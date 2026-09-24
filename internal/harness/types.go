@@ -1,0 +1,56 @@
+package harness
+
+import (
+	"context"
+	"time"
+)
+
+// TaskBrief is the whole task as data, handed to a harness adapter
+// (architecture 6.2).
+type TaskBrief struct {
+	Objective  string   `json:"objective"`
+	Repository string   `json:"repository"`
+	SHA        string   `json:"sha"`
+	IssueURL   string   `json:"issue_url,omitempty"`
+	Findings   []string `json:"findings,omitempty"`
+	Artifacts  []string `json:"artifacts,omitempty"`
+}
+
+type EventKind string
+
+const (
+	EventModelCall  EventKind = "model_call"
+	EventToolCall   EventKind = "tool_call"
+	EventFileChange EventKind = "file_change"
+	EventCommand    EventKind = "command"
+	EventCheckpoint EventKind = "checkpoint"
+	EventFinished   EventKind = "finished"
+)
+
+// Event is one normalized stream item from a running harness. The git
+// diff and the artifact store stay the ground truth.
+type Event struct {
+	Time   time.Time      `json:"time"`
+	Kind   EventKind      `json:"kind"`
+	Detail map[string]any `json:"detail,omitempty"`
+}
+
+// Result is the adapter's final verdict.
+type Result struct {
+	Success bool   `json:"success"`
+	Summary string `json:"summary"`
+}
+
+// SandboxEnv names where a task runs.
+type SandboxEnv struct {
+	Namespace      string `json:"namespace"`
+	ServiceAccount string `json:"service_account"`
+	Image          string `json:"image"`
+}
+
+// Harness is the only thing factoryd knows about harnesses
+// (architecture 6.2).
+type Harness interface {
+	Prepare(ctx context.Context, env SandboxEnv, brief TaskBrief) error
+	Run(ctx context.Context, brief TaskBrief, emit func(Event)) Result
+}
