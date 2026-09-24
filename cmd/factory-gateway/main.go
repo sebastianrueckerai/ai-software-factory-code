@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/sebastianrueckerai/factory/internal/health"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 )
 
 var version = "dev"
