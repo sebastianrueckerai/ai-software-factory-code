@@ -10,3 +10,16 @@ jobs:
           go-version: "1.25"
       - run: go test ./...
       - run: go vet ./...
+  image:
+    needs: test
+    if: gitea.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u sebastian --password-stdin
+      - name: build and push gateway image
+        run: |
+          SHA=${GITHUB_SHA::7}
+          docker build -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA .
+          docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
