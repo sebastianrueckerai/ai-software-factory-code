@@ -23,8 +23,9 @@ func main() {
 		log.Fatalf("open task store: %v", err)
 	}
 	auth, err := gateway.NewAuth(gateway.AuthOptions{
-		Audience:  cfg.Audience,
-		FetchBase: gateway.InClusterFetchBase,
+		Audience:   cfg.Audience,
+		FetchBase:  gateway.InClusterFetchBase,
+		CACertPath: gateway.InClusterCACertPath, // missing bundle fails boot above
 	})
 	if err != nil {
 		log.Fatalf("init auth: %v", err)

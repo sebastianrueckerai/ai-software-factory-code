@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -131,6 +132,11 @@ func (f *authFixture) mint(t *testing.T, mod func(*tokenOpts)) string {
 	if mod != nil {
 		mod(&o)
 	}
+	return mintToken(t, o)
+}
+
+func mintToken(t *testing.T, o tokenOpts) string {
+	t.Helper()
 	claims := jwt.MapClaims{
 		"iss": o.iss,
 		"sub": o.sub,
@@ -350,5 +356,96 @@ func TestJWKSURL(t *testing.T) {
 				t.Fatalf("jwksURL(%q, %q) = %q, want %q", tt.iss, tt.base, got, tt.want)
 			}
 		})
+	}
+}
+
+// Finding-1 regression: main wires CACertPath: InClusterCACertPath, so the
+// JWKS fetch to https://kubernetes.default.svc must verify against the pod's
+// CA bundle, and an absent bundle must fail construction (fail-fast boot).
+func TestInClusterCACertWiring(t *testing.T) {
+	if InClusterCACertPath != "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" {
+		t.Fatalf("InClusterCACertPath = %q, want the mounted serviceaccount CA path", InClusterCACertPath)
+	}
+
+	absent := AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase, CACertPath: filepath.Join(t.TempDir(), "absent.crt")}
+	if _, err := NewAuth(absent); err == nil {
+		t.Fatal("absent CA bundle must fail NewAuth, want fail-fast boot")
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(caPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := NewAuth(AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase, CACertPath: caPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, ok := auth.client.Transport.(bearerTransport)
+	if !ok {
+		t.Fatalf("JWKS transport = %T, want bearerTransport", auth.client.Transport)
+	}
+	tlsCfg := bt.next.(*http.Transport).TLSClientConfig
+	if tlsCfg == nil || tlsCfg.RootCAs == nil {
+		t.Fatal("CA pool never reached the JWKS client's TLS config")
+	}
+}
+
+// Finding-2 regression: the JWKS client cache is keyed by the derived URL
+// (distinct issuers collapse onto one entry under the fetch-base override)
+// and stays bounded against distinct unverified issuer paths.
+func TestKeyfuncCacheBoundedAndKeyedByURL(t *testing.T) {
+	signKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"keys": []jwk{publicJWK("test-key-1", &signKey.PublicKey)},
+		})
+	}))
+	defer srv.Close()
+	ownPath := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(ownPath, []byte("gateway-own-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	auth, err := NewAuth(AuthOptions{Audience: testAudience, FetchBase: srv.URL, OwnTokenPath: ownPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := func(iss string) string {
+		return mintToken(t, tokenOpts{
+			key: signKey, kid: "test-key-1", iss: iss, aud: testAudience,
+			sub: "system:serviceaccount:factory:task-42",
+			exp: time.Now().Add(time.Hour), alg: jwt.SigningMethodRS256,
+		})
+	}
+
+	for _, iss := range []string{"https://cluster-a.example", "https://cluster-b.example"} {
+		id, err := auth.Authenticate(bearerRequest(token(iss)))
+		if err != nil {
+			t.Fatalf("issuer %s: %v", iss, err)
+		}
+		if id.TaskID != "42" {
+			t.Fatalf("identity = %+v", id)
+		}
+	}
+	if n := len(auth.keyfuncBy); n != 1 {
+		t.Fatalf("keyfunc cache has %d entries for issuers collapsed onto one URL, want 1", n)
+	}
+
+	for i := 0; i < keyfuncCacheCap*3; i++ {
+		iss := fmt.Sprintf("https://cluster.example/attack-%d", i)
+		if _, err := auth.Authenticate(bearerRequest(token(iss))); err != nil {
+			t.Fatalf("issuer %s: %v", iss, err)
+		}
+	}
+	if n := len(auth.keyfuncBy); n > keyfuncCacheCap {
+		t.Fatalf("keyfunc cache grew to %d entries, want <= %d", n, keyfuncCacheCap)
 	}
 }

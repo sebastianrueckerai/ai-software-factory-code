@@ -35,7 +35,14 @@ const (
 	InClusterFetchBase = "https://kubernetes.default.svc"
 
 	defaultOwnTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-	defaultCACertPath   = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+	// InClusterCACertPath is the pod's mounted CA bundle; the JWKS fetch to
+	// InClusterFetchBase presents a certificate signed by it, so production
+	// wiring must pass this as CACertPath (a missing bundle fails boot).
+	InClusterCACertPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+	// keyfuncCacheCap bounds the JWKS client cache below.
+	keyfuncCacheCap = 8
 )
 
 type AuthOptions struct {
@@ -50,10 +57,18 @@ type AuthOptions struct {
 // cluster endpoint URL, so it must never be hardcoded); the JWKS fetch is
 // redirected through FetchBase independently of claim validation.
 type Auth struct {
-	opts      AuthOptions
-	client    *http.Client
-	mu        sync.Mutex
-	keyfuncBy map[string]keyfunc.Keyfunc
+	opts   AuthOptions
+	client *http.Client
+	mu     sync.Mutex
+	// keyfuncBy is keyed by the DERIVED JWKS URL, never the raw iss claim,
+	// which is unverified input. Each value's cancel reaps the entry's
+	// refresh goroutine on eviction.
+	keyfuncBy map[string]cachedKeyfunc
+}
+
+type cachedKeyfunc struct {
+	kf     keyfunc.Keyfunc
+	cancel context.CancelFunc
 }
 
 // bearerTransport injects the gateway pod's own mounted SA token on every
@@ -139,30 +154,42 @@ func (a *Auth) Verify(ctx context.Context, raw string) (Identity, error) {
 	return taskIdentity(claims.Subject)
 }
 
-// keyfunc returns a cached JWKS client for one issuer. keyfunc launches a
-// refresh goroutine per instance, so exactly one is kept per issuer; the
-// background context keeps it alive for the process lifetime.
+// keyfunc returns a cached JWKS client for the URL derived from the token's
+// issuer. At the cap one arbitrary entry is evicted and its context
+// cancelled, ending its refresh goroutine: legitimate traffic holds exactly
+// one entry (the fetch-base override collapses every issuer onto one URL),
+// so eviction can only reclaim attacker noise or cost one legit token a
+// single JWKS re-fetch — arbitrary victim selection is correct here.
 func (a *Auth) keyfunc(iss string) (keyfunc.Keyfunc, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if k, ok := a.keyfuncBy[iss]; ok {
-		return k, nil
-	}
 	u, err := jwksURL(iss, a.opts.FetchBase)
 	if err != nil {
 		return nil, err
 	}
-	k, err := keyfunc.NewDefaultOverrideCtx(context.Background(), []string{u}, keyfunc.Override{
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if c, ok := a.keyfuncBy[u]; ok {
+		return c.kf, nil
+	}
+	if len(a.keyfuncBy) >= keyfuncCacheCap {
+		for k, v := range a.keyfuncBy {
+			v.cancel()
+			delete(a.keyfuncBy, k)
+			break
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	k, err := keyfunc.NewDefaultOverrideCtx(ctx, []string{u}, keyfunc.Override{
 		Client:          a.client,
 		RefreshInterval: time.Hour,
 	})
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("jwks %s: %w", u, err)
 	}
 	if a.keyfuncBy == nil {
-		a.keyfuncBy = map[string]keyfunc.Keyfunc{}
+		a.keyfuncBy = map[string]cachedKeyfunc{}
 	}
-	a.keyfuncBy[iss] = k
+	a.keyfuncBy[u] = cachedKeyfunc{kf: k, cancel: cancel}
 	return k, nil
 }
 
