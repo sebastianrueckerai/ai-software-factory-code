@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factory-gateway
+  namespace: factory
+  labels: {app: factory-gateway}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: factory-gateway}}
+  template:
+    metadata:
+      labels: {app: factory-gateway}
+    spec:
+      serviceAccountName: factory-gateway
+      automountServiceAccountToken: true # the JWKS fetch authenticates with this token
+      imagePullSecrets:
+      - name: forgejo-registry
+      containers:
+      - name: gateway
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:0cad6fb26828555846872b1f6ba57b1f055754d699d0b4d4c3f0500a61e290e0
+        ports: [{name: http, containerPort: 8081}]
+        env:
+        - name: LITELLM_URL
+          value: http://litellm.platform.svc:4000
+        - name: PGUSER
+          valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
+        - name: PGPASSWORD
+          valueFrom: {secretKeyRef: {name: factory-db-creds, key: password}}
+        - name: DATABASE_URL
+          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
+        - name: LITELLM_MASTER_KEY
+          valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
+        - name: GATEWAY_AUDIENCE
+          value: factory-gateway
+        readinessProbe: {httpGet: {path: /healthz, port: http}}
+        livenessProbe: {httpGet: {path: /healthz, port: http}}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}

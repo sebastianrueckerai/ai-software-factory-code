@@ -1,0 +1,8 @@
+# The gateway's Postgres database on the shared CNPG cluster. The owner role
+# `gateway` is created imperatively (CNPG's Database CR cannot create roles);
+# its password is the imperative secret factory-db-creds in the factory
+# namespace (pods cannot read secrets across namespaces).
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata: {name: gateway-db, namespace: platform}
+spec: {name: gateway, owner: gateway, cluster: {name: sf-cluster}}
