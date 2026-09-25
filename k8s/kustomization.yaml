@@ -1,6 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-namespace: factory
+# No kustomization-level namespace: it would override the explicit one on the
+# platform-scoped Database CR (CNPG clusters are namespace-local).
 resources:
 - database.yaml
 - serviceaccount.yaml
