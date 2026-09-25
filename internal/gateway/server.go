@@ -33,7 +33,7 @@ var (
 // maxBodyBytes caps the proxied request body at the trust boundary. Large
 // enough for 1M-token contexts (about 4 MB of text), var so tests can lower
 // it.
-var maxBodyBytes int64 = 64 << 20
+var maxBodyBytes int64 = 16 << 20
 
 type ServerOptions struct {
 	Auth       Authenticator
