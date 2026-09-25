@@ -1,22 +1,48 @@
 package main
 
 import (
-	"flag"
+	"context"
 	"log"
 	"net/http"
+	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 )
 
 var version = "dev"
 
 func main() {
-	addr := flag.String("addr", ":8081", "listen address")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Parse()
-	if *showVersion {
-		log.Println(version)
-		return
+	cfg := gateway.ConfigFromEnv()
+	if cfg.LiteLLMURL == "" || cfg.LiteLLMMasterKey == "" {
+		log.Fatal("LITELLM_URL and LITELLM_MASTER_KEY are required")
 	}
-	log.Fatal(http.ListenAndServe(*addr, health.Handler("factory-gateway", version)))
+
+	ctx := context.Background()
+	store, err := gateway.OpenStore(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("open task store: %v", err)
+	}
+	auth, err := gateway.NewAuth(gateway.AuthOptions{
+		Audience:  cfg.Audience,
+		FetchBase: gateway.InClusterFetchBase,
+	})
+	if err != nil {
+		log.Fatalf("init auth: %v", err)
+	}
+	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
+	srv := gateway.NewServer(gateway.ServerOptions{
+		Auth:       auth,
+		Store:      store,
+		Minter:     lite,
+		LiteLLMURL: cfg.LiteLLMURL,
+	})
+
+	addr := ":" + cfg.Port
+	log.Printf("factory-gateway %s listening on %s", version, addr)
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Routes(version),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
