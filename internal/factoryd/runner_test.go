@@ -28,6 +28,7 @@ type fakeKube struct {
 	secretTypes map[string]string            // ns/name → type
 	sourceData  map[string]map[string]string // read-only source secrets
 	cnps        map[string]map[string]any    // ns/name → spec
+	createdNs   map[string]map[string]string // survives deletion
 }
 
 type fakePod struct {
@@ -46,6 +47,7 @@ func newFakeKube() *fakeKube {
 		secretTypes: map[string]string{},
 		sourceData:  map[string]map[string]string{},
 		cnps:        map[string]map[string]any{},
+		createdNs:   map[string]map[string]string{},
 	}
 }
 
@@ -56,6 +58,7 @@ func (k *fakeKube) CreateNamespace(ctx context.Context, name string, labels map[
 		return ErrAlreadyExists
 	}
 	k.namespaces[name] = labels
+	k.createdNs[name] = labels
 	return nil
 }
 
@@ -334,6 +337,9 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	if len(kube.deletedNs) == 0 || kube.deletedNs[0] != ns {
 		t.Fatalf("deleted namespaces = %v, want %s", kube.deletedNs, ns)
 	}
+	if l := kube.createdNs[ns]; l["factory.ai/task"] != "t1" || l["pod-security.kubernetes.io/enforce"] != "restricted" {
+		t.Fatalf("task namespace labels = %v", l)
+	}
 	if kube.secrets[ns+"/task-git"]["GIT_TOKEN"] != "tok-task-t1" {
 		t.Fatalf("git token secret = %v", kube.secrets[ns+"/task-git"])
 	}
@@ -366,6 +372,9 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	spec := pod.spec["spec"].(map[string]any)
 	if spec["runtimeClassName"] != "gvisor" || spec["automountServiceAccountToken"] != false {
 		t.Fatalf("pod spec hardening: %v %v", spec["runtimeClassName"], spec["automountServiceAccountToken"])
+	}
+	if sp, _ := spec["securityContext"].(map[string]any)["seccompProfile"].(map[string]any); sp["type"] != "RuntimeDefault" {
+		t.Fatalf("pod seccompProfile = %v", sp)
 	}
 	if spec["serviceAccountName"] != "task-t1" || spec["restartPolicy"] != "Never" {
 		t.Fatalf("pod identity: %v %v", spec["serviceAccountName"], spec["restartPolicy"])

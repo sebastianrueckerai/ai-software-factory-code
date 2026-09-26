@@ -338,7 +338,10 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) e
 		do   func() error
 	}{
 		{"namespace", func() error {
-			return r.kube.CreateNamespace(ctx, ns, map[string]string{"factory.ai/task": t.ID})
+			return r.kube.CreateNamespace(ctx, ns, map[string]string{
+				"factory.ai/task":                    t.ID,
+				"pod-security.kubernetes.io/enforce": "restricted",
+			})
 		}},
 		{"service account", func() error {
 			return r.kube.CreateServiceAccount(ctx, ns, "task-"+t.ID)
@@ -440,10 +443,13 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 			},
 		},
 		"spec": map[string]any{
-			"restartPolicy":                 "Never",
-			"runtimeClassName":              "gvisor",
-			"serviceAccountName":            "task-" + t.ID,
-			"automountServiceAccountToken":  false,
+			"restartPolicy":                "Never",
+			"runtimeClassName":             "gvisor",
+			"serviceAccountName":           "task-" + t.ID,
+			"automountServiceAccountToken": false,
+			"securityContext": map[string]any{
+				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+			},
 			"imagePullSecrets":              pullSecrets,
 			"terminationGracePeriodSeconds": 30,
 			"containers": []any{map[string]any{

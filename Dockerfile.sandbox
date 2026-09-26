@@ -9,7 +9,7 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 ARG OPENCODE_VERSION=v1.18.32
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
-      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl \
+      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash worker
 # release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
@@ -29,7 +29,8 @@ RUN mkdir -p /opt/opencode-home \
       && HOME=/opt/opencode-home OPENCODE_CONFIG_CONTENT='{"provider":{"factory":{"npm":"@ai-sdk/openai-compatible","name":"Factory gateway","options":{"baseURL":"http://127.0.0.1:9/v1","apiKey":"sandbox-dummy"},"models":{"bake":{"name":"Factory model","reasoning":true,"interleaved":{"field":"reasoning_content"},"limit":{"context":200000,"output":1000}}}}}}' \
          timeout 300 opencode run --format json --model factory/bake "warm the provider cache" || true
 USER 1000:1000
-# every one of these phones home past the egress allowlist and stalls on the drop
+# every one of these phones home past the egress allowlist and stalls on the drop;
+# ripgrep is installed because opencode otherwise downloads it from GitHub
 ENV HOME=/home/worker \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
