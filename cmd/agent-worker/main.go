@@ -52,6 +52,11 @@ func run(log func(string, ...any)) int {
 		log("clone: %v", err)
 		return 1
 	}
+	// the adapter writes brief.json into the work tree; it must never be committed
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
+		log("exclude brief.json: %v", err)
+		return 1
+	}
 	if env.repoSHA != "" {
 		if err := env.gitRun(repoDir, "checkout", env.repoSHA); err != nil {
 			log("checkout %s: %v", env.repoSHA, err)
@@ -138,7 +143,7 @@ func loadEnv() (workerEnv, error) {
 	e.model = str("MODEL")
 	e.home = str("HOME")
 	for name, val := range map[string]string{
-		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPO_URL": e.repoURL,
+		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL,
 		"BRANCH": e.branch, "GIT_TOKEN": e.gitToken, "GATEWAY_URL": e.gatewayURL,
 		"TOKEN_FILE": e.tokenFile, "MODEL": e.model,
 	} {
@@ -158,13 +163,6 @@ func loadEnv() (workerEnv, error) {
 	}
 	// FINDINGS arrives as a JSON array; absent means a first attempt.
 	json.Unmarshal([]byte(str("FINDINGS")), &e.findings)
-	if e.repository == "" {
-		// REPO_URL is https://host/owner/name.git
-		trimmed := strings.TrimSuffix(strings.TrimPrefix(e.repoURL, "https://"), ".git")
-		if i := strings.Index(trimmed, "/"); i >= 0 {
-			e.repository = trimmed[i+1:]
-		}
-	}
 	return e, nil
 }
 

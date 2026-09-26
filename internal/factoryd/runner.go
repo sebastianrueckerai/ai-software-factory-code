@@ -411,6 +411,7 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": sessionID},
 		{"name": "OBJECTIVE", "value": t.Objective},
+		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_URL", "value": r.cloneURL(t)},
 		{"name": "REPO_SHA", "value": t.SHA},
 		{"name": "BRANCH", "value": r.branch(t)},

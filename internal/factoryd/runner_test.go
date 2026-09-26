@@ -480,8 +480,11 @@ func TestRunnerResumesAfterSupervisionTrip(t *testing.T) {
 
 	second := runner.workerPodSpec(task, "s2", "s1", nil, cfg.RetryModel)
 	secondEnv := second["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any)
-	var model, parentEnv string
+	var model, parentEnv, repository string
 	for _, e := range secondEnv {
+		if e["name"] == "REPOSITORY" {
+			repository = e["value"].(string)
+		}
 		if e["name"] == "MODEL" {
 			model = e["value"].(string)
 		}
@@ -489,8 +492,8 @@ func TestRunnerResumesAfterSupervisionTrip(t *testing.T) {
 			parentEnv = e["value"].(string)
 		}
 	}
-	if model != cfg.RetryModel || parentEnv != "s1" {
-		t.Fatalf("resumed pod env: model=%q parent=%q", model, parentEnv)
+	if model != cfg.RetryModel || parentEnv != "s1" || repository != task.Repository {
+		t.Fatalf("resumed pod env: model=%q parent=%q repository=%q", model, parentEnv, repository)
 	}
 }
 
