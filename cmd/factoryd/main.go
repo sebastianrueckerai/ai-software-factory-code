@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -60,8 +64,8 @@ func main() {
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
-		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc:8081"),
-		GitBaseURL:           env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc:3000"),
+		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"),
+		GitBaseURL:           env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000"),
 		Model:                env("MODEL", "factory/coding-frontier"),
 		RetryModel:           env("RETRY_MODEL", "factory/review-frontier"),
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
@@ -78,10 +82,17 @@ func main() {
 		log.Fatalf("runner: %v", err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	intakeToken := mustEnv("INTAKE_TOKEN")
+	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	runner.BootSweep(ctx)
-	go runner.Run(ctx)
+	runnerDone := make(chan struct{})
+	go func() {
+		defer close(runnerDone)
+		runner.Run(ctx)
+	}()
 
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
@@ -92,7 +103,7 @@ func main() {
 		}
 		w.Write([]byte("ok"))
 	})
-	mux.HandleFunc("POST /tasks", func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("POST /tasks", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
 			Repository string  `json:"repository"`
@@ -112,6 +123,7 @@ func main() {
 		if in.BudgetEUR <= 0 {
 			in.BudgetEUR = 2.0
 		}
+		in.BudgetEUR = min(in.BudgetEUR, maxBudget)
 		id := factoryd.NewTaskID()
 		if in.Branch == "" {
 			in.Branch = "factory/" + id
@@ -128,9 +140,9 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"id": id, "branch": in.Branch})
-	})
-	mux.HandleFunc("GET /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR})
+	}))
+	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -142,15 +154,38 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(task)
-	})
+	}))
 
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	go func() {
+		<-ctx.Done()
+		log.Printf("factoryd: shutting down, waiting for the runner")
+		<-runnerDone
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(shutdown)
+	}()
 	log.Printf("factoryd %s listening on %s", version, *addr)
-	log.Fatal(server.ListenAndServe())
+	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+// requireBearer admits only requests carrying the intake token.
+func requireBearer(token string, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if !ok || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func env(name, def string) string {
@@ -166,6 +201,16 @@ func mustEnv(name string) string {
 		log.Fatalf("%s is required", name)
 	}
 	return v
+}
+
+func envFloat(name string, def float64) float64 {
+	if v := os.Getenv(name); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			return f
+		}
+		log.Fatalf("%s: not a positive number", name)
+	}
+	return def
 }
 
 func envInt(name string, def int) int {

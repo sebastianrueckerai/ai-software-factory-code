@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -33,11 +34,21 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 func (s *fakeStore) SetTaskStatus(ctx context.Context, id, status string) error {
 	t, ok := s.tasks[id]
 	if !ok {
-		return nil
+		return fmt.Errorf("task %s: not found", id)
 	}
 	t.Status = status
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) ClaimTask(ctx context.Context, id string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Status != "queued" {
+		return false, nil
+	}
+	t.Status = "running"
+	s.tasks[id] = t
+	return true, nil
 }
 
 func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
@@ -127,12 +138,21 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("task = %+v, want %+v", got, in)
 	}
 
-	if err := s.SetTaskStatus(ctx, "t1", "running"); err != nil {
-		t.Fatalf("SetTaskStatus: %v", err)
+	if claimed, err := s.ClaimTask(ctx, "t1"); err != nil || !claimed {
+		t.Fatalf("first claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if claimed, err := s.ClaimTask(ctx, "t1"); err != nil || claimed {
+		t.Fatalf("second claim = (%v, %v), want (false, nil): a running task must not be claimed twice", claimed, err)
 	}
 	got, _, _ = s.Task(ctx, "t1")
 	if got.Status != "running" {
 		t.Fatalf("status = %q", got.Status)
+	}
+	if err := s.SetTaskStatus(ctx, "t1", "queued"); err != nil {
+		t.Fatalf("SetTaskStatus: %v", err)
+	}
+	if err := s.SetTaskStatus(ctx, "nope", "running"); err == nil {
+		t.Fatal("SetTaskStatus on a missing task must fail")
 	}
 
 	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "queued", Objective: "x"}); err != nil {

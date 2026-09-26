@@ -1,11 +1,11 @@
-FROM golang:1.25-alpine AS build
+FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-worker ./cmd/agent-worker
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 ARG OPENCODE_VERSION=v1.18.32
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \

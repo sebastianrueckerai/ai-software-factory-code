@@ -29,6 +29,19 @@ type fakeKube struct {
 	sourceData  map[string]map[string]string // read-only source secrets
 	cnps        map[string]map[string]any    // ns/name → spec
 	createdNs   map[string]map[string]string // survives deletion
+	objects     map[string]map[string]any    // Create path → object
+	saErr       error                        // injected CreateServiceAccount failure
+}
+
+// hangLogs as a pod's log body keeps the stream open until the reader's
+// context ends: a worker that runs on without output.
+const hangLogs = "<hang>"
+
+type ctxReader struct{ ctx context.Context }
+
+func (r ctxReader) Read([]byte) (int, error) {
+	<-r.ctx.Done()
+	return 0, io.EOF
 }
 
 type fakePod struct {
@@ -48,6 +61,7 @@ func newFakeKube() *fakeKube {
 		sourceData:  map[string]map[string]string{},
 		cnps:        map[string]map[string]any{},
 		createdNs:   map[string]map[string]string{},
+		objects:     map[string]map[string]any{},
 	}
 }
 
@@ -87,7 +101,7 @@ func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]
 }
 
 func (k *fakeKube) CreateServiceAccount(ctx context.Context, namespace, name string) error {
-	return nil
+	return k.saErr
 }
 
 func (k *fakeKube) CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error {
@@ -117,6 +131,13 @@ func (k *fakeKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace, nam
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.cnps[namespace+"/"+name] = spec
+	return nil
+}
+
+func (k *fakeKube) Create(ctx context.Context, path string, obj map[string]any) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.objects[path] = obj
 	return nil
 }
 
@@ -164,6 +185,9 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 	case <-p.logsReady:
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+	if p.logs == hangLogs {
+		return io.NopCloser(ctxReader{ctx}), nil
 	}
 	return io.NopCloser(strings.NewReader(p.logs)), nil
 }
@@ -267,8 +291,8 @@ func testRunnerConfig() RunnerConfig {
 		WorkerImage:          "reg/worker@sha256:abc",
 		PullSecret:           "forgejo-registry",
 		FactoryNamespace:     "factory",
-		GatewayURL:           "http://factory-gateway.factory.svc:8081",
-		GitBaseURL:           "http://forgejo-http.forgejo.svc:3000",
+		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
+		GitBaseURL:           "http://forgejo-http.forgejo.svc.cluster.local:3000",
 		Model:                "factory/coding-frontier",
 		RetryModel:           "factory/review-frontier",
 		AnswerTokens:         8192,
@@ -357,10 +381,33 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	if !strings.Contains(deny, "169.254.169.254/32") {
 		t.Fatalf("egressDeny = %v, want the metadata address", deny)
 	}
-	if !strings.Contains(fmt.Sprint(cnp), "matchPattern") {
-		t.Fatal("DNS rule without matchPattern")
-	}
 	cnpStr := fmt.Sprint(cnp)
+	if strings.Contains(cnpStr, "matchPattern") {
+		t.Fatal("DNS rule with a pattern: only the allowlisted names may resolve")
+	}
+	for _, name := range []string{"matchName:factory-gateway.factory.svc.cluster.local", "matchName:forgejo-http.forgejo.svc.cluster.local"} {
+		if !strings.Contains(cnpStr, name) {
+			t.Fatalf("DNS allowlist lacks %s: %s", name, cnpStr)
+		}
+	}
+	if strings.Contains(cnpStr, "golang.org") || strings.Contains(cnpStr, "toFQDNs") {
+		t.Fatal("no toolchain in the sandbox image, so no package-proxy egress")
+	}
+	gw := cnp["egress"].([]any)[0].(map[string]any)
+	if !strings.Contains(fmt.Sprint(gw["toEndpoints"]), "app:factory-gateway") || fmt.Sprint(gw["toPorts"]) != "[map[ports:[map[port:8081 protocol:TCP]]]]" {
+		t.Fatalf("gateway allow not restricted to port 8081: %v", gw)
+	}
+	rb := kube.objects["/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings"]
+	if fmt.Sprint(rb["roleRef"]) != "map[apiGroup:rbac.authorization.k8s.io kind:ClusterRole name:factoryd-task]" {
+		t.Fatalf("task role binding = %v", rb)
+	}
+	quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]
+	if hard := quota["spec"].(map[string]any)["hard"].(map[string]any); hard["pods"] != "2" || hard["limits.memory"] != "4Gi" {
+		t.Fatalf("resource quota = %v", quota)
+	}
+	if kube.objects["/api/v1/namespaces/"+ns+"/limitranges"] == nil {
+		t.Fatal("limit range missing")
+	}
 	if strings.Contains(cnpStr, "matchName") && strings.Contains(cnpStr, "git.aisoftwarefactory.world") {
 		t.Fatal("git host allowed by FQDN: the in-cluster DNS answer is the gateway ClusterIP, which toFQDNs cannot authorize")
 	}
@@ -384,7 +431,18 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
 	}
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:2Gi] requests:map[cpu:250m memory:512Mi]]" {
+		t.Fatalf("container resources = %s", res)
+	}
+	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
+		t.Fatalf("dnsConfig = %s", dns)
+	}
 	volumes := spec["volumes"].([]any)
+	for i, want := range []string{"4Gi", "1Gi"} {
+		if got := volumes[i].(map[string]any)["emptyDir"].(map[string]any)["sizeLimit"]; got != want {
+			t.Fatalf("volume %d sizeLimit = %v, want %s", i, got, want)
+		}
+	}
 	projected := volumes[2].(map[string]any)["projected"].(map[string]any)
 	sat := projected["sources"].([]any)[0].(map[string]any)["serviceAccountToken"].(map[string]any)
 	if sat["audience"] != "factory-gateway" {
@@ -582,5 +640,114 @@ func TestRunnerBootSweep(t *testing.T) {
 	}
 	if _, ok := kube.namespaces["factory-agents-tqueued"]; !ok {
 		t.Fatal("queued task's namespace must NOT be swept")
+	}
+}
+
+func TestRunnerWallClockCapIsPerTask(t *testing.T) {
+	task := Task{ID: "t5", Status: "queued", Objective: "slow", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, WallClockCap: 300 * time.Millisecond, RepetitionEvents: 24}
+
+	runWithPodLogs(t, runner, task, []string{hangLogs, hangLogs, hangLogs})
+
+	got, _, _ := store.Task(context.Background(), "t5")
+	if got.Status != "failed" {
+		t.Fatalf("status = %q, want failed at the task cap", got.Status)
+	}
+	if len(kube.podOrder) != 1 {
+		t.Fatalf("pods = %d, want 1: a wall-clock trip ends the task, it does not resume", len(kube.podOrder))
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v", hub.revoked)
+	}
+}
+
+func TestRunnerShutdownRequeuesInFlightTask(t *testing.T) {
+	task := Task{ID: "t6", Status: "queued", Objective: "long", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runner.execute(ctx, task)
+	}()
+	for {
+		kube.mu.Lock()
+		n := len(kube.podOrder)
+		kube.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	kube.scriptPods(0, hangLogs)
+	cancel()
+	<-done
+
+	got, _, _ := store.Task(context.Background(), "t6")
+	if got.Status != "queued" {
+		t.Fatalf("status = %q, want queued (handed back on shutdown)", got.Status)
+	}
+	if len(kube.podOrder) != 1 {
+		t.Fatalf("pods = %d, want 1: no new session after shutdown", len(kube.podOrder))
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v: a requeued task's token must not survive", hub.revoked)
+	}
+	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
+		t.Fatal("namespace survived the shutdown")
+	}
+}
+
+func TestRunnerSkipsTaskItCannotClaim(t *testing.T) {
+	task := Task{ID: "t7", Status: "running", Objective: "taken", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	runner.execute(context.Background(), task)
+
+	if len(kube.createdNs) != 0 || len(hub.minted()) != 0 {
+		t.Fatalf("unclaimed task was run: namespaces %v, tokens %v", kube.createdNs, hub.minted())
+	}
+	if got, _, _ := store.Task(context.Background(), "t7"); got.Status != "running" {
+		t.Fatalf("status = %q, want untouched running", got.Status)
+	}
+}
+
+func TestRunnerSetupFailureDeletesNamespace(t *testing.T) {
+	task := Task{ID: "t8", Status: "queued", Objective: "x", Repository: "sf/repo"}
+	kube := newFakeKube()
+	kube.saErr = fmt.Errorf("apiserver says no")
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	runner.execute(context.Background(), task)
+
+	if got, _, _ := store.Task(context.Background(), "t8"); got.Status != "failed" {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if _, ok := kube.createdNs["factory-agents-t8"]; !ok {
+		t.Fatal("setup never created the namespace")
+	}
+	if _, ok := kube.namespaces["factory-agents-t8"]; ok {
+		t.Fatal("half-built namespace survived a setup failure")
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v", hub.revoked)
+	}
+}
+
+func TestFreshNamespaceReplacesLeftover(t *testing.T) {
+	kube := newFakeKube()
+	kube.namespaces["factory-agents-t10"] = map[string]string{"stale": "yes"}
+	runner, _, _ := newTestRunner(t, Task{ID: "t10", Status: "queued"}, kube, &fakeObjectStore{})
+
+	if err := runner.freshNamespace(context.Background(), "factory-agents-t10", map[string]string{"factory.ai/task": "t10"}); err != nil {
+		t.Fatal(err)
+	}
+	if l := kube.namespaces["factory-agents-t10"]; l["stale"] != "" || l["factory.ai/task"] != "t10" {
+		t.Fatalf("namespace labels = %v, want the fresh namespace", l)
 	}
 }

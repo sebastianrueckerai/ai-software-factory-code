@@ -4,9 +4,10 @@ metadata:
   name: factoryd
   namespace: factory
 ---
-# Cluster-wide because every task gets its own namespace: factoryd creates
-# and tears down namespaces, pods, secrets, service accounts and CNPs in
-# them, and lists agent namespaces by label for the boot sweep.
+# Cluster scope holds only what cannot be namespaced: namespace create,
+# delete and list, and creating the RoleBinding that grants factoryd-task
+# inside each task namespace. RBAC cannot restrict create by name, so the
+# ValidatingAdmissionPolicy below confines all of it to factory-agents-*.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -14,22 +15,14 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [namespaces]
-  verbs: [create, delete, get, list]
-- apiGroups: [""]
-  resources: [pods]
-  verbs: [create, delete, get]
-- apiGroups: [""]
-  resources: [pods/log]
-  verbs: [get]
-- apiGroups: [""]
-  resources: [secrets]
-  verbs: [create, get]
-- apiGroups: [""]
-  resources: [serviceaccounts]
-  verbs: [create, get]
-- apiGroups: [cilium.io]
-  resources: [ciliumnetworkpolicies]
-  verbs: [create, get]
+  verbs: [create, delete, list]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [rolebindings]
+  verbs: [create]
+- apiGroups: [rbac.authorization.k8s.io]
+  resources: [clusterroles]
+  verbs: [bind]
+  resourceNames: [factoryd-task]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -44,6 +37,107 @@ subjects:
   name: factoryd
   namespace: factory
 ---
+# Bound per task namespace by factoryd itself, never cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factoryd-task
+rules:
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [create, delete, get]
+- apiGroups: [""]
+  resources: [pods/log]
+  verbs: [get]
+- apiGroups: [""]
+  resources: [secrets, serviceaccounts, resourcequotas, limitranges]
+  verbs: [create]
+- apiGroups: [cilium.io]
+  resources: [ciliumnetworkpolicies]
+  verbs: [create]
+---
+# The registry pull secret factoryd copies into each task namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factoryd
+  namespace: factory
+rules:
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get]
+  resourceNames: [forgejo-registry]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factoryd
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factoryd-task-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["*"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE, DELETE]
+      resources: ["*"]
+      scope: "*"
+  matchConditions:
+  - name: factoryd
+    expression: request.userInfo.username == 'system:serviceaccount:factory:factoryd'
+  # access reviews (kubectl auth can-i) are queries, not objects
+  - name: not-a-review
+    expression: "!(request.resource.group in ['authorization.k8s.io', 'authentication.k8s.io'])"
+  variables:
+  - name: kind
+    expression: request.kind.kind
+  - name: target
+    expression: "request.kind.kind != 'Namespace' ? request.namespace : request.operation == 'DELETE' ? oldObject.metadata.name : object.metadata.name"
+  validations:
+  - expression: variables.target.startsWith('factory-agents-')
+    message: factoryd may only act in factory-agents-* namespaces
+  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod']
+    message: factoryd may not create this kind of object
+  - expression: >-
+      variables.kind != 'Namespace' || request.operation == 'DELETE' ||
+      (has(object.metadata.labels) &&
+       'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
+       object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' &&
+       'factory.ai/task' in object.metadata.labels)
+    message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted
+  - expression: >-
+      variables.kind != 'RoleBinding' || request.operation == 'DELETE' ||
+      (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'factoryd-task' &&
+       has(object.subjects) && object.subjects.all(s, s.kind == 'ServiceAccount' &&
+       s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory'))
+    message: factoryd may only bind factoryd-task to itself
+  - expression: >-
+      variables.kind != 'Pod' || request.operation == 'DELETE' ||
+      (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
+       has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
+    message: sandbox pods must run under gVisor without an automounted API token
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factoryd-task-namespaces
+spec:
+  policyName: factoryd-task-namespaces
+  validationActions: [Deny]
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,12 +146,16 @@ metadata:
   labels: {app: factoryd}
 spec:
   replicas: 1
+  # two factoryd pods would race for the same queue
+  strategy: {type: Recreate}
   selector: {matchLabels: {app: factoryd}}
   template:
     metadata:
       labels: {app: factoryd}
     spec:
       serviceAccountName: factoryd
+      # room to delete the sandbox, revoke credentials and requeue the task in flight
+      terminationGracePeriodSeconds: 150
       automountServiceAccountToken: true
       imagePullSecrets:
       - name: forgejo-registry
@@ -91,9 +189,19 @@ spec:
         - name: WORKER_IMAGE
           value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:5a2b85a4539afd85eb782db8aa0fcfc61998a367064a08516aba2c304911ef22
         - name: GATEWAY_URL
-          value: http://factory-gateway.factory.svc:8081
+          value: http://factory-gateway.factory.svc.cluster.local:8081
+        - name: INTAKE_TOKEN
+          valueFrom: {secretKeyRef: {name: factoryd-intake, key: token}}
+        - name: MAX_BUDGET_EUR
+          value: "5"
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+          seccompProfile: {type: RuntimeDefault}
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
@@ -107,3 +215,19 @@ metadata:
 spec:
   selector: {app: factoryd}
   ports: [{name: http, port: 8080, targetPort: http}]
+---
+# Intake callers today reach factoryd by kubectl port-forward, which enters
+# the pod's network namespace and is not subject to policy; the node itself
+# (kubelet probes) is the only network source.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factoryd-ingress
+  namespace: factory
+spec:
+  endpointSelector:
+    matchLabels: {app: factoryd}
+  ingress:
+  - fromEntities: [host]
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]

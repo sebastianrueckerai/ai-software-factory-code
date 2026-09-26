@@ -30,8 +30,8 @@ type Trip struct {
 // watchdog fails the task loudly instead of never firing.
 type SupervisorConfig struct {
 	NoProgressAfter  time.Duration // no events for this long
-	WallClockCap     time.Duration // hard session runtime cap
-	RepetitionEvents int           // events without a file change before repetition trips
+	WallClockCap     time.Duration // hard runtime cap for the whole task, across sessions
+	RepetitionEvents int           // tool calls without a file change before repetition trips
 }
 
 func (c SupervisorConfig) validate() error {
@@ -49,10 +49,11 @@ func (c SupervisorConfig) validate() error {
 
 // Supervisor watches one live session (architecture: session supervision).
 // The runner feeds every harness event through Event and a ticker through
-// Tick; the first trip is sticky and becomes the kill decision.
+// Tick, always stamped with factoryd's clock, never the worker's; the first
+// trip is sticky and becomes the kill decision.
 type Supervisor struct {
 	cfg      SupervisorConfig
-	started  time.Time
+	deadline time.Time
 	lastSeen time.Time
 
 	sinceChange int
@@ -60,11 +61,13 @@ type Supervisor struct {
 	tripped     *Trip
 }
 
-func NewSupervisor(cfg SupervisorConfig, now time.Time) (*Supervisor, error) {
+// NewSupervisor starts watching a session at now; taskStarted anchors the
+// wall-clock cap, so resumed sessions share the first session's budget.
+func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Supervisor, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Supervisor{cfg: cfg, started: now, lastSeen: now}, nil
+	return &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), lastSeen: now}, nil
 }
 
 // Event observes one harness event. A nil return means the session may run on.
@@ -74,11 +77,13 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	s.lastSeen = at
 	s.noteFinding(ev)
-	s.sinceChange++
-	if ev.Kind == harness.EventFileChange {
+	switch ev.Kind {
+	case harness.EventToolCall, harness.EventCommand:
+		s.sinceChange++
+	case harness.EventFileChange:
 		s.sinceChange = 0
 	}
-	if at.Sub(s.started) >= s.cfg.WallClockCap {
+	if !at.Before(s.deadline) {
 		return s.trip(TripWallClock, false)
 	}
 	if s.sinceChange >= s.cfg.RepetitionEvents {
@@ -93,7 +98,7 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	if now.Sub(s.started) >= s.cfg.WallClockCap {
+	if !now.Before(s.deadline) {
 		return s.trip(TripWallClock, false)
 	}
 	if now.Sub(s.lastSeen) >= s.cfg.NoProgressAfter {

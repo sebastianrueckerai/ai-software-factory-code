@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +19,7 @@ import (
 // apiserver: paths, status-code mapping, and secret decoding.
 func TestInClusterKubeWire(t *testing.T) {
 	var mu sync.Mutex
+	var selectors []string
 	respond := map[string]func(w http.ResponseWriter, r *http.Request){
 		"POST /api/v1/namespaces": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
@@ -31,10 +34,11 @@ func TestInClusterKubeWire(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 		},
 		"GET /api/v1/namespaces": func(w http.ResponseWriter, r *http.Request) {
-			if sel := r.URL.Query().Get("labelSelector"); sel != "factory.ai/task=t1" {
-				t.Errorf("labelSelector = %q", sel)
-			}
+			selectors = append(selectors, r.URL.Query().Get("labelSelector"))
 			io.WriteString(w, `{"items":[{"metadata":{"name":"factory-agents-t1"}}]}`)
+		},
+		"POST /api/v1/namespaces/factory-agents-t1/resourcequotas": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusCreated)
 		},
 		"DELETE /api/v1/namespaces/factory-agents-t1": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
@@ -120,6 +124,13 @@ func TestInClusterKubeWire(t *testing.T) {
 	if err != nil || len(names) != 1 || names[0] != "factory-agents-t1" {
 		t.Fatalf("NamespacesByLabel = %v, %v", names, err)
 	}
+	if _, err := k.NamespacesByLabel(ctx, "factory.ai/task", ""); err != nil {
+		t.Fatalf("NamespacesByLabel key-only: %v", err)
+	}
+	// "factory.ai/task=" would select only namespaces whose label is empty
+	if fmt.Sprint(selectors) != "[factory.ai/task=t1 factory.ai/task]" {
+		t.Fatalf("labelSelectors = %v", selectors)
+	}
 	if err := k.CreateServiceAccount(ctx, "factory-agents-t1", "task-t1"); err != nil {
 		t.Fatalf("CreateServiceAccount: %v", err)
 	}
@@ -130,8 +141,11 @@ func TestInClusterKubeWire(t *testing.T) {
 	if err != nil || data[".dockerconfigjson"] != "{}" {
 		t.Fatalf("GetSecretData = %v, %v", data, err)
 	}
-	if err := k.CreateCiliumNetworkPolicy(ctx, "factory-agents-t1", "worker-egress", workerEgressSpec()); err != nil {
+	if err := k.CreateCiliumNetworkPolicy(ctx, "factory-agents-t1", "worker-egress", map[string]any{"endpointSelector": map[string]any{}}); err != nil {
 		t.Fatalf("CreateCiliumNetworkPolicy: %v", err)
+	}
+	if err := k.Create(ctx, "/api/v1/namespaces/factory-agents-t1/resourcequotas", map[string]any{"kind": "ResourceQuota"}); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 	if err := k.CreatePod(ctx, "factory-agents-t1", "worker-s1", map[string]any{"spec": map[string]any{}}); err != nil {
 		t.Fatalf("CreatePod: %v", err)
@@ -167,5 +181,13 @@ func TestInClusterKubeWire(t *testing.T) {
 	ck := &InClusterKube{Host: conflict.URL, HTTP: conflict.Client()}
 	if err := ck.CreateNamespace(ctx, "x", nil); err != ErrAlreadyExists {
 		t.Fatalf("conflict = %v, want ErrAlreadyExists", err)
+	}
+	forbidden := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer forbidden.Close()
+	fk := &InClusterKube{Host: forbidden.URL, HTTP: forbidden.Client()}
+	if err := fk.CreateNamespace(ctx, "x", nil); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("forbidden = %v, want ErrForbidden", err)
 	}
 }

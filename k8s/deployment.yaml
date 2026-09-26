@@ -34,6 +34,12 @@ spec:
           value: factory-gateway
         readinessProbe: {httpGet: {path: /healthz, port: http}}
         livenessProbe: {httpGet: {path: /healthz, port: http}}
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+          seccompProfile: {type: RuntimeDefault}
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}

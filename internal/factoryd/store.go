@@ -52,6 +52,9 @@ type Store interface {
 	CreateTask(ctx context.Context, t Task) error
 	Task(ctx context.Context, id string) (Task, bool, error)
 	SetTaskStatus(ctx context.Context, id, status string) error
+	// ClaimTask moves a queued task to running; false means another
+	// runner (or an earlier pass) already took it.
+	ClaimTask(ctx context.Context, id string) (bool, error)
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
@@ -188,8 +191,31 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 }
 
 func (s *PGStore) SetTaskStatus(ctx context.Context, id, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2 WHERE id = $1`, id, status)
-	return err
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2 WHERE id = $1`, id, status)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) ClaimTask(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1 AND status = 'queued'`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func oneRow(res sql.Result, err error, what string) error {
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("%s: not found", what)
+	}
+	return nil
 }
 
 func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
@@ -240,8 +266,8 @@ func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []strin
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET findings = $2::jsonb, restart_state = $3::jsonb WHERE id = $1`,
 		id, fb, restartState)
-	return err
+	return oneRow(res, err, "session "+id)
 }

@@ -28,6 +28,7 @@ const (
 	EventCommand    EventKind = "command"
 	EventCheckpoint EventKind = "checkpoint"
 	EventFinished   EventKind = "finished"
+	EventPushed     EventKind = "pushed" // the worker pushed the task branch; detail carries branch and commit
 )
 
 // Event is one normalized stream item from a running harness. The git

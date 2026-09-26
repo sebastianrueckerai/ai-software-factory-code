@@ -22,6 +22,7 @@ import (
 var (
 	ErrAlreadyExists = errors.New("kubernetes: already exists")
 	ErrNotFound      = errors.New("kubernetes: not found")
+	ErrForbidden     = errors.New("kubernetes: forbidden")
 )
 
 // saDir is a var so the wire test can point it at a stub token.
@@ -38,6 +39,9 @@ type Kube interface {
 	CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
 	CreateCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error
+	// Create POSTs a complete object to a collection path such as
+	// /api/v1/namespaces/<ns>/resourcequotas.
+	Create(ctx context.Context, path string, obj map[string]any) error
 	CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error
 	DeletePod(ctx context.Context, namespace, name string) error
 	// PodStatus reports the pod phase and the container exit code (-1 while
@@ -87,7 +91,11 @@ func (k *InClusterKube) DeleteNamespace(ctx context.Context, name string) error 
 }
 
 func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
-	q := url.Values{"labelSelector": []string{key + "=" + value}}
+	sel := key
+	if value != "" {
+		sel += "=" + value // "key=" would select only empty values
+	}
+	q := url.Values{"labelSelector": []string{sel}}
 	var list struct {
 		Items []struct {
 			Metadata struct {
@@ -152,6 +160,11 @@ func (k *InClusterKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace
 		"spec":     spec,
 	}
 	_, err := k.call(ctx, http.MethodPost, "/apis/cilium.io/v2/namespaces/"+namespace+"/ciliumnetworkpolicies", body, nil)
+	return err
+}
+
+func (k *InClusterKube) Create(ctx context.Context, path string, obj map[string]any) error {
+	_, err := k.call(ctx, http.MethodPost, path, obj, nil)
 	return err
 }
 
@@ -227,6 +240,9 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 	}
 	if res.StatusCode == http.StatusNotFound {
 		return nil, ErrNotFound
+	}
+	if res.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("%w: %s %s: %s", ErrForbidden, method, path, raw)
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("kube %s %s: status %d: %s", method, path, res.StatusCode, raw)

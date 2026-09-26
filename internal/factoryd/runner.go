@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,8 +27,8 @@ type RunnerConfig struct {
 	WorkerImage          string // pinned digest
 	PullSecret           string // registry pull secret copied into task namespaces
 	FactoryNamespace     string // where the pull secret lives
-	GatewayURL           string // http://factory-gateway.factory.svc:8081
-	GitBaseURL           string // http://forgejo-http.forgejo.svc:3000 — sandbox clones; the public host's in-cluster DNS answer is the gateway ClusterIP, which FQDN policy cannot authorize
+	GatewayURL           string // http://factory-gateway.factory.svc.cluster.local:8081
+	GitBaseURL           string // http://forgejo-http.forgejo.svc.cluster.local:3000 — sandbox clones; the public host's in-cluster DNS answer is the gateway ClusterIP, which FQDN policy cannot authorize
 	Model                string
 	RetryModel           string
 	AnswerTokens         int
@@ -53,6 +54,11 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" {
 		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL are required")
 	}
+	for _, raw := range []string{cfg.GatewayURL, cfg.GitBaseURL} {
+		if u, err := url.Parse(raw); err != nil || u.Hostname() == "" {
+			return nil, fmt.Errorf("runner: %q is not an absolute URL", raw)
+		}
+	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
@@ -68,7 +74,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, objects: objects}, nil
 }
 
-// Run polls for queued tasks and executes them serially until ctx ends.
+// Run polls for queued tasks and executes them serially until ctx ends. A
+// task in flight when ctx ends is handed back to the queue.
 func (r *Runner) Run(ctx context.Context) {
 	tick := time.NewTicker(r.cfg.PollInterval)
 	defer tick.Stop()
@@ -83,6 +90,9 @@ func (r *Runner) Run(ctx context.Context) {
 				continue
 			}
 			for _, t := range queued {
+				if ctx.Err() != nil {
+					return
+				}
 				r.execute(ctx, t)
 			}
 		}
@@ -130,34 +140,59 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 func (r *Runner) execute(ctx context.Context, t Task) {
-	if err := r.store.SetTaskStatus(ctx, t.ID, "running"); err != nil {
-		log.Printf("task %s: mark running: %v", t.ID, err)
+	claimed, err := r.store.ClaimTask(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: claim: %v", t.ID, err)
 		return
 	}
+	if !claimed {
+		return
+	}
+	final, reason := r.runTask(ctx, t, time.Now())
+
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer cancel()
+	if ctx.Err() != nil {
+		log.Printf("task %s: shutdown mid-run, requeued (%s)", t.ID, reason)
+		if err := r.completion.Requeue(cleanup, t.ID); err != nil {
+			log.Printf("task %s: requeue stuck in closing: %v", t.ID, err)
+		}
+		return
+	}
+	log.Printf("task %s: %s (%s)", t.ID, final, reason)
+	if err := r.completion.Complete(cleanup, t.ID, final); err != nil {
+		log.Printf("task %s: completion stuck in closing: %v", t.ID, err)
+	}
+}
+
+// runTask provisions the task namespace and runs sessions until one yields
+// a verdict, the task's wall-clock cap passes, or the attempts run out.
+func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final, reason string) {
 	repo, err := splitRepo(t.Repository)
 	if err != nil {
-		r.fail(ctx, t.ID, err)
-		return
+		return "failed", err.Error()
 	}
+	// registered first: a half-built namespace must not outlive the task
+	defer r.forgetNamespace(context.WithoutCancel(ctx), t.ID)
 	tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), []Repo{repo})
 	if err != nil {
-		r.fail(ctx, t.ID, err)
-		return
+		return "failed", err.Error()
 	}
 	ns := r.agentNamespace(t.ID)
 	if err := r.setupNamespace(ctx, t, tok); err != nil {
-		r.fail(ctx, t.ID, err)
-		return
+		return "failed", err.Error()
 	}
-	defer r.forgetNamespace(context.Background(), t.ID)
 
 	findings := []string{}
 	parent := ""
 	model := r.cfg.Model
-	final, reason := "failed", "no session produced a result"
-	for attempt := 0; attempt < r.cfg.MaxSessions; attempt++ {
+	final, reason = "failed", "no session produced a result"
+	for attempt := 0; attempt < r.cfg.MaxSessions && ctx.Err() == nil; attempt++ {
+		if time.Since(started) >= r.cfg.Supervisor.WallClockCap {
+			return "failed", "supervision trip: " + string(TripWallClock)
+		}
 		sessionID := newID("s-")
-		out, err := r.runSession(ctx, t, ns, sessionID, parent, findings, model)
+		out, err := r.runSession(ctx, t, ns, sessionID, parent, findings, model, started)
 		if err != nil {
 			reason = err.Error()
 			continue
@@ -167,35 +202,27 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 			if out.result.Success {
 				final = "done"
 			}
-			break
+			return final, reason
 		}
 		if out.trip != nil {
+			reason = "supervision trip: " + string(out.trip.Kind)
+			if out.trip.Kind == TripWallClock {
+				return "failed", reason
+			}
 			parent = sessionID
 			findings = out.trip.Findings
 			if out.trip.RetryStrongerModel {
 				model = r.cfg.RetryModel
 			}
-			reason = "supervision trip: " + string(out.trip.Kind)
 			continue
 		}
 		if out.noResult != "" {
 			parent = sessionID
 			findings = append(append([]string(nil), findings...), out.noResult)
 			reason = out.noResult
-			continue
 		}
 	}
-	log.Printf("task %s: %s (%s)", t.ID, final, reason)
-	if err := r.completion.Complete(ctx, t.ID, final); err != nil {
-		log.Printf("task %s: completion stuck in closing: %v", t.ID, err)
-	}
-}
-
-func (r *Runner) fail(ctx context.Context, taskID string, cause error) {
-	log.Printf("task %s: %v", taskID, cause)
-	if err := r.completion.Complete(ctx, taskID, "failed"); err != nil {
-		log.Printf("task %s: completion stuck in closing: %v", taskID, err)
-	}
+	return final, reason
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -206,13 +233,13 @@ type sessionOutcome struct {
 	noResult string
 }
 
-func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent string, findings []string, model string) (sessionOutcome, error) {
+func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent string, findings []string, model string, taskStarted time.Time) (sessionOutcome, error) {
 	out := sessionOutcome{}
 	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, sessionID, parent)
 	if err != nil {
 		return out, err
 	}
-	sup, err := NewSupervisor(r.cfg.Supervisor, time.Now())
+	sup, err := NewSupervisor(r.cfg.Supervisor, taskStarted, time.Now())
 	if err != nil {
 		return out, err
 	}
@@ -230,8 +257,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 	}()
 
 	// The pod must leave Pending before its log endpoint is useful; a first
-	// image pull can take minutes.
-	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute); err != nil {
+	// image pull can take minutes, but never past the task's wall-clock cap.
+	wait := min(10*time.Minute, time.Until(taskStarted.Add(r.cfg.Supervisor.WallClockCap)))
+	if err := r.awaitPodStart(ctx, ns, podName, wait); err != nil {
 		out.noResult = err.Error()
 		return out, nil
 	}
@@ -294,7 +322,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 				if err := recorder.Record(ctx, *env.Event); err != nil {
 					log.Printf("task %s: record event: %v", t.ID, err)
 				}
-				if trip := sup.Event(*env.Event, env.Event.Time); trip != nil {
+				if trip := sup.Event(*env.Event, time.Now()); trip != nil {
 					out.trip = r.abandon(recorder, trip)
 					return out, nil
 				}
@@ -333,21 +361,51 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 
 func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) error {
 	ns := r.agentNamespace(t.ID)
+	if err := r.freshNamespace(ctx, ns, map[string]string{
+		"factory.ai/task":                    t.ID,
+		"pod-security.kubernetes.io/enforce": "restricted",
+	}); err != nil {
+		return fmt.Errorf("setup namespace: %w", err)
+	}
+	core := "/api/v1/namespaces/" + ns
 	steps := []struct {
 		name string
 		do   func() error
 	}{
-		{"namespace", func() error {
-			return r.kube.CreateNamespace(ctx, ns, map[string]string{
-				"factory.ai/task":                    t.ID,
-				"pod-security.kubernetes.io/enforce": "restricted",
+		// factoryd holds no cluster-wide pod or secret rights; this binding
+		// grants them inside the task namespace only (k8s/factoryd.yaml)
+		{"role binding", func() error {
+			return r.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
+				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+				"metadata": map[string]any{"name": "factoryd"},
+				"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
+				"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": r.cfg.FactoryNamespace}},
+			})
+		}},
+		{"resource quota", func() error {
+			return r.kube.Create(ctx, core+"/resourcequotas", map[string]any{
+				"apiVersion": "v1", "kind": "ResourceQuota",
+				"metadata": map[string]any{"name": "sandbox"},
+				"spec":     map[string]any{"hard": sandboxQuota},
+			})
+		}},
+		{"limit range", func() error {
+			return r.kube.Create(ctx, core+"/limitranges", map[string]any{
+				"apiVersion": "v1", "kind": "LimitRange",
+				"metadata": map[string]any{"name": "sandbox"},
+				"spec": map[string]any{"limits": []any{map[string]any{
+					"type":           "Container",
+					"default":        sandboxLimits,
+					"defaultRequest": sandboxRequests,
+					"max":            sandboxLimits,
+				}}},
 			})
 		}},
 		{"service account", func() error {
 			return r.kube.CreateServiceAccount(ctx, ns, "task-"+t.ID)
 		}},
 		{"egress policy", func() error {
-			return r.kube.CreateCiliumNetworkPolicy(ctx, ns, "worker-egress", workerEgressSpec())
+			return r.kube.CreateCiliumNetworkPolicy(ctx, ns, "worker-egress", r.workerEgressSpec())
 		}},
 		{"git token secret", func() error {
 			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"GIT_TOKEN": tok.Secret})
@@ -357,12 +415,66 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) e
 		}},
 	}
 	for _, step := range steps {
-		if err := step.do(); err != nil && !errors.Is(err, ErrAlreadyExists) {
+		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
 			return fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
 	return nil
 }
+
+// freshNamespace creates the task namespace, deleting a leftover one first:
+// a requeued task's old namespace may still be terminating.
+func (r *Runner) freshNamespace(ctx context.Context, ns string, labels map[string]string) error {
+	deadline := time.Now().Add(3 * time.Minute)
+	for {
+		err := r.kube.CreateNamespace(ctx, ns, labels)
+		if !errors.Is(err, ErrAlreadyExists) {
+			return err
+		}
+		if err := r.kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("namespace %s still terminating", ns)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// retryForbidden rides out the gap between creating the task RoleBinding
+// and the authorizer seeing it.
+func retryForbidden(ctx context.Context, do func() error) error {
+	for i := 0; ; i++ {
+		err := do()
+		if !errors.Is(err, ErrForbidden) || i == 10 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// Sandbox resources: the worker container's requests and limits, and the
+// namespace ceiling (two pods: a finished session pod can still be
+// terminating when the resumed one starts).
+var (
+	sandboxRequests = map[string]any{"cpu": "250m", "memory": "512Mi"}
+	sandboxLimits   = map[string]any{"cpu": "2", "memory": "2Gi"}
+	sandboxQuota    = map[string]any{
+		"pods":            "2",
+		"requests.cpu":    "1",
+		"requests.memory": "2Gi",
+		"limits.cpu":      "4",
+		"limits.memory":   "4Gi",
+	}
+)
 
 func (r *Runner) copyPullSecret(ctx context.Context, ns string) error {
 	if r.cfg.PullSecret == "" {
@@ -452,11 +564,18 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 			},
 			"imagePullSecrets":              pullSecrets,
 			"terminationGracePeriodSeconds": 30,
+			// FQDN service names resolve on the first query; search-path
+			// expansions would be refused by the DNS allowlist
+			"dnsConfig": map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
 			"containers": []any{map[string]any{
 				"name":    "worker",
 				"image":   r.cfg.WorkerImage,
 				"command": []any{"/usr/local/bin/agent-worker"},
 				"env":     env,
+				"resources": map[string]any{
+					"requests": sandboxRequests,
+					"limits":   sandboxLimits,
+				},
 				"volumeMounts": []any{
 					map[string]any{"name": "workspace", "mountPath": "/workspace"},
 					map[string]any{"name": "home", "mountPath": "/home/worker"},
@@ -472,8 +591,8 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 				},
 			}},
 			"volumes": []any{
-				map[string]any{"name": "workspace", "emptyDir": map[string]any{}},
-				map[string]any{"name": "home", "emptyDir": map[string]any{}},
+				map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
+				map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 				map[string]any{"name": "gateway-token", "projected": map[string]any{
 					"sources": []any{map[string]any{
 						"serviceAccountToken": map[string]any{
@@ -490,16 +609,22 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
-// address, and exactly four allows — the model gateway, Forgejo git, the Go
-// module proxy/checksum hosts (the npm provider is pre-baked into the image,
-// so no npm/pypi host is needed at runtime), and kube-dns so Cilium's DNS
-// proxy can learn the toFQDNs identities. Workers reach Forgejo through its
-// in-cluster service, not the public host: in-cluster DNS answers that host
-// with the gateway ClusterIP, which Cilium's toFQDNs cannot authorize (the
-// envoy fronting it answers 403), while the service path is
-// identity-scoped. The live gateway pods carry the plain `app` label, not
-// app.kubernetes.io/name.
-func workerEgressSpec() map[string]any {
+// address, and exactly three allows: the model gateway's port, Forgejo's
+// HTTP port, and kube-dns for the two service names behind them. DNS is
+// allowlisted by name because an open resolver is itself an exfiltration
+// channel. No package registry is reachable: the npm provider is pre-baked
+// into the image and the image carries no language toolchain. Workers reach
+// Forgejo through its in-cluster service, not the public host: in-cluster
+// DNS answers that host with the gateway ClusterIP, which Cilium's toFQDNs
+// cannot authorize (the envoy fronting it answers 403), while the service
+// path is identity-scoped. The live gateway pods carry the plain `app`
+// label, not app.kubernetes.io/name.
+func (r *Runner) workerEgressSpec() map[string]any {
+	dnsNames := []any{}
+	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
+		u, _ := url.Parse(raw) // validated in NewRunner
+		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	}
 	return map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": "opencode-worker"},
@@ -515,6 +640,9 @@ func workerEgressSpec() map[string]any {
 						"app":                             "factory-gateway",
 					},
 				}},
+				"toPorts": []any{map[string]any{
+					"ports": []any{map[string]any{"port": "8081", "protocol": "TCP"}},
+				}},
 			},
 			map[string]any{
 				"toEndpoints": []any{map[string]any{
@@ -528,15 +656,6 @@ func workerEgressSpec() map[string]any {
 				}},
 			},
 			map[string]any{
-				"toFQDNs": []any{
-					map[string]any{"matchName": "proxy.golang.org"},
-					map[string]any{"matchName": "sum.golang.org"},
-				},
-				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
-				}},
-			},
-			map[string]any{
 				"toEndpoints": []any{map[string]any{
 					"matchLabels": map[string]string{
 						"k8s:io.kubernetes.pod.namespace": "kube-system",
@@ -545,9 +664,7 @@ func workerEgressSpec() map[string]any {
 				}},
 				"toPorts": []any{map[string]any{
 					"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
-					"rules": map[string]any{
-						"dns": []any{map[string]any{"matchPattern": "*"}},
-					},
+					"rules": map[string]any{"dns": dnsNames},
 				}},
 			},
 		},

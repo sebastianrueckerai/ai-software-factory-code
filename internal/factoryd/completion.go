@@ -32,6 +32,12 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	return c.Store.SetTaskStatus(ctx, taskID, finalStatus)
 }
 
+// Requeue hands an interrupted task back to the queue with its credentials
+// revoked; the next claim mints fresh ones.
+func (c *Completion) Requeue(ctx context.Context, taskID string) error {
+	return c.Complete(ctx, taskID, "queued")
+}
+
 // reconcile revokes every token named for the task and blocks its keys.
 // Calling it on an already-clean task is a no-op, which is what makes
 // completion idempotent.

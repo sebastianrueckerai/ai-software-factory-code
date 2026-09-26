@@ -8,14 +8,16 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -30,6 +32,12 @@ func main() {
 }
 
 func run(log func(string, ...any)) int {
+	// The agent runs as the same uid; a non-dumpable worker keeps its
+	// /proc/<pid>/environ (which still holds the git token) unreadable to it.
+	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		log("prctl PR_SET_DUMPABLE: %v", errno)
+		return 1
+	}
 	env, err := loadEnv()
 	if err != nil {
 		log("%v", err)
@@ -48,7 +56,9 @@ func run(log func(string, ...any)) int {
 	}
 
 	repoDir := filepath.Join(workspace, "repo")
-	if err := env.gitRun("", "clone", env.repoURLWithToken(), repoDir); err != nil {
+	// the token travels as a per-command header, so .git/config keeps the
+	// plain URL and nothing the agent can read holds the credential
+	if err := env.gitRun("", "clone", env.repoURL, repoDir); err != nil {
 		log("clone: %v", err)
 		return 1
 	}
@@ -96,11 +106,12 @@ func run(log func(string, ...any)) int {
 	res := oc.Run(ctx, brief, emit)
 
 	if res.Success {
-		pushed, err := commitAndPush(repoDir, env)
+		commit, err := commitAndPush(repoDir, env)
 		if err != nil {
 			res = harness.Result{Success: false, Summary: "push failed: " + err.Error()}
-		} else if pushed {
-			res.Summary = "pushed branch " + env.branch
+		} else if commit != "" {
+			emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": env.branch, "commit": commit}})
+			res.Summary = "pushed branch " + env.branch + " at " + commit
 		} else {
 			res.Summary = "no changes to push"
 		}
@@ -137,6 +148,8 @@ func loadEnv() (workerEnv, error) {
 	e.repoSHA = str("REPO_SHA")
 	e.branch = str("BRANCH")
 	e.gitToken = str("GIT_TOKEN")
+	// opencode inherits this process's environment
+	os.Unsetenv("GIT_TOKEN")
 	e.repoURL = str("REPO_URL")
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
@@ -166,29 +179,32 @@ func loadEnv() (workerEnv, error) {
 	return e, nil
 }
 
-func (e workerEnv) repoURLWithToken() string {
-	u, err := url.Parse(e.repoURL)
-	if err != nil {
-		return e.repoURL
-	}
-	u.User = url.UserPassword("x-access-token", e.gitToken)
-	return u.String()
+func (e workerEnv) authHeader() string {
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+e.gitToken))
 }
 
-// gitRun runs git and scrubs the task token from failures: git echoes the
-// authenticated URL in args and stderr, and worker stderr reaches the
-// factoryd log stream.
+// gitRun runs git with the task token as a per-command http.extraHeader
+// (environment config, so it never lands in args or .git/config) and scrubs
+// the token from failures, because worker stderr reaches the factoryd log.
 func (e workerEnv) gitRun(dir string, args ...string) error {
+	_, err := e.git(dir, args...)
+	return err
+}
+
+func (e workerEnv) git(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_COUNT=3",
 		"GIT_CONFIG_KEY_0=user.name",
 		"GIT_CONFIG_VALUE_0=factory-agent",
 		"GIT_CONFIG_KEY_1=user.email",
 		"GIT_CONFIG_VALUE_1=factory-agent@factory.local",
+		"GIT_CONFIG_KEY_2=http.extraHeader",
+		"GIT_CONFIG_VALUE_2="+e.authHeader(),
+		"GIT_TERMINAL_PROMPT=0",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -196,22 +212,23 @@ func (e workerEnv) gitRun(dir string, args ...string) error {
 			if e.gitToken == "" {
 				return s
 			}
+			s = strings.ReplaceAll(s, e.authHeader(), "Authorization: ***")
 			return strings.ReplaceAll(s, e.gitToken, "***")
 		}
-		return fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
+		return "", fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
 	}
-	return nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // commitAndPush commits everything the adapter changed and pushes the task
-// branch. Reports whether a commit was created; a no-change task is fine.
-func commitAndPush(repoDir string, e workerEnv) (bool, error) {
-	status, err := exec.Command("git", "-C", repoDir, "status", "--porcelain").Output()
+// branch. Returns the pushed commit, empty when there was nothing to commit.
+func commitAndPush(repoDir string, e workerEnv) (string, error) {
+	status, err := e.git(repoDir, "status", "--porcelain")
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	if len(status) == 0 {
-		return false, nil
+	if status == "" {
+		return "", nil
 	}
 	subject := e.objective
 	if i := strings.IndexAny(subject, "\r\n"); i >= 0 {
@@ -221,13 +238,17 @@ func commitAndPush(repoDir string, e workerEnv) (bool, error) {
 		subject = subject[:72]
 	}
 	if err := e.gitRun(repoDir, "add", "-A"); err != nil {
-		return false, err
+		return "", err
 	}
 	if err := e.gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject)); err != nil {
-		return false, err
+		return "", err
 	}
-	if err := e.gitRun(repoDir, "push", e.repoURLWithToken(), "HEAD:refs/heads/"+e.branch); err != nil {
-		return false, err
+	commit, err := e.git(repoDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
 	}
-	return true, nil
+	if err := e.gitRun(repoDir, "push", "origin", "HEAD:refs/heads/"+e.branch); err != nil {
+		return "", err
+	}
+	return commit, nil
 }

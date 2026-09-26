@@ -1,5 +1,7 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,7 +14,6 @@ jobs:
       - run: go vet ./...
   image:
     needs: test
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,7 +26,6 @@ jobs:
           docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
   image-sandbox:
     needs: test
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
