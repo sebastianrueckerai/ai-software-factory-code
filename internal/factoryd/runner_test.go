@@ -265,6 +265,7 @@ func testRunnerConfig() RunnerConfig {
 		PullSecret:           "forgejo-registry",
 		FactoryNamespace:     "factory",
 		GatewayURL:           "http://factory-gateway.factory.svc:8081",
+		GitBaseURL:           "http://forgejo-http.forgejo.svc:3000",
 		Model:                "factory/coding-frontier",
 		RetryModel:           "factory/review-frontier",
 		AnswerTokens:         8192,
@@ -352,6 +353,13 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(cnp), "matchPattern") {
 		t.Fatal("DNS rule without matchPattern")
+	}
+	cnpStr := fmt.Sprint(cnp)
+	if strings.Contains(cnpStr, "matchName") && strings.Contains(cnpStr, "git.aisoftwarefactory.world") {
+		t.Fatal("git host allowed by FQDN: the in-cluster DNS answer is the gateway ClusterIP, which toFQDNs cannot authorize")
+	}
+	if !strings.Contains(cnpStr, `k8s:app.kubernetes.io/name:forgejo`) || !strings.Contains(cnpStr, `port:3000`) {
+		t.Fatal("CNP without the in-cluster forgejo service allow")
 	}
 
 	pod := kube.podAt(0)

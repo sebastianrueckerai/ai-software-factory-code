@@ -61,6 +61,7 @@ func main() {
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc:8081"),
+		GitBaseURL:           env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc:3000"),
 		Model:                env("MODEL", "factory/coding-frontier"),
 		RetryModel:           env("RETRY_MODEL", "factory/review-frontier"),
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),

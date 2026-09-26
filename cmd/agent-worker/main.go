@@ -47,17 +47,17 @@ func run(log func(string, ...any)) int {
 	}
 
 	repoDir := filepath.Join(workspace, "repo")
-	if err := gitRun("", "clone", env.repoURLWithToken(), repoDir); err != nil {
+	if err := env.gitRun("", "clone", env.repoURLWithToken(), repoDir); err != nil {
 		log("clone: %v", err)
 		return 1
 	}
 	if env.repoSHA != "" {
-		if err := gitRun(repoDir, "checkout", env.repoSHA); err != nil {
+		if err := env.gitRun(repoDir, "checkout", env.repoSHA); err != nil {
 			log("checkout %s: %v", env.repoSHA, err)
 			return 1
 		}
 	}
-	if err := gitRun(repoDir, "checkout", "-B", env.branch); err != nil {
+	if err := env.gitRun(repoDir, "checkout", "-B", env.branch); err != nil {
 		log("branch %s: %v", env.branch, err)
 		return 1
 	}
@@ -171,7 +171,10 @@ func (e workerEnv) repoURLWithToken() string {
 	return strings.Replace(e.repoURL, "https://", "https://x-access-token:"+e.gitToken+"@", 1)
 }
 
-func gitRun(dir string, args ...string) error {
+// gitRun runs git and scrubs the task token from failures: git echoes the
+// authenticated URL in args and stderr, and worker stderr reaches the
+// factoryd log stream.
+func (e workerEnv) gitRun(dir string, args ...string) error {
 	cmd := exec.Command("git", args...)
 	if dir != "" {
 		cmd.Dir = dir
@@ -185,7 +188,13 @@ func gitRun(dir string, args ...string) error {
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		redact := func(s string) string {
+			if e.gitToken == "" {
+				return s
+			}
+			return strings.ReplaceAll(s, e.gitToken, "***")
+		}
+		return fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
 	}
 	return nil
 }
@@ -207,13 +216,13 @@ func commitAndPush(repoDir string, e workerEnv) (bool, error) {
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}
-	if err := gitRun(repoDir, "add", "-A"); err != nil {
+	if err := e.gitRun(repoDir, "add", "-A"); err != nil {
 		return false, err
 	}
-	if err := gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject)); err != nil {
+	if err := e.gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject)); err != nil {
 		return false, err
 	}
-	if err := gitRun(repoDir, "push", e.repoURLWithToken(), "HEAD:refs/heads/"+e.branch); err != nil {
+	if err := e.gitRun(repoDir, "push", e.repoURLWithToken(), "HEAD:refs/heads/"+e.branch); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -27,6 +27,7 @@ type RunnerConfig struct {
 	PullSecret           string // registry pull secret copied into task namespaces
 	FactoryNamespace     string // where the pull secret lives
 	GatewayURL           string // http://factory-gateway.factory.svc:8081
+	GitBaseURL           string // http://forgejo-http.forgejo.svc:3000 — sandbox clones; the public host's in-cluster DNS answer is the gateway ClusterIP, which FQDN policy cannot authorize
 	Model                string
 	RetryModel           string
 	AnswerTokens         int
@@ -49,8 +50,8 @@ type Runner struct {
 }
 
 func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore) (*Runner, error) {
-	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" {
-		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL are required")
+	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" {
+		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL are required")
 	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
@@ -389,7 +390,7 @@ func (r *Runner) branch(t Task) string {
 }
 
 func (r *Runner) cloneURL(t Task) string {
-	base := strings.TrimSuffix(r.forgejo.BaseURL, "/")
+	base := strings.TrimSuffix(r.cfg.GitBaseURL, "/")
 	return base + "/" + t.Repository + ".git"
 }
 
@@ -484,8 +485,12 @@ func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []stri
 // address, and exactly four allows — the model gateway, Forgejo git, the Go
 // module proxy/checksum hosts (the npm provider is pre-baked into the image,
 // so no npm/pypi host is needed at runtime), and kube-dns so Cilium's DNS
-// proxy can learn the toFQDNs identities. The live gateway pods carry the
-// plain `app` label, not app.kubernetes.io/name.
+// proxy can learn the toFQDNs identities. Workers reach Forgejo through its
+// in-cluster service, not the public host: in-cluster DNS answers that host
+// with the gateway ClusterIP, which Cilium's toFQDNs cannot authorize (the
+// envoy fronting it answers 403), while the service path is
+// identity-scoped. The live gateway pods carry the plain `app` label, not
+// app.kubernetes.io/name.
 func workerEgressSpec() map[string]any {
 	return map[string]any{
 		"endpointSelector": map[string]any{
@@ -504,8 +509,18 @@ func workerEgressSpec() map[string]any {
 				}},
 			},
 			map[string]any{
+				"toEndpoints": []any{map[string]any{
+					"matchLabels": map[string]string{
+						"k8s:io.kubernetes.pod.namespace": "forgejo",
+						"k8s:app.kubernetes.io/name":      "forgejo",
+					},
+				}},
+				"toPorts": []any{map[string]any{
+					"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+				}},
+			},
+			map[string]any{
 				"toFQDNs": []any{
-					map[string]any{"matchName": "git.aisoftwarefactory.world"},
 					map[string]any{"matchName": "proxy.golang.org"},
 					map[string]any{"matchName": "sum.golang.org"},
 				},
