@@ -29,6 +29,10 @@ RUN mkdir -p /opt/opencode-home \
       && HOME=/opt/opencode-home OPENCODE_CONFIG_CONTENT='{"provider":{"factory":{"npm":"@ai-sdk/openai-compatible","name":"Factory gateway","options":{"baseURL":"http://127.0.0.1:9/v1","apiKey":"sandbox-dummy"},"models":{"bake":{"name":"Factory model","reasoning":true,"interleaved":{"field":"reasoning_content"},"limit":{"context":200000,"output":1000}}}}}}' \
          timeout 300 opencode run --format json --model factory/bake "warm the provider cache" || true
 USER 1000:1000
-ENV HOME=/home/worker
+# every one of these phones home past the egress allowlist and stalls on the drop
+ENV HOME=/home/worker \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+    OPENCODE_DISABLE_LSP_DOWNLOAD=1
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/opencode"]

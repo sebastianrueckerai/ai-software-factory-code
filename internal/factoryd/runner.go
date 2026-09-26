@@ -281,7 +281,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 			}
 			var env harness.WorkerEnvelope
 			if err := json.Unmarshal(line, &env); err != nil {
-				log.Printf("task %s: unreadable worker line: %q", t.ID, string(line))
+				// the worker's stderr log shares the stream with its envelopes
+				log.Printf("task %s: worker: %s", t.ID, line)
 				continue
 			}
 			if env.Result != nil {
