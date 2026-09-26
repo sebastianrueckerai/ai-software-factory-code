@@ -16,14 +16,13 @@ import (
 type fakeStore struct {
 	tasks    map[string]Task
 	sessions map[string]Session
-	started  map[string]time.Time
+	elapsed  map[string]time.Duration // what the store's clock reports at the next claim
 	finished map[string]time.Time
-	settled  map[string]bool
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
-		started: map[string]time.Time{}, finished: map[string]time.Time{}, settled: map[string]bool{}}
+		elapsed: map[string]time.Duration{}, finished: map[string]time.Time{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -49,23 +48,20 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 	return nil
 }
 
-func (s *fakeStore) ClaimTask(ctx context.Context, id string) (time.Time, bool, error) {
+func (s *fakeStore) ClaimTask(ctx context.Context, id string) (time.Duration, bool, error) {
 	t, ok := s.tasks[id]
 	if !ok || t.Status != "queued" {
-		return time.Time{}, false, nil
+		return 0, false, nil
 	}
 	t.Status = "running"
 	s.tasks[id] = t
-	if _, ok := s.started[id]; !ok {
-		s.started[id] = time.Now()
-	}
-	return s.started[id], true, nil
+	return s.elapsed[id], true, nil
 }
 
-func (s *fakeStore) UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error) {
+func (s *fakeStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	var ids []string
 	for id, at := range s.finished {
-		if st := s.tasks[id].Status; !s.settled[id] && (st == "done" || st == "failed") && at.Before(finishedBefore) {
+		if st := s.tasks[id].Status; (st == "done" || st == "failed") && time.Since(at) < within {
 			ids = append(ids, id)
 		}
 	}
@@ -80,7 +76,6 @@ func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64
 	}
 	t.SpentEUR = max(t.SpentEUR, reported)
 	s.tasks[id] = t
-	s.settled[id] = true
 	return nil
 }
 
@@ -171,9 +166,9 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("task = %+v, want %+v", got, in)
 	}
 
-	started, claimed, err := s.ClaimTask(ctx, "t1")
-	if err != nil || !claimed || started.IsZero() {
-		t.Fatalf("first claim = (%v, %v, %v), want (a start time, true, nil)", started, claimed, err)
+	elapsed, claimed, err := s.ClaimTask(ctx, "t1")
+	if err != nil || !claimed || elapsed != 0 {
+		t.Fatalf("first claim = (%v, %v, %v), want (0, true, nil): now() is the start", elapsed, claimed, err)
 	}
 	if _, claimed, err := s.ClaimTask(ctx, "t1"); err != nil || claimed {
 		t.Fatalf("second claim = (%v, %v), want (false, nil): a running task must not be claimed twice", claimed, err)
@@ -193,10 +188,15 @@ func TestPGStore(t *testing.T) {
 			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
 		}
 	}
-	// a requeued task keeps its first start: the wall-clock cap spans runs
+	// a requeued task keeps its first start: the wall-clock cap spans runs,
+	// measured on the database's clock alone
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET started_at = now() - interval '90 minutes' WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
+	}
 	again, claimed, err := s.ClaimTask(ctx, "t1")
-	if err != nil || !claimed || !again.Equal(started) {
-		t.Fatalf("reclaim = (%v, %v, %v), want the first start %v", again, claimed, err, started)
+	// 90 min plus the gap between the two statements
+	if err != nil || !claimed || again < 90*time.Minute || again > 91*time.Minute {
+		t.Fatalf("reclaim = (%v, %v, %v), want (1h30m plus under a minute, true, nil)", again, claimed, err)
 	}
 	for _, step := range [][2]string{{"running", "closing"}, {"closing", "queued"}} {
 		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
@@ -204,45 +204,39 @@ func TestPGStore(t *testing.T) {
 		}
 	}
 
-	// spend settlement: only finished tasks past the cutoff, raised to at
-	// least LiteLLM's figure, and only once
+	// spend settlement: finished tasks inside the window, raised to at least
+	// LiteLLM's figure on every call, never lowered
 	for _, row := range []struct {
 		id     string
 		status string
-		spent  float64
-	}{{"s-done", "done", 0.5}, {"s-failed", "failed", 0.5}, {"s-run", "running", 0}} {
-		if err := s.CreateTask(ctx, Task{ID: row.id, BudgetEUR: 1, SpentEUR: row.spent, Status: "closing"}); err != nil {
+	}{{"s-done", "done"}, {"s-failed", "failed"}, {"s-old", "done"}, {"s-run", "running"}} {
+		if err := s.CreateTask(ctx, Task{ID: row.id, BudgetEUR: 1, SpentEUR: 0.5, Status: "closing"}); err != nil {
 			t.Fatal(err)
 		}
-		if row.status != "running" {
-			if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
-				t.Fatal(err)
-			}
-		} else if err := s.TransitionTask(ctx, row.id, []string{"closing"}, "running"); err != nil {
+		if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if ids, err := s.UnsettledTasks(ctx, time.Now().Add(-time.Hour)); err != nil || len(ids) != 0 {
-		t.Fatalf("unsettled before an hour ago = (%v, %v), want none", ids, err)
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '2 hours' WHERE id = 's-old'`); err != nil {
+		t.Fatal(err)
 	}
-	ids, err := s.UnsettledTasks(ctx, time.Now().Add(time.Minute))
+	ids, err := s.RecentlyFinishedTasks(ctx, time.Hour)
 	sort.Strings(ids)
 	if err != nil || !reflect.DeepEqual(ids, []string{"s-done", "s-failed"}) {
-		t.Fatalf("unsettled = (%v, %v), want [s-done s-failed]", ids, err)
+		t.Fatalf("recently finished = (%v, %v), want [s-done s-failed]", ids, err)
 	}
-	if err := s.SettleSpend(ctx, "s-done", 0.75); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.SettleSpend(ctx, "s-failed", 0.25); err != nil {
-		t.Fatal(err)
-	}
-	for id, want := range map[string]float64{"s-done": 0.75, "s-failed": 0.5} {
-		if got, _, _ := s.Task(ctx, id); got.SpentEUR != want {
-			t.Fatalf("%s spent = %v, want %v (max of booked and LiteLLM)", id, got.SpentEUR, want)
+	for _, step := range []struct {
+		id       string
+		reported float64
+	}{{"s-done", 0.75}, {"s-failed", 0.25}, {"s-done", 0.625}, {"s-done", 0.875}} {
+		if err := s.SettleSpend(ctx, step.id, step.reported); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if ids, _ := s.UnsettledTasks(ctx, time.Now().Add(time.Minute)); len(ids) != 0 {
-		t.Fatalf("unsettled after settling = %v, want none", ids)
+	for id, want := range map[string]float64{"s-done": 0.875, "s-failed": 0.5} {
+		if got, _, _ := s.Task(ctx, id); got.SpentEUR != want {
+			t.Fatalf("%s spent = %v, want %v (max of booked and every LiteLLM figure)", id, got.SpentEUR, want)
+		}
 	}
 
 	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "queued", Objective: "x"}); err != nil {

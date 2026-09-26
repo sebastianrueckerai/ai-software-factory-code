@@ -84,9 +84,6 @@ func (r *Runner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if err := r.completion.SettleSpend(ctx, time.Now()); err != nil {
-				log.Printf("runner: settle spend: %v", err)
-			}
 			queued, err := r.store.ListTasksByStatus(ctx, "queued")
 			if err != nil {
 				log.Printf("runner: list queued: %v", err)
@@ -143,7 +140,7 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 func (r *Runner) execute(ctx context.Context, t Task) {
-	started, claimed, err := r.store.ClaimTask(ctx, t.ID)
+	elapsed, claimed, err := r.store.ClaimTask(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: claim: %v", t.ID, err)
 		return
@@ -151,6 +148,9 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 	if !claimed {
 		return
 	}
+	// the store measured the elapsed time on its own clock; every deadline
+	// from here on runs on this process's monotonic clock
+	started := time.Now().Add(-elapsed)
 	final, reason := r.runTask(ctx, t, started)
 
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)

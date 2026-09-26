@@ -11,11 +11,11 @@ import (
 	"testing"
 )
 
-// keyHub serves the wire shapes recorded from the live proxy: /key/list
-// returns hashes with total_pages, /key/info carries metadata and blocked.
+// keyHub serves the wire shapes recorded from the live proxy (1.102.1):
+// /key/list?return_full_object=true returns key objects whose token is the
+// hash, with metadata, spend and blocked, and total_pages.
 type keyHub struct {
 	pages   map[int]string // page number → list body
-	infos   map[string]string
 	blocked []string
 	lists   []string
 }
@@ -26,12 +26,13 @@ func (h *keyHub) srv(t *testing.T) *httptest.Server {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/key/list":
 			page := r.URL.Query().Get("page")
+			if r.URL.Query().Get("return_full_object") != "true" {
+				t.Errorf("key/list without return_full_object: %s", r.URL.RawQuery)
+			}
 			h.lists = append(h.lists, page)
 			var pn int
 			fmt.Sscanf(page, "%d", &pn)
 			io.WriteString(w, h.pages[pn])
-		case r.Method == "GET" && r.URL.Path == "/key/info":
-			io.WriteString(w, h.infos[r.URL.Query().Get("key")])
 		case r.Method == "POST" && r.URL.Path == "/key/block":
 			b, _ := io.ReadAll(r.Body)
 			var body map[string]any
@@ -50,13 +51,13 @@ func (h *keyHub) srv(t *testing.T) *httptest.Server {
 
 func TestLiteLLMBlockTaskKeys(t *testing.T) {
 	hub := &keyHub{
-		pages: map[int]string{1: `{"keys":["h-t1-live","h-t1-dead","h-t2","h-notask"],"total_count":4,"current_page":1,"total_pages":1}`},
-		infos: map[string]string{
-			"h-t1-live": `{"key":"h-t1-live","info":{"key_name":"sk-...ive","blocked":null,"metadata":{"task_id":"t1"}}}`,
-			"h-t1-dead": `{"key":"h-t1-dead","info":{"key_name":"sk-...ead","blocked":true,"metadata":{"task_id":"t1"}}}`,
-			"h-t2":      `{"key":"h-t2","info":{"key_name":"sk-...t2","blocked":null,"metadata":{"task_id":"t2"}}}`,
-			"h-notask":  `{"key":"h-notask","info":{"key_name":"sk-...nsk","blocked":null,"metadata":{"user":"x"}}}`,
-		},
+		pages: map[int]string{1: `{"keys":[
+			{"token":"h-t1-live","key_name":"sk-...ive","blocked":null,"spend":0.1,"metadata":{"task_id":"t1"}},
+			{"token":"h-t1-dead","key_name":"sk-...ead","blocked":true,"spend":0.2,"metadata":{"task_id":"t1"}},
+			{"token":"h-t2","key_name":"sk-...t2","blocked":null,"spend":0,"metadata":{"task_id":"t2"}},
+			{"token":"h-notask","key_name":"sk-...nsk","blocked":null,"spend":null,"metadata":{"user":"x"}},
+			{"token":"h-nometa","key_name":"sk-...nmt","blocked":null,"spend":1,"metadata":null}
+		],"total_count":5,"current_page":1,"total_pages":1}`},
 	}
 	l := &LiteLLMAdmin{BaseURL: hub.srv(t).URL, MasterKey: "mk"}
 	n, err := l.BlockTaskKeys(context.Background(), "t1")
@@ -75,13 +76,8 @@ func TestLiteLLMBlockTaskKeys(t *testing.T) {
 func TestLiteLLMBlockTaskKeysWalksEveryPage(t *testing.T) {
 	hub := &keyHub{
 		pages: map[int]string{
-			1: `{"keys":["h-a","h-b"],"total_count":3,"current_page":1,"total_pages":2}`,
-			2: `{"keys":["h-c"],"total_count":3,"current_page":2,"total_pages":2}`,
-		},
-		infos: map[string]string{
-			"h-a": `{"key":"h-a","info":{"blocked":null,"metadata":{"task_id":"t9"}}}`,
-			"h-b": `{"key":"h-b","info":{"blocked":null,"metadata":{"task_id":"other"}}}`,
-			"h-c": `{"key":"h-c","info":{"blocked":null,"metadata":{"task_id":"t9"}}}`,
+			1: `{"keys":[{"token":"h-a","blocked":null,"metadata":{"task_id":"t9"}},{"token":"h-b","blocked":null,"metadata":{"task_id":"other"}}],"total_count":3,"current_page":1,"total_pages":2}`,
+			2: `{"keys":[{"token":"h-c","blocked":null,"metadata":{"task_id":"t9"}}],"total_count":3,"current_page":2,"total_pages":2}`,
 		},
 	}
 	l := &LiteLLMAdmin{BaseURL: hub.srv(t).URL, MasterKey: "mk", PageSize: 2}
@@ -117,5 +113,27 @@ func TestLiteLLMBlockSendsMasterKey(t *testing.T) {
 	}
 	if auth != "Bearer mk" {
 		t.Fatalf("Authorization = %q", auth)
+	}
+}
+
+// One pass lists every key once, page by page, and sums spend per task.
+func TestLiteLLMSpendByTaskListsEveryKeyOnce(t *testing.T) {
+	hub := &keyHub{
+		pages: map[int]string{
+			1: `{"keys":[{"token":"h-a","spend":0.25,"metadata":{"task_id":"t1"}},{"token":"h-b","spend":0.5,"metadata":{"task_id":"t2"}}],"total_pages":2}`,
+			2: `{"keys":[{"token":"h-c","spend":0.125,"metadata":{"task_id":"t1"}},{"token":"h-d","spend":4,"metadata":{"user":"x"}}],"total_pages":2}`,
+		},
+	}
+	l := &LiteLLMAdmin{BaseURL: hub.srv(t).URL, MasterKey: "mk", PageSize: 2}
+	got, err := l.SpendByTask(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// t1: 0.25 + 0.125 across both pages; t2: 0.5; the task-less key is not a task
+	if len(got) != 2 || got["t1"] != 0.375 || got["t2"] != 0.5 {
+		t.Fatalf("spend = %v, want map[t1:0.375 t2:0.5]", got)
+	}
+	if strings.Join(hub.lists, ",") != "1,2" {
+		t.Fatalf("list pages = %v, want 1,2 once each", hub.lists)
 	}
 }

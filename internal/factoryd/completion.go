@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -39,32 +40,53 @@ func (c *Completion) Requeue(ctx context.Context, taskID string) error {
 	return c.Complete(ctx, taskID, "queued")
 }
 
-// SpendSettleDelay is how long after a task finishes its spend is settled
-// against LiteLLM. LiteLLM writes key spend to its database in batches,
-// observed 60 to 80 s after a call; the task's keys are blocked at
-// completion, so after this delay their reported spend is final.
-const SpendSettleDelay = 3 * time.Minute
+// SpendSettleWindow is how long after a task finishes its spend keeps being
+// settled against LiteLLM. LiteLLM writes key spend to its database in
+// batches, observed 60 to 80 s after a call, so an early pass can see part
+// of it; every pass inside the window raises spend again, never lowers it.
+const SpendSettleWindow = time.Hour
 
-// SettleSpend raises each task finished before now-SpendSettleDelay to at
+// SettleSpend raises each task finished within SpendSettleWindow to at
 // least the spend LiteLLM reports for its keys, so a call whose cost the
-// gateway could not book (an abandoned stream) still counts. A task stays
-// unsettled while LiteLLM is unreachable and is retried on the next call.
-func (c *Completion) SettleSpend(ctx context.Context, now time.Time) error {
-	ids, err := c.Store.UnsettledTasks(ctx, now.Add(-SpendSettleDelay))
+// gateway could not book (an abandoned stream) still counts. It lists
+// LiteLLM's keys once per pass and returns how many tasks it settled.
+func (c *Completion) SettleSpend(ctx context.Context) (int, error) {
+	ids, err := c.Store.RecentlyFinishedTasks(ctx, SpendSettleWindow)
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	spend, err := c.LiteLLM.SpendByTask(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	errs := []error{}
 	for _, id := range ids {
-		spend, err := c.LiteLLM.TaskSpend(ctx, id)
-		if err == nil {
-			err = c.Store.SettleSpend(ctx, id, spend)
-		}
-		if err != nil {
+		if err := c.Store.SettleSpend(ctx, id, spend[id]); err != nil {
 			errs = append(errs, fmt.Errorf("task %s: %w", id, err))
 		}
 	}
-	return errors.Join(errs...)
+	return len(ids) - len(errs), errors.Join(errs...)
+}
+
+// SettleLoop runs a SettleSpend pass every interval until ctx ends. It has
+// its own goroutine, so a slow LiteLLM never delays task claims.
+func (c *Completion) SettleLoop(ctx context.Context, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			n, err := c.SettleSpend(ctx)
+			if err != nil {
+				log.Printf("settle spend: %v", err)
+			}
+			if n > 0 {
+				log.Printf("settle spend: pass settled %d tasks finished within %s", n, SpendSettleWindow)
+			}
+		}
+	}
 }
 
 // reconcile revokes every token named for the task and blocks its keys.

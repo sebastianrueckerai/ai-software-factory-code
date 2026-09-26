@@ -746,7 +746,7 @@ func TestRunnerWallClockAnchorsToFirstStart(t *testing.T) {
 	task := Task{ID: "t9", Status: "queued", Objective: "requeued", Repository: "sf/repo"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	store.started["t9"] = time.Now().Add(-61 * time.Minute) // cap is 1h
+	store.elapsed["t9"] = 61 * time.Minute // on the store's clock; cap is 1h
 
 	runner.execute(context.Background(), task)
 

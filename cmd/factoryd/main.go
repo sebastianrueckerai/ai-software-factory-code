@@ -88,6 +88,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	runner.BootSweep(ctx)
+	go completion.SettleLoop(ctx, time.Minute)
 	runnerDone := make(chan struct{})
 	go func() {
 		defer close(runnerDone)

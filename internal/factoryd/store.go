@@ -55,15 +55,15 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	// ClaimTask moves a queued task to running and returns when the task
-	// first started, which a requeue keeps; false means another runner (or
-	// an earlier pass) already took it.
-	ClaimTask(ctx context.Context, id string) (started time.Time, claimed bool, err error)
-	// UnsettledTasks lists finished tasks, finished before the cutoff, whose
-	// spend was not yet settled against LiteLLM.
-	UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error)
-	// SettleSpend raises spent_eur to at least reported and marks the task
-	// settled.
+	// ClaimTask moves a queued task to running and returns how long ago,
+	// on the store's clock, the task first started; a requeue keeps the
+	// first start. false means another runner (or an earlier pass) already
+	// took it.
+	ClaimTask(ctx context.Context, id string) (elapsed time.Duration, claimed bool, err error)
+	// RecentlyFinishedTasks lists tasks that finished (done or failed)
+	// within the last `within`, on the store's clock.
+	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
+	// SettleSpend raises spent_eur to at least reported.
 	SettleSpend(ctx context.Context, id string, reported float64) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	InsertSession(ctx context.Context, s Session) error
@@ -211,21 +211,22 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 	return nil
 }
 
-func (s *PGStore) ClaimTask(ctx context.Context, id string) (time.Time, bool, error) {
-	var started time.Time
+func (s *PGStore) ClaimTask(ctx context.Context, id string) (time.Duration, bool, error) {
+	var secs float64
 	err := s.db.QueryRowContext(ctx,
 		`UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, now())
-		 WHERE id = $1 AND status = 'queued' RETURNING started_at`, id).Scan(&started)
+		 WHERE id = $1 AND status = 'queued'
+		 RETURNING EXTRACT(EPOCH FROM now() - started_at)::float8`, id).Scan(&secs)
 	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, false, nil
+		return 0, false, nil
 	}
-	return started, err == nil, err
+	return time.Duration(secs * float64(time.Second)), err == nil, err
 }
 
-func (s *PGStore) UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error) {
+func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM tasks WHERE NOT spend_settled AND status IN ('done', 'failed') AND finished_at < $1
-		 ORDER BY finished_at`, finishedBefore)
+		`SELECT id FROM tasks WHERE status IN ('done', 'failed') AND finished_at > now() - make_interval(secs => $1)
+		 ORDER BY finished_at`, within.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +244,7 @@ func (s *PGStore) UnsettledTasks(ctx context.Context, finishedBefore time.Time) 
 
 func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET spent_eur = GREATEST(spent_eur, $2), spend_settled = true WHERE id = $1`, id, reported)
+		`UPDATE tasks SET spent_eur = GREATEST(spent_eur, $2) WHERE id = $1`, id, reported)
 	return oneRow(res, err, "task "+id)
 }
 

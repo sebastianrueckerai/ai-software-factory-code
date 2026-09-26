@@ -42,11 +42,7 @@ func (r *recordingBackend) srv(t *testing.T) (forgejo, litellm string) {
 		status := r.litellmStatus
 		r.mu.Unlock()
 		if req.URL.Path == "/key/list" {
-			io.WriteString(w, `{"keys":["h-t1"],"total_count":1,"current_page":1,"total_pages":1}`)
-			return
-		}
-		if req.URL.Path == "/key/info" {
-			io.WriteString(w, `{"key":"h-t1","info":{"blocked":null,"metadata":{"task_id":"t1"}}}`)
+			io.WriteString(w, `{"keys":[{"token":"h-t1","blocked":null,"metadata":{"task_id":"t1"}}],"total_count":1,"current_page":1,"total_pages":1}`)
 			return
 		}
 		w.WriteHeader(status)
@@ -142,49 +138,106 @@ func TestCompletionLeavesClosingOnRevocationFailure(t *testing.T) {
 	}
 }
 
-// Finished tasks are raised to the spend LiteLLM reports for their keys once
-// the settle delay has passed, never lowered, and settled once.
+// Every task finished within the settle window is raised to the spend
+// LiteLLM reports for its keys, on every pass, never lowered: a spend write
+// that lands late is still counted. One pass lists the keys once.
 func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
-	infos := map[string]string{
-		"h1": `{"key":"h1","info":{"spend":0.3,"metadata":{"task_id":"t1"}}}`,
-		"h2": `{"key":"h2","info":{"spend":0.45,"blocked":true,"metadata":{"task_id":"t1"}}}`,
-		"h3": `{"key":"h3","info":{"spend":9,"metadata":{"task_id":"other"}}}`,
-	}
+	var mu sync.Mutex
+	lists := 0
+	h1Spend := "0.25"
 	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		switch req.URL.Path {
-		case "/key/list":
-			io.WriteString(w, `{"keys":["h1","h2","h3"],"total_pages":1}`)
-		case "/key/info":
-			io.WriteString(w, infos[req.URL.Query().Get("key")])
-		default:
+		mu.Lock()
+		defer mu.Unlock()
+		if req.URL.Path != "/key/list" {
 			t.Errorf("unexpected litellm call %s", req.URL.Path)
+			return
 		}
+		lists++
+		io.WriteString(w, `{"keys":[
+			{"token":"h1","spend":`+h1Spend+`,"metadata":{"task_id":"t1"}},
+			{"token":"h2","spend":0.5,"blocked":true,"metadata":{"task_id":"t1"}},
+			{"token":"h3","spend":9,"metadata":{"task_id":"old"}},
+			{"token":"h4","spend":9,"metadata":{"task_id":"run"}}],"total_pages":1}`)
 	}))
 	defer ll.Close()
 
 	store := newFakeStore()
 	now := time.Now()
-	for id, spent := range map[string]float64{"t1": 0.5, "t2": 0.5, "t3": 1} {
-		store.CreateTask(context.Background(), Task{ID: id, BudgetEUR: 2, SpentEUR: spent, Status: "done"})
+	for _, tk := range []Task{
+		{ID: "t1", SpentEUR: 0.5, Status: "done"},
+		{ID: "t2", SpentEUR: 1, Status: "failed"},
+		{ID: "old", SpentEUR: 0.5, Status: "done"},
+		{ID: "run", SpentEUR: 0.5, Status: "running"},
+	} {
+		store.CreateTask(context.Background(), tk)
 	}
-	store.finished["t1"] = now.Add(-4 * time.Minute)
-	store.finished["t2"] = now.Add(-1 * time.Minute) // LiteLLM may not have written its spend yet
-	store.finished["t3"] = now.Add(-4 * time.Minute)
+	store.finished["t1"] = now.Add(-10 * time.Second)
+	store.finished["t2"] = now.Add(-30 * time.Minute)
+	store.finished["old"] = now.Add(-61 * time.Minute) // past the 1h window
 	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
 
-	if err := c.SettleSpend(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
-	for id, want := range map[string]float64{
-		"t1": 0.75, // 0.3 + 0.45 from its two keys, above the booked 0.5
-		"t2": 0.5,  // inside the settle delay
-		"t3": 1,    // no LiteLLM spend: never lowered
-	} {
-		if got, _, _ := store.Task(context.Background(), id); got.SpentEUR != want {
-			t.Fatalf("%s spent = %v, want %v", id, got.SpentEUR, want)
+	check := func(pass int, want map[string]float64) {
+		t.Helper()
+		n, err := c.SettleSpend(context.Background())
+		if err != nil || n != 2 {
+			t.Fatalf("pass %d: SettleSpend = (%d, %v), want (2, nil): t1 and t2", pass, n, err)
+		}
+		for id, w := range want {
+			if got, _, _ := store.Task(context.Background(), id); got.SpentEUR != w {
+				t.Fatalf("pass %d: %s spent = %v, want %v", pass, id, got.SpentEUR, w)
+			}
+		}
+		if lists != pass {
+			t.Fatalf("pass %d: key/list calls = %d, want one per pass", pass, lists)
 		}
 	}
-	if !store.settled["t1"] || store.settled["t2"] || !store.settled["t3"] {
-		t.Fatalf("settled = %v, want t1 and t3", store.settled)
+	check(1, map[string]float64{
+		"t1":  0.75, // 0.25 + 0.5 from its two keys, above the booked 0.5
+		"t2":  1,    // no LiteLLM keys: never lowered
+		"old": 0.5,  // outside the window
+		"run": 0.5,  // not finished
+	})
+	mu.Lock()
+	h1Spend = "0.5" // LiteLLM's late spend write lands: 0.5 + 0.5
+	mu.Unlock()
+	check(2, map[string]float64{"t1": 1, "t2": 1, "old": 0.5, "run": 0.5})
+
+	// nothing finished in the window: no LiteLLM call at all
+	delete(store.finished, "t1")
+	delete(store.finished, "t2")
+	if n, err := c.SettleSpend(context.Background()); n != 0 || err != nil || lists != 2 {
+		t.Fatalf("empty pass = (%d, %v), key/list calls = %d; want (0, nil) and still 2", n, err, lists)
+	}
+}
+
+// The settle loop runs passes on its own ticker until its context ends.
+func TestCompletionSettleLoopRunsPasses(t *testing.T) {
+	passes := make(chan struct{}, 10)
+	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		io.WriteString(w, `{"keys":[{"token":"h1","spend":0.25,"metadata":{"task_id":"t1"}}],"total_pages":1}`)
+		select {
+		case passes <- struct{}{}:
+		default:
+		}
+	}))
+	defer ll.Close()
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "done"})
+	store.finished["t1"] = time.Now()
+	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { c.SettleLoop(ctx, time.Millisecond); close(done) }()
+	<-passes
+	<-passes
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("SettleLoop did not return after cancel")
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.SpentEUR != 0.25 {
+		t.Fatalf("spent = %v, want 0.25", got.SpentEUR)
 	}
 }
