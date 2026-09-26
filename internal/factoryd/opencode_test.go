@@ -359,3 +359,65 @@ echo $! > `+dir+`/detached.pid
 		}
 	}
 }
+
+// A line longer than 1 MiB is dropped up to its newline without buffering
+// it; the lines around it still arrive.
+func TestLineWriterCapsALine(t *testing.T) {
+	var lines []string
+	tooLong := 0
+	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }, tooLong: func() { tooLong++ }}
+	exact := strings.Repeat("x", 1<<20)
+	chunks := []string{"a\n", exact[:1000], exact[1000:] + "\n"}
+	for range 3 { // 3 MiB of one line, written 1 MiB at a time
+		chunks = append(chunks, exact)
+	}
+	chunks = append(chunks, "y\nb", "\n")
+	for _, c := range chunks {
+		if n, err := w.Write([]byte(c)); n != len(c) || err != nil {
+			t.Fatalf("Write = (%d, %v), want (%d, nil)", n, err, len(c))
+		}
+		if len(w.buf) > 1<<20 {
+			t.Fatalf("buffered %d bytes, want at most 1 MiB", len(w.buf))
+		}
+	}
+	w.flush()
+	if len(lines) != 3 || lines[0] != "a" || lines[1] != exact || lines[2] != "b" {
+		t.Fatalf("lines = %d (first %q), want a, the exactly-1-MiB line, b", len(lines), lines[0])
+	}
+	if tooLong != 1 {
+		t.Fatalf("tooLong = %d, want 1", tooLong)
+	}
+}
+
+func TestOpencodeRunFailsOnOversizeLine(t *testing.T) {
+	stub := writeStubOpencode(t, "opencode-run-edit.jsonl")
+	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
+	os.WriteFile(stub, []byte(`#!/bin/sh
+head -c 2097152 /dev/zero | tr '\0' x
+echo
+cat `+fixturePath+`
+head -c 2097152 /dev/zero | tr '\0' e >&2
+`), 0o755)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
+	oc := &Opencode{
+		Binary: stub, WorkDir: t.TempDir(), GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+	}
+	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
+	if res.Success || res.Summary != "opencode output line exceeds 1 MiB" {
+		t.Fatalf("result = %v, %.100q; want a failure naming the oversize line", res.Success, res.Summary)
+	}
+}
+
+func TestCapWriterKeepsTheHead(t *testing.T) {
+	w := &capWriter{max: 4}
+	for _, s := range []string{"ab", "cde", "f"} {
+		if n, err := w.Write([]byte(s)); n != len(s) || err != nil {
+			t.Fatalf("Write(%q) = (%d, %v)", s, n, err)
+		}
+	}
+	if w.String() != "abcd" {
+		t.Fatalf("kept %q, want abcd", w.String())
+	}
+}

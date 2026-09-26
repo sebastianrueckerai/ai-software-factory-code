@@ -115,14 +115,17 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	}
 
 	p := &opencodeParser{}
-	lines := &lineWriter{line: func(b []byte) { p.line(b, emit) }}
+	lines := &lineWriter{
+		line:    func(b []byte) { p.line(b, emit) },
+		tooLong: func() { p.fail("opencode output line exceeds 1 MiB") },
+	}
 	cmd := exec.CommandContext(ctx, o.binary(),
 		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief))
 	cmd.Dir = o.WorkDir
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_CONTENT="+string(cfg))
 	cmd.Stdout = lines
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &capWriter{max: 64 << 10}
+	cmd.Stderr = stderr
 	// opencode and everything the agent starts share one process group, so
 	// nothing it leaves behind outlives the session; a leftover holding the
 	// output pipe gets WaitDelay before the group dies.
@@ -149,25 +152,44 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	return o.finish(emit, success, summary)
 }
 
+// maxOutputLine bounds one opencode JSON line, like the gateway's SSE line.
+const maxOutputLine = 1 << 20
+
 // lineWriter hands each complete line to line; flush parses a final line
-// that lacks its newline.
+// that lacks its newline. A line past maxOutputLine is dropped up to its
+// newline, unbuffered, and reported once to tooLong.
 type lineWriter struct {
-	buf  []byte
-	line func([]byte)
+	buf      []byte
+	skipping bool
+	line     func([]byte)
+	tooLong  func()
 }
 
 func (w *lineWriter) Write(b []byte) (int, error) {
-	w.buf = append(w.buf, b...)
-	for {
-		i := bytes.IndexByte(w.buf, '\n')
+	n := len(b)
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		part := b
+		if i >= 0 {
+			part = b[:i]
+		}
+		if !w.skipping && len(w.buf)+len(part) > maxOutputLine {
+			w.skipping, w.buf = true, nil
+			w.tooLong()
+		}
+		if !w.skipping {
+			w.buf = append(w.buf, part...)
+		}
 		if i < 0 {
-			return len(b), nil
+			break
 		}
-		if l := bytes.TrimSpace(w.buf[:i]); len(l) > 0 {
-			w.line(l)
+		if !w.skipping {
+			w.flush()
 		}
-		w.buf = w.buf[i+1:]
+		w.skipping, w.buf = false, nil
+		b = b[i+1:]
 	}
+	return n, nil
 }
 
 func (w *lineWriter) flush() {
@@ -175,6 +197,17 @@ func (w *lineWriter) flush() {
 		w.line(l)
 	}
 	w.buf = nil
+}
+
+// capWriter keeps the first max bytes written to it and drops the rest.
+type capWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (w *capWriter) Write(b []byte) (int, error) {
+	w.Buffer.Write(b[:min(len(b), max(0, w.max-w.Len()))])
+	return len(b), nil
 }
 
 func (o *Opencode) finish(emit func(harness.Event), success bool, summary string) harness.Result {
@@ -253,6 +286,12 @@ type opencodeParser struct {
 }
 
 func (p *opencodeParser) errMessage() string { return p.errMsg }
+
+func (p *opencodeParser) fail(msg string) {
+	if p.errMsg == "" {
+		p.errMsg = msg
+	}
+}
 
 func (p *opencodeParser) summary() string { return p.lastText }
 
