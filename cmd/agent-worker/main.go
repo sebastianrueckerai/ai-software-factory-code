@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -32,6 +33,12 @@ func main() {
 }
 
 func run(log func(string, ...any)) int {
+	// killOthers relies on every agent process being in this PID namespace
+	// and reparenting to the worker.
+	if os.Getpid() != 1 {
+		log("must run as the container's init (pid 1), runs as pid %d", os.Getpid())
+		return 1
+	}
 	// The agent runs as the same uid; a non-dumpable worker keeps its
 	// /proc/<pid>/environ (which still holds the git token) unreadable to it.
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0); errno != 0 {
@@ -56,9 +63,8 @@ func run(log func(string, ...any)) int {
 	}
 
 	repoDir := filepath.Join(workspace, "repo")
-	// the token travels as a per-command header, so .git/config keeps the
-	// plain URL and nothing the agent can read holds the credential
-	if err := env.gitRun("", "clone", env.repoURL, repoDir); err != nil {
+	// no agent process exists yet; the header stays out of .git/config
+	if err := env.gitAuth("", "clone", "-q", env.repoURL, repoDir); err != nil {
 		log("clone: %v", err)
 		return 1
 	}
@@ -94,9 +100,12 @@ func run(log func(string, ...any)) int {
 		fmt.Println(string(line))
 	}
 	res := oc.Run(ctx, brief, emit)
+	if err := killOthers(); err != nil {
+		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
+	}
 
 	if res.Success {
-		commit, err := commitAndPush(repoDir, env, base)
+		commit, err := commitAndPush(repoDir, env, base, killOthers)
 		if err != nil {
 			res = harness.Result{Success: false, Summary: "push failed: " + err.Error()}
 		} else if commit != "" {
@@ -113,6 +122,35 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 	return 0
+}
+
+// killOthers SIGKILLs every other process in the container and reaps them.
+// The worker is init, so every orphan the agent leaves reparents to it, and
+// wait4 answering ECHILD means no other process is left. Nothing the agent
+// started, including one that left opencode's process group, survives.
+func killOthers() error {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := syscall.Kill(-1, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
+			return fmt.Errorf("kill(-1): %w", err)
+		}
+		for {
+			pid, err := syscall.Wait4(-1, nil, syscall.WNOHANG, nil)
+			if err == syscall.ECHILD {
+				return nil
+			}
+			if err != nil && err != syscall.EINTR {
+				return fmt.Errorf("wait4: %w", err)
+			}
+			if pid <= 0 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			return errors.New("agent processes survive SIGKILL")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 const (
@@ -173,25 +211,42 @@ func (e workerEnv) authHeader() string {
 	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+e.gitToken))
 }
 
-// gitRun runs git with the task token as a per-command http.extraHeader
-// (environment config, so it never lands in args or .git/config) and scrubs
-// the token from failures, because worker stderr reaches the factoryd log.
-func (e workerEnv) gitRun(dir string, args ...string) error {
-	_, err := e.git(dir, args...)
+// safeGit is prepended to every worker git command: agent-planted hooks and
+// fsmonitor never run, and "-c" reaches every nested git through
+// GIT_CONFIG_PARAMETERS.
+var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+
+// git runs a token-free git command. HOME is agent-writable, so global and
+// system config are ignored.
+func (e workerEnv) git(dir string, args ...string) (string, error) {
+	return e.runGit(dir, nil, args...)
+}
+
+// gitAuth runs git with the task token as an http.extraHeader in the
+// environment (never args, never a config file). Only the initial clone,
+// before the agent exists, and the final push from the worker's own repo,
+// after every agent process is dead, use it.
+func (e workerEnv) gitAuth(dir string, args ...string) error {
+	_, err := e.runGit(dir, []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0=" + e.authHeader(),
+	}, args...)
 	return err
 }
 
-func (e workerEnv) git(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// runGit scrubs the token from failures, because worker stderr reaches the
+// factoryd log.
+func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {
+	cmd := exec.Command("git", append(append([]string(nil), safeGit...), args...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0="+e.authHeader(),
+	cmd.Env = append(append(os.Environ(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
-	)
+	), env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		redact := func(s string) string {
@@ -210,47 +265,97 @@ func (e workerEnv) git(dir string, args ...string) (string, error) {
 // that base commit. The commit identity goes into the repo config so the
 // agent's own commits carry it too.
 func prepareRepo(repoDir string, e workerEnv) (string, error) {
-	// the adapter writes brief.json into the work tree; it must never be committed
+	// the adapter writes brief.json into the work tree; keep it out of the agent's own commits
 	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
 		return "", err
 	}
-	steps := [][]string{{"config", "user.name", "factory-agent"}, {"config", "user.email", "factory-agent@factory.local"}}
+	steps := [][]string{{"config", "user.name", botName}, {"config", "user.email", botEmail}}
 	if e.repoSHA != "" {
 		steps = append(steps, []string{"checkout", "-q", e.repoSHA})
 	}
 	steps = append(steps, []string{"checkout", "-q", "-B", e.branch})
 	for _, args := range steps {
-		if err := e.gitRun(repoDir, args...); err != nil {
+		if _, err := e.git(repoDir, args...); err != nil {
 			return "", err
 		}
 	}
 	return e.git(repoDir, "rev-parse", "HEAD")
 }
 
-// commitAndPush commits whatever the agent left uncommitted and pushes the
-// task branch if it moved past base, the agent's own commits included.
-// Returns the pushed commit, empty when there was nothing to push.
-func commitAndPush(repoDir string, e workerEnv, base string) (string, error) {
-	status, err := e.git(repoDir, "status", "--porcelain")
+const (
+	botName  = "factory-agent"
+	botEmail = "factory-agent@factory.local"
+)
+
+// commitAndPush never runs a token-bearing git in the agent's repo, whose
+// config, hooks and work tree the agent controls. A fresh worker repo
+// fetches the agent's HEAD, stages the agent's work tree on top under the
+// worker's own config (so no agent filter, hook or fsmonitor runs), commits
+// any leftovers, and pushes to the task URL if the result moved past base.
+// killAgent runs right before the push, so no agent process is alive while
+// the token is in a git process's environment. Returns the pushed commit,
+// empty when there was nothing to push.
+func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() error) (string, error) {
+	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
 		return "", err
 	}
-	if status != "" {
-		if err := commitAll(repoDir, e); err != nil {
+	defer os.RemoveAll(own)
+	if _, err := e.git(own, "init", "-q"); err != nil {
+		return "", err
+	}
+	// the adapter writes brief.json into the work tree; it must never be committed
+	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
+		return "", err
+	}
+	if _, err := e.git(own, "fetch", "-q", "--no-tags", agentRepo, "+HEAD:refs/heads/agent"); err != nil {
+		return "", err
+	}
+	head, err := e.git(own, "rev-parse", "refs/heads/agent")
+	if err != nil {
+		return "", err
+	}
+	tree, err := stageWorkTree(own, agentRepo, e)
+	if err != nil {
+		return "", err
+	}
+	if headTree, err := e.git(own, "rev-parse", "refs/heads/agent^{tree}"); err != nil {
+		return "", err
+	} else if tree != headTree {
+		if head, err = e.runGit(own, botIdentity, "commit-tree", tree, "-p", head, "-m", commitMessage(e)); err != nil {
 			return "", err
 		}
 	}
-	commit, err := e.git(repoDir, "rev-parse", "HEAD")
-	if err != nil || commit == base {
+	if head == base {
+		return "", nil
+	}
+	if err := killAgent(); err != nil {
+		return "", fmt.Errorf("stop agent processes: %w", err)
+	}
+	if err := e.gitAuth(own, "push", "-q", e.repoURL, head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
-	if err := e.gitRun(repoDir, "push", "origin", "HEAD:refs/heads/"+e.branch); err != nil {
-		return "", err
-	}
-	return commit, nil
+	return head, nil
 }
 
-func commitAll(repoDir string, e workerEnv) error {
+var botIdentity = []string{
+	"GIT_AUTHOR_NAME=" + botName, "GIT_AUTHOR_EMAIL=" + botEmail,
+	"GIT_COMMITTER_NAME=" + botName, "GIT_COMMITTER_EMAIL=" + botEmail,
+}
+
+// stageWorkTree indexes the agent's work tree, starting from the agent's
+// HEAD tree, in the worker's repo and returns the tree ID.
+func stageWorkTree(own, agentRepo string, e workerEnv) (string, error) {
+	env := []string{"GIT_DIR=" + filepath.Join(own, ".git"), "GIT_WORK_TREE=" + agentRepo}
+	for _, args := range [][]string{{"read-tree", "refs/heads/agent"}, {"add", "-A"}} {
+		if _, err := e.runGit(own, env, args...); err != nil {
+			return "", err
+		}
+	}
+	return e.runGit(own, env, "write-tree")
+}
+
+func commitMessage(e workerEnv) string {
 	subject := e.objective
 	if i := strings.IndexAny(subject, "\r\n"); i >= 0 {
 		subject = subject[:i]
@@ -258,8 +363,5 @@ func commitAll(repoDir string, e workerEnv) error {
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}
-	if err := e.gitRun(repoDir, "add", "-A"); err != nil {
-		return err
-	}
-	return e.gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject))
+	return fmt.Sprintf("factory task %s: %s", e.taskID, subject)
 }

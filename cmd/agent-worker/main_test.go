@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +13,7 @@ import (
 
 func TestGitRunRedactsToken(t *testing.T) {
 	e := workerEnv{gitToken: "s3cret-tok"}
-	err := e.gitRun("", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")
+	err := e.gitAuth("", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")
 	if err == nil {
 		t.Fatal("clone into a nonexistent dir should fail")
 	}
@@ -53,7 +56,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "repo")
-	if err := e.gitRun("", "clone", e.repoURL, dst); err != nil {
+	if err := e.gitAuth("", "clone", e.repoURL, dst); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(dst, ".git", "config"))
@@ -63,10 +66,9 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	if strings.Contains(string(cfg), "s3cret-tok") || strings.Contains(string(cfg), "extraHeader") {
 		t.Fatalf(".git/config carries the credential:\n%s", cfg)
 	}
-	// git run by the worker sends the header; git run by the agent does not
-	header, err := e.git(dst, "config", "--get", "http.extraHeader")
-	if err != nil || header != e.authHeader() {
-		t.Fatalf("worker git header = %q, %v", header, err)
+	// only gitAuth carries the header: neither the worker's other git nor the agent's sees one
+	if header, err := e.git(dst, "config", "--get", "http.extraHeader"); err == nil || header != "" {
+		t.Fatalf("token-free worker git sees a header: %q", header)
 	}
 	if out, _ := exec.Command("git", "-C", dst, "config", "--get", "http.extraHeader").Output(); len(out) != 0 {
 		t.Fatalf("plain git sees a header: %q", out)
@@ -118,9 +120,9 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch}
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote}
 			dir := filepath.Join(t.TempDir(), "repo")
-			if err := e.gitRun("", "clone", remote, dir); err != nil {
+			if err := e.gitAuth("", "clone", remote, dir); err != nil {
 				t.Fatal(err)
 			}
 			base, err := prepareRepo(dir, e)
@@ -132,7 +134,7 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 			}
 			tc.agent(dir)
 
-			commit, err := commitAndPush(dir, e, base)
+			commit, err := commitAndPush(dir, e, base, func() error { return nil })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -146,14 +148,143 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 			if commit == "" || strings.TrimSpace(string(remoteHead)) != commit {
 				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
 			}
-			for _, author := range strings.Split(run("-C", dir, "log", "--format=%an <%ae>", base+".."+commit), "\n") {
+			for _, author := range strings.Split(run("-C", remote, "log", "--format=%an <%ae>", base+".."+commit), "\n") {
 				if author != "factory-agent <factory-agent@factory.local>" {
 					t.Fatalf("pushed commit author = %q, want factory-agent", author)
 				}
 			}
-			if tc.wantParent && run("-C", dir, "log", "-1", "--format=%s", commit+"^") != "agent" {
+			if tc.wantParent && run("-C", remote, "log", "-1", "--format=%s", commit+"^") != "agent" {
 				t.Fatal("leftover changes were not committed on top of the agent's commit")
 			}
 		})
+	}
+}
+
+// An agent that plants every git-driven program it can must see none of
+// them run while the worker commits and pushes, and the token must still
+// reach the server on the push.
+func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	backend := filepath.Join(run("--exec-path"), "git-http-backend")
+	if _, err := os.Stat(backend); err != nil {
+		t.Fatalf("git-http-backend: %v", err)
+	}
+
+	root := t.TempDir()
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	remote := filepath.Join(root, "repo.git")
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "config", "http.receivepack", "true")
+	sha := run("-C", seed, "rev-parse", "HEAD")
+
+	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", gitToken: "s3cret-tok"}
+	var pushes, refused int
+	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Basic auth for x-access-token:s3cret-tok, base64 derived by hand
+		if r.Header.Get("Authorization") != "Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0LXRvaw==" {
+			refused++
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			http.Error(w, "no token", http.StatusUnauthorized)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
+			pushes++
+		}
+		git.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	e.repoURL = srv.URL + "/repo.git"
+
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := e.gitAuth("", "clone", "-q", e.repoURL, dir); err != nil {
+		t.Fatal(err)
+	}
+	base, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+	run("-C", dir, "add", "a.txt")
+	run("-C", dir, "commit", "-q", "-m", "agent")
+
+	// every planted program appends its environment to spy.log
+	spyLog := filepath.Join(t.TempDir(), "spy.log")
+	spy := filepath.Join(t.TempDir(), "spy")
+	os.WriteFile(spy, []byte("#!/bin/sh\nenv >> "+spyLog+"\ncat\n"), 0o755)
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	os.Mkdir(hooks, 0o755)
+	for _, h := range []string{"pre-commit", "commit-msg", "post-commit", "pre-push", "reference-transaction", "post-checkout", "post-index-change", "pre-auto-gc"} {
+		for _, d := range []string{hooks, filepath.Join(dir, ".git", "hooks")} {
+			os.WriteFile(filepath.Join(d, h), []byte("#!/bin/sh\n"+spy+" </dev/null\n"), 0o755)
+		}
+	}
+	included := filepath.Join(t.TempDir(), "included.cfg")
+	os.WriteFile(included, []byte("[core]\n\tfsmonitor = "+spy+"\n"), 0o644)
+	planted := [][]string{
+		{"core.hooksPath", hooks}, {"core.fsmonitor", spy}, {"core.sshCommand", spy},
+		{"credential.helper", "!" + spy}, {"filter.spy.clean", spy}, {"filter.spy.smudge", spy},
+		{"filter.spy.required", "true"}, {"diff.spy.textconv", spy}, {"include.path", included},
+		{"url.http://127.0.0.1:1/.insteadOf", srv.URL + "/"}, {"remote.origin.pushurl", "http://127.0.0.1:1/x.git"},
+	}
+	for _, kv := range planted {
+		run("-C", dir, "config", kv[0], kv[1])
+		run("config", "--global", kv[0], kv[1])
+	}
+	if got := run("config", "--global", "core.fsmonitor"); got != spy {
+		t.Fatalf("planted global config not read by plain git: %q", got)
+	}
+	os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=spy diff=spy\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644)
+
+	killed := false
+	commit, err := commitAndPush(dir, e, base, func() error {
+		if pushes != 0 {
+			t.Error("push ran before the agent was killed")
+		}
+		killed = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !killed {
+		t.Fatal("agent processes were not killed before the push")
+	}
+	if b, err := os.ReadFile(spyLog); err == nil {
+		t.Fatalf("an agent-planted program ran (token in its env: %v)", strings.Contains(string(b), "czNjcmV0LXRvaw") || strings.Contains(string(b), "s3cret-tok"))
+	}
+	if pushes != 1 || refused != 0 {
+		t.Fatalf("pushes = %d, refused = %d, want one authenticated push", pushes, refused)
+	}
+	if got := run("-C", remote, "rev-parse", "refs/heads/factory/t1"); got != commit {
+		t.Fatalf("remote branch = %s, want %s", got, commit)
+	}
+	if run("-C", remote, "log", "-1", "--format=%s", commit+"^") != "agent" {
+		t.Fatal("leftovers were not committed on top of the agent's commit")
+	}
+	if got := run("-C", remote, "log", "-1", "--format=%an <%ae>", commit); got != "factory-agent <factory-agent@factory.local>" {
+		t.Fatalf("leftover commit author = %q", got)
+	}
+	if got := run("-C", remote, "ls-tree", "--name-only", commit); got != ".gitattributes\na.txt\nb.txt" {
+		t.Fatalf("pushed tree = %q", got)
+	}
+	// control: the same plants do run under the agent's own git
+	os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644)
+	exec.Command("git", "-C", dir, "add", "-A").Run()
+	if _, err := os.Stat(spyLog); err != nil {
+		t.Fatalf("control: planted programs did not run under plain git: %v", err)
 	}
 }

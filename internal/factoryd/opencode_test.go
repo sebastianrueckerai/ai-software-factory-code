@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -298,5 +301,49 @@ func TestOpencodePrepareRejectsHeadroomlessBudget(t *testing.T) {
 	oc := &Opencode{WorkDir: t.TempDir(), Budget: TokenBudget{AnswerTokens: 1000}}
 	if err := oc.Prepare(context.Background(), harness.SandboxEnv{}, harness.TaskBrief{Objective: "x"}); err == nil {
 		t.Fatal("budget without headroom accepted at task start")
+	}
+}
+
+// Whatever the agent leaves running must die with the session: one
+// leftover still holds opencode's stdout, one has let go of it.
+func TestOpencodeRunKillsLeftoverProcesses(t *testing.T) {
+	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "opencode-stub")
+	os.WriteFile(stub, []byte(`#!/bin/sh
+cat `+fixturePath+`
+sleep 300 &
+echo $! > `+dir+`/holder.pid
+sleep 300 >/dev/null 2>&1 </dev/null &
+echo $! > `+dir+`/detached.pid
+`), 0o755)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
+
+	oc := &Opencode{
+		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+	}
+	start := time.Now()
+	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
+	if !res.Success {
+		t.Fatalf("result = %+v: a leftover process must not fail the run", res)
+	}
+	if d := time.Since(start); d > 20*time.Second {
+		t.Fatalf("Run took %s: it waited on the stdout holder", d)
+	}
+	for _, name := range []string{"holder.pid", "detached.pid"} {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		deadline := time.Now().Add(5 * time.Second)
+		for syscall.Kill(pid, 0) == nil {
+			if time.Now().After(deadline) {
+				t.Fatalf("%s (pid %d) still alive after Run", name, pid)
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 }

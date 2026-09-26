@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -112,46 +114,30 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		return o.finish(emit, false, err.Error())
 	}
 
+	p := &opencodeParser{}
+	lines := &lineWriter{line: func(b []byte) { p.line(b, emit) }}
 	cmd := exec.CommandContext(ctx, o.binary(),
 		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief))
 	cmd.Dir = o.WorkDir
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_CONTENT="+string(cfg))
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return o.finish(emit, false, err.Error())
-	}
+	cmd.Stdout = lines
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	// opencode and everything the agent starts share one process group, so
+	// nothing it leaves behind outlives the session; a leftover holding the
+	// output pipe gets WaitDelay before the group dies.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return o.finish(emit, false, err.Error())
 	}
-
-	p := &opencodeParser{}
-	buf := make([]byte, 64<<10)
-	line := make([]byte, 0, 16<<10)
-	for {
-		n, rerr := stdout.Read(buf)
-		line = append(line, buf[:n]...)
-		for len(line) > 0 {
-			i := bytes.IndexByte(line, '\n')
-			if i < 0 {
-				break
-			}
-			if b := bytes.TrimSpace(line[:i]); len(b) > 0 {
-				p.line(b, emit)
-			}
-			line = line[i+1:]
-		}
-		if rerr != nil {
-			// EOF: the final line may lack a trailing newline; parse the
-			// remainder instead of discarding it.
-			if b := bytes.TrimSpace(line); len(b) > 0 {
-				p.line(b, emit)
-			}
-			break
-		}
-	}
 	waitErr := cmd.Wait()
+	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		waitErr = nil
+	}
+	lines.flush()
 
 	success := p.stopped && p.errMessage() == "" && waitErr == nil
 	summary := p.summary()
@@ -161,6 +147,34 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		summary = fmt.Sprintf("opencode exited: %v; stderr: %s", waitErr, strings.TrimSpace(stderr.String()))
 	}
 	return o.finish(emit, success, summary)
+}
+
+// lineWriter hands each complete line to line; flush parses a final line
+// that lacks its newline.
+type lineWriter struct {
+	buf  []byte
+	line func([]byte)
+}
+
+func (w *lineWriter) Write(b []byte) (int, error) {
+	w.buf = append(w.buf, b...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			return len(b), nil
+		}
+		if l := bytes.TrimSpace(w.buf[:i]); len(l) > 0 {
+			w.line(l)
+		}
+		w.buf = w.buf[i+1:]
+	}
+}
+
+func (w *lineWriter) flush() {
+	if l := bytes.TrimSpace(w.buf); len(l) > 0 {
+		w.line(l)
+	}
+	w.buf = nil
 }
 
 func (o *Opencode) finish(emit func(harness.Event), success bool, summary string) harness.Result {
