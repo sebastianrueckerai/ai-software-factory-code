@@ -147,7 +147,7 @@ metadata:
 spec:
   replicas: 1
   # two factoryd pods would race for the same queue
-  strategy: {type: Recreate}
+  strategy: {type: Recreate, rollingUpdate: null}
   selector: {matchLabels: {app: factoryd}}
   template:
     metadata:
