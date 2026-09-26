@@ -262,6 +262,38 @@ func TestOpencodeRunFailsOnStubError(t *testing.T) {
 	}
 }
 
+func TestOpencodeRunParsesUnterminatedFinalLine(t *testing.T) {
+	// Command substitution strips the fixture's trailing newline, so the
+	// stub's last step_finish reaches the adapter without a delimiter.
+	stub := writeStubOpencode(t, "opencode-run-edit.jsonl")
+	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
+	dir := t.TempDir()
+	os.WriteFile(stub, []byte(`#!/bin/sh
+printf '%s' "$(cat `+fixturePath+`)"
+`), 0o755)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
+
+	oc := &Opencode{
+		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+	}
+	var events []harness.Event
+	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
+	if !res.Success {
+		t.Fatalf("result = %+v: the unterminated final step_finish was not parsed", res)
+	}
+	var lastStep harness.Event
+	for _, ev := range events {
+		if ev.Kind == harness.EventModelCall {
+			lastStep = ev
+		}
+	}
+	if lastStep.Detail == nil || lastStep.Detail["reason"] != "stop" {
+		t.Fatalf("last model call = %+v, want the fixture's final stop step", lastStep)
+	}
+}
+
 func TestOpencodePrepareRejectsHeadroomlessBudget(t *testing.T) {
 	oc := &Opencode{WorkDir: t.TempDir(), Budget: TokenBudget{AnswerTokens: 1000}}
 	if err := oc.Prepare(context.Background(), harness.SandboxEnv{}, harness.TaskBrief{Objective: "x"}); err == nil {

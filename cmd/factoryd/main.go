@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"strconv"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -33,6 +36,53 @@ func main() {
 	}
 	defer store.Close()
 
+	forgejo := &factoryd.Forgejo{
+		BaseURL:    env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		AdminToken: os.Getenv("FORGEJO_ADMIN_TOKEN"),
+	}
+	botUser := env("FORGEJO_BOT_USER", "factory-agent")
+	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000")}
+	objects := &factoryd.S3{
+		Endpoint:  mustEnv("S3_ENDPOINT"),
+		Region:    env("S3_REGION", "fsn1"),
+		Bucket:    mustEnv("S3_BUCKET"),
+		AccessKey: mustEnv("S3_ACCESS_KEY_ID"),
+		SecretKey: mustEnv("S3_SECRET_ACCESS_KEY"),
+	}
+	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, BotUser: botUser, LiteLLM: litellm}
+
+	kube, err := factoryd.NewInClusterKube()
+	if err != nil {
+		log.Fatalf("kube client: %v", err)
+	}
+	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
+		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
+		WorkerImage:          mustEnv("WORKER_IMAGE"),
+		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
+		FactoryNamespace:     kube.Namespace(),
+		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc:8081"),
+		Model:                env("MODEL", "factory/coding-frontier"),
+		RetryModel:           env("RETRY_MODEL", "factory/review-frontier"),
+		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
+		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
+		MaxSessions:          envInt("MAX_SESSIONS", 3),
+		BotUser:              botUser,
+		PollInterval:         2 * time.Second,
+		Supervisor: factoryd.SupervisorConfig{
+			NoProgressAfter:  5 * time.Minute,
+			WallClockCap:     20 * time.Minute,
+			RepetitionEvents: 24,
+		},
+	}, store, kube, forgejo, completion, objects)
+	if err != nil {
+		log.Fatalf("runner: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	runner.BootSweep(ctx)
+	go runner.Run(ctx)
+
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
@@ -42,6 +92,57 @@ func main() {
 		}
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("POST /tasks", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Objective  string  `json:"objective"`
+			Repository string  `json:"repository"`
+			SHA        string  `json:"sha"`
+			Branch     string  `json:"branch"`
+			Priority   int     `json:"priority"`
+			BudgetEUR  float64 `json:"budget_eur"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.Objective == "" || in.Repository == "" {
+			http.Error(w, "objective and repository are required", http.StatusBadRequest)
+			return
+		}
+		if in.BudgetEUR <= 0 {
+			in.BudgetEUR = 2.0
+		}
+		id := factoryd.NewTaskID()
+		if in.Branch == "" {
+			in.Branch = "factory/" + id
+		}
+		task := factoryd.Task{
+			ID: id, Priority: in.Priority, RiskClass: "standard",
+			BudgetEUR: in.BudgetEUR, Status: "queued",
+			Objective: in.Objective, Repository: in.Repository,
+			SHA: in.SHA, Branch: in.Branch,
+		}
+		if err := store.CreateTask(r.Context(), task); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"id": id, "branch": in.Branch})
+	})
+	mux.HandleFunc("GET /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(task)
+	})
 
 	server := &http.Server{
 		Addr:              *addr,
@@ -50,4 +151,29 @@ func main() {
 	}
 	log.Printf("factoryd %s listening on %s", version, *addr)
 	log.Fatal(server.ListenAndServe())
+}
+
+func env(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+func mustEnv(name string) string {
+	v := os.Getenv(name)
+	if v == "" {
+		log.Fatalf("%s is required", name)
+	}
+	return v
+}
+
+func envInt(name string, def int) int {
+	if v := os.Getenv(name); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+		log.Fatalf("%s: not an int", name)
+	}
+	return def
 }

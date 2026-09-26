@@ -27,6 +27,10 @@ type Task struct {
 	BudgetEUR            float64
 	SpentEUR             float64
 	Status               string
+	Objective            string
+	Repository           string
+	SHA                  string
+	Branch               string
 }
 
 // Session is one agent worker run of a task. ParentSessionID chains a
@@ -48,6 +52,7 @@ type Store interface {
 	CreateTask(ctx context.Context, t Task) error
 	Task(ctx context.Context, id string) (Task, bool, error)
 	SetTaskStatus(ctx context.Context, id, status string) error
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
@@ -122,9 +127,11 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)`,
-		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status)
+		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
+		                    objective, repository, sha, branch)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
+		t.Objective, t.Repository, t.SHA, t.Branch)
 	return err
 }
 
@@ -132,9 +139,11 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	var t Task
 	var caps []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status
+		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
+		       objective, repository, sha, branch
 		 FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status)
+	).Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
+		&t.Objective, &t.Repository, &t.SHA, &t.Branch)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
@@ -153,6 +162,29 @@ func (s *PGStore) Close() error {
 // Ping checks database connectivity for readiness probing.
 func (s *PGStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
+		        objective, repository, sha, branch
+		 FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tasks []Task
+	for rows.Next() {
+		var t Task
+		var caps []byte
+		if err := rows.Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
+			&t.Objective, &t.Repository, &t.SHA, &t.Branch); err != nil {
+			return nil, err
+		}
+		t.RequiredCapabilities = fromJSON(caps)
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
 }
 
 func (s *PGStore) SetTaskStatus(ctx context.Context, id, status string) error {

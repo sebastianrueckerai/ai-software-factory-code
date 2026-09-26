@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 )
@@ -37,6 +38,22 @@ func (s *fakeStore) SetTaskStatus(ctx context.Context, id, status string) error 
 	t.Status = status
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	var tasks []Task
+	for _, t := range s.tasks {
+		if t.Status == status {
+			tasks = append(tasks, t)
+		}
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].Priority != tasks[j].Priority {
+			return tasks[i].Priority > tasks[j].Priority
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
+	return tasks, nil
 }
 
 func (s *fakeStore) InsertSession(ctx context.Context, sess Session) error {
@@ -94,6 +111,10 @@ func TestPGStore(t *testing.T) {
 		RiskClass:            "high",
 		BudgetEUR:            10,
 		Status:               "queued",
+		Objective:            "Add the runner",
+		Repository:           "sf/ai-software-factory-code",
+		SHA:                  "abc123",
+		Branch:               "factory/t1",
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -112,6 +133,17 @@ func TestPGStore(t *testing.T) {
 	got, _, _ = s.Task(ctx, "t1")
 	if got.Status != "running" {
 		t.Fatalf("status = %q", got.Status)
+	}
+
+	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "queued", Objective: "x"}); err != nil {
+		t.Fatalf("CreateTask t0: %v", err)
+	}
+	queued, err := s.ListTasksByStatus(ctx, "queued")
+	if err != nil {
+		t.Fatalf("ListTasksByStatus: %v", err)
+	}
+	if len(queued) != 2 || queued[0].ID != "t1" || queued[0].Objective != "Add the runner" {
+		t.Fatalf("queued = %+v, want t1 (priority 2, brief round-tripped) before t0", queued)
 	}
 
 	_, ok, err = s.Task(ctx, "nope")

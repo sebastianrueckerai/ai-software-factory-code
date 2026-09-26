@@ -143,6 +143,11 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 			line = line[i+1:]
 		}
 		if rerr != nil {
+			// EOF: the final line may lack a trailing newline; parse the
+			// remainder instead of discarding it.
+			if b := bytes.TrimSpace(line); len(b) > 0 {
+				p.line(b, emit)
+			}
 			break
 		}
 	}

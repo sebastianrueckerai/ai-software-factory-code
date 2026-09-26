@@ -64,6 +64,28 @@ func (f *Forgejo) MintToken(ctx context.Context, botUser, name string, repos []R
 	return ForgejoToken{ID: res.ID, Secret: res.SHA1}, nil
 }
 
+// TokenRef is a listed token: enough to find a task's tokens by name and
+// revoke them, without ever seeing the secret again.
+type TokenRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListTokens lists the bot user's tokens (admin scope). The runner uses it
+// to reconcile tokens by name: completion and the boot sweep must revoke a
+// task's token even when the mint's ID was lost to a crash.
+func (f *Forgejo) ListTokens(ctx context.Context, botUser string) ([]TokenRef, error) {
+	body, err := f.call(ctx, http.MethodGet, "/api/v1/users/"+botUser+"/tokens", nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var refs []TokenRef
+	if err := json.Unmarshal(body, &refs); err != nil {
+		return nil, fmt.Errorf("forgejo list tokens: %w", err)
+	}
+	return refs, nil
+}
+
 func (f *Forgejo) RevokeToken(ctx context.Context, botUser string, id int64) error {
 	_, err := f.call(ctx, http.MethodDelete,
 		fmt.Sprintf("/api/v1/admin/users/%s/tokens/%d", botUser, id), nil, http.StatusNoContent)
