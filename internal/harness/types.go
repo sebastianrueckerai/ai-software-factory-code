@@ -6,7 +6,10 @@ import (
 )
 
 // TaskBrief is the whole task as data, handed to a harness adapter
-// (architecture 6.2).
+// (architecture 6.2). Capability requirements deliberately do not travel
+// here: they live on the task row (required_capabilities) and are applied
+// by the control plane when it picks the sandbox and mints credentials.
+// Policy stays outside the LLM, so a harness cannot ask for capabilities.
 type TaskBrief struct {
 	Objective  string   `json:"objective"`
 	Repository string   `json:"repository"`
