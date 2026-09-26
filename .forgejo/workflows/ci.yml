@@ -23,3 +23,16 @@ jobs:
           SHA=${GITHUB_SHA::7}
           docker build -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA .
           docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
+  image-sandbox:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u sebastian --password-stdin
+      - name: build and push sandbox image
+        run: |
+          SHA=${GITHUB_SHA::7}
+          docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA .
+          docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA

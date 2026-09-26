@@ -1,0 +1,17 @@
+FROM debian:bookworm-slim
+LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
+ARG OPENCODE_VERSION=v1.18.32
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+      && apt-get install -y --no-install-recommends git ca-certificates tzdata \
+      && rm -rf /var/lib/apt/lists/* \
+      && useradd -m -u 1000 -s /bin/bash worker
+# release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
+ADD https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /tmp/opencode.tar.gz
+RUN echo "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b  /tmp/opencode.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
+      && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
+      && rm /tmp/opencode.tar.gz /tmp/opencode
+USER 1000:1000
+ENV HOME=/home/worker
+WORKDIR /workspace
+ENTRYPOINT ["opencode"]
