@@ -64,7 +64,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:72cc1e4cf2546284ff8c857aa1c3e2bae5b468a532d4de14f1719b018cbbb9f5
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:51d80a672b4178487151d6959244430bc8045539196f170c7611bc34208b63e2
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}]
         env:
