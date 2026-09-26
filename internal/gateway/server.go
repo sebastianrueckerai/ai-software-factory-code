@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 )
 
@@ -54,6 +56,7 @@ type Server struct {
 	http       *http.Client
 	mu         sync.Mutex
 	keysByTask map[string]cachedKey
+	mints      singleflight.Group
 }
 
 func NewServer(opts ServerOptions) *Server {
@@ -92,15 +95,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, id.TaskID, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
 		return
 	}
-	var chatReq struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &chatReq); err != nil {
-		s.refuse(w, id.TaskID, "refused_body", "request body is not JSON", "", http.StatusBadRequest, "invalid_request_error")
+	chatReq, err := parseChat(body)
+	if err != nil {
+		s.refuse(w, id.TaskID, "refused_body", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
 		return
 	}
-
 	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
 	if err != nil {
 		s.refuse(w, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
@@ -121,10 +120,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if chatReq.Stream {
-		if body, err = withStreamUsage(body); err != nil {
+		if err := withStreamUsage(chatReq.fields); err != nil {
 			s.refuse(w, id.TaskID, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 			return
 		}
+	}
+	if body, err = json.Marshal(chatReq.fields); err != nil {
+		s.refuse(w, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		return
 	}
 
 	key, err := s.keyFor(ctx, task, id.SAUID)
@@ -136,25 +139,47 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.proxy(w, r, task, key, body, chatReq.Model, chatReq.Stream)
 }
 
+type chatRequest struct {
+	Model  string
+	Stream bool
+	fields map[string]json.RawMessage
+}
+
+// parseChat reads model and stream by exact key, as LiteLLM does (Go's
+// struct decoding would also match "MODEL" or "Stream"). A repeated key keeps
+// its last value here, and the gateway forwards the re-encoded fields, so
+// the body LiteLLM parses holds each key once, with the value checked here.
+func parseChat(body []byte) (chatRequest, error) {
+	req := chatRequest{}
+	if err := json.Unmarshal(body, &req.fields); err != nil || req.fields == nil {
+		return req, errors.New("request body is not a JSON object")
+	}
+	if raw, ok := req.fields["model"]; ok {
+		if err := json.Unmarshal(raw, &req.Model); err != nil {
+			return req, errors.New("model is not a string")
+		}
+	}
+	if raw, ok := req.fields["stream"]; ok {
+		if err := json.Unmarshal(raw, &req.Stream); err != nil {
+			return req, errors.New("stream is not a boolean")
+		}
+	}
+	return req, nil
+}
+
 // withStreamUsage makes a streaming request end with a usage chunk, which
 // LiteLLM stamps with the call's cost: the only place a stream's cost shows.
-func withStreamUsage(body []byte) ([]byte, error) {
-	var req map[string]json.RawMessage
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, err
-	}
+func withStreamUsage(req map[string]json.RawMessage) error {
 	opts := map[string]json.RawMessage{}
 	if raw, ok := req["stream_options"]; ok && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &opts); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	opts["include_usage"] = json.RawMessage("true")
 	var err error
-	if req["stream_options"], err = json.Marshal(opts); err != nil {
-		return nil, err
-	}
-	return json.Marshal(req)
+	req["stream_options"], err = json.Marshal(opts)
+	return err
 }
 
 // keyFor returns the virtual key of the task's current run or mints one
@@ -162,17 +187,34 @@ func withStreamUsage(body []byte) ([]byte, error) {
 // budget_eur even if the gateway's own check lags. A requeue blocks the old
 // key and recreates the service account, so a new SA UID gets a new key.
 func (s *Server) keyFor(ctx context.Context, task Task, saUID string) (string, error) {
+	if key, ok := s.cachedKey(task.ID, saUID); ok {
+		return key, nil
+	}
+	// one mint per run at a time, and no task waits on another's mint
+	v, err, _ := s.mints.Do(task.ID+"\x00"+saUID, func() (any, error) {
+		if key, ok := s.cachedKey(task.ID, saUID); ok {
+			return key, nil
+		}
+		key, err := s.opts.Minter.Mint(context.WithoutCancel(ctx), task.ID, task.BudgetEUR-task.SpentEUR)
+		if err != nil {
+			return "", fmt.Errorf("mint virtual key: %w", err)
+		}
+		s.mu.Lock()
+		s.keysByTask[task.ID] = cachedKey{key: key, saUID: saUID}
+		s.mu.Unlock()
+		return key, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return v.(string), nil
+}
+
+func (s *Server) cachedKey(taskID, saUID string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.keysByTask[task.ID]; ok && c.saUID == saUID {
-		return c.key, nil
-	}
-	key, err := s.opts.Minter.Mint(ctx, task.ID, task.BudgetEUR-task.SpentEUR)
-	if err != nil {
-		return "", fmt.Errorf("mint virtual key: %w", err)
-	}
-	s.keysByTask[task.ID] = cachedKey{key: key, saUID: saUID}
-	return key, nil
+	c, ok := s.keysByTask[taskID]
+	return c.key, ok && c.saUID == saUID
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key string, body []byte, alias string, stream bool) {
@@ -246,22 +288,36 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 	s.audit(task.ID, "allowed", reason, alias, &spend)
 }
 
+// maxSSELine bounds what usageScanner buffers of one line. The usage chunk
+// is small; a longer line is content, passed through but not inspected.
+const maxSSELine = 1 << 20
+
 // usageScanner watches an SSE stream for the usage chunk's cost.
 type usageScanner struct {
-	pending []byte
-	cost    float64
-	seen    bool
+	pending  []byte
+	skipping bool // the current line outgrew maxSSELine
+	cost     float64
+	seen     bool
 }
 
 func (u *usageScanner) Write(p []byte) (int, error) {
-	u.pending = append(u.pending, p...)
+	n := len(p)
 	for {
-		i := bytes.IndexByte(u.pending, '\n')
+		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
-			return len(p), nil
+			if !u.skipping {
+				u.pending = append(u.pending, p...)
+				if len(u.pending) > maxSSELine {
+					u.pending, u.skipping = nil, true
+				}
+			}
+			return n, nil
 		}
-		u.line(u.pending[:i])
-		u.pending = u.pending[i+1:]
+		if !u.skipping {
+			u.line(append(u.pending, p[:i]...))
+		}
+		u.pending, u.skipping = u.pending[:0], false
+		p = p[i+1:]
 	}
 }
 

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // memStore is the in-memory Store fake for tests only.
@@ -84,12 +86,19 @@ type fakeMinter struct {
 	mu    sync.Mutex
 	calls []mintCall
 	err   error
+	hold  map[string]chan struct{} // a task's mint waits until its channel closes
 }
 
 func (f *fakeMinter) Mint(_ context.Context, taskID string, maxBudget float64) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, mintCall{taskID, maxBudget})
+	hold := f.hold[taskID]
+	f.mu.Unlock()
+	if hold != nil {
+		<-hold
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.err != nil {
 		return "", f.err
 	}
@@ -152,7 +161,8 @@ func (s *stubUpstream) seen() (auths, bodies, paths []string) {
 }
 
 func chatBody(model string) string {
-	return fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]}`, model)
+	// keys in encoding/json order, so the forwarded re-encoding is byte-identical
+	return fmt.Sprintf(`{"messages":[{"role":"user","content":"hi"}],"model":%q}`, model)
 }
 
 func doChat(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
@@ -193,6 +203,7 @@ func TestChatCompletions(t *testing.T) {
 		wantMintBudget  *float64
 		wantNoMint      bool
 		wantUpstreamHit int
+		wantAlias       string // "" = don't check
 	}{
 		{
 			name:         "no or invalid jwt refuses 401",
@@ -359,6 +370,79 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			name:            "a case variant of stream does not turn a stream into a plain call",
+			task:            &runningTask,
+			reqBody:         `{"model":"coding-frontier","stream":true,"STREAM":false,"messages":[]}`,
+			resp:            stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream", "x-litellm-response-cost": "0.0"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamReq: `{"STREAM":false,"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
+			wantSpent:       ptr(2.25),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:            "a repeated stream key counts by its last value and is forwarded once",
+			task:            &runningTask,
+			reqBody:         `{"model":"coding-frontier","stream":false,"messages":[],"stream":true}`,
+			resp:            stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream", "x-litellm-response-cost": "0.0"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
+			wantSpent:       ptr(2.25),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:            "the audited model is the exact-case key LiteLLM calls",
+			task:            &runningTask,
+			reqBody:         `{"Model":"review-frontier","model":"coding-cheap","messages":[]}`,
+			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamReq: `{"Model":"review-frontier","messages":[],"model":"coding-cheap"}`,
+			wantSpent:       ptr(2.5),
+			wantUpstreamHit: 1,
+			wantAlias:       "coding-cheap",
+		},
+		{
+			name:            "a repeated model key counts by its last value and is forwarded once",
+			task:            &runningTask,
+			reqBody:         `{"model":"review-frontier","messages":[],"model":"coding-cheap"}`,
+			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamReq: `{"messages":[],"model":"coding-cheap"}`,
+			wantSpent:       ptr(2.5),
+			wantUpstreamHit: 1,
+			wantAlias:       "coding-cheap",
+		},
+		{
+			name:         "a non-boolean stream refuses 400",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","stream":"yes","messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "a non-string model refuses 400",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":7,"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "a JSON array body refuses 400",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `[{"model":"coding-cheap"}]`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
 			name:            "missing cost header leaves spent untouched",
 			task:            &runningTask,
 			reqBody:         chatBody("coding-frontier"),
@@ -477,6 +561,9 @@ func TestChatCompletions(t *testing.T) {
 				}
 			}
 
+			if tt.wantAlias != "" && last.ModelAlias != tt.wantAlias {
+				t.Fatalf("audited model = %q, want %q", last.ModelAlias, tt.wantAlias)
+			}
 			if tt.wantUpstreamHit > 0 && last.Decision == "allowed" {
 				if last.ModelAlias == "" {
 					t.Fatalf("allowed audit row missing model alias: %+v", last)
@@ -525,6 +612,92 @@ func TestKeyCachedPerTask(t *testing.T) {
 // A requeued task runs under a recreated service account; its old key was
 // blocked at requeue, so the gateway must mint a fresh one capped at what is
 // left of the budget.
+// A slow mint for one task must not hold up another task's calls, and
+// concurrent calls of one run share a single mint.
+func TestKeyMintsDoNotSerializeTasks(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
+	store := newMemStore(
+		Task{ID: "slow", BudgetEUR: 10, Status: "running"},
+		Task{ID: "fast", BudgetEUR: 10, Status: "running"},
+	)
+	release := make(chan struct{})
+	minter := &fakeMinter{hold: map[string]chan struct{}{"slow": release}}
+	auth := authByTask{}
+	s := NewServer(ServerOptions{Auth: auth, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	h := s.Routes("test")
+
+	slowDone := make(chan int, 3)
+	for range 3 {
+		go func() {
+			r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
+			r.Header.Set("X-Task", "slow")
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, r)
+			slowDone <- rr.Code
+		}()
+	}
+	for len(minter.mintCalls()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+
+	fast := make(chan int, 1)
+	go func() {
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
+		r.Header.Set("X-Task", "fast")
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		fast <- rr.Code
+	}()
+	select {
+	case code := <-fast:
+		if code != http.StatusOK {
+			t.Fatalf("fast task status = %d", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("fast task waited on the slow task's mint")
+	}
+
+	close(release)
+	for range 3 {
+		if code := <-slowDone; code != http.StatusOK {
+			t.Fatalf("slow task status = %d", code)
+		}
+	}
+	slowMints := 0
+	for _, c := range minter.mintCalls() {
+		if c.taskID == "slow" {
+			slowMints++
+		}
+	}
+	if slowMints != 1 {
+		t.Fatalf("slow task mints = %d, want 1 shared by its 3 calls", slowMints)
+	}
+}
+
+// authByTask maps the X-Task header to a task identity with a fixed SA UID.
+type authByTask struct{}
+
+func (authByTask) Authenticate(r *http.Request) (Identity, error) {
+	id := r.Header.Get("X-Task")
+	return Identity{Subject: "system:serviceaccount:factory:task-" + id, Namespace: "factory", TaskID: id, SAUID: "uid-" + id}, nil
+}
+
+func TestUsageScannerBoundsItsBuffer(t *testing.T) {
+	u := &usageScanner{}
+	chunk := bytes.Repeat([]byte("x"), 64<<10)
+	for range 40 { // 2.5 MiB of one line
+		u.Write(chunk)
+		if len(u.pending) > maxSSELine {
+			t.Fatalf("pending = %d bytes, want at most %d", len(u.pending), maxSSELine)
+		}
+	}
+	u.Write([]byte("\ndata: {\"usage\":{\"cost\":0.25}}\n"))
+	if !u.seen || u.cost != 0.25 {
+		t.Fatalf("cost = %v seen = %v, want the usage after the long line: 0.25", u.cost, u.seen)
+	}
+}
+
 func TestKeyRemintedForNewServiceAccount(t *testing.T) {
 	stub := newStubUpstream(t)
 	store := newMemStore(Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
