@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -304,6 +304,18 @@ func TestOpencodePrepareRejectsHeadroomlessBudget(t *testing.T) {
 	}
 }
 
+// running reports a live, non-zombie process: an orphan's reaper may be a
+// container init that never reaps.
+func running(pid int) bool {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// the state field follows the parenthesized command name
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	return len(fields) > 0 && fields[0] != "Z"
+}
+
 // Whatever the agent leaves running must die with the session: one
 // leftover still holds opencode's stdout, one has let go of it.
 func TestOpencodeRunKillsLeftoverProcesses(t *testing.T) {
@@ -339,7 +351,7 @@ echo $! > `+dir+`/detached.pid
 		}
 		pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
 		deadline := time.Now().Add(5 * time.Second)
-		for syscall.Kill(pid, 0) == nil {
+		for running(pid) {
 			if time.Now().After(deadline) {
 				t.Fatalf("%s (pid %d) still alive after Run", name, pid)
 			}
