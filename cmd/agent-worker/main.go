@@ -62,19 +62,9 @@ func run(log func(string, ...any)) int {
 		log("clone: %v", err)
 		return 1
 	}
-	// the adapter writes brief.json into the work tree; it must never be committed
-	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
-		log("exclude brief.json: %v", err)
-		return 1
-	}
-	if env.repoSHA != "" {
-		if err := env.gitRun(repoDir, "checkout", env.repoSHA); err != nil {
-			log("checkout %s: %v", env.repoSHA, err)
-			return 1
-		}
-	}
-	if err := env.gitRun(repoDir, "checkout", "-B", env.branch); err != nil {
-		log("branch %s: %v", env.branch, err)
+	base, err := prepareRepo(repoDir, env)
+	if err != nil {
+		log("prepare repo: %v", err)
 		return 1
 	}
 
@@ -106,7 +96,7 @@ func run(log func(string, ...any)) int {
 	res := oc.Run(ctx, brief, emit)
 
 	if res.Success {
-		commit, err := commitAndPush(repoDir, env)
+		commit, err := commitAndPush(repoDir, env, base)
 		if err != nil {
 			res = harness.Result{Success: false, Summary: "push failed: " + err.Error()}
 		} else if commit != "" {
@@ -197,13 +187,9 @@ func (e workerEnv) git(dir string, args ...string) (string, error) {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(os.Environ(),
-		"GIT_CONFIG_COUNT=3",
-		"GIT_CONFIG_KEY_0=user.name",
-		"GIT_CONFIG_VALUE_0=factory-agent",
-		"GIT_CONFIG_KEY_1=user.email",
-		"GIT_CONFIG_VALUE_1=factory-agent@factory.local",
-		"GIT_CONFIG_KEY_2=http.extraHeader",
-		"GIT_CONFIG_VALUE_2="+e.authHeader(),
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0="+e.authHeader(),
 		"GIT_TERMINAL_PROMPT=0",
 	)
 	out, err := cmd.CombinedOutput()
@@ -220,16 +206,51 @@ func (e workerEnv) git(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// commitAndPush commits everything the adapter changed and pushes the task
-// branch. Returns the pushed commit, empty when there was nothing to commit.
-func commitAndPush(repoDir string, e workerEnv) (string, error) {
+// prepareRepo puts the clone on the task branch at the task SHA and returns
+// that base commit. The commit identity goes into the repo config so the
+// agent's own commits carry it too.
+func prepareRepo(repoDir string, e workerEnv) (string, error) {
+	// the adapter writes brief.json into the work tree; it must never be committed
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
+		return "", err
+	}
+	steps := [][]string{{"config", "user.name", "factory-agent"}, {"config", "user.email", "factory-agent@factory.local"}}
+	if e.repoSHA != "" {
+		steps = append(steps, []string{"checkout", "-q", e.repoSHA})
+	}
+	steps = append(steps, []string{"checkout", "-q", "-B", e.branch})
+	for _, args := range steps {
+		if err := e.gitRun(repoDir, args...); err != nil {
+			return "", err
+		}
+	}
+	return e.git(repoDir, "rev-parse", "HEAD")
+}
+
+// commitAndPush commits whatever the agent left uncommitted and pushes the
+// task branch if it moved past base, the agent's own commits included.
+// Returns the pushed commit, empty when there was nothing to push.
+func commitAndPush(repoDir string, e workerEnv, base string) (string, error) {
 	status, err := e.git(repoDir, "status", "--porcelain")
 	if err != nil {
 		return "", err
 	}
-	if status == "" {
-		return "", nil
+	if status != "" {
+		if err := commitAll(repoDir, e); err != nil {
+			return "", err
+		}
 	}
+	commit, err := e.git(repoDir, "rev-parse", "HEAD")
+	if err != nil || commit == base {
+		return "", err
+	}
+	if err := e.gitRun(repoDir, "push", "origin", "HEAD:refs/heads/"+e.branch); err != nil {
+		return "", err
+	}
+	return commit, nil
+}
+
+func commitAll(repoDir string, e workerEnv) error {
 	subject := e.objective
 	if i := strings.IndexAny(subject, "\r\n"); i >= 0 {
 		subject = subject[:i]
@@ -238,17 +259,7 @@ func commitAndPush(repoDir string, e workerEnv) (string, error) {
 		subject = subject[:72]
 	}
 	if err := e.gitRun(repoDir, "add", "-A"); err != nil {
-		return "", err
+		return err
 	}
-	if err := e.gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject)); err != nil {
-		return "", err
-	}
-	commit, err := e.git(repoDir, "rev-parse", "HEAD")
-	if err != nil {
-		return "", err
-	}
-	if err := e.gitRun(repoDir, "push", "origin", "HEAD:refs/heads/"+e.branch); err != nil {
-		return "", err
-	}
-	return commit, nil
+	return e.gitRun(repoDir, "commit", "-m", fmt.Sprintf("factory task %s: %s", e.taskID, subject))
 }
