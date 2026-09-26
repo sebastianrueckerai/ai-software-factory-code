@@ -6,4 +6,5 @@ resources:
 - database.yaml
 - serviceaccount.yaml
 - deployment.yaml
+- factoryd.yaml
 - service.yaml

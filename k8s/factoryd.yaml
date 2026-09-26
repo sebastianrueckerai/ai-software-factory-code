@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factoryd
+  namespace: factory
+---
+# Cluster-wide because every task gets its own namespace: factoryd creates
+# and tears down namespaces, pods, secrets, service accounts and CNPs in
+# them, and lists agent namespaces by label for the boot sweep.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factoryd
+rules:
+- apiGroups: [""]
+  resources: [namespaces]
+  verbs: [create, delete, get, list]
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [create, delete, get]
+- apiGroups: [""]
+  resources: [pods/log]
+  verbs: [get]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [create, get]
+- apiGroups: [""]
+  resources: [serviceaccounts]
+  verbs: [create, get]
+- apiGroups: [cilium.io]
+  resources: [ciliumnetworkpolicies]
+  verbs: [create, get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factoryd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factoryd
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factoryd
+  namespace: factory
+  labels: {app: factoryd}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: factoryd}}
+  template:
+    metadata:
+      labels: {app: factoryd}
+    spec:
+      serviceAccountName: factoryd
+      automountServiceAccountToken: true
+      imagePullSecrets:
+      - name: forgejo-registry
+      containers:
+      - name: factoryd
+        # same image as the gateway; the deployment picks the other binary
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:72cc1e4cf2546284ff8c857aa1c3e2bae5b468a532d4de14f1719b018cbbb9f5
+        command: [factoryd]
+        ports: [{name: http, containerPort: 8080}]
+        env:
+        - name: FACTORYD_DATABASE_URL
+          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
+        - name: PGUSER
+          valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
+        - name: PGPASSWORD
+          valueFrom: {secretKeyRef: {name: factory-db-creds, key: password}}
+        - name: FORGEJO_BOT_USER
+          value: factory-agent
+        - name: FORGEJO_BOT_PASSWORD
+          valueFrom: {secretKeyRef: {name: forgejo-bot-creds, key: password}}
+        - name: LITELLM_MASTER_KEY
+          valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
+        - name: S3_ENDPOINT
+          value: https://fsn1.your-objectstorage.com
+        - name: S3_BUCKET
+          value: aisoftwarefactory-sessions
+        - name: S3_ACCESS_KEY_ID
+          valueFrom: {secretKeyRef: {name: factory-s3-creds, key: access-key-id}}
+        - name: S3_SECRET_ACCESS_KEY
+          valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
+        - name: WORKER_IMAGE
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:0ef51aa2cbb05ac45e39c1e114769da2c45a6737e5ac5d277af1931bbdd91006
+        - name: GATEWAY_URL
+          value: http://factory-gateway.factory.svc:8081
+        readinessProbe: {httpGet: {path: /readyz, port: http}}
+        livenessProbe: {httpGet: {path: /, port: http}}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: factoryd
+  namespace: factory
+  labels: {app: factoryd}
+spec:
+  selector: {app: factoryd}
+  ports: [{name: http, port: 8080, targetPort: http}]
