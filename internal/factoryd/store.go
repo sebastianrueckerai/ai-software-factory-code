@@ -201,6 +201,9 @@ func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
 	if err != nil {
 		return err
 	}
+	if restart == nil {
+		restart = []byte("{}") // NOT NULL column; a fresh session has no restart state
+	}
 	var created any
 	if sess.CreatedAt.IsZero() {
 		created = nil

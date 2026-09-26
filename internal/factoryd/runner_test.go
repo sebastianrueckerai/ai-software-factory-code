@@ -526,6 +526,7 @@ func TestRunnerBootSweep(t *testing.T) {
 	t.Cleanup(ll.Close)
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t9", Status: "running", Repository: "sf/repo", Objective: "x"})
+	store.CreateTask(context.Background(), Task{ID: "tclosing", Status: "closing", Repository: "sf/repo", Objective: "z"})
 	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo", Objective: "y"})
 	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL}}
@@ -539,6 +540,10 @@ func TestRunnerBootSweep(t *testing.T) {
 	t9, _, _ := store.Task(context.Background(), "t9")
 	if t9.Status != "failed" {
 		t.Fatalf("interrupted task status = %q, want failed", t9.Status)
+	}
+	tc, _, _ := store.Task(context.Background(), "tclosing")
+	if tc.Status != "failed" {
+		t.Fatalf("stuck-closing task status = %q, want failed (sweep finishes the cleanup)", tc.Status)
 	}
 	if _, ok := kube.namespaces["factory-agents-t9"]; ok {
 		t.Fatal("interrupted task's namespace survived the sweep")

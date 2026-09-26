@@ -92,16 +92,21 @@ func (r *Runner) Run(ctx context.Context) {
 // failed (their namespaces die, their credentials get revoked), and
 // namespaces whose task no longer needs one are deleted.
 func (r *Runner) BootSweep(ctx context.Context) {
-	stuck, err := r.store.ListTasksByStatus(ctx, "running")
-	if err != nil {
-		log.Printf("boot sweep: list running: %v", err)
-	}
-	for _, t := range stuck {
-		r.forgetNamespace(ctx, t.ID)
-		if err := r.completion.Complete(ctx, t.ID, "failed"); err != nil {
-			log.Printf("boot sweep: task %s: %v", t.ID, err)
-		} else {
-			log.Printf("boot sweep: task %s failed (interrupted run)", t.ID)
+	// A crash leaves tasks running (interrupted) or closing (cleanup was
+	// already underway and failed); Complete is idempotent, so both are
+	// finished the same way.
+	for _, status := range []string{"running", "closing"} {
+		stuck, err := r.store.ListTasksByStatus(ctx, status)
+		if err != nil {
+			log.Printf("boot sweep: list %s: %v", status, err)
+		}
+		for _, t := range stuck {
+			r.forgetNamespace(ctx, t.ID)
+			if err := r.completion.Complete(ctx, t.ID, "failed"); err != nil {
+				log.Printf("boot sweep: task %s: %v", t.ID, err)
+			} else {
+				log.Printf("boot sweep: task %s failed (interrupted run)", t.ID)
+			}
 		}
 	}
 	live, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
