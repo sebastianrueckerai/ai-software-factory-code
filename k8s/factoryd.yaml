@@ -68,12 +68,12 @@ spec:
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}]
         env:
-        - name: FACTORYD_DATABASE_URL
-          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
         - name: PGUSER
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
         - name: PGPASSWORD
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: password}}
+        - name: FACTORYD_DATABASE_URL
+          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
         - name: FORGEJO_BOT_USER
           value: factory-agent
         - name: FORGEJO_BOT_PASSWORD
