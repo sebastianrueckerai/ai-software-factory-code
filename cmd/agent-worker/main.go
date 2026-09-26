@@ -212,9 +212,12 @@ func (e workerEnv) authHeader() string {
 }
 
 // safeGit is prepended to every worker git command: agent-planted hooks and
-// fsmonitor never run, and "-c" reaches every nested git through
-// GIT_CONFIG_PARAMETERS.
+// fsmonitor never run. "-c" reaches nested gits through GIT_CONFIG_PARAMETERS,
+// except upload-pack on a local fetch: git clears that variable for it, so
+// uploadPack puts the flags on its command line.
 var safeGit = []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
+
+var uploadPack = "--upload-pack=git " + strings.Join(safeGit, " ") + " upload-pack"
 
 // git runs a token-free git command. HOME is agent-writable, so global and
 // system config are ignored.
@@ -308,7 +311,7 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
 		return "", err
 	}
-	if _, err := e.git(own, "fetch", "-q", "--no-tags", agentRepo, "+HEAD:refs/heads/agent"); err != nil {
+	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent"); err != nil {
 		return "", err
 	}
 	head, err := e.git(own, "rev-parse", "refs/heads/agent")
@@ -332,7 +335,22 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if err := killAgent(); err != nil {
 		return "", fmt.Errorf("stop agent processes: %w", err)
 	}
-	if err := e.gitAuth(own, "push", "-q", e.repoURL, head+":refs/heads/"+e.branch); err != nil {
+	// The fetch ran upload-pack under the agent's repo config, so the worker
+	// repo's config is not trusted either: the token-bearing push runs from a
+	// bare repo made after every agent process is dead, borrowing the worker
+	// repo's objects only.
+	send, err := os.MkdirTemp(filepath.Dir(agentRepo), ".send-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(send)
+	if _, err := e.git("", "init", "-q", "--bare", send); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o644); err != nil {
+		return "", err
+	}
+	if err := e.gitAuth("", "--git-dir="+send, "push", "-q", e.repoURL, head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil

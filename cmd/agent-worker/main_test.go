@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -190,7 +193,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
 	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", gitToken: "s3cret-tok"}
-	var pushes, refused int
+	var pushes, refused, spyHeaders int
 	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Basic auth for x-access-token:s3cret-tok, base64 derived by hand
@@ -202,6 +205,9 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 		}
 		if strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
 			pushes++
+		}
+		if r.Header.Get("X-Spy") != "" {
+			spyHeaders++
 		}
 		git.ServeHTTP(w, r)
 	}))
@@ -249,12 +255,37 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=spy diff=spy\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644)
 
+	// git traces the effective hooksPath and fsmonitor of every process,
+	// including the upload-pack side of the worker's fetch from the agent repo
+	trace := filepath.Join(t.TempDir(), "trace.json")
+	t.Setenv("GIT_TRACE2_EVENT", trace)
+	t.Setenv("GIT_TRACE2_CONFIG_PARAMS", "core.hooksPath,core.fsmonitor")
+
 	killed := false
 	commit, err := commitAndPush(dir, e, base, func() error {
 		if pushes != 0 {
 			t.Error("push ran before the agent was killed")
 		}
 		killed = true
+		// the worker repo's config as a process running during the fetch could leave it
+		own, _ := filepath.Glob(filepath.Join(filepath.Dir(dir), ".push-*"))
+		if len(own) != 1 {
+			t.Fatalf("worker repos = %v, want one", own)
+		}
+		spyHeader := filepath.Join(t.TempDir(), "header.cfg")
+		os.WriteFile(spyHeader, []byte("[http]\n\textraHeader = X-Spy: 1\n"), 0o644)
+		cfg, err := os.OpenFile(filepath.Join(own[0], ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n\tsshCommand = %s\n"+
+			"[credential]\n\thelper = !%s\n[http]\n\tproxy = http://127.0.0.1:1\n\textraHeader = X-Spy: 1\n"+
+			"[include]\n\tpath = %s\n[url \"http://127.0.0.1:1/\"]\n\tinsteadOf = %s/\n",
+			hooks, spy, spy, spy, spyHeader, srv.URL)
+		cfg.Close()
+		for _, h := range []string{"pre-push", "reference-transaction"} {
+			os.WriteFile(filepath.Join(own[0], ".git", "hooks", h), []byte("#!/bin/sh\n"+spy+" </dev/null\n"), 0o755)
+		}
 		return nil
 	})
 	if err != nil {
@@ -266,8 +297,46 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	if b, err := os.ReadFile(spyLog); err == nil {
 		t.Fatalf("an agent-planted program ran (token in its env: %v)", strings.Contains(string(b), "czNjcmV0LXRvaw") || strings.Contains(string(b), "s3cret-tok"))
 	}
-	if pushes != 1 || refused != 0 {
-		t.Fatalf("pushes = %d, refused = %d, want one authenticated push", pushes, refused)
+	if pushes != 1 || refused != 0 || spyHeaders != 0 {
+		t.Fatalf("pushes = %d, refused = %d, spy headers = %d, want one authenticated push", pushes, refused, spyHeaders)
+	}
+	// every git process, the fetch's pack-objects in the agent repo among
+	// them, ends with hooks at /dev/null and fsmonitor off
+	f, err := os.Open(trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	last := map[string]string{}
+	packObjects := map[string]bool{}
+	for sc := bufio.NewScanner(f); sc.Scan(); {
+		var ev struct {
+			Event, Sid, Param, Value string
+			Argv                     []string
+		}
+		json.Unmarshal(sc.Bytes(), &ev)
+		switch ev.Event {
+		case "start":
+			if len(ev.Argv) > 1 && ev.Argv[1] == "pack-objects" {
+				packObjects[ev.Sid] = true
+			}
+		case "def_param":
+			last[ev.Sid+" "+ev.Param] = ev.Value
+		}
+	}
+	if len(packObjects) == 0 {
+		t.Fatal("trace shows no pack-objects: the fetch's upload-pack side was not traced")
+	}
+	for sid := range packObjects {
+		if last[sid+" core.hookspath"] != "/dev/null" || last[sid+" core.fsmonitor"] != "false" {
+			t.Fatalf("pack-objects under upload-pack: hooksPath = %q, fsmonitor = %q, want /dev/null and false",
+				last[sid+" core.hookspath"], last[sid+" core.fsmonitor"])
+		}
+	}
+	for k, v := range last {
+		if strings.HasSuffix(k, " core.hookspath") && v != "/dev/null" || strings.HasSuffix(k, " core.fsmonitor") && v != "false" {
+			t.Fatalf("git process %s = %q", k, v)
+		}
 	}
 	if got := run("-C", remote, "rev-parse", "refs/heads/factory/t1"); got != commit {
 		t.Fatalf("remote branch = %s, want %s", got, commit)
