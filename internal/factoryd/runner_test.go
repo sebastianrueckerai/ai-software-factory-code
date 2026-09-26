@@ -25,6 +25,7 @@ type fakeKube struct {
 	deletedPods []string
 	deletedNs   []string
 	secrets     map[string]map[string]string // ns/name → data
+	secretTypes map[string]string            // ns/name → type
 	sourceData  map[string]map[string]string // read-only source secrets
 	cnps        map[string]map[string]any    // ns/name → spec
 }
@@ -39,11 +40,12 @@ type fakePod struct {
 
 func newFakeKube() *fakeKube {
 	return &fakeKube{
-		namespaces: map[string]map[string]string{},
-		pods:       map[string]*fakePod{},
-		secrets:    map[string]map[string]string{},
-		sourceData: map[string]map[string]string{},
-		cnps:       map[string]map[string]any{},
+		namespaces:  map[string]map[string]string{},
+		pods:        map[string]*fakePod{},
+		secrets:     map[string]map[string]string{},
+		secretTypes: map[string]string{},
+		sourceData:  map[string]map[string]string{},
+		cnps:        map[string]map[string]any{},
 	}
 }
 
@@ -85,10 +87,14 @@ func (k *fakeKube) CreateServiceAccount(ctx context.Context, namespace, name str
 	return nil
 }
 
-func (k *fakeKube) CreateSecret(ctx context.Context, namespace, name string, stringData map[string]string) error {
+func (k *fakeKube) CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error {
+	if secretType == "" {
+		secretType = "Opaque"
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.secrets[namespace+"/"+name] = stringData
+	k.secretTypes[namespace+"/"+name] = secretType
 	return nil
 }
 
@@ -329,6 +335,9 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	}
 	if kube.secrets[ns+"/task-git"]["GIT_TOKEN"] != "tok-task-t1" {
 		t.Fatalf("git token secret = %v", kube.secrets[ns+"/task-git"])
+	}
+	if typ := kube.secretTypes[ns+"/forgejo-registry"]; typ != "kubernetes.io/dockerconfigjson" {
+		t.Fatalf("copied pull secret type = %q, want kubernetes.io/dockerconfigjson (kubelet ignores Opaque)", typ)
 	}
 	if kube.secrets[ns+"/forgejo-registry"][".dockerconfigjson"] != "{}" {
 		t.Fatal("pull secret was not copied into the task namespace")

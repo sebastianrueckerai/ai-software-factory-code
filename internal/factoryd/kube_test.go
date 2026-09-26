@@ -123,7 +123,7 @@ func TestInClusterKubeWire(t *testing.T) {
 	if err := k.CreateServiceAccount(ctx, "factory-agents-t1", "task-t1"); err != nil {
 		t.Fatalf("CreateServiceAccount: %v", err)
 	}
-	if err := k.CreateSecret(ctx, "factory-agents-t1", "task-git", map[string]string{"GIT_TOKEN": "s3cret"}); err != nil {
+	if err := k.CreateSecret(ctx, "factory-agents-t1", "task-git", "", map[string]string{"GIT_TOKEN": "s3cret"}); err != nil {
 		t.Fatalf("CreateSecret: %v", err)
 	}
 	data, err := k.GetSecretData(ctx, "factory", "forgejo-registry")

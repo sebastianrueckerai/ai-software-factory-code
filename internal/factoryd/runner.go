@@ -345,7 +345,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) e
 			return r.kube.CreateCiliumNetworkPolicy(ctx, ns, "worker-egress", workerEgressSpec())
 		}},
 		{"git token secret", func() error {
-			return r.kube.CreateSecret(ctx, ns, "task-git", map[string]string{"GIT_TOKEN": tok.Secret})
+			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"GIT_TOKEN": tok.Secret})
 		}},
 		{"pull secret", func() error {
 			return r.copyPullSecret(ctx, ns)
@@ -367,7 +367,8 @@ func (r *Runner) copyPullSecret(ctx context.Context, ns string) error {
 	if err != nil {
 		return err
 	}
-	return r.kube.CreateSecret(ctx, ns, r.cfg.PullSecret, data)
+	// kubelet only honors a pull secret of the dockerconfigjson type
+	return r.kube.CreateSecret(ctx, ns, r.cfg.PullSecret, "kubernetes.io/dockerconfigjson", data)
 }
 
 func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {

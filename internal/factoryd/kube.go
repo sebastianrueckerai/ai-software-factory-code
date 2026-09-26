@@ -35,7 +35,7 @@ type Kube interface {
 	DeleteNamespace(ctx context.Context, name string) error
 	NamespacesByLabel(ctx context.Context, key, value string) ([]string, error)
 	CreateServiceAccount(ctx context.Context, namespace, name string) error
-	CreateSecret(ctx context.Context, namespace, name string, stringData map[string]string) error
+	CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
 	CreateCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error
 	CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error
@@ -114,11 +114,14 @@ func (k *InClusterKube) CreateServiceAccount(ctx context.Context, namespace, nam
 	return err
 }
 
-func (k *InClusterKube) CreateSecret(ctx context.Context, namespace, name string, stringData map[string]string) error {
+func (k *InClusterKube) CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error {
+	if secretType == "" {
+		secretType = "Opaque"
+	}
 	body := map[string]any{
 		"apiVersion": "v1", "kind": "Secret",
 		"metadata": map[string]any{"name": name, "namespace": namespace},
-		"type":     "Opaque", "stringData": stringData,
+		"type":     secretType, "stringData": stringData,
 	}
 	_, err := k.call(ctx, http.MethodPost, "/api/v1/namespaces/"+namespace+"/secrets", body, nil)
 	return err
