@@ -22,6 +22,18 @@ type Identity struct {
 	Subject   string // system:serviceaccount:<namespace>:task-<id>
 	Namespace string
 	TaskID    string
+	// SAUID is the service account's UID. A requeued task runs under a
+	// recreated account, so the UID tells its runs apart.
+	SAUID string
+}
+
+type saClaims struct {
+	jwt.RegisteredClaims
+	K8s struct {
+		ServiceAccount struct {
+			UID string `json:"uid"`
+		} `json:"serviceaccount"`
+	} `json:"kubernetes.io"`
 }
 
 const (
@@ -142,7 +154,7 @@ func (a *Auth) Verify(ctx context.Context, raw string) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
-	claims := &jwt.RegisteredClaims{}
+	claims := &saClaims{}
 	if _, err := jwt.ParseWithClaims(raw, claims, k.Keyfunc,
 		jwt.WithValidMethods([]string{"RS256"}),
 		jwt.WithIssuer(iss),
@@ -151,7 +163,15 @@ func (a *Auth) Verify(ctx context.Context, raw string) (Identity, error) {
 	); err != nil {
 		return Identity{}, fmt.Errorf("verify token: %w", err)
 	}
-	return taskIdentity(claims.Subject)
+	id, err := taskIdentity(claims.Subject)
+	if err != nil {
+		return Identity{}, err
+	}
+	if claims.K8s.ServiceAccount.UID == "" {
+		return Identity{}, errors.New("token has no service account uid")
+	}
+	id.SAUID = claims.K8s.ServiceAccount.UID
+	return id, nil
 }
 
 // keyfunc returns a cached JWKS client for the URL derived from the token's

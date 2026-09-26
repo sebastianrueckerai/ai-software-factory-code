@@ -34,7 +34,7 @@ type AuditRow struct {
 // The production implementation is Postgres; tests use an in-memory fake.
 type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
-	UpdateSpent(ctx context.Context, id string, spent float64) error
+	AddSpent(ctx context.Context, id string, cost float64) (float64, error)
 	InsertAudit(ctx context.Context, row AuditRow) error
 }
 
@@ -102,12 +102,17 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, true, nil
 }
 
-// UpdateSpent sets the task's cumulative spend. The value is absolute, not a
-// delta: it comes from the per-task virtual key's cumulative
-// x-litellm-key-spend plus the task spend at key mint time.
-func (s *PGStore) UpdateSpent(ctx context.Context, id string, spent float64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = $2 WHERE id = $1`, id, spent)
-	return err
+// AddSpent books one model call's cost onto the task and returns the new
+// total. The increment is atomic, so concurrent calls of one task add up.
+func (s *PGStore) AddSpent(ctx context.Context, id string, cost float64) (float64, error) {
+	var total float64
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1 RETURNING spent_eur::float8`, id, cost,
+	).Scan(&total)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("add spent: no task row for %s", id)
+	}
+	return total, err
 }
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {

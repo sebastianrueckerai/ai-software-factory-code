@@ -50,15 +50,21 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
 
-	if err := s.UpdateSpent(ctx, "t1", 2.5); err != nil {
-		t.Fatalf("UpdateSpent: %v", err)
+	if total, err := s.AddSpent(ctx, "t1", 0.5); err != nil || total != 2.5 {
+		t.Fatalf("AddSpent = (%v, %v), want (2.5, nil)", total, err)
+	}
+	if total, err := s.AddSpent(ctx, "t1", 0.25); err != nil || total != 2.75 {
+		t.Fatalf("second AddSpent = (%v, %v), want (2.75, nil)", total, err)
 	}
 	got, _, _ = s.Task(ctx, "t1")
-	if got.SpentEUR != 2.5 {
-		t.Fatalf("spent after update = %v, want 2.5", got.SpentEUR)
+	if got.SpentEUR != 2.75 {
+		t.Fatalf("spent after adds = %v, want 2.75", got.SpentEUR)
+	}
+	if _, err := s.AddSpent(ctx, "missing", 1); err == nil {
+		t.Fatal("AddSpent on a missing task succeeded, want an error")
 	}
 
-	spend := 2.5
+	spend := 2.75
 	if err := s.InsertAudit(ctx, AuditRow{
 		TaskID: "t1", Decision: "allowed", Reason: "", ModelAlias: "coding-cheap", SpendEUR: &spend,
 	}); err != nil {

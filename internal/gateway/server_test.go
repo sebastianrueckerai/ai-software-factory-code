@@ -36,11 +36,14 @@ func (m *memStore) Task(_ context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
-func (m *memStore) UpdateSpent(_ context.Context, id string, spent float64) error {
+func (m *memStore) AddSpent(_ context.Context, id string, cost float64) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.spends[id] = spent
-	return nil
+	t := m.tasks[id]
+	t.SpentEUR += cost
+	m.tasks[id] = t
+	m.spends[id] = t.SpentEUR
+	return t.SpentEUR, nil
 }
 
 func (m *memStore) InsertAudit(_ context.Context, row AuditRow) error {
@@ -90,7 +93,7 @@ func (f *fakeMinter) Mint(_ context.Context, taskID string, maxBudget float64) (
 	if f.err != nil {
 		return "", f.err
 	}
-	return "sk-task-key", nil
+	return fmt.Sprintf("sk-task-key-%d", len(f.calls)), nil
 }
 
 func (f *fakeMinter) mintCalls() []mintCall {
@@ -168,6 +171,7 @@ func TestChatCompletions(t *testing.T) {
 		Subject:   "system:serviceaccount:factory:task-42",
 		Namespace: "factory",
 		TaskID:    "42",
+		SAUID:     "sa-uid-1",
 	}
 
 	tests := []struct {
@@ -184,6 +188,7 @@ func TestChatCompletions(t *testing.T) {
 		wantDecision    string
 		wantErrType     string // "" = no error body expected
 		wantBody        string // "" = don't check
+		wantUpstreamReq string // "" = the client body forwarded verbatim
 		wantSpent       *float64
 		wantMintBudget  *float64
 		wantNoMint      bool
@@ -302,10 +307,13 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 0,
 		},
 		{
-			name:            "under budget proxies and harvests spend",
-			task:            &runningTask,
-			reqBody:         chatBody("coding-cheap"),
-			resp:            stubResp{status: http.StatusOK, body: `{"choices":[{"message":{"role":"assistant"}}]}`, headers: map[string]string{"x-litellm-key-spend": "0.5"}},
+			name:    "under budget proxies and books the call cost",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp: stubResp{status: http.StatusOK, body: `{"choices":[{"message":{"role":"assistant"}}]}`, headers: map[string]string{
+				"x-litellm-response-cost": "0.5",
+				"x-litellm-key-spend":     "7", // stale cache read: never booked
+			}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantBody:        `{"choices":[{"message":{"role":"assistant"}}]}`,
@@ -314,7 +322,44 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
-			name:            "missing spend header leaves spent untouched",
+			name:    "stream books the usage cost of the final chunk",
+			task:    &runningTask,
+			reqBody: `{"model":"coding-frontier","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+			resp: stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{
+				"Content-Type":            "text/event-stream",
+				"x-litellm-response-cost": "0.0",
+				"x-litellm-key-spend":     "0.0",
+			}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantBody:        sseBody,
+			wantUpstreamReq: `{"messages":[{"role":"user","content":"hi"}],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
+			wantSpent:       ptr(2.25),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:            "stream forces include_usage over the client's choice",
+			task:            &runningTask,
+			reqBody:         `{"model":"coding-frontier","stream":true,"stream_options":{"include_usage":false,"x":1},"messages":[]}`,
+			resp:            stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true,"x":1}}`,
+			wantSpent:       ptr(2.25),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:            "stream without a usage chunk leaves spent untouched",
+			task:            &runningTask,
+			reqBody:         `{"model":"coding-frontier","stream":true,"messages":[]}`,
+			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
+			resp:            stubResp{status: http.StatusOK, body: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", headers: map[string]string{"Content-Type": "text/event-stream"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantUpstreamHit: 1,
+		},
+		{
+			name:            "missing cost header leaves spent untouched",
 			task:            &runningTask,
 			reqBody:         chatBody("coding-frontier"),
 			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`},
@@ -417,14 +462,18 @@ func TestChatCompletions(t *testing.T) {
 				t.Fatalf("upstream hits = %d, want %d", len(auths), tt.wantUpstreamHit)
 			}
 			for i, a := range auths {
-				if a != "Bearer sk-task-key" {
+				if a != "Bearer sk-task-key-1" {
 					t.Fatalf("upstream auth[%d] = %q, want the minted virtual key", i, a)
 				}
 				if paths[i] != "/v1/chat/completions" {
 					t.Fatalf("upstream path[%d] = %q, want /v1/chat/completions", i, paths[i])
 				}
-				if bodies[i] != tt.reqBody {
-					t.Fatalf("upstream body[%d] = %q, want the client body forwarded verbatim", i, bodies[i])
+				want := tt.wantUpstreamReq
+				if want == "" {
+					want = tt.reqBody
+				}
+				if bodies[i] != want {
+					t.Fatalf("upstream body[%d] = %q, want %q", i, bodies[i], want)
 				}
 			}
 
@@ -442,17 +491,17 @@ func TestKeyCachedPerTask(t *testing.T) {
 	store := newMemStore(Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
-		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42"}},
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
 		Store:      store,
 		Minter:     minter,
 		LiteLLMURL: stub.URL,
 	})
 
-	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-key-spend": "0.5"}})
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
 		t.Fatalf("first call status = %d", rr.Code)
 	}
-	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-key-spend": "0.7"}})
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.25"}})
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
 		t.Fatalf("second call status = %d", rr.Code)
 	}
@@ -460,12 +509,46 @@ func TestKeyCachedPerTask(t *testing.T) {
 	if calls := minter.mintCalls(); len(calls) != 1 {
 		t.Fatalf("mint calls = %d, want 1 (key cached per task)", len(calls))
 	}
-	if spent, ok := store.spentOf("42"); !ok || spent != 2.7 {
-		t.Fatalf("spent = (%v, %v), want (2.7, true): base 2 + key spend 0.7", spent, ok)
+	if spent, ok := store.spentOf("42"); !ok || spent != 2.75 {
+		t.Fatalf("spent = (%v, %v), want (2.75, true): 2 + 0.5 + 0.25", spent, ok)
 	}
 	auths, _, _ := stub.seen()
-	if len(auths) != 2 || auths[0] != "Bearer sk-task-key" || auths[1] != "Bearer sk-task-key" {
+	if len(auths) != 2 || auths[0] != "Bearer sk-task-key-1" || auths[1] != "Bearer sk-task-key-1" {
 		t.Fatalf("upstream auths = %v, want the same cached key twice", auths)
+	}
+	audits := store.auditRows()
+	if n := len(audits); n != 2 || *audits[1].SpendEUR != 2.75 {
+		t.Fatalf("audits = %+v, want 2 rows, the last at spend 2.75", audits)
+	}
+}
+
+// A requeued task runs under a recreated service account; its old key was
+// blocked at requeue, so the gateway must mint a fresh one capped at what is
+// left of the budget.
+func TestKeyRemintedForNewServiceAccount(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore(Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	minter := &fakeMinter{}
+	id := Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
+
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("first run status = %d", rr.Code)
+	}
+	id.SAUID = "sa-uid-2"
+	s.opts.Auth = fakeAuth{id: id}
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("second run status = %d", rr.Code)
+	}
+
+	calls := minter.mintCalls()
+	if len(calls) != 2 || calls[0].maxBudget != 8 || calls[1].maxBudget != 7.5 {
+		t.Fatalf("mint calls = %+v, want budgets 8 (10-2) then 7.5 (10-2.5)", calls)
+	}
+	auths, _, _ := stub.seen()
+	if len(auths) != 2 || auths[0] != "Bearer sk-task-key-1" || auths[1] != "Bearer sk-task-key-2" {
+		t.Fatalf("upstream auths = %v, want the first key then the re-minted one", auths)
 	}
 }
 
@@ -542,3 +625,7 @@ func TestRoutes(t *testing.T) {
 }
 
 func ptr(f float64) *float64 { return &f }
+
+const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+	"data: {\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":0.25}}\n\n" +
+	"data: [DONE]\n\n"

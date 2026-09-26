@@ -49,6 +49,7 @@ type tokenOpts struct {
 	iss   string
 	aud   any // string or []string
 	sub   string
+	saUID string // "" = claim absent
 	exp   time.Time
 	noExp bool
 	alg   jwt.SigningMethod
@@ -121,13 +122,14 @@ func newAuthFixture(t *testing.T) *authFixture {
 func (f *authFixture) mint(t *testing.T, mod func(*tokenOpts)) string {
 	t.Helper()
 	o := tokenOpts{
-		key: f.signKey,
-		kid: "test-key-1",
-		iss: f.iss,
-		aud: testAudience,
-		sub: "system:serviceaccount:factory:task-42",
-		exp: time.Now().Add(time.Hour),
-		alg: jwt.SigningMethodRS256,
+		key:   f.signKey,
+		kid:   "test-key-1",
+		iss:   f.iss,
+		aud:   testAudience,
+		sub:   "system:serviceaccount:factory:task-42",
+		saUID: "sa-uid-1",
+		exp:   time.Now().Add(time.Hour),
+		alg:   jwt.SigningMethodRS256,
 	}
 	if mod != nil {
 		mod(&o)
@@ -144,6 +146,12 @@ func mintToken(t *testing.T, o tokenOpts) string {
 	}
 	if o.aud != nil {
 		claims["aud"] = o.aud
+	}
+	if o.saUID != "" {
+		claims["kubernetes.io"] = map[string]any{
+			"namespace":      "factory",
+			"serviceaccount": map[string]any{"name": "task-42", "uid": o.saUID},
+		}
 	}
 	if !o.noExp {
 		claims["exp"] = o.exp.Unix()
@@ -194,6 +202,7 @@ func TestAuthenticate(t *testing.T) {
 				Subject:   "system:serviceaccount:factory:task-42",
 				Namespace: "factory",
 				TaskID:    "42",
+				SAUID:     "sa-uid-1",
 			},
 		},
 		{
@@ -205,7 +214,14 @@ func TestAuthenticate(t *testing.T) {
 				Subject:   "system:serviceaccount:factory:task-42",
 				Namespace: "factory",
 				TaskID:    "42",
+				SAUID:     "sa-uid-1",
 			},
+		},
+		{
+			name:    "service account uid missing",
+			req:     bearerRequest(f.mint(t, func(o *tokenOpts) { o.saUID = "" })),
+			wantErr: "uid",
+			fails:   true,
 		},
 		{
 			name:    "expired",
@@ -421,7 +437,7 @@ func TestKeyfuncCacheBoundedAndKeyedByURL(t *testing.T) {
 	token := func(iss string) string {
 		return mintToken(t, tokenOpts{
 			key: signKey, kid: "test-key-1", iss: iss, aud: testAudience,
-			sub: "system:serviceaccount:factory:task-42",
+			sub: "system:serviceaccount:factory:task-42", saUID: "sa-uid-1",
 			exp: time.Now().Add(time.Hour), alg: jwt.SigningMethodRS256,
 		})
 	}

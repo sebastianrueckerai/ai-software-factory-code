@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -44,8 +45,8 @@ type ServerOptions struct {
 }
 
 type cachedKey struct {
-	key       string
-	baseSpend float64 // task spent at mint time
+	key   string
+	saUID string // the run the key was minted for
 }
 
 type Server struct {
@@ -92,7 +93,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var chatReq struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	if err := json.Unmarshal(body, &chatReq); err != nil {
 		s.refuse(w, id.TaskID, "refused_body", "request body is not JSON", "", http.StatusBadRequest, "invalid_request_error")
@@ -118,34 +120,62 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.keyFor(ctx, task)
+	if chatReq.Stream {
+		if body, err = withStreamUsage(body); err != nil {
+			s.refuse(w, id.TaskID, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+			return
+		}
+	}
+
+	key, err := s.keyFor(ctx, task, id.SAUID)
 	if err != nil {
 		s.refuse(w, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
 
-	s.proxy(w, r, task, key, body, chatReq.Model)
+	s.proxy(w, r, task, key, body, chatReq.Model, chatReq.Stream)
 }
 
-// keyFor returns the task's cached virtual key or mints one capped at the
-// remaining budget, so a task can never spend past its budget_eur even if
-// the gateway's own check lags.
-func (s *Server) keyFor(ctx context.Context, task Task) (cachedKey, error) {
+// withStreamUsage makes a streaming request end with a usage chunk, which
+// LiteLLM stamps with the call's cost: the only place a stream's cost shows.
+func withStreamUsage(body []byte) ([]byte, error) {
+	var req map[string]json.RawMessage
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, err
+	}
+	opts := map[string]json.RawMessage{}
+	if raw, ok := req["stream_options"]; ok && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &opts); err != nil {
+			return nil, err
+		}
+	}
+	opts["include_usage"] = json.RawMessage("true")
+	var err error
+	if req["stream_options"], err = json.Marshal(opts); err != nil {
+		return nil, err
+	}
+	return json.Marshal(req)
+}
+
+// keyFor returns the virtual key of the task's current run or mints one
+// capped at the remaining budget, so a task can never spend past its
+// budget_eur even if the gateway's own check lags. A requeue blocks the old
+// key and recreates the service account, so a new SA UID gets a new key.
+func (s *Server) keyFor(ctx context.Context, task Task, saUID string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if c, ok := s.keysByTask[task.ID]; ok {
-		return c, nil
+	if c, ok := s.keysByTask[task.ID]; ok && c.saUID == saUID {
+		return c.key, nil
 	}
 	key, err := s.opts.Minter.Mint(ctx, task.ID, task.BudgetEUR-task.SpentEUR)
 	if err != nil {
-		return cachedKey{}, fmt.Errorf("mint virtual key: %w", err)
+		return "", fmt.Errorf("mint virtual key: %w", err)
 	}
-	c := cachedKey{key: key, baseSpend: task.SpentEUR}
-	s.keysByTask[task.ID] = c
-	return c, nil
+	s.keysByTask[task.ID] = cachedKey{key: key, saUID: saUID}
+	return key, nil
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key cachedKey, body []byte, alias string) {
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key string, body []byte, alias string, stream bool) {
 	ctx := r.Context()
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -153,7 +183,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key ca
 		return
 	}
 	upReq.Header.Set("Content-Type", contentType(r))
-	upReq.Header.Set("Authorization", "Bearer "+key.key)
+	upReq.Header.Set("Authorization", "Bearer "+key)
 
 	res, err := s.http.Do(upReq)
 	if err != nil {
@@ -181,22 +211,80 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key ca
 		return
 	}
 
-	// Spend is the key's cumulative total; the task's is that plus whatever
-	// the task had already spent when the key was minted. Written on a
-	// background context: the billing happened, so it must be recorded even
-	// if the caller disconnects mid-stream.
-	spend := task.SpentEUR
-	if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-key-spend"), 64); err == nil {
-		spend = key.baseSpend + v
-		if err := s.opts.Store.UpdateSpent(context.Background(), task.ID, spend); err != nil {
-			log.Printf("update spent for task %s: %v", task.ID, err)
-		}
-	}
-	s.audit(task.ID, "allowed", "", alias, &spend)
-
 	w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 	w.WriteHeader(res.StatusCode)
-	s.stream(w, res.Body)
+
+	// Each call's own cost is booked onto the task. x-litellm-key-spend is
+	// not: it is a cached read that lags, and a stream's headers leave before
+	// its cost exists. A stream's cost arrives in its final usage chunk. Costs
+	// are LiteLLM's USD prices booked 1:1 as EUR, the unit of budget_eur and
+	// of the key's max_budget.
+	var cost float64
+	costErr := error(nil)
+	if stream {
+		usage := &usageScanner{}
+		s.stream(w, io.TeeReader(res.Body, usage))
+		cost, costErr = usage.cost, usage.err()
+	} else {
+		cost, costErr = strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64)
+		s.stream(w, res.Body)
+	}
+
+	// Booked on a background context: the billing happened, so it must be
+	// recorded even if the caller disconnects.
+	spend, reason := task.SpentEUR, ""
+	if costErr != nil {
+		reason = "cost not reported, not booked: " + costErr.Error()
+	} else if total, err := s.opts.Store.AddSpent(context.Background(), task.ID, cost); err != nil {
+		reason = "cost " + strconv.FormatFloat(cost, 'g', -1, 64) + " not booked: " + err.Error()
+	} else {
+		spend = total
+	}
+	if reason != "" {
+		log.Printf("task %s: %s", task.ID, reason)
+	}
+	s.audit(task.ID, "allowed", reason, alias, &spend)
+}
+
+// usageScanner watches an SSE stream for the usage chunk's cost.
+type usageScanner struct {
+	pending []byte
+	cost    float64
+	seen    bool
+}
+
+func (u *usageScanner) Write(p []byte) (int, error) {
+	u.pending = append(u.pending, p...)
+	for {
+		i := bytes.IndexByte(u.pending, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		u.line(u.pending[:i])
+		u.pending = u.pending[i+1:]
+	}
+}
+
+func (u *usageScanner) line(l []byte) {
+	data, ok := bytes.CutPrefix(bytes.TrimSpace(l), []byte("data:"))
+	if !ok || !bytes.Contains(data, []byte(`"usage"`)) {
+		return
+	}
+	var ev struct {
+		Usage *struct {
+			Cost *float64 `json:"cost"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(data, &ev) == nil && ev.Usage != nil && ev.Usage.Cost != nil {
+		u.cost, u.seen = *ev.Usage.Cost, true
+	}
+}
+
+func (u *usageScanner) err() error {
+	if !u.seen {
+		return errors.New("stream ended without a usage cost")
+	}
+	return nil
 }
 
 // stream copies the upstream body with per-write flushes so SSE streaming
