@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,14 +17,18 @@ type Repo struct {
 	Name  string `json:"name"`
 }
 
-// Forgejo mints and revokes the per-task git tokens through Forgejo's admin
-// API: repo-scoped (Forgejo v15+), write:repository, deleted at task end so
-// a leaked token can push exactly one repository for exactly one task
-// (architecture 6.3, research Q3).
+// Forgejo mints and revokes the per-task git tokens (architecture 6.3,
+// research Q3), authenticating as the bot user with basic auth — the live
+// wire (Forgejo 15 / gitea 1.22): /users/{u}/tokens refuses token auth for
+// minting ("auth method not allowed") and the /admin/users mint path does
+// not exist. Tokens are repo-scoped, write:repository, and deleted at task
+// end, so a leaked token can push exactly one repository for exactly one
+// task.
 type Forgejo struct {
-	BaseURL    string // e.g. https://git.aisoftwarefactory.world
-	AdminToken string
-	HTTP       *http.Client // nil = a mint-sized timeout
+	BaseURL     string // e.g. https://git.aisoftwarefactory.world
+	BotUser     string
+	BotPassword string
+	HTTP        *http.Client // nil = a mint-sized timeout
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -33,7 +38,7 @@ type ForgejoToken struct {
 	Secret string
 }
 
-func (f *Forgejo) MintToken(ctx context.Context, botUser, name string, repos []Repo) (ForgejoToken, error) {
+func (f *Forgejo) MintToken(ctx context.Context, name string, repos []Repo) (ForgejoToken, error) {
 	var tok ForgejoToken
 	if len(repos) == 0 {
 		return tok, fmt.Errorf("forgejo mint %s: at least one repository is required", name)
@@ -47,7 +52,7 @@ func (f *Forgejo) MintToken(ctx context.Context, botUser, name string, repos []R
 		return tok, err
 	}
 	body, err := f.call(ctx, http.MethodPost,
-		fmt.Sprintf("/api/v1/admin/users/%s/tokens", botUser), payload, http.StatusCreated)
+		fmt.Sprintf("/api/v1/users/%s/tokens", f.BotUser), payload, http.StatusCreated)
 	if err != nil {
 		return tok, err
 	}
@@ -71,11 +76,12 @@ type TokenRef struct {
 	Name string `json:"name"`
 }
 
-// ListTokens lists the bot user's tokens (admin scope). The runner uses it
-// to reconcile tokens by name: completion and the boot sweep must revoke a
-// task's token even when the mint's ID was lost to a crash.
-func (f *Forgejo) ListTokens(ctx context.Context, botUser string) ([]TokenRef, error) {
-	body, err := f.call(ctx, http.MethodGet, "/api/v1/users/"+botUser+"/tokens", nil, http.StatusOK)
+// ListTokens lists the bot user's tokens. The runner uses it to reconcile
+// tokens by name: completion and the boot sweep must revoke a task's token
+// even when the mint's ID was lost to a crash.
+func (f *Forgejo) ListTokens(ctx context.Context) ([]TokenRef, error) {
+	body, err := f.call(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/users/%s/tokens", f.BotUser), nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -86,9 +92,14 @@ func (f *Forgejo) ListTokens(ctx context.Context, botUser string) ([]TokenRef, e
 	return refs, nil
 }
 
-func (f *Forgejo) RevokeToken(ctx context.Context, botUser string, id int64) error {
+// RevokeToken deletes a token. A 404 means it is already gone — a revoke
+// racing another revoke (or a completion retry) has nothing left to do.
+func (f *Forgejo) RevokeToken(ctx context.Context, id int64) error {
 	_, err := f.call(ctx, http.MethodDelete,
-		fmt.Sprintf("/api/v1/admin/users/%s/tokens/%d", botUser, id), nil, http.StatusNoContent)
+		fmt.Sprintf("/api/v1/users/%s/tokens/%d", f.BotUser, id), nil, http.StatusNoContent)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
 	return err
 }
 
@@ -101,7 +112,7 @@ func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "token "+f.AdminToken)
+	req.SetBasicAuth(f.BotUser, f.BotPassword)
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -120,6 +131,9 @@ func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte,
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	if res.StatusCode != wantStatus {
+		if res.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("forgejo %s %s: %w", method, path, ErrNotFound)
+		}
 		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)
 	}
 	return body, nil

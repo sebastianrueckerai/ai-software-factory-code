@@ -32,7 +32,6 @@ type RunnerConfig struct {
 	AnswerTokens         int
 	HeadroomTokens       int
 	MaxSessions          int
-	BotUser              string
 	PollInterval         time.Duration
 	Supervisor           SupervisorConfig
 }
@@ -50,8 +49,8 @@ type Runner struct {
 }
 
 func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore) (*Runner, error) {
-	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.BotUser == "" {
-		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL and BotUser are required")
+	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" {
+		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL are required")
 	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
@@ -134,7 +133,7 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 		r.fail(ctx, t.ID, err)
 		return
 	}
-	tok, err := r.forgejo.MintToken(ctx, r.cfg.BotUser, TokenName(t.ID), []Repo{repo})
+	tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), []Repo{repo})
 	if err != nil {
 		r.fail(ctx, t.ID, err)
 		return

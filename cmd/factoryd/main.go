@@ -37,10 +37,10 @@ func main() {
 	defer store.Close()
 
 	forgejo := &factoryd.Forgejo{
-		BaseURL:    env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
-		AdminToken: os.Getenv("FORGEJO_ADMIN_TOKEN"),
+		BaseURL:     env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		BotUser:     env("FORGEJO_BOT_USER", "factory-agent"),
+		BotPassword: mustEnv("FORGEJO_BOT_PASSWORD"),
 	}
-	botUser := env("FORGEJO_BOT_USER", "factory-agent")
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000")}
 	objects := &factoryd.S3{
 		Endpoint:  mustEnv("S3_ENDPOINT"),
@@ -49,7 +49,7 @@ func main() {
 		AccessKey: mustEnv("S3_ACCESS_KEY_ID"),
 		SecretKey: mustEnv("S3_SECRET_ACCESS_KEY"),
 	}
-	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, BotUser: botUser, LiteLLM: litellm}
+	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm}
 
 	kube, err := factoryd.NewInClusterKube()
 	if err != nil {
@@ -66,7 +66,6 @@ func main() {
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
 		MaxSessions:          envInt("MAX_SESSIONS", 3),
-		BotUser:              botUser,
 		PollInterval:         2 * time.Second,
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  5 * time.Minute,

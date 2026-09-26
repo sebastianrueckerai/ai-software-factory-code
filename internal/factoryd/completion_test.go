@@ -58,8 +58,7 @@ func (r *recordingBackend) srv(t *testing.T) (forgejo, litellm string) {
 func newCompletion(store Store, fjURL, llURL string) *Completion {
 	return &Completion{
 		Store:   store,
-		Forgejo: &Forgejo{BaseURL: fjURL, AdminToken: "admin"},
-		BotUser: "factory-bot",
+		Forgejo: &Forgejo{BaseURL: fjURL, BotUser: "factory-bot", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: llURL, MasterKey: "mk"},
 	}
 }
@@ -78,7 +77,7 @@ func TestCompletionClosesSpendThenRevokesThenDones(t *testing.T) {
 		t.Fatalf("status = %q, want done", task.Status)
 	}
 	// The token is found by name, never by a remembered ID.
-	if len(back.forgejoCalls) < 2 || back.forgejoCalls[1] != "DELETE /api/v1/admin/users/factory-bot/tokens/77" {
+	if len(back.forgejoCalls) < 2 || back.forgejoCalls[1] != "DELETE /api/v1/users/factory-bot/tokens/77" {
 		t.Fatalf("forgejo calls = %v, want task-t1 (id 77) revoked by name", back.forgejoCalls)
 	}
 	if len(back.litellmCalls) == 0 || back.litellmCalls[len(back.litellmCalls)-1] != "POST /key/block" {

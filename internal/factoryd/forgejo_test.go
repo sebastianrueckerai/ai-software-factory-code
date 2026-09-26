@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -24,15 +25,15 @@ func TestForgejoMintRepoScopedToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &Forgejo{BaseURL: srv.URL, AdminToken: "admin-tok"}
-	tok, err := f.MintToken(context.Background(), "factory-bot", "task-t1", []Repo{{Owner: "sf", Name: "ai-software-factory-code"}})
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	tok, err := f.MintToken(context.Background(), "task-t1", []Repo{{Owner: "sf", Name: "ai-software-factory-code"}})
 	if err != nil {
 		t.Fatalf("MintToken: %v", err)
 	}
-	if gotPath != "/api/v1/admin/users/factory-bot/tokens" {
+	if gotPath != "/api/v1/users/factory-bot/tokens" {
 		t.Fatalf("mint path = %s", gotPath)
 	}
-	if gotAuth != "token admin-tok" {
+	if want := "Basic " + base64.StdEncoding.EncodeToString([]byte("factory-bot:bot-pw")); gotAuth != want {
 		t.Fatalf("mint auth = %q", gotAuth)
 	}
 	if gotBody["name"] != "task-t1" {
@@ -59,8 +60,8 @@ func TestForgejoMintRefused(t *testing.T) {
 		http.Error(w, `{"message":"token name already exists"}`, http.StatusUnprocessableEntity)
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, AdminToken: "admin-tok"}
-	_, err := f.MintToken(context.Background(), "bot", "task-t1", []Repo{{Owner: "sf", Name: "r"}})
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	_, err := f.MintToken(context.Background(), "task-t1", []Repo{{Owner: "sf", Name: "r"}})
 	if err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("err = %v, want the 422 body surfaced", err)
 	}
@@ -74,11 +75,11 @@ func TestForgejoRevokeDeletesByID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := &Forgejo{BaseURL: srv.URL, AdminToken: "admin-tok"}
-	if err := f.RevokeToken(context.Background(), "factory-bot", 77); err != nil {
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	if err := f.RevokeToken(context.Background(), 77); err != nil {
 		t.Fatalf("RevokeToken: %v", err)
 	}
-	if gotMethod != http.MethodDelete || gotPath != "/api/v1/admin/users/factory-bot/tokens/77" {
+	if gotMethod != http.MethodDelete || gotPath != "/api/v1/users/factory-bot/tokens/77" {
 		t.Fatalf("revoke = %s %s", gotMethod, gotPath)
 	}
 }
@@ -88,9 +89,20 @@ func TestForgejoRevokeRefused(t *testing.T) {
 		http.Error(w, "nope", http.StatusForbidden)
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, AdminToken: "admin-tok"}
-	err := f.RevokeToken(context.Background(), "bot", 1)
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	err := f.RevokeToken(context.Background(), 1)
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err = %v, want the 403 surfaced", err)
+	}
+}
+
+func TestForgejoRevokeAlreadyGone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "bot", BotPassword: "bot-pw"}
+	if err := f.RevokeToken(context.Background(), 77); err != nil {
+		t.Fatalf("revoke of a gone token = %v, want nil (already clean)", err)
 	}
 }

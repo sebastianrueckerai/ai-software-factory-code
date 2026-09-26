@@ -223,7 +223,7 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			w.Write(list)
 		case r.Method == "DELETE":
 			var id int64
-			fmt.Sscanf(r.URL.Path, "/api/v1/admin/users/factory-agent/tokens/%d", &id)
+			fmt.Sscanf(r.URL.Path, "/api/v1/users/factory-agent/tokens/%d", &id)
 			kept := h.tokens[:0]
 			for _, tok := range h.tokens {
 				if tok.ID != id {
@@ -264,7 +264,6 @@ func testRunnerConfig() RunnerConfig {
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		MaxSessions:          3,
-		BotUser:              "factory-agent",
 		PollInterval:         time.Millisecond,
 		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24},
 	}
@@ -290,8 +289,7 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	completion := &Completion{
 		Store:   store,
-		Forgejo: &Forgejo{BaseURL: fjSrv.URL, AdminToken: "admin"},
-		BotUser: "factory-agent",
+		Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"},
 	}
 	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects)
@@ -415,7 +413,7 @@ func TestRunnerResumesAfterSupervisionTrip(t *testing.T) {
 	t.Cleanup(ll.Close)
 	store := newFakeStore()
 	store.CreateTask(context.Background(), task)
-	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL}, BotUser: "factory-agent",
+	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL}}
 	runner, err := NewRunner(cfg, store, kube, completion.Forgejo, completion, objects)
 	if err != nil {
@@ -529,7 +527,7 @@ func TestRunnerBootSweep(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t9", Status: "running", Repository: "sf/repo", Objective: "x"})
 	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo", Objective: "y"})
-	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL}, BotUser: "factory-agent",
+	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL}}
 	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects)
 	if err != nil {

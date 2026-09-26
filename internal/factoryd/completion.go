@@ -17,7 +17,6 @@ import (
 type Completion struct {
 	Store   Store
 	Forgejo *Forgejo
-	BotUser string
 	LiteLLM *LiteLLMAdmin
 }
 
@@ -37,7 +36,7 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 // Calling it on an already-clean task is a no-op, which is what makes
 // completion idempotent.
 func (c *Completion) reconcile(ctx context.Context, taskID string) error {
-	refs, err := c.Forgejo.ListTokens(ctx, c.BotUser)
+	refs, err := c.Forgejo.ListTokens(ctx)
 	if err != nil {
 		return fmt.Errorf("list tokens: %w", err)
 	}
@@ -46,7 +45,7 @@ func (c *Completion) reconcile(ctx context.Context, taskID string) error {
 		if ref.Name != TokenName(taskID) {
 			continue
 		}
-		if err := c.Forgejo.RevokeToken(ctx, c.BotUser, ref.ID); err != nil {
+		if err := c.Forgejo.RevokeToken(ctx, ref.ID); err != nil {
 			errs = append(errs, err)
 		}
 	}
