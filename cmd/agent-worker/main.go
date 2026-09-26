@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,7 +169,12 @@ func loadEnv() (workerEnv, error) {
 }
 
 func (e workerEnv) repoURLWithToken() string {
-	return strings.Replace(e.repoURL, "https://", "https://x-access-token:"+e.gitToken+"@", 1)
+	u, err := url.Parse(e.repoURL)
+	if err != nil {
+		return e.repoURL
+	}
+	u.User = url.UserPassword("x-access-token", e.gitToken)
+	return u.String()
 }
 
 // gitRun runs git and scrubs the task token from failures: git echoes the

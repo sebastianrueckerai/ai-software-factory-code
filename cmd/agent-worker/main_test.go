@@ -18,3 +18,15 @@ func TestGitRunRedactsToken(t *testing.T) {
 		t.Fatalf("git error not redacted: %s", err)
 	}
 }
+
+func TestRepoURLWithTokenBothSchemes(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://git.example/sf/repo.git":                  "https://x-access-token:tok@git.example/sf/repo.git",
+		"http://forgejo-http.forgejo.svc:3000/sf/repo.git": "http://x-access-token:tok@forgejo-http.forgejo.svc:3000/sf/repo.git",
+	} {
+		e := workerEnv{repoURL: in, gitToken: "tok"}
+		if got := e.repoURLWithToken(); got != want {
+			t.Errorf("repoURLWithToken(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
