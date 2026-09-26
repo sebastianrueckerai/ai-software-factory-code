@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -15,10 +16,14 @@ import (
 type fakeStore struct {
 	tasks    map[string]Task
 	sessions map[string]Session
+	started  map[string]time.Time
+	finished map[string]time.Time
+	settled  map[string]bool
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{}}
+	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
+		started: map[string]time.Time{}, finished: map[string]time.Time{}, settled: map[string]bool{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -31,24 +36,52 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
-func (s *fakeStore) SetTaskStatus(ctx context.Context, id, status string) error {
+func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	t, ok := s.tasks[id]
+	if !ok || !slices.Contains(from, t.Status) {
+		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
+	}
+	t.Status = to
+	s.tasks[id] = t
+	if to == "done" || to == "failed" {
+		s.finished[id] = time.Now()
+	}
+	return nil
+}
+
+func (s *fakeStore) ClaimTask(ctx context.Context, id string) (time.Time, bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Status != "queued" {
+		return time.Time{}, false, nil
+	}
+	t.Status = "running"
+	s.tasks[id] = t
+	if _, ok := s.started[id]; !ok {
+		s.started[id] = time.Now()
+	}
+	return s.started[id], true, nil
+}
+
+func (s *fakeStore) UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error) {
+	var ids []string
+	for id, at := range s.finished {
+		if st := s.tasks[id].Status; !s.settled[id] && (st == "done" || st == "failed") && at.Before(finishedBefore) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: not found", id)
 	}
-	t.Status = status
+	t.SpentEUR = max(t.SpentEUR, reported)
 	s.tasks[id] = t
+	s.settled[id] = true
 	return nil
-}
-
-func (s *fakeStore) ClaimTask(ctx context.Context, id string) (bool, error) {
-	t, ok := s.tasks[id]
-	if !ok || t.Status != "queued" {
-		return false, nil
-	}
-	t.Status = "running"
-	s.tasks[id] = t
-	return true, nil
 }
 
 func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
@@ -138,21 +171,78 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("task = %+v, want %+v", got, in)
 	}
 
-	if claimed, err := s.ClaimTask(ctx, "t1"); err != nil || !claimed {
-		t.Fatalf("first claim = (%v, %v), want (true, nil)", claimed, err)
+	started, claimed, err := s.ClaimTask(ctx, "t1")
+	if err != nil || !claimed || started.IsZero() {
+		t.Fatalf("first claim = (%v, %v, %v), want (a start time, true, nil)", started, claimed, err)
 	}
-	if claimed, err := s.ClaimTask(ctx, "t1"); err != nil || claimed {
+	if _, claimed, err := s.ClaimTask(ctx, "t1"); err != nil || claimed {
 		t.Fatalf("second claim = (%v, %v), want (false, nil): a running task must not be claimed twice", claimed, err)
 	}
 	got, _, _ = s.Task(ctx, "t1")
 	if got.Status != "running" {
 		t.Fatalf("status = %q", got.Status)
 	}
-	if err := s.SetTaskStatus(ctx, "t1", "queued"); err != nil {
-		t.Fatalf("SetTaskStatus: %v", err)
+	if err := s.TransitionTask(ctx, "t1", []string{"queued"}, "done"); err == nil {
+		t.Fatal("a running task moved from queued")
 	}
-	if err := s.SetTaskStatus(ctx, "nope", "running"); err == nil {
-		t.Fatal("SetTaskStatus on a missing task must fail")
+	if err := s.TransitionTask(ctx, "nope", []string{"running"}, "closing"); err == nil {
+		t.Fatal("TransitionTask on a missing task must fail")
+	}
+	for _, step := range [][2]string{{"running", "closing"}, {"closing", "queued"}} {
+		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
+			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
+		}
+	}
+	// a requeued task keeps its first start: the wall-clock cap spans runs
+	again, claimed, err := s.ClaimTask(ctx, "t1")
+	if err != nil || !claimed || !again.Equal(started) {
+		t.Fatalf("reclaim = (%v, %v, %v), want the first start %v", again, claimed, err, started)
+	}
+	for _, step := range [][2]string{{"running", "closing"}, {"closing", "queued"}} {
+		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
+			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
+		}
+	}
+
+	// spend settlement: only finished tasks past the cutoff, raised to at
+	// least LiteLLM's figure, and only once
+	for _, row := range []struct {
+		id     string
+		status string
+		spent  float64
+	}{{"s-done", "done", 0.5}, {"s-failed", "failed", 0.5}, {"s-run", "running", 0}} {
+		if err := s.CreateTask(ctx, Task{ID: row.id, BudgetEUR: 1, SpentEUR: row.spent, Status: "closing"}); err != nil {
+			t.Fatal(err)
+		}
+		if row.status != "running" {
+			if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := s.TransitionTask(ctx, row.id, []string{"closing"}, "running"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ids, err := s.UnsettledTasks(ctx, time.Now().Add(-time.Hour)); err != nil || len(ids) != 0 {
+		t.Fatalf("unsettled before an hour ago = (%v, %v), want none", ids, err)
+	}
+	ids, err := s.UnsettledTasks(ctx, time.Now().Add(time.Minute))
+	sort.Strings(ids)
+	if err != nil || !reflect.DeepEqual(ids, []string{"s-done", "s-failed"}) {
+		t.Fatalf("unsettled = (%v, %v), want [s-done s-failed]", ids, err)
+	}
+	if err := s.SettleSpend(ctx, "s-done", 0.75); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SettleSpend(ctx, "s-failed", 0.25); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]float64{"s-done": 0.75, "s-failed": 0.5} {
+		if got, _, _ := s.Task(ctx, id); got.SpentEUR != want {
+			t.Fatalf("%s spent = %v, want %v (max of booked and LiteLLM)", id, got.SpentEUR, want)
+		}
+	}
+	if ids, _ := s.UnsettledTasks(ctx, time.Now().Add(time.Minute)); len(ids) != 0 {
+		t.Fatalf("unsettled after settling = %v, want none", ids)
 	}
 
 	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "queued", Objective: "x"}); err != nil {

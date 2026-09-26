@@ -84,6 +84,9 @@ func (r *Runner) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if err := r.completion.SettleSpend(ctx, time.Now()); err != nil {
+				log.Printf("runner: settle spend: %v", err)
+			}
 			queued, err := r.store.ListTasksByStatus(ctx, "queued")
 			if err != nil {
 				log.Printf("runner: list queued: %v", err)
@@ -140,7 +143,7 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 func (r *Runner) execute(ctx context.Context, t Task) {
-	claimed, err := r.store.ClaimTask(ctx, t.ID)
+	started, claimed, err := r.store.ClaimTask(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: claim: %v", t.ID, err)
 		return
@@ -148,11 +151,11 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 	if !claimed {
 		return
 	}
-	final, reason := r.runTask(ctx, t, time.Now())
+	final, reason := r.runTask(ctx, t, started)
 
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
-	if ctx.Err() != nil {
+	if final == "" {
 		log.Printf("task %s: shutdown mid-run, requeued (%s)", t.ID, reason)
 		if err := r.completion.Requeue(cleanup, t.ID); err != nil {
 			log.Printf("task %s: requeue stuck in closing: %v", t.ID, err)
@@ -166,8 +169,17 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 }
 
 // runTask provisions the task namespace and runs sessions until one yields
-// a verdict, the task's wall-clock cap passes, or the attempts run out.
+// a verdict, the task's wall-clock cap (anchored to the task's first start)
+// passes, or the attempts run out. final is empty when shutdown cut the run
+// short before any verdict: the task goes back to the queue. A verdict
+// reached before shutdown stands.
 func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final, reason string) {
+	verdict := false
+	defer func() {
+		if !verdict && ctx.Err() != nil {
+			final = ""
+		}
+	}()
 	repo, err := splitRepo(t.Repository)
 	if err != nil {
 		return "failed", err.Error()
@@ -189,6 +201,7 @@ func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final,
 	final, reason = "failed", "no session produced a result"
 	for attempt := 0; attempt < r.cfg.MaxSessions && ctx.Err() == nil; attempt++ {
 		if time.Since(started) >= r.cfg.Supervisor.WallClockCap {
+			verdict = true
 			return "failed", "supervision trip: " + string(TripWallClock)
 		}
 		sessionID := newID("s-")
@@ -198,6 +211,7 @@ func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final,
 			continue
 		}
 		if out.result != nil {
+			verdict = true
 			final, reason = "failed", out.result.Summary
 			if out.result.Success {
 				final = "done"
@@ -207,6 +221,7 @@ func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final,
 		if out.trip != nil {
 			reason = "supervision trip: " + string(out.trip.Kind)
 			if out.trip.Kind == TripWallClock {
+				verdict = true
 				return "failed", reason
 			}
 			parent = sessionID

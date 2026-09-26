@@ -31,6 +31,7 @@ type fakeKube struct {
 	createdNs   map[string]map[string]string // survives deletion
 	objects     map[string]map[string]any    // Create path → object
 	saErr       error                        // injected CreateServiceAccount failure
+	onDeletePod func()                       // runs on every DeletePod
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -161,6 +162,9 @@ func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error 
 	}
 	delete(k.pods, namespace+"/"+name)
 	k.deletedPods = append(k.deletedPods, namespace+"/"+name)
+	if k.onDeletePod != nil {
+		k.onDeletePod()
+	}
 	return nil
 }
 
@@ -699,6 +703,58 @@ func TestRunnerShutdownRequeuesInFlightTask(t *testing.T) {
 	}
 	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
 		t.Fatal("namespace survived the shutdown")
+	}
+}
+
+// A shutdown that lands after the worker delivered its verdict must not
+// hand the finished task back to the queue.
+func TestRunnerShutdownAfterVerdictCompletes(t *testing.T) {
+	task := Task{ID: "t8", Status: "queued", Objective: "quick", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	ctx, cancel := context.WithCancel(context.Background())
+	kube.onDeletePod = cancel // the session's pod teardown runs after the result arrived
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runner.execute(ctx, task)
+	}()
+	for {
+		kube.mu.Lock()
+		n := len(kube.podOrder)
+		kube.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	kube.scriptPods(0, resultLine(true, "pushed branch factory/t8 at abc")+"\n")
+	<-done
+
+	if got, _, _ := store.Task(context.Background(), "t8"); got.Status != "done" {
+		t.Fatalf("status = %q, want done: the verdict came before the shutdown", got.Status)
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v", hub.revoked)
+	}
+}
+
+// A requeued task keeps its first start, so the wall-clock cap counts the
+// runs before the requeue too.
+func TestRunnerWallClockAnchorsToFirstStart(t *testing.T) {
+	task := Task{ID: "t9", Status: "queued", Objective: "requeued", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	store.started["t9"] = time.Now().Add(-61 * time.Minute) // cap is 1h
+
+	runner.execute(context.Background(), task)
+
+	if got, _, _ := store.Task(context.Background(), "t9"); got.Status != "failed" {
+		t.Fatalf("status = %q, want failed: 61 min since the first start is past the 1h cap", got.Status)
+	}
+	if len(kube.podOrder) != 0 {
+		t.Fatalf("pods = %d, want 0: no session starts past the cap", len(kube.podOrder))
 	}
 }
 

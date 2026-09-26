@@ -51,10 +51,20 @@ type Session struct {
 type Store interface {
 	CreateTask(ctx context.Context, t Task) error
 	Task(ctx context.Context, id string) (Task, bool, error)
-	SetTaskStatus(ctx context.Context, id, status string) error
-	// ClaimTask moves a queued task to running; false means another
-	// runner (or an earlier pass) already took it.
-	ClaimTask(ctx context.Context, id string) (bool, error)
+	// TransitionTask moves a task to status `to` only from one of the
+	// statuses in from; any other current status is an error. Entering done
+	// or failed stamps the finish time.
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	// ClaimTask moves a queued task to running and returns when the task
+	// first started, which a requeue keeps; false means another runner (or
+	// an earlier pass) already took it.
+	ClaimTask(ctx context.Context, id string) (started time.Time, claimed bool, err error)
+	// UnsettledTasks lists finished tasks, finished before the cutoff, whose
+	// spend was not yet settled against LiteLLM.
+	UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error)
+	// SettleSpend raises spent_eur to at least reported and marks the task
+	// settled.
+	SettleSpend(ctx context.Context, id string, reported float64) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
@@ -190,18 +200,51 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 	return tasks, rows.Err()
 }
 
-func (s *PGStore) SetTaskStatus(ctx context.Context, id, status string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2 WHERE id = $1`, id, status)
-	return oneRow(res, err, "task "+id)
+func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET status = $2,
+		        finished_at = CASE WHEN $2 IN ('done', 'failed') THEN now() ELSE finished_at END
+		 WHERE id = $1 AND status = ANY($3)`, id, to, from)
+	if err := oneRow(res, err, "task "+id); err != nil {
+		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
+	}
+	return nil
 }
 
-func (s *PGStore) ClaimTask(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'running' WHERE id = $1 AND status = 'queued'`, id)
-	if err != nil {
-		return false, err
+func (s *PGStore) ClaimTask(ctx context.Context, id string) (time.Time, bool, error) {
+	var started time.Time
+	err := s.db.QueryRowContext(ctx,
+		`UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, now())
+		 WHERE id = $1 AND status = 'queued' RETURNING started_at`, id).Scan(&started)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
 	}
-	n, err := res.RowsAffected()
-	return n == 1, err
+	return started, err == nil, err
+}
+
+func (s *PGStore) UnsettledTasks(ctx context.Context, finishedBefore time.Time) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM tasks WHERE NOT spend_settled AND status IN ('done', 'failed') AND finished_at < $1
+		 ORDER BY finished_at`, finishedBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE tasks SET spent_eur = GREATEST(spent_eur, $2), spend_settled = true WHERE id = $1`, id, reported)
+	return oneRow(res, err, "task "+id)
 }
 
 func oneRow(res sql.Result, err error, what string) error {

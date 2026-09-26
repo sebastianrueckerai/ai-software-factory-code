@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordingBackend struct {
@@ -138,5 +139,52 @@ func TestCompletionLeavesClosingOnRevocationFailure(t *testing.T) {
 		if task.Status != "closing" {
 			t.Fatalf("%s: status = %q, want closing", name, task.Status)
 		}
+	}
+}
+
+// Finished tasks are raised to the spend LiteLLM reports for their keys once
+// the settle delay has passed, never lowered, and settled once.
+func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
+	infos := map[string]string{
+		"h1": `{"key":"h1","info":{"spend":0.3,"metadata":{"task_id":"t1"}}}`,
+		"h2": `{"key":"h2","info":{"spend":0.45,"blocked":true,"metadata":{"task_id":"t1"}}}`,
+		"h3": `{"key":"h3","info":{"spend":9,"metadata":{"task_id":"other"}}}`,
+	}
+	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/key/list":
+			io.WriteString(w, `{"keys":["h1","h2","h3"],"total_pages":1}`)
+		case "/key/info":
+			io.WriteString(w, infos[req.URL.Query().Get("key")])
+		default:
+			t.Errorf("unexpected litellm call %s", req.URL.Path)
+		}
+	}))
+	defer ll.Close()
+
+	store := newFakeStore()
+	now := time.Now()
+	for id, spent := range map[string]float64{"t1": 0.5, "t2": 0.5, "t3": 1} {
+		store.CreateTask(context.Background(), Task{ID: id, BudgetEUR: 2, SpentEUR: spent, Status: "done"})
+	}
+	store.finished["t1"] = now.Add(-4 * time.Minute)
+	store.finished["t2"] = now.Add(-1 * time.Minute) // LiteLLM may not have written its spend yet
+	store.finished["t3"] = now.Add(-4 * time.Minute)
+	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
+
+	if err := c.SettleSpend(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]float64{
+		"t1": 0.75, // 0.3 + 0.45 from its two keys, above the booked 0.5
+		"t2": 0.5,  // inside the settle delay
+		"t3": 1,    // no LiteLLM spend: never lowered
+	} {
+		if got, _, _ := store.Task(context.Background(), id); got.SpentEUR != want {
+			t.Fatalf("%s spent = %v, want %v", id, got.SpentEUR, want)
+		}
+	}
+	if !store.settled["t1"] || store.settled["t2"] || !store.settled["t3"] {
+		t.Fatalf("settled = %v, want t1 and t3", store.settled)
 	}
 }

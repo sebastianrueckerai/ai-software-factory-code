@@ -37,39 +37,65 @@ type keyInfo struct {
 	Info struct {
 		KeyName  string         `json:"key_name"`
 		Blocked  bool           `json:"blocked"`
+		Spend    float64        `json:"spend"`
 		Metadata map[string]any `json:"metadata"`
 	} `json:"info"`
 }
 
-// BlockTaskKeys walks every /key/list page, inspects each key hash, and
-// blocks the unblocked ones whose metadata.task_id matches. Returns how many
-// it blocked.
+// BlockTaskKeys blocks the task's unblocked keys and returns how many it
+// blocked.
 func (l *LiteLLMAdmin) BlockTaskKeys(ctx context.Context, taskID string) (int, error) {
+	blocked := 0
+	err := l.eachTaskKey(ctx, taskID, func(info keyInfo) error {
+		if info.Info.Blocked {
+			return nil
+		}
+		if err := l.blockKey(ctx, info.Key); err != nil {
+			return err
+		}
+		blocked++
+		return nil
+	})
+	return blocked, err
+}
+
+// TaskSpend sums the spend LiteLLM has recorded on the task's keys.
+func (l *LiteLLMAdmin) TaskSpend(ctx context.Context, taskID string) (float64, error) {
+	spend := 0.0
+	err := l.eachTaskKey(ctx, taskID, func(info keyInfo) error {
+		spend += info.Info.Spend
+		return nil
+	})
+	return spend, err
+}
+
+// eachTaskKey walks every /key/list page, inspects each key hash, and calls
+// fn for the keys whose metadata.task_id matches.
+func (l *LiteLLMAdmin) eachTaskKey(ctx context.Context, taskID string, fn func(keyInfo) error) error {
 	size := l.PageSize
 	if size <= 0 {
 		size = 100
 	}
-	blocked := 0
 	for page := 1; ; page++ {
 		list, err := l.listKeys(ctx, page, size)
 		if err != nil {
-			return blocked, err
+			return err
 		}
 		for _, hash := range list.Keys {
 			info, err := l.keyInfo(ctx, hash)
 			if err != nil {
-				return blocked, err
+				return err
 			}
-			if info.Info.Metadata["task_id"] != taskID || info.Info.Blocked {
+			if info.Info.Metadata["task_id"] != taskID {
 				continue
 			}
-			if err := l.blockKey(ctx, hash); err != nil {
-				return blocked, err
+			info.Key = hash
+			if err := fn(info); err != nil {
+				return err
 			}
-			blocked++
 		}
 		if page >= list.TotalPages {
-			return blocked, nil
+			return nil
 		}
 	}
 }
