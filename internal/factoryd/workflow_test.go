@@ -188,7 +188,7 @@ func TestWorkflowAttemptExhaustionFails(t *testing.T) {
 
 func TestWorkflowWallClockExpiryFails(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(21*time.Minute).Return(
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(21 * time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
 			return SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no-progress trip"}, nil
