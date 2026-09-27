@@ -143,7 +143,9 @@ by number or, when none was recorded, by its branch on the fork, and
 then comments the reason on it once (the comment follows the close, so a
 retried close never repeats it). Every finished task's branch on the
 fork is deleted. Close and delete happen before the task turns final and
-retry until Forgejo answers, so no failed task keeps an open PR.
+retry through a Forgejo outage, so no failed task keeps an open PR; one
+Forgejo refuses (a 4xx, which no retry fixes) is logged and the task
+completes anyway.
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
 `factory/coding-frontier`) with the failures as findings; supervision
 (below) can redirect, climb or escalate. Signals from the webhook intake
