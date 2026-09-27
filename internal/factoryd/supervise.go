@@ -23,15 +23,14 @@ const (
 	TripRepetition TripKind = "repetition"
 )
 
-// Trip is the supervisor's verdict: kill the session, snapshot findings, and
-// either resume as a new pod (carrying Findings and the parent session id)
-// or retry with a stronger model.
+// Trip is a detector firing: the kind, what it saw, and the session's
+// findings so far. A wall-clock trip ends the session; every other trip
+// goes to the supervisor model.
 type Trip struct {
-	Kind               TripKind
-	Findings           []string
-	RetryStrongerModel bool
-	Detail             string // what the detector saw, for the supervisor and the record
-	key                string // which evidence tripped, so a continue resets only that
+	Kind     TripKind
+	Findings []string
+	Detail   string // what the detector saw, for the supervisor and the record
+	key      string // which evidence tripped, so a continue resets only that
 }
 
 // SupervisorConfig must be validated at task start so a misconfigured
@@ -56,30 +55,40 @@ func (c SupervisorConfig) validate() error {
 	if c.RepetitionEvents < 2 {
 		return fmt.Errorf("supervisor: RepetitionEvents must be >= 2, is %d", c.RepetitionEvents)
 	}
+	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 0 {
+		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 0: %+v", c)
+	}
 	return nil
 }
 
-// Supervisor watches one live session (architecture: session supervision).
-// The runner feeds every harness event through Event and a ticker through
-// Tick, always stamped with factoryd's clock, never the worker's; the first
-// trip is sticky and becomes the kill decision.
+// Supervisor watches one live session (architecture 6.6). The runner feeds
+// every harness event through Event and a ticker through Tick, always
+// stamped with factoryd's clock, never the worker's. A trip is sticky
+// until Resume (the supervisor model answered continue).
 type Supervisor struct {
 	cfg      SupervisorConfig
 	deadline time.Time
+	halfAt   time.Time
 	lastSeen time.Time
 
 	sinceChange int
+	traces      *traceDetectors
+	halfWayDone bool    // fires once per task: the workflow carries it across sessions
+	spent       float64 // the task's spend as a fraction of its budget
 	findings    []string
 	tripped     *Trip
 }
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
-// wall-clock cap, so resumed sessions share the first session's budget.
+// wall-clock cap (the agent time earlier sessions used lies before now),
+// so resumed sessions share the first session's cap and its half-way point.
 func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Supervisor, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	return &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), lastSeen: now}, nil
+	cfg = cfg.withDefaults()
+	return &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), halfAt: taskStarted.Add(cfg.WallClockCap / 2),
+		lastSeen: now, traces: newTraceDetectors(cfg)}, nil
 }
 
 // Event observes one harness event. A nil return means the session may run on.
@@ -96,27 +105,73 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		s.sinceChange = 0
 	}
 	if !at.Before(s.deadline) {
-		return s.trip(TripWallClock, false)
+		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}
 	if s.sinceChange >= s.cfg.RepetitionEvents {
-		return s.trip(TripRepetition, true)
+		return s.trip(&Trip{Kind: TripRepetition, Detail: fmt.Sprintf("%d tool calls and commands without a file change", s.sinceChange)})
 	}
-	return nil
+	if trip := s.traces.observe(ev); trip != nil {
+		return s.trip(trip)
+	}
+	return s.halfWay(at)
 }
 
 // Tick is the heartbeat check between (or instead of) events: it catches a
-// harness that went silent and enforces the wall-clock cap.
+// harness that went silent, the half-way point and the wall-clock cap.
 func (s *Supervisor) Tick(now time.Time) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
 	if !now.Before(s.deadline) {
-		return s.trip(TripWallClock, false)
+		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}
-	if now.Sub(s.lastSeen) >= s.cfg.NoProgressAfter {
-		return s.trip(TripNoProgress, false)
+	if trip := s.halfWay(now); trip != nil {
+		return trip
+	}
+	if silent := now.Sub(s.lastSeen); silent >= s.cfg.NoProgressAfter {
+		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
 	}
 	return nil
+}
+
+// SetSpend tells the supervisor the task's spend so far.
+func (s *Supervisor) SetSpend(spentEUR, budgetEUR float64) {
+	if budgetEUR > 0 {
+		s.spent = spentEUR / budgetEUR
+	}
+}
+
+func (s *Supervisor) halfWay(now time.Time) *Trip {
+	if s.halfWayDone {
+		return nil
+	}
+	var detail string
+	switch {
+	case !now.Before(s.halfAt):
+		detail = fmt.Sprintf("the task passed half its wall-clock cap of %s", s.cfg.WallClockCap)
+	case s.spent >= 0.5:
+		detail = fmt.Sprintf("the task spent %.0f%% of its budget", s.spent*100)
+	default:
+		return nil
+	}
+	s.halfWayDone = true
+	return s.trip(&Trip{Kind: TripHalfWay, Detail: detail})
+}
+
+// HalfWayDone reports whether the half-way check-in has fired for the task.
+func (s *Supervisor) HalfWayDone() bool { return s.halfWayDone }
+
+// Resume clears the trip after the supervisor answered continue and resets
+// the detector that tripped; the time the supervisor took is not silence.
+func (s *Supervisor) Resume(now time.Time) {
+	switch s.tripped.Kind {
+	case TripRepetition:
+		s.sinceChange = 0
+	default:
+		s.traces.reset(s.tripped)
+	}
+	s.lastSeen = now
+	s.tripped = nil
 }
 
 // Findings is a copy of what the session has done so far.
@@ -124,9 +179,10 @@ func (s *Supervisor) Findings() []string {
 	return append([]string(nil), s.findings...)
 }
 
-func (s *Supervisor) trip(kind TripKind, retry bool) *Trip {
-	s.tripped = &Trip{Kind: kind, Findings: append([]string(nil), s.findings...), RetryStrongerModel: retry}
-	return s.tripped
+func (s *Supervisor) trip(t *Trip) *Trip {
+	t.Findings = append([]string(nil), s.findings...)
+	s.tripped = t
+	return t
 }
 
 // noteFinding distills the event stream into the compact lines a resumed

@@ -131,11 +131,13 @@ type issuesPayload struct {
 }
 
 type webhookComment struct {
+	ID     int64       `json:"id"`
 	Poster webhookUser `json:"user"`
 	Body   string      `json:"body"`
 }
 
 type issueCommentPayload struct {
+	Action     string            `json:"action"`
 	Issue      webhookIssue      `json:"issue"`
 	Comment    webhookComment    `json:"comment"`
 	Repository webhookRepository `json:"repository"`
@@ -381,7 +383,11 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 		return err
 	}
 	if !p.IsPull {
-		return nil
+		// a new comment on the task's issue may answer an escalation
+		if p.Action != "created" {
+			return nil
+		}
+		return in.Workflows.Signal(ctx, taskID, SignalHumanComment, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body, Comment: p.Comment.ID})
 	}
 	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body, PR: p.Issue.Index})
 }

@@ -23,15 +23,19 @@ const (
 	SignalPRClosed         = "pr_closed"
 	SignalChangesRequested = "changes_requested"
 	SignalIssueClosed      = "issue_closed"
+	// SignalHumanComment is a non-bot comment on the task's issue; it
+	// answers an escalation when it is newer than the escalation comment.
+	SignalHumanComment = "human_comment"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
 // which pull request (0 for an issue event). The workflow counts a pull
 // request signal only for the pull request it opened itself.
 type TaskSignal struct {
-	Author string
-	Body   string
-	PR     int64
+	Author  string
+	Body    string
+	PR      int64
+	Comment int64 // the issue comment's id, for human_comment
 }
 
 // Activity names, registered by Runner.RegisterActivities.
@@ -45,6 +49,7 @@ const (
 	ActivityRecordStep        = "RecordStep"
 	ActivityFinish            = "Finish"
 	ActivityReconcile         = "Reconcile"
+	ActivityEscalate          = "Escalate"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -76,13 +81,16 @@ type WorkflowConfig struct {
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
-// on it. Task 44's supervisor adds its verdicts here.
+// on it. redirect, retry_stronger and escalate are the supervisor's
+// verdicts (architecture 6.6, ruling 87).
 type SessionOutcome string
 
 const (
 	OutcomePushed        SessionOutcome = "pushed"
 	OutcomeNoPush        SessionOutcome = "no_push"
+	OutcomeRedirect      SessionOutcome = "redirect"
 	OutcomeRetryStronger SessionOutcome = "retry_stronger"
+	OutcomeEscalate      SessionOutcome = "escalate"
 	OutcomeWallClock     SessionOutcome = "wall_clock"
 )
 
@@ -95,14 +103,19 @@ type SessionInput struct {
 	Findings        []string
 	StartRef        string
 	ParentSessionID string
+	HalfWayDone     bool // the task's half-way check-in already fired
 }
 
 type SessionResult struct {
 	Outcome   SessionOutcome
 	SessionID string
-	Commit    string
+	Commit    string // pushed; for a supervisor stop, the work in progress
 	Summary   string
 	Findings  []string
+	// Reason is the supervisor's escalation reason with the progress
+	// digest's summary, for the issue.
+	Reason      string
+	HalfWayDone bool
 }
 
 type PullRequest struct {
@@ -161,7 +174,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	})
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
 		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
-		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace)}
+		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
+		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor)}
 	return run.lifecycle()
 }
 
@@ -181,14 +195,21 @@ const (
 	// work; RunSession and WaitChecks race the terminal signals and are
 	// cancelled when one decides.
 	versionReconcileRace workflow.Version = 1
+	// versionSupervisor (change id "supervisor"): the supervisor's
+	// verdicts. redirect resumes on the same rung with its guidance,
+	// escalate hands the task to a human (Escalate, then a wait for an
+	// answering issue comment, which buys one more attempt, or the issue's
+	// close); a run that finds its task waiting for a human waits again.
+	versionSupervisor workflow.Version = 1
 )
 
 type taskRun struct {
 	ctx, short workflow.Context
 	cfg        WorkflowConfig
 	taskID     string
-	v, v2      workflow.Version
+	v, v2, v3  workflow.Version
 	pr         PullRequest
+	escalation int64 // the escalation comment human answers must be newer than
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -231,6 +252,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("failed", "issue closed without merge")
 		case st.PRClosed:
 			return t.finish("failed", "pull request closed without merge")
+		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
+			t.pr, startRef = st.PR, st.Head
+			final, why, answer := t.awaitHuman("factoryd restarted while the task waited for a human; the question above still stands.")
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = answer
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
@@ -241,7 +269,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			apply(v)
 		}
 	}
-	for attempt := 1; attempt <= t.cfg.MaxSessions; attempt++ {
+	halfWayDone := false
+	maxAttempts := t.cfg.MaxSessions
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if drained {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
@@ -259,7 +289,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		final, why, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
-			Findings: findings, StartRef: startRef, ParentSessionID: parent,
+			Findings: findings, StartRef: startRef, ParentSessionID: parent, HalfWayDone: halfWayDone,
 		})
 		used += workflow.Now(t.ctx).Sub(began)
 		if decided {
@@ -277,14 +307,28 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		parent = res.SessionID
 		reason = res.Summary
+		halfWayDone = halfWayDone || res.HalfWayDone
 		switch res.Outcome {
 		case OutcomeWallClock:
 			return t.finish("failed", "wall-clock cap reached")
 		case OutcomeRetryStronger:
+			// at the top rung this is a redirect: Stronger stays Stronger
 			model, findings = t.cfg.Models.Stronger, res.Findings
 			continue
-		case OutcomeNoPush:
+		case OutcomeNoPush, OutcomeRedirect:
 			findings = res.Findings
+			continue
+		case OutcomeEscalate:
+			if t.v3 < versionSupervisor {
+				return t.finish("failed", "supervisor escalated: "+res.Reason)
+			}
+			final, why, answer := t.awaitHuman(res.Reason)
+			if final != "" {
+				return t.finish(final, why)
+			}
+			// only a human raises a limit: the answer buys one more attempt
+			findings = append(res.Findings, answer...)
+			maxAttempts++
 			continue
 		}
 		startRef = res.Commit
@@ -299,7 +343,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		apply(v)
 	}
-	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions, reason))
+	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", maxAttempts, reason))
 }
 
 // verify takes a pushed commit through its pull request, the checks and
@@ -456,6 +500,35 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 	}
 }
 
+// awaitHuman escalates the task and blocks, at no cost, until a human
+// answers on the issue (a comment newer than the escalation, or a change
+// request on the task's PR) or a terminal signal decides the task.
+func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string) {
+	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason).Get(t.ctx, &t.escalation); err != nil {
+		return "failed", "escalate: " + errMessage(err), nil
+	}
+	for {
+		sel := workflow.NewSelector(t.ctx)
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.Select(t.ctx)
+		if final, why, ok := t.decided(); ok {
+			return final, why, nil
+		}
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			if t.counted(SignalHumanComment, sig) {
+				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
+			}
+		}
+		answer = append(answer, t.drainChanges()...)
+		if len(answer) > 0 {
+			return "", "", answer
+		}
+	}
+}
+
 // counted records a received signal on the timeline and reports whether it
 // counts: an issue event always, a pull request event only for the pull
 // request this workflow opened (a hand-opened PR on the task branch is not
@@ -465,6 +538,13 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 	detail := map[string]any{"signal": name, "author": sig.Author, "pr": sig.PR}
 	if !counts {
 		detail["ignored"] = "not the task's pull request"
+	}
+	if name == SignalHumanComment {
+		counts = t.escalation != 0 && sig.Comment > t.escalation
+		detail = map[string]any{"signal": name, "author": sig.Author, "comment": sig.Comment}
+		if !counts {
+			detail["ignored"] = "older than the escalation"
+		}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)

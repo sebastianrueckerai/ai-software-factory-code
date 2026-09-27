@@ -29,12 +29,13 @@ var testWorkflowConfig = WorkflowConfig{
 // defaults are a clean first session, a PR, green checks; tests override
 // the step they are about.
 type workflowHarness struct {
-	env      *testsuite.TestWorkflowEnvironment
-	sessions []SessionInput
-	finals   [][2]string
-	states   []string
-	state    RunState // what Reconcile reports; zero = a fresh task
-	finishAt time.Time
+	env       *testsuite.TestWorkflowEnvironment
+	sessions  []SessionInput
+	finals    [][2]string
+	states    []string
+	state     RunState // what Reconcile reports; zero = a fresh task
+	finishAt  time.Time
+	escalated []string // Escalate reasons, in order
 }
 
 func newWorkflowHarness(t *testing.T) *workflowHarness {
@@ -52,6 +53,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
+		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -61,6 +63,11 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })
 	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(nil)
+	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, reason string) (int64, error) {
+			h.escalated = append(h.escalated, reason)
+			return int64(600 + len(h.escalated)), nil
+		})
 	h.env.OnActivity(ActivityFinish, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, final, reason string) error {
 			h.finals = append(h.finals, [2]string{final, reason})
@@ -478,5 +485,122 @@ func TestWorkflowTerminalSignalCancelsTheRunningActivity(t *testing.T) {
 	h.signalAfter(5*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "failed" || h.finishAt.IsZero() || h.finishAt.Sub(start) >= 30*time.Minute {
 		t.Fatalf("checks: final = %q after %s, want failed before the 30 min check wait returned", final, h.finishAt.Sub(start))
+	}
+}
+
+func TestWorkflowRedirectResumesOnTheSameRungWithGuidance(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", Commit: "c-wip", Findings: []string{"supervisor guidance: read the script"}},
+		pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	second := h.sessions[1]
+	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script"}) {
+		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance as findings", second)
+	}
+}
+
+// retry_stronger climbs one rung; on the top rung it stays there, which is
+// a redirect. No path raises more than the next rung.
+func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Findings: []string{"a"}},
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s2", Findings: []string{"b"}},
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Findings: []string{"c"}})
+
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	var models []string
+	for _, in := range h.sessions {
+		models = append(models, in.Model)
+	}
+	if !slices.Equal(models, []string{"factory/coding-cheap", "factory/coding-frontier", "factory/coding-frontier"}) {
+		t.Fatalf("models = %v", models)
+	}
+}
+
+// escalate: the workflow asks a human (state waiting-human, comment), a
+// comment older than the escalation does not answer, a newer one starts a
+// new attempt with the answer as findings and one attempt more.
+func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Findings: []string{"n2"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Findings: []string{"n3"}},
+		pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "stale note", Comment: 600})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "you may edit the script", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "the check cannot pass") {
+		t.Fatalf("escalations = %q", h.escalated)
+	}
+	if len(h.sessions) != 4 {
+		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
+	}
+	second := h.sessions[1]
+	if !slices.Equal(second.Findings, []string{"ran x", "human sebastian answered the escalation: you may edit the script"}) || second.ParentSessionID != "s1" {
+		t.Fatalf("second attempt = %+v", second)
+	}
+	if !slices.Contains(h.states, "running") {
+		t.Fatalf("states = %v", h.states)
+	}
+}
+
+func TestWorkflowEscalationIssueClosedFails(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "impossible"})
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q after %d sessions, want failed after one", final, len(h.sessions))
+	}
+	if !strings.Contains(h.finals[0][1], "issue closed") {
+		t.Fatalf("reason = %q", h.finals[0][1])
+	}
+}
+
+// A run that finds its task waiting for a human (factoryd restarted, the
+// workflow was healed) asks again and waits; it runs no session first.
+func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human"}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 900})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "restarted") {
+		t.Fatalf("escalations = %q", h.escalated)
+	}
+	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, []string{"human sebastian answered the escalation: go on"}) {
+		t.Fatalf("sessions = %+v", h.sessions)
+	}
+}
+
+func TestWorkflowCarriesHalfWayAcrossSessions(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", HalfWayDone: true},
+		SessionResult{Outcome: OutcomeRedirect, SessionID: "s2"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"})
+	h.run(t)
+	if h.sessions[0].HalfWayDone || !h.sessions[1].HalfWayDone || !h.sessions[2].HalfWayDone {
+		t.Fatalf("half-way flags = %v %v %v, want false true true", h.sessions[0].HalfWayDone, h.sessions[1].HalfWayDone, h.sessions[2].HalfWayDone)
 	}
 }

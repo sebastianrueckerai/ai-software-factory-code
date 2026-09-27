@@ -75,7 +75,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
 	}
-	for _, status := range []string{"queued", "running", "in-review", "closing"} {
+	for _, status := range []string{"queued", "running", "in-review", "waiting-human", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)

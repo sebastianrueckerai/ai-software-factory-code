@@ -81,7 +81,7 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	// MarkStarted moves a queued, running or in-review task to running and
+	// MarkStarted moves a queued, running, in-review or waiting-human task to running and
 	// stamps started_at on the first call only.
 	MarkStarted(ctx context.Context, id string) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
@@ -287,7 +287,7 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, now())
-		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review')`, id)
+		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review', 'waiting-human')`, id)
 	return oneRow(res, err, "task "+id)
 }
 

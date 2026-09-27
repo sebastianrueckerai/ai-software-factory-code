@@ -94,7 +94,11 @@ func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig Tas
 	if w.err != nil {
 		return w.err
 	}
-	w.signals = append(w.signals, fmt.Sprintf("%s %s %s #%d: %s", taskID, name, sig.Author, sig.PR, sig.Body))
+	comment := ""
+	if sig.Comment != 0 {
+		comment = fmt.Sprintf(" c%d", sig.Comment)
+	}
+	w.signals = append(w.signals, fmt.Sprintf("%s %s %s #%d%s: %s", taskID, name, sig.Author, sig.PR, comment, sig.Body))
 	return nil
 }
 
@@ -521,14 +525,23 @@ func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
 		"is_pull":    true,
 	})
 	issue, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 30},
-		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "a note on the issue"},
+		"comment":    map[string]any{"id": 77, "user": map[string]string{"login": "sebastian"}, "body": "a note on the issue"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+	})
+	edited, _ := json.Marshal(map[string]any{
+		"action":     "edited",
+		"issue":      map[string]any{"number": 30},
+		"comment":    map[string]any{"id": 77, "user": map[string]string{"login": "sebastian"}, "body": "a note, edited"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 	})
 	postWebhook(in, "pull_request_comment", pr, sign(webhookSecret, pr))
 	postWebhook(in, "issue_comment", issue, sign(webhookSecret, issue))
-	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-pr changes_requested sebastian #21: one nit" {
-		t.Fatalf("signals = %q, want only the PR comment as changes_requested", got)
+	postWebhook(in, "issue_comment", edited, sign(webhookSecret, edited))
+	want := []string{"t-pr changes_requested sebastian #21: one nit", "t-issue human_comment sebastian #0 c77: a note on the issue"}
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want %q: the PR comment requests changes, a new issue comment is a human comment", got, want)
 	}
 }
 

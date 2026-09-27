@@ -42,3 +42,16 @@ func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
 func (r *SessionRecorder) Snapshot(ctx context.Context, findings []string, restartState []byte) error {
 	return r.store.UpdateSession(ctx, r.id, findings, restartState)
 }
+
+// Tail is the history's last n bytes, from a line start.
+func (r *SessionRecorder) Tail(n int) string {
+	b := r.history.Bytes()
+	if len(b) <= n {
+		return string(b)
+	}
+	b = b[len(b)-n:]
+	if i := bytes.IndexByte(b, '\n'); i >= 0 {
+		b = b[i+1:]
+	}
+	return string(b)
+}

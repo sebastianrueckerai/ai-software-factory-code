@@ -101,11 +101,23 @@ func main() {
 		MaxSessions:    envInt("MAX_SESSIONS", 3),
 		ChecksTimeout:  envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
-			NoProgressAfter:  5 * time.Minute,
-			WallClockCap:     20 * time.Minute,
-			RepetitionEvents: 24,
+			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
+			WallClockCap:     envDuration("WALL_CLOCK_CAP", 20*time.Minute),
+			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
+			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),
+			SameCall:         envInt("SUPERVISE_SAME_CALL", factoryd.DefaultSameCall),
+			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),
+			MaxCalls:         envInt("SUPERVISOR_MAX_CALLS", factoryd.DefaultMaxCalls),
 		},
-	}, store, kube, forgejo, completion, objects)
+	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
+		BaseURL: litellm.BaseURL,
+		Admin:   litellm,
+		Alias:   env("SUPERVISOR_MODEL", "supervisor"),
+		Budget: factoryd.TokenBudget{
+			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
+			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 8192),
+		},
+	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}

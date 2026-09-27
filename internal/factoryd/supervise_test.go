@@ -40,7 +40,7 @@ func TestSupervisorNoProgressBoundary(t *testing.T) {
 		t.Fatalf("tripped one nanosecond early: %+v", trip)
 	}
 	trip := s.Tick(t0.Add(5 * time.Minute))
-	if trip == nil || trip.Kind != TripNoProgress || trip.RetryStrongerModel {
+	if trip == nil || trip.Kind != TripNoProgress {
 		t.Fatalf("trip = %+v, want no_progress resume", trip)
 	}
 	// Fresh progress pushes the boundary out.
@@ -59,6 +59,7 @@ func TestSupervisorNoProgressBoundary(t *testing.T) {
 
 func TestSupervisorWallClockCapWinsOverProgress(t *testing.T) {
 	s := mustSupervisor(t, 5*time.Minute, 30*time.Minute, 1000)
+	s.halfWayDone = true
 	t0 := time.Unix(0, 0)
 	// Events keep flowing: no-progress never fires, but the cap does.
 	for m := 0; m <= 30; m++ {
@@ -66,7 +67,7 @@ func TestSupervisorWallClockCapWinsOverProgress(t *testing.T) {
 			if m != 30 {
 				t.Fatalf("tripped at minute %d: %+v", m, trip)
 			}
-			if trip.Kind != TripWallClock || trip.RetryStrongerModel {
+			if trip.Kind != TripWallClock {
 				t.Fatalf("trip = %+v, want wall_clock resume", trip)
 			}
 			return
@@ -108,8 +109,8 @@ func TestSupervisorRepetitionDetector(t *testing.T) {
 			t.Fatalf("step %d (%s): trip = %+v, want trip=%v", i, step.ev.Kind, trip, step.trip)
 		}
 	}
-	if trip.Kind != TripRepetition || !trip.RetryStrongerModel {
-		t.Fatalf("trip = %+v, want repetition retry-stronger-model", trip)
+	if trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
 	}
 	// The snapshot findings carry what the session actually did.
 	joined := strings.Join(trip.Findings, "\n")
@@ -128,6 +129,7 @@ func TestSupervisorWallClockSpansSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	s.halfWayDone = true
 	if trip := s.Tick(taskStart.Add(29*time.Minute + 59*time.Second)); trip != nil {
 		t.Fatalf("tripped before the task cap: %+v", trip)
 	}
@@ -413,5 +415,83 @@ func TestResetClearsOnlyTheTrippedDetector(t *testing.T) {
 	d.observe(cmdEvent("go test", 1, "same"))
 	if trip := d.observe(cmdEvent("go test", 1, "same")); trip == nil || trip.Kind != TripSameFailure {
 		t.Fatalf("trip = %+v, want same_failure again after 3 more", trip)
+	}
+}
+
+func TestSupervisorHalfWayByTimeFiresOncePerTask(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 100}
+	start := time.Unix(0, 0)
+	// a second session: 8 of the 20 minutes were used before it
+	s, err := NewSupervisor(cfg, start, start.Add(8*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trip := s.Tick(start.Add(10*time.Minute - time.Second)); trip != nil {
+		t.Fatalf("tripped before half way: %+v", trip)
+	}
+	trip := s.Tick(start.Add(10 * time.Minute))
+	if trip == nil || trip.Kind != TripHalfWay || !s.HalfWayDone() {
+		t.Fatalf("trip = %+v, want half_way at 10 of 20 minutes", trip)
+	}
+	s.Resume(start.Add(10 * time.Minute))
+	if trip := s.Tick(start.Add(15 * time.Minute)); trip != nil {
+		t.Fatalf("half way fired twice: %+v", trip)
+	}
+	// the next session of the same task starts with the flag the workflow carried
+	s2, _ := NewSupervisor(cfg, start, start.Add(12*time.Minute))
+	s2.halfWayDone = true
+	if trip := s2.Tick(start.Add(12 * time.Minute)); trip != nil {
+		t.Fatalf("half way fired again in the next session: %+v", trip)
+	}
+}
+
+func TestSupervisorHalfWayByBudget(t *testing.T) {
+	s := mustSupervisor(t, time.Hour, time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	s.SetSpend(0.149, 0.3)
+	if trip := s.Tick(t0.Add(time.Minute)); trip != nil {
+		t.Fatalf("tripped below half the budget: %+v", trip)
+	}
+	s.SetSpend(0.15, 0.3)
+	if trip := s.Tick(t0.Add(2 * time.Minute)); trip == nil || trip.Kind != TripHalfWay || !strings.Contains(trip.Detail, "50%") {
+		t.Fatalf("trip = %+v, want half_way naming 50%% of the budget", trip)
+	}
+}
+
+func TestSupervisorRoutesEventsThroughTheTraceDetectors(t *testing.T) {
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	var trip *Trip
+	for i := 0; i < 3; i++ {
+		trip = s.Event(cmdEvent("sh scripts/loopcheck.sh", 1, "loopcheck: impossible"), t0.Add(time.Duration(i)*time.Second))
+	}
+	if trip == nil || trip.Kind != TripSameFailure || len(trip.Findings) != 3 {
+		t.Fatalf("trip = %+v, want same_failure with the three runs as findings", trip)
+	}
+	// continue: the detector starts over, the session runs on
+	s.Resume(t0.Add(time.Minute))
+	if trip := s.Event(cmdEvent("sh scripts/loopcheck.sh", 1, "loopcheck: impossible"), t0.Add(61*time.Second)); trip != nil {
+		t.Fatalf("tripped right after continue: %+v", trip)
+	}
+	// resume also restarts the silence clock
+	if trip := s.Tick(t0.Add(61*time.Second + 30*time.Minute - time.Second)); trip != nil {
+		t.Fatalf("stall counted the supervisor's time: %+v", trip)
+	}
+}
+
+func TestSupervisorResumeResetsReadingWithoutWriting(t *testing.T) {
+	s := mustSupervisor(t, time.Hour, time.Hour, 3)
+	t0 := time.Unix(0, 0)
+	for i := 0; i < 3; i++ {
+		s.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint(i)}), t0)
+	}
+	if s.tripped == nil || s.tripped.Kind != TripRepetition {
+		t.Fatalf("tripped = %+v, want repetition", s.tripped)
+	}
+	s.Resume(t0)
+	for i := 3; i < 5; i++ {
+		if trip := s.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint(i)}), t0); trip != nil {
+			t.Fatalf("read %d tripped after the reset: %+v", i, trip)
+		}
 	}
 }

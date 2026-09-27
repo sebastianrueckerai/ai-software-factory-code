@@ -343,7 +343,7 @@ func TestForgejoCreateIssueComment(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	if err := f.CreateIssueComment(context.Background(), "sf", "r", 3, "attempts exhausted"); err != nil {
+	if _, err := f.CreateIssueComment(context.Background(), "sf", "r", 3, "attempts exhausted"); err != nil {
 		t.Fatalf("CreateIssueComment: %v", err)
 	}
 	if gotPath != "/api/v1/repos/sf/r/issues/3/comments" {

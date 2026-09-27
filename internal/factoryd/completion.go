@@ -25,7 +25,7 @@ type Completion struct {
 func TokenName(taskID string) string { return "task-" + taskID }
 
 func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
-	if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review", "closing"}, "closing"); err != nil {
+	if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review", "waiting-human", "closing"}, "closing"); err != nil {
 		return err
 	}
 	if err := c.reconcile(ctx, taskID); err != nil {

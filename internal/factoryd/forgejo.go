@@ -645,14 +645,23 @@ func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, numb
 // CreateIssueComment posts a comment on an issue: the workflow uses it to
 // record why a task's attempts were exhausted or it otherwise failed, on
 // the same issue task 42 filed at intake.
-func (f *Forgejo) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int64, body string) error {
+func (f *Forgejo) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int64, body string) (int64, error) {
 	payload, err := json.Marshal(map[string]any{"body": body})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber)
-	_, err = f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
-	return err
+	res, err := f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	if err != nil {
+		return 0, err
+	}
+	var c struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(res, &c); err != nil {
+		return 0, fmt.Errorf("forgejo comment on %s/%s#%d: %w", owner, repo, issueNumber, err)
+	}
+	return c.ID, nil
 }
 
 // PullRequestState reads pull request number: open, closed or merged, and

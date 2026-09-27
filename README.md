@@ -109,9 +109,9 @@ for the branch and recording its number on the task; a commit whose
 `.forgejo` tree entry differs from the base's gets no PR, and an already
 open one is closed with the reason), `SetState in-review`, `WaitChecks`
 on the head commit's combined status (`CHECKS_TIMEOUT`, default 45m).
-Red checks or a repetition trip make the next attempt climb to
-`STRONGER_MODEL` (default `factory/coding-frontier`) with the failures as
-findings. Signals from the webhook intake are delivered with
+Red checks make the next attempt climb to `STRONGER_MODEL` (default
+`factory/coding-frontier`) with the failures as findings; supervision
+(below) can redirect, climb or escalate. Signals from the webhook intake are delivered with
 signal-with-start, so a signal to a task whose run died starts a new one
 (which reconciles first). `pr_merged` (done), `pr_closed` (closed
 without merge: failed) and `issue_closed` (done if the PR merged, else
@@ -119,7 +119,9 @@ failed) decide the task wherever they land: a running session or check
 wait is cancelled at once (the session deletes its pod and namespace
 and revokes its credentials first), and they are drained before every
 attempt, before a PR is opened and after the checks; green checks wait
-for them at no cost. `changes_requested` (a review requesting changes, a
+for them at no cost. `human_comment` (a new
+non-bot comment on the task's issue) answers an escalation.
+`changes_requested` (a review requesting changes, a
 review comment, or a PR comment by a non-bot user) starts one more
 attempt, all pending requests coalesced into its findings. Pull request
 signals count only for the task's own PR. A webhook delivery is marked
@@ -132,6 +134,51 @@ A restarted factoryd loses nothing: Temporal retries an interrupted
 `RunSession` on the new pod, which removes the dead session's namespace,
 pod and credentials and starts a new session with the dead one as parent
 and its findings.
+
+## Supervision
+
+`internal/factoryd/supervise.go` watches every session's event stream.
+Detectors, thresholds with their env overrides: stall (no events for
+`SUPERVISE_NO_PROGRESS_AFTER`, 5m), reading without writing
+(`SUPERVISE_READING_WITHOUT_WRITING` tool calls and commands without a
+file change, 24), same failure (the same command failing with the same
+error signature `SUPERVISE_SAME_FAILURE` times in a row, 3; the
+signature is the command plus its output tail with timestamps, hex
+addresses, durations, temp paths, line and column numbers and pids
+stripped), same call (the same tool with the same arguments
+`SUPERVISE_SAME_CALL` times in a session, 4), flip-flop (a file returns
+to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
+the diff against the base last grew, with no command newly passing, 15),
+half way (half the wall-clock cap `WALL_CLOCK_CAP` or half the budget;
+once per task). The wall-clock cap ends the session. Every other trip
+asks the supervisor, a model under the LiteLLM alias `supervisor`,
+called directly with a virtual key minted per call (metadata `task_id`,
+`max_budget` the task's remaining budget, model `supervisor` only, so
+the settlement books its spend and the session end blocks it). It reads
+the brief, the trip, a progress digest and the session record's tail,
+and answers one of `continue` (the detector resets, the session runs
+on), `redirect` (new session, same rung, its guidance as findings),
+`retry_stronger` (the next rung; at the top rung a redirect) or
+`escalate`; an invalid answer or a failed call escalates. At most
+`SUPERVISOR_MAX_CALLS` (3) calls per session; the next trip escalates
+without one. Nothing it answers changes a cap, a budget or the ladder.
+A stopping session's pod is deleted with a 60 s grace period: the worker
+ends the agent, commits and pushes its work in progress through the
+same clean push path, and the next session starts from it. Escalation
+moves the task to `waiting-human`, comments the reason and the digest
+summary on the issue, and waits: a newer non-bot issue comment starts
+one more attempt with the comment as findings, closing the issue fails
+the task. Every decision is a `supervisor` event in the session record,
+a timeline step and an issue comment.
+
+The worker reports what the detectors read: commands with exit code and
+output tail, tool calls with arguments and their canonical hash, file
+changes with the content hash, and a checkpoint with the diff against
+the base (`--shortstat` numbers and the capped patch) every 15 s when it
+changed. It measures the diff in fresh repos of its own that borrow the
+base objects, never in the agent's repo: hooks and fsmonitor off, no
+external diff or textconv, no system or global config, no token in the
+environment.
 
 Changing `TaskWorkflow`: a running workflow can wait days for its
 reviewer and replays on the new code, so every change to the commands it

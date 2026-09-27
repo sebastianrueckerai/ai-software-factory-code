@@ -34,7 +34,7 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 // whose workflow died in review or mid-completion is not stranded.
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
-	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tc": "closing", "td": "done", "tf": "failed"} {
+	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "td": "done", "tf": "failed"} {
 		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/repo"})
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
@@ -42,7 +42,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	wf := &fakeWorkflows{}
 	HealPass(context.Background(), store, wf)
 	slices.Sort(wf.started)
-	if want := []string{"tc", "tq", "tr", "tv"}; !slices.Equal(wf.started, want) {
+	if want := []string{"tc", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
 	}
 	if len(store.pruned) != 1 || store.pruned[0] != 30*24*time.Hour {

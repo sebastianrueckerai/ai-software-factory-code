@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -90,7 +91,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewDecoder(r.Body).Decode(&body)
 			f.comments = append(f.comments, body.Body)
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{}`)
+			fmt.Fprintf(w, `{"id":%d}`, 700+len(f.comments))
 		case r.Method == "GET" && strings.HasSuffix(p, "/labels"):
 			var n int64
 			fmt.Sscanf(p, "/issues/%d/labels", &n)
@@ -417,3 +418,37 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 func withPR(t Task, n int64) Task      { t.PRNumber = n; return t }
 func withStatus(t Task, s string) Task { t.Status = s; return t }
 func withKind(t Task, k string) Task   { t.Kind = k; return t }
+
+// Escalate moves the task to waiting-human, mirrors it on the issue and
+// asks there; its comment id is what an answer must be newer than. A
+// healed run asking again keeps the state and asks again.
+func TestEscalateAsksAHumanOnTheIssue(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+	r, store, objects := newActivityRunner(t, prTask, fj)
+
+	var id int64
+	val, err := execActivity(t, r, ActivityEscalate, "t1", "the check cannot pass\n\nProgress: 3 commands")
+	if err != nil || val.Get(&id) != nil {
+		t.Fatalf("Escalate: %v", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "waiting-human" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	if labels := fj.labels[4]; !slices.Equal(labels, []string{"agent", "state/waiting-human"}) {
+		t.Fatalf("labels = %v", labels)
+	}
+	if id != 701 || len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "the check cannot pass") || !strings.Contains(fj.comments[0], "Reply on this issue") {
+		t.Fatalf("id = %d, comments = %q", id, fj.comments)
+	}
+	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if !strings.Contains(string(timeline), `"step":"escalated"`) || !strings.Contains(string(timeline), `"comment":701`) {
+		t.Fatalf("timeline = %s", timeline)
+	}
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", "asked again"); err != nil || len(fj.comments) != 2 {
+		t.Fatalf("second Escalate: %v, comments = %d", err, len(fj.comments))
+	}
+	// a human answer starts the next attempt
+	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
+		t.Fatalf("SetState running from waiting-human: %v", err)
+	}
+}

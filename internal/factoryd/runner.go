@@ -50,9 +50,14 @@ type Runner struct {
 	completion *Completion
 	objects    ObjectStore
 	timeline   Timeline
+	supervisor *SupervisorModel
+	stopWait   time.Duration
 }
 
-func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore) (*Runner, error) {
+func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore, supervisor *SupervisorModel) (*Runner, error) {
+	if supervisor == nil {
+		return nil, fmt.Errorf("runner: a supervisor model is required")
+	}
 	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" {
 		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL are required")
 	}
@@ -79,8 +84,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.ChecksPoll <= 0 {
 		cfg.ChecksPoll = 30 * time.Second
 	}
-	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion,
-		objects: objects, timeline: Timeline{Objects: objects}}, nil
+	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
+		objects: objects, timeline: Timeline{Objects: objects}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
 }
 
 // WorkflowConfig is the task policy TaskWorkflow captures at start.
@@ -125,27 +130,39 @@ func (r *Runner) BootSweep(ctx context.Context) {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id       string
-	parent   string
-	findings []string
-	model    string
-	startRef string
+	id          string
+	parent      string
+	findings    []string
+	model       string
+	startRef    string
+	halfWayDone bool
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
-// a supervision trip, or the pod dying without either.
+// a trip (with the supervisor's decision unless it was the wall-clock
+// cap), or the pod dying without either.
 type sessionOutcome struct {
-	result   *harness.Result
-	commit   string
-	trip     *Trip
-	noResult string
-	findings []string
+	result      *harness.Result
+	commit      string
+	trip        *Trip
+	decision    *Decision
+	digest      string
+	noResult    string
+	findings    []string
+	halfWayDone bool
 }
 
+// workerTerminationGrace is how long a stopped worker gets to commit and
+// push its work in progress before the kubelet kills it; runSession reads
+// its log five seconds longer.
+const workerTerminationGrace = 60
+
 // runSession runs one worker pod in the task namespace until it yields a
-// result, trips its supervisor (whose wall clock ends at deadline), or
-// dies. progress receives the event count and findings so far, for the
-// activity heartbeat.
+// result, hits the wall-clock cap (deadline), or dies. Every other trip
+// asks the supervisor model; continue lets the session run on, any other
+// decision stops it. A stopped worker commits and pushes its work in
+// progress before it exits. progress receives the event count and
+// findings so far, for the activity heartbeat.
 func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (sessionOutcome, error) {
 	out := sessionOutcome{}
 	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
@@ -156,7 +173,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.findings = sup.Findings() }()
+	sup.halfWayDone = s.halfWayDone
+	defer func() { out.findings, out.halfWayDone = sup.Findings(), sup.HalfWayDone() }()
+	digest := newDigestBuilder(time.Now())
+	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
+		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls)
+	}}
 	podName := "worker-" + s.id
 	pod := r.workerPodSpec(t, s)
 	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
@@ -204,17 +226,92 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		close(lines)
 	}()
 
+	// read takes one log line: the result ends the session; an event is
+	// recorded and returned for supervision.
+	events := 0
+	read := func(line []byte) (ev *harness.Event, done bool) {
+		var env harness.WorkerEnvelope
+		if err := json.Unmarshal(line, &env); err != nil {
+			// the worker's stderr log shares the stream with its envelopes
+			log.Printf("task %s: worker: %s", t.ID, line)
+			return nil, false
+		}
+		if env.Result != nil {
+			res := *env.Result
+			out.result = &res
+			return nil, true
+		}
+		if env.Event == nil {
+			return nil, false
+		}
+		if env.Event.Kind == harness.EventSupervisor {
+			log.Printf("task %s: dropped a supervisor event from the worker", t.ID)
+			return nil, false
+		}
+		if err := recorder.Record(ctx, *env.Event); err != nil {
+			log.Printf("task %s: record event: %v", t.ID, err)
+		}
+		if env.Event.Kind == harness.EventPushed {
+			out.commit, _ = env.Event.Detail["commit"].(string)
+		}
+		events++
+		return env.Event, false
+	}
+	// stop asks the worker to end (SIGTERM through the pod's deletion) and
+	// reads on until it has pushed its work in progress and reported, or
+	// its grace period is over.
+	stop := func(trip *Trip) {
+		out.trip = r.abandon(recorder, trip)
+		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
+			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
+		}
+		timeout := time.After(r.stopWait)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timeout:
+				return
+			case line, ok := <-lines:
+				if !ok {
+					return
+				}
+				if _, done := read(line); done {
+					return
+				}
+			}
+		}
+	}
+	// onTrip returns true when the session stops.
+	onTrip := func(trip *Trip) bool {
+		if trip.Kind == TripWallClock {
+			stop(trip)
+			return true
+		}
+		d, called := supervision.onTrip(ctx, trip)
+		out.digest = digest.digest().Summary()
+		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
+		if d.Action == ActionContinue {
+			sup.Resume(time.Now())
+			return false
+		}
+		out.decision = &d
+		stop(trip)
+		return true
+	}
+
 	tick := time.NewTicker(r.supervisionTick())
 	defer tick.Stop()
-	events := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case <-tick.C:
-			if trip := sup.Tick(time.Now()); trip != nil {
-				out.trip = r.abandon(recorder, trip)
-				return out, nil
+			if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
+				sup.SetSpend(cur.SpentEUR, cur.BudgetEUR)
+			}
+			if trip := sup.Tick(time.Now()); trip != nil && onTrip(trip) {
+				return out, ctx.Err()
 			}
 		case line, ok := <-lines:
 			if !ok {
@@ -223,33 +320,71 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 				return out, nil
 			}
-			var env harness.WorkerEnvelope
-			if err := json.Unmarshal(line, &env); err != nil {
-				// the worker's stderr log shares the stream with its envelopes
-				log.Printf("task %s: worker: %s", t.ID, line)
-				continue
-			}
-			if env.Result != nil {
-				res := *env.Result
-				out.result = &res
+			ev, done := read(line)
+			if done {
 				return out, nil
 			}
-			if env.Event != nil {
-				if err := recorder.Record(ctx, *env.Event); err != nil {
-					log.Printf("task %s: record event: %v", t.ID, err)
-				}
-				if env.Event.Kind == harness.EventPushed {
-					out.commit, _ = env.Event.Detail["commit"].(string)
-				}
-				events++
-				trip := sup.Event(*env.Event, time.Now())
-				progress(events, sup.Findings())
-				if trip != nil {
-					out.trip = r.abandon(recorder, trip)
-					return out, nil
-				}
+			if ev == nil {
+				continue
+			}
+			now := time.Now()
+			digest.add(*ev, now)
+			trip := sup.Event(*ev, now)
+			progress(events, sup.Findings())
+			if trip != nil && onTrip(trip) {
+				return out, ctx.Err()
 			}
 		}
+	}
+}
+
+// askSupervisor builds the supervisor's input and calls it with the task's
+// remaining budget as the key's cap.
+func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
+	cur, ok, err := r.store.Task(ctx, t.ID)
+	if err != nil || !ok {
+		return Decision{Action: ActionEscalate, Reason: fmt.Sprintf("supervisor not called: task unreadable (%v)", err)}
+	}
+	return r.supervisor.Decide(ctx, t.ID, cur.BudgetEUR-cur.SpentEUR, SupervisorInput{
+		Brief:   harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings},
+		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},
+		Digest:  digest.digest(),
+		Record:  recorder.Tail(maxRecordTail),
+		Model:   s.model,
+		TopRung: s.model == r.cfg.Models.Stronger,
+		Calls:   call,
+		MaxCall: maxCalls,
+	})
+}
+
+// recordDecision writes a supervisor decision into the session record, the
+// timeline and, except for an escalation (the workflow's Escalate comment
+// carries it), onto the issue.
+func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, called bool, digest string) {
+	detail := map[string]any{"detector": string(trip.Kind), "trip": trip.Detail, "digest": digest,
+		"decision": string(d.Action), "guidance": d.Guidance, "reason": d.Reason, "called": called}
+	if err := recorder.Record(ctx, harness.Event{Time: time.Now(), Kind: harness.EventSupervisor, Detail: detail}); err != nil {
+		log.Printf("task %s: record supervisor decision: %v", t.ID, err)
+	}
+	detail["session"] = s.id
+	r.record(ctx, t.ID, "supervisor", detail)
+	if d.Action == ActionEscalate || t.IssueNumber == 0 {
+		return
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return
+	}
+	body := fmt.Sprintf("factoryd supervisor, session %s: **%s** after the %s detector tripped.\n\nDetector: %s\nProgress: %s",
+		s.id, d.Action, trip.Kind, trip.Detail, digest)
+	if d.Guidance != "" {
+		body += "\nGuidance: " + d.Guidance
+	}
+	if d.Reason != "" {
+		body += "\nReason: " + d.Reason
+	}
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
+		log.Printf("task %s: comment supervisor decision: %v", t.ID, err)
 	}
 }
 
@@ -488,7 +623,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 			},
 			"imagePullSecrets":              pullSecrets,
-			"terminationGracePeriodSeconds": 30,
+			"terminationGracePeriodSeconds": workerTerminationGrace,
 			// FQDN service names resolve on the first query; search-path
 			// expansions would be refused by the DNS allowlist
 			"dnsConfig": map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},

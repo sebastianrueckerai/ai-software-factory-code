@@ -92,7 +92,7 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 
 func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t, ok := s.tasks[id]
-	if !ok || !slices.Contains([]string{"queued", "running", "in-review"}, t.Status) {
+	if !ok || !slices.Contains([]string{"queued", "running", "in-review", "waiting-human"}, t.Status) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
@@ -309,6 +309,12 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.MarkStarted(ctx, "t1"); err != nil {
 		t.Fatalf("MarkStarted from in-review: %v", err)
+	}
+	if err := s.TransitionTask(ctx, "t1", []string{"running"}, "waiting-human"); err != nil {
+		t.Fatalf("TransitionTask running -> waiting-human: %v", err)
+	}
+	if err := s.MarkStarted(ctx, "t1"); err != nil {
+		t.Fatalf("MarkStarted from waiting-human (a human answered): %v", err)
 	}
 	var again time.Time
 	if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM tasks WHERE id = 't1'`).Scan(&again); err != nil {

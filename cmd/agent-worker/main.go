@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -116,24 +117,20 @@ func run(log func(string, ...any)) int {
 		defer close(ckDone)
 		ck.loop(ckCtx, checkpointEvery, emit, log)
 	}()
-	res := oc.Run(ctx, brief, emit)
+	// factoryd stops a session (a supervisor decision, the wall-clock cap)
+	// by deleting the pod: SIGTERM ends the agent, and its work in progress
+	// is committed and pushed like a finished session's before the grace
+	// period runs out.
+	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
+	defer stopRun()
+	res := oc.Run(runCtx, brief, emit)
+	stopped := runCtx.Err() != nil
 	stopCheckpoints()
 	<-ckDone
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}
-
-	if res.Success {
-		commit, err := commitAndPush(repoDir, env, base, killOthers)
-		if err != nil {
-			res = harness.Result{Success: false, Summary: "push failed: " + err.Error()}
-		} else if commit != "" {
-			emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": env.branch, "commit": commit}})
-			res.Summary = "pushed branch " + env.branch + " at " + commit
-		} else {
-			res.Summary = "no changes to push"
-		}
-	}
+	res = deliver(res, stopped, func() (string, error) { return commitAndPush(repoDir, env, base, killOthers) }, env.branch, emit)
 	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &res})
 	fmt.Println(string(line))
 	if !res.Success {
@@ -141,6 +138,32 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 	return 0
+}
+
+// deliver pushes a finished session's result, or a stopped session's work
+// in progress, and says so in the result.
+func deliver(res harness.Result, stopped bool, push func() (string, error), branch string, emit func(harness.Event)) harness.Result {
+	if !res.Success && !stopped {
+		return res
+	}
+	commit, err := push()
+	switch {
+	case err != nil:
+		return harness.Result{Success: false, Summary: "push failed: " + err.Error()}
+	case commit != "":
+		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": branch, "commit": commit}})
+	}
+	switch {
+	case res.Success && commit != "":
+		res.Summary = "pushed branch " + branch + " at " + commit
+	case res.Success:
+		res.Summary = "no changes to push"
+	case commit != "":
+		res.Summary = "stopped; work in progress pushed to " + branch + " at " + commit
+	default:
+		res.Summary = "stopped; no work in progress to push"
+	}
+	return res
 }
 
 // killOthers SIGKILLs every other process in the container and reaps them.

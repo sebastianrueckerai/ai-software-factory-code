@@ -35,6 +35,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRecordStep:        r.RecordStep,
 		ActivityFinish:            r.Finish,
 		ActivityReconcile:         r.Reconcile,
+		ActivityEscalate:          r.Escalate,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -72,7 +73,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
-		"running":   {"queued", "running", "in-review"},
+		"running":   {"queued", "running", "in-review", "waiting-human"},
 		"in-review": {"running", "in-review"},
 	}[state]
 	if from == nil {
@@ -163,7 +164,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model, halfWayDone: in.HalfWayDone}
 	// the branch head, when the branch exists, is where every attempt
 	// continues: the push of an earlier attempt, or of a session that died
 	// after pushing, which a non-force push must build on
@@ -229,16 +230,31 @@ func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) 
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
-	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush}
+	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, HalfWayDone: out.halfWayDone}
 	switch {
-	case out.trip != nil:
-		res.Summary = "supervision trip: " + string(out.trip.Kind)
-		res.Findings = out.trip.Findings
-		switch {
-		case out.trip.Kind == TripWallClock:
-			res.Outcome = OutcomeWallClock
-		case out.trip.RetryStrongerModel:
+	case out.trip != nil && out.trip.Kind == TripWallClock:
+		res.Outcome, res.Commit, res.Findings = OutcomeWallClock, out.commit, out.trip.Findings
+		res.Summary = "supervision trip: " + string(TripWallClock)
+		return res
+	case out.trip != nil && out.decision != nil:
+		d := out.decision
+		res.Commit = out.commit
+		res.Summary = fmt.Sprintf("supervisor: %s after %s: %s", d.Action, out.trip.Kind, out.trip.Detail)
+		res.Findings = slices.Clone(out.trip.Findings)
+		if out.commit != "" {
+			res.Findings = append(res.Findings, "the stopped session's work in progress is on the branch at "+out.commit)
+		}
+		if d.Guidance != "" {
+			res.Findings = append(res.Findings, "supervisor guidance: "+d.Guidance)
+		}
+		switch d.Action {
+		case ActionRedirect:
+			res.Outcome = OutcomeRedirect
+		case ActionRetryStronger:
 			res.Outcome = OutcomeRetryStronger
+		default:
+			res.Outcome = OutcomeEscalate
+			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)
 		}
 		return res
 	case out.result != nil && out.result.Success && out.commit != "":
@@ -252,6 +268,29 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	res.Findings = append(slices.Clone(out.findings), "previous session ended without a pushed commit: "+res.Summary)
 	return res
+}
+
+// Escalate hands the task to a human (architecture 6.6): state
+// waiting-human, mirrored on the issue, and a comment with the reason. It
+// returns the comment's id: only later comments answer it.
+func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if t.Status != "waiting-human" {
+		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-human"); err != nil {
+			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
+		}
+		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
+	}
+	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+
+		" needs a human.\n\n"+reason+"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task.")
+	if err != nil {
+		return 0, err
+	}
+	r.record(ctx, taskID, "escalated", map[string]any{"reason": reason, "comment": id})
+	return id, nil
 }
 
 // record appends to the timeline; a failed append is logged, never fails
@@ -295,7 +334,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if err := r.refuseForgejoChange(ctx, t, repo, commit); err != nil {
 		if existing != nil && isTerminal(err) {
 			msg := "factoryd: closing this pull request: " + errMessage(err)
-			if err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
+			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
 				return PullRequest{}, err
 			}
 			if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, existing.Number); err != nil {
@@ -482,7 +521,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	}
 	// a malformed repository still completes the task, only uncommented
 	if repo, err := SplitRepo(t.Repository); err == nil && final == "failed" && t.IssueNumber != 0 {
-		if err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+" failed: "+reason); err != nil {
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+" failed: "+reason); err != nil {
 			log.Printf("task %s: comment failure reason: %v", taskID, err)
 		}
 	}

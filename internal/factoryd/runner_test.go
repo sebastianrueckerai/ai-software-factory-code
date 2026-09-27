@@ -256,6 +256,7 @@ type forgejoHub struct {
 	nextID      int64
 	calls       []string
 	branchHead  string // the task branch's head; empty = no branch yet
+	comments    []string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -283,6 +284,12 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.calls = append(h.calls, "list")
 			list, _ := json.Marshal(h.tokens)
 			w.Write(list)
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/comments"):
+			var body struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&body)
+			h.comments = append(h.comments, body.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
 			if h.branchHead == "" {
 				w.WriteHeader(http.StatusNotFound)
@@ -333,7 +340,9 @@ func testRunnerConfig() RunnerConfig {
 		HeadroomTokens:       16384,
 		MaxSessions:          3,
 		ChecksPoll:           time.Millisecond,
-		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24},
+		// the test activity environment's deadline is 10 minutes out, so a
+		// 10 minute cap puts the half-way point 3 minutes into each session
+		Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
 	}
 }
 
@@ -360,10 +369,17 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 		Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"},
 	}
-	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects)
+	// a test that expects a supervisor call replaces this with a fakeLiteLLM
+	unexpected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected supervisor call %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(unexpected.Close)
+	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects, testSupervisorModel(unexpected.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
+	runner.stopWait = 500 * time.Millisecond
 	return runner, hub, store
 }
 
@@ -664,28 +680,150 @@ func TestRunSessionRetryAfterSetupFailureStartsClean(t *testing.T) {
 	}
 }
 
-func TestRunSessionRepetitionTripAsksForStrongerModel(t *testing.T) {
-	task := Task{ID: "t2", Status: "running", Objective: "do it", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.cfg.Supervisor.RepetitionEvents = 2
+func loopFailure(i int) string {
+	return envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{
+		"command": "sh scripts/loopcheck.sh", "exit": 1, "output": fmt.Sprintf("loopcheck: FAIL at 10:00:%02d", i)}}) + "\n"
+}
 
-	var stalling string
-	for i := 0; i < 3; i++ {
-		stalling += envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": fmt.Sprintf("cmd %d", i), "exit": 0}}) + "\n"
-	}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, stalling)
+func supervisedTask(id string) Task {
+	return Task{ID: id, Status: "running", Objective: "make loopcheck pass", Repository: "sf/repo", BudgetEUR: 0.3, SpentEUR: 0.05, IssueNumber: 7}
+}
+
+// The third identical failure trips same_failure; the supervisor (under
+// the task's own key) says retry_stronger; the worker is stopped, pushes
+// its work in progress, and the decision lands in the session record, the
+// timeline and on the issue.
+func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	f := &fakeLiteLLM{content: `{"action":"retry_stronger","guidance":"the check needs a file the agent never created"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
+		// what the worker prints after its SIGTERM
+		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": false}}) + "\n" +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped: work in progress pushed at c-wip") + "\n"
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeRetryStronger || len(res.Findings) == 0 {
-		t.Fatalf("result = %+v, want retry_stronger with findings", res)
+	if res.Outcome != OutcomeRetryStronger || res.Commit != "c-wip" {
+		t.Fatalf("result = %+v, want retry_stronger with the work in progress", res)
+	}
+	joined := strings.Join(res.Findings, "\n")
+	if !strings.Contains(joined, "supervisor guidance: the check needs a file") || !strings.Contains(joined, "c-wip") {
+		t.Fatalf("findings = %v, want the guidance and the pushed work", res.Findings)
+	}
+	if len(f.mints) != 1 || f.mints[0]["max_budget"] != 0.25 {
+		t.Fatalf("mints = %v, want one key capped at the remaining 0.25", f.mints)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	// the record: three commands, the decision, then what the stopped worker sent
+	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
+	var kinds []string
+	for _, l := range strings.Split(strings.TrimSpace(record), "\n") {
+		var ev harness.Event
+		json.Unmarshal([]byte(l), &ev)
+		kinds = append(kinds, string(ev.Kind))
+		if ev.Kind == harness.EventSupervisor && (ev.Detail["detector"] != "same_failure" || ev.Detail["decision"] != "retry_stronger" ||
+			!strings.Contains(fmt.Sprint(ev.Detail["digest"]), "3 commands (3 failed)")) {
+			t.Fatalf("supervisor event = %v", ev.Detail)
+		}
+	}
+	if strings.Join(kinds, ",") != "command,command,command,supervisor,finished,pushed" {
+		t.Fatalf("record kinds = %v", kinds)
+	}
+	timeline := string(objGet(objects, "sessions/t2/timeline.jsonl"))
+	if !strings.Contains(timeline, `"step":"supervisor"`) || !strings.Contains(timeline, `"decision":"retry_stronger"`) {
+		t.Fatalf("timeline = %s", timeline)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**retry_stronger**") || !strings.Contains(hub.comments[0], "same_failure") {
+		t.Fatalf("comments = %v", hub.comments)
 	}
 	if snap := store.sessions[res.SessionID]; len(snap.Findings) == 0 {
 		t.Fatal("tripped session left no findings snapshot")
 	}
-	if len(hub.revoked) != 1 {
-		t.Fatalf("revoked = %v", hub.revoked)
+}
+
+func TestRunSessionContinueLetsTheSessionRunOn(t *testing.T) {
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"continue","reason":"each run fails later"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + loopFailure(4) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || len(f.chats) != 1 {
+		t.Fatalf("result = %+v after %d supervisor calls, want pushed after one", res, len(f.chats))
+	}
+	if len(kube.deletedPods) != 1 {
+		t.Fatalf("deleted pods = %v, want only the cleanup delete", kube.deletedPods)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**continue**") {
+		t.Fatalf("comments = %v", hub.comments)
+	}
+}
+
+// Three continues use up the session's calls; the fourth trip escalates
+// without a call, and the escalation is left to the workflow's comment.
+func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"continue"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	var logs string
+	for i := 0; i < 12; i++ {
+		logs += loopFailure(i)
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs+resultLine(false, "stopped"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.chats) != 3 || res.Outcome != OutcomeEscalate || !strings.Contains(res.Reason, "after 3 supervisor calls") {
+		t.Fatalf("calls = %d, result = %+v; want 3 calls, then escalate", len(f.chats), res)
+	}
+	if !strings.Contains(res.Reason, "Progress: 12 commands (12 failed)") {
+		t.Fatalf("reason = %q, want the digest summary", res.Reason)
+	}
+	if len(hub.comments) != 3 {
+		t.Fatalf("comments = %d, want one per continue and none for the escalation", len(hub.comments))
+	}
+}
+
+func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner.cfg.Supervisor.RepetitionEvents = 2
+	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"write the file instead of reading"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	logs := envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "args": map[string]any{"filePath": "a"}}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "args": map[string]any{"filePath": "b"}}}) + "\n"
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeRedirect || !slices.Contains(res.Findings, "supervisor guidance: write the file instead of reading") {
+		t.Fatalf("result = %+v", res)
+	}
+}
+
+// Only factoryd writes supervisor events: one from the worker is dropped.
+func TestRunSessionDropsWorkerSupervisorEvents(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	forged := envLine(harness.Event{Kind: harness.EventSupervisor, Time: time.Now(), Detail: map[string]any{"decision": "continue"}})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, forged+"\n"+resultLine(false, "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"); len(rec) != 0 {
+		t.Fatalf("record = %s, want the forged event dropped", rec)
 	}
 }
 
@@ -818,4 +956,9 @@ func TestFreshNamespaceReplacesLeftover(t *testing.T) {
 	if l := kube.namespaces["factory-agents-t10"]; l["stale"] != "" || l["factory.ai/task"] != "t10" {
 		t.Fatalf("namespace labels = %v, want the fresh namespace", l)
 	}
+}
+
+func objGet(s *fakeObjectStore, key string) []byte {
+	b, _ := s.Get(context.Background(), key)
+	return b
 }
