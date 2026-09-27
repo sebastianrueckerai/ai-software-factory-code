@@ -21,6 +21,20 @@ import (
 
 var version = "dev"
 
+// stateLabels are the labels task 42's webhook intake and state mirroring
+// need to exist on the issue-tracked repo before anything files an issue or
+// mirrors state onto one (colors are GitHub-style #RRGGBB).
+var stateLabels = map[string]string{
+	"agent":               "#ededed",
+	"human":               "#c2e0c6",
+	"state/queued":        "#ededed",
+	"state/running":       "#1f6feb",
+	"state/waiting-human": "#d4a72c",
+	"state/in-review":     "#8250df",
+	"state/done":          "#2da44e",
+	"state/failed":        "#cf222e",
+}
+
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -101,9 +115,17 @@ func main() {
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
+	webhookIntake := &factoryd.Intake{
+		Store: store, Forgejo: forgejo, BotUser: forgejo.BotUser,
+		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), MaxBudgetEUR: maxBudget,
+	}
+	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, stateLabels); err != nil {
+		log.Printf("ensure labels: %v", err)
+	}
 	runner.BootSweep(ctx)
 	go completion.SettleLoop(ctx, time.Minute)
 	go ciSpawner.Run(ctx)
@@ -139,19 +161,31 @@ func main() {
 			http.Error(w, "objective and repository are required", http.StatusBadRequest)
 			return
 		}
-		if in.BudgetEUR <= 0 {
-			in.BudgetEUR = 2.0
+		repoParts, err := factoryd.SplitRepo(in.Repository)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
-		in.BudgetEUR = min(in.BudgetEUR, maxBudget)
+		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
 		id := factoryd.NewTaskID()
 		if in.Branch == "" {
 			in.Branch = "factory/" + id
+		}
+		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, firstLine(in.Objective), in.Objective)
+		if err != nil {
+			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := forgejo.ReplaceIssueLabels(r.Context(), repoParts.Owner, repoParts.Name, ref.Number,
+			[]string{"agent", "state/queued"}); err != nil {
+			log.Printf("task %s: label issue %d: %v", id, ref.Number, err)
 		}
 		task := factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard",
 			BudgetEUR: in.BudgetEUR, Status: "queued",
 			Objective: in.Objective, Repository: in.Repository,
 			SHA: in.SHA, Branch: in.Branch,
+			Kind: "agent", IssueNumber: ref.Number,
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -159,8 +193,12 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR}) // #nosec G104 -- best-effort response write
+		json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
+			"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR,
+			"issue_number": ref.Number, "issue_url": ref.URL,
+		})
 	}))
+	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -192,6 +230,12 @@ func main() {
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// firstLine derives an issue title from an objective's first line.
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return strings.TrimSpace(line)
 }
 
 // requireBearer admits only requests carrying the intake token.

@@ -227,6 +227,8 @@ spec:
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
           valueFrom: {secretKeyRef: {name: factoryd-intake, key: token}}
+        - name: FORGEJO_WEBHOOK_SECRET
+          valueFrom: {secretKeyRef: {name: factoryd-webhook, key: secret}}
         - name: MAX_BUDGET_EUR
           value: "5"
         readinessProbe: {httpGet: {path: /readyz, port: http}}
@@ -253,7 +255,9 @@ spec:
 ---
 # Intake callers today reach factoryd by kubectl port-forward, which enters
 # the pod's network namespace and is not subject to policy; the node itself
-# (kubelet probes) is the only network source.
+# (kubelet probes) is the only network source. Forgejo's webhook deliveries
+# (task 42, POST /webhooks/forgejo) are the one caller that arrives over the
+# in-cluster network instead.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -264,5 +268,11 @@ spec:
     matchLabels: {app: factoryd}
   ingress:
   - fromEntities: [host]
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: forgejo
+        "k8s:io.kubernetes.pod.namespace": forgejo
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]

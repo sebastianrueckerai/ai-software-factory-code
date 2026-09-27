@@ -31,10 +31,11 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
-	tasks    map[string]Task
-	sessions map[string]Session
-	elapsed  map[string]time.Duration // what the store's clock reports at the next claim
-	finished map[string]time.Time
+	tasks        map[string]Task
+	sessions     map[string]Session
+	elapsed      map[string]time.Duration // what the store's clock reports at the next claim
+	finished     map[string]time.Time
+	intakeEvents []IntakeEvent
 }
 
 func newFakeStore() *fakeStore {
@@ -43,6 +44,9 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
+	if t.Kind == "" {
+		t.Kind = "agent"
+	}
 	s.tasks[t.ID] = t
 	return nil
 }
@@ -50,6 +54,20 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil
+}
+
+func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
+func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
+	s.intakeEvents = append(s.intakeEvents, e)
+	return nil
 }
 
 func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
@@ -149,7 +167,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -171,6 +189,8 @@ func TestPGStore(t *testing.T) {
 		Repository:           "sf/ai-software-factory-code",
 		SHA:                  "abc123",
 		Branch:               "factory/t1",
+		Kind:                 "agent",
+		IssueNumber:          42,
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -181,6 +201,23 @@ func TestPGStore(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, in) {
 		t.Fatalf("task = %+v, want %+v", got, in)
+	}
+	byIssue, ok, err := s.TaskByIssue(ctx, "sf/ai-software-factory-code", 42)
+	if err != nil || !ok || byIssue.ID != "t1" {
+		t.Fatalf("TaskByIssue = (%+v, %v, %v), want (t1, true, nil)", byIssue, ok, err)
+	}
+	if _, ok, err := s.TaskByIssue(ctx, "sf/ai-software-factory-code", 999); err != nil || ok {
+		t.Fatalf("TaskByIssue unknown issue = (%v, %v), want (false, nil)", ok, err)
+	}
+	if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "looks good"}); err != nil {
+		t.Fatalf("InsertIntakeEvent: %v", err)
+	}
+	var intakeCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1'`).Scan(&intakeCount); err != nil {
+		t.Fatal(err)
+	}
+	if intakeCount != 1 {
+		t.Fatalf("intake_events for t1 = %d, want 1", intakeCount)
 	}
 
 	elapsed, claimed, err := s.ClaimTask(ctx, "t1")
@@ -313,7 +350,8 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("migrate over gateway-created row: %v", err)
 	}
 	gw, ok, err := s2.Task(ctx, "t-gw")
-	if err != nil || !ok || gw.Priority != 0 || gw.RiskClass != "standard" || len(gw.RequiredCapabilities) != 0 {
+	if err != nil || !ok || gw.Priority != 0 || gw.RiskClass != "standard" || len(gw.RequiredCapabilities) != 0 ||
+		gw.Kind != "agent" || gw.IssueNumber != 0 {
 		t.Fatalf("gateway-seeded task = %+v (%v, %v)", gw, ok, err)
 	}
 }

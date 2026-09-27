@@ -31,7 +31,34 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	if err := c.reconcile(ctx, taskID); err != nil {
 		return err
 	}
-	return c.Store.TransitionTask(ctx, taskID, []string{"closing"}, finalStatus)
+	if err := c.Store.TransitionTask(ctx, taskID, []string{"closing"}, finalStatus); err != nil {
+		return err
+	}
+	c.mirrorState(ctx, taskID, finalStatus)
+	return nil
+}
+
+// mirrorState swaps a completed task's linked Forgejo issue onto exactly one
+// state/* label. A task with no linked issue has nothing to mirror.
+// Mirroring failures are logged, never returned: Complete's own result must
+// never depend on Forgejo being reachable.
+func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
+	t, ok, err := c.Store.Task(ctx, taskID)
+	if err != nil {
+		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
+		return
+	}
+	if !ok || t.IssueNumber == 0 {
+		return
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
+		return
+	}
+	if err := c.Forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, t.IssueNumber, state); err != nil {
+		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
+	}
 }
 
 // Requeue hands an interrupted task back to the queue with its credentials

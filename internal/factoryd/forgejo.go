@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -275,4 +276,201 @@ func (f *Forgejo) ListCIRunners(ctx context.Context, owner, repo string) ([]CIRu
 		return nil, fmt.Errorf("forgejo list ci runners: %w", err)
 	}
 	return refs, nil
+}
+
+// IssueRef is a freshly filed issue: enough to store the link and report it
+// back to a POST /tasks caller.
+type IssueRef struct {
+	Number int64
+	URL    string
+}
+
+// CreateIssue files a new Forgejo issue (task 42: every task gets one, so
+// the factory's task list stays visible and actionable from the repo itself).
+func (f *Forgejo) CreateIssue(ctx context.Context, owner, repo, title, body string) (IssueRef, error) {
+	payload, err := json.Marshal(map[string]any{"title": title, "body": body})
+	if err != nil {
+		return IssueRef{}, err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", owner, repo)
+	resBody, err := f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	if err != nil {
+		return IssueRef{}, err
+	}
+	var res struct {
+		Number  int64  `json:"number"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(resBody, &res); err != nil {
+		return IssueRef{}, fmt.Errorf("forgejo create issue %s/%s: %w", owner, repo, err)
+	}
+	if res.Number == 0 {
+		return IssueRef{}, fmt.Errorf("forgejo create issue %s/%s: response carries no issue number", owner, repo)
+	}
+	return IssueRef{Number: res.Number, URL: res.HTMLURL}, nil
+}
+
+// RepoLabel is one label defined on a repository.
+type RepoLabel struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListLabels lists owner/repo's currently defined labels.
+func (f *Forgejo) ListLabels(ctx context.Context, owner, repo string) ([]RepoLabel, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/labels", owner, repo)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var labels []RepoLabel
+	if err := json.Unmarshal(body, &labels); err != nil {
+		return nil, fmt.Errorf("forgejo list labels %s/%s: %w", owner, repo, err)
+	}
+	return labels, nil
+}
+
+// CreateLabel defines a new repository label. color is a hex RGB string
+// without a leading '#' ambiguity issue: Forgejo accepts "#RRGGBB".
+func (f *Forgejo) CreateLabel(ctx context.Context, owner, repo, name, color string) error {
+	payload, err := json.Marshal(map[string]any{"name": name, "color": color})
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/labels", owner, repo)
+	_, err = f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	return err
+}
+
+// EnsureLabels creates whichever of wanted (name -> color) does not already
+// exist on owner/repo. It must run at boot, before anything files an issue
+// under one of these names or mirrors state onto one: Forgejo's issue-label
+// endpoints resolve labels by name and silently drop any name that doesn't
+// exist yet, so a label first used mid-mirror would vanish instead of
+// applying.
+func (f *Forgejo) EnsureLabels(ctx context.Context, owner, repo string, wanted map[string]string) error {
+	existing, err := f.ListLabels(ctx, owner, repo)
+	if err != nil {
+		return fmt.Errorf("forgejo ensure labels %s/%s: %w", owner, repo, err)
+	}
+	have := make(map[string]bool, len(existing))
+	for _, l := range existing {
+		have[l.Name] = true
+	}
+	var errs []error
+	for name, color := range wanted {
+		if have[name] {
+			continue
+		}
+		if err := f.CreateLabel(ctx, owner, repo, name, color); err != nil {
+			errs = append(errs, fmt.Errorf("label %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// IssueLabels lists the names of the labels currently on issue number.
+func (f *Forgejo) IssueLabels(ctx context.Context, owner, repo string, issueNumber int64) ([]string, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels", owner, repo, issueNumber)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var labels []RepoLabel
+	if err := json.Unmarshal(body, &labels); err != nil {
+		return nil, fmt.Errorf("forgejo issue labels %s/%s#%d: %w", owner, repo, issueNumber, err)
+	}
+	names := make([]string, 0, len(labels))
+	for _, l := range labels {
+		names = append(names, l.Name)
+	}
+	return names, nil
+}
+
+// ReplaceIssueLabels sets issue number's full label set to exactly names.
+func (f *Forgejo) ReplaceIssueLabels(ctx context.Context, owner, repo string, issueNumber int64, names []string) error {
+	payload, err := json.Marshal(map[string]any{"labels": names})
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/labels", owner, repo, issueNumber)
+	_, err = f.call(ctx, http.MethodPut, path, payload, http.StatusOK)
+	return err
+}
+
+// SetStateLabel swaps issue number's state onto exactly one state/* label,
+// leaving every other label untouched. This is the one mirror primitive:
+// task 42 calls it for agent-run tasks, and task 43's workflow can call it
+// directly with any state string for the human lane.
+func (f *Forgejo) SetStateLabel(ctx context.Context, owner, repo string, issueNumber int64, state string) error {
+	current, err := f.IssueLabels(ctx, owner, repo, issueNumber)
+	if err != nil {
+		return fmt.Errorf("forgejo set state label %s/%s#%d: %w", owner, repo, issueNumber, err)
+	}
+	next := make([]string, 0, len(current)+1)
+	for _, name := range current {
+		if strings.HasPrefix(name, "state/") {
+			continue
+		}
+		next = append(next, name)
+	}
+	next = append(next, "state/"+state)
+	return f.ReplaceIssueLabels(ctx, owner, repo, issueNumber, next)
+}
+
+// PullRequestHeadBranch reads a pull request's head branch name. Needed
+// because a pull-request comment's nested PR metadata in the webhook payload
+// lacks a head ref.
+func (f *Forgejo) PullRequestHeadBranch(ctx context.Context, owner, repo string, index int64) (string, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, index)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Head struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo pull request head %s/%s#%d: %w", owner, repo, index, err)
+	}
+	return res.Head.Ref, nil
+}
+
+// BranchHeadSHA reads a branch's current head commit SHA: intake uses it to
+// stamp a new task's base SHA to the default branch's head at intake time.
+func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo branch head %s/%s/%s: %w", owner, repo, branch, err)
+	}
+	return res.Commit.ID, nil
+}
+
+// RepoDefaultBranch reads a repository's default branch name. A defensive
+// fallback for when a webhook payload's own repository.default_branch field
+// is empty (the payload shape is reconstructed, not documented upstream).
+func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s", owner, repo)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo repo default branch %s/%s: %w", owner, repo, err)
+	}
+	return res.DefaultBranch, nil
 }

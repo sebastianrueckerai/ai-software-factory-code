@@ -28,6 +28,49 @@ the agents work on.
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).
 
+## Webhook intake (task 42)
+
+`POST /webhooks/forgejo` (`internal/factoryd/intake.go`) turns Forgejo
+issue, comment and review events into task rows and intake events.
+`X-Forgejo-Signature` (hex HMAC-SHA256 of the raw body, secret
+`factoryd-webhook`) is checked with a constant-time compare before the
+body is parsed at all; a bad or missing signature is a 401 and only the
+event type is logged, never the body. An issue labelled `agent` or
+`human` becomes a task, idempotent per (repository, issue number) —
+redeliveries and later relabel events on the same issue find the task
+already linked and no-op. `human` takes priority over `agent` when both
+are present, and skips the branch/SHA lookup: that lane never runs the
+agent. Issues and comments authored by the bot user itself
+(`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, so the
+factory's own status updates never create a second task. `POST /tasks`
+files a Forgejo issue and labels it the same way, so every task —
+API-created or webhook-created — has exactly one linked issue.
+
+Priority is the higher of two label scales, default 0 if neither is present:
+
+| label | priority |
+| --- | --- |
+| `priority/p0` or `severity/critical` | 3 |
+| `priority/p1` or `severity/high` | 2 |
+| `priority/p2` or `severity/medium` | 1 |
+| `priority/p3` or `severity/low` | 0 |
+
+PR and issue comments, and PR reviews, are recorded as intake events
+(`intake_events`, task 43's input) rather than acted on directly: an
+issue comment resolves its task by issue number, a PR comment resolves
+it by reading the pull request's own head branch (`factory/<task id>`),
+and a review reads that same head branch straight off its own payload.
+A comment or review on anything the factory did not file — no task
+behind that issue number or branch — is silently dropped rather than
+erroring.
+
+A task's state (`queued`, `running`, `waiting-human`, `in-review`,
+`done`, `failed`) is mirrored onto its issue as exactly one `state/*`
+label, swapped by `Forgejo.SetStateLabel`; the full label set
+(`agent`, `human`, and one `state/*` per status) is created at boot by
+`EnsureLabels` if missing. Mirroring failures are logged and retried on
+the next transition, never fail the task itself.
+
 ## Build and test
 
     go build ./...

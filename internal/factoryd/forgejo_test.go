@@ -106,3 +106,160 @@ func TestForgejoRevokeAlreadyGone(t *testing.T) {
 		t.Fatalf("revoke of a gone token = %v, want nil (already clean)", err)
 	}
 }
+
+func TestForgejoCreateIssue(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &gotBody)
+		w.WriteHeader(201)
+		io.WriteString(w, `{"number":42,"html_url":"https://git.example/sf/r/issues/42"}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ref, err := f.CreateIssue(context.Background(), "sf", "r", "Add the runner", "objective body")
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if gotPath != "/api/v1/repos/sf/r/issues" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotBody["title"] != "Add the runner" || gotBody["body"] != "objective body" {
+		t.Fatalf("body = %v", gotBody)
+	}
+	if ref.Number != 42 || ref.URL != "https://git.example/sf/r/issues/42" {
+		t.Fatalf("ref = %+v", ref)
+	}
+}
+
+func TestForgejoCreateIssueRefused(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusForbidden)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	_, err := f.CreateIssue(context.Background(), "sf", "r", "t", "b")
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("err = %v, want the 403 surfaced", err)
+	}
+}
+
+func TestForgejoEnsureLabelsCreatesOnlyMissing(t *testing.T) {
+	var created []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			io.WriteString(w, `[{"id":1,"name":"agent"},{"id":2,"name":"state/queued"}]`)
+		case r.Method == http.MethodPost:
+			var body map[string]any
+			b, _ := io.ReadAll(r.Body)
+			json.Unmarshal(b, &body)
+			created = append(created, body["name"].(string))
+			w.WriteHeader(201)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	wanted := map[string]string{"agent": "#ededed", "state/queued": "#ededed", "human": "#c2e0c6"}
+	if err := f.EnsureLabels(context.Background(), "sf", "r", wanted); err != nil {
+		t.Fatalf("EnsureLabels: %v", err)
+	}
+	if len(created) != 1 || created[0] != "human" {
+		t.Fatalf("created = %v, want exactly [human] (agent, state/queued already existed)", created)
+	}
+}
+
+func TestForgejoEnsureLabelsJoinsCreateErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			io.WriteString(w, `[]`)
+		case http.MethodPost:
+			http.Error(w, "nope", http.StatusForbidden)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#ededed", "human": "#c2e0c6"})
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("err = %v, want the two 403s surfaced", err)
+	}
+}
+
+func TestForgejoSetStateLabelSwapsExactlyOne(t *testing.T) {
+	var putBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/issues/42/labels" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			io.WriteString(w, `[{"id":1,"name":"agent"},{"id":2,"name":"state/queued"}]`)
+		case http.MethodPut:
+			b, _ := io.ReadAll(r.Body)
+			json.Unmarshal(b, &putBody)
+			w.WriteHeader(200)
+			io.WriteString(w, `[]`)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if err := f.SetStateLabel(context.Background(), "sf", "r", 42, "running"); err != nil {
+		t.Fatalf("SetStateLabel: %v", err)
+	}
+	labels, _ := putBody["labels"].([]any)
+	got := make([]string, len(labels))
+	for i, l := range labels {
+		got[i] = l.(string)
+	}
+	if len(got) != 2 || got[0] != "agent" || got[1] != "state/running" {
+		t.Fatalf("replaced labels = %v, want [agent state/running] (queued swapped for running)", got)
+	}
+}
+
+func TestForgejoPullRequestHeadBranch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/pulls/7" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"head":{"ref":"factory/t1"}}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ref, err := f.PullRequestHeadBranch(context.Background(), "sf", "r", 7)
+	if err != nil || ref != "factory/t1" {
+		t.Fatalf("PullRequestHeadBranch = (%q, %v), want (factory/t1, nil)", ref, err)
+	}
+}
+
+func TestForgejoBranchHeadSHA(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/branches/main" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"commit":{"id":"abc123"}}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	sha, err := f.BranchHeadSHA(context.Background(), "sf", "r", "main")
+	if err != nil || sha != "abc123" {
+		t.Fatalf("BranchHeadSHA = (%q, %v), want (abc123, nil)", sha, err)
+	}
+}
+
+func TestForgejoRepoDefaultBranch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"default_branch":"main"}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	branch, err := f.RepoDefaultBranch(context.Background(), "sf", "r")
+	if err != nil || branch != "main" {
+		t.Fatalf("RepoDefaultBranch = (%q, %v), want (main, nil)", branch, err)
+	}
+}
