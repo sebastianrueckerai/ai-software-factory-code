@@ -174,8 +174,14 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	if res.StatusCode != wantStatus {
-		if res.StatusCode == http.StatusNotFound {
+		switch res.StatusCode {
+		case http.StatusNotFound:
 			return nil, fmt.Errorf("forgejo %s %s: %w", method, path, ErrNotFound)
+		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
+		default:
+			if res.StatusCode >= 400 && res.StatusCode < 500 {
+				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, ErrRefused, res.StatusCode, body)
+			}
 		}
 		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)
 	}
@@ -719,7 +725,8 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 // of commit's tree; an absent entry has no key. Two commits whose entry
 // for a workflow directory differs changed something under it (rulings
 // 90, 100), renames and deletions included, however large the diff. The
-// listing is paged; a truncated one fails closed.
+// listing is paged by total_count; Forgejo's truncated flag only says the
+// tree exceeds one page, whichever page it is on.
 func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, names ...string) (map[string]string, error) {
 	entries := map[string]string{}
 	seen := 0
@@ -730,8 +737,7 @@ func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, n
 			return nil, err
 		}
 		var res struct {
-			Truncated  bool `json:"truncated"`
-			TotalCount int  `json:"total_count"`
+			TotalCount int `json:"total_count"`
 			Tree       []struct {
 				Path string `json:"path"`
 				SHA  string `json:"sha"`
@@ -739,9 +745,6 @@ func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, n
 		}
 		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
-		}
-		if res.Truncated {
-			return nil, fmt.Errorf("forgejo tree %s/%s %s: listing truncated", owner, repo, commit)
 		}
 		for _, e := range res.Tree {
 			if slices.Contains(names, e.Path) {
@@ -853,9 +856,6 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 	return res.State == "closed", nil
 }
 
-// RepoDefaultBranch reads a repository's default branch name. A defensive
-// fallback for when a webhook payload's own repository.default_branch field
-// is empty (the payload shape is reconstructed, not documented upstream).
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
 // every agent task is stamped with at intake; branch is the default branch
 // when the caller already knows it (a webhook payload), else it is read.
@@ -869,6 +869,9 @@ func (f *Forgejo) DefaultBranchHeadSHA(ctx context.Context, owner, repo, branch 
 	return f.BranchHeadSHA(ctx, owner, repo, branch)
 }
 
+// RepoDefaultBranch reads a repository's default branch name. A defensive
+// fallback for when a webhook payload's own repository.default_branch field
+// is empty (the payload shape is reconstructed, not documented upstream).
 func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s", owner, repo)
 	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)

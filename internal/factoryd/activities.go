@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 )
 
 // prBase is the branch every task pull request targets.
@@ -45,6 +47,33 @@ func (r *Runner) RegisterActivities(w interface {
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
+}
+
+// TerminalForgejoErrors is the worker interceptor that ends an activity's
+// retries on a Forgejo refusal or on a not-found that escaped it (I4): no
+// retry fixes a 4xx, and the activities that tolerate an absent object
+// swallow ErrNotFound themselves, so one that escapes names an object gone
+// for good. Temporal reads the non-retryable type off the returned error
+// itself, never off one it wraps, so the classification sits at the
+// activity boundary.
+type TerminalForgejoErrors struct {
+	interceptor.WorkerInterceptorBase
+}
+
+func (*TerminalForgejoErrors) InterceptActivity(ctx context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
+	return &terminalForgejoInbound{interceptor.ActivityInboundInterceptorBase{Next: next}}
+}
+
+type terminalForgejoInbound struct {
+	interceptor.ActivityInboundInterceptorBase
+}
+
+func (i *terminalForgejoInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
+	out, err := i.Next.ExecuteActivity(ctx, in)
+	if (errors.Is(err, ErrRefused) || errors.Is(err, ErrNotFound)) && !isTerminal(err) {
+		return out, temporal.NewNonRetryableApplicationError(err.Error(), errTerminal, err)
+	}
+	return out, err
 }
 
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {
@@ -596,11 +625,15 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 // request behind. The comment follows the close so a retried close never
 // repeats it, and a retry finds the pull request closed and posts nothing.
 // A task whose number never got recorded (a crash between opening and
-// recording) is found by its branch on the fork.
+// recording) is found by its branch on the fork; a recorded one Forgejo
+// no longer has leaves nothing to close.
 func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, msg string) error {
 	var pr *PullRequestRef
 	if t.PRNumber != 0 {
 		state, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}

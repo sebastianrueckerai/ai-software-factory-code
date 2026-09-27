@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -615,17 +616,19 @@ func TestForgejoFindPullRequestByHead(t *testing.T) {
 	}
 }
 
-func TestForgejoTreeEntriesPagesAndFailsClosed(t *testing.T) {
+// Forgejo flags a tree listing truncated whenever the whole tree exceeds
+// one page, whatever the page: the flag says nothing, the pages do.
+func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path + "?" + r.URL.RawQuery {
 		case "/api/v1/repos/sf/r/git/trees/c1?page=1":
-			io.WriteString(w, `{"truncated":false,"total_count":3,"tree":[{"path":".github","sha":"g"},{"path":"README.md","sha":"r"}]}`)
+			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[{"path":".github","sha":"g"},{"path":"README.md","sha":"r"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c1?page=2":
-			io.WriteString(w, `{"truncated":false,"total_count":3,"tree":[{"path":".forgejo","sha":"f1"}]}`)
+			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[{"path":".forgejo","sha":"f1"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c2?page=1":
 			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"README.md","sha":"r"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c3?page=1":
-			io.WriteString(w, `{"truncated":true,"total_count":9,"tree":[]}`)
+			w.WriteHeader(404)
 		default:
 			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
 			w.WriteHeader(404)
@@ -641,8 +644,39 @@ func TestForgejoTreeEntriesPagesAndFailsClosed(t *testing.T) {
 	if got, err := f.TreeEntries(ctx, "sf", "r", "c2", WorkflowDirs...); err != nil || len(got) != 0 {
 		t.Fatalf("c2 = (%v, %v), want none", got, err)
 	}
-	if _, err := f.TreeEntries(ctx, "sf", "r", "c3", WorkflowDirs...); err == nil {
-		t.Fatal("a truncated tree listing must fail closed")
+	if _, err := f.TreeEntries(ctx, "sf", "r", "c3", WorkflowDirs...); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("c3 = %v, want ErrNotFound: a commit Forgejo does not have", err)
+	}
+}
+
+// A 4xx no retry can fix is a refusal (I4): the activity interceptor ends
+// the retries on it. 404 stays ErrNotFound, and 408, 409 and 429 are as
+// transient as a 5xx.
+func TestForgejoClientErrorsAreRefusals(t *testing.T) {
+	var status int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"no"}`, status)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	for code, want := range map[int]error{
+		400: ErrRefused, 401: ErrRefused, 403: ErrRefused, 405: ErrRefused, 410: ErrRefused, 422: ErrRefused,
+		404: ErrNotFound, 408: nil, 409: nil, 429: nil, 500: nil, 502: nil,
+	} {
+		status = code
+		_, err := f.RepoDefaultBranch(context.Background(), "sf", "r")
+		if err == nil {
+			t.Fatalf("%d: err = nil", code)
+		}
+		if got := errors.Is(err, ErrRefused); got != (want == ErrRefused) {
+			t.Fatalf("%d: refused = %v: %v", code, got, err)
+		}
+		if got := errors.Is(err, ErrNotFound); got != (want == ErrNotFound) {
+			t.Fatalf("%d: not found = %v: %v", code, got, err)
+		}
+		if want == ErrRefused && !strings.Contains(err.Error(), "no") {
+			t.Fatalf("%d: body not surfaced: %v", code, err)
+		}
 	}
 }
 

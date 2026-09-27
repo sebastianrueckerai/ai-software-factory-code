@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -150,7 +151,10 @@ func main() {
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
-	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{WorkerStopTimeout: 120 * time.Second})
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{
+		WorkerStopTimeout: 120 * time.Second,
+		Interceptors:      []interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}},
+	})
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)

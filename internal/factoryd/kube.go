@@ -24,6 +24,9 @@ var (
 	ErrAlreadyExists = errors.New("kubernetes: already exists")
 	ErrNotFound      = errors.New("not found") // shared by the kube, S3, Forgejo and store clients
 	ErrForbidden     = errors.New("kubernetes: forbidden")
+	// ErrRefused is a Forgejo 4xx no retry can fix: everything but a 404
+	// (ErrNotFound) and the transient 408, 409 and 429.
+	ErrRefused = errors.New("forgejo: refused")
 )
 
 // saDir is a var so the wire test can point it at a stub token.

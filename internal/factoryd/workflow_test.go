@@ -401,12 +401,14 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 }
 
 // A Forgejo or LiteLLM outage longer than any bounded retry must not strand
-// the task: Finish retries without limit. (The test environment caps
-// unlimited retries at 10, so the policy itself is what is checked.)
-func TestWorkflowFinishRetriesWithoutLimit(t *testing.T) {
+// the task: Finish and the other short activities retry for a day, backoff
+// capped at five minutes; only a refusal ends them sooner (I4). (The test
+// environment caps unlimited retries at 10, so the policy itself is what
+// is checked.)
+func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
 	opts := finishOptions()
-	if opts.ScheduleToCloseTimeout != 0 || opts.RetryPolicy.MaximumAttempts != 0 || opts.RetryPolicy.MaximumInterval != 5*time.Minute {
-		t.Fatalf("finish options = %+v / %+v, want unlimited attempts, no schedule-to-close, 5 min backoff cap", opts, *opts.RetryPolicy)
+	if opts.ScheduleToCloseTimeout != 24*time.Hour || opts.RetryPolicy.MaximumAttempts != 0 || opts.RetryPolicy.MaximumInterval != 5*time.Minute {
+		t.Fatalf("finish options = %+v / %+v, want unlimited attempts within 24 h, 5 min backoff cap", opts, *opts.RetryPolicy)
 	}
 }
 

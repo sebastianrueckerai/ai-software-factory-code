@@ -15,9 +15,12 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 )
 
 // prForgejo plays the pull request, status and issue endpoints the
@@ -82,7 +85,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
-			io.WriteString(w, f.pulls[n])
+			if body, ok := f.pulls[n]; ok {
+				io.WriteString(w, body)
+			} else {
+				http.NotFound(w, r)
+			}
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && !strings.HasSuffix(p, "/labels") && !strings.HasSuffix(p, "/comments"):
 			state := "open"
 			if f.issueOff {
@@ -175,8 +182,51 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 	var suite testsuite.WorkflowTestSuite
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{}}})
 	r.RegisterActivities(env)
 	return env.ExecuteActivity(name, args...)
+}
+
+// A Forgejo refusal or a not-found that escapes an activity ends its
+// retries (I4), and one the activity already made terminal stays as it is;
+// anything else stays retryable.
+func TestTerminalForgejoErrorsEndRetries(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err      error
+		terminal bool
+	}{
+		"refused":          {fmt.Errorf("forgejo GET /x: %w: status 422: no", ErrRefused), true},
+		"not found":        {fmt.Errorf("forgejo GET /x: %w", ErrNotFound), true},
+		"already terminal": {terminalError("task gone"), true},
+		"transient":        {fmt.Errorf("forgejo GET /x: status 502: bad gateway"), false},
+		"none":             {nil, false},
+	} {
+		var suite testsuite.WorkflowTestSuite
+		suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+		env := suite.NewTestActivityEnvironment()
+		env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{}}})
+		env.RegisterActivityWithOptions(func(context.Context) error { return tc.err }, activity.RegisterOptions{Name: "probe"})
+		_, err := env.ExecuteActivity("probe")
+		if (err == nil) != (tc.err == nil) || isTerminal(err) != tc.terminal {
+			t.Fatalf("%s: err = %v, terminal = %v, want %v", name, err, isTerminal(err), tc.terminal)
+		}
+		if tc.err != nil && !strings.Contains(err.Error(), tc.err.Error()) {
+			t.Fatalf("%s: err = %v, want the cause kept", name, err)
+		}
+	}
+}
+
+// A recorded pull request Forgejo no longer has leaves nothing to close:
+// Finish completes the task rather than failing on it for a day.
+func TestFinishCompletesWhenThePullRequestIsGone(t *testing.T) {
+	fj := &prForgejo{}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" || len(fj.closed) != 0 || len(fj.comments) != 1 {
+		t.Fatalf("status = %q, closed = %v, comments = %q, want failed, nothing closed, the reason on the issue", got.Status, fj.closed, fj.comments)
+	}
 }
 
 var prTask = Task{ID: "t1", Status: "running", Objective: "Add a make check target\n\nand wire it into CI", Repository: "sf/repo",

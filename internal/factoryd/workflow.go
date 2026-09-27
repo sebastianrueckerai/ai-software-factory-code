@@ -659,7 +659,7 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 	return "", "", []string{"reviewer " + sig.Author + " requested changes: " + sig.Body}
 }
 
-// finish is the one exit of every path. It retries without limit (backoff
+// finish is the one exit of every path. It retries for a day (backoff
 // capped at five minutes): giving up would leave the task running or
 // closing with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
@@ -670,11 +670,13 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 	return final, nil
 }
 
-// finishOptions: MaximumAttempts 0 is unlimited, and no schedule-to-close
-// bounds the retries; only a terminal error ends them.
+// finishOptions are the short activities' options: MaximumAttempts 0 is
+// unlimited within the day the schedule-to-close allows; a terminal error
+// (a Forgejo refusal among them, I4) ends the retries sooner.
 func finishOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
-		StartToCloseTimeout: 2 * time.Minute,
+		StartToCloseTimeout:    2 * time.Minute,
+		ScheduleToCloseTimeout: 24 * time.Hour,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        5 * time.Second,
 			MaximumInterval:        5 * time.Minute,
