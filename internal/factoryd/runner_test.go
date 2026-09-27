@@ -617,6 +617,10 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
 		t.Fatalf("session row = %+v, want parent s-dead", sess)
 	}
+	timeline, _ := runner.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","changed a.go","session s-dead was interrupted`) {
+		t.Fatalf("timeline = %s, want the session start with its parent and findings", timeline)
+	}
 }
 
 func TestRunSessionRepetitionTripAsksForStrongerModel(t *testing.T) {
