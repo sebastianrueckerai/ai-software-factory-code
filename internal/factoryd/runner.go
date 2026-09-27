@@ -762,8 +762,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 // (ruling 99: the image carries the Go toolchain, and a registry joins by
 // name with the toolchain that needs it), and kube-dns for exactly those
 // names. DNS is allowlisted by name because an open resolver is itself an
-// exfiltration channel. No other registry is reachable: the npm provider
-// is pre-baked into the image. Workers reach
+// exfiltration channel. No other registry is reachable: opencode needs
+// no npm, and npm is not reachable either. Workers reach
 // Forgejo through its in-cluster service, not the public host: in-cluster
 // DNS answers that host with the gateway ClusterIP, which Cilium's toFQDNs
 // cannot authorize (the envoy fronting it answers 403), while the service
