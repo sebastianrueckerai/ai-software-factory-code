@@ -39,13 +39,13 @@ type Forgejo struct {
 	HTTP        *http.Client // nil = a mint-sized timeout
 
 	// CIRegistrarToken authenticates the Actions runner-registration API
-	// and the collaborator permission lookups (task 41, rulings 78, 101):
-	// a repo-scoped token of the dedicated user factory-ci, an admin
-	// collaborator on the code repository only (runner registration and
-	// permission reads need repository admin), kept out of main's push and
-	// merge whitelist with apply_to_admins on, so the token can neither
-	// push nor merge main. Never a registry credential, never mounted into
-	// a runner pod.
+	// and the collaborator permission lookups (task 41, rulings 78, 101,
+	// 101a): a token of the dedicated user factory-ci scoped to the code
+	// repository. Forgejo's repository runner API demands the repository
+	// owner (reqOwner), so factory-ci sits in the org's Owners team; main's
+	// push and merge whitelist excludes it with apply_to_admins on, so the
+	// token can neither push nor merge main. Never a registry credential,
+	// never mounted into a runner pod.
 	CIRegistrarToken string
 }
 
@@ -185,8 +185,8 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 // RepoPermission is user's effective permission on the repository ("owner",
 // "admin", "write", "read"; "none" when Forgejo knows no access). Reading
 // another user's permission needs repository admin, which the bot lacks:
-// it runs on the registrar token (factory-ci, a repository admin that
-// cannot push or merge main, ruling 101).
+// it runs on the registrar token (factory-ci, an org owner whose repo-scoped
+// token cannot push or merge main, rulings 101 and 101a).
 func (f *Forgejo) RepoPermission(ctx context.Context, owner, repo, user string) (string, error) {
 	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", owner, repo, url.PathEscape(user)), nil, http.StatusOK)
 	if errors.Is(err, ErrNotFound) {
@@ -533,10 +533,17 @@ func (f *Forgejo) EnsureFork(ctx context.Context, upstream Repo) error {
 	return nil
 }
 
-// DeleteBranch deletes a branch. A 404 means it is already gone: a retried
-// Finish has nothing left to do.
+// DeleteBranch deletes a branch. Absent means nothing to do (never pushed, or
+// a retried Finish). Forgejo 15 answers DELETE on a missing branch with 500
+// rather than 404, so the branch is looked up first.
 func (f *Forgejo) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
+	if _, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
 	_, err := f.call(ctx, http.MethodDelete, path, nil, http.StatusNoContent)
 	if errors.Is(err, ErrNotFound) {
 		return nil

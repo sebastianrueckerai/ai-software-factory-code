@@ -28,7 +28,7 @@ type prForgejo struct {
 	github     map[string]string // commit → its top-level .github tree id; unlisted commits have none
 	closed     []int64           // PATCH /pulls/{n} closes
 	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
-	branchGone bool              // DELETE /branches/{b} answers 404
+	branchGone bool              // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
 	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
 	pulls      map[int64]string  // GET /pulls/{n} bodies
 	issueOff   bool              // GET /issues/{n} reports closed
@@ -102,9 +102,15 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{}`)
 		case r.Method == "GET" && p == "/pulls":
 			json.NewEncoder(w).Encode(f.open)
-		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
+		case r.Method == "GET" && strings.HasPrefix(p, "/branches/"):
 			if f.branchGone {
 				http.NotFound(w, r)
+				return
+			}
+			io.WriteString(w, `{}`)
+		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
+			if f.branchGone {
+				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
 			f.deleted = append(f.deleted, strings.Replace(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/"), "/branches/", " ", 1))

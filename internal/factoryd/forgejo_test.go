@@ -9,6 +9,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -339,22 +340,37 @@ func TestForgejoEnsureForkRefusesAStranger(t *testing.T) {
 
 // Finish deletes a finished task's branch on the fork; a branch already
 // gone (a retried Finish) is done, a refusal is not.
+// Forgejo 15 answers DELETE on a branch that does not exist with a 500, not
+// a 404, so a branch is looked up before it is deleted: never pushed means
+// nothing to do, and a retried Finish stays idempotent.
 func TestForgejoDeleteBranchIsIdempotent(t *testing.T) {
 	for name, tc := range map[string]struct {
-		code    int
-		wantErr bool
-	}{"deleted": {http.StatusNoContent, false}, "already gone": {http.StatusNotFound, false}, "refused": {http.StatusInternalServerError, true}} {
+		getCode, deleteCode int
+		wantCalls           []string
+		wantErr             bool
+	}{
+		"deleted":          {http.StatusOK, http.StatusNoContent, []string{"GET", "DELETE"}, false},
+		"never pushed":     {http.StatusNotFound, http.StatusInternalServerError, []string{"GET"}, false},
+		"vanished between": {http.StatusOK, http.StatusNotFound, []string{"GET", "DELETE"}, false},
+		"refused":          {http.StatusOK, http.StatusInternalServerError, []string{"GET", "DELETE"}, true},
+	} {
+		var calls []string
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != "DELETE" || r.URL.EscapedPath() != "/api/v1/repos/factory-agent/r/branches/factory%2Ft1" {
-				t.Errorf("%s: call = %s %s", name, r.Method, r.URL.EscapedPath())
+			if r.URL.EscapedPath() != "/api/v1/repos/factory-agent/r/branches/factory%2Ft1" {
+				t.Errorf("%s: path = %s", name, r.URL.EscapedPath())
 			}
-			w.WriteHeader(tc.code)
+			calls = append(calls, r.Method)
+			if r.Method == http.MethodGet {
+				w.WriteHeader(tc.getCode)
+				return
+			}
+			w.WriteHeader(tc.deleteCode)
 		}))
 		f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 		err := f.DeleteBranch(context.Background(), "factory-agent", "r", "factory/t1")
 		srv.Close()
-		if (err != nil) != tc.wantErr {
-			t.Fatalf("%s: err = %v", name, err)
+		if (err != nil) != tc.wantErr || !slices.Equal(calls, tc.wantCalls) {
+			t.Fatalf("%s: err = %v, calls = %v", name, err, calls)
 		}
 	}
 }
