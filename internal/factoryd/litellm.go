@@ -61,6 +61,32 @@ func (l *LiteLLMAdmin) BlockTaskKeys(ctx context.Context, taskID string) (int, e
 	return blocked, nil
 }
 
+// MintKey creates a virtual key for one purpose of a task: metadata
+// task_id (so BlockTaskKeys and SpendByTask find it), max_budget, and the
+// only models it may call. The key expires within the hour regardless.
+func (l *LiteLLMAdmin) MintKey(ctx context.Context, taskID string, maxBudget float64, models []string, purpose string) (string, error) {
+	payload, err := json.Marshal(map[string]any{
+		"max_budget": maxBudget,
+		"models":     models,
+		"duration":   "1h",
+		"metadata":   map[string]string{"task_id": taskID, "purpose": purpose},
+	})
+	if err != nil {
+		return "", err
+	}
+	body, err := l.call(ctx, http.MethodPost, "/key/generate", payload)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Key == "" {
+		return "", fmt.Errorf("litellm key/generate: no key in the answer")
+	}
+	return res.Key, nil
+}
+
 // SpendByTask sums the spend LiteLLM has recorded on each task's keys.
 func (l *LiteLLMAdmin) SpendByTask(ctx context.Context) (map[string]float64, error) {
 	keys, err := l.keysByTask(ctx)
