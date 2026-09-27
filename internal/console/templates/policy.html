@@ -1,0 +1,10 @@
+{{template "head" .}}
+<h2>Policy</h2>
+<dl>
+<dt>Version</dt><dd>{{.Version.ID}}</dd>
+<dt>sha256</dt><dd><code>{{.Version.SHA256}}</code></dd>
+<dt>Loaded</dt><dd>{{.LoadedAt}}</dd>
+</dl>
+<p>The policy is a file in Git; every change is a commit there. <a href="{{.URL}}">Edit it in the infra repository</a>.</p>
+<pre><code>{{.Document}}</code></pre>
+{{template "foot"}}

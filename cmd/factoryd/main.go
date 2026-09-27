@@ -23,6 +23,7 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -46,6 +47,7 @@ var stateLabels = map[string]string{
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	consoleAddr := flag.String("console-addr", ":8090", "console listen address (its own Service and route)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
@@ -242,6 +244,38 @@ func main() {
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	// the console is the only listener the edge gateway reaches; the
+	// webhook and intake API above stay in-cluster
+	consoleHandler, err := console.New(console.Config{
+		PublicURL:        env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world"),
+		ForgejoURL:       forgejo.BaseURL,
+		ForgejoPublicURL: forgejo.PublicURL,
+		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
+		ClientSecret:     mustEnv("CONSOLE_CLIENT_SECRET"),
+		Repo:             upstream,
+		Tasks:            store,
+		Writers:          forgejo,
+		Timelines:        objects,
+		Policies:         store,
+		Costs:            store,
+		PolicyURL: env("CONSOLE_POLICY_URL",
+			"https://git.aisoftwarefactory.world/sf/ai-software-factory-infra/src/branch/main/k8s/platform/policy/policy.yaml"),
+	})
+	if err != nil {
+		log.Fatalf("console: %v", err)
+	}
+	consoleServer := &http.Server{
+		Addr:              *consoleAddr,
+		Handler:           consoleHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+	go func() {
+		log.Printf("console listening on %s", *consoleAddr)
+		if err := consoleServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("console: %v", err)
+		}
+	}()
 	go func() {
 		<-ctx.Done()
 		log.Printf("factoryd: shutting down, stopping the temporal worker")
@@ -251,7 +285,8 @@ func main() {
 		taskWorker.Stop()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(shutdown) // #nosec G104 -- process exits right after; shutdown error is inconsequential
+		consoleServer.Shutdown(shutdown) // #nosec G104 -- as below
+		server.Shutdown(shutdown)        // #nosec G104 -- process exits right after; shutdown error is inconsequential
 	}()
 	log.Printf("factoryd %s listening on %s", version, *addr)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

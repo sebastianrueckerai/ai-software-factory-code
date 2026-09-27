@@ -29,3 +29,7 @@ table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: .85
 th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .3rem .5rem; vertical-align: top; }
 code { white-space: pre-wrap; word-break: break-word; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+caption { text-align: left; font-weight: 600; padding: .3rem 0; }
+dt { font-weight: 600; }
+dd { margin: 0 0 .4rem; }
+pre { background: var(--card); border: 1px solid var(--line); padding: .6rem; overflow-x: auto; }

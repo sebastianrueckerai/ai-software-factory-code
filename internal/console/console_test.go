@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // htmxSHA256 pins the vendored htmx 2.0.11 (npm htmx.org-2.0.11.tgz,
@@ -152,21 +153,39 @@ type fakeApprovals []Approval
 
 func (a fakeApprovals) PendingApprovals(context.Context) ([]Approval, error) { return a, nil }
 
+type fakeLedger struct {
+	from, to time.Time
+	costs    policy.Costs
+}
+
+func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
+	l.from, l.to = from, to
+	return l.costs, nil
+}
+
+func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	return policy.Version{ID: 4, SHA256: "c9d98bb0aa", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
+		Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
+			Classes: map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}}}}, true, nil
+}
+
 type rig struct {
 	c       *Console
 	fg      *fakeForgejo
 	tasks   *fakeTasks
 	writers *fakeWriters
 	objects fakeObjects
+	ledger  *fakeLedger
 }
 
 func newRig(t *testing.T) *rig {
 	fg := newFakeForgejo(t)
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}}
+	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", Repo: factoryd.Repo{Owner: "sf", Name: "code"},
-		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects,
+		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
+		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
 		Approvals: fakeApprovals{{ID: 3, Kind: "resource", TaskID: "t-res", Summary: "cx33 for load test", MonthlyEUR: 12.5}},
 	})
 	if err != nil {
@@ -323,7 +342,7 @@ func TestWriterRemovedLosesTheSession(t *testing.T) {
 
 func TestPagesRequireASession(t *testing.T) {
 	r := newRig(t)
-	for _, path := range []string{"/", "/board", "/tasks/new", "/tasks/t-1/timeline"} {
+	for _, path := range []string{"/", "/board", "/tasks/new", "/tasks/t-1/timeline", "/costs", "/policy"} {
 		rec := r.do(httptest.NewRequest(http.MethodGet, path, nil))
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
 			t.Errorf("GET %s = %d to %q, want 303 to /login", path, rec.Code, rec.Header().Get("Location"))
@@ -556,5 +575,53 @@ func TestTimelinePageAndStaticAssets(t *testing.T) {
 	}
 	if csp := r.do(httptest.NewRequest(http.MethodGet, "/login", nil)).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
 		t.Errorf("CSP %q", csp)
+	}
+}
+
+func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	today := time.Now().UTC().Format(policy.DateLayout)
+	r.ledger.costs = policy.Costs{From: "2026-09-15", To: today,
+		Days: []policy.DayCost{
+			{Day: "2026-09-20", ByKind: map[string]float64{"model": 0.5}, Total: 0.5},
+			{Day: today, ByKind: map[string]float64{"model": 1.25, "settlement": 0.5, "resource": 2}, Total: 3.75},
+		},
+		Tasks: []policy.TaskCost{{TaskID: "t-big", EUR: 3.25}, {TaskID: "t-small", EUR: 1}}}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/costs = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.ledger.to.Sub(r.ledger.from); got != 13*24*time.Hour {
+		t.Errorf("range %v to %v: want 14 days, today included", r.ledger.from, r.ledger.to)
+	}
+	if r.ledger.to.UTC().Format(policy.DateLayout) != today {
+		t.Errorf("range ends %v, want today (UTC)", r.ledger.to)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<strong>3.75 EUR</strong> of the 20.00 EUR day cap",
+		"<th scope=\"row\">" + today + "</th><td>1.25</td><td>0.00</td><td>2.00</td><td>0.50</td><td>3.75</td>",
+		"<th scope=\"row\">2026-09-20</th><td>0.50</td>",
+		`<a href="/tasks/t-big/timeline">t-big</a></th><td>3.25</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/costs lacks %q", want)
+		}
+	}
+	if strings.Index(body, today) > strings.Index(body, "2026-09-20") {
+		t.Error("days are not newest first")
+	}
+}
+
+func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
+	for _, want := range []string{"<dd>4</dd>", "c9d98bb0aa", "2026-09-27T22:50:07Z", `&#34;day_eur&#34;: 20`,
+		`href="https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/policy lacks %q", want)
+		}
 	}
 }

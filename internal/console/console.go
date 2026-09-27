@@ -71,6 +71,11 @@ type Config struct {
 	Tasks     Tasks
 	Writers   Writers
 	Timelines factoryd.ObjectStore
+	Policies  Policies
+	Costs     Costs
+	// PolicyURL is the policy file in the infra repository, where every
+	// change is made (ruling 107).
+	PolicyURL string
 	// Approvals feeds the human lane's approval cards; nil shows none.
 	Approvals Approvals
 	HTTP      *http.Client // nil = 15 s timeout
@@ -130,6 +135,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks", c.auth(c.createTask))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
+	c.mux.Handle("GET /costs", c.auth(c.costs))
+	c.mux.Handle("GET /policy", c.auth(c.policy))
 	return c, nil
 }
 

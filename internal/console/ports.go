@@ -2,13 +2,14 @@ package console
 
 import (
 	"context"
-	"encoding/json"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The console's seams for the later stage 7 pieces: approval requests
-// (tasks 53 and 55), the resource registry (53), the cost ledger and the
-// policy versions (51). factoryd's store implements them.
+// The console's seams to the stage 7 data: approval requests (tasks 53 and
+// 55), the resource registry (53), the cost ledger and the policy versions
+// (51). factoryd's store implements them.
 
 // Approval is a pending approval_requests row: a merge (task 55) or a
 // resource beyond its envelope (task 53).
@@ -28,30 +29,14 @@ type Approvals interface {
 	PendingApprovals(ctx context.Context) ([]Approval, error)
 }
 
-// PolicyVersion is the current policy_versions row.
-type PolicyVersion struct {
-	ID       int64
-	SHA256   string
-	LoadedAt time.Time
-	Document json.RawMessage
-}
-
-// Policies reads the active policy.
+// Policies reads the policy version being enforced (policy_versions).
 type Policies interface {
-	CurrentPolicy(ctx context.Context) (PolicyVersion, error)
+	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 }
 
-// CostDay is one day's ledger total per kind (model, tool, resource,
-// settlement).
-type CostDay struct {
-	Day    time.Time
-	ByKind map[string]float64
-}
-
-// Costs reads the ledger: per day and per task over [from, to].
+// Costs reads the ledger between two UTC days, both included.
 type Costs interface {
-	CostsByDay(ctx context.Context, from, to time.Time) ([]CostDay, error)
-	CostsByTask(ctx context.Context, from, to time.Time) (map[string]float64, error)
+	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 }
 
 // Resource is one cloud_resources registry row.

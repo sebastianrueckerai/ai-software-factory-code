@@ -12,7 +12,7 @@
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
 <header>
 <a class="home" href="/">Factory console</a>
-{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a></nav>
+{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a></nav>
 <form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
 </header>
 <main>

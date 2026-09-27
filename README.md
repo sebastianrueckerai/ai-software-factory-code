@@ -309,6 +309,38 @@ Both endpoints take the intake bearer token:
   each defaulting to today, at most 366 days apart): `days` (per day
   `by_kind` and `total`) and `tasks` (per task total, largest first).
 
+## Console (task 54)
+
+`internal/console`, served by factoryd on `:8090` (`-console-addr`) behind
+its own Service `factoryd-console` and the HTTPRoute `console` on the edge
+gateway's `https-console` listener (https://console.aisoftwarefactory.world);
+the webhook and intake API on `:8080` stay in-cluster. Server-rendered
+`html/template` with htmx 2.0.11 vendored in `internal/console/static`
+(sha256 pinned by a test), no build step.
+
+- Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
+  client `factory-console` (secret `console-oauth`: `client_id`,
+  `client_secret`; redirect `/auth/callback`), always the explicit scopes
+  `read:user write:repository write:issue` (an unscoped grant would carry
+  the user's full power). Browsers go to `FORGEJO_PUBLIC_URL`, the code
+  exchange and API calls to `FORGEJO_URL`. Only the trust gate's writers
+  of the code repository get in, checked at login and on every request
+  (list cached a minute); others get 403. Sessions are in memory (a
+  restart logs everyone out), the tokens never leave the server and are
+  refreshed before their hour runs out; the cookie is `__Host-`,
+  HttpOnly, Secure, SameSite=Lax. Every POST needs the session's CSRF
+  token (form field `csrf` or header `X-CSRF-Token`).
+- `/`: the agent lane by task status (done and failed for 7 days), the
+  human lane (approval requests, escalations with their reason and an
+  answer box, human tasks); htmx polls `/board` every 10 s.
+- `/tasks/new`: files the issue as the human, labelled `agent` or `human`
+  and optionally `priority/pN` (offered when the label exists); intake
+  makes it a task. An escalation's answer is an issue comment as the
+  human, which resumes the task through the human-comment path.
+- `/costs`: the ledger per day and kind and per task for 14 days, today
+  against the day cap. `/policy`: the version in force, linked to its file
+  in the infra repository for edits.
+
 ## Build and test
 
     go build ./...
@@ -389,6 +421,9 @@ resolves to the edge gateway; links for people use
 and the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`). Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
+Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
+webhooks on 8080, and the edge gateway's Envoy (entity `ingress`) on the
+console port 8090 only.
 
 ## Operating it
 
