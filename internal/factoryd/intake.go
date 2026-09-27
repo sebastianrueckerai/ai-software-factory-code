@@ -353,7 +353,19 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	if t.Kind == "human" {
 		return in.finishHumanTask(ctx, t)
 	}
-	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: closer})
+	return in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
+}
+
+// decide records a decision — issue number closed, pull request number
+// merged or closed — once and signals it once: between the webhook and
+// the heal passes that read the same state off Forgejo, and not again on
+// every pass while the workflow winds the task down.
+func (in *Intake) decide(ctx context.Context, taskID, kind, author string, number int64) error {
+	e, err := in.record(ctx, IntakeEvent{TaskID: taskID, Kind: kind, Author: author, CommentID: number, Trusted: true})
+	if err != nil {
+		return err
+	}
+	return in.signalEvent(ctx, taskID, e, number)
 }
 
 // finishHumanTask: a human-lane task has no workflow; its closed issue is
@@ -388,11 +400,11 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if _, ok, err := in.agentTask(ctx, taskID); err != nil || !ok {
 		return err
 	}
-	signal := SignalPRClosed
+	kind := "pull_request_closed"
 	if p.PullRequest.Merged {
-		signal = SignalPRMerged
+		kind = "pull_request_merged"
 	}
-	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName, PR: p.PullRequest.Index})
+	return in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
 }
 
 // agentTask is task id when it exists and runs a workflow to signal: a
@@ -513,9 +525,10 @@ func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, error
 // signalEvent delivers a trusted event not yet signalled to the task's
 // workflow, once: a pull request comment or rejecting review on pull
 // request pr asks for changes, an issue comment may answer an escalation,
-// an approval is only recorded. The event is claimed before the signal,
-// so the webhook path and a heal pass holding the same one send it once
-// between them; a failed signal releases the claim.
+// a decision ends the task, an approval is only recorded. The event is
+// claimed before the signal, so the webhook path and a heal pass holding
+// the same one send it once between them; a failed signal releases the
+// claim.
 func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent, pr int64) error {
 	if !e.Trusted || e.Signalled {
 		return nil
@@ -527,6 +540,12 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 		name, sig.Comment = SignalHumanComment, e.CommentID
 	case "pull_request_comment", "pull_request_review_rejected":
 		name, sig.PR = SignalChangesRequested, pr
+	case "issue_closed":
+		name = SignalIssueClosed
+	case "pull_request_merged":
+		name, sig.PR = SignalPRMerged, pr
+	case "pull_request_closed":
+		name, sig.PR = SignalPRClosed, pr
 	default:
 		return nil
 	}
@@ -617,9 +636,9 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		}
 		switch {
 		case pr.Merged:
-			err = in.Workflows.Signal(ctx, t.ID, SignalPRMerged, TaskSignal{Author: healAuthor, PR: t.PRNumber})
+			err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber)
 		case pr.State == "closed":
-			err = in.Workflows.Signal(ctx, t.ID, SignalPRClosed, TaskSignal{Author: healAuthor, PR: t.PRNumber})
+			err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)
 		}
 		if err != nil {
 			return err

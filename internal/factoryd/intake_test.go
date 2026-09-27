@@ -625,11 +625,10 @@ func writerReads(requests []string) int {
 }
 
 // I1: a webhook Forgejo delivered while factoryd was down is gone; the heal
-// pass re-reads the task's pull request, issue and comments. Terminal
-// states are signalled on every pass (the workflow ignores what it acted
-// on); a comment is recorded and signalled once, whichever of the webhook
-// or the re-read saw it first, and a trusted comment recorded but not yet
-// signalled is signalled now.
+// pass re-reads the task's pull request, issue and comments. A terminal
+// state and a comment alike are recorded and signalled once, whichever of
+// the webhook or a re-read saw it first, and a trusted event recorded but
+// not yet signalled is signalled now.
 func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
 	forgejo, requests := resyncForgejoStub(t, "sebastian")
 	store := newFakeStore()
@@ -657,7 +656,9 @@ func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
 	}
 	wantRecorded := []string{
 		"issue_comment 80 sebastian trusted=true signalled=true",
+		"pull_request_merged 5 factoryd heal pass trusted=true signalled=true",
 		"pull_request_comment 90 sebastian trusted=true signalled=true",
+		"issue_closed 30 sebastian trusted=true signalled=true",
 		"issue_comment 81 reader trusted=false signalled=false",
 	}
 	if !slices.Equal(recorded, wantRecorded) {
@@ -667,18 +668,54 @@ func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
 		t.Fatalf("permission reads = %d, want one per new author (sebastian, reader)", n)
 	}
 
-	// the next pass: the terminal states again, no comment twice, no
-	// permission read for a comment already recorded
+	// the next pass, while the workflow still winds the task down: nothing
+	// twice, no permission read for an author already granted
 	*requests = nil
 	if err := in.Resync(context.Background(), task); err != nil {
 		t.Fatalf("second Resync: %v", err)
 	}
-	wantAgain := append(want, "t1 pr_merged factoryd heal pass #5: ", "t1 issue_closed sebastian #0: ")
-	if got := workflowsOf(in).signals; !slices.Equal(got, wantAgain) {
-		t.Fatalf("signals after the second pass = %q, want %q", got, wantAgain)
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
+		t.Fatalf("signals after the second pass = %q, want %q", got, want)
 	}
-	if len(store.intakeEvents) != 3 || writerReads(*requests) != 0 {
-		t.Fatalf("second pass: %d events, %d permission reads; want 3 and 0", len(store.intakeEvents), writerReads(*requests))
+	if len(store.intakeEvents) != 5 || writerReads(*requests) != 0 {
+		t.Fatalf("second pass: %d events, %d permission reads; want 5 and 0", len(store.intakeEvents), writerReads(*requests))
+	}
+}
+
+// A decision the webhook delivered is not sent again by the heal pass that
+// reads the same closed pull request or issue off Forgejo: the store row
+// claims it for whichever path came first.
+func TestIntakeSignalsADecisionOnce(t *testing.T) {
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+	task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 30, PRNumber: 5}
+	store.tasks["t1"] = task
+	closed, _ := json.Marshal(map[string]any{
+		"action":     "closed",
+		"issue":      map[string]any{"number": 30, "user": map[string]string{"login": "factory-agent"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":     map[string]string{"login": "sebastian"},
+	})
+	for _, d := range []struct {
+		event string
+		body  []byte
+	}{{"pull_request", prClosedBody("factory/t1", true)}, {"issues", closed}} {
+		if rr := postWebhook(in, d.event, d.body, sign(webhookSecret, d.body)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", d.event, rr.Code)
+		}
+	}
+	if err := in.Resync(context.Background(), task); err != nil {
+		t.Fatalf("Resync: %v", err)
+	}
+	var got []string
+	for _, sig := range workflowsOf(in).signals {
+		if strings.Contains(sig, " pr_merged ") || strings.Contains(sig, " issue_closed ") {
+			got = append(got, sig)
+		}
+	}
+	if want := []string{"t1 pr_merged sebastian #5: ", "t1 issue_closed sebastian #0: "}; !slices.Equal(got, want) {
+		t.Fatalf("decision signals = %q, want %q", got, want)
 	}
 }
 
@@ -728,7 +765,9 @@ func TestIntakeResyncSkipsCommentsOlderThanAnIdlessEvent(t *testing.T) {
 	}
 	var recorded []string
 	for _, e := range store.intakeEvents {
-		recorded = append(recorded, fmt.Sprintf("%s %d %s", e.Kind, e.CommentID, e.Author))
+		if strings.HasSuffix(e.Kind, "_comment") {
+			recorded = append(recorded, fmt.Sprintf("%s %d %s", e.Kind, e.CommentID, e.Author))
+		}
 	}
 	want := []string{"issue_comment 0 sebastian", "pull_request_comment 90 sebastian", "issue_comment 81 reader"}
 	if !slices.Equal(recorded, want) {

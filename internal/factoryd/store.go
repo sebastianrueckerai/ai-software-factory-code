@@ -56,22 +56,24 @@ type TaskUsage struct {
 	ExtraAttempts int           // one per human answer
 }
 
-// IntakeEvent is a Forgejo comment or review recorded against a task's issue
-// or pull request; the ones that ask for changes are also signalled to the
+// IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
+// request merged or closed) recorded against a task's issue or pull
+// request; the ones that steer or end the task are also signalled to the
 // task's workflow.
 type IntakeEvent struct {
 	ID        int64
 	TaskID    string
-	Kind      string // issue_comment, pull_request_comment, or the review's X-Forgejo-Event-Type
+	Kind      string // issue_comment, pull_request_comment, issue_closed, pull_request_merged, pull_request_closed, or the review's X-Forgejo-Event-Type
 	Author    string
 	Body      string
 	CreatedAt time.Time
 	// DeliveryID is the webhook delivery that produced it: a redelivery
 	// inserts no second row.
 	DeliveryID string
-	// CommentID is Forgejo's id of the comment (0 for a review): the heal
-	// pass re-reads comments, and a comment is recorded once whether the
-	// webhook or the re-read saw it first.
+	// CommentID is Forgejo's id of the comment (0 for a review; for a
+	// decision, the number of the issue or pull request it ended): the
+	// heal pass re-reads comments and states, and each is recorded once
+	// whether the webhook or the re-read saw it first.
 	CommentID int64
 	// Trusted: the author could steer the task when the event was recorded.
 	Trusted bool
