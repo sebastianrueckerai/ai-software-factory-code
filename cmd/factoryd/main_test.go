@@ -136,7 +136,7 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 	if res.IssueNumber != 42 || res.IssueURL != "https://git.example/sf/repo/issues/42" {
 		t.Fatalf("response = %+v, want issue_number 42 and its URL", res)
 	}
-	if len(store.created) != 1 || store.created[0].IssueNumber != 42 {
+	if len(store.created) != 1 || store.created[0].IssueNumber != 42 || store.created[0].Source != "api" {
 		t.Fatalf("created task = %+v, want IssueNumber 42", store.created)
 	}
 }

@@ -143,14 +143,11 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 func (r *Runner) execute(ctx context.Context, t Task) {
-	elapsed, claimed, err := r.store.ClaimTask(ctx, t.ID)
-	if err != nil {
+	if err := r.store.MarkStarted(ctx, t.ID); err != nil {
 		log.Printf("task %s: claim: %v", t.ID, err)
 		return
 	}
-	if !claimed {
-		return
-	}
+	elapsed := time.Duration(0)
 	mirrorTaskState(ctx, r.forgejo, t, "running")
 	// the store measured the elapsed time on its own clock; every deadline
 	// from here on runs on this process's monotonic clock

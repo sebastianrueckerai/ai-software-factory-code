@@ -241,7 +241,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, maxBudget f
 			BudgetEUR: in.BudgetEUR, Status: "queued",
 			Objective: in.Objective, Repository: in.Repository,
 			SHA: in.SHA, Branch: in.Branch,
-			Kind: "agent", IssueNumber: ref.Number,
+			Kind: "agent", IssueNumber: ref.Number, Source: "api",
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

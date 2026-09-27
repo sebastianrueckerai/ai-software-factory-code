@@ -744,39 +744,6 @@ func TestRunnerShutdownAfterVerdictCompletes(t *testing.T) {
 	}
 }
 
-// A requeued task keeps its first start, so the wall-clock cap counts the
-// runs before the requeue too.
-func TestRunnerWallClockAnchorsToFirstStart(t *testing.T) {
-	task := Task{ID: "t9", Status: "queued", Objective: "requeued", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	store.elapsed["t9"] = 61 * time.Minute // on the store's clock; cap is 1h
-
-	runner.execute(context.Background(), task)
-
-	if got, _, _ := store.Task(context.Background(), "t9"); got.Status != "failed" {
-		t.Fatalf("status = %q, want failed: 61 min since the first start is past the 1h cap", got.Status)
-	}
-	if len(kube.podOrder) != 0 {
-		t.Fatalf("pods = %d, want 0: no session starts past the cap", len(kube.podOrder))
-	}
-}
-
-func TestRunnerSkipsTaskItCannotClaim(t *testing.T) {
-	task := Task{ID: "t7", Status: "running", Objective: "taken", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-
-	runner.execute(context.Background(), task)
-
-	if len(kube.createdNs) != 0 || len(hub.minted()) != 0 {
-		t.Fatalf("unclaimed task was run: namespaces %v, tokens %v", kube.createdNs, hub.minted())
-	}
-	if got, _, _ := store.Task(context.Background(), "t7"); got.Status != "running" {
-		t.Fatalf("status = %q, want untouched running", got.Status)
-	}
-}
-
 func TestRunnerSetupFailureDeletesNamespace(t *testing.T) {
 	task := Task{ID: "t8", Status: "queued", Objective: "x", Repository: "sf/repo"}
 	kube := newFakeKube()

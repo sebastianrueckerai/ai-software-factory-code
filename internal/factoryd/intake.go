@@ -217,6 +217,7 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		Branch:      "factory/" + id,
 		Kind:        kind,
 		IssueNumber: p.Issue.Index,
+		Source:      "webhook",
 	}
 	if kind == "agent" {
 		repoParts, err := SplitRepo(repo)

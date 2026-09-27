@@ -479,6 +479,166 @@ func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string)
 	return res.Commit.ID, nil
 }
 
+// PullRequestRef is an opened or found pull request: enough for the
+// workflow to record the number and URL and to poll its head commit.
+type PullRequestRef struct {
+	Number int64
+	URL    string
+	Head   string
+}
+
+// CreatePullRequest opens a pull request from head into base. The workflow
+// calls FindOpenPullRequestForBranch first so a retried OpenPullRequest
+// activity reuses the existing PR instead of opening a second one for the
+// same branch.
+func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base, title, body string) (PullRequestRef, error) {
+	payload, err := json.Marshal(map[string]any{
+		"head":  head,
+		"base":  base,
+		"title": title,
+		"body":  body,
+	})
+	if err != nil {
+		return PullRequestRef{}, err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls", owner, repo)
+	resBody, err := f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	if err != nil {
+		return PullRequestRef{}, err
+	}
+	var res struct {
+		Number  int64  `json:"number"`
+		HTMLURL string `json:"html_url"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(resBody, &res); err != nil {
+		return PullRequestRef{}, fmt.Errorf("forgejo create pull request %s/%s %s: %w", owner, repo, head, err)
+	}
+	if res.Number == 0 {
+		return PullRequestRef{}, fmt.Errorf("forgejo create pull request %s/%s %s: response carries no pull number", owner, repo, head)
+	}
+	return PullRequestRef{Number: res.Number, URL: res.HTMLURL, Head: res.Head.Ref}, nil
+}
+
+// FindOpenPullRequestForBranch looks for an already-open pull request whose
+// head is branch (the idempotency key OpenPullRequest reuses across a
+// retried or replayed attempt). A nil ref with a nil error means no open PR
+// exists yet.
+func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo, branch string) (*PullRequestRef, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&limit=50", owner, repo)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var all []struct {
+		Number  int64  `json:"number"`
+		HTMLURL string `json:"html_url"`
+		Head    struct {
+			Ref string `json:"ref"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(body, &all); err != nil {
+		return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
+	}
+	for _, pr := range all {
+		if pr.Head.Ref == branch {
+			return &PullRequestRef{Number: pr.Number, URL: pr.HTMLURL, Head: pr.Head.Ref}, nil
+		}
+	}
+	return nil, nil
+}
+
+// CommitStatus is one check reported against a commit (most often a
+// Forgejo Actions job): State is one of "pending", "success", "error",
+// "failure" or "warning".
+type CommitStatus struct {
+	State       string `json:"status"`
+	Context     string `json:"context"`
+	TargetURL   string `json:"target_url"`
+	Description string `json:"description"`
+}
+
+// CombinedStatus is a commit's aggregate state across every reported check.
+type CombinedStatus struct {
+	State    string
+	Statuses []CommitStatus
+}
+
+// CombinedStatus reads sha's combined commit status: WaitChecks polls this
+// (architecture 7: Forgejo Actions is the first verification gate).
+func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (CombinedStatus, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/commits/%s/status", owner, repo, sha)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return CombinedStatus{}, err
+	}
+	var res struct {
+		State    string         `json:"state"`
+		Statuses []CommitStatus `json:"statuses"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return CombinedStatus{}, fmt.Errorf("forgejo combined status %s/%s %s: %w", owner, repo, sha, err)
+	}
+	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
+}
+
+// CompareBranches lists the files changed between base and head (ruling 90:
+// factoryd refuses to open a pull request whose diff touches .forgejo/**,
+// since Actions workflows run with the repository's CI credentials and a
+// task branch must never rewrite its own gate).
+func (f *Forgejo) CompareBranches(ctx context.Context, owner, repo, base, head string) ([]string, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", owner, repo, base, head)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Files []struct {
+			Filename string `json:"filename"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo compare %s/%s %s...%s: %w", owner, repo, base, head, err)
+	}
+	names := make([]string, 0, len(res.Files))
+	for _, file := range res.Files {
+		names = append(names, file.Filename)
+	}
+	return names, nil
+}
+
+// CreateIssueComment posts a comment on an issue: the workflow uses it to
+// record why a task's attempts were exhausted or it otherwise failed, on
+// the same issue task 42 filed at intake.
+func (f *Forgejo) CreateIssueComment(ctx context.Context, owner, repo string, issueNumber int64, body string) error {
+	payload, err := json.Marshal(map[string]any{"body": body})
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, issueNumber)
+	_, err = f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	return err
+}
+
+// PullRequestMerged reports whether pull request number was merged: the
+// workflow asks when an issue closes, because the merge that closes it
+// through "Closes #N" and a plain close arrive as the same issue event.
+func (f *Forgejo) PullRequestMerged(ctx context.Context, owner, repo string, number int64) (bool, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), nil, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	var res struct {
+		Merged bool `json:"merged"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return false, fmt.Errorf("forgejo pull request %s/%s #%d: %w", owner, repo, number, err)
+	}
+	return res.Merged, nil
+}
+
 // RepoDefaultBranch reads a repository's default branch name. A defensive
 // fallback for when a webhook payload's own repository.default_branch field
 // is empty (the payload shape is reconstructed, not documented upstream).

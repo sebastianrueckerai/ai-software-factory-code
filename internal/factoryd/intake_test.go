@@ -183,7 +183,7 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	for _, tk := range store.tasks {
 		task = tk
 	}
-	if task.Kind != "agent" || task.IssueNumber != 7 || task.Repository != "sf/ai-software-factory-code" {
+	if task.Kind != "agent" || task.Source != "webhook" || task.IssueNumber != 7 || task.Repository != "sf/ai-software-factory-code" {
 		t.Fatalf("task = %+v", task)
 	}
 	if task.Priority != 2 {

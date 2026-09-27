@@ -33,14 +33,14 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 type fakeStore struct {
 	tasks        map[string]Task
 	sessions     map[string]Session
-	elapsed      map[string]time.Duration // what the store's clock reports at the next claim
+	started      map[string]bool
 	finished     map[string]time.Time
 	intakeEvents []IntakeEvent
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
-		elapsed: map[string]time.Duration{}, finished: map[string]time.Time{}}
+		started: map[string]bool{}, finished: map[string]time.Time{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -83,14 +83,31 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 	return nil
 }
 
-func (s *fakeStore) ClaimTask(ctx context.Context, id string) (time.Duration, bool, error) {
+func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t, ok := s.tasks[id]
-	if !ok || t.Status != "queued" {
-		return 0, false, nil
+	if !ok || !slices.Contains([]string{"queued", "running", "in-review"}, t.Status) {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
 	s.tasks[id] = t
-	return s.elapsed[id], true, nil
+	s.started[id] = true
+	return nil
+}
+
+func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	var tasks []Task
+	for _, t := range s.tasks {
+		if t.Status == status {
+			tasks = append(tasks, t)
+		}
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].Priority != tasks[j].Priority {
+			return tasks[i].Priority > tasks[j].Priority
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
+	return tasks, nil
 }
 
 func (s *fakeStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
@@ -112,22 +129,6 @@ func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64
 	t.SpentEUR = max(t.SpentEUR, reported)
 	s.tasks[id] = t
 	return nil
-}
-
-func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
-	var tasks []Task
-	for _, t := range s.tasks {
-		if t.Status == status {
-			tasks = append(tasks, t)
-		}
-	}
-	sort.Slice(tasks, func(i, j int) bool {
-		if tasks[i].Priority != tasks[j].Priority {
-			return tasks[i].Priority > tasks[j].Priority
-		}
-		return tasks[i].ID < tasks[j].ID
-	})
-	return tasks, nil
 }
 
 func (s *fakeStore) InsertSession(ctx context.Context, sess Session) error {
@@ -191,6 +192,7 @@ func TestPGStore(t *testing.T) {
 		Branch:               "factory/t1",
 		Kind:                 "agent",
 		IssueNumber:          42,
+		Source:               "api",
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -220,12 +222,27 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("intake_events for t1 = %d, want 1", intakeCount)
 	}
 
-	elapsed, claimed, err := s.ClaimTask(ctx, "t1")
-	if err != nil || !claimed || elapsed != 0 {
-		t.Fatalf("first claim = (%v, %v, %v), want (0, true, nil): now() is the start", elapsed, claimed, err)
+	if err := s.MarkStarted(ctx, "t1"); err != nil {
+		t.Fatalf("MarkStarted: %v", err)
 	}
-	if _, claimed, err := s.ClaimTask(ctx, "t1"); err != nil || claimed {
-		t.Fatalf("second claim = (%v, %v), want (false, nil): a running task must not be claimed twice", claimed, err)
+	var first time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM tasks WHERE id = 't1'`).Scan(&first); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range [][2]string{{"running", "in-review"}} {
+		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
+			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
+		}
+	}
+	if err := s.MarkStarted(ctx, "t1"); err != nil {
+		t.Fatalf("MarkStarted from in-review: %v", err)
+	}
+	var again time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM tasks WHERE id = 't1'`).Scan(&again); err != nil {
+		t.Fatal(err)
+	}
+	if !again.Equal(first) {
+		t.Fatalf("started_at moved from %v to %v: the first start is kept", first, again)
 	}
 	got, _, _ = s.Task(ctx, "t1")
 	if got.Status != "running" {
@@ -237,25 +254,18 @@ func TestPGStore(t *testing.T) {
 	if err := s.TransitionTask(ctx, "nope", []string{"running"}, "closing"); err == nil {
 		t.Fatal("TransitionTask on a missing task must fail")
 	}
-	for _, step := range [][2]string{{"running", "closing"}, {"closing", "queued"}} {
-		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
-			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
-		}
+	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "running", Objective: "x"}); err != nil {
+		t.Fatalf("CreateTask t0: %v", err)
 	}
-	// a requeued task keeps its first start: the wall-clock cap spans runs,
-	// measured on the database's clock alone
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET started_at = now() - interval '90 minutes' WHERE id = 't1'`); err != nil {
+	running, err := s.ListTasksByStatus(ctx, "running")
+	if err != nil || len(running) != 2 || running[0].ID != "t1" || running[0].Source != "api" {
+		t.Fatalf("running = (%+v, %v), want t1 (priority 2, source round-tripped) before t0", running, err)
+	}
+	if err := s.TransitionTask(ctx, "t1", []string{"running"}, "closing"); err != nil {
 		t.Fatal(err)
 	}
-	again, claimed, err := s.ClaimTask(ctx, "t1")
-	// 90 min plus the gap between the two statements
-	if err != nil || !claimed || again < 90*time.Minute || again > 91*time.Minute {
-		t.Fatalf("reclaim = (%v, %v, %v), want (1h30m plus under a minute, true, nil)", again, claimed, err)
-	}
-	for _, step := range [][2]string{{"running", "closing"}, {"closing", "queued"}} {
-		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
-			t.Fatalf("TransitionTask %s -> %s: %v", step[0], step[1], err)
-		}
+	if err := s.MarkStarted(ctx, "t1"); err == nil {
+		t.Fatal("MarkStarted revived a closing task")
 	}
 
 	// spend settlement: finished tasks inside the window, raised to at least
@@ -291,17 +301,6 @@ func TestPGStore(t *testing.T) {
 		if got, _, _ := s.Task(ctx, id); got.SpentEUR != want {
 			t.Fatalf("%s spent = %v, want %v (max of booked and every LiteLLM figure)", id, got.SpentEUR, want)
 		}
-	}
-
-	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "queued", Objective: "x"}); err != nil {
-		t.Fatalf("CreateTask t0: %v", err)
-	}
-	queued, err := s.ListTasksByStatus(ctx, "queued")
-	if err != nil {
-		t.Fatalf("ListTasksByStatus: %v", err)
-	}
-	if len(queued) != 2 || queued[0].ID != "t1" || queued[0].Objective != "Add the runner" {
-		t.Fatalf("queued = %+v, want t1 (priority 2, brief round-tripped) before t0", queued)
 	}
 
 	_, ok, err = s.Task(ctx, "nope")

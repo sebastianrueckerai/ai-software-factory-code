@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -249,6 +250,128 @@ func TestForgejoBranchHeadSHA(t *testing.T) {
 	}
 }
 
+func TestForgejoCreatePullRequest(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &gotBody)
+		w.WriteHeader(201)
+		io.WriteString(w, `{"number":9,"html_url":"https://git.example/sf/r/pulls/9","head":{"ref":"factory/t1"}}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ref, err := f.CreatePullRequest(context.Background(), "sf", "r", "factory/t1", "main", "Add the runner", "Closes #3")
+	if err != nil {
+		t.Fatalf("CreatePullRequest: %v", err)
+	}
+	if gotPath != "/api/v1/repos/sf/r/pulls" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotBody["head"] != "factory/t1" || gotBody["base"] != "main" || gotBody["title"] != "Add the runner" || gotBody["body"] != "Closes #3" {
+		t.Fatalf("body = %v", gotBody)
+	}
+	if ref.Number != 9 || ref.URL != "https://git.example/sf/r/pulls/9" || ref.Head != "factory/t1" {
+		t.Fatalf("ref = %+v", ref)
+	}
+}
+
+func TestForgejoFindOpenPullRequestForBranchFindsMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/pulls" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `[
+			{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other"}},
+			{"number":9,"html_url":"https://git.example/sf/r/pulls/9","head":{"ref":"factory/t1"}}
+		]`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", "factory/t1")
+	if err != nil {
+		t.Fatalf("FindOpenPullRequestForBranch: %v", err)
+	}
+	if ref == nil || ref.Number != 9 {
+		t.Fatalf("ref = %+v, want #9", ref)
+	}
+}
+
+func TestForgejoFindOpenPullRequestForBranchNoMatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `[{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other"}}]`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", "factory/t1")
+	if err != nil {
+		t.Fatalf("FindOpenPullRequestForBranch: %v", err)
+	}
+	if ref != nil {
+		t.Fatalf("ref = %+v, want nil", ref)
+	}
+}
+
+func TestForgejoCombinedStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/commits/abc123/status" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"state":"failure","statuses":[{"status":"failure","context":"ci/build","target_url":"https://ci.example/1","description":"tests failed"}]}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	status, err := f.CombinedStatus(context.Background(), "sf", "r", "abc123")
+	if err != nil {
+		t.Fatalf("CombinedStatus: %v", err)
+	}
+	if status.State != "failure" || len(status.Statuses) != 1 || status.Statuses[0].Context != "ci/build" || status.Statuses[0].State != "failure" {
+		t.Fatalf("status = %+v", status)
+	}
+}
+
+func TestForgejoCompareBranches(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/compare/main...factory/t1" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		io.WriteString(w, `{"files":[{"filename":"main.go"},{"filename":".forgejo/workflows/ci.yml"}]}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	files, err := f.CompareBranches(context.Background(), "sf", "r", "main", "factory/t1")
+	if err != nil {
+		t.Fatalf("CompareBranches: %v", err)
+	}
+	if len(files) != 2 || files[0] != "main.go" || files[1] != ".forgejo/workflows/ci.yml" {
+		t.Fatalf("files = %v", files)
+	}
+}
+
+func TestForgejoCreateIssueComment(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &gotBody)
+		w.WriteHeader(201)
+		io.WriteString(w, `{"id":1}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if err := f.CreateIssueComment(context.Background(), "sf", "r", 3, "attempts exhausted"); err != nil {
+		t.Fatalf("CreateIssueComment: %v", err)
+	}
+	if gotPath != "/api/v1/repos/sf/r/issues/3/comments" {
+		t.Fatalf("path = %s", gotPath)
+	}
+	if gotBody["body"] != "attempts exhausted" {
+		t.Fatalf("body = %v", gotBody)
+	}
+}
+
 func TestForgejoRepoDefaultBranch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/sf/r" {
@@ -261,5 +384,22 @@ func TestForgejoRepoDefaultBranch(t *testing.T) {
 	branch, err := f.RepoDefaultBranch(context.Background(), "sf", "r")
 	if err != nil || branch != "main" {
 		t.Fatalf("RepoDefaultBranch = (%q, %v), want (main, nil)", branch, err)
+	}
+}
+
+func TestForgejoPullRequestMerged(t *testing.T) {
+	for _, merged := range []bool{true, false} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/api/v1/repos/sf/r/pulls/9" || r.Method != http.MethodGet {
+				t.Fatalf("%s %s", r.Method, r.URL.Path)
+			}
+			fmt.Fprintf(w, `{"number":9,"merged":%v}`, merged)
+		}))
+		f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		got, err := f.PullRequestMerged(context.Background(), "sf", "r", 9)
+		srv.Close()
+		if err != nil || got != merged {
+			t.Fatalf("PullRequestMerged = (%v, %v), want (%v, nil)", got, err, merged)
+		}
 	}
 }

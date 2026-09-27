@@ -37,11 +37,14 @@ type Task struct {
 	// IssueNumber is the Forgejo issue mirroring this task's state; 0 means
 	// none is linked yet.
 	IssueNumber int64
+	// Source is how the task arrived: "api" (POST /tasks) or "webhook" (an
+	// issue labelled in Forgejo).
+	Source string
 }
 
 // IntakeEvent is a Forgejo comment or review recorded against a task's issue
-// or pull request. Task 43's workflow consumes these as signals; today they
-// are only stored.
+// or pull request; the ones that ask for changes are also signalled to the
+// task's workflow.
 type IntakeEvent struct {
 	ID        int64
 	TaskID    string
@@ -73,17 +76,16 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	// ClaimTask moves a queued task to running and returns how long ago,
-	// on the store's clock, the task first started; a requeue keeps the
-	// first start. false means another runner (or an earlier pass) already
-	// took it.
-	ClaimTask(ctx context.Context, id string) (elapsed time.Duration, claimed bool, err error)
+	// MarkStarted moves a queued, running or in-review task to running and
+	// stamps started_at on the first call only.
+	MarkStarted(ctx context.Context, id string) error
+	// ListTasksByStatus lists tasks in status, highest priority first.
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
 	// SettleSpend raises spent_eur to at least reported.
 	SettleSpend(ctx context.Context, id string, reported float64) error
-	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency; false means no task is linked to that
 	// issue yet.
@@ -169,10 +171,10 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, branch, kind, issue_number)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		                    objective, repository, sha, branch, kind, issue_number, source)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, t.Branch, defaultKind(t.Kind), t.IssueNumber)
+		t.Objective, t.Repository, t.SHA, t.Branch, defaultKind(t.Kind), t.IssueNumber, t.Source)
 	return err
 }
 
@@ -183,46 +185,40 @@ func defaultKind(kind string) string {
 	return kind
 }
 
-func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
+const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
+	objective, repository, sha, branch, kind, issue_number, source`
+
+func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-		       objective, repository, sha, branch, kind, issue_number
-		 FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber)
+	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
+		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source); err != nil {
+		return Task{}, err
+	}
+	var err error
+	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
+		return Task{}, fmt.Errorf("required_capabilities: %w", err)
+	}
+	return t, nil
+}
+
+func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task, bool, error) {
+	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE `+where, args...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
 	if err != nil {
 		return Task{}, false, err
-	}
-	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
-		return Task{}, false, fmt.Errorf("required_capabilities: %w", err)
 	}
 	return t, true, nil
 }
 
+func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	return s.oneTask(ctx, `id = $1`, id)
+}
+
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
-	var t Task
-	var caps []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-		       objective, repository, sha, branch, kind, issue_number
-		 FROM tasks WHERE repository = $1 AND issue_number = $2`, repository, issueNumber,
-	).Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Task{}, false, nil
-	}
-	if err != nil {
-		return Task{}, false, err
-	}
-	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
-		return Task{}, false, fmt.Errorf("required_capabilities: %w", err)
-	}
-	return t, true, nil
+	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
 }
 
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
@@ -242,31 +238,6 @@ func (s *PGStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-		        objective, repository, sha, branch, kind, issue_number
-		 FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var tasks []Task
-	for rows.Next() {
-		var t Task
-		var caps []byte
-		if err := rows.Scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-			&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber); err != nil {
-			return nil, err
-		}
-		if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
-			return nil, fmt.Errorf("required_capabilities: %w", err)
-		}
-		tasks = append(tasks, t)
-	}
-	return tasks, rows.Err()
-}
-
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = $2,
@@ -278,16 +249,29 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 	return nil
 }
 
-func (s *PGStore) ClaimTask(ctx context.Context, id string) (time.Duration, bool, error) {
-	var secs float64
-	err := s.db.QueryRowContext(ctx,
+func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'running', started_at = COALESCE(started_at, now())
-		 WHERE id = $1 AND status = 'queued'
-		 RETURNING EXTRACT(EPOCH FROM now() - started_at)::float8`, id).Scan(&secs)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review')`, id)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+taskColumns+` FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
+	if err != nil {
+		return nil, err
 	}
-	return time.Duration(secs * float64(time.Second)), err == nil, err
+	defer rows.Close()
+	var tasks []Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
 }
 
 func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
