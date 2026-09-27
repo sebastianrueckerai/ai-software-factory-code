@@ -357,3 +357,86 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 		t.Fatalf("control: planted programs did not run under plain git: %v", err)
 	}
 }
+
+// Forgejo's protected_file_patterns rejects every new factory/* branch
+// outright, so branch protection cannot keep an agent from editing
+// .forgejo/ (ruling 90): the worker itself must refuse the push instead.
+func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	sha := run("-C", seed, "rev-parse", "HEAD")
+
+	for _, tc := range []struct {
+		name       string
+		agent      func(dir string)
+		wantRefuse bool
+	}{
+		{name: "agent-commit-touches-forgejo", wantRefuse: true, agent: func(dir string) {
+			os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+			os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "pr.yml"), []byte("evil: true\n"), 0o644)
+			run("-C", dir, "add", "-A")
+			run("-C", dir, "commit", "-q", "-m", "agent")
+		}},
+		{name: "leftover-change-touches-forgejo", wantRefuse: true, agent: func(dir string) {
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+			run("-C", dir, "add", "a.txt")
+			run("-C", dir, "commit", "-q", "-m", "agent")
+			os.MkdirAll(filepath.Join(dir, ".forgejo"), 0o755)
+			os.WriteFile(filepath.Join(dir, ".forgejo", "config.yml"), []byte("evil: true\n"), 0o644)
+		}},
+		{name: "lookalike-path-is-not-forgejo", agent: func(dir string) {
+			os.MkdirAll(filepath.Join(dir, ".forgejo-lookalike"), 0o755)
+			os.WriteFile(filepath.Join(dir, ".forgejo-lookalike", "x"), []byte("x\n"), 0o644)
+			run("-C", dir, "add", "-A")
+			run("-C", dir, "commit", "-q", "-m", "agent")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + tc.name
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := e.gitAuth("", "clone", remote, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, err := prepareRepo(dir, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.agent(dir)
+
+			commit, err := commitAndPush(dir, e, base, func() error { return nil })
+			remoteHead, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
+			if tc.wantRefuse {
+				if err == nil {
+					t.Fatalf("commitAndPush succeeded, commit = %q, want refusal", commit)
+				}
+				if !strings.Contains(err.Error(), ".forgejo") {
+					t.Fatalf("error = %q, want it to name .forgejo", err)
+				}
+				if len(remoteHead) != 0 {
+					t.Fatalf("remote branch = %q, want nothing pushed", remoteHead)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if commit == "" || strings.TrimSpace(string(remoteHead)) != commit {
+				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
+			}
+		})
+	}
+}

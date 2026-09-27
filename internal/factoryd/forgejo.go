@@ -252,3 +252,27 @@ func (f *Forgejo) DeleteCIRunner(ctx context.Context, owner, repo string, id int
 	}
 	return err
 }
+
+// CIRunnerRef is one currently registered runner, enough to recover the job
+// id spawn named it for and to delete it.
+type CIRunnerRef struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// ListCIRunners lists owner/repo's currently registered runners. It is
+// Forgejo's own durable record of a registration: the reconciler's last
+// resort for a runner spawn registered but crashed before writing anything
+// local to recover it from.
+func (f *Forgejo) ListCIRunners(ctx context.Context, owner, repo string) ([]CIRunnerRef, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners", owner, repo)
+	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var refs []CIRunnerRef
+	if err := json.Unmarshal(body, &refs); err != nil {
+		return nil, fmt.Errorf("forgejo list ci runners: %w", err)
+	}
+	return refs, nil
+}

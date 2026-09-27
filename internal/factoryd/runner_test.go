@@ -31,6 +31,7 @@ type fakeKube struct {
 	createdNs   map[string]map[string]string // survives deletion
 	objects     map[string]map[string]any    // Create path → object
 	saErr       error                        // injected CreateServiceAccount failure
+	getErr      map[string]error             // ns/name → injected GetSecretData failure
 	onDeletePod func()                       // runs on every DeletePod
 }
 
@@ -119,6 +120,9 @@ func (k *fakeKube) CreateSecret(ctx context.Context, namespace, name, secretType
 func (k *fakeKube) GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if err, ok := k.getErr[namespace+"/"+name]; ok {
+		return nil, err
+	}
 	if data, ok := k.sourceData[namespace+"/"+name]; ok {
 		return data, nil
 	}

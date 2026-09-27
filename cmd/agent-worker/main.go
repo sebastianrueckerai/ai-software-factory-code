@@ -332,6 +332,9 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if head == base {
 		return "", nil
 	}
+	if err := refuseForgejoPathChange(e, own, base, head); err != nil {
+		return "", err
+	}
 	if err := killAgent(); err != nil {
 		return "", fmt.Errorf("stop agent processes: %w", err)
 	}
@@ -354,6 +357,25 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 		return "", err
 	}
 	return head, nil
+}
+
+// refuseForgejoPathChange stops a push whose diff against base touches
+// .forgejo/: Forgejo's protected_file_patterns rejects every new factory/*
+// branch outright (ruling 90), so branch protection cannot gate this — the
+// worker, trusted and running with the agent already dead, is where the
+// guard has to live instead. Computed against own, the repo the worker
+// itself fetched and staged, never against the agent-controlled repo.
+func refuseForgejoPathChange(e workerEnv, own, base, head string) error {
+	diff, err := e.git(own, "diff", "--name-only", base, head)
+	if err != nil {
+		return err
+	}
+	for _, path := range strings.Split(diff, "\n") {
+		if path == ".forgejo" || strings.HasPrefix(path, ".forgejo/") {
+			return fmt.Errorf("refusing to push: %s changes .forgejo/", path)
+		}
+	}
+	return nil
 }
 
 var botIdentity = []string{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,13 +14,14 @@ import (
 )
 
 // ciHub scripts the Forgejo Actions runner-registrar API (task 41): the
-// repo-scoped jobs search, ephemeral registration, and deletion endpoints,
-// authenticated by the registrar's own bearer-style token header, never the
-// bot user's basic auth.
+// repo-scoped jobs search, ephemeral registration, listing, and deletion
+// endpoints, authenticated by the registrar's own bearer-style token
+// header, never the bot user's basic auth.
 type ciHub struct {
 	mu         sync.Mutex
 	jobs       []CIJob
-	registered []string // registration name, in call order
+	runners    map[int64]string // id → name, currently registered
+	registered []string         // registration name, in call order
 	deleted    []int64
 	nextID     int64
 	wantToken  string
@@ -37,6 +39,14 @@ func (h *ciHub) srv(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
 			body, _ := json.Marshal(h.jobs)
 			w.Write(body)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/actions/runners"):
+			refs := make([]CIRunnerRef, 0, len(h.runners))
+			for id, name := range h.runners {
+				refs = append(refs, CIRunnerRef{ID: id, Name: name})
+			}
+			sort.Slice(refs, func(i, j int) bool { return refs[i].ID < refs[j].ID })
+			body, _ := json.Marshal(refs)
+			w.Write(body)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/actions/runners"):
 			var in struct {
 				Name      string `json:"name"`
@@ -48,15 +58,20 @@ func (h *ciHub) srv(t *testing.T) *httptest.Server {
 			}
 			h.nextID++
 			h.registered = append(h.registered, in.Name)
+			if h.runners == nil {
+				h.runners = map[int64]string{}
+			}
+			h.runners[h.nextID] = in.Name
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"uuid":"uuid-%d","token":"tok-%d"}`, h.nextID, h.nextID, h.nextID)
 		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/runners/"):
 			var id int64
 			fmt.Sscanf(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/actions/runners/%d", &id)
-			if id < 1 || id > h.nextID || contains(h.deleted, id) {
+			if _, ok := h.runners[id]; !ok {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
+			delete(h.runners, id)
 			h.deleted = append(h.deleted, id)
 			w.WriteHeader(http.StatusNoContent)
 		default:
@@ -65,15 +80,6 @@ func (h *ciHub) srv(t *testing.T) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
-}
-
-func contains(ids []int64, id int64) bool {
-	for _, v := range ids {
-		if v == id {
-			return true
-		}
-	}
-	return false
 }
 
 func testCIConfig() CIConfig {
@@ -385,5 +391,91 @@ func TestCISpawnerPullSecretCopiedNoOtherCredentials(t *testing.T) {
 		if strings.HasPrefix(key, ns+"/") && !wantSecrets[key] {
 			t.Fatalf("unexpected secret %s in the CI namespace: only the runner registration and the pull secret belong there", key)
 		}
+	}
+}
+
+// The factoryd-task ClusterRole grants only create, not get, on secrets
+// (finding 1, fix round 1): a Forbidden read of the registration secret
+// must not be mistaken for "no secret was ever written" — the namespace
+// must survive so the next reconcile tick retries the read, instead of
+// silently losing the deregistration forever.
+func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 8, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	ns := "factory-agents-ci-8"
+	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
+	kube.getErr = map[string]error{ns + "/" + ciSecretName: ErrForbidden}
+
+	spawner.reconcile(context.Background())
+
+	if _, ok := kube.namespaces[ns]; !ok {
+		t.Fatal("namespace was torn down despite a Forbidden registration read")
+	}
+	if len(hub.deleted) != 0 {
+		t.Fatalf("deleted = %v, want no deregistration while the read is Forbidden", hub.deleted)
+	}
+
+	delete(kube.getErr, ns+"/"+ciSecretName)
+	spawner.reconcile(context.Background())
+
+	if _, ok := kube.namespaces[ns]; ok {
+		t.Fatal("namespace survived once the registration read succeeded")
+	}
+	if len(hub.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the runner deregistered once the read succeeds", hub.deleted)
+	}
+}
+
+// A crash between RegisterCIRunner succeeding and any local write (the
+// namespace, the registration secret) leaves an orphaned Forgejo
+// registration with nothing local to recover it from (finding 2, fix round
+// 1). Forgejo's own runner list is the only record that survives that
+// crash: reconcile must find and deregister a runner named for a job that
+// has no namespace.
+func TestCISpawnerReconcileSweepsOrphanRunnerRegistration(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{}
+	spawner := newTestCISpawner(t, kube, hub)
+	// a runner registered under spawn's naming convention, but the process
+	// crashed before CreateNamespace ever ran for job 99
+	hub.runners = map[int64]string{99: "ci-job-99"}
+
+	spawner.reconcile(context.Background())
+
+	if len(hub.deleted) != 1 || hub.deleted[0] != 99 {
+		t.Fatalf("deleted = %v, want the orphan runner 99 deregistered", hub.deleted)
+	}
+}
+
+// A runner whose job's namespace exists — spawning or already running —
+// must survive sweep: only a registration with no namespace to show for it
+// is an orphan.
+func TestCISpawnerReconcileLeavesActiveRunnerRegistrationAlone(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 6, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background()) // registers ci-job-6 and creates its namespace
+
+	spawner.reconcile(context.Background())
+
+	if len(hub.deleted) != 0 {
+		t.Fatalf("deleted = %v, want the active job's runner registration left alone", hub.deleted)
+	}
+}
+
+// A registration whose name doesn't match spawn's ci-job-<id> convention —
+// one a human or another process registered — must never be swept.
+func TestCISpawnerReconcileIgnoresForeignRunnerNames(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{}
+	spawner := newTestCISpawner(t, kube, hub)
+	hub.runners = map[int64]string{5: "some-other-runner"}
+
+	spawner.reconcile(context.Background())
+
+	if len(hub.deleted) != 0 {
+		t.Fatalf("deleted = %v, want a non-spawner runner name left alone", hub.deleted)
 	}
 }

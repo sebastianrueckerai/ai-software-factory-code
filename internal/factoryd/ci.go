@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -241,12 +242,18 @@ func (s *CISpawner) reconcile(ctx context.Context) {
 		}
 		s.teardown(ctx, ns)
 	}
+	s.sweepOrphanRunners(ctx)
 }
 
 func isCINamespace(prefix, ns string) bool {
 	return len(ns) > len(prefix) && ns[:len(prefix)] == prefix
 }
 
+// teardown deregisters ns's runner and reclaims the namespace. A Forbidden
+// or otherwise failed read of the registration secret must not be treated
+// like "no secret was ever written": the namespace is left for the next
+// reconcile tick to retry, rather than deleted with the registration still
+// live in Forgejo.
 func (s *CISpawner) teardown(ctx context.Context, ns string) {
 	data, err := s.kube.GetSecretData(ctx, ns, ciSecretName)
 	switch {
@@ -256,12 +263,59 @@ func (s *CISpawner) teardown(ctx context.Context, ns string) {
 				log.Printf("ci spawner: delete runner registration for %s: %v", ns, err)
 			}
 		}
-	case !errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound):
+		// no registration secret was ever written; nothing to deregister
+	default:
 		log.Printf("ci spawner: read registration secret for %s: %v", ns, err)
+		return
 	}
 	if err := s.kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("ci spawner: delete namespace %s: %v", ns, err)
 	}
+}
+
+// sweepOrphanRunners deregisters runners that spawn's own naming convention
+// (jobIDFromRunnerName) ties to a job, but for which no namespace exists.
+// spawn can crash after RegisterCIRunner succeeds but before the namespace
+// (or its registration secret) is ever written, leaving nothing local to
+// reconcile from; Forgejo's own runner list is the only record that
+// survives that crash. The single poll loop runs reconcile to completion
+// before spawning any job in the same tick, so a runner this finds with no
+// namespace can only be left over from a previous, crashed process.
+func (s *CISpawner) sweepOrphanRunners(ctx context.Context) {
+	runners, err := s.forgejo.ListCIRunners(ctx, s.cfg.Owner, s.cfg.Repo)
+	if err != nil {
+		log.Printf("ci spawner: sweep orphan runners: list: %v", err)
+		return
+	}
+	for _, r := range runners {
+		jobID, ok := jobIDFromRunnerName(r.Name)
+		if !ok {
+			continue
+		}
+		names, err := s.kube.NamespacesByLabel(ctx, "factory.ai/task", jobLabel(jobID))
+		if err != nil {
+			log.Printf("ci spawner: sweep orphan runner %d: %v", r.ID, err)
+			continue
+		}
+		if len(names) > 0 {
+			continue
+		}
+		if err := s.forgejo.DeleteCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, r.ID); err != nil {
+			log.Printf("ci spawner: sweep delete orphan runner %d: %v", r.ID, err)
+		}
+	}
+}
+
+// jobIDFromRunnerName recovers the job id spawn named the runner for
+// ("ci-job-<id>"); a name that doesn't match this shape was not spawn's.
+func jobIDFromRunnerName(name string) (int64, bool) {
+	const prefix = "ci-job-"
+	if !strings.HasPrefix(name, prefix) {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(name[len(prefix):], 10, 64)
+	return id, err == nil
 }
 
 // CI namespace resources: `go test -race` and gosec need more headroom than
