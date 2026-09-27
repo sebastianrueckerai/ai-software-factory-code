@@ -125,3 +125,11 @@ func TestTemporalStartAndSignalAreLogged(t *testing.T) {
 		t.Fatalf("log = %q, want nothing for a refused duplicate start (the heal pass tries every minute)", buf.String())
 	}
 }
+
+// The SDK swallows an already-started refusal into the existing run unless
+// told otherwise; Start relies on seeing that error to stay quiet.
+func TestStartOptionsSurfaceAnAlreadyStartedRun(t *testing.T) {
+	if !startOptions("t1").WorkflowExecutionErrorWhenAlreadyStarted {
+		t.Fatal("startOptions must set WorkflowExecutionErrorWhenAlreadyStarted")
+	}
+}

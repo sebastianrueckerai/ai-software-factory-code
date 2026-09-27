@@ -67,6 +67,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 		ID:                    WorkflowID(taskID),
 		TaskQueue:             TaskQueue,
 		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		// without this the SDK hands back the running execution as a success
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}
 }
 
