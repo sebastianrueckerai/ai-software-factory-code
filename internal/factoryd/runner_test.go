@@ -814,6 +814,20 @@ func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	}
 }
 
+// What the session did reaches its result: the findings of a session that
+// ended without a push, and the half-way flag the workflow carries on.
+func TestRunSessionResultCarriesFindingsAndHalfWay(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "go test ./...", "exit": 1}}) + "\n" + resultLine(false, "gave up")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", HalfWayDone: true}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") || !res.HalfWayDone {
+		t.Fatalf("result = %+v, want the command in the findings and the half-way flag kept", res)
+	}
+}
+
 func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2

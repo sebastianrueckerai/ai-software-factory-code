@@ -163,8 +163,9 @@ const workerTerminationGrace = 60
 // decision stops it. A stopped worker commits and pushes its work in
 // progress before it exits. progress receives the event count and
 // findings so far, for the activity heartbeat.
-func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (sessionOutcome, error) {
-	out := sessionOutcome{}
+// out is a named result so the deferred findings and half-way flag reach
+// the caller on every return.
+func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (out sessionOutcome, err error) {
 	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
 	if err != nil {
 		return out, err
