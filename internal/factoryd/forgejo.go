@@ -176,7 +176,7 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 	if res.StatusCode != wantStatus {
 		switch res.StatusCode {
 		case http.StatusNotFound:
-			return nil, fmt.Errorf("forgejo %s %s: %w", method, path, ErrNotFound)
+			return nil, fmt.Errorf("%s %s: %w", method, path, errForgejoNotFound)
 		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
 		default:
 			if res.StatusCode >= 400 && res.StatusCode < 500 {

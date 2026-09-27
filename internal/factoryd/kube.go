@@ -25,8 +25,12 @@ var (
 	ErrNotFound      = errors.New("not found") // shared by the kube, S3, Forgejo and store clients
 	ErrForbidden     = errors.New("kubernetes: forbidden")
 	// ErrRefused is a Forgejo 4xx no retry can fix: everything but a 404
-	// (ErrNotFound) and the transient 408, 409 and 429.
+	// (errForgejoNotFound) and the transient 408, 409 and 429.
 	ErrRefused = errors.New("forgejo: refused")
+	// errForgejoNotFound is Forgejo's 404. It is also ErrNotFound, so a
+	// caller tolerating an absent object needs no second check, but only
+	// it, not a kube, S3 or store not-found, ends an activity's retries.
+	errForgejoNotFound = fmt.Errorf("forgejo: %w", ErrNotFound)
 )
 
 // saDir is a var so the wire test can point it at a stub token.

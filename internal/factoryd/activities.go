@@ -50,12 +50,12 @@ func (r *Runner) RegisterActivities(w interface {
 }
 
 // TerminalForgejoErrors is the worker interceptor that ends an activity's
-// retries on a Forgejo refusal or on a not-found that escaped it (I4): no
+// retries on a Forgejo refusal or on a Forgejo 404 that escaped it (I4): no
 // retry fixes a 4xx, and the activities that tolerate an absent object
 // swallow ErrNotFound themselves, so one that escapes names an object gone
-// for good. Temporal reads the non-retryable type off the returned error
-// itself, never off one it wraps, so the classification sits at the
-// activity boundary.
+// for good. A kube, S3 or store not-found keeps retrying. Temporal reads
+// the non-retryable type off the returned error itself, never off one it
+// wraps, so the classification sits at the activity boundary.
 type TerminalForgejoErrors struct {
 	interceptor.WorkerInterceptorBase
 }
@@ -70,10 +70,15 @@ type terminalForgejoInbound struct {
 
 func (i *terminalForgejoInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
 	out, err := i.Next.ExecuteActivity(ctx, in)
-	if (errors.Is(err, ErrRefused) || errors.Is(err, ErrNotFound)) && !isTerminal(err) {
+	if forgejoTerminal(err) && !isTerminal(err) {
 		return out, temporal.NewNonRetryableApplicationError(err.Error(), errTerminal, err)
 	}
 	return out, err
+}
+
+// forgejoTerminal is a Forgejo answer no retry changes: a refusal or a 404.
+func forgejoTerminal(err error) bool {
+	return errors.Is(err, ErrRefused) || errors.Is(err, errForgejoNotFound)
 }
 
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {

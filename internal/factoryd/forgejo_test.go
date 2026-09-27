@@ -693,7 +693,7 @@ func TestForgejoIssueClosedBy(t *testing.T) {
 }
 
 // A 4xx no retry can fix is a refusal (I4): the activity interceptor ends
-// the retries on it. 404 stays ErrNotFound, and 408, 409 and 429 are as
+// the retries on it. 404 is Forgejo's own not-found (also ErrNotFound), and 408, 409 and 429 are as
 // transient as a 5xx.
 func TestForgejoClientErrorsAreRefusals(t *testing.T) {
 	var status int
@@ -716,6 +716,9 @@ func TestForgejoClientErrorsAreRefusals(t *testing.T) {
 		}
 		if got := errors.Is(err, ErrNotFound); got != (want == ErrNotFound) {
 			t.Fatalf("%d: not found = %v: %v", code, got, err)
+		}
+		if got := errors.Is(err, errForgejoNotFound); got != (want == ErrNotFound) {
+			t.Fatalf("%d: forgejo not found = %v: %v", code, got, err)
 		}
 		if want == ErrRefused && !strings.Contains(err.Error(), "no") {
 			t.Fatalf("%d: body not surfaced: %v", code, err)

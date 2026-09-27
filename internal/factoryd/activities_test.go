@@ -196,7 +196,9 @@ func TestTerminalForgejoErrorsEndRetries(t *testing.T) {
 		terminal bool
 	}{
 		"refused":          {fmt.Errorf("forgejo GET /x: %w: status 422: no", ErrRefused), true},
-		"not found":        {fmt.Errorf("forgejo GET /x: %w", ErrNotFound), true},
+		"forgejo 404":      {fmt.Errorf("forgejo GET /x: %w", errForgejoNotFound), true},
+		"store not found":  {fmt.Errorf("task t1: %w", ErrNotFound), false},
+		"kube not found":   {ErrNotFound, false},
 		"already terminal": {terminalError("task gone"), true},
 		"transient":        {fmt.Errorf("forgejo GET /x: status 502: bad gateway"), false},
 		"none":             {nil, false},
