@@ -58,6 +58,11 @@ rules:
   # finding 1) — still confined per-namespace by the RoleBinding above.
   resources: [secrets]
   verbs: [create, get]
+- apiGroups: [""]
+  # the buildkitd Service a pr-untrusted-build job's namespace holds
+  # (ruling 91), giving the runner pod a stable in-namespace DNS name.
+  resources: [services]
+  verbs: [create]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   verbs: [create]
@@ -115,15 +120,17 @@ spec:
   validations:
   - expression: variables.target.startsWith('factory-agents-')
     message: factoryd may only act in factory-agents-* namespaces
-  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod']
+  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod', 'Service']
     message: factoryd may not create this kind of object
   - expression: >-
       variables.kind != 'Namespace' || request.operation == 'DELETE' ||
       (has(object.metadata.labels) &&
        'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
-       object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' &&
-       'factory.ai/task' in object.metadata.labels)
-    message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted
+       ('factory.ai/task' in object.metadata.labels) &&
+       (object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' ||
+        (object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'baseline' &&
+         object.metadata.name.startsWith('factory-agents-ci-'))))
+    message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted (baseline only for factory-agents-ci-* build namespaces)
   - expression: >-
       variables.kind != 'RoleBinding' || request.operation == 'DELETE' ||
       (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'factoryd-task' &&
@@ -135,6 +142,24 @@ spec:
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
        has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
     message: sandbox pods must run under gVisor without an automounted API token
+  - expression: >-
+      variables.kind != 'Pod' || request.operation == 'DELETE' ||
+      !(
+        (has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0) ||
+        object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0)
+      ) ||
+      (
+        variables.target.startsWith('factory-agents-ci-') &&
+        has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
+        object.metadata.labels['factory.ai/build-pod'] == 'true' &&
+        !object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true) &&
+        !object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.add) && size(c.securityContext.capabilities.add) > 0) &&
+        (!has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.hostPath))) &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false)
+      )
+    message: only factory.ai/build-pod pods in factory-agents-ci-* namespaces may run as root, and only without privileged containers, added capabilities, hostPath volumes, hostNetwork or hostPID
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

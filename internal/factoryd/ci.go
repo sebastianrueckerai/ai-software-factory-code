@@ -20,11 +20,16 @@ type CIConfig struct {
 	Owner            string // Forgejo repo owner, e.g. "sf"
 	Repo             string // e.g. "ai-software-factory-code"
 	Label            string // "pr-untrusted"; the runner also declares ":host"
-	RunnerImage      string // pinned digest, host-mode (Dockerfile.runner)
-	PullSecret       string // registry pull secret copied into the CI namespace
-	GitBaseURL       string // in-cluster Forgejo — same host RunnerConfig.GitBaseURL uses, not the public API host
-	PollInterval     time.Duration
-	JobTimeout       time.Duration // activeDeadlineSeconds
+	// BuildLabel jobs (ruling 91) get the same restricted runner pod plus a
+	// second, sandbox-root buildkitd pod in the same namespace: no rootless
+	// BuildKit path works under gVisor (task-41-report.md, design decision
+	// #4; research-stage6-buildkit-gvisor.md in the build-plan ledger).
+	BuildLabel   string // "pr-untrusted-build"
+	RunnerImage  string // pinned digest, host-mode (Dockerfile.runner); also runs buildkitd
+	PullSecret   string // registry pull secret copied into the CI namespace
+	GitBaseURL   string // in-cluster Forgejo — same host RunnerConfig.GitBaseURL uses, not the public API host
+	PollInterval time.Duration
+	JobTimeout   time.Duration // activeDeadlineSeconds
 }
 
 func (c *CIConfig) setDefaults() {
@@ -34,6 +39,9 @@ func (c *CIConfig) setDefaults() {
 	if c.Label == "" {
 		c.Label = "pr-untrusted"
 	}
+	if c.BuildLabel == "" {
+		c.BuildLabel = "pr-untrusted-build"
+	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = 10 * time.Second
 	}
@@ -42,14 +50,15 @@ func (c *CIConfig) setDefaults() {
 	}
 }
 
-// CISpawner polls Forgejo for Actions jobs waiting on cfg.Label and, for each
-// one not yet served, registers an ephemeral runner and spawns a namespace
-// holding one gVisor pod running `forgejo-runner one-job --wait`. It never
-// binds a specific job to a specific runner instance: Forgejo's own
-// scheduler decides which waiting job a connected runner ends up serving.
-// The namespace name and its factory.ai/task label carry the job id, so a
-// restart or a second poll tick never spawns a second runner for the same
-// job.
+// CISpawner polls Forgejo for Actions jobs waiting on cfg.Label or
+// cfg.BuildLabel and, for each one not yet served, registers an ephemeral
+// runner and spawns a namespace holding one gVisor pod running
+// `forgejo-runner one-job --wait` (plus, for a build-label job, a second
+// buildkitd pod). It never binds a specific job to a specific runner
+// instance: Forgejo's own scheduler decides which waiting job a connected
+// runner ends up serving. The namespace name and its factory.ai/task label
+// carry the job id, so a restart or a second poll tick never spawns a second
+// runner for the same job.
 type CISpawner struct {
 	cfg     CIConfig
 	kube    Kube
@@ -59,6 +68,14 @@ type CISpawner struct {
 const (
 	ciPodName    = "ci-runner"
 	ciSecretName = "ci-runner-registration"
+
+	// buildPodName is the buildkitd pod ruling 91 adds alongside ciPodName
+	// for pr-untrusted-build jobs.
+	buildPodName = "buildkitd"
+	// buildPodLabelKey marks the one pod the VAP's build-pod carve-out
+	// allows to run as root (k8s/factoryd.yaml).
+	buildPodLabelKey = "factory.ai/build-pod"
+	buildPodPort     = 1234
 )
 
 func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube) (*CISpawner, error) {
@@ -90,25 +107,42 @@ func (s *CISpawner) Run(ctx context.Context) {
 	}
 }
 
+// ciJobKind distinguishes the ordinary restricted runner (build: false) from
+// a pr-untrusted-build job, which additionally gets a sandbox-root buildkitd
+// pod, a baseline-labeled namespace and a wider resource quota (ruling 91).
+type ciJobKind struct {
+	label string
+	build bool
+}
+
+func (s *CISpawner) jobKinds() []ciJobKind {
+	return []ciJobKind{
+		{label: s.cfg.Label},
+		{label: s.cfg.BuildLabel, build: true},
+	}
+}
+
 func (s *CISpawner) poll(ctx context.Context) {
 	s.reconcile(ctx)
 
-	jobs, err := s.forgejo.WaitingRunJobs(ctx, s.cfg.Owner, s.cfg.Repo, s.cfg.Label)
-	if err != nil {
-		log.Printf("ci spawner: waiting jobs: %v", err)
-		return
-	}
-	for _, job := range jobs {
-		served, err := s.served(ctx, job.ID)
+	for _, kind := range s.jobKinds() {
+		jobs, err := s.forgejo.WaitingRunJobs(ctx, s.cfg.Owner, s.cfg.Repo, kind.label)
 		if err != nil {
-			log.Printf("ci spawner: check job %d served: %v", job.ID, err)
+			log.Printf("ci spawner: waiting jobs (%s): %v", kind.label, err)
 			continue
 		}
-		if served {
-			continue
-		}
-		if err := s.spawn(ctx, job.ID); err != nil {
-			log.Printf("ci spawner: spawn for job %d: %v", job.ID, err)
+		for _, job := range jobs {
+			served, err := s.served(ctx, job.ID)
+			if err != nil {
+				log.Printf("ci spawner: check job %d served: %v", job.ID, err)
+				continue
+			}
+			if served {
+				continue
+			}
+			if err := s.spawn(ctx, job.ID, kind); err != nil {
+				log.Printf("ci spawner: spawn for job %d: %v", job.ID, err)
+			}
 		}
 	}
 }
@@ -131,14 +165,14 @@ func (s *CISpawner) namespaceFor(jobID int64) string {
 	return fmt.Sprintf("%s%d", s.cfg.NamespacePrefix, jobID)
 }
 
-func (s *CISpawner) spawn(ctx context.Context, jobID int64) error {
+func (s *CISpawner) spawn(ctx context.Context, jobID int64, kind ciJobKind) error {
 	name := fmt.Sprintf("ci-job-%d", jobID)
 	reg, err := s.forgejo.RegisterCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, name)
 	if err != nil {
 		return fmt.Errorf("register runner: %w", err)
 	}
 	ns := s.namespaceFor(jobID)
-	if err := s.setupNamespace(ctx, ns, jobID, reg); err != nil {
+	if err := s.setupNamespace(ctx, ns, jobID, reg, kind); err != nil {
 		if derr := s.forgejo.DeleteCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, reg.ID); derr != nil {
 			log.Printf("ci spawner: rollback delete runner %d: %v", reg.ID, derr)
 		}
@@ -147,18 +181,29 @@ func (s *CISpawner) spawn(ctx context.Context, jobID int64) error {
 	return nil
 }
 
-func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, reg CIRunnerRegistration) error {
+type ciSetupStep struct {
+	name string
+	do   func() error
+}
+
+func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, reg CIRunnerRegistration, kind ciJobKind) error {
+	enforce := "restricted"
+	if kind.build {
+		// Sandbox-root buildkitd (ruling 91) needs runAsUser: 0, which
+		// `restricted` forbids unconditionally; `baseline` still forbids
+		// privileged containers, host namespaces, hostPath and added
+		// capabilities, all of which the VAP's build-pod carve-out also
+		// re-checks (k8s/factoryd.yaml).
+		enforce = "baseline"
+	}
 	if err := s.kube.CreateNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    jobLabel(jobID),
-		"pod-security.kubernetes.io/enforce": "restricted",
+		"pod-security.kubernetes.io/enforce": enforce,
 	}); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
 	}
 	core := "/api/v1/namespaces/" + ns
-	steps := []struct {
-		name string
-		do   func() error
-	}{
+	steps := []ciSetupStep{
 		{"role binding", func() error {
 			return s.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
 				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
@@ -171,7 +216,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.Create(ctx, core+"/resourcequotas", map[string]any{
 				"apiVersion": "v1", "kind": "ResourceQuota",
 				"metadata": map[string]any{"name": "ci"},
-				"spec":     map[string]any{"hard": ciQuota},
+				"spec":     map[string]any{"hard": ciQuotaFor(kind.build)},
 			})
 		}},
 		{"limit range", func() error {
@@ -190,7 +235,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.CreateServiceAccount(ctx, ns, "ci-runner")
 		}},
 		{"egress policy", func() error {
-			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec())
+			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(ns, kind))
 		}},
 		{"runner registration secret", func() error {
 			// forgejo-runner reads its token from a file (--token-url
@@ -208,12 +253,30 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return copyPullSecret(ctx, s.kube, s.cfg.FactoryNamespace, s.cfg.PullSecret, ns)
 		}},
 	}
+	if kind.build {
+		steps = append(steps,
+			ciSetupStep{"buildkitd service", func() error {
+				return s.kube.Create(ctx, core+"/services", s.buildServiceSpec())
+			}},
+			ciSetupStep{"buildkitd egress policy", func() error {
+				return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "buildkitd-policy", s.buildEgressSpec())
+			}},
+		)
+	}
 	for _, step := range steps {
 		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
 			return fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
-	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec())
+	if err := s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(ns, kind)); err != nil {
+		return err
+	}
+	if !kind.build {
+		return nil
+	}
+	// No token, no Secret, no SA token: the build pod never mounts
+	// ciSecretName or the ci-runner ServiceAccount (ruling 91 #1).
+	return s.kube.CreatePod(ctx, ns, buildPodName, s.buildPodSpec())
 }
 
 // reconcile tears down CI namespaces whose pod has finished — successfully,
@@ -221,12 +284,18 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // Failed with reason DeadlineExceeded, already covered by phase !=
 // Succeeded && phase != Failed). A namespace whose pod never got created
 // (a setup crash between the namespace step and the pod step) reads as
-// "not found", torn down the same way.
+// "not found", torn down the same way. Both PSA levels a CI namespace can
+// carry — restricted (ordinary jobs) and baseline (build jobs, ruling 91)
+// — are listed so build namespaces get reaped too.
 func (s *CISpawner) reconcile(ctx context.Context) {
-	names, err := s.kube.NamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
-	if err != nil {
-		log.Printf("ci spawner: reconcile list: %v", err)
-		return
+	var names []string
+	for _, enforce := range []string{"restricted", "baseline"} {
+		found, err := s.kube.NamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", enforce)
+		if err != nil {
+			log.Printf("ci spawner: reconcile list (%s): %v", enforce, err)
+			continue
+		}
+		names = append(names, found...)
 	}
 	for _, ns := range names {
 		if !isCINamespace(s.cfg.NamespacePrefix, ns) {
@@ -319,8 +388,8 @@ func jobIDFromRunnerName(name string) (int64, bool) {
 }
 
 // CI namespace resources: `go test -race` and gosec need more headroom than
-// the LLM-harness worker sandbox, but the namespace holds exactly one pod
-// for its whole life, never two.
+// the LLM-harness worker sandbox, but an ordinary namespace holds exactly
+// one pod for its whole life, never two.
 var (
 	ciRequests = map[string]any{"cpu": "500m", "memory": "1Gi"}
 	ciLimits   = map[string]any{"cpu": "2", "memory": "4Gi"}
@@ -333,10 +402,40 @@ var (
 	}
 )
 
-func (s *CISpawner) runnerPodSpec() map[string]any {
+// ciQuotaFor doubles the namespace-wide quota for a build-label job, whose
+// namespace holds both the runner pod and the buildkitd pod at once (each
+// still capped per-container by the LimitRange below, unchanged).
+func ciQuotaFor(build bool) map[string]any {
+	if !build {
+		return ciQuota
+	}
+	return map[string]any{
+		"pods":            "2",
+		"requests.cpu":    "1",
+		"requests.memory": "2Gi",
+		"limits.cpu":      "4",
+		"limits.memory":   "8Gi",
+	}
+}
+
+func (s *CISpawner) runnerPodSpec(ns string, kind ciJobKind) map[string]any {
 	pullSecrets := []any{}
 	if s.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": s.cfg.PullSecret})
+	}
+	env := []any{
+		map[string]any{"name": "HOME", "value": "/home/runner"},
+		map[string]any{"name": "RUNNER_UUID", "valueFrom": map[string]any{
+			"secretKeyRef": map[string]any{"name": ciSecretName, "key": "uuid"}}},
+	}
+	if kind.build {
+		// buildctl reads BUILDKIT_HOST itself; pr.yml's image-build job
+		// needs no --addr flag. The FQDN is resolved once here, where ns is
+		// already known, rather than guessed at by the runner from the
+		// pod's own search domains.
+		env = append(env, map[string]any{
+			"name": "BUILDKIT_HOST", "value": "tcp://" + buildServiceFQDN(ns) + ":" + strconv.Itoa(buildPodPort),
+		})
 	}
 	return map[string]any{
 		"metadata": map[string]any{
@@ -365,14 +464,10 @@ func (s *CISpawner) runnerPodSpec() map[string]any {
 					"--url", s.cfg.GitBaseURL,
 					"--uuid", "$(RUNNER_UUID)",
 					"--token-url", "file:/var/run/secrets/ci/token",
-					"--label", s.cfg.Label + ":host",
+					"--label", kind.label + ":host",
 					"--wait",
 				},
-				"env": []any{
-					map[string]any{"name": "HOME", "value": "/home/runner"},
-					map[string]any{"name": "RUNNER_UUID", "valueFrom": map[string]any{
-						"secretKeyRef": map[string]any{"name": ciSecretName, "key": "uuid"}}},
-				},
+				"env": env,
 				"resources": map[string]any{
 					"requests": ciRequests,
 					"limits":   ciLimits,
@@ -403,30 +498,185 @@ func (s *CISpawner) runnerPodSpec() map[string]any {
 	}
 }
 
+func buildServiceFQDN(ns string) string {
+	return fmt.Sprintf("buildkitd.%s.svc.cluster.local", ns)
+}
+
+// buildServiceSpec exposes the buildkitd pod at a stable in-namespace DNS
+// name so the runner pod's static pr.yml step never has to discover a pod
+// IP (it has no Kubernetes API access to do so: automountServiceAccountToken
+// is false and the ci-runner ServiceAccount grants nothing cluster-facing).
+func (s *CISpawner) buildServiceSpec() map[string]any {
+	return map[string]any{
+		"apiVersion": "v1", "kind": "Service",
+		"metadata": map[string]any{"name": "buildkitd"},
+		"spec": map[string]any{
+			"type":     "ClusterIP",
+			"selector": map[string]string{"app.kubernetes.io/name": "buildkitd"},
+			"ports": []any{map[string]any{
+				"port": int64(buildPodPort), "targetPort": int64(buildPodPort), "protocol": "TCP",
+			}},
+		},
+	}
+}
+
+// buildkitdScript is the V4-wide recipe (research-stage6-buildkit-gvisor.md):
+// under real gVisor, no rootless BuildKit path comes up at all — rootlesskit
+// and unshare --map-users both fail at the newuidmap/uid_map write, and a
+// single-uid --map-root-user mapping is too narrow for any real base image.
+// The only working shape is a genuinely-root parent that writes a wide,
+// full-range uid_map/gid_map directly into a nested `unshare --user --mount`
+// child, then execs buildkitd inside it. setgroups is left at its default
+// "allow": writing "deny" breaks every apt-get install in the build steps
+// (apt drops privilege via setgroups for its own sandboxing), and the
+// already-root writer does not need "deny" to set a multi-entry gid_map.
+func buildkitdScript() string {
+	return fmt.Sprintf(`set -eu
+mkfifo /tmp/sync.fifo
+unshare --user --mount -- sh -c '
+  read x < /tmp/sync.fifo
+  exec buildkitd --oci-worker-binary=/usr/local/bin/runc --oci-worker-no-process-sandbox --oci-worker-snapshotter=native --root /scratch/bk --addr tcp://0.0.0.0:%d
+' &
+CPID=$!
+printf "0 0 65536\n" > /proc/$CPID/uid_map
+printf "0 0 65536\n" > /proc/$CPID/gid_map
+echo go > /tmp/sync.fifo
+wait $CPID
+`, buildPodPort)
+}
+
+// buildPodSpec is the sandbox-root buildkitd pod (ruling 91): fits Pod
+// Security baseline, not restricted (root user is baseline-legal — no
+// privileged container, no host namespaces, no added capabilities beyond
+// the default set). Reuses the ci-runner image unmodified: it already ships
+// buildctl, buildkitd and (Dockerfile.runner) runc. No job token, no
+// registration Secret, no ServiceAccount token — this pod never touches
+// Forgejo or the repository, it only builds what the runner pod hands it
+// over the network.
+func (s *CISpawner) buildPodSpec() map[string]any {
+	pullSecrets := []any{}
+	if s.cfg.PullSecret != "" {
+		pullSecrets = append(pullSecrets, map[string]any{"name": s.cfg.PullSecret})
+	}
+	return map[string]any{
+		"metadata": map[string]any{
+			"labels": map[string]string{
+				"app.kubernetes.io/name": "buildkitd",
+				buildPodLabelKey:         "true",
+			},
+		},
+		"spec": map[string]any{
+			"restartPolicy":                "Never",
+			"activeDeadlineSeconds":        int64(s.cfg.JobTimeout / time.Second),
+			"runtimeClassName":             "gvisor",
+			"automountServiceAccountToken": false,
+			"securityContext": map[string]any{
+				"runAsUser":      int64(0),
+				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+			},
+			"imagePullSecrets":              pullSecrets,
+			"terminationGracePeriodSeconds": 30,
+			"containers": []any{map[string]any{
+				"name":    "buildkitd",
+				"image":   s.cfg.RunnerImage,
+				"command": []any{"sh", "-c", buildkitdScript()},
+				"ports": []any{map[string]any{
+					"containerPort": int64(buildPodPort), "protocol": "TCP",
+				}},
+				"resources": map[string]any{
+					"requests": ciRequests,
+					"limits":   ciLimits,
+				},
+				"volumeMounts": []any{
+					map[string]any{"name": "scratch", "mountPath": "/scratch"},
+					map[string]any{"name": "tmp", "mountPath": "/tmp"},
+				},
+				"securityContext": map[string]any{
+					"allowPrivilegeEscalation": true,
+				},
+			}},
+			"volumes": []any{
+				// native snapshotter is copy-based, not copy-on-write (no
+				// overlayfs under gVisor): sized well past what three
+				// sequential Dockerfile builds accumulate, instead of the
+				// default tmpfs sizing that exhausted mid-spike.
+				map[string]any{"name": "scratch", "emptyDir": map[string]any{"sizeLimit": "20Gi"}},
+				map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+			},
+		},
+	}
+}
+
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
 // #5): the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
 // proxy and checksum database, the host actions/checkout resolves against,
 // and the registry hosts the repo's Dockerfiles' base images need. No
-// Kubernetes API, no other namespace, no LiteLLM, no gateway. Rootless
-// BuildKit's own build step is not run by pr.yml (blocked — see the task 41
-// report), but the network path is provisioned for when it is.
-func (s *CISpawner) ciEgressSpec() map[string]any {
+// Kubernetes API, no other namespace, no LiteLLM, no gateway. A build-label
+// job (ruling 91) additionally reaches the buildkitd pod this same
+// namespace holds, by endpoint selector and by its one DNS name — nothing
+// else about the runner pod's own network posture changes.
+func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
 		"data.forgejo.org",                                                           // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
 		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", // Docker Hub, for the repo's Dockerfile base images
 	}
-	dnsNames := make([]any, 0, len(fqdns))
+	dnsNames := make([]any, 0, len(fqdns)+2)
 	for _, host := range fqdns {
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
 	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	if kind.build {
+		dnsNames = append(dnsNames, map[string]any{"matchName": buildServiceFQDN(ns)})
+	}
 
 	toFQDNs := make([]any, 0, len(fqdns))
 	for _, host := range fqdns {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
+	}
+
+	egress := []any{
+		map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "forgejo",
+					"k8s:app.kubernetes.io/name":      "forgejo",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+			}},
+		},
+		map[string]any{
+			"toFQDNs": toFQDNs,
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+			}},
+		},
+		map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "kube-system",
+					"k8s:k8s-app":                     "kube-dns",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
+				"rules": map[string]any{"dns": dnsNames},
+			}},
+		},
+	}
+	if kind.build {
+		egress = append(egress, map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{"app.kubernetes.io/name": "buildkitd"},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": strconv.Itoa(buildPodPort), "protocol": "TCP"}},
+			}},
+		})
 	}
 
 	return map[string]any{
@@ -436,22 +686,79 @@ func (s *CISpawner) ciEgressSpec() map[string]any {
 		"egressDeny": []any{
 			map[string]any{"toCIDR": []string{"169.254.169.254/32"}},
 		},
-		"egress": []any{
+		"egress": egress,
+	}
+}
+
+// buildEgressSpec is the buildkitd pod's own policy (ruling 91 #3): egress
+// limited to exactly the hosts the three Dockerfiles' FROM/RUN/ADD lines
+// need — read directly from Dockerfile, Dockerfile.sandbox and
+// Dockerfile.runner — DNS matchName only (no wildcards), cloud metadata
+// denied; ingress accepted only from the runner pod, on the buildkitd port.
+// Docker Hub (base images for all three), the Go module proxy/sumdb (`go
+// mod download` in Dockerfile and Dockerfile.sandbox), the Debian archive
+// (apt in Dockerfile.sandbox and Dockerfile.runner — plain http, not
+// https), and the four release-download hosts Dockerfile.runner's ADD lines
+// fetch forgejo-runner/BuildKit/runc/gosec and the Go toolchain from.
+// Dockerfile.sandbox's opencode-provider "warm the provider cache" RUN step
+// also reaches for registry.npmjs.org and opencode's own auto-update/model
+// endpoints; that step already tolerates failure (`|| true`, a dead local
+// baseURL is the point of the step) so those hosts are deliberately left off
+// — the build does not need them to succeed.
+func (s *CISpawner) buildEgressSpec() map[string]any {
+	httpsHosts := []string{
+		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", // Docker Hub base images
+		"proxy.golang.org", "sum.golang.org", // go mod download
+		"github.com", "objects.githubusercontent.com", // buildkit, runc, gosec release downloads
+		"code.forgejo.org", // forgejo-runner release download
+		"go.dev", "dl.google.com", // Go toolchain download
+	}
+	httpHosts := []string{"deb.debian.org", "security.debian.org"} // apt, plain http by default in bookworm-slim
+
+	dnsNames := make([]any, 0, len(httpsHosts)+len(httpHosts))
+	for _, host := range httpsHosts {
+		dnsNames = append(dnsNames, map[string]any{"matchName": host})
+	}
+	for _, host := range httpHosts {
+		dnsNames = append(dnsNames, map[string]any{"matchName": host})
+	}
+	toFQDNsHTTPS := make([]any, 0, len(httpsHosts))
+	for _, host := range httpsHosts {
+		toFQDNsHTTPS = append(toFQDNsHTTPS, map[string]any{"matchName": host})
+	}
+	toFQDNsHTTP := make([]any, 0, len(httpHosts))
+	for _, host := range httpHosts {
+		toFQDNsHTTP = append(toFQDNsHTTP, map[string]any{"matchName": host})
+	}
+
+	return map[string]any{
+		"endpointSelector": map[string]any{
+			"matchLabels": map[string]string{"app.kubernetes.io/name": "buildkitd"},
+		},
+		"egressDeny": []any{
+			map[string]any{"toCIDR": []string{"169.254.169.254/32"}},
+		},
+		"ingress": []any{
 			map[string]any{
-				"toEndpoints": []any{map[string]any{
-					"matchLabels": map[string]string{
-						"k8s:io.kubernetes.pod.namespace": "forgejo",
-						"k8s:app.kubernetes.io/name":      "forgejo",
-					},
+				"fromEndpoints": []any{map[string]any{
+					"matchLabels": map[string]string{"app.kubernetes.io/name": "ci-runner"},
 				}},
 				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+					"ports": []any{map[string]any{"port": strconv.Itoa(buildPodPort), "protocol": "TCP"}},
+				}},
+			},
+		},
+		"egress": []any{
+			map[string]any{
+				"toFQDNs": toFQDNsHTTPS,
+				"toPorts": []any{map[string]any{
+					"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
 				}},
 			},
 			map[string]any{
-				"toFQDNs": toFQDNs,
+				"toFQDNs": toFQDNsHTTP,
 				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+					"ports": []any{map[string]any{"port": "80", "protocol": "TCP"}},
 				}},
 			},
 			map[string]any{

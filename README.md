@@ -60,16 +60,25 @@ ephemeral runner registration are torn down when the pod finishes or its
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go 1.25 toolchain and gosec pre-installed, and rootless
-BuildKit (`buildctl`/`buildkitd`) — but `pr.yml` does not run a
-BuildKit build step. A live spike (task-41-report.md) found rootless
-BuildKit's user-namespace setup categorically incompatible with
-Kubernetes' `restricted` Pod Security Standard, which every namespace
-factoryd creates enforces with no exception: RootlessKit's own re-exec
-is blocked by the default seccomp profile, and the fallback
-(`newuidmap`) itself needs privilege escalation. Both are forbidden by
-`restricted`. The binaries ship anyway so the step can be turned back on
-the moment a controller ruling picks a working builder.
+node, the Go 1.25 toolchain, gosec and BuildKit (`buildctl`/`buildkitd`)
+plus a pinned `runc` pre-installed. A live spike (task-41-report.md,
+research-stage6-buildkit-gvisor.md) found no *rootless* BuildKit path
+comes up under gVisor's systrap platform — RootlessKit's own re-exec is
+blocked by the default seccomp profile, and its `newuidmap` fallback
+needs privilege escalation, which Kubernetes' `restricted` Pod Security
+Standard forbids either way. Ruling 91 resolves it instead: jobs whose
+`runs_on` includes `pr-untrusted-build` (`.forgejo/workflows/pr.yml`'s
+`image-build` job) get, alongside the usual restricted runner pod, a
+second pod in the same namespace running `buildkitd` as sandbox root
+(`runAsUser: 0`, no added capabilities, still under gVisor) inside a
+nested `unshare --user --mount` with a wide uid/gid map — that
+namespace's Pod Security label is `baseline` rather than `restricted`,
+which a ValidatingAdmissionPolicy admits only for
+`factory-agents-ci-*` namespaces and only for a pod carrying the
+`factory.ai/build-pod` label. The runner pod holds no extra
+credentials for this; it drives the build pod over `BUILDKIT_HOST`
+(`buildctl`), which factoryd's CI spawner injects, and the build never
+pushes.
 
 ## Ship
 

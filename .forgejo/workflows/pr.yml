@@ -9,12 +9,13 @@
 #
 # No secrets.* anywhere in this file — the runner pod holds none.
 #
-# The rootless-BuildKit build-verification step (Dockerfile /
-# Dockerfile.sandbox / Dockerfile.runner, no push) is intentionally omitted:
-# rootless buildkitd does not come up under gVisor's systrap platform on a
-# pod-security "restricted" namespace (categorical RootlessKit/user-namespace
-# conflict, not a missing flag) — see task-41-report.md, design decision #4.
-# Re-add it once a controller ruling picks a working builder.
+# image-build (ruling 91) verifies Dockerfile / Dockerfile.sandbox /
+# Dockerfile.runner build cleanly, without ever pushing. No rootless BuildKit
+# path comes up under gVisor (task-41-report.md, design decision #4), so
+# `runs-on: pr-untrusted-build` gets factoryd's CI spawner to stand up a
+# second, sandbox-root buildkitd pod (internal/factoryd/ci.go) alongside the
+# usual restricted runner pod; the runner drives it over BUILDKIT_HOST with
+# no token, Secret or ServiceAccount token of its own.
 name: pr
 on:
   pull_request:
@@ -41,3 +42,17 @@ jobs:
     steps:
       - name: print job environment variable NAMES only
         run: env | cut -d= -f1 | sort
+  image-build:
+    # ruling 91: builds only, never pushes — output goes to /dev/null on the
+    # runner pod (BuildKit 0.33 has no cacheonly exporter). The buildkitd
+    # pod holds no token, Secret or ServiceAccount token; the runner reaches
+    # it over BUILDKIT_HOST, which factoryd's CI spawner injects.
+    runs-on: pr-untrusted-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: build Dockerfile
+        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile --output type=oci,dest=/dev/null
+      - name: build Dockerfile.sandbox
+        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile.sandbox --output type=oci,dest=/dev/null
+      - name: build Dockerfile.runner
+        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile.runner --output type=oci,dest=/dev/null
