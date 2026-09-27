@@ -369,7 +369,7 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	for _, host := range []string{
 		"proxy.golang.org", "sum.golang.org", "data.forgejo.org",
-		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com",
+		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com",
 	} {
 		if !strings.Contains(cnpStr, host) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)

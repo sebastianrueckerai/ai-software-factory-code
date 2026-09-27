@@ -648,7 +648,7 @@ func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
 		"data.forgejo.org",                                                           // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
-		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", // Docker Hub, for the repo's Dockerfile base images
+		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub, for the repo's Dockerfile base images
 	}
 	dnsNames := make([]any, 0, len(fqdns)+2)
 	for _, host := range fqdns {
@@ -734,7 +734,7 @@ func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 // — the build does not need them to succeed.
 func (s *CISpawner) buildEgressSpec() map[string]any {
 	httpsHosts := []string{
-		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", // Docker Hub base images
+		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub base images
 		"proxy.golang.org", "sum.golang.org", // go mod download
 		"github.com", "objects.githubusercontent.com", // buildkit, runc, gosec release downloads
 		"code.forgejo.org",        // forgejo-runner release download
