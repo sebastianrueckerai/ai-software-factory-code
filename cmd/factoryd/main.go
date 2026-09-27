@@ -116,7 +116,7 @@ func main() {
 		Alias:   env("SUPERVISOR_MODEL", "supervisor"),
 		Budget: factoryd.TokenBudget{
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
-			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 8192),
+			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
 	})
 	if err != nil {

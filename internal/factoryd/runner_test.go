@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"go.temporal.io/sdk/converter"
@@ -217,8 +218,15 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 	if p.logs == hangLogs {
 		return io.NopCloser(ctxReader{ctx}), nil
 	}
+	if body, ok := strings.CutPrefix(p.logs, trickleLogs); ok {
+		return io.NopCloser(iotest.HalfReader(strings.NewReader(body))), nil
+	}
 	return io.NopCloser(strings.NewReader(p.logs)), nil
 }
+
+// trickleLogs before a log body serves it in small reads, as a live pod log
+// arrives: the reader's buffer fills and is reused across lines.
+const trickleLogs = "<trickle>"
 
 // scriptPods assigns log bodies to the pods created from index start on,
 // in creation order, and unblocks their log streams.
@@ -825,6 +833,30 @@ func TestRunSessionResultCarriesFindingsAndHalfWay(t *testing.T) {
 	}
 	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") || !res.HalfWayDone {
 		t.Fatalf("result = %+v, want the command in the findings and the half-way flag kept", res)
+	}
+}
+
+// Every line of a log that arrives in pieces is recorded intact.
+func TestRunSessionRecordsEveryLineOfATricklingLog(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	logs := trickleLogs
+	for i := 0; i < 400; i++ {
+		logs += envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now(), Detail: map[string]any{"n": i, "text": strings.Repeat("x", 300)}}) + "\n"
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs+resultLine(false, "x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))), "\n")
+	if len(lines) != 400 {
+		t.Fatalf("recorded %d events, want 400", len(lines))
+	}
+	for i, l := range lines {
+		var ev harness.Event
+		if err := json.Unmarshal([]byte(l), &ev); err != nil || ev.Detail["n"] != float64(i) {
+			t.Fatalf("event %d = %.80s (%v)", i, l, err)
+		}
 	}
 }
 

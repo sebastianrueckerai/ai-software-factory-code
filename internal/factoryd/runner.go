@@ -219,7 +219,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
 		for sc.Scan() {
 			select {
-			case lines <- sc.Bytes():
+			// a copy: the next Scan reuses the buffer while this line is parsed
+			case lines <- bytes.Clone(sc.Bytes()):
 			case <-doneReading:
 				return
 			}
