@@ -806,6 +806,33 @@ func TestIntakeResyncResignalsAStrandedDecision(t *testing.T) {
 	}
 }
 
+// A pull request decision names its own pull request: one on another PR
+// of the task branch, which the workflow ignored, is never sent again as
+// a decision on the task's PR, and one not yet signalled goes out with
+// its own number.
+func TestIntakeResyncKeepsADecisionOnItsOwnPR(t *testing.T) {
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+	task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 5}
+	store.tasks["t1"] = task
+	at := time.Now().Add(-decisionResignalAfter - time.Minute)
+	store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "pull_request_closed", Author: "sebastian", CommentID: 4, Trusted: true, Signalled: true, CreatedAt: at})
+	store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "pull_request_closed", Author: "sebastian", CommentID: 3, Trusted: true, CreatedAt: at})
+	if err := in.Resync(context.Background(), task); err != nil {
+		t.Fatalf("Resync: %v", err)
+	}
+	var got []string
+	for _, sig := range workflowsOf(in).signals {
+		if strings.Contains(sig, " pr_closed ") {
+			got = append(got, sig)
+		}
+	}
+	if want := []string{"t1 pr_closed sebastian #3: "}; !slices.Equal(got, want) {
+		t.Fatalf("pr_closed signals = %q, want %q: #3 once on its own number, #4 not again", got, want)
+	}
+}
+
 // The heal pass reads who closed the issue off its timeline and applies
 // the webhook path's gate: the bot and a user with write access close a
 // task (the agent lane is signalled, the human lane is done), a stranger's

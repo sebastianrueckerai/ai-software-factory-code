@@ -590,7 +590,8 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 }
 
 // signalOf is the signal event e sends, "" for one that sends none, and
-// whether it is a decision that ends the task.
+// whether it is a decision that ends the task. A pull request decision
+// carries its own pull request (its CommentID), a change request pr.
 func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bool) {
 	sig = TaskSignal{Author: e.Author, Body: e.Body}
 	switch e.Kind {
@@ -601,9 +602,9 @@ func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bo
 	case "issue_closed":
 		name, decision = SignalIssueClosed, true
 	case "pull_request_merged":
-		name, sig.PR, decision = SignalPRMerged, pr, true
+		name, sig.PR, decision = SignalPRMerged, e.CommentID, true
 	case "pull_request_closed":
-		name, sig.PR, decision = SignalPRClosed, pr, true
+		name, sig.PR, decision = SignalPRClosed, e.CommentID, true
 	}
 	return name, sig, decision
 }
@@ -618,8 +619,10 @@ const decisionResignalAfter = 15 * time.Minute
 // strand the task. The workflow ignores a decision it already acted on.
 func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) error {
 	name, sig, decision := signalOf(e, t.PRNumber)
+	// a decision on another pull request of the task branch was ignored
+	// by the workflow and stays ignored
 	if !decision || !e.Trusted || !e.Signalled || time.Since(e.CreatedAt) < decisionResignalAfter ||
-		(t.Status != "in-review" && t.Status != "waiting-human") {
+		(t.Status != "in-review" && t.Status != "waiting-human") || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
 		return nil
 	}
 	log.Printf("intake: task %s still %s after decision %d (%s): signalling it again", t.ID, t.Status, e.ID, e.Kind)
