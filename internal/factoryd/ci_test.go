@@ -599,6 +599,37 @@ func TestCISpawnerBuildJobCreatesBuildkitdPodAndService(t *testing.T) {
 	}
 }
 
+// Live under gVisor, writing the nested child's uid_map/gid_map right after
+// backgrounding it raced the child's own unshare(2)+exec and failed with
+// "printf: I/O error" every time (reproduced on 5/5 live pods); waiting for
+// an ack the child can only send after it is already running (and therefore
+// already unshared, since unshare(1) syscalls before it execs) fixed it on
+// 5/5. This pins that ordering in the generated script text so it can't
+// regress back to the unsynchronized write.
+func TestBuildkitdScriptWaitsForChildAckBeforeWritingMaps(t *testing.T) {
+	script := buildkitdScript()
+
+	childBlock := script[strings.Index(script, "unshare"):strings.Index(script, "' &")]
+	ackIdx := strings.Index(childBlock, "echo ready > /tmp/ready.fifo")
+	childGoReadIdx := strings.Index(childBlock, "read x < /tmp/go.fifo")
+	if ackIdx < 0 || childGoReadIdx < 0 || ackIdx > childGoReadIdx {
+		t.Fatalf("child must ack ready.fifo before blocking on go.fifo, got: %s", childBlock)
+	}
+
+	cpidIdx := strings.Index(script, "CPID=$!")
+	parentAckReadIdx := strings.Index(script, "read x < /tmp/ready.fifo")
+	uidMapIdx := strings.Index(script, "/proc/$CPID/uid_map")
+	gidMapIdx := strings.Index(script, "/proc/$CPID/gid_map")
+	releaseIdx := strings.Index(script, "echo go > /tmp/go.fifo")
+	if cpidIdx < 0 || parentAckReadIdx < 0 || uidMapIdx < 0 || gidMapIdx < 0 || releaseIdx < 0 {
+		t.Fatalf("script missing an expected step: %s", script)
+	}
+	if !(cpidIdx < parentAckReadIdx && parentAckReadIdx < uidMapIdx && uidMapIdx < gidMapIdx && gidMapIdx < releaseIdx) {
+		t.Fatalf("parent must wait for the child's ack before writing uid_map/gid_map and only then release it, got order cpid=%d ack=%d uid=%d gid=%d release=%d",
+			cpidIdx, parentAckReadIdx, uidMapIdx, gidMapIdx, releaseIdx)
+	}
+}
+
 // An ordinary (non-build) job must never get a buildkitd pod, Service, or
 // policy: those are ruling 91's build-label carve-out, not the default.
 func TestCISpawnerOrdinaryJobGetsNoBuildkitdPod(t *testing.T) {

@@ -530,17 +530,32 @@ func (s *CISpawner) buildServiceSpec() map[string]any {
 // "allow": writing "deny" breaks every apt-get install in the build steps
 // (apt drops privilege via setgroups for its own sandboxing), and the
 // already-root writer does not need "deny" to set a multi-entry gid_map.
+//
+// unshare(1) (no --fork) performs the unshare(2) syscall itself before it
+// execs the child command, so by the time that command's first instruction
+// runs, the new user namespace already exists under the same PID — but
+// nothing guarantees the parent's own next instruction (backgrounding,
+// reading $!, then the uid_map write) runs any later than that. Live under
+// gVisor, the parent routinely wins that race and writes to a /proc/$CPID
+// that the child hasn't finished becoming yet, failing both writes with
+// "printf: I/O error" (confirmed reproducible every time without the fix,
+// zero times with it, across five live pods). The child now acks over a
+// second fifo the instant it is running — which, per the above, proves its
+// own unshare(2) already happened — and the parent waits for that ack
+// before touching uid_map/gid_map at all.
 func buildkitdScript() string {
 	return fmt.Sprintf(`set -eu
-mkfifo /tmp/sync.fifo
+mkfifo /tmp/ready.fifo /tmp/go.fifo
 unshare --user --mount -- sh -c '
-  read x < /tmp/sync.fifo
+  echo ready > /tmp/ready.fifo
+  read x < /tmp/go.fifo
   exec buildkitd --oci-worker-binary=/usr/local/bin/runc --oci-worker-no-process-sandbox --oci-worker-snapshotter=native --root /scratch/bk --addr tcp://0.0.0.0:%d
 ' &
 CPID=$!
+read x < /tmp/ready.fifo
 printf "0 0 65536\n" > /proc/$CPID/uid_map
 printf "0 0 65536\n" > /proc/$CPID/gid_map
-echo go > /tmp/sync.fifo
+echo go > /tmp/go.fifo
 wait $CPID
 `, buildPodPort)
 }
