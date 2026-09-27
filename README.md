@@ -239,6 +239,19 @@ credentials for this; it drives the build pod over `BUILDKIT_HOST`
 (`buildctl`), which factoryd's CI spawner injects, and the build never
 pushes.
 
+## factoryd's own network
+
+factoryd holds the LiteLLM master key, the bot password and the S3 keys,
+so its egress is default-deny (`factoryd-egress` in `k8s/factoryd.yaml`):
+kube-dns for exactly the names below, the API server (by entity;
+factoryd dials the injected `KUBERNETES_SERVICE_HOST`, no DNS), the
+`sf-cluster` Postgres instances on 5432, the in-cluster Forgejo on 3000
+(`FORGEJO_URL`; the public host resolves to the edge gateway), LiteLLM on
+4000, the Temporal frontend on 7233, and the S3 endpoint on 443 (its FQDN
+must match `S3_ENDPOINT`). Every callee is named in full and the pod
+runs with `ndots: 1`, so the first DNS query is the admitted one. A new
+callee needs a rule here first.
+
 ## Ship
 
 CI pushes images by digest. A deploy is a commit that rolls the digests
