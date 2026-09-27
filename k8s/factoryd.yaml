@@ -160,6 +160,23 @@ spec:
         (!has(object.spec.hostPID) || object.spec.hostPID == false)
       )
     message: only factory.ai/build-pod pods in factory-agents-ci-* namespaces may run as root, and only without privileged containers, added capabilities, hostPath volumes, hostNetwork or hostPID
+  # baseline (not restricted) is what factory-agents-ci-* namespaces carry
+  # so the build pod above can run as root; baseline does not require
+  # runAsNonRoot at all, and the rule above only catches an EXPLICIT
+  # runAsUser: 0 — a pod that sets neither runAsUser nor runAsNonRoot runs
+  # as root by its image's default user and passed both checks unnoticed
+  # (fix round 2). Every other pod in these namespaces must declare
+  # non-root explicitly; the build pod keeps only its checks above.
+  - expression: >-
+      variables.kind != 'Pod' || request.operation == 'DELETE' ||
+      !variables.target.startsWith('factory-agents-ci-') ||
+      (has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
+       object.metadata.labels['factory.ai/build-pod'] == 'true') ||
+      (has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) &&
+       object.spec.securityContext.runAsNonRoot == true) ||
+      object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.runAsNonRoot) &&
+       c.securityContext.runAsNonRoot == true)
+    message: pods in factory-agents-ci-* namespaces must explicitly set runAsNonRoot (pod-level or on every container), unless they are the labelled factory.ai/build-pod shape
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
