@@ -55,12 +55,12 @@ func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, e
 	if err != nil {
 		return false, err
 	}
-	perm, err := in.Forgejo.RepoPermission(ctx, repo.Owner, repo.Name, user)
+	writers, err := in.Forgejo.RepoWriters(ctx, repo.Owner, repo.Name)
 	if err != nil {
-		return false, fmt.Errorf("permission of %s: %w", user, err)
+		return false, fmt.Errorf("writers of %s: %w", repository, err)
 	}
-	if perm != "owner" && perm != "admin" && perm != "write" {
-		log.Printf("intake: %s has %q on %s: not trusted to steer a task", user, perm, repository)
+	if !slices.Contains(writers, user) {
+		log.Printf("intake: %s cannot write %s: not trusted to steer a task", user, repository)
 		return false, nil
 	}
 	in.trustMu.Lock()

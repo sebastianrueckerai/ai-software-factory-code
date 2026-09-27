@@ -740,30 +740,29 @@ func TestForgejoClosePullRequest(t *testing.T) {
 	}
 }
 
-// m4: a 404 for the user means no access; a 404 for the repository is an
-// error, not a silent "none".
-func TestForgejoRepoPermissionTellsAMissingRepositoryFromAMissingUser(t *testing.T) {
+// The trust gate reads the assignee list: exactly the users with write
+// access or more, readable by any collaborator with a repository-scoped
+// token. Forgejo's per-user permission endpoint refuses every scoped token
+// that is not a site admin's ("Only admins can query all permissions ..."),
+// the registrar's included, which broke the gate live.
+func TestForgejoRepoWritersIsTheAssigneeList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/v1/repos/sf/r/collaborators/alice/permission":
-			io.WriteString(w, `{"permission":"write"}`)
-		case "/api/v1/repos/sf/r":
-			io.WriteString(w, `{"name":"r"}`)
-		default:
-			http.NotFound(w, r)
+		if r.Header.Get("Authorization") != "token tok" {
+			t.Errorf("writers read without the registrar token: %q", r.Header.Get("Authorization"))
 		}
+		if r.URL.Path != "/api/v1/repos/sf/r/assignees" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `[{"id":1,"login":"alice"},{"id":2,"login":"bob"}]`)
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
-	for _, tc := range []struct{ repo, user, want string }{
-		{"r", "alice", "write"},
-		{"r", "nobody", "none"},
-	} {
-		if got, err := f.RepoPermission(context.Background(), "sf", tc.repo, tc.user); err != nil || got != tc.want {
-			t.Fatalf("%s on %s = %q, %v; want %q", tc.user, tc.repo, got, err, tc.want)
-		}
+	got, err := f.RepoWriters(context.Background(), "sf", "r")
+	if err != nil || !slices.Equal(got, []string{"alice", "bob"}) {
+		t.Fatalf("writers = %q, %v; want alice and bob", got, err)
 	}
-	if got, err := f.RepoPermission(context.Background(), "sf", "gone", "alice"); err == nil || !strings.Contains(err.Error(), "repository sf/gone") {
-		t.Fatalf("missing repository = %q, %v; want an error naming it", got, err)
+	if _, err := f.RepoWriters(context.Background(), "sf", "gone"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing repository: %v, want ErrNotFound", err)
 	}
 }

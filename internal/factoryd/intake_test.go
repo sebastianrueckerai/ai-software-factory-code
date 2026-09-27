@@ -40,19 +40,12 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/permission"):
-			// the registrar token reads permissions; the bot cannot
+		case strings.HasSuffix(r.URL.Path, "/assignees"):
+			// the registrar token lists the writers
 			if r.Header.Get("Authorization") != "token registrar-tok" {
-				t.Errorf("permission read without the registrar token: %q", r.Header.Get("Authorization"))
+				t.Errorf("writers read without the registrar token: %q", r.Header.Get("Authorization"))
 			}
-			switch strings.Split(r.URL.Path, "/")[7] {
-			case "sebastian":
-				io.WriteString(w, `{"permission":"owner"}`)
-			case "reader":
-				io.WriteString(w, `{"permission":"read"}`)
-			default:
-				http.NotFound(w, r)
-			}
+			io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code":
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
@@ -597,15 +590,11 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/labels"):
 			io.WriteString(w, `[]`)
-		case strings.HasSuffix(r.URL.Path, "/permission"):
+		case strings.HasSuffix(r.URL.Path, "/assignees"):
 			if r.Header.Get("Authorization") != "token registrar-tok" {
-				t.Errorf("permission read without the registrar token: %q", r.Header.Get("Authorization"))
+				t.Errorf("writers read without the registrar token: %q", r.Header.Get("Authorization"))
 			}
-			if strings.Split(r.URL.Path, "/")[7] == "sebastian" {
-				io.WriteString(w, `{"permission":"owner"}`)
-			} else {
-				io.WriteString(w, `{"permission":"read"}`)
-			}
+			io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/pulls/5":
 			io.WriteString(w, `{"number":5,"state":"closed","merged":true,"head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30":
@@ -625,10 +614,10 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}, &requests
 }
 
-func permissionReads(requests []string) int {
+func writerReads(requests []string) int {
 	n := 0
 	for _, p := range requests {
-		if strings.HasSuffix(p, "/permission") {
+		if strings.HasSuffix(p, "/assignees") {
 			n++
 		}
 	}
@@ -674,7 +663,7 @@ func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
 	if !slices.Equal(recorded, wantRecorded) {
 		t.Fatalf("intake events = %q, want %q", recorded, wantRecorded)
 	}
-	if n := permissionReads(*requests); n != 2 {
+	if n := writerReads(*requests); n != 2 {
 		t.Fatalf("permission reads = %d, want one per new author (sebastian, reader)", n)
 	}
 
@@ -688,8 +677,8 @@ func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
 	if got := workflowsOf(in).signals; !slices.Equal(got, wantAgain) {
 		t.Fatalf("signals after the second pass = %q, want %q", got, wantAgain)
 	}
-	if len(store.intakeEvents) != 3 || permissionReads(*requests) != 0 {
-		t.Fatalf("second pass: %d events, %d permission reads; want 3 and 0", len(store.intakeEvents), permissionReads(*requests))
+	if len(store.intakeEvents) != 3 || writerReads(*requests) != 0 {
+		t.Fatalf("second pass: %d events, %d permission reads; want 3 and 0", len(store.intakeEvents), writerReads(*requests))
 	}
 }
 
@@ -943,15 +932,10 @@ func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
 	if len(store.intakeEvents) != 5 {
 		t.Fatalf("intake events = %d, want every comment recorded", len(store.intakeEvents))
 	}
-	checks := map[string]int{}
-	for _, r := range *requests {
-		if strings.HasSuffix(r, "/permission") {
-			checks[strings.Split(r, "/")[7]]++
-		}
-	}
-	// a grant is reused, a denial is checked again every time
-	if checks["sebastian"] != 1 || checks["reader"] != 2 {
-		t.Fatalf("permission reads = %v, want sebastian 1 (cached), reader 2", checks)
+	// a grant is reused, a denial is checked again every time: mallory 1,
+	// reader 2, sebastian 1
+	if n := writerReads(*requests); n != 4 {
+		t.Fatalf("writer reads = %d, want 4", n)
 	}
 }
 

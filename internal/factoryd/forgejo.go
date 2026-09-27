@@ -39,8 +39,8 @@ type Forgejo struct {
 	HTTP        *http.Client // nil = a mint-sized timeout
 
 	// CIRegistrarToken authenticates the Actions runner-registration API
-	// and the collaborator permission lookups (task 41, rulings 78, 101,
-	// 101a): a token of the dedicated user factory-ci scoped to the code
+	// and the writer lookups behind the trust gate (task 41, rulings 78,
+	// 101, 101a): a token of the dedicated user factory-ci scoped to the code
 	// repository. Forgejo's repository runner API demands the repository
 	// owner (reqOwner), so factory-ci sits in the org's Owners team; main's
 	// push and merge whitelist excludes it with apply_to_admins on, so the
@@ -188,31 +188,27 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 	return body, nil
 }
 
-// RepoPermission is user's effective permission on the repository ("owner",
-// "admin", "write", "read"; "none" when Forgejo knows no access). Reading
-// another user's permission needs repository admin, which the bot lacks:
-// it runs on the registrar token (factory-ci, an org owner whose repo-scoped
-// token cannot push or merge main, rulings 101 and 101a).
-func (f *Forgejo) RepoPermission(ctx context.Context, owner, repo, user string) (string, error) {
-	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", owner, repo, url.PathEscape(user)), nil, http.StatusOK)
-	if errors.Is(err, ErrNotFound) {
-		// Forgejo answers 404 for an unknown user and for an unknown (or
-		// invisible) repository alike: only the first means "no access"
-		if _, rerr := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s", owner, repo), nil, http.StatusOK); rerr != nil {
-			return "", fmt.Errorf("forgejo permission of %s: repository %s/%s: %w", user, owner, repo, rerr)
-		}
-		return "none", nil
-	}
+// RepoWriters lists the users with write access or more to the repository:
+// Forgejo's assignee list, which is exactly that set and readable by any
+// collaborator. The per-user permission endpoint is not an option: it
+// refuses every scoped token that is not a site admin's, the registrar's
+// included (rulings 101 and 101a).
+func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string, error) {
+	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/assignees", owner, repo), nil, http.StatusOK)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	var res struct {
-		Permission string `json:"permission"`
+	var users []struct {
+		Login string `json:"login"`
 	}
-	if err := json.Unmarshal(body, &res); err != nil {
-		return "", fmt.Errorf("forgejo permission of %s on %s/%s: %w", user, owner, repo, err)
+	if err := json.Unmarshal(body, &users); err != nil {
+		return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
 	}
-	return res.Permission, nil
+	logins := make([]string, len(users))
+	for i, u := range users {
+		logins[i] = u.Login
+	}
+	return logins, nil
 }
 
 // CIJob is one Forgejo Actions job waiting for a runner matching its labels
