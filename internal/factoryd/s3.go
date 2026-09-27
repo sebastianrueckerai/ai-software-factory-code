@@ -10,17 +10,19 @@ import (
 	"time"
 )
 
-var errObjectStore = errors.New("object store refused the upload")
+var errObjectStore = errors.New("object store refused the request")
 
-// ObjectStore is the seam for the session-history sink. S3 is the production
-// implementation; tests substitute a fake.
+// ObjectStore is the seam for the session and timeline records. S3 is the
+// production implementation; tests substitute a fake.
 type ObjectStore interface {
 	Put(ctx context.Context, key string, body []byte) error
+	// Get returns the object's body, nil when the object does not exist.
+	Get(ctx context.Context, key string) ([]byte, error)
 }
 
 // S3 talks to an S3-compatible object store with path-style addressing and
-// SigV4 (stdlib only, no SDK dependency). One object per PUT: the session
-// recorder re-PUTs the growing JSONL object, which S3 overwrites atomically.
+// SigV4 (stdlib only, no SDK dependency). One object per PUT: the recorders
+// re-PUT the growing JSONL object, which S3 overwrites atomically.
 type S3 struct {
 	Endpoint  string // e.g. http://minio.platform.svc.cluster.local:9000
 	Region    string
@@ -31,10 +33,23 @@ type S3 struct {
 }
 
 func (s *S3) Put(ctx context.Context, key string, body []byte) error {
+	_, err := s.do(ctx, http.MethodPut, key, body)
+	return err
+}
+
+func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
+	body, err := s.do(ctx, http.MethodGet, key, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	return body, err
+}
+
+func (s *S3) do(ctx context.Context, method, key string, body []byte) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s/%s", s.Endpoint, s.Bucket, uriEncode(key))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	host := req.URL.Host
 	if req.URL.Port() == "" {
@@ -47,7 +62,7 @@ func (s *S3) Put(ctx context.Context, key string, body []byte) error {
 	signer := signer{AccessKey: s.AccessKey, SecretKey: s.SecretKey, Region: s.Region}
 	amzDate := time.Now()
 	auth := signer.sign(putRequest{
-		Method:  http.MethodPut,
+		Method:  method,
 		Path:    req.URL.Path,
 		Headers: [][2]string{{"Host", host}},
 		Body:    body,
@@ -63,13 +78,16 @@ func (s *S3) Put(ctx context.Context, key string, body []byte) error {
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("s3 put %s: %w", key, err)
+		return nil, fmt.Errorf("s3 %s %s: %w", method, key, err)
 	}
 	defer res.Body.Close()
+	if res.StatusCode == http.StatusNotFound && method == http.MethodGet {
+		return nil, ErrNotFound
+	}
 	if res.StatusCode/100 != 2 {
 		snippet, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
-		return fmt.Errorf("%w: s3 put %s: status %d: %s",
-			errObjectStore, key, res.StatusCode, snippet)
+		return nil, fmt.Errorf("%w: s3 %s %s: status %d: %s",
+			errObjectStore, method, key, res.StatusCode, snippet)
 	}
-	return nil
+	return io.ReadAll(io.LimitReader(res.Body, 64<<20))
 }

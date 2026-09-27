@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -73,5 +74,29 @@ func TestS3PutReportsStoreRefusal(t *testing.T) {
 	err := s.Put(context.Background(), "k", []byte("x"))
 	if err == nil || !errors.Is(err, errObjectStore) || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err = %v, want a wrapped 403 store refusal", err)
+	}
+}
+
+func TestS3GetReadsObjectAndTreats404AsAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") {
+			t.Fatalf("%s with auth %q", r.Method, r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/bucket/sessions/t1/timeline.jsonl":
+			io.WriteString(w, "line\n")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	s := &S3{Endpoint: srv.URL, Region: "fsn1", Bucket: "bucket", AccessKey: "ak", SecretKey: "sk"}
+	got, err := s.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if err != nil || string(got) != "line\n" {
+		t.Fatalf("Get = (%q, %v), want (line, nil)", got, err)
+	}
+	got, err = s.Get(context.Background(), "sessions/t1/absent.jsonl")
+	if err != nil || got != nil {
+		t.Fatalf("Get absent = (%q, %v), want (nil, nil)", got, err)
 	}
 }

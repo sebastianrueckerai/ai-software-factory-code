@@ -26,6 +26,16 @@ func (s *fakeObjectStore) Put(ctx context.Context, key string, body []byte) erro
 	return nil
 }
 
+// Get returns the last body put under key, nil when none was.
+func (s *fakeObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
+	for i := len(s.puts) - 1; i >= 0; i-- {
+		if s.puts[i].key == key {
+			return s.puts[i].body, nil
+		}
+	}
+	return nil, nil
+}
+
 var _ ObjectStore = (*fakeObjectStore)(nil)
 
 func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {
