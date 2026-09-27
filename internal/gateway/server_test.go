@@ -13,7 +13,25 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+var coder = []string{"coder"}
+
+// testPolicy is the shape of the deployed v1 policy.
+func testPolicy(id int64, dayEUR float64) policy.Version {
+	return policy.Version{ID: id, SHA256: fmt.Sprintf("sha-%d", id), Document: policy.Document{
+		Version: 1,
+		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR},
+		Classes: map[string]policy.Class{"coder": {Models: []string{"coding-cheap", "coding-frontier"}}},
+	}}
+}
+
+type ledgerRow struct {
+	taskID, ref string
+	eur         float64
+}
 
 // memStore is the in-memory Store fake for tests only.
 type memStore struct {
@@ -21,10 +39,16 @@ type memStore struct {
 	tasks  map[string]Task
 	audits []AuditRow
 	spends map[string]float64
+	ledger []ledgerRow
+	// day is today's ledger total before this test's calls
+	day      float64
+	pol      *policy.Version // nil = none loaded
+	polReads int
 }
 
 func newMemStore(tasks ...Task) *memStore {
-	m := &memStore{tasks: map[string]Task{}, spends: map[string]float64{}}
+	pol := testPolicy(1, 20)
+	m := &memStore{tasks: map[string]Task{}, spends: map[string]float64{}, pol: &pol}
 	for _, t := range tasks {
 		m.tasks[t.ID] = t
 	}
@@ -38,14 +62,41 @@ func (m *memStore) Task(_ context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
-func (m *memStore) AddSpent(_ context.Context, id string, cost float64) (float64, error) {
+func (m *memStore) AddSpent(_ context.Context, id, alias string, cost float64) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t := m.tasks[id]
 	t.SpentEUR += cost
 	m.tasks[id] = t
 	m.spends[id] = t.SpentEUR
+	m.ledger = append(m.ledger, ledgerRow{id, alias, cost})
 	return t.SpentEUR, nil
+}
+
+func (m *memStore) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.polReads++
+	if m.pol == nil {
+		return policy.Version{}, false, nil
+	}
+	return *m.pol, true, nil
+}
+
+func (m *memStore) setPolicy(v policy.Version) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pol = &v
+}
+
+func (m *memStore) DayTotal(context.Context) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := m.day
+	for _, l := range m.ledger {
+		total += l.eur
+	}
+	return total, nil
 }
 
 func (m *memStore) InsertAudit(_ context.Context, row AuditRow) error {
@@ -176,7 +227,7 @@ func doChat(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorde
 }
 
 func TestChatCompletions(t *testing.T) {
-	runningTask := Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"}
+	runningTask := Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"}
 	testIdentity := Identity{
 		Subject:   "system:serviceaccount:factory:task-42",
 		Namespace: "factory",
@@ -193,6 +244,8 @@ func TestChatCompletions(t *testing.T) {
 		mintErr     error
 		upstreamURL string // "" = stub URL; "closed" = unreachable port
 		resp        stubResp
+		noPolicy    bool    // no policy version loaded yet
+		dayTotal    float64 // today's ledger total before the call (policy day cap 20)
 
 		wantStatus      int
 		wantDecision    string
@@ -205,6 +258,66 @@ func TestChatCompletions(t *testing.T) {
 		wantUpstreamHit int
 		wantAlias       string // "" = don't check
 	}{
+		{
+			name:         "a model outside the task's classes refuses 403",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      chatBody("review-frontier"),
+			wantStatus:   http.StatusForbidden,
+			wantDecision: "refused_capability",
+			wantErrType:  "permission_error",
+			wantAlias:    "review-frontier",
+		},
+		{
+			name:         "a task without capability classes refuses 403",
+			wantNoMint:   true,
+			task:         &Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"},
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusForbidden,
+			wantDecision: "refused_capability",
+			wantErrType:  "permission_error",
+		},
+		{
+			name:         "a class the policy does not define allows nothing",
+			wantNoMint:   true,
+			task:         &Task{Classes: []string{"reviewer"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"},
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusForbidden,
+			wantDecision: "refused_capability",
+			wantErrType:  "permission_error",
+		},
+		{
+			name:         "no policy version loaded refuses 503",
+			wantNoMint:   true,
+			noPolicy:     true,
+			task:         &runningTask,
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusServiceUnavailable,
+			wantDecision: "error_policy",
+			wantErrType:  "server_error",
+		},
+		{
+			name:         "the day cap reached refuses 402",
+			wantNoMint:   true,
+			dayTotal:     20,
+			task:         &runningTask,
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusPaymentRequired,
+			wantDecision: "refused_day_cap",
+			wantErrType:  "budget_exceeded",
+		},
+		{
+			name:            "the key is capped at the day headroom when it is the smaller",
+			dayTotal:        17,
+			task:            &runningTask,
+			reqBody:         chatBody("coding-cheap"),
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantMintBudget:  ptr(3.0),
+			wantSpent:       ptr(2.5),
+			wantUpstreamHit: 1,
+		},
 		{
 			name:         "no or invalid jwt refuses 401",
 			wantNoMint:   true,
@@ -236,7 +349,7 @@ func TestChatCompletions(t *testing.T) {
 		{
 			name:         "non-running task refuses 409",
 			wantNoMint:   true,
-			task:         &Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "completed"},
+			task:         &Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "completed"},
 			reqBody:      chatBody("coding-cheap"),
 			wantStatus:   http.StatusConflict,
 			wantDecision: "refused_task_status",
@@ -245,7 +358,7 @@ func TestChatCompletions(t *testing.T) {
 		{
 			name:            "spent equals budget refuses 402",
 			wantNoMint:      true,
-			task:            &Task{ID: "42", BudgetEUR: 10, SpentEUR: 10, Status: "running"},
+			task:            &Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 10, Status: "running"},
 			reqBody:         chatBody("coding-cheap"),
 			wantStatus:      http.StatusPaymentRequired,
 			wantDecision:    "refused_budget",
@@ -255,7 +368,7 @@ func TestChatCompletions(t *testing.T) {
 		{
 			name:            "spent over budget refuses 402",
 			wantNoMint:      true,
-			task:            &Task{ID: "42", BudgetEUR: 10, SpentEUR: 11, Status: "running"},
+			task:            &Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 11, Status: "running"},
 			reqBody:         chatBody("coding-cheap"),
 			wantStatus:      http.StatusPaymentRequired,
 			wantDecision:    "refused_budget",
@@ -459,7 +572,7 @@ func TestChatCompletions(t *testing.T) {
 			stub := newStubUpstream(t)
 			stub.setResp(tt.resp)
 
-			task := Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"}
+			task := Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"}
 			if tt.task != nil {
 				task = *tt.task
 			}
@@ -467,6 +580,10 @@ func TestChatCompletions(t *testing.T) {
 			if tt.task != nil {
 				store.tasks[task.ID] = task
 			}
+			if tt.noPolicy {
+				store.pol = nil
+			}
+			store.day = tt.dayTotal
 			minter := &fakeMinter{err: tt.mintErr}
 
 			url := stub.URL
@@ -488,6 +605,11 @@ func TestChatCompletions(t *testing.T) {
 			audits := store.auditRows()
 			if len(audits) == 0 {
 				t.Fatal("no audit row written")
+			}
+			for _, a := range audits {
+				if tt.noPolicy && a.PolicyVersion != nil || !tt.noPolicy && (a.PolicyVersion == nil || *a.PolicyVersion != 1) {
+					t.Fatalf("audit row %+v names policy version %v, want 1 (nil without a policy)", a, a.PolicyVersion)
+				}
 			}
 			last := audits[len(audits)-1]
 			if last.Decision != tt.wantDecision {
@@ -575,7 +697,7 @@ func TestChatCompletions(t *testing.T) {
 
 func TestKeyCachedPerTask(t *testing.T) {
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -618,8 +740,8 @@ func TestKeyMintsDoNotSerializeTasks(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
 	store := newMemStore(
-		Task{ID: "slow", BudgetEUR: 10, Status: "running"},
-		Task{ID: "fast", BudgetEUR: 10, Status: "running"},
+		Task{Classes: coder, ID: "slow", BudgetEUR: 10, Status: "running"},
+		Task{Classes: coder, ID: "fast", BudgetEUR: 10, Status: "running"},
 	)
 	release := make(chan struct{})
 	minter := &fakeMinter{hold: map[string]chan struct{}{"slow": release}}
@@ -700,7 +822,7 @@ func TestUsageScannerBoundsItsBuffer(t *testing.T) {
 
 func TestKeyRemintedForNewServiceAccount(t *testing.T) {
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	id := Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: minter, LiteLLMURL: stub.URL})
@@ -731,7 +853,7 @@ func TestBodyLimit(t *testing.T) {
 	t.Cleanup(func() { maxBodyBytes = old })
 
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{TaskID: "42"}},
 		Store:      store,
@@ -802,3 +924,81 @@ func ptr(f float64) *float64 { return &f }
 const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 	"data: {\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":0.25}}\n\n" +
 	"data: [DONE]\n\n"
+
+// Two tasks, each within its own budget, together exhaust the day: the day
+// cap binds the key of the second and refuses the next call of either.
+func TestDayCapAcrossTasks(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore(
+		Task{Classes: coder, ID: "a", BudgetEUR: 5, Status: "running"},
+		Task{Classes: coder, ID: "b", BudgetEUR: 5, Status: "running"},
+	)
+	store.setPolicy(testPolicy(3, 1))
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: authByTask{}, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	call := func(task, cost string) *httptest.ResponseRecorder {
+		stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": cost}})
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
+		r.Header.Set("X-Task", task)
+		rr := httptest.NewRecorder()
+		s.Routes("test").ServeHTTP(rr, r)
+		return rr
+	}
+
+	if rr := call("a", "0.625"); rr.Code != http.StatusOK {
+		t.Fatalf("a's first call = %d, want 200", rr.Code)
+	}
+	if rr := call("b", "0.5"); rr.Code != http.StatusOK {
+		t.Fatalf("b's first call = %d, want 200", rr.Code)
+	}
+	// a minted at min(5, 1), b at min(5, 1 - 0.625)
+	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", 1}) || calls[1] != (mintCall{"b", 0.375}) {
+		t.Fatalf("mint calls = %+v, want a at 1, b at 0.375", calls)
+	}
+	for _, task := range []string{"a", "b"} {
+		rr := call(task, "0.1")
+		if rr.Code != http.StatusPaymentRequired || !strings.Contains(rr.Body.String(), "day cap 1.0000") {
+			t.Fatalf("%s after the day's 1.125 = %d %s, want 402 naming the day cap", task, rr.Code, rr.Body.String())
+		}
+	}
+	audits := store.auditRows()
+	for i, want := range []string{"allowed", "allowed", "refused_day_cap", "refused_day_cap"} {
+		if audits[i].Decision != want || audits[i].PolicyVersion == nil || *audits[i].PolicyVersion != 3 {
+			t.Fatalf("audit %d = %+v, want %s under policy version 3", i, audits[i], want)
+		}
+	}
+	if len(store.ledger) != 2 || store.ledger[0] != (ledgerRow{"a", "coding-cheap", 0.625}) || store.ledger[1] != (ledgerRow{"b", "coding-cheap", 0.5}) {
+		t.Fatalf("ledger = %+v, want one model row per allowed call", store.ledger)
+	}
+}
+
+// A new policy version is in force within policyTTL, and the store is read
+// at most once per TTL.
+func TestPolicyCachedForAtMost30s(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0"}})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL})
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+
+	doChat(t, s.Routes("test"), chatBody("coding-cheap"))
+	next := testPolicy(2, 20)
+	next.Document.Classes = map[string]policy.Class{"coder": {Models: []string{"coding-frontier"}}}
+	store.setPolicy(next)
+	now = now.Add(29 * time.Second)
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("within the TTL = %d, want 200 under version 1", rr.Code)
+	}
+	now = now.Add(time.Second)
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusForbidden {
+		t.Fatalf("after the TTL = %d, want 403 under version 2", rr.Code)
+	}
+	var versions []int64
+	for _, a := range store.auditRows() {
+		versions = append(versions, *a.PolicyVersion)
+	}
+	if fmt.Sprint(versions) != "[1 1 2]" || store.polReads != 2 {
+		t.Fatalf("audited versions %v with %d store reads, want [1 1 2] with 2", versions, store.polReads)
+	}
+}

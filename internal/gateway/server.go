@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Authenticator is implemented by Auth; tests substitute a fake.
@@ -57,13 +59,43 @@ type Server struct {
 	mu         sync.Mutex
 	keysByTask map[string]cachedKey
 	mints      singleflight.Group
+
+	now   func() time.Time
+	polMu sync.Mutex
+	pol   policy.Version
+	polAt time.Time // when pol was read; zero = never
 }
+
+// policyTTL bounds how long the gateway enforces a policy version after
+// reading it: a new version is in force within this time.
+const policyTTL = 30 * time.Second
 
 func NewServer(opts ServerOptions) *Server {
 	if opts.HTTP == nil {
 		opts.HTTP = &http.Client{}
 	}
-	return &Server{opts: opts, http: opts.HTTP, keysByTask: map[string]cachedKey{}}
+	return &Server{opts: opts, http: opts.HTTP, keysByTask: map[string]cachedKey{}, now: time.Now}
+}
+
+// currentPolicy is the policy version in force, read from Postgres at most
+// policyTTL ago. The gateway never parses the policy file: factoryd loads
+// it, and an unreadable current version refuses every call.
+func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
+	s.polMu.Lock()
+	defer s.polMu.Unlock()
+	if !s.polAt.IsZero() && s.now().Sub(s.polAt) < policyTTL {
+		v := s.pol
+		return &v, nil
+	}
+	v, ok, err := s.opts.Store.CurrentPolicy(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read current policy: %w", err)
+	}
+	if !ok {
+		return nil, errors.New("no policy version loaded")
+	}
+	s.pol, s.polAt = v, s.now()
+	return &v, nil
 }
 
 // Routes is the gateway's full HTTP surface: the single model route plus the
@@ -84,59 +116,86 @@ func (s *Server) Routes(version string) http.Handler {
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	pv, polErr := s.currentPolicy(ctx)
+	var pid *int64
+	if pv != nil {
+		pid = &pv.ID
+	}
+
 	id, err := s.opts.Auth.Authenticate(r)
 	if err != nil {
-		s.refuse(w, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
+		s.refuse(w, pid, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
+		return
+	}
+	if polErr != nil {
+		s.refuse(w, pid, id.TaskID, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		s.refuse(w, id.TaskID, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
 		return
 	}
 	chatReq, err := parseChat(body)
 	if err != nil {
-		s.refuse(w, id.TaskID, "refused_body", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
 	if err != nil {
-		s.refuse(w, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
+		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
 	if !ok {
-		s.refuse(w, id.TaskID, "refused_task_unknown", "no task row for "+id.TaskID, chatReq.Model, http.StatusNotFound, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_task_unknown", "no task row for "+id.TaskID, chatReq.Model, http.StatusNotFound, "invalid_request_error")
 		return
 	}
 	if task.Status != "running" {
-		s.refuse(w, id.TaskID, "refused_task_status", "task status is "+task.Status, chatReq.Model, http.StatusConflict, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_task_status", "task status is "+task.Status, chatReq.Model, http.StatusConflict, "invalid_request_error")
 		return
 	}
 
-	if task.SpentEUR >= task.BudgetEUR {
-		s.refuseSpend(w, task, chatReq.Model, fmt.Sprintf("spent %.4f >= budget %.4f EUR", task.SpentEUR, task.BudgetEUR))
+	if !pv.Document.AllowsModel(task.Classes, chatReq.Model) {
+		s.refuse(w, pid, id.TaskID, "refused_capability",
+			fmt.Sprintf("model %q is not allowed for capability classes %q under policy version %d", chatReq.Model, task.Classes, pv.ID),
+			chatReq.Model, http.StatusForbidden, "permission_error")
+		return
+	}
+	taskHeadroom := task.BudgetEUR - task.SpentEUR
+	if taskHeadroom <= 0 {
+		s.refuseSpend(w, pid, task, "refused_budget", chatReq.Model, fmt.Sprintf("spent %.4f >= budget %.4f EUR", task.SpentEUR, task.BudgetEUR))
+		return
+	}
+	dayTotal, err := s.opts.Store.DayTotal(ctx)
+	if err != nil {
+		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
+		return
+	}
+	dayHeadroom := pv.Document.Budget.DayEUR - dayTotal
+	if dayHeadroom <= 0 {
+		s.refuseSpend(w, pid, task, "refused_day_cap", chatReq.Model, fmt.Sprintf("today's spend %.4f >= day cap %.4f EUR (UTC day, all tasks)", dayTotal, pv.Document.Budget.DayEUR))
 		return
 	}
 
 	if chatReq.Stream {
 		if err := withStreamUsage(chatReq.fields); err != nil {
-			s.refuse(w, id.TaskID, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+			s.refuse(w, pid, id.TaskID, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 			return
 		}
 	}
 	if body, err = json.Marshal(chatReq.fields); err != nil {
-		s.refuse(w, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 
-	key, err := s.keyFor(ctx, task, id.SAUID)
+	key, err := s.keyFor(ctx, task, id.SAUID, min(taskHeadroom, dayHeadroom))
 	if err != nil {
-		s.refuse(w, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, pid, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
 
-	s.proxy(w, r, task, key, body, chatReq.Model, chatReq.Stream)
+	s.proxy(w, r, pid, task, key, body, chatReq.Model, chatReq.Stream)
 }
 
 type chatRequest struct {
@@ -183,10 +242,11 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 }
 
 // keyFor returns the virtual key of the task's current run or mints one
-// capped at the remaining budget, so a task can never spend past its
-// budget_eur even if the gateway's own check lags. A requeue blocks the old
-// key and recreates the service account, so a new SA UID gets a new key.
-func (s *Server) keyFor(ctx context.Context, task Task, saUID string) (string, error) {
+// capped at maxBudget, the smaller of the task's and the day's headroom, so
+// a task can never spend past either even if the gateway's own check lags.
+// A requeue blocks the old key and recreates the service account, so a new
+// SA UID gets a new key.
+func (s *Server) keyFor(ctx context.Context, task Task, saUID string, maxBudget float64) (string, error) {
 	if key, ok := s.cachedKey(task.ID, saUID); ok {
 		return key, nil
 	}
@@ -195,7 +255,7 @@ func (s *Server) keyFor(ctx context.Context, task Task, saUID string) (string, e
 		if key, ok := s.cachedKey(task.ID, saUID); ok {
 			return key, nil
 		}
-		key, err := s.opts.Minter.Mint(context.WithoutCancel(ctx), task.ID, task.BudgetEUR-task.SpentEUR)
+		key, err := s.opts.Minter.Mint(context.WithoutCancel(ctx), task.ID, maxBudget)
 		if err != nil {
 			return "", fmt.Errorf("mint virtual key: %w", err)
 		}
@@ -217,11 +277,11 @@ func (s *Server) cachedKey(taskID, saUID string) (string, bool) {
 	return c.key, ok && c.saUID == saUID
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key string, body []byte, alias string, stream bool) {
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, pid *int64, task Task, key string, body []byte, alias string, stream bool) {
 	ctx := r.Context()
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		s.refuse(w, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, pid, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	upReq.Header.Set("Content-Type", contentType(r))
@@ -229,7 +289,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 
 	res, err := s.http.Do(upReq)
 	if err != nil {
-		s.refuse(w, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, pid, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	defer res.Body.Close()
@@ -243,10 +303,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 				} `json:"error"`
 			}
 			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-			s.refuseSpend(w, task, alias, "litellm budget_exceeded: "+liteErr.Error.Message)
+			s.refuseSpend(w, pid, task, "refused_budget", alias, "litellm budget_exceeded: "+liteErr.Error.Message)
 			return
 		}
-		s.audit(task.ID, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), alias, &task.SpentEUR)
+		s.audit(pid, task.ID, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), alias, &task.SpentEUR)
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 		w.WriteHeader(res.StatusCode)
 		w.Write(respBody) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
@@ -277,7 +337,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 	spend, reason := task.SpentEUR, ""
 	if costErr != nil {
 		reason = "cost not reported, not booked: " + costErr.Error()
-	} else if total, err := s.opts.Store.AddSpent(context.Background(), task.ID, cost); err != nil {
+	} else if total, err := s.opts.Store.AddSpent(context.Background(), task.ID, alias, cost); err != nil {
 		reason = "cost " + strconv.FormatFloat(cost, 'g', -1, 64) + " not booked: " + err.Error()
 	} else {
 		spend = total
@@ -285,7 +345,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 	if reason != "" {
 		log.Printf("task %s: %s", task.ID, reason)
 	}
-	s.audit(task.ID, "allowed", reason, alias, &spend)
+	s.audit(pid, task.ID, "allowed", reason, alias, &spend)
 }
 
 // maxSSELine bounds what usageScanner buffers of one line. The usage chunk
@@ -380,27 +440,29 @@ func contentType(r *http.Request) string {
 	return "application/json"
 }
 
-// refuseSpend writes the 402 budget refusal. The gateway refuses with 402;
-// LiteLLM's 429 + budget_exceeded is only the backstop mapped onto it.
-func (s *Server) refuseSpend(w http.ResponseWriter, task Task, alias, reason string) {
-	s.audit(task.ID, "refused_budget", reason, alias, &task.SpentEUR)
+// refuseSpend writes a 402 refusal: the task's budget or the day cap. The
+// gateway refuses with 402; LiteLLM's 429 + budget_exceeded is only the
+// backstop mapped onto it.
+func (s *Server) refuseSpend(w http.ResponseWriter, pid *int64, task Task, decision, alias, reason string) {
+	s.audit(pid, task.ID, decision, reason, alias, &task.SpentEUR)
 	writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
 }
 
-func (s *Server) refuse(w http.ResponseWriter, taskID, decision, reason, alias string, status int, typ string) {
-	s.audit(taskID, decision, reason, alias, nil)
+func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, decision, reason, alias string, status int, typ string) {
+	s.audit(pid, taskID, decision, reason, alias, nil)
 	writeError(w, status, typ, reason)
 }
 
 // audit persists the decision on a background context: audit rows are the
 // record of what the gateway did and must survive the caller disconnecting.
-func (s *Server) audit(taskID, decision, reason, alias string, spend *float64) {
+func (s *Server) audit(pid *int64, taskID, decision, reason, alias string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
-		TaskID:     taskID,
-		Decision:   decision,
-		Reason:     reason,
-		ModelAlias: alias,
-		SpendEUR:   spend,
+		TaskID:        taskID,
+		Decision:      decision,
+		Reason:        reason,
+		ModelAlias:    alias,
+		SpendEUR:      spend,
+		PolicyVersion: pid,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, decision %s): %v", taskID, decision, err)
 	}

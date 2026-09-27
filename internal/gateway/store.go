@@ -4,12 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 //go:embed migrations/*.sql
@@ -20,6 +23,8 @@ type Task struct {
 	BudgetEUR float64
 	SpentEUR  float64
 	Status    string
+	// Classes are the task's capability classes (tasks.required_capabilities).
+	Classes []string
 }
 
 type AuditRow struct {
@@ -28,14 +33,22 @@ type AuditRow struct {
 	Reason     string
 	ModelAlias string
 	SpendEUR   *float64
+	// PolicyVersion is the policy version the decision was made under; nil
+	// only when no version could be read.
+	PolicyVersion *int64
 }
 
 // Store is the task and audit state every gateway decision reads and writes.
 // The production implementation is Postgres; tests use an in-memory fake.
 type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
-	AddSpent(ctx context.Context, id string, cost float64) (float64, error)
+	// AddSpent books one model call's cost onto the task and the ledger and
+	// returns the task's new total.
+	AddSpent(ctx context.Context, id, alias string, cost float64) (float64, error)
 	InsertAudit(ctx context.Context, row AuditRow) error
+	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
+	// DayTotal is today's (UTC) ledger total over all tasks.
+	DayTotal(ctx context.Context) (float64, error)
 }
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
@@ -75,7 +88,7 @@ func (s *PGStore) migrate(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return policy.Migrate(ctx, s.db)
 }
 
 func splitSQL(sqlText string) []string {
@@ -90,24 +103,31 @@ func splitSQL(sqlText string) []string {
 
 func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	var t Task
+	var classes []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, budget_eur::float8, spent_eur::float8, status FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status)
+		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities FROM tasks WHERE id = $1`, id,
+	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
 	if err != nil {
 		return Task{}, false, err
 	}
+	if err := json.Unmarshal(classes, &t.Classes); err != nil {
+		return Task{}, false, fmt.Errorf("task %s required_capabilities: %w", id, err)
+	}
 	return t, true, nil
 }
 
-// AddSpent books one model call's cost onto the task and returns the new
-// total. The increment is atomic, so concurrent calls of one task add up.
-func (s *PGStore) AddSpent(ctx context.Context, id string, cost float64) (float64, error) {
+// AddSpent is one statement, so the task's spend and its ledger row are
+// booked together or not at all; the increment is atomic, so concurrent
+// calls of one task add up.
+func (s *PGStore) AddSpent(ctx context.Context, id, alias string, cost float64) (float64, error) {
 	var total float64
 	err := s.db.QueryRowContext(ctx,
-		`UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1 RETURNING spent_eur::float8`, id, cost,
+		`WITH t AS (UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1 RETURNING spent_eur),
+		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT $1, $3, $4, $2 FROM t)
+		 SELECT spent_eur::float8 FROM t`, id, cost, policy.KindModel, alias,
 	).Scan(&total)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, fmt.Errorf("add spent: no task row for %s", id)
@@ -117,7 +137,15 @@ func (s *PGStore) AddSpent(ctx context.Context, id string, cost float64) (float6
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, spend_eur) VALUES ($1, $2, $3, $4, $5)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.SpendEUR)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, spend_eur, policy_version_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.SpendEUR, row.PolicyVersion)
 	return err
+}
+
+func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {
+	return policy.Current(ctx, s.db)
+}
+
+func (s *PGStore) DayTotal(ctx context.Context) (float64, error) {
+	return policy.DayTotal(ctx, s.db)
 }
