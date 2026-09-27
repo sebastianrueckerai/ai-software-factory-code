@@ -52,7 +52,7 @@ func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 	}
 	s := &PGStore{db: db}
 	if err := s.migrate(ctx); err != nil {
-		db.Close()
+		db.Close() // #nosec G104 -- already returning the migrate error; the close error would only mask it
 		return nil, err
 	}
 	return s, nil

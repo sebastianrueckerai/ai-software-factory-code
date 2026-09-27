@@ -12,6 +12,23 @@ import (
 	"time"
 )
 
+// fromJSON must surface a decode failure rather than silently returning an
+// empty slice, so corrupt required_capabilities/findings columns fail the
+// read instead of quietly discarding data (fix round 1).
+func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
+	if _, err := fromJSON([]byte(`not json`)); err == nil {
+		t.Fatal("want an error for malformed JSON, got nil")
+	}
+	out, err := fromJSON(nil)
+	if err != nil || out != nil {
+		t.Fatalf("fromJSON(nil) = %v, %v, want nil, nil", out, err)
+	}
+	out, err = fromJSON([]byte(`["a","b"]`))
+	if err != nil || !slices.Equal(out, []string{"a", "b"}) {
+		t.Fatalf("fromJSON = %v, %v, want [a b], nil", out, err)
+	}
+}
+
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
 	tasks    map[string]Task

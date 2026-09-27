@@ -710,7 +710,7 @@ func (s *CISpawner) buildEgressSpec() map[string]any {
 		"registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com", // Docker Hub base images
 		"proxy.golang.org", "sum.golang.org", // go mod download
 		"github.com", "objects.githubusercontent.com", // buildkit, runc, gosec release downloads
-		"code.forgejo.org", // forgejo-runner release download
+		"code.forgejo.org",        // forgejo-runner release download
 		"go.dev", "dl.google.com", // Go toolchain download
 	}
 	httpHosts := []string{"deb.debian.org", "security.debian.org"} // apt, plain http by default in bookworm-slim

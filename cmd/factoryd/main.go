@@ -120,7 +120,7 @@ func main() {
 			http.Error(w, "store unreachable: "+err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		w.Write([]byte("ok"))
+		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	})
 	mux.Handle("POST /tasks", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -159,7 +159,7 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR})
+		json.NewEncoder(w).Encode(map[string]any{"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR}) // #nosec G104 -- best-effort response write
 	}))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
@@ -172,7 +172,7 @@ func main() {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(task)
+		json.NewEncoder(w).Encode(task) // #nosec G104 -- best-effort response write
 	}))
 
 	server := &http.Server{
@@ -186,7 +186,7 @@ func main() {
 		<-runnerDone
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		server.Shutdown(shutdown)
+		server.Shutdown(shutdown) // #nosec G104 -- process exits right after; shutdown error is inconsequential
 	}()
 	log.Printf("factoryd %s listening on %s", version, *addr)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -80,14 +81,14 @@ func (o *Opencode) Prepare(ctx context.Context, env harness.SandboxEnv, brief ha
 	if o.WorkDir == "" {
 		return fmt.Errorf("opencode: WorkDir is required")
 	}
-	if err := os.MkdirAll(o.WorkDir, 0o755); err != nil {
+	if err := os.MkdirAll(o.WorkDir, 0o750); err != nil {
 		return err
 	}
 	briefJSON, err := json.Marshal(brief)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(o.WorkDir, "brief.json"), briefJSON, 0o644)
+	return os.WriteFile(filepath.Join(o.WorkDir, "brief.json"), briefJSON, 0o600)
 }
 
 // Run drives `opencode run --format json` and normalizes its JSONL stream
@@ -103,10 +104,15 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if err != nil {
 		return o.finish(emit, false, "identity proxy listen: "+err.Error())
 	}
-	proxy := &http.Server{Handler: &IdentityProxy{GatewayURL: o.GatewayURL, TokenFile: o.TokenFile, HTTP: o.HTTP}}
+	proxy := &http.Server{Handler: &IdentityProxy{GatewayURL: o.GatewayURL, TokenFile: o.TokenFile, HTTP: o.HTTP}, ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan struct{})
-	go func() { proxy.Serve(ln); close(done) }()
-	defer func() { proxy.Shutdown(context.Background()); <-done }()
+	go func() {
+		if err := proxy.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("opencode: identity proxy: %v", err)
+		}
+		close(done)
+	}()
+	defer func() { proxy.Shutdown(context.Background()); <-done }() // #nosec G104 -- shutdown error is inconsequential once the run is over
 
 	provider, modelID := o.model()
 	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String()+"/v1", provider, modelID, outputLimit)
@@ -120,7 +126,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		tooLong: func() { p.fail("opencode output line exceeds 1 MiB") },
 	}
 	cmd := exec.CommandContext(ctx, o.binary(),
-		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief))
+		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief)) // #nosec G204 -- exec.CommandContext, no shell; objectiveText(brief) is one argv element from factoryd's own task brief
 	cmd.Dir = o.WorkDir
 	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_CONTENT="+string(cfg))
 	cmd.Stdout = lines
@@ -136,7 +142,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		return o.finish(emit, false, err.Error())
 	}
 	waitErr := cmd.Wait()
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // #nosec G104 -- best-effort reap of a process group already exited; ESRCH is expected
 	if errors.Is(waitErr, exec.ErrWaitDelay) {
 		waitErr = nil
 	}

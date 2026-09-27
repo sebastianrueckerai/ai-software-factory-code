@@ -65,6 +65,27 @@ func TestIdentityProxyFailsLoudlyWithoutToken(t *testing.T) {
 	}
 }
 
+func TestIdentityProxyRejectsAbsoluteFormTarget(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be reached for an absolute-form request target")
+	}))
+	defer upstream.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &IdentityProxy{GatewayURL: upstream.URL, TokenFile: tokenFile}
+
+	// A request line naming its own scheme and host (proxy-style) must never
+	// let that host override the fixed GatewayURL destination.
+	req := httptest.NewRequest(http.MethodGet, "http://attacker.example/v1/models", nil)
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestIdentityProxyPassesMethodPathQueryAndStatus(t *testing.T) {
 	var gotPath, gotMethod string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

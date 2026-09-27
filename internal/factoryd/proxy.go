@@ -20,14 +20,26 @@ type IdentityProxy struct {
 }
 
 func (p *IdentityProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// The agent process is the caller here, not a trusted harness component:
+	// only origin-form request lines (path[?query], no scheme or host of
+	// their own) are ever forwarded, so the destination host below is always
+	// the fixed, operator-configured GatewayURL, never something the agent
+	// can redirect by shaping its request.
+	if r.URL.IsAbs() || r.URL.Host != "" {
+		http.Error(w, "absolute-form request target rejected", http.StatusBadRequest)
+		return
+	}
+
 	token, err := readToken(p.TokenFile)
 	if err != nil {
 		http.Error(w, "task identity unavailable: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
 
+	// host is always the fixed GatewayURL above; only the path/query is
+	// request-influenced, and absolute-form targets are rejected above.
 	target := strings.TrimSuffix(p.GatewayURL, "/") + r.URL.RequestURI()
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, r.Body) // #nosec G704
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -47,7 +59,7 @@ func (p *IdentityProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // #nosec G704 -- same fixed-host request built above
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -63,7 +75,7 @@ func (p *IdentityProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func readToken(path string) (string, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec G304 -- path is the proxy's own configured TokenFile, never derived from a request
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", path, err)
 	}

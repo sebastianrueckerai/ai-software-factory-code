@@ -203,7 +203,11 @@ func loadEnv() (workerEnv, error) {
 		return e, fmt.Errorf("HEADROOM_TOKENS: %w", err)
 	}
 	// FINDINGS arrives as a JSON array; absent means a first attempt.
-	json.Unmarshal([]byte(str("FINDINGS")), &e.findings)
+	if raw := str("FINDINGS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &e.findings); err != nil {
+			return e, fmt.Errorf("FINDINGS: %w", err)
+		}
+	}
 	return e, nil
 }
 
@@ -241,7 +245,7 @@ func (e workerEnv) gitAuth(dir string, args ...string) error {
 // runGit scrubs the token from failures, because worker stderr reaches the
 // factoryd log.
 func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", append(append([]string(nil), safeGit...), args...)...)
+	cmd := exec.Command("git", append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.Command, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -269,7 +273,7 @@ func (e workerEnv) runGit(dir string, env []string, args ...string) (string, err
 // agent's own commits carry it too.
 func prepareRepo(repoDir string, e workerEnv) (string, error) {
 	// the adapter writes brief.json into the work tree; keep it out of the agent's own commits
-	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
 		return "", err
 	}
 	steps := [][]string{{"config", "user.name", botName}, {"config", "user.email", botEmail}}
@@ -308,7 +312,7 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 		return "", err
 	}
 	// the adapter writes brief.json into the work tree; it must never be committed
-	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
 		return "", err
 	}
 	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent"); err != nil {
@@ -350,7 +354,7 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if _, err := e.git("", "init", "-q", "--bare", send); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	if err := e.gitAuth("", "--git-dir="+send, "push", "-q", e.repoURL, head+":refs/heads/"+e.branch); err != nil {

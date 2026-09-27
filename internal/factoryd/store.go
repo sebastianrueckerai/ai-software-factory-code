@@ -85,7 +85,7 @@ func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 	}
 	s := &PGStore{db: db}
 	if err := s.migrate(ctx); err != nil {
-		db.Close()
+		db.Close() // #nosec G104 -- already returning the migrate error; the close error would only mask it
 		return nil, err
 	}
 	return s, nil
@@ -128,10 +128,15 @@ func toJSON(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
-func fromJSON(b []byte) []string {
+func fromJSON(b []byte) ([]string, error) {
+	if len(b) == 0 {
+		return nil, nil
+	}
 	var out []string
-	json.Unmarshal(b, &out)
-	return out
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
@@ -163,7 +168,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	if err != nil {
 		return Task{}, false, err
 	}
-	t.RequiredCapabilities = fromJSON(caps)
+	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
+		return Task{}, false, fmt.Errorf("required_capabilities: %w", err)
+	}
 	return t, true, nil
 }
 
@@ -194,7 +201,9 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 			&t.Objective, &t.Repository, &t.SHA, &t.Branch); err != nil {
 			return nil, err
 		}
-		t.RequiredCapabilities = fromJSON(caps)
+		if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
+			return nil, fmt.Errorf("required_capabilities: %w", err)
+		}
 		tasks = append(tasks, t)
 	}
 	return tasks, rows.Err()
@@ -300,7 +309,9 @@ func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error)
 	if err != nil {
 		return Session{}, false, err
 	}
-	sess.Findings = fromJSON(findings)
+	if sess.Findings, err = fromJSON(findings); err != nil {
+		return Session{}, false, fmt.Errorf("findings: %w", err)
+	}
 	sess.RestartState = restart
 	return sess, true, nil
 }

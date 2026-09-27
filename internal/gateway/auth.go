@@ -46,7 +46,7 @@ const (
 	// cannot reach; the in-cluster API Service serves the same keys.
 	InClusterFetchBase = "https://kubernetes.default.svc"
 
-	defaultOwnTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	defaultOwnTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- projected token file path, not a credential value
 
 	// InClusterCACertPath is the pod's mounted CA bundle; the JWKS fetch to
 	// InClusterFetchBase presents a certificate signed by it, so production

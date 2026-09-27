@@ -242,14 +242,14 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, task Task, key st
 					Message string `json:"message"`
 				} `json:"error"`
 			}
-			json.Unmarshal(respBody, &liteErr)
+			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
 			s.refuseSpend(w, task, alias, "litellm budget_exceeded: "+liteErr.Error.Message)
 			return
 		}
 		s.audit(task.ID, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), alias, &task.SpentEUR)
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 		w.WriteHeader(res.StatusCode)
-		w.Write(respBody)
+		w.Write(respBody) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 		return
 	}
 
@@ -409,7 +409,7 @@ func (s *Server) audit(taskID, decision, reason, alias string, spend *float64) {
 func writeError(w http.ResponseWriter, status int, typ, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]any{
+	json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
 		"error": map[string]any{
 			"message": msg,
 			"type":    typ,

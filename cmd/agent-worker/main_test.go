@@ -14,6 +14,50 @@ import (
 	"testing"
 )
 
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	for name, val := range map[string]string{
+		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo", "REPO_URL": "https://example/repo.git",
+		"BRANCH": "factory/t1", "GIT_TOKEN": "tok", "GATEWAY_URL": "http://gw",
+		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10",
+	} {
+		t.Setenv(name, val)
+	}
+}
+
+// A malformed FINDINGS must fail loudly, not silently become a first
+// attempt with no findings (fix round 1).
+func TestLoadEnvRejectsMalformedFindings(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("FINDINGS", "not json")
+	if _, err := loadEnv(); err == nil {
+		t.Fatal("want an error for malformed FINDINGS, got nil")
+	}
+}
+
+func TestLoadEnvFindingsAbsentMeansFirstAttempt(t *testing.T) {
+	setRequiredEnv(t)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if e.findings != nil {
+		t.Fatalf("findings = %v, want nil", e.findings)
+	}
+}
+
+func TestLoadEnvParsesFindings(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("FINDINGS", `["missing test", "wrong error code"]`)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if len(e.findings) != 2 || e.findings[0] != "missing test" || e.findings[1] != "wrong error code" {
+		t.Fatalf("findings = %v", e.findings)
+	}
+}
+
 func TestGitRunRedactsToken(t *testing.T) {
 	e := workerEnv{gitToken: "s3cret-tok"}
 	err := e.gitAuth("", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")
