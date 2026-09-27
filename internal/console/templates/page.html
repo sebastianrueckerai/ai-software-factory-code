@@ -1,0 +1,4 @@
+{{template "head" .}}
+{{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
+{{template "board" .}}
+{{template "foot"}}

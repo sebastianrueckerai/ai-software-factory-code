@@ -1,0 +1,12 @@
+{{template "head" .}}
+<h2>Timeline of {{.Card.ID}}</h2>
+{{template "card" .Card}}
+<table>
+<caption class="visually-hidden">Timeline steps, oldest first</caption>
+<thead><tr><th scope="col">Time</th><th scope="col">Step</th><th scope="col">Detail</th></tr></thead>
+<tbody>
+{{range .Entries}}<tr><td>{{.Time}}</td><td>{{.Step}}</td><td><code>{{.Detail}}</code></td></tr>
+{{else}}<tr><td colspan="3">No steps recorded yet.</td></tr>{{end}}
+</tbody>
+</table>
+{{template "foot"}}

@@ -1,0 +1,22 @@
+{{template "head" .}}
+<h2>New task</h2>
+<form method="post" action="/tasks" class="newtask">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<p>Files an issue on {{.Repo}} as you.</p>
+<label for="title">Title</label>
+<input id="title" name="title" type="text" maxlength="255" required>
+<label for="body">Description</label>
+<textarea id="body" name="body" rows="10"></textarea>
+<fieldset>
+<legend>Lane</legend>
+<label><input type="radio" name="lane" value="agent" checked> Agent</label>
+<label><input type="radio" name="lane" value="human"> Human</label>
+</fieldset>
+<label for="priority">Priority</label>
+<select id="priority" name="priority">
+<option value="">none</option>
+{{range .Priorities}}<option value="{{.}}">{{.}}</option>{{end}}
+</select>
+<button type="submit">File the issue</button>
+</form>
+{{template "foot"}}

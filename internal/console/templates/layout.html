@@ -1,0 +1,30 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false,"allowScriptTags":false}'>
+<title>Factory console</title>
+<link rel="stylesheet" href="/static/console.css">
+<script src="/static/htmx.min.js" defer></script>
+<script src="/static/console.js" defer></script>
+</head>
+<body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
+<header>
+<a class="home" href="/">Factory console</a>
+{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a></nav>
+<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
+</header>
+<main>
+{{end}}
+
+{{define "foot"}}</main>
+</body>
+</html>
+{{end}}
+
+{{define "card"}}<article class="card">
+<h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
+<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur .SpentEUR}} / {{eur .BudgetEUR}} EUR</p>
+<p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
+</article>{{end}}

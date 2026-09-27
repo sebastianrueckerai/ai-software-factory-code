@@ -1,0 +1,38 @@
+{{define "board"}}<div id="board" hx-get="/board" hx-trigger="every 10s" hx-swap="outerHTML">
+{{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
+<section aria-labelledby="human-lane">
+<h2 id="human-lane">Human lane</h2>
+<div class="lane">
+<section class="column" aria-labelledby="col-approvals"><h3 id="col-approvals">Approvals <span class="count">{{len .Approvals}}</span></h3>
+{{range .Approvals}}<article class="card approval">
+<h4>{{if eq .Kind "merge"}}Merge PR #{{.PRNumber}}{{else}}Resource request{{end}} · {{.TaskID}}</h4>
+<p>{{.Summary}}</p>{{if .MonthlyEUR}}<p class="meta">{{eur .MonthlyEUR}} EUR per month</p>{{end}}
+<p class="links"><a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
+</article>{{end}}
+</section>
+<section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
+{{range .Escalations}}<article class="card escalation">
+{{template "card" .}}
+{{if .Reason}}<p class="reason">{{.Reason}}</p>{{end}}
+<form method="post" action="/tasks/{{.ID}}/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<label for="answer-{{.ID}}">Your answer, posted on the issue as you</label>
+<textarea id="answer-{{.ID}}" name="answer" rows="3" required></textarea>
+<button type="submit">Answer</button>
+</form>
+</article>{{end}}
+</section>
+<section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>
+{{range .HumanTasks}}{{template "card" .}}{{end}}
+</section>
+</div>
+</section>
+<section aria-labelledby="agent-lane">
+<h2 id="agent-lane">Agent lane</h2>
+<div class="lane">
+{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{len $col.Cards}}</span></h3>
+{{range $col.Cards}}{{template "card" .}}{{end}}
+</section>
+{{end}}</div>
+</section>
+</div>{{end}}
