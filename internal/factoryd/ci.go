@@ -583,6 +583,18 @@ func (s *CISpawner) buildPodSpec() map[string]any {
 				"ports": []any{map[string]any{
 					"containerPort": int64(buildPodPort), "protocol": "TCP",
 				}},
+				// The container process (the unshare parent) starts well
+				// before buildkitd itself is listening: it still has to
+				// write the uid/gid maps and let the nested child exec.
+				// Without this, kubelet marks the pod Ready — and the
+				// Service adds it as an endpoint — the instant the shell
+				// script starts, so the runner pod's first buildctl call
+				// can lose the race and fail in seconds.
+				"readinessProbe": map[string]any{
+					"tcpSocket":        map[string]any{"port": int64(buildPodPort)},
+					"periodSeconds":    int64(1),
+					"failureThreshold": int64(30),
+				},
 				"resources": map[string]any{
 					"requests": ciRequests,
 					"limits":   ciLimits,

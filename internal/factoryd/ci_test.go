@@ -544,6 +544,18 @@ func TestCISpawnerBuildJobCreatesBuildkitdPodAndService(t *testing.T) {
 	if csc["allowPrivilegeEscalation"] != true {
 		t.Fatalf("buildkitd container allowPrivilegeEscalation = %v, want true", csc["allowPrivilegeEscalation"])
 	}
+	// The container process starts long before buildkitd is actually
+	// listening (nested unshare + uid/gid map writes first); without a
+	// readiness gate the Service would route to it before it can accept a
+	// connection, and the runner's first buildctl call would race it.
+	probe, ok := bcontainer["readinessProbe"].(map[string]any)
+	if !ok {
+		t.Fatal("buildkitd container missing a readinessProbe")
+	}
+	tcp, ok := probe["tcpSocket"].(map[string]any)
+	if !ok || tcp["port"] != int64(buildPodPort) {
+		t.Fatalf("buildkitd readinessProbe tcpSocket = %v, want port %d", probe["tcpSocket"], buildPodPort)
+	}
 	if _, privileged := csc["privileged"]; privileged {
 		t.Fatal("buildkitd container must not set privileged")
 	}
