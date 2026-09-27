@@ -236,10 +236,9 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 		return set
 	}
 	teams, err := getPages[struct {
-		ID         int64             `json:"id"`
-		Permission string            `json:"permission"`
-		AllRepos   bool              `json:"includes_all_repositories"`
-		UnitsMap   map[string]string `json:"units_map"`
+		ID       int64             `json:"id"`
+		AllRepos bool              `json:"includes_all_repositories"`
+		UnitsMap map[string]string `json:"units_map"`
 	}](ctx, f.orgCall, fmt.Sprintf("/api/v1/orgs/%s/teams?", owner))
 	if err != nil {
 		return fail(err)
@@ -261,7 +260,10 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 			return fail(err)
 		}
 		into := others
-		if codeWrite(t.Permission) || codeWrite(t.UnitsMap["repo.code"]) {
+		// the unit, never the team's aggregate permission: Forgejo sets that
+		// to the lowest unit mode, "write" for an issue-write team without
+		// code; an admin or owner team lists every unit at its mode
+		if codeWrite(t.UnitsMap["repo.code"]) {
 			into = writers
 		}
 		maps.Copy(into, logins(members))

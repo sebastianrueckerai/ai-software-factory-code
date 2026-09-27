@@ -794,7 +794,8 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 				`{"id":1,"name":"Owners","permission":"owner","includes_all_repositories":true,"units_map":{"repo.code":"owner","repo.pulls":"owner"}}`,
 				`{"id":2,"name":"reviewers","permission":"read","units_map":{"repo.code":"read","repo.pulls":"read"}}`,
 				`{"id":3,"name":"devs","permission":"read","units_map":{"repo.code":"write","repo.issues":"read"}}`,
-				`{"id":4,"name":"infra","permission":"write","units_map":{"repo.code":"write"}}`)
+				`{"id":4,"name":"infra","permission":"write","units_map":{"repo.code":"write"}}`,
+				`{"id":5,"name":"triage","permission":"write","includes_all_repositories":true,"units_map":{"repo.issues":"write"}}`)
 		case "/api/v1/teams/2/repos", "/api/v1/teams/3/repos":
 			servePage(w, r, 1, `{"full_name":"sf/other"}`, `{"full_name":"sf/r"}`)
 		case "/api/v1/teams/4/repos":
@@ -807,10 +808,12 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 			servePage(w, r, 1, `{"login":"dave"}`)
 		case "/api/v1/teams/4/members":
 			servePage(w, r, 1, `{"login":"ivan"}`)
+		case "/api/v1/teams/5/members":
+			servePage(w, r, 1, `{"login":"judy"}`, `{"login":"kim"}`)
 		case "/api/v1/repos/sf/r/collaborators":
-			servePage(w, r, 2, `{"login":"factory-agent"}`, `{"login":"carol"}`, `{"login":"erin"}`)
+			servePage(w, r, 2, `{"login":"factory-agent"}`, `{"login":"carol"}`, `{"login":"erin"}`, `{"login":"kim"}`)
 		case "/api/v1/repos/sf/r/assignees":
-			io.WriteString(w, `[{"login":"carol"},{"login":"dave"},{"login":"factory-agent"},{"login":"factory-ci"},{"login":"rita"},{"login":"sebastian"}]`)
+			io.WriteString(w, `[{"login":"carol"},{"login":"dave"},{"login":"factory-agent"},{"login":"factory-ci"},{"login":"judy"},{"login":"kim"},{"login":"rita"},{"login":"sebastian"}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -819,7 +822,9 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar", CIOrgToken: "org-read"}
 	got, err := f.RepoWriters(context.Background(), "sf", "r")
 	// rita: a read-only team's member; carol: a collaborator who is one too;
-	// erin: a read collaborator, no assignee; ivan: a code writer elsewhere
+	// erin: a read collaborator, no assignee; ivan: a code writer elsewhere;
+	// judy: in a team with issue write and no code, whose aggregate
+	// permission Forgejo reports as "write"; kim: a collaborator in it
 	if want := []string{"dave", "factory-agent", "factory-ci", "sebastian"}; err != nil || !slices.Equal(got, want) {
 		t.Fatalf("writers = %q, %v; want %q", got, err, want)
 	}
