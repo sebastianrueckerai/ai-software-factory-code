@@ -272,6 +272,9 @@ spec:
           valueFrom: {secretKeyRef: {name: factoryd-webhook, key: secret}}
         - name: MAX_BUDGET_EUR
           value: "5"
+        # task 44 live check: trip reading-without-writing early (reverted after the check)
+        - name: SUPERVISE_READING_WITHOUT_WRITING
+          value: "6"
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
