@@ -751,16 +751,16 @@ func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 // release-assets.githubusercontent.com instead — confirmed live from a
 // buildkitd "server misbehaving" DNS-block error, the same failure mode as
 // the Docker Hub CDN hostname fix above.
-// Dockerfile.sandbox's opencode-provider "warm the provider cache" RUN step
-// also reaches for registry.npmjs.org and opencode's own auto-update/model
-// endpoints; that step already tolerates failure (`|| true`, a dead local
-// baseURL is the point of the step) so those hosts are deliberately left off
-// — the build does not need them to succeed.
+// Dockerfile.sandbox's opencode-plugin stage bakes @opencode-ai/plugin with a
+// hard-requiring `npm ci` (032029f restored this after the warm-cache/`||
+// true` version it replaced proved unreliable), so registry.npmjs.org must be
+// reachable for that build to succeed — it is not a tolerated-failure step.
 func (s *CISpawner) buildEgressSpec() map[string]any {
 	httpsHosts := []string{
 		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub base images
 		"proxy.golang.org", "sum.golang.org", // go mod download
 		"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", // buildkit, runc, gosec, opencode release downloads
+		"registry.npmjs.org",      // opencode-plugin stage's npm ci bake (Dockerfile.sandbox)
 		"code.forgejo.org",        // forgejo-runner release download
 		"go.dev", "dl.google.com", // Go toolchain download
 	}
