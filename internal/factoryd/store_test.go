@@ -401,9 +401,8 @@ func TestPGStore(t *testing.T) {
 	if err := s.MarkStarted(ctx, "t1"); err != nil {
 		t.Fatalf("MarkStarted: %v", err)
 	}
-	var first time.Time
-	if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM tasks WHERE id = 't1'`).Scan(&first); err != nil {
-		t.Fatal(err)
+	if _, err := s.db.ExecContext(ctx, `SELECT started_at FROM tasks`); err == nil {
+		t.Fatal("started_at still exists: nothing read it, migration 0013 drops it")
 	}
 	for _, step := range [][2]string{{"running", "in-review"}} {
 		if err := s.TransitionTask(ctx, "t1", []string{step[0]}, step[1]); err != nil {
@@ -419,12 +418,11 @@ func TestPGStore(t *testing.T) {
 	if err := s.MarkStarted(ctx, "t1"); err != nil {
 		t.Fatalf("MarkStarted from waiting-human (a human answered): %v", err)
 	}
-	var again time.Time
-	if err := s.db.QueryRowContext(ctx, `SELECT started_at FROM tasks WHERE id = 't1'`).Scan(&again); err != nil {
-		t.Fatal(err)
+	if err := s.MarkStarted(ctx, "t1"); err != nil {
+		t.Fatalf("MarkStarted: %v", err)
 	}
-	if !again.Equal(first) {
-		t.Fatalf("started_at moved from %v to %v: the first start is kept", first, again)
+	if _, err := s.db.ExecContext(ctx, `SELECT started_at FROM tasks`); err == nil {
+		t.Fatal("started_at still exists: nothing read it, migration 0013 drops it")
 	}
 	got, _, _ = s.Task(ctx, "t1")
 	if got.Status != "running" {

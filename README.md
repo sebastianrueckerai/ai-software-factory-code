@@ -40,6 +40,12 @@ the agents work on.
   and reaps every other process when the agent is done, then fetches
   the agent's commits into a clean repository and pushes `factory/<id>`
   from there to the fork `factory-agent/<repo>` with the write token.
+  The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep
+  and the Go 1.25 toolchain (ruling 99, the same pin as the runner
+  image); its egress (`workerEgressSpec`) is default-deny plus the
+  gateway, the in-cluster Forgejo, the Go module proxy and checksum DB
+  by name on 443, and kube-dns for exactly those names; the cloud
+  metadata address is denied outright.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).

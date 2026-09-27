@@ -137,6 +137,14 @@ spec:
        has(object.subjects) && object.subjects.all(s, s.kind == 'ServiceAccount' &&
        s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory'))
     message: factoryd may only bind factoryd-task to itself
+  # The buildkitd Service (ruling 91) is the only one factoryd creates: a
+  # ClusterIP inside its namespace, never a node port or an external IP.
+  - expression: >-
+      variables.kind != 'Service' || request.operation == 'DELETE' ||
+      ((!has(object.spec.type) || object.spec.type == 'ClusterIP') &&
+       (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0) &&
+       (!has(object.spec.ports) || !object.spec.ports.exists(p, has(p.nodePort) && p.nodePort != 0)))
+    message: services must be ClusterIP without externalIPs or nodePorts
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&

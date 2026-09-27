@@ -51,7 +51,9 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store.CreateTask(context.Background(), Task{ID: "th", Status: "waiting-human", Kind: "human", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t)
-	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"})
+	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
+	fjURL, llURL := back.srv(t)
+	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, newCompletion(store, fjURL, llURL))
 	slices.Sort(wf.started)
 	if want := []string{"tc", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
@@ -64,6 +66,9 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	}
 	if len(store.pruned) != 1 || store.pruned[0] != 30*24*time.Hour {
 		t.Fatalf("pruned = %v, want one pass forgetting deliveries older than 30 days", store.pruned)
+	}
+	if !slices.Equal(back.litellmCalls, []string{"GET /key/list"}) || !slices.ContainsFunc(back.forgejoCalls, func(c string) bool { return strings.HasSuffix(c, "/tokens") }) {
+		t.Fatalf("litellm calls = %v, forgejo calls = %v: want the broken task completed like any failure (tokens listed for revocation, keys listed for blocking)", back.litellmCalls, back.forgejoCalls)
 	}
 	if got, _, _ := store.Task(context.Background(), "tbroken"); got.Status != "failed" {
 		t.Fatalf("broken task = %q, want failed outside any workflow, so the pass skips it next time", got.Status)

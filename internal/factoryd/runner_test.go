@@ -591,8 +591,19 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("DNS allowlist lacks %s: %s", name, cnpStr)
 		}
 	}
-	if strings.Contains(cnpStr, "golang.org") || strings.Contains(cnpStr, "toFQDNs") {
-		t.Fatal("no toolchain in the sandbox image, so no package-proxy egress")
+	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org"} {
+		if !strings.Contains(cnpStr, name) {
+			t.Fatalf("DNS allowlist lacks %s (ruling 99: the sandbox carries the Go toolchain): %s", name, cnpStr)
+		}
+	}
+	var fqdn map[string]any
+	for _, rule := range cnp["egress"].([]any) {
+		if r := rule.(map[string]any); r["toFQDNs"] != nil {
+			fqdn = r
+		}
+	}
+	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
+		t.Fatalf("toFQDNs rule = %v, want exactly the Go module proxy and checksum DB on 443", fqdn)
 	}
 	gw := cnp["egress"].([]any)[0].(map[string]any)
 	if !strings.Contains(fmt.Sprint(gw["toEndpoints"]), "app:factory-gateway") || fmt.Sprint(gw["toPorts"]) != "[map[ports:[map[port:8081 protocol:TCP]]]]" {
@@ -628,6 +639,9 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("pod identity: %v %v", spec["serviceAccountName"], spec["restartPolicy"])
 	}
 	container := spec["containers"].([]any)[0].(map[string]any)
+	if mounts := fmt.Sprint(container["volumeMounts"]); !strings.Contains(mounts, "mountPath:/tmp") {
+		t.Fatalf("mounts = %s, want a writable /tmp under the read-only root (go build needs one)", mounts)
+	}
 	sc := container["securityContext"].(map[string]any)
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
@@ -639,12 +653,12 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("dnsConfig = %s", dns)
 	}
 	volumes := spec["volumes"].([]any)
-	for i, want := range []string{"4Gi", "1Gi"} {
+	for i, want := range []string{"4Gi", "1Gi", "1Gi"} {
 		if got := volumes[i].(map[string]any)["emptyDir"].(map[string]any)["sizeLimit"]; got != want {
 			t.Fatalf("volume %d sizeLimit = %v, want %s", i, got, want)
 		}
 	}
-	projected := volumes[2].(map[string]any)["projected"].(map[string]any)
+	projected := volumes[3].(map[string]any)["projected"].(map[string]any)
 	sat := projected["sources"].([]any)[0].(map[string]any)["serviceAccountToken"].(map[string]any)
 	if sat["audience"] != "factory-gateway" {
 		t.Fatalf("projected token audience = %v", sat["audience"])
@@ -913,7 +927,7 @@ func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
 // A supervisor still thinking when the wall-clock cap arrives is cut off:
 // the cap ends the session.
 func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.WallClockCap = time.Second
 	f := &fakeLiteLLM{content: `{"action":"continue"}`, delay: time.Minute}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
@@ -925,6 +939,9 @@ func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	}
 	if took := time.Since(began); took > 10*time.Second {
 		t.Fatalf("took %s: the supervisor call outlived the session", took)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "Superseded: the task's wall-clock cap was reached during the supervisor call") {
+		t.Fatalf("comments = %q, want the decision commented with the superseded note", hub.comments)
 	}
 }
 

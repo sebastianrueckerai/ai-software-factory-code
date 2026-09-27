@@ -562,7 +562,7 @@ func TestSameFailureAPassEndsTheRunUnlessTheExitIsMasked(t *testing.T) {
 			t.Fatalf("passing run %d tripped: %+v", i, trip)
 		}
 	}
-	for _, masked := range []string{`sh scripts/loopcheck.sh; echo "EXIT: $?"`, "go test ./... | tail -5", "make check || true"} {
+	for _, masked := range []string{`sh scripts/loopcheck.sh; echo "EXIT: $?"`, "go test ./... | tail -5", "make check || true", "go test ./... &", "go test ./...\necho done"} {
 		d := newTraces()
 		var trip *Trip
 		for i := 0; i < 3; i++ {

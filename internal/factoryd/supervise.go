@@ -305,7 +305,7 @@ func (d *traceDetectors) observe(ev harness.Event) *Trip {
 
 // masksExitStatus: the command's exit code need not be its test's.
 func masksExitStatus(cmd string) bool {
-	return strings.ContainsAny(cmd, ";|") || strings.Contains(cmd, "$?")
+	return strings.ContainsAny(cmd, ";|&\n") || strings.Contains(cmd, "$?")
 }
 
 // changed notes a file change for every command's output run.
@@ -321,7 +321,8 @@ func (d *traceDetectors) changed() {
 // (exit code folded in) with a file change before each repeat; a rerun
 // with nothing changed and a command without output are no evidence. A
 // pass ends the run, unless the command masks its own exit status (`;`,
-// `|`, `||`, `$?`, as in `cmd; echo $?`): then only its output tells.
+// `|`, `||`, `&`, `&&`, a second line, `$?`, as in `cmd; echo $?`): then
+// only its output tells.
 func (d *traceDetectors) command(ev harness.Event) *Trip {
 	cmd := detailString(ev, "command")
 	exit, hasExit := detailInt(ev, "exit")

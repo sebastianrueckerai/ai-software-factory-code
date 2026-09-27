@@ -8,6 +8,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-worker ./cmd
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 ARG OPENCODE_VERSION=v1.18.32
+ARG GO_VERSION=1.25.9
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep \
       && rm -rf /var/lib/apt/lists/* \
@@ -18,6 +19,12 @@ RUN echo "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b  /tmp
       && tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
       && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
       && rm /tmp/opencode.tar.gz /tmp/opencode
+# Go toolchain (ruling 99), the same pin as Dockerfile.runner, so the agent
+# can run the tests the PR checks will run.
+ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz
+RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp/go.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/go.tar.gz -C /usr/local \
+      && rm /tmp/go.tar.gz
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
 # Pre-bake the npm provider so a running sandbox never needs registry.npmjs.org
 # (egress stays off the CNP allowlist). HOME here is NOT the runtime HOME —
@@ -30,10 +37,17 @@ RUN mkdir -p /opt/opencode-home \
          timeout 300 opencode run --format json --model factory/bake "warm the provider cache" || true
 USER 1000:1000
 # every one of these phones home past the egress allowlist and stalls on the drop;
-# ripgrep is installed because opencode otherwise downloads it from GitHub
+# ripgrep is installed because opencode otherwise downloads it from GitHub.
+# GOTOOLCHAIN=local: go never fetches another toolchain; GOPROXY without the
+# "direct" fallback: only the module proxy is reachable, a fallback would
+# hang on the drop.
 ENV HOME=/home/worker \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
-    OPENCODE_DISABLE_LSP_DOWNLOAD=1
+    OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
+    PATH=/usr/local/go/bin:/home/worker/go/bin:$PATH \
+    GOTOOLCHAIN=local \
+    GOPROXY=https://proxy.golang.org \
+    GOSUMDB=sum.golang.org
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/opencode"]

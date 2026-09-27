@@ -685,6 +685,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 				"volumeMounts": []any{
 					map[string]any{"name": "workspace", "mountPath": "/workspace"},
 					map[string]any{"name": "home", "mountPath": "/home/worker"},
+					map[string]any{"name": "tmp", "mountPath": "/tmp"},
 					map[string]any{"name": "gateway-token", "mountPath": "/var/run/secrets/tokens", "readOnly": true},
 				},
 				"securityContext": map[string]any{
@@ -699,6 +700,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 			"volumes": []any{
 				map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 				map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+				map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 				map[string]any{"name": "gateway-token", "projected": map[string]any{
 					"sources": []any{map[string]any{
 						"serviceAccountToken": map[string]any{
@@ -715,11 +717,13 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
-// address, and exactly three allows: the model gateway's port, Forgejo's
-// HTTP port, and kube-dns for the two service names behind them. DNS is
-// allowlisted by name because an open resolver is itself an exfiltration
-// channel. No package registry is reachable: the npm provider is pre-baked
-// into the image and the image carries no language toolchain. Workers reach
+// address, and exactly four allows: the model gateway's port, Forgejo's
+// HTTP port, the Go module proxy and checksum database by name on 443
+// (ruling 99: the image carries the Go toolchain, and a registry joins by
+// name with the toolchain that needs it), and kube-dns for exactly those
+// names. DNS is allowlisted by name because an open resolver is itself an
+// exfiltration channel. No other registry is reachable: the npm provider
+// is pre-baked into the image. Workers reach
 // Forgejo through its in-cluster service, not the public host: in-cluster
 // DNS answers that host with the gateway ClusterIP, which Cilium's toFQDNs
 // cannot authorize (the envoy fronting it answers 403), while the service
@@ -730,6 +734,11 @@ func (r *Runner) workerEgressSpec() map[string]any {
 	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
 		u, _ := url.Parse(raw) // validated in NewRunner
 		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	}
+	toFQDNs := []any{}
+	for _, host := range []string{"proxy.golang.org", "sum.golang.org"} {
+		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
+		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
 	return map[string]any{
 		"endpointSelector": map[string]any{
@@ -759,6 +768,12 @@ func (r *Runner) workerEgressSpec() map[string]any {
 				}},
 				"toPorts": []any{map[string]any{
 					"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+				}},
+			},
+			map[string]any{
+				"toFQDNs": toFQDNs,
+				"toPorts": []any{map[string]any{
+					"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
 				}},
 			},
 			map[string]any{

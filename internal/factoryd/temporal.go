@@ -82,7 +82,7 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // workflow.
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
-func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake) {
+func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
 	}
@@ -102,11 +102,13 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake) {
 				continue
 			}
 			// a task no workflow can run (its repository is not owner/name)
-			// is failed here, or it would be restarted every pass
+			// is completed failed here like any failure (credentials
+			// revoked, keys blocked, the label mirrored where the repository
+			// allows), or it would be restarted every pass
 			if _, err := SplitRepo(t.Repository); err != nil {
-				log.Printf("start open workflows: task %s failed: %v", t.ID, err)
-				if err := store.TransitionTask(ctx, t.ID, []string{status}, "failed"); err != nil {
-					log.Printf("start open workflows: fail task %s: %v", t.ID, err)
+				log.Printf("heal pass: task %s failed: %v", t.ID, err)
+				if err := completion.Complete(ctx, t.ID, "failed"); err != nil {
+					log.Printf("heal pass: fail task %s: %v", t.ID, err)
 				}
 				continue
 			}
