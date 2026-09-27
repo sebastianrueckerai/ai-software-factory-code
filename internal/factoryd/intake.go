@@ -533,20 +533,8 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 	if !e.Trusted || e.Signalled {
 		return nil
 	}
-	sig := TaskSignal{Author: e.Author, Body: e.Body}
-	var name string
-	switch e.Kind {
-	case "issue_comment":
-		name, sig.Comment = SignalHumanComment, e.CommentID
-	case "pull_request_comment", "pull_request_review_rejected":
-		name, sig.PR = SignalChangesRequested, pr
-	case "issue_closed":
-		name = SignalIssueClosed
-	case "pull_request_merged":
-		name, sig.PR = SignalPRMerged, pr
-	case "pull_request_closed":
-		name, sig.PR = SignalPRClosed, pr
-	default:
+	name, sig, _ := signalOf(e, pr)
+	if name == "" {
 		return nil
 	}
 	if claimed, err := in.Store.SetSignalled(ctx, e.ID, true); err != nil || !claimed {
@@ -559,6 +547,43 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 		return err
 	}
 	return nil
+}
+
+// signalOf is the signal event e sends, "" for one that sends none, and
+// whether it is a decision that ends the task.
+func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bool) {
+	sig = TaskSignal{Author: e.Author, Body: e.Body}
+	switch e.Kind {
+	case "issue_comment":
+		name, sig.Comment = SignalHumanComment, e.CommentID
+	case "pull_request_comment", "pull_request_review_rejected":
+		name, sig.PR = SignalChangesRequested, pr
+	case "issue_closed":
+		name, decision = SignalIssueClosed, true
+	case "pull_request_merged":
+		name, sig.PR, decision = SignalPRMerged, pr, true
+	case "pull_request_closed":
+		name, sig.PR, decision = SignalPRClosed, pr, true
+	}
+	return name, sig, decision
+}
+
+// decisionResignalAfter is how old a signalled decision must be before
+// the heal pass sends it again to a task still in review or waiting on a
+// human: longer than a workflow takes to wind a decided task down.
+const decisionResignalAfter = 15 * time.Minute
+
+// resignalDecision sends decision e again: claimed but never delivered
+// (factoryd died between the claim and the signal), it would otherwise
+// strand the task. The workflow ignores a decision it already acted on.
+func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) error {
+	name, sig, decision := signalOf(e, t.PRNumber)
+	if !decision || !e.Trusted || !e.Signalled || time.Since(e.CreatedAt) < decisionResignalAfter ||
+		(t.Status != "in-review" && t.Status != "waiting-human") {
+		return nil
+	}
+	log.Printf("intake: task %s still %s after decision %d (%s): signalling it again", t.ID, t.Status, e.ID, e.Kind)
+	return in.Workflows.Signal(ctx, t.ID, name, sig)
 }
 
 // handleReview records a pull request review as an intake event, resolved to
@@ -604,11 +629,13 @@ const healAuthor = "factoryd heal pass"
 // what it may have missed: a webhook is delivered once, so a merge, close
 // or comment made while factoryd was down or erroring is otherwise lost.
 // Terminal states (pull request merged or closed, issue closed) are
-// signalled on every pass they hold; the workflow ignores a signal it has
-// already acted on. A closed issue is credited to its last closer per the
-// timeline and gated like a webhook's sender. Comments are recorded once
-// and signalled once; a trusted event recorded but not signalled
-// (factoryd died between the two) is signalled now. Reviews carry no id
+// recorded and signalled once, like comments; a decision that has not
+// moved the task out of review or the human wait within
+// decisionResignalAfter is signalled again on every pass (the claim may
+// have outlived a factoryd that died before the signal). A closed issue
+// is credited to its last closer per the timeline and gated like a
+// webhook's sender. A trusted event recorded but not signalled (factoryd
+// died between the two) is signalled now. Reviews carry no id
 // in their webhook payload and are not re-read.
 func (in *Intake) Resync(ctx context.Context, t Task) error {
 	repo, err := SplitRepo(t.Repository)
@@ -665,6 +692,9 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	}
 	for _, e := range events {
 		if err := in.signalEvent(ctx, t.ID, e, t.PRNumber); err != nil {
+			return err
+		}
+		if err := in.resignalDecision(ctx, t, e); err != nil {
 			return err
 		}
 	}

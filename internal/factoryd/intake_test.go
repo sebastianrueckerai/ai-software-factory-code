@@ -719,6 +719,42 @@ func TestIntakeSignalsADecisionOnce(t *testing.T) {
 	}
 }
 
+// A decision claimed but never signalled (factoryd died between the two)
+// would strand the task: the heal pass signals a claimed decision again
+// while the task still waits in review or on a human, once the decision
+// is older than a workflow takes to wind a task down; a fresh one is
+// left to that wind-down.
+func TestIntakeResyncResignalsAStrandedDecision(t *testing.T) {
+	for name, tc := range map[string]struct {
+		age  time.Duration
+		want []string
+	}{
+		"stranded": {decisionResignalAfter + time.Minute, []string{"t1 pr_merged sebastian #5: ", "t1 issue_closed sebastian #0: "}},
+		"fresh":    {time.Minute, nil},
+	} {
+		forgejo, _ := resyncForgejoStub(t, "sebastian")
+		store := newFakeStore()
+		in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+		task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 30, PRNumber: 5}
+		store.tasks["t1"] = task
+		at := time.Now().Add(-tc.age)
+		store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "pull_request_merged", Author: "sebastian", CommentID: 5, Trusted: true, Signalled: true, CreatedAt: at})
+		store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "issue_closed", Author: "sebastian", CommentID: 30, Trusted: true, Signalled: true, CreatedAt: at})
+		if err := in.Resync(context.Background(), task); err != nil {
+			t.Fatalf("%s: Resync: %v", name, err)
+		}
+		var got []string
+		for _, sig := range workflowsOf(in).signals {
+			if strings.Contains(sig, " pr_merged ") || strings.Contains(sig, " issue_closed ") {
+				got = append(got, sig)
+			}
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: decision signals = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
 // The heal pass reads who closed the issue off its timeline and applies
 // the webhook path's gate: the bot and a user with write access close a
 // task (the agent lane is signalled, the human lane is done), a stranger's

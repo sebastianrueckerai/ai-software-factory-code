@@ -165,9 +165,16 @@ comment, or a PR comment by a non-bot user) starts one more attempt, all
 pending requests coalesced into its findings. Pull request signals count
 only for the task's own PR. A webhook delivery is marked processed (by
 `X-Forgejo-Delivery`) after it was processed; a redelivery of a
-processed one is a no-op, and intake events are keyed by delivery id. A
-failure comments its reason on the issue; `Finish` retries without
-limit. The wall-clock cap (20 min) bounds the agent's working time
+processed one is a no-op, and intake events are keyed by delivery id.
+Forgejo never retries a failed delivery, so for every task in review or
+waiting on a human the heal pass re-reads its pull request, issue
+(closer from the timeline) and comments, and records and signals what
+the webhooks missed, each event once; a decision (merge, close) that has
+not moved the task out of review or the human wait within 15 minutes is
+signalled again every pass, since its claim may have outlived a factoryd
+that died before signalling it. A failure comments its reason on the
+issue; `Finish` retries for a day, and a workflow that still fails is
+restarted by the heal pass. The wall-clock cap (20 min) bounds the agent's working time
 summed over the attempts; waiting on checks or reviewers does not count.
 The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same
