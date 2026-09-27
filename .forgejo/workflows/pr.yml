@@ -42,6 +42,29 @@ jobs:
     steps:
       - name: print job environment variable NAMES only
         run: env | cut -d= -f1 | sort
+      # The per-run job token (FORGEJO_TOKEN = GITHUB_TOKEN, plus the runtime
+      # and OIDC request tokens) is the only credential a PR job may hold.
+      - name: assert no registry or repository write credential
+        run: |
+          bad=$(env | cut -d= -f1 | grep -Ei 'TOKEN|PASSW|SECRET|CREDENTIAL|AUTH|REGISTRY|DOCKER|(^|_)PAT($|_)|(^|_)KEY($|_)' \
+            | grep -Evx 'FORGEJO_TOKEN|GITHUB_TOKEN|GITEA_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN' || true)
+          if [ -n "$bad" ]; then echo "credential-shaped variables: $bad"; exit 1; fi
+          if [ -e "$HOME/.docker/config.json" ] || [ -e "$HOME/.git-credentials" ]; then echo "credential file in HOME"; exit 1; fi
+          echo "only the per-run job token is present"
+      - name: assert the job token reads but cannot push
+        run: |
+          set -eu
+          auth="Authorization: Basic $(printf 'x-access-token:%s' "$FORGEJO_TOKEN" | base64 -w0)"
+          url="$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY.git"
+          probe="refs/heads/job-token-probe-$FORGEJO_RUN_ID"
+          g() { GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$auth" git "$@"; }
+          git init -q /tmp/probe && cd /tmp/probe
+          git -c user.name=probe -c user.email=probe@invalid commit -q --allow-empty -m probe
+          if g push -q "$url" "HEAD:$probe" >/tmp/push.log 2>&1; then echo "the job token pushed $probe"; exit 1; fi
+          echo "push refused:"; head -n 3 /tmp/push.log | sed "s/$FORGEJO_TOKEN/***/g"
+          g ls-remote --exit-code "$url" refs/heads/main >/dev/null
+          if g ls-remote --exit-code "$url" "$probe" >/dev/null; then echo "$probe exists"; exit 1; fi
+          echo "the job token reads the repository and cannot write it"
   image-build:
     # ruling 91: builds only, never pushes — output goes to /dev/null on the
     # runner pod (BuildKit 0.33 has no cacheonly exporter). The buildkitd
