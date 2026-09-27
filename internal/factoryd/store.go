@@ -40,6 +40,8 @@ type Task struct {
 	// Source is how the task arrived: "api" (POST /tasks) or "webhook" (an
 	// issue labelled in Forgejo).
 	Source string
+	// PRNumber is the pull request the task's workflow opened; 0 = none yet.
+	PRNumber int64
 }
 
 // IntakeEvent is a Forgejo comment or review recorded against a task's issue
@@ -52,6 +54,9 @@ type IntakeEvent struct {
 	Author    string
 	Body      string
 	CreatedAt time.Time
+	// DeliveryID is the webhook delivery that produced it: a redelivery
+	// inserts no second row.
+	DeliveryID string
 }
 
 // Session is one agent worker run of a task. ParentSessionID chains a
@@ -91,11 +96,14 @@ type Store interface {
 	// issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) error
-	// ClaimDelivery records a webhook delivery id; false means it was
-	// already claimed (a redelivery).
-	ClaimDelivery(ctx context.Context, id string) (bool, error)
-	// ReleaseDelivery forgets a claimed delivery whose processing failed.
-	ReleaseDelivery(ctx context.Context, id string) error
+	// SetTaskPR records the pull request a task's workflow opened.
+	SetTaskPR(ctx context.Context, id string, number int64) error
+	// DeliverySeen reports whether a webhook delivery was processed.
+	DeliverySeen(ctx context.Context, id string) (bool, error)
+	// RecordDelivery marks a webhook delivery processed.
+	RecordDelivery(ctx context.Context, id string) error
+	// PruneDeliveries forgets processed deliveries older than age.
+	PruneDeliveries(ctx context.Context, age time.Duration) error
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
@@ -191,13 +199,13 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, branch, kind, issue_number, source`
+	objective, repository, sha, branch, kind, issue_number, source, pr_number`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source); err != nil {
+		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -228,22 +236,30 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO intake_events (task_id, kind, author, body) VALUES ($1, $2, $3, $4)`,
-		e.TaskID, e.Kind, e.Author, e.Body)
+		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id) VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (delivery_id) WHERE delivery_id <> '' DO NOTHING`,
+		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID)
 	return err
 }
 
-func (s *PGStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
+func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = $2 WHERE id = $1`, id, number)
+	return oneRow(res, err, "task "+id)
 }
 
-func (s *PGStore) ReleaseDelivery(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE id = $1`, id)
+func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
+	var seen bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id).Scan(&seen)
+	return seen, err
+}
+
+func (s *PGStore) RecordDelivery(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
+	return err
+}
+
+func (s *PGStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE received_at < now() - make_interval(secs => $1)`, age.Seconds())
 	return err
 }
 

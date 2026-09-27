@@ -480,11 +480,31 @@ func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string)
 }
 
 // PullRequestRef is an opened or found pull request: enough for the
-// workflow to record the number and URL and to poll its head commit.
+// workflow to record the number and URL, poll its head commit, and tell
+// open, closed and merged apart.
 type PullRequestRef struct {
-	Number int64
-	URL    string
-	Head   string
+	Number  int64
+	URL     string
+	Head    string
+	HeadSHA string
+	State   string // "open" or "closed"
+	Merged  bool
+}
+
+// wirePR is Forgejo's pull request JSON, as far as the factory reads it.
+type wirePR struct {
+	Number  int64  `json:"number"`
+	HTMLURL string `json:"html_url"`
+	State   string `json:"state"`
+	Merged  bool   `json:"merged"`
+	Head    struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+func (w wirePR) ref() PullRequestRef {
+	return PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadSHA: w.Head.SHA, State: w.State, Merged: w.Merged}
 }
 
 // CreatePullRequest opens a pull request from head into base. The workflow
@@ -506,20 +526,14 @@ func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base
 	if err != nil {
 		return PullRequestRef{}, err
 	}
-	var res struct {
-		Number  int64  `json:"number"`
-		HTMLURL string `json:"html_url"`
-		Head    struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
-	}
+	var res wirePR
 	if err := json.Unmarshal(resBody, &res); err != nil {
 		return PullRequestRef{}, fmt.Errorf("forgejo create pull request %s/%s %s: %w", owner, repo, head, err)
 	}
 	if res.Number == 0 {
 		return PullRequestRef{}, fmt.Errorf("forgejo create pull request %s/%s %s: response carries no pull number", owner, repo, head)
 	}
-	return PullRequestRef{Number: res.Number, URL: res.HTMLURL, Head: res.Head.Ref}, nil
+	return res.ref(), nil
 }
 
 // FindOpenPullRequestForBranch looks for an already-open pull request whose
@@ -532,19 +546,14 @@ func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo,
 	if err != nil {
 		return nil, err
 	}
-	var all []struct {
-		Number  int64  `json:"number"`
-		HTMLURL string `json:"html_url"`
-		Head    struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
-	}
+	var all []wirePR
 	if err := json.Unmarshal(body, &all); err != nil {
 		return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
 	}
 	for _, pr := range all {
 		if pr.Head.Ref == branch {
-			return &PullRequestRef{Number: pr.Number, URL: pr.HTMLURL, Head: pr.Head.Ref}, nil
+			ref := pr.ref()
+			return &ref, nil
 		}
 	}
 	return nil, nil
@@ -646,21 +655,33 @@ func (f *Forgejo) CreateIssueComment(ctx context.Context, owner, repo string, is
 	return err
 }
 
-// PullRequestMerged reports whether pull request number was merged: the
-// workflow asks when an issue closes, because the merge that closes it
-// through "Closes #N" and a plain close arrive as the same issue event.
-func (f *Forgejo) PullRequestMerged(ctx context.Context, owner, repo string, number int64) (bool, error) {
+// PullRequestState reads pull request number: open, closed or merged, and
+// its head commit.
+func (f *Forgejo) PullRequestState(ctx context.Context, owner, repo string, number int64) (PullRequestRef, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), nil, http.StatusOK)
+	if err != nil {
+		return PullRequestRef{}, err
+	}
+	var res wirePR
+	if err := json.Unmarshal(body, &res); err != nil {
+		return PullRequestRef{}, fmt.Errorf("forgejo pull request %s/%s #%d: %w", owner, repo, number, err)
+	}
+	return res.ref(), nil
+}
+
+// IssueClosed reports whether issue number is closed.
+func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number int64) (bool, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, number), nil, http.StatusOK)
 	if err != nil {
 		return false, err
 	}
 	var res struct {
-		Merged bool `json:"merged"`
+		State string `json:"state"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return false, fmt.Errorf("forgejo pull request %s/%s #%d: %w", owner, repo, number, err)
+		return false, fmt.Errorf("forgejo issue %s/%s #%d: %w", owner, repo, number, err)
 	}
-	return res.Merged, nil
+	return res.State == "closed", nil
 }
 
 // RepoDefaultBranch reads a repository's default branch name. A defensive

@@ -88,38 +88,50 @@ not a transient state on the way to `running`).
 
 ## Task workflow
 
-Both intake paths store the task row, then start its workflow; a pass
-at boot and every minute starts the workflow of any agent task not yet
-done or failed again. Temporal refuses the start while the workflow runs
-or after it completed, and allows it after a failure or termination, so
-no task is stranded (terminating a workflow is not a cancel; closing the
-issue is). The workflow, in order: `EnsureIssue`; up to `MAX_SESSIONS`
-(default 3) attempts, each `SetState running` then `RunSession`, the
-first on `MODEL` (default `factory/coding-cheap`); every session starts
-from the task branch's head when the branch exists, else from the base
-SHA. After a pushed commit `OpenPullRequest` (head `factory/<id>`, base
-`main`, `Closes #<issue>`, reusing an open PR for the branch; a commit
-whose `.forgejo` tree entry differs from the base's gets no PR, and an
-already open one is closed with the reason), `SetState in-review`,
-`WaitChecks` on the head commit's combined status (`CHECKS_TIMEOUT`,
-default 45m). Red checks or a repetition trip make the next attempt climb
-to `STRONGER_MODEL` (default `factory/coding-frontier`) with the failures
-as findings. Signals from the webhook intake: `pr_merged` (done),
-`pr_closed` (closed without merge: failed), `issue_closed` (done if the
-PR merged, else failed) decide the task wherever they land: they are
-drained before every attempt, before a PR is opened and after the
-checks; green checks wait for them at no cost. `changes_requested` (a
-review requesting changes, a review comment, or a PR comment by a
-non-bot user) starts one more attempt, all pending requests coalesced
-into its findings. Pull request signals count only for the PR the
-workflow opened. Webhook deliveries are processed once per
-`X-Forgejo-Delivery` id. A failure comments its reason on the issue;
-`Finish` retries without limit. The wall-clock cap (20 min) bounds the
-agent's working time summed over the attempts; waiting on checks or
-reviewers does not count. A restarted factoryd loses nothing: Temporal
-retries an interrupted `RunSession` on the new pod, which removes the
-dead session's namespace, pod and credentials and starts a new session
-with the dead one as parent and its findings.
+Both intake paths store the task row, then start its workflow; a heal
+pass at boot and every minute starts the workflow of any agent task not
+yet done or failed again (and forgets webhook deliveries older than 30
+days). Temporal refuses the start while the workflow runs or after it
+completed, and allows it after a failure or termination, so no task is
+stranded (terminating a workflow is not a cancel; closing the issue is).
+A task whose repository is not `owner/name` is failed by the heal pass
+instead. Every run first calls `Reconcile`: a task already done or
+failed does nothing; a merged PR finishes it done; an interrupted
+completion (`closing`), a closed issue or a PR closed without merge
+finish it failed; an open PR is adopted, and the run goes straight to
+its checks and the review wait, with no new session. Then: up to
+`MAX_SESSIONS` (default 3) attempts, each `SetState running` then
+`RunSession`, the first on `MODEL` (default `factory/coding-cheap`);
+every session starts from the task branch's head when the branch
+exists, else from the base SHA. After a pushed commit `OpenPullRequest`
+(head `factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR
+for the branch and recording its number on the task; a commit whose
+`.forgejo` tree entry differs from the base's gets no PR, and an already
+open one is closed with the reason), `SetState in-review`, `WaitChecks`
+on the head commit's combined status (`CHECKS_TIMEOUT`, default 45m).
+Red checks or a repetition trip make the next attempt climb to
+`STRONGER_MODEL` (default `factory/coding-frontier`) with the failures as
+findings. Signals from the webhook intake are delivered with
+signal-with-start, so a signal to a task whose run died starts a new one
+(which reconciles first). `pr_merged` (done), `pr_closed` (closed
+without merge: failed) and `issue_closed` (done if the PR merged, else
+failed) decide the task wherever they land: a running session or check
+wait is cancelled at once (the session deletes its pod and namespace
+and revokes its credentials first), and they are drained before every
+attempt, before a PR is opened and after the checks; green checks wait
+for them at no cost. `changes_requested` (a review requesting changes, a
+review comment, or a PR comment by a non-bot user) starts one more
+attempt, all pending requests coalesced into its findings. Pull request
+signals count only for the task's own PR. A webhook delivery is marked
+processed (by `X-Forgejo-Delivery`) after it was processed; a redelivery
+of a processed one is a no-op, and intake events are keyed by delivery
+id. A failure comments its reason on the issue; `Finish` retries without
+limit. The wall-clock cap (20 min) bounds the agent's working time
+summed over the attempts; waiting on checks or reviewers does not count.
+A restarted factoryd loses nothing: Temporal retries an interrupted
+`RunSession` on the new pod, which removes the dead session's namespace,
+pod and credentials and starts a new session with the dead one as parent
+and its findings.
 
 Changing `TaskWorkflow`: a running workflow can wait days for its
 reviewer and replays on the new code, so every change to the commands it

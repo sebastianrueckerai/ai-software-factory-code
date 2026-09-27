@@ -155,7 +155,7 @@ func main() {
 	}
 	go func() {
 		for {
-			factoryd.StartOpenWorkflows(ctx, store, workflows)
+			factoryd.HealPass(ctx, store, workflows)
 			select {
 			case <-ctx.Done():
 				return
@@ -276,7 +276,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// a failed start is healed by the next StartOpenWorkflows pass
+		// a failed start is healed by the next HealPass
 		if err := workflows.Start(r.Context(), id); err != nil {
 			log.Printf("task %s: start workflow: %v", id, err)
 		}

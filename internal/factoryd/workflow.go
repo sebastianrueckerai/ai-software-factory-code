@@ -44,6 +44,7 @@ const (
 	ActivityPullRequestMerged = "PullRequestMerged"
 	ActivityRecordStep        = "RecordStep"
 	ActivityFinish            = "Finish"
+	ActivityReconcile         = "Reconcile"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -109,6 +110,17 @@ type PullRequest struct {
 	URL    string
 }
 
+// RunState is where a task stands when a run starts (Reconcile).
+type RunState struct {
+	Skip        bool // already done or failed, or a human-lane task: nothing to run
+	Status      string
+	PR          PullRequest // the task's open pull request, adopted by the run
+	Head        string      // its head commit
+	Merged      bool        // the task's pull request merged
+	PRClosed    bool        // the task's pull request closed without merge
+	IssueClosed bool
+}
+
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
 type ChecksState string
 
@@ -148,7 +160,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		},
 	})
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
-		v: workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained)}
+		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
+		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace)}
 	return run.lifecycle()
 }
 
@@ -163,14 +176,27 @@ const (
 	// count only for the task's own PR, a terminal session error finishes
 	// the task.
 	versionSignalsDrained workflow.Version = 1
+	// versionReconcileRace (change id "reconcile-race"): every run starts
+	// with Reconcile and adopts the task's open PR instead of redoing the
+	// work; RunSession and WaitChecks race the terminal signals and are
+	// cancelled when one decides.
+	versionReconcileRace workflow.Version = 1
 )
 
 type taskRun struct {
 	ctx, short workflow.Context
 	cfg        WorkflowConfig
 	taskID     string
-	v          workflow.Version
+	v, v2      workflow.Version
 	pr         PullRequest
+}
+
+// verdict is how one pushed commit ended: a final state, or the findings
+// (and ladder rung) the next attempt starts with.
+type verdict struct {
+	final, reason string
+	findings      []string
+	stronger      bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -183,6 +209,38 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var used time.Duration
 	reason := "no session produced a result"
+	apply := func(v verdict) {
+		if v.stronger {
+			model = t.cfg.Models.Stronger
+		}
+		findings, reason = v.findings, v.reason
+	}
+	if t.v2 >= versionReconcileRace {
+		var st RunState
+		if err := workflow.ExecuteActivity(t.short, ActivityReconcile, t.taskID).Get(t.ctx, &st); err != nil {
+			return t.finish("failed", "reconcile: "+errMessage(err))
+		}
+		switch {
+		case st.Skip:
+			return st.Status, nil
+		case st.Merged:
+			return t.finish("done", "pull request merged")
+		case st.Status == "closing":
+			return t.finish("failed", "completion resumed after an interrupted run")
+		case st.IssueClosed:
+			return t.finish("failed", "issue closed without merge")
+		case st.PRClosed:
+			return t.finish("failed", "pull request closed without merge")
+		case st.PR.Number != 0:
+			// the task's work is pushed and in review: verify it, no new session
+			t.pr, startRef = st.PR, st.Head
+			v := t.verify(st.Head)
+			if v.final != "" {
+				return t.finish(v.final, v.reason)
+			}
+			apply(v)
+		}
+	}
 	for attempt := 1; attempt <= t.cfg.MaxSessions; attempt++ {
 		if drained {
 			if final, why, ok := t.decided(); ok {
@@ -198,11 +256,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
 		began := workflow.Now(t.ctx)
-		res, err := t.session(SessionInput{
+		var res SessionResult
+		final, why, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
 			Findings: findings, StartRef: startRef, ParentSessionID: parent,
-		}, remaining)
+		})
 		used += workflow.Now(t.ctx).Sub(began)
+		if decided {
+			return t.finish(final, why)
+		}
 		if isWallClockTimeout(err) {
 			return t.finish("failed", "wall-clock cap reached")
 		}
@@ -231,52 +293,90 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 		}
-
-		if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, res.Commit).Get(t.ctx, &t.pr); err != nil {
-			return t.finish("failed", "open pull request: "+errMessage(err))
+		v := t.verify(res.Commit)
+		if v.final != "" {
+			return t.finish(v.final, v.reason)
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
-			return t.finish("failed", "set in-review: "+errMessage(err))
-		}
-		checks, err := t.waitChecks(res.Commit)
-		if err != nil {
-			return t.finish("failed", "wait for checks: "+errMessage(err))
-		}
-		if drained {
-			if final, why, ok := t.decided(); ok {
-				return t.finish(final, why)
-			}
-		}
-		switch checks.State {
-		case ChecksFailure:
-			model, findings = t.cfg.Models.Stronger, checks.Findings
-			reason = "checks failed"
-			continue
-		case ChecksTimeout:
-			return t.finish("failed", fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout))
-		}
-
-		await := t.awaitDecision
-		if !drained {
-			await = t.reviewV0
-		}
-		final, why, requested := await()
-		if final != "" {
-			return t.finish(final, why)
-		}
-		findings = requested
-		reason = "changes requested"
+		apply(v)
 	}
 	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions, reason))
 }
 
-// session runs one RunSession attempt. The activity heartbeats; a factoryd
-// that dies mid-session misses heartbeats, and Temporal retries the attempt
-// on the next worker, which resumes from the dead session's heartbeat.
-// Retries share one schedule-to-close budget: the task's remaining agent
-// time.
-func (t *taskRun) session(in SessionInput, remaining time.Duration) (SessionResult, error) {
-	ctx := workflow.WithActivityOptions(t.ctx, workflow.ActivityOptions{
+// verify takes a pushed commit through its pull request, the checks and
+// the review wait.
+func (t *taskRun) verify(commit string) verdict {
+	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
+		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
+		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
+	}
+	var checks ChecksResult
+	final, why, decided, err := t.race(t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
+	if decided {
+		return verdict{final: final, reason: why}
+	}
+	if err != nil {
+		return verdict{final: "failed", reason: "wait for checks: " + errMessage(err)}
+	}
+	if t.v >= versionSignalsDrained {
+		if final, why, ok := t.decided(); ok {
+			return verdict{final: final, reason: why}
+		}
+	}
+	switch checks.State {
+	case ChecksFailure:
+		return verdict{findings: checks.Findings, stronger: true, reason: "checks failed"}
+	case ChecksTimeout:
+		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}
+	}
+	await := t.awaitDecision
+	if t.v < versionSignalsDrained {
+		await = t.reviewV0
+	}
+	final, why, requested := await()
+	if final != "" {
+		return verdict{final: final, reason: why}
+	}
+	return verdict{findings: requested, reason: "changes requested"}
+}
+
+// race runs a long activity. From versionReconcileRace on it races the
+// terminal signals: when one decides the task, the activity is cancelled
+// (RunSession then deletes its pod and namespace and revokes its
+// credentials; the workflow waits for that) and the decision returned.
+func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, args ...any) (final, reason string, decided bool, err error) {
+	if t.v2 < versionReconcileRace {
+		return "", "", false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
+	}
+	actCtx, cancel := workflow.WithCancel(t.ctx)
+	opts.WaitForCancellation = true
+	fut := workflow.ExecuteActivity(workflow.WithActivityOptions(actCtx, opts), activity, args...)
+	for {
+		done := false
+		sel := workflow.NewSelector(t.ctx)
+		sel.AddFuture(fut, func(workflow.Future) { done = true })
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.Select(t.ctx)
+		if done {
+			return "", "", false, fut.Get(t.ctx, out)
+		}
+		if final, reason, ok := t.decided(); ok {
+			cancel()
+			_ = fut.Get(t.ctx, nil)
+			return final, reason, true, nil
+		}
+	}
+}
+
+// sessionOptions: the RunSession activity heartbeats; a factoryd that dies
+// mid-session misses heartbeats, and Temporal retries the attempt on the
+// next worker, which resumes from the dead session's heartbeat. Retries
+// share one schedule-to-close budget: the task's remaining agent time.
+func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
 		StartToCloseTimeout:    remaining + sessionGrace,
 		ScheduleToCloseTimeout: remaining + sessionGrace,
 		HeartbeatTimeout:       2 * time.Minute,
@@ -285,14 +385,11 @@ func (t *taskRun) session(in SessionInput, remaining time.Duration) (SessionResu
 			MaximumAttempts:        3,
 			NonRetryableErrorTypes: []string{errTerminal},
 		},
-	})
-	var res SessionResult
-	err := workflow.ExecuteActivity(ctx, ActivityRunSession, in).Get(t.ctx, &res)
-	return res, err
+	}
 }
 
-func (t *taskRun) waitChecks(sha string) (ChecksResult, error) {
-	ctx := workflow.WithActivityOptions(t.ctx, workflow.ActivityOptions{
+func (t *taskRun) checksOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
 		StartToCloseTimeout:    t.cfg.ChecksTimeout + time.Minute,
 		ScheduleToCloseTimeout: t.cfg.ChecksTimeout + time.Minute,
 		HeartbeatTimeout:       2 * time.Minute,
@@ -301,10 +398,7 @@ func (t *taskRun) waitChecks(sha string) (ChecksResult, error) {
 			MaximumAttempts:        5,
 			NonRetryableErrorTypes: []string{errTerminal},
 		},
-	})
-	var res ChecksResult
-	err := workflow.ExecuteActivity(ctx, ActivityWaitChecks, t.taskID, sha).Get(t.ctx, &res)
-	return res, err
+	}
 }
 
 // decided drains the terminal signals without blocking and reports the

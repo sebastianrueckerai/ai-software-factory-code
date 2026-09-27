@@ -584,8 +584,10 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 	}
 }
 
-// Forgejo can deliver the same webhook twice; the delivery id makes the
-// second a no-op, unless the first failed.
+// Forgejo can deliver the same webhook twice; a processed delivery id is a
+// no-op, and a delivery whose processing failed is processed again. A
+// redelivery that slips through (a crash between processing and marking)
+// adds no second intake event.
 func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
@@ -611,5 +613,8 @@ func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
 	}
 	if got := workflowsOf(in).signals; len(got) != 1 {
 		t.Fatalf("signals = %q, want exactly one across the failed try and two redeliveries", got)
+	}
+	if len(store.intakeEvents) != 1 || store.intakeEvents[0].DeliveryID != "d-1" {
+		t.Fatalf("intake events = %+v, want one, keyed by the delivery", store.intakeEvents)
 	}
 }

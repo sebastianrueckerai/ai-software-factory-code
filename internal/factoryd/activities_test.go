@@ -24,6 +24,8 @@ type prForgejo struct {
 	mu       sync.Mutex
 	forgejo  map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
 	closed   []int64           // PATCH /pulls/{n} closes
+	pulls    map[int64]string  // GET /pulls/{n} bodies
+	issueOff bool              // GET /issues/{n} reports closed
 	open     []map[string]any  // open pull requests
 	statuses []string          // combined-status bodies, served in order, the last repeating
 	polls    int
@@ -53,6 +55,16 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				tree = append(tree, map[string]string{"path": ".forgejo", "sha": sha})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
+		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
+			var n int64
+			fmt.Sscanf(p, "/pulls/%d", &n)
+			io.WriteString(w, f.pulls[n])
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && !strings.HasSuffix(p, "/labels") && !strings.HasSuffix(p, "/comments"):
+			state := "open"
+			if f.issueOff {
+				state = "closed"
+			}
+			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
@@ -144,6 +156,9 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 	}
 	if first.Number != 12 || second != first || first.URL != "https://git.example/sf/repo/pulls/12" {
 		t.Fatalf("PRs = %+v, %+v", first, second)
+	}
+	if got, _, _ := r.store.Task(context.Background(), "t1"); got.PRNumber != 12 {
+		t.Fatalf("recorded pr_number = %d, want 12", got.PRNumber)
 	}
 	body := fj.created[0]
 	if body["head"] != "factory/t1" || body["base"] != "main" || body["title"] != "Add a make check target" ||
@@ -350,3 +365,55 @@ func TestSetStateRefusesAFinishingTaskTerminally(t *testing.T) {
 		}
 	}
 }
+
+// Finish never fails terminally on a task it cannot fully read: a bad
+// repository still completes it (uncommented), a vanished task is a no-op.
+// A terminal Finish would fail the workflow and the heal pass would
+// restart it forever.
+func TestFinishCompletesATaskWithABrokenRepository(t *testing.T) {
+	task := prTask
+	task.Repository = "no-slash"
+	fj := &prForgejo{}
+	r, store, _ := newActivityRunner(t, task, fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "repository is not owner/name"); err != nil {
+		t.Fatalf("Finish = %v", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	if _, err := execActivity(t, r, ActivityFinish, "gone", "failed", "x"); err != nil {
+		t.Fatalf("Finish of an unknown task = %v, want no-op", err)
+	}
+}
+
+func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7"}}`
+	for name, tc := range map[string]struct {
+		task Task
+		fj   *prForgejo
+		want RunState
+	}{
+		"fresh": {prTask, &prForgejo{}, RunState{Status: "running"}},
+		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": map[string]any{"ref": "factory/t1", "sha": "c7"}}}},
+			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
+			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
+			RunState{Status: "running", Merged: true, IssueClosed: true}},
+		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
+			RunState{Status: "running", PRClosed: true}},
+		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Skip: true}},
+		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Skip: true}},
+	} {
+		r, _, _ := newActivityRunner(t, tc.task, tc.fj)
+		var got RunState
+		val, err := execActivity(t, r, ActivityReconcile, "t1")
+		if err != nil || val.Get(&got) != nil || got != tc.want {
+			t.Fatalf("%s: Reconcile = (%+v, %v), want %+v", name, got, err, tc.want)
+		}
+	}
+}
+
+func withPR(t Task, n int64) Task      { t.PRNumber = n; return t }
+func withStatus(t Task, s string) Task { t.Status = s; return t }
+func withKind(t Task, k string) Task   { t.Kind = k; return t }

@@ -46,16 +46,19 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	// a redelivered webhook (same delivery id) is processed once
+	// A delivery is marked processed only after it was: a crash in between
+	// makes a redelivery process it again, which every step tolerates (task
+	// creation is keyed by issue, intake events by delivery id, workflow
+	// starts by workflow id, and the workflow coalesces signals).
 	delivery := r.Header.Get("X-Forgejo-Delivery")
 	if delivery != "" {
-		fresh, err := in.Store.ClaimDelivery(ctx, delivery)
+		seen, err := in.Store.DeliverySeen(ctx, delivery)
 		if err != nil {
-			log.Printf("webhook intake: claim delivery: %v", err)
+			log.Printf("webhook intake: delivery lookup: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		if !fresh {
+		if seen {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
@@ -65,9 +68,9 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "issues", "issue_assign", "issue_label", "issue_milestone":
 		procErr = in.handleIssue(ctx, body, eventType)
 	case "issue_comment", "pull_request_comment":
-		procErr = in.handleIssueComment(ctx, body, eventType)
+		procErr = in.handleIssueComment(ctx, body, eventType, delivery)
 	case "pull_request_review_approved", "pull_request_review_rejected", "pull_request_review_comment":
-		procErr = in.handleReview(ctx, body, eventType)
+		procErr = in.handleReview(ctx, body, eventType, delivery)
 	case "pull_request":
 		procErr = in.handlePullRequest(ctx, body)
 	default:
@@ -75,15 +78,14 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Forgejo's delivery list reads all 2xx, nothing to process
 	}
 	if procErr != nil {
-		if delivery != "" {
-			// released so that a redelivery can retry what failed here
-			if err := in.Store.ReleaseDelivery(context.WithoutCancel(ctx), delivery); err != nil {
-				log.Printf("webhook intake: release delivery: %v", err)
-			}
-		}
 		log.Printf("webhook intake: %s: %v", strconv.Quote(eventType), procErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if delivery != "" {
+		if err := in.Store.RecordDelivery(ctx, delivery); err != nil {
+			log.Printf("webhook intake: record delivery: %v", err)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -333,7 +335,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 // resolving the pull request's head branch (factory/<task id>) for a pull
 // request comment. A comment on anything else the factory did not file
 // (no matching task) is silently dropped.
-func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType string) error {
+func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType, delivery string) error {
 	var p issueCommentPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode %s: %w", eventType, err)
@@ -374,7 +376,7 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 		return nil
 	}
 	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
-		TaskID: taskID, Kind: eventType, Author: p.Comment.Poster.UserName, Body: p.Comment.Body,
+		TaskID: taskID, Kind: eventType, Author: p.Comment.Poster.UserName, Body: p.Comment.Body, DeliveryID: delivery,
 	}); err != nil {
 		return err
 	}
@@ -387,7 +389,7 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 // handleReview records a pull request review as an intake event, resolved to
 // its task directly from the payload's own head branch (no extra API call:
 // unlike a comment, a review payload already carries the pull request).
-func (in *Intake) handleReview(ctx context.Context, body []byte, eventType string) error {
+func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, delivery string) error {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode %s: %w", eventType, err)
@@ -409,7 +411,7 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType strin
 		reviewBody = p.Review.Content
 	}
 	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
-		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody,
+		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery,
 	}); err != nil {
 		return err
 	}

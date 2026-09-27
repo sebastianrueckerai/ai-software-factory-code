@@ -369,19 +369,35 @@ func TestForgejoRepoDefaultBranch(t *testing.T) {
 	}
 }
 
-func TestForgejoPullRequestMerged(t *testing.T) {
-	for _, merged := range []bool{true, false} {
+func TestForgejoPullRequestState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/r/pulls/9" || r.Method != http.MethodGet {
+			t.Fatalf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"number":9,"state":"closed","merged":true,"html_url":"https://git.example/sf/r/pulls/9","head":{"ref":"factory/t1","sha":"c7"}}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	got, err := f.PullRequestState(context.Background(), "sf", "r", 9)
+	want := PullRequestRef{Number: 9, URL: "https://git.example/sf/r/pulls/9", Head: "factory/t1", HeadSHA: "c7", State: "closed", Merged: true}
+	if err != nil || got != want {
+		t.Fatalf("PullRequestState = (%+v, %v), want %+v", got, err, want)
+	}
+}
+
+func TestForgejoIssueClosed(t *testing.T) {
+	for state, want := range map[string]bool{"open": false, "closed": true} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/api/v1/repos/sf/r/pulls/9" || r.Method != http.MethodGet {
-				t.Fatalf("%s %s", r.Method, r.URL.Path)
+			if r.URL.Path != "/api/v1/repos/sf/r/issues/4" {
+				t.Fatalf("path %s", r.URL.Path)
 			}
-			fmt.Fprintf(w, `{"number":9,"merged":%v}`, merged)
+			fmt.Fprintf(w, `{"number":4,"state":%q}`, state)
 		}))
 		f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-		got, err := f.PullRequestMerged(context.Background(), "sf", "r", 9)
+		got, err := f.IssueClosed(context.Background(), "sf", "r", 4)
 		srv.Close()
-		if err != nil || got != merged {
-			t.Fatalf("PullRequestMerged = (%v, %v), want (%v, nil)", got, err, merged)
+		if err != nil || got != want {
+			t.Fatalf("%s: IssueClosed = (%v, %v)", state, got, err)
 		}
 	}
 }

@@ -37,6 +37,7 @@ type fakeStore struct {
 	finished     map[string]time.Time
 	intakeEvents []IntakeEvent
 	deliveries   map[string]bool
+	pruned       []time.Duration
 }
 
 func newFakeStore() *fakeStore {
@@ -67,6 +68,11 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
+	for _, have := range s.intakeEvents {
+		if e.DeliveryID != "" && have.DeliveryID == e.DeliveryID {
+			return nil
+		}
+	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return nil
 }
@@ -95,19 +101,30 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	return nil
 }
 
-func (s *fakeStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
+func (s *fakeStore) SetTaskPR(ctx context.Context, id string, number int64) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.PRNumber = number
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
+	return s.deliveries[id], nil
+}
+
+func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 	if s.deliveries == nil {
 		s.deliveries = map[string]bool{}
 	}
-	if s.deliveries[id] {
-		return false, nil
-	}
 	s.deliveries[id] = true
-	return true, nil
+	return nil
 }
 
-func (s *fakeStore) ReleaseDelivery(ctx context.Context, id string) error {
-	delete(s.deliveries, id)
+func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
+	s.pruned = append(s.pruned, age)
 	return nil
 }
 
@@ -231,23 +248,51 @@ func TestPGStore(t *testing.T) {
 	if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "looks good"}); err != nil {
 		t.Fatalf("InsertIntakeEvent: %v", err)
 	}
-	for i, want := range []bool{true, false} {
-		if fresh, err := s.ClaimDelivery(ctx, "d-1"); err != nil || fresh != want {
-			t.Fatalf("claim %d = (%v, %v), want %v", i, fresh, err, want)
+	if seen, err := s.DeliverySeen(ctx, "d-1"); err != nil || seen {
+		t.Fatalf("unseen delivery = (%v, %v)", seen, err)
+	}
+	for range 2 {
+		if err := s.RecordDelivery(ctx, "d-1"); err != nil {
+			t.Fatalf("RecordDelivery: %v", err)
 		}
 	}
-	if err := s.ReleaseDelivery(ctx, "d-1"); err != nil {
+	if seen, err := s.DeliverySeen(ctx, "d-1"); err != nil || !seen {
+		t.Fatalf("recorded delivery = (%v, %v), want seen", seen, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE webhook_deliveries SET received_at = now() - interval '31 days' WHERE id = 'd-1'`); err != nil {
 		t.Fatal(err)
 	}
-	if fresh, err := s.ClaimDelivery(ctx, "d-1"); err != nil || !fresh {
-		t.Fatalf("claim after release = (%v, %v), want fresh", fresh, err)
+	if err := s.RecordDelivery(ctx, "d-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneDeliveries(ctx, 30*24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"d-1": false, "d-2": true} {
+		if seen, _ := s.DeliverySeen(ctx, id); seen != want {
+			t.Fatalf("after prune %s seen = %v, want %v", id, seen, want)
+		}
+	}
+	for range 2 {
+		if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "again", DeliveryID: "d-9"}); err != nil {
+			t.Fatalf("InsertIntakeEvent with delivery: %v", err)
+		}
+	}
+	if err := s.SetTaskPR(ctx, "t1", 12); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
+		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 0 WHERE id = 't1'`); err != nil {
+		t.Fatal(err)
 	}
 	var intakeCount int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1'`).Scan(&intakeCount); err != nil {
 		t.Fatal(err)
 	}
-	if intakeCount != 1 {
-		t.Fatalf("intake_events for t1 = %d, want 1", intakeCount)
+	if intakeCount != 2 {
+		t.Fatalf("intake_events for t1 = %d, want 2 (the redelivered d-9 counts once)", intakeCount)
 	}
 
 	if err := s.MarkStarted(ctx, "t1"); err != nil {

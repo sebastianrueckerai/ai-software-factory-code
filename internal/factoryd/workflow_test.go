@@ -33,6 +33,8 @@ type workflowHarness struct {
 	sessions []SessionInput
 	finals   [][2]string
 	states   []string
+	state    RunState // what Reconcile reports; zero = a fresh task
+	finishAt time.Time
 }
 
 func newWorkflowHarness(t *testing.T) *workflowHarness {
@@ -49,16 +51,20 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
+		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
 	h.env.OnActivity(ActivityEnsureIssue, mock.Anything, "t1").Return(nil)
+	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })
 	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(nil)
 	h.env.OnActivity(ActivityFinish, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, final, reason string) error {
 			h.finals = append(h.finals, [2]string{final, reason})
+			h.finishAt = h.env.Now()
 			return nil
 		})
 	return h
@@ -389,5 +395,88 @@ func TestWorkflowFinishRetriesWithoutLimit(t *testing.T) {
 	opts := finishOptions()
 	if opts.ScheduleToCloseTimeout != 0 || opts.RetryPolicy.MaximumAttempts != 0 || opts.RetryPolicy.MaximumInterval != 5*time.Minute {
 		t.Fatalf("finish options = %+v / %+v, want unlimited attempts, no schedule-to-close, 5 min backoff cap", opts, *opts.RetryPolicy)
+	}
+}
+
+// R1: a run started by the heal pass or by a signal reconciles first.
+
+// Case 1+2: a healed in-review task adopts its open PR: no new session,
+// checks on the PR head, and the earlier run's PR counts, so its merge (or
+// the issue close "Closes #N" causes) finishes the task done.
+func TestWorkflowHealedRunAdoptsTheOpenPR(t *testing.T) {
+	for _, sig := range []string{SignalPRMerged, SignalIssueClosed} {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c7"}
+		h.onSessions(pushed("s1", "c1"))
+		var checked []string
+		h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+				checked = append(checked, sha)
+				return ChecksResult{State: ChecksSuccess}, nil
+			})
+		h.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", int64(9)).Return(true, nil)
+		h.signalAfter(time.Hour, sig, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" || len(h.sessions) != 0 || len(checked) != 1 || checked[0] != "c7" {
+			t.Fatalf("%s: final = %q, sessions = %d, checked = %v; want done, no session, checks on c7", sig, final, len(h.sessions), checked)
+		}
+	}
+}
+
+// Case 1 variant and 3: the merge (or the close) already happened while no
+// run existed, e.g. a signal started this run.
+func TestWorkflowReconcileFinishesAnAlreadyDecidedTask(t *testing.T) {
+	for name, tc := range map[string]struct {
+		state  RunState
+		final  string
+		reason string
+	}{
+		"merged":         {RunState{Status: "in-review", Merged: true, IssueClosed: true}, "done", "pull request merged"},
+		"issue closed":   {RunState{Status: "in-review", IssueClosed: true}, "failed", "issue closed without merge"},
+		"pr closed":      {RunState{Status: "in-review", PRClosed: true}, "failed", "pull request closed without merge"},
+		"closing merged": {RunState{Status: "closing", Merged: true}, "done", "pull request merged"},
+		"closing":        {RunState{Status: "closing"}, "failed", "completion resumed after an interrupted run"},
+	} {
+		h := newWorkflowHarness(t)
+		h.state = tc.state
+		h.onSessions(pushed("s1", "c1"))
+		if final := h.run(t); final != tc.final || h.finals[0][1] != tc.reason || len(h.sessions) != 0 || len(h.states) != 0 {
+			t.Fatalf("%s: final = %q (%q), sessions = %d, states = %v", name, final, h.finals[0][1], len(h.sessions), h.states)
+		}
+	}
+}
+
+// A signal for a finished task (its workflow gone to retention) starts a
+// run that does nothing.
+func TestWorkflowReconcileSkipsAFinishedTask(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Skip: true, Status: "done"}
+	h.env.ExecuteWorkflow("TaskWorkflow", "t1")
+	var final string
+	if err := h.env.GetWorkflowError(); err != nil || h.env.GetWorkflowResult(&final) != nil || final != "done" || len(h.finals) != 0 || len(h.sessions) != 0 {
+		t.Fatalf("err = %v, final = %q, finishes = %v, sessions = %d", err, final, h.finals, len(h.sessions))
+	}
+}
+
+// M8: a terminal signal cancels the running session or check wait at once
+// instead of after it returns.
+func TestWorkflowTerminalSignalCancelsTheRunningActivity(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10*time.Minute).Return(pushed("s1", "c1"), nil)
+	start := h.env.Now()
+	h.signalAfter(3*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "failed" || h.finishAt.IsZero() || h.finishAt.Sub(start) >= 10*time.Minute {
+		t.Fatalf("session: final = %q after %s, want failed before the 10 min session returned", final, h.finishAt.Sub(start))
+	}
+
+	h = newWorkflowHarness(t)
+	h.onSessions(pushed("s1", "c1"))
+	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	start = h.env.Now()
+	h.signalAfter(5*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "failed" || h.finishAt.IsZero() || h.finishAt.Sub(start) >= 30*time.Minute {
+		t.Fatalf("checks: final = %q after %s, want failed before the 30 min check wait returned", final, h.finishAt.Sub(start))
 	}
 }

@@ -34,6 +34,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityPullRequestMerged: r.PullRequestMerged,
 		ActivityRecordStep:        r.RecordStep,
 		ActivityFinish:            r.Finish,
+		ActivityReconcile:         r.Reconcile,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -312,6 +313,9 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 			return PullRequest{}, err
 		}
 	}
+	if err := r.store.SetTaskPR(ctx, taskID, ref.Number); err != nil {
+		return PullRequest{}, err
+	}
 	r.record(ctx, taskID, "pr_opened", map[string]any{"number": ref.Number, "url": ref.URL, "commit": commit, "reused": existing != nil})
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
 }
@@ -339,6 +343,50 @@ func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, com
 		return terminalError("branch %s changes .forgejo/ (commit %s against base %s); factoryd opens no pull request that edits .forgejo/", r.branch(t), commit, base)
 	}
 	return nil
+}
+
+// Reconcile reads where a task stands before a run acts, so that a run
+// started by the heal pass or by a signal continues the task instead of
+// redoing it: the row's status, the task's pull request (the recorded one,
+// else the branch's open one) and whether it merged or closed, and whether
+// the issue closed.
+func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st := RunState{Status: t.Status}
+	if t.Status == "done" || t.Status == "failed" || t.Kind == "human" {
+		st.Skip = true
+		return st, nil
+	}
+	var pr *PullRequestRef
+	if t.PRNumber != 0 {
+		got, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if err != nil {
+			return RunState{}, err
+		}
+		pr = &got
+	} else if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.branch(t)); err != nil {
+		return RunState{}, err
+	}
+	switch {
+	case pr == nil:
+	case pr.Merged:
+		st.Merged = true
+	case pr.State == "closed":
+		st.PRClosed = true
+	default:
+		st.PR, st.Head = PullRequest{Number: pr.Number, URL: pr.URL}, pr.HeadSHA
+	}
+	if t.IssueNumber != 0 {
+		if st.IssueClosed, err = r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+			return RunState{}, err
+		}
+	}
+	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
+		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip})
+	return st, nil
 }
 
 // FirstLine is an objective's first line: the issue and pull request title.
@@ -412,7 +460,8 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	if err != nil {
 		return false, err
 	}
-	return r.forgejo.PullRequestMerged(ctx, repo.Owner, repo.Name, number)
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
+	return pr.Merged, err
 }
 
 // Finish is the terminal step: completion (credentials revoked, keys
@@ -420,18 +469,19 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 // issue comment. Finishing an already-finished task is a no-op, so a
 // retried Finish never double-completes.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
-	t, repo, err := r.task(ctx, taskID)
+	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if t.Status == final {
-		return nil
+	if !ok || t.Status == final || (t.Status == "done" || t.Status == "failed") {
+		return nil // nothing to finish: gone, or already final
 	}
 	r.forgetNamespace(ctx, taskID)
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}
-	if final == "failed" && t.IssueNumber != 0 {
+	// a malformed repository still completes the task, only uncommented
+	if repo, err := SplitRepo(t.Repository); err == nil && final == "failed" && t.IssueNumber != 0 {
 		if err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+" failed: "+reason); err != nil {
 			log.Printf("task %s: comment failure reason: %v", taskID, err)
 		}
