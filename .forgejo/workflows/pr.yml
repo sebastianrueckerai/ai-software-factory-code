@@ -1,0 +1,43 @@
+# Ruling 78/89 (task 41): pull requests from agent branches run on the
+# untrusted host executor — a fresh gVisor pod, no repository or registry
+# credential beyond the per-run job token Forgejo injects, default-deny
+# egress. Every tool a step needs (Go, gosec) ships pre-installed in
+# Dockerfile.runner so no step reaches past the egress allowlist for
+# tooling; only actions/checkout itself, the Go module proxy, and the
+# Dockerfiles' base-image registries are reachable (see ciEgressSpec in
+# internal/factoryd/ci.go).
+#
+# No secrets.* anywhere in this file — the runner pod holds none.
+#
+# The rootless-BuildKit build-verification step (Dockerfile /
+# Dockerfile.sandbox / Dockerfile.runner, no push) is intentionally omitted:
+# rootless buildkitd does not come up under gVisor's systrap platform on a
+# pod-security "restricted" namespace (categorical RootlessKit/user-namespace
+# conflict, not a missing flag) — see task-41-report.md, design decision #4.
+# Re-add it once a controller ruling picks a working builder.
+name: pr
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  test:
+    runs-on: pr-untrusted
+    steps:
+      - uses: actions/checkout@v4
+      - run: go test -race -p 1 ./...
+  vet-and-format:
+    runs-on: pr-untrusted
+    steps:
+      - uses: actions/checkout@v4
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+  security:
+    runs-on: pr-untrusted
+    steps:
+      - uses: actions/checkout@v4
+      - run: gosec ./...
+  job-env-audit:
+    runs-on: pr-untrusted
+    steps:
+      - name: print job environment variable NAMES only
+        run: env | cut -d= -f1 | sort

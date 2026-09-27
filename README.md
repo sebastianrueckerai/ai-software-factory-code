@@ -13,7 +13,8 @@ the agents work on.
   revocation, session records to S3, supervision (stall watchdog,
   wall-clock cap, tool calls without file changes), spend settlement
   against LiteLLM, and the orphan sweep. Runs with `strategy: Recreate`;
-  a restart requeues the running task.
+  a restart requeues the running task. It also runs the CI spawner (see
+  below) in the same process, on the same in-cluster Kubernetes client.
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
   projected ServiceAccount JWT, mints a per-task LiteLLM virtual key,
   forwards the call, books each call's cost into the task row, refuses
@@ -37,13 +38,43 @@ The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
 `-p 1` keeps the two packages from racing on the same database. The
 revocation test runs only with the `FACTORYD_LIVE_*` variables set
 against the live cluster. CI (`.forgejo/workflows/ci.yml`) runs on push
-to protected `main` only, tests, then builds the factory image and the
-sandbox image into the Forgejo registry.
+to protected `main` only, on the privileged dind runner, tests, then
+builds the factory image, the sandbox image and the CI runner image
+into the Forgejo registry.
+
+## The untrusted pull-request runner (ruling 78)
+
+`.forgejo/workflows/pr.yml` runs on pull requests from agent branches,
+`runs-on: pr-untrusted`. factoryd's CI spawner (`internal/factoryd/ci.go`)
+polls Forgejo for Actions jobs waiting on that label, registers a
+repo-scoped ephemeral runner (`forgejo-ci-registrar` token, never the
+repository or registry credential, never mounted into the runner pod),
+and creates a namespace `factory-agents-ci-<job id>` holding one
+`runtimeClassName: gvisor` pod running `forgejo-runner one-job --wait` —
+non-root, no automounted ServiceAccount token, dropped capabilities,
+default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
+module proxy and checksum DB, `data.forgejo.org`, Docker Hub; nothing
+else, `169.254.169.254/32` explicitly denied). The namespace and the
+ephemeral runner registration are torn down when the pod finishes or its
+45-minute deadline passes. Idempotency is the Forgejo job id on the
+namespace label, so a restart or a second poll tick never spawns twice.
+
+The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
+node, the Go 1.25 toolchain and gosec pre-installed, and rootless
+BuildKit (`buildctl`/`buildkitd`) — but `pr.yml` does not run a
+BuildKit build step. A live spike (task-41-report.md) found rootless
+BuildKit's user-namespace setup categorically incompatible with
+Kubernetes' `restricted` Pod Security Standard, which every namespace
+factoryd creates enforces with no exception: RootlessKit's own re-exec
+is blocked by the default seccomp profile, and the fallback
+(`newuidmap`) itself needs privilege escalation. Both are forbidden by
+`restricted`. The binaries ship anyway so the step can be turned back on
+the moment a controller ruling picks a working builder.
 
 ## Ship
 
 CI pushes images by digest. A deploy is a commit that rolls the digests
-in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway
-and `WORKER_IMAGE`), pushed to both remotes:
+in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
+`WORKER_IMAGE` and `CI_RUNNER_IMAGE`), pushed to both remotes:
 
     git push origin main && git push github main

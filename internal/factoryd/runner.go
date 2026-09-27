@@ -426,7 +426,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) e
 			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"GIT_TOKEN": tok.Secret})
 		}},
 		{"pull secret", func() error {
-			return r.copyPullSecret(ctx, ns)
+			return copyPullSecret(ctx, r.kube, r.cfg.FactoryNamespace, r.cfg.PullSecret, ns)
 		}},
 	}
 	for _, step := range steps {
@@ -491,16 +491,19 @@ var (
 	}
 )
 
-func (r *Runner) copyPullSecret(ctx context.Context, ns string) error {
-	if r.cfg.PullSecret == "" {
+// copyPullSecret copies the factory namespace's registry pull secret into a
+// task or CI namespace. Shared by the agent Runner and the CI spawner: both
+// hand ephemeral pods a way to pull their own image, and nothing else.
+func copyPullSecret(ctx context.Context, kube Kube, factoryNamespace, pullSecret, ns string) error {
+	if pullSecret == "" {
 		return nil
 	}
-	data, err := r.kube.GetSecretData(ctx, r.cfg.FactoryNamespace, r.cfg.PullSecret)
+	data, err := kube.GetSecretData(ctx, factoryNamespace, pullSecret)
 	if err != nil {
 		return err
 	}
 	// kubelet only honors a pull secret of the dockerconfigjson type
-	return r.kube.CreateSecret(ctx, ns, r.cfg.PullSecret, "kubernetes.io/dockerconfigjson", data)
+	return kube.CreateSecret(ctx, ns, pullSecret, "kubernetes.io/dockerconfigjson", data)
 }
 
 func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {

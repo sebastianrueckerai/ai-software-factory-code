@@ -41,9 +41,10 @@ func main() {
 	defer store.Close()
 
 	forgejo := &factoryd.Forgejo{
-		BaseURL:     env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
-		BotUser:     env("FORGEJO_BOT_USER", "factory-agent"),
-		BotPassword: mustEnv("FORGEJO_BOT_PASSWORD"),
+		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		BotUser:          env("FORGEJO_BOT_USER", "factory-agent"),
+		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
+		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
 	}
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
@@ -59,13 +60,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
 	}
+	// the sandbox clones against the in-cluster Forgejo service, not the
+	// public host: the CI runner pod (task 41) uses the same endpoint for
+	// its own --url, since Cilium's toFQDNs cannot authorize the public
+	// host's in-cluster DNS answer (see workerEgressSpec).
+	gitBase := env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000")
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"),
-		GitBaseURL:           env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000"),
+		GitBaseURL:           gitBase,
 		Model:                env("MODEL", "factory/coding-frontier"),
 		RetryModel:           env("RETRY_MODEL", "factory/review-frontier"),
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
@@ -81,6 +87,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
+	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
+		FactoryNamespace: kube.Namespace(),
+		Owner:            env("CI_REPO_OWNER", "sf"),
+		Repo:             env("CI_REPO_NAME", "ai-software-factory-code"),
+		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
+		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
+		GitBaseURL:       gitBase,
+	}, forgejo, kube)
+	if err != nil {
+		log.Fatalf("ci spawner: %v", err)
+	}
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
@@ -89,6 +106,7 @@ func main() {
 	defer stop()
 	runner.BootSweep(ctx)
 	go completion.SettleLoop(ctx, time.Minute)
+	go ciSpawner.Run(ctx)
 	runnerDone := make(chan struct{})
 	go func() {
 		defer close(runnerDone)

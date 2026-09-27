@@ -176,6 +176,10 @@ spec:
           value: factory-agent
         - name: FORGEJO_BOT_PASSWORD
           valueFrom: {secretKeyRef: {name: forgejo-bot-creds, key: password}}
+        - name: FORGEJO_CI_REGISTRAR_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
+        - name: CI_RUNNER_IMAGE
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:REPLACE_WITH_DIGEST
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT

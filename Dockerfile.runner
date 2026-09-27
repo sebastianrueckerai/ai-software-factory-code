@@ -1,0 +1,53 @@
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
+# Task 41 (ruling 78/89): the untrusted PR runner. Host executor inside an
+# unprivileged, gVisor-isolated pod — no docker CLI, no socket, no registry
+# or repository credential baked in or mounted. Everything a pull_request
+# job needs (a Go toolchain, git, node for JS actions, buildctl/buildkitd for
+# the rootless image-build spike) ships pre-installed so the job itself
+# never has to reach past the egress allowlist for tooling.
+ARG FORGEJO_RUNNER_VERSION=13.2.0
+ARG BUILDKIT_VERSION=0.33.0
+ARG GO_VERSION=1.25.9
+ARG GOSEC_VERSION=2.29.0
+
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+      && apt-get install -y --no-install-recommends \
+           git bash nodejs curl tar ca-certificates \
+      && rm -rf /var/lib/apt/lists/* \
+      && useradd -m -u 1000 -s /bin/bash runner
+
+# forgejo-runner: single static binary, no extraction.
+ADD https://code.forgejo.org/forgejo/runner/releases/download/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
+RUN echo "fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1  /usr/local/bin/forgejo-runner" | sha256sum -c - \
+      && chmod 0755 /usr/local/bin/forgejo-runner
+
+# Rootless BuildKit: buildkitd + buildctl only (design decision #3); no
+# docker CLI, no dockerd, no CNI/qemu extras this pod's build spike doesn't
+# use. The rootless-under-gVisor spike is BLOCKED (task-41-report.md,
+# design decision #4) — the binaries still ship so pr.yml's build step can
+# be turned back on the moment a controller ruling picks a working path.
+ADD https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /tmp/buildkit.tar.gz
+RUN echo "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead  /tmp/buildkit.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/buildkit.tar.gz -C /usr/local bin/buildctl bin/buildkitd \
+      && rm /tmp/buildkit.tar.gz
+
+# Go 1.25 toolchain, pre-installed so a job never downloads it mid-run.
+ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz
+RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp/go.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/go.tar.gz -C /usr/local \
+      && rm /tmp/go.tar.gz
+
+# gosec: pr.yml's static security scan (design decision #6 — chosen over
+# govulncheck so the job's egress allowlist never needs vuln.go.dev).
+ADD https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /tmp/gosec.tar.gz
+RUN echo "6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095  /tmp/gosec.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec \
+      && rm /tmp/gosec.tar.gz
+
+ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
+    HOME=/home/runner \
+    GOPATH=/home/runner/go
+USER 1000:1000
+WORKDIR /workspace
+ENTRYPOINT ["forgejo-runner"]
