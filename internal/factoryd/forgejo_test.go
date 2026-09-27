@@ -262,7 +262,10 @@ func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 		t.Fatalf("Fork = %+v", got)
 	}
 	var calls []string
-	exists := false
+	exists, actions := false, false
+	repoJSON := func() string {
+		return fmt.Sprintf(`{"full_name":"factory-agent/r","fork":true,"private":true,"has_actions":%t,"parent":{"full_name":"sf/r"}}`, actions)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
 		switch {
@@ -271,7 +274,17 @@ func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 				http.NotFound(w, r)
 				return
 			}
-			io.WriteString(w, `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"sf/r"}}`)
+			io.WriteString(w, repoJSON())
+		// the fork comes with the Actions unit on: a leaked session token
+		// could push the fork's main and run its ci.yml there
+		case r.Method == "PATCH" && r.URL.Path == "/api/v1/repos/factory-agent/r":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["has_actions"] != false {
+				t.Errorf("patch body = %v, want has_actions false", body)
+			}
+			actions = false
+			io.WriteString(w, repoJSON())
 		case r.Method == "POST" && r.URL.Path == "/api/v1/repos/sf/r/forks":
 			if r.Header.Get("Authorization") != "Basic "+base64.StdEncoding.EncodeToString([]byte("factory-agent:bot-pw")) {
 				t.Errorf("fork auth = %q, want the bot's basic auth", r.Header.Get("Authorization"))
@@ -281,9 +294,9 @@ func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 			if body["name"] != "r" {
 				t.Errorf("fork body = %v, want the same name", body)
 			}
-			exists = true
+			exists, actions = true, true
 			w.WriteHeader(http.StatusAccepted)
-			io.WriteString(w, `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"sf/r"}}`)
+			io.WriteString(w, repoJSON())
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
 		}
@@ -295,19 +308,21 @@ func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := []string{"GET /api/v1/repos/factory-agent/r", "POST /api/v1/repos/sf/r/forks", "GET /api/v1/repos/factory-agent/r"}
+	want := []string{"GET /api/v1/repos/factory-agent/r", "POST /api/v1/repos/sf/r/forks", "PATCH /api/v1/repos/factory-agent/r", "GET /api/v1/repos/factory-agent/r"}
 	if strings.Join(calls, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
 }
 
-// A repository under the bot's name that is not a fork of the upstream, or
-// that went public, is refused: the worker would push there.
+// A repository under the bot's name that is not a fork of the upstream, that
+// went public, or whose Actions unit stays on after the patch, is refused:
+// the worker would push there.
 func TestForgejoEnsureForkRefusesAStranger(t *testing.T) {
 	for name, body := range map[string]string{
 		"not a fork":   `{"full_name":"factory-agent/r","fork":false,"private":true}`,
 		"other parent": `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"else/r"}}`,
 		"public":       `{"full_name":"factory-agent/r","fork":true,"private":false,"parent":{"full_name":"sf/r"}}`,
+		"actions stay": `{"full_name":"factory-agent/r","fork":true,"private":true,"has_actions":true,"parent":{"full_name":"sf/r"}}`,
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, body)
@@ -317,6 +332,28 @@ func TestForgejoEnsureForkRefusesAStranger(t *testing.T) {
 		srv.Close()
 		if err == nil || !strings.Contains(err.Error(), "factory-agent/r") {
 			t.Fatalf("%s: err = %v, want a refusal naming the repository", name, err)
+		}
+	}
+}
+
+// Finish deletes a finished task's branch on the fork; a branch already
+// gone (a retried Finish) is done, a refusal is not.
+func TestForgejoDeleteBranchIsIdempotent(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code    int
+		wantErr bool
+	}{"deleted": {http.StatusNoContent, false}, "already gone": {http.StatusNotFound, false}, "refused": {http.StatusInternalServerError, true}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "DELETE" || r.URL.EscapedPath() != "/api/v1/repos/factory-agent/r/branches/factory%2Ft1" {
+				t.Errorf("%s: call = %s %s", name, r.Method, r.URL.EscapedPath())
+			}
+			w.WriteHeader(tc.code)
+		}))
+		f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		err := f.DeleteBranch(context.Background(), "factory-agent", "r", "factory/t1")
+		srv.Close()
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("%s: err = %v", name, err)
 		}
 	}
 }

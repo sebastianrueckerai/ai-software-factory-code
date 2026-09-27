@@ -22,18 +22,21 @@ import (
 // prForgejo plays the pull request, status and issue endpoints the
 // workflow activities use.
 type prForgejo struct {
-	mu       sync.Mutex
-	forgejo  map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
-	closed   []int64           // PATCH /pulls/{n} closes
-	pulls    map[int64]string  // GET /pulls/{n} bodies
-	issueOff bool              // GET /issues/{n} reports closed
-	open     []map[string]any  // open pull requests
-	statuses []string          // combined-status bodies, served in order, the last repeating
-	polls    int
-	created  []map[string]any   // POST /pulls bodies
-	comments []string           // issue comment bodies
-	labels   map[int64][]string // issue → labels
-	calls    []string
+	mu         sync.Mutex
+	forgejo    map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	closed     []int64           // PATCH /pulls/{n} closes
+	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
+	branchGone bool              // DELETE /branches/{b} answers 404
+	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
+	pulls      map[int64]string  // GET /pulls/{n} bodies
+	issueOff   bool              // GET /issues/{n} reports closed
+	open       []map[string]any  // open pull requests
+	statuses   []string          // combined-status bodies, served in order, the last repeating
+	polls      int
+	created    []map[string]any   // POST /pulls bodies
+	comments   []string           // issue comment bodies
+	labels     map[int64][]string // issue → labels
+	calls      []string
 }
 
 func (f *prForgejo) srv(t *testing.T) *httptest.Server {
@@ -67,6 +70,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
+			if f.closeFail > 0 {
+				f.closeFail--
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
+			}
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
 			f.closed = append(f.closed, n)
@@ -74,6 +82,13 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{}`)
 		case r.Method == "GET" && p == "/pulls":
 			json.NewEncoder(w).Encode(f.open)
+		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
+			if f.branchGone {
+				http.NotFound(w, r)
+				return
+			}
+			f.deleted = append(f.deleted, strings.Replace(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/"), "/branches/", " ", 1))
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == "POST" && p == "/pulls":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -403,16 +418,22 @@ func forkHead(ref, sha string) map[string]any {
 // A failed task closes the pull request it opened (a closed issue must not
 // leave the PR behind); an already closed or merged one is left alone.
 func TestFinishFailedClosesTheOpenPR(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
 	for name, tc := range map[string]struct {
-		pr     string
+		task   Task
+		fj     *prForgejo
 		closed []int64
 	}{
-		"open":   {`{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7"}}`, []int64{12}},
-		"closed": {`{"number":12,"state":"closed","merged":false}`, nil},
-		"merged": {`{"number":12,"state":"closed","merged":true}`, nil},
+		"open":   {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}}, []int64{12}},
+		"closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}}, nil},
+		"merged": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}}, nil},
+		// a crash between opening the PR and recording its number: found by
+		// its branch on the fork
+		"unrecorded, open": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}}, []int64{12}},
+		"unrecorded, none": {prTask, &prForgejo{}, nil},
 	} {
-		fj := &prForgejo{pulls: map[int64]string{12: tc.pr}}
-		r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
+		fj := tc.fj
+		r, store, _ := newActivityRunner(t, withStatus(tc.task, "in-review"), fj)
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -424,6 +445,53 @@ func TestFinishFailedClosesTheOpenPR(t *testing.T) {
 		}
 		if want := 1 + len(tc.closed); len(fj.comments) != want || !strings.Contains(fj.comments[want-1], "issue closed") {
 			t.Fatalf("%s: comments = %q, want the reason on the issue and on a closed PR", name, fj.comments)
+		}
+		if !slices.Equal(fj.deleted, []string{"factory-agent/repo factory/t1"}) {
+			t.Fatalf("%s: deleted = %v, want the task's branch on the fork", name, fj.deleted)
+		}
+	}
+}
+
+// The close comes before completion and its error is returned: a Forgejo
+// blip retries the whole step, so no failed task keeps an open PR.
+func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, closeFail: 1}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err == nil {
+		t.Fatal("Finish with the close refused = nil, want the error for a retry")
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.closed) != 0 {
+		t.Fatalf("after the refused close: status = %q, closed = %v, want in-review and nothing closed", got.Status, fj.closed)
+	}
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" || !slices.Equal(fj.closed, []int64{12}) {
+		t.Fatalf("after the retry: status = %q, closed = %v, want failed and #12 closed", got.Status, fj.closed)
+	}
+}
+
+// A finished task's branch on the fork goes with it (its PR is merged or
+// closed by then); a branch already gone is done.
+func TestFinishDeletesTheForkBranch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fj      *prForgejo
+		deleted []string
+	}{
+		"deleted":      {&prForgejo{}, []string{"factory-agent/repo factory/t1"}},
+		"already gone": {&prForgejo{branchGone: true}, nil},
+	} {
+		fj := tc.fj
+		r, store, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+			t.Fatalf("%s: status = %q", name, got.Status)
+		}
+		if !slices.Equal(fj.deleted, tc.deleted) || len(fj.closed) != 0 || len(fj.comments) != 0 {
+			t.Fatalf("%s: deleted = %v, closed = %v, comments = %q", name, fj.deleted, fj.closed, fj.comments)
 		}
 	}
 }

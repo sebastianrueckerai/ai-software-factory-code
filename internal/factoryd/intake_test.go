@@ -585,11 +585,15 @@ func prClosedBody(ref string, merged bool) []byte {
 }
 
 func prClosedBodyFrom(ref, headRepo string, merged bool) []byte {
+	return prClosedBodyBy(ref, headRepo, "sebastian", merged)
+}
+
+func prClosedBodyBy(ref, headRepo, sender string, merged bool) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"action":       "closed",
 		"pull_request": map[string]any{"number": 5, "merged": merged, "head": prHead(ref, headRepo)},
 		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
-		"sender":       map[string]string{"login": "sebastian"},
+		"sender":       map[string]string{"login": sender},
 	})
 	return b
 }
@@ -598,9 +602,11 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
 	// only a head on the bot's fork is the task's PR: a same-named branch on
-	// sf or on a stranger's fork is not (ruling 97)
+	// sf or on a stranger's fork is not (ruling 97); the bot's own close
+	// (Finish, a .forgejo refusal) is no signal either, Reconcile reads it
 	for _, body := range [][]byte{prClosedBody("factory/t1", true), prClosedBody("factory/t1", false), prClosedBody("feature/x", true),
-		prClosedBodyFrom("factory/t1", "sf/ai-software-factory-code", true), prClosedBodyFrom("factory/t1", "stranger/ai-software-factory-code", true)} {
+		prClosedBodyFrom("factory/t1", "sf/ai-software-factory-code", true), prClosedBodyFrom("factory/t1", "stranger/ai-software-factory-code", true),
+		prClosedBodyBy("factory/t1", "factory-agent/ai-software-factory-code", "factory-agent", false)} {
 		if rr := postWebhook(in, "pull_request", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 			t.Fatalf("status = %d", rr.Code)
 		}

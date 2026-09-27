@@ -26,9 +26,10 @@ func (r Repo) String() string { return r.Owner + "/" + r.Name }
 // research Q3), authenticating as the bot user with basic auth — the live
 // wire (Forgejo 15 / gitea 1.22): /users/{u}/tokens refuses token auth for
 // minting ("auth method not allowed") and the /admin/users mint path does
-// not exist. Tokens are repo-scoped, write:repository, and deleted at task
-// end, so a leaked token can push exactly one repository for exactly one
-// task.
+// not exist. Each task gets a repo-scoped pair, deleted at task end:
+// read:repository on the task's repository (the clone) and
+// write:repository on the bot's fork (the branch push), so a leaked token
+// can at most push the bot's own fork, for exactly one task.
 type Forgejo struct {
 	BaseURL     string // API calls: the in-cluster service
 	PublicURL   string // links meant for people, e.g. https://git.aisoftwarefactory.world
@@ -478,11 +479,14 @@ func (f *Forgejo) Fork(upstream Repo) Repo {
 	return Repo{Owner: f.BotUser, Name: upstream.Name}
 }
 
-// EnsureFork creates the bot's fork of upstream if it is missing and refuses
-// a repository under that name that is not a private fork of upstream.
+// EnsureFork creates the bot's fork of upstream if it is missing, switches
+// the fork's Actions unit off (a session's write token must not be able to
+// run workflows there by pushing the fork's main), and refuses a repository
+// under that name that is not a private fork of upstream with Actions off.
 func (f *Forgejo) EnsureFork(ctx context.Context, upstream Repo) error {
 	fork := f.Fork(upstream)
-	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s", fork.Owner, fork.Name), nil, http.StatusOK)
+	path := fmt.Sprintf("/api/v1/repos/%s/%s", fork.Owner, fork.Name)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if errors.Is(err, ErrNotFound) {
 		payload, _ := json.Marshal(map[string]string{"name": fork.Name})
 		body, err = f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/forks", upstream.Owner, upstream.Name), payload, http.StatusAccepted)
@@ -491,20 +495,40 @@ func (f *Forgejo) EnsureFork(ctx context.Context, upstream Repo) error {
 		return err
 	}
 	var res struct {
-		FullName string `json:"full_name"`
-		IsFork   bool   `json:"fork"`
-		Private  bool   `json:"private"`
-		Parent   struct {
+		IsFork  bool `json:"fork"`
+		Private bool `json:"private"`
+		Actions bool `json:"has_actions"`
+		Parent  struct {
 			FullName string `json:"full_name"`
 		} `json:"parent"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
 		return fmt.Errorf("forgejo fork %s: %w", fork, err)
 	}
-	if !res.IsFork || res.Parent.FullName != upstream.String() || !res.Private {
-		return fmt.Errorf("forgejo fork %s: not a private fork of %s", fork, upstream)
+	if res.Actions {
+		payload, _ := json.Marshal(map[string]bool{"has_actions": false})
+		if body, err = f.call(ctx, http.MethodPatch, path, payload, http.StatusOK); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			return fmt.Errorf("forgejo fork %s: %w", fork, err)
+		}
+	}
+	if !res.IsFork || res.Parent.FullName != upstream.String() || !res.Private || res.Actions {
+		return fmt.Errorf("forgejo fork %s: not a private fork of %s with Actions off", fork, upstream)
 	}
 	return nil
+}
+
+// DeleteBranch deletes a branch. A 404 means it is already gone: a retried
+// Finish has nothing left to do.
+func (f *Forgejo) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
+	_, err := f.call(ctx, http.MethodDelete, path, nil, http.StatusNoContent)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // BranchHeadSHA reads a branch's current head commit SHA: intake uses it to

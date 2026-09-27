@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -13,8 +14,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/mocks"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 // A workflow that failed or was terminated may be started again by the
@@ -126,10 +130,41 @@ func TestTemporalStartAndSignalAreLogged(t *testing.T) {
 	}
 }
 
-// The SDK swallows an already-started refusal into the existing run unless
-// told otherwise; Start relies on seeing that error to stay quiet.
-func TestStartOptionsSurfaceAnAlreadyStartedRun(t *testing.T) {
-	if !startOptions("t1").WorkflowExecutionErrorWhenAlreadyStarted {
-		t.Fatal("startOptions must set WorkflowExecutionErrorWhenAlreadyStarted")
+// runningService is a Temporal frontend whose every start meets a running
+// execution.
+type runningService struct {
+	workflowservice.UnimplementedWorkflowServiceServer
+}
+
+func (runningService) GetSystemInfo(context.Context, *workflowservice.GetSystemInfoRequest) (*workflowservice.GetSystemInfoResponse, error) {
+	return &workflowservice.GetSystemInfoResponse{Capabilities: &workflowservice.GetSystemInfoResponse_Capabilities{}}, nil
+}
+
+func (runningService) StartWorkflowExecution(context.Context, *workflowservice.StartWorkflowExecutionRequest) (*workflowservice.StartWorkflowExecutionResponse, error) {
+	return nil, serviceerror.ToStatus(serviceerror.NewWorkflowExecutionAlreadyStarted("running", "start-1", "run-1")).Err()
+}
+
+// The SDK swallows the frontend's already-started refusal into the existing
+// run unless told otherwise: through the real client, a start against a
+// running workflow must still reach Start as that refusal and log nothing.
+func TestTemporalStartIsQuietAgainstARunningWorkflow(t *testing.T) {
+	lis := bufconn.Listen(1 << 20)
+	srv := grpc.NewServer()
+	workflowservice.RegisterWorkflowServiceServer(srv, runningService{})
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+	c, err := client.Dial(client.Options{HostPort: "passthrough:///bufconn", ConnectionOptions: client.ConnectionOptions{DialOptions: []grpc.DialOption{
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return lis.DialContext(ctx) }),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	buf := captureLog(t)
+	if err := (TemporalWorkflows{Client: c}).Start(context.Background(), "t1"); err != nil {
+		t.Fatalf("Start = %v, want a quiet no-op", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("log = %q, want nothing for a start against a running workflow", buf.String())
 	}
 }

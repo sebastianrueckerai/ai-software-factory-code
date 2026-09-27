@@ -526,49 +526,71 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	return pr.Merged, err
 }
 
-// Finish is the terminal step: completion (credentials revoked, keys
-// blocked, final status, issue label), and for a failure the reason as an
-// issue comment. Finishing an already-finished task is a no-op, so a
-// retried Finish never double-completes.
+// Finish is the terminal step. A failed task's open pull request is closed
+// first, with the reason, and the task's branch on the fork deleted; both
+// return their error, so a Forgejo blip retries them before the task turns
+// final. Then completion (credentials revoked, keys blocked, final status,
+// issue label) and, for a failure, the reason as an issue comment.
+// Finishing an already-finished task is a no-op, so a retried Finish never
+// double-completes.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if !ok || t.Status == final || (t.Status == "done" || t.Status == "failed") {
+	if !ok || t.Status == "done" || t.Status == "failed" {
 		return nil // nothing to finish: gone, or already final
 	}
 	r.forgetNamespace(ctx, taskID)
+	msg := "factoryd: task " + taskID + " failed: " + reason
+	// a malformed repository still completes the task, only uncommented
+	repo, repoErr := SplitRepo(t.Repository)
+	if repoErr == nil {
+		if final == "failed" {
+			if err := r.closeTaskPullRequest(ctx, repo, t, msg); err != nil {
+				return err
+			}
+		}
+		fork := r.forgejo.Fork(repo)
+		if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t)); err != nil {
+			return err
+		}
+	}
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}
-	// a malformed repository still completes the task, only uncommented
-	if repo, err := SplitRepo(t.Repository); err == nil && final == "failed" {
-		msg := "factoryd: task " + taskID + " failed: " + reason
-		if t.IssueNumber != 0 {
-			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
-				log.Printf("task %s: comment failure reason: %v", taskID, err)
-			}
-		}
-		if t.PRNumber != 0 {
-			if err := r.closeOpenPullRequest(ctx, repo, t.PRNumber, msg); err != nil {
-				log.Printf("task %s: close pull request #%d: %v", taskID, t.PRNumber, err)
-			}
+	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
+			log.Printf("task %s: comment failure reason: %v", taskID, err)
 		}
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
 	return nil
 }
 
-// closeOpenPullRequest closes pull request number with msg as the reason
-// when it is still open: a failed task leaves no pull request behind.
-func (r *Runner) closeOpenPullRequest(ctx context.Context, repo Repo, number int64, msg string) error {
-	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
-	if err != nil || pr.State != "open" {
+// closeTaskPullRequest closes the task's pull request with msg as the
+// reason while it is still open: a failed task leaves no pull request
+// behind. A task whose number never got recorded (a crash between opening
+// and recording) is found by its branch on the fork.
+func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, msg string) error {
+	var pr *PullRequestRef
+	if t.PRNumber != 0 {
+		state, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if err != nil {
+			return err
+		}
+		pr = &state
+	} else {
+		var err error
+		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo), r.branch(t)); err != nil {
+			return err
+		}
+	}
+	if pr == nil || pr.State != "open" {
+		return nil
+	}
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, msg); err != nil {
 		return err
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, msg); err != nil {
-		return err
-	}
-	return r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, number)
+	return r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number)
 }

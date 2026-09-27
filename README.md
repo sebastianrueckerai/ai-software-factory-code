@@ -52,8 +52,9 @@ redeliveries and later relabel events on the same issue find the task
 already linked and no-op. `human` takes priority over `agent` when both
 are present, and skips the branch/SHA lookup: that lane never runs the
 agent. Issues and comments authored by the bot user itself
-(`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, so the
-factory's own status updates never create a second task. `POST /tasks`
+(`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, and so are
+pull requests it closed itself, so the factory's own status updates
+never create a second task or a stray signal. `POST /tasks`
 files a Forgejo issue and labels it the same way, so every task —
 API-created or webhook-created — has exactly one linked issue.
 
@@ -117,7 +118,10 @@ reason), `SetState in-review`, `WaitChecks` on the head commit's
 combined status, which Forgejo records on the base repository
 (`CHECKS_TIMEOUT`, default 45m). A task that fails (its issue closed,
 its PR closed unmerged, the ladder exhausted) closes its open PR with
-the reason.
+the reason, found by number or, when none was recorded, by its branch
+on the fork. Every finished task's branch on the fork is deleted. Both
+happen before the task turns final and retry until Forgejo answers, so
+no failed task keeps an open PR.
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
 `factory/coding-frontier`) with the failures as findings; supervision
 (below) can redirect, climb or escalate. Signals from the webhook intake
@@ -228,9 +232,10 @@ the repository itself (ruling 97): Forgejo hands a same-repository PR
 job a per-run token that can push to the repository, and hands a fork
 PR job a read-only one and no secrets. factoryd creates the private
 fork `factory-agent/<repo>` at boot and before every session if it is
-missing, as the bot; the per-task write token is scoped to the fork
-alone, and the base clone uses a second token scoped read-only to the
-repository. `pr.yml`'s `job-env-audit` job proves both on every PR: no
+missing, as the bot, and switches the fork's Actions unit off, so a
+session token cannot run a workflow there by pushing the fork's `main`;
+the per-task write token is scoped to the fork alone, and the base
+clone uses a second token scoped read-only to the repository. `pr.yml`'s `job-env-audit` job proves both on every PR: no
 credential-shaped variable beyond the job-token names, no credential
 file, and a push with the job token refused.
 

@@ -366,7 +366,9 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode pull_request: %w", err)
 	}
-	if p.Action != "closed" {
+	// the bot's own close (Finish, a .forgejo refusal) lands on a workflow
+	// that already knows; Reconcile reads the state for a resumed one
+	if p.Action != "closed" || p.Sender.UserName == in.BotUser {
 		return nil
 	}
 	taskID, ok := in.taskOfHead(p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref)

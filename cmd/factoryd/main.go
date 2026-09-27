@@ -165,7 +165,7 @@ func main() {
 	if err := forgejo.EnsureFork(ctx, upstream); err != nil {
 		log.Printf("ensure fork of %s: %v", upstream, err)
 	} else {
-		log.Printf("fork %s ready", forgejo.Fork(upstream))
+		log.Printf("fork %s ready: private, Actions off", forgejo.Fork(upstream))
 	}
 	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, stateLabels); err != nil {
 		log.Printf("ensure labels: %v", err)
