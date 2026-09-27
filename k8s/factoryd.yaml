@@ -142,20 +142,15 @@ spec:
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
        has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
     message: sandbox pods must run under gVisor without an automounted API token
-  # fix round 3: the label must never buy root by itself. These checks
-  # apply to every factory.ai/build-pod pod in factory-agents-ci-*
-  # unconditionally, not only when the pod happens to set an explicit
-  # runAsUser: 0 — an implicitly-root labelled pod (neither runAsUser nor
-  # runAsNonRoot set) used to skip them entirely. runtimeClassName and
+  # No pod factoryd creates (worker, CI runner, buildkitd) needs privileged
+  # containers, added capabilities, hostPath volumes or host namespaces, so
+  # these checks apply to every pod, whatever its labels or namespace. The
+  # factory.ai/build-pod label buys exactly one thing: the root exemption in
+  # the rule below, and only inside factory-agents-ci-*. runtimeClassName and
   # automountServiceAccountToken are not re-checked here: the rule above
-  # already requires both, for every pod, unconditionally.
+  # already requires both for every pod.
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
-      !(
-        variables.target.startsWith('factory-agents-ci-') &&
-        has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
-        object.metadata.labels['factory.ai/build-pod'] == 'true'
-      ) ||
       (
         !(object.spec.containers +
           (has(object.spec.initContainers) ? object.spec.initContainers : []) +
@@ -171,17 +166,13 @@ spec:
         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
         (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
       )
-    message: factory.ai/build-pod pods in factory-agents-ci-* namespaces must still have no privileged containers, no added capabilities, no hostPath volumes, and no hostNetwork, hostPID or hostIPC, unconditionally
-  # fix round 3: effective, not per-field. A container's own runAsNonRoot
-  # or runAsUser wins over the pod's; if the container sets neither, the
-  # pod's value applies; if neither sets it, it counts as not proven
-  # non-root. Checked across containers, initContainers and
-  # ephemeralContainers, for every pod factoryd creates anywhere under
-  # factory-agents-*, except the labelled build-pod shape above (fix
-  # rounds 1 and 2 checked only object.spec.containers and only pod-level
-  # runAsNonRoot, so a labelled pod's implicit root, a container
-  # overriding runAsNonRoot back to false, and a root initContainer all
-  # passed unnoticed).
+    message: pods may not have privileged containers, added capabilities, hostPath volumes, hostNetwork, hostPID or hostIPC
+  # Effective, not per-field. A container's own runAsNonRoot or runAsUser
+  # wins over the pod's; if the container sets neither, the pod's value
+  # applies; if neither sets it, it counts as not proven non-root. Checked
+  # across containers, initContainers and ephemeralContainers, for every
+  # pod factoryd creates anywhere under factory-agents-*, except the
+  # labelled build-pod shape in factory-agents-ci-* (ruling 91).
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (
