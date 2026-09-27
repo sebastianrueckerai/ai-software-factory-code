@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +26,10 @@ func testPolicy(id int64, dayEUR float64) policy.Version {
 	return policy.Version{ID: id, SHA256: fmt.Sprintf("sha-%d", id), Document: policy.Document{
 		Version: 1,
 		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR},
-		Classes: map[string]policy.Class{"coder": {Models: []string{"coding-cheap", "coding-frontier"}}},
+		Classes: map[string]policy.Class{
+			"coder": {Models: []string{"coding-cheap", "coding-frontier"}},
+			"odd":   {Models: []string{"unpriced"}},
+		},
 	}}
 }
 
@@ -33,13 +38,31 @@ type ledgerRow struct {
 	eur         float64
 }
 
-// memStore is the in-memory Store fake for tests only.
+// testPrice prices every test alias: 1e-6 in, 4e-6 out per token, at most
+// 32768 output tokens.
+var testPrice = policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}
+
+type fakePrices map[string]policy.Price
+
+func (f fakePrices) Price(_ context.Context, alias string) (policy.Price, error) {
+	if p, ok := f[alias]; ok {
+		return p, nil
+	}
+	return policy.Price{}, fmt.Errorf("LiteLLM has no model %q", alias)
+}
+
+var testPrices = fakePrices{"coding-cheap": testPrice, "coding-frontier": testPrice, "review-frontier": testPrice}
+
+// memStore is the in-memory Store fake for tests only: tasks, holds and the
+// ledger, with policy.Fit doing the admission as policy.TakeHold does.
 type memStore struct {
 	mu     sync.Mutex
 	tasks  map[string]Task
 	audits []AuditRow
 	spends map[string]float64
 	ledger []ledgerRow
+	holds  map[int64]policy.Hold
+	nextID int64
 	// day is today's ledger total before this test's calls
 	day      float64
 	pol      *policy.Version // nil = none loaded
@@ -48,7 +71,7 @@ type memStore struct {
 
 func newMemStore(tasks ...Task) *memStore {
 	pol := testPolicy(1, 20)
-	m := &memStore{tasks: map[string]Task{}, spends: map[string]float64{}, pol: &pol}
+	m := &memStore{tasks: map[string]Task{}, spends: map[string]float64{}, holds: map[int64]policy.Hold{}, pol: &pol}
 	for _, t := range tasks {
 		m.tasks[t.ID] = t
 	}
@@ -62,15 +85,61 @@ func (m *memStore) Task(_ context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
-func (m *memStore) AddSpent(_ context.Context, id, alias string, cost float64) (float64, error) {
+func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hold, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	t := m.tasks[id]
-	t.SpentEUR += cost
-	m.tasks[id] = t
-	m.spends[id] = t.SpentEUR
-	m.ledger = append(m.ledger, ledgerRow{id, alias, cost})
+	t, ok := m.tasks[r.TaskID]
+	if !ok {
+		return policy.Hold{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
+	}
+	dayTotal := m.day
+	for _, l := range m.ledger {
+		dayTotal += l.eur
+	}
+	taskHeld, dayHeld := 0.0, 0.0
+	for _, h := range m.holds {
+		dayHeld += h.EUR
+		if h.TaskID == r.TaskID {
+			taskHeld += h.EUR
+		}
+	}
+	taskHeadroom, dayHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal
+	h, err := policy.Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+	if err != nil {
+		return h, err
+	}
+	m.nextID++
+	h.ID, h.Headroom = m.nextID, min(taskHeadroom, dayHeadroom)
+	m.holds[h.ID] = h
+	return h, nil
+}
+
+func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	held, ok := m.holds[h.ID]
+	delete(m.holds, h.ID)
+	amount := held.EUR
+	if cost != nil {
+		amount = *cost
+	}
+	if !ok {
+		amount = 0
+	}
+	t := m.tasks[h.TaskID]
+	if amount > 0 {
+		t.SpentEUR += amount
+		m.tasks[h.TaskID] = t
+		m.spends[h.TaskID] = t.SpentEUR
+		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount})
+	}
 	return t.SpentEUR, nil
+}
+
+func (m *memStore) openHolds() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.holds)
 }
 
 func (m *memStore) CurrentPolicy(context.Context) (policy.Version, bool, error) {
@@ -87,16 +156,6 @@ func (m *memStore) setPolicy(v policy.Version) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pol = &v
-}
-
-func (m *memStore) DayTotal(context.Context) (float64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	total := m.day
-	for _, l := range m.ledger {
-		total += l.eur
-	}
-	return total, nil
 }
 
 func (m *memStore) InsertAudit(_ context.Context, row AuditRow) error {
@@ -131,18 +190,33 @@ func (f fakeAuth) Authenticate(*http.Request) (Identity, error) { return f.id, f
 type mintCall struct {
 	taskID    string
 	maxBudget float64
+	models    string // comma-joined
 }
 
 type fakeMinter struct {
-	mu    sync.Mutex
-	calls []mintCall
-	err   error
-	hold  map[string]chan struct{} // a task's mint waits until its channel closes
+	mu      sync.Mutex
+	calls   []mintCall
+	blocked []string
+	err     error
+	hold    map[string]chan struct{} // a task's mint waits until its channel closes
 }
 
-func (f *fakeMinter) Mint(_ context.Context, taskID string, maxBudget float64) (string, error) {
+func (f *fakeMinter) Block(_ context.Context, key string) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, mintCall{taskID, maxBudget})
+	defer f.mu.Unlock()
+	f.blocked = append(f.blocked, key)
+	return nil
+}
+
+func (f *fakeMinter) blockedKeys() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.blocked...)
+}
+
+func (f *fakeMinter) Mint(_ context.Context, taskID string, maxBudget float64, models []string) (string, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, mintCall{taskID, maxBudget, strings.Join(models, ",")})
 	hold := f.hold[taskID]
 	f.mu.Unlock()
 	if hold != nil {
@@ -421,13 +495,16 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
-			name:            "litellm unreachable refuses 502",
-			task:            &runningTask,
-			reqBody:         chatBody("coding-cheap"),
-			upstreamURL:     "closed",
-			wantStatus:      http.StatusBadGateway,
-			wantDecision:    "error_upstream",
-			wantErrType:     "upstream_error",
+			name:         "litellm unreachable refuses 502",
+			task:         &runningTask,
+			reqBody:      chatBody("coding-cheap"),
+			upstreamURL:  "closed",
+			wantStatus:   http.StatusBadGateway,
+			wantDecision: "error_upstream",
+			wantErrType:  "upstream_error",
+			// the provider may have run part of it: the hold is booked,
+			// 132 input tokens at 1e-6 and 32768 output tokens at 4e-6
+			wantSpent:       ptr(2.131204),
 			wantUpstreamHit: 0,
 		},
 		{
@@ -473,25 +550,24 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
-			name:            "stream without a usage chunk leaves spent untouched",
+			name:            "stream without a usage chunk books the hold",
 			task:            &runningTask,
 			reqBody:         `{"model":"coding-frontier","stream":true,"messages":[]}`,
 			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
 			resp:            stubResp{status: http.StatusOK, body: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", headers: map[string]string{"Content-Type": "text/event-stream"}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
+			wantSpent:       ptr(2.131231), // 159 input and 32768 output tokens
 			wantUpstreamHit: 1,
 		},
 		{
-			name:            "a case variant of stream does not turn a stream into a plain call",
-			task:            &runningTask,
-			reqBody:         `{"model":"coding-frontier","stream":true,"STREAM":false,"messages":[]}`,
-			resp:            stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream", "x-litellm-response-cost": "0.0"}},
-			wantStatus:      http.StatusOK,
-			wantDecision:    "allowed",
-			wantUpstreamReq: `{"STREAM":false,"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
-			wantSpent:       ptr(2.25),
-			wantUpstreamHit: 1,
+			name:         "a case variant of a field is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-frontier","stream":true,"STREAM":false,"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
 		},
 		{
 			name:            "a repeated stream key counts by its last value and is forwarded once",
@@ -505,16 +581,73 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
-			name:            "the audited model is the exact-case key LiteLLM calls",
-			task:            &runningTask,
-			reqBody:         `{"Model":"review-frontier","model":"coding-cheap","messages":[]}`,
-			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
-			wantStatus:      http.StatusOK,
-			wantDecision:    "allowed",
-			wantUpstreamReq: `{"Model":"review-frontier","messages":[],"model":"coding-cheap"}`,
-			wantSpent:       ptr(2.5),
+			name:         "a case variant of model is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"Model":"review-frontier","model":"coding-cheap","messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "LiteLLM fallbacks are refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","fallbacks":["review-frontier"],"mock_testing_fallbacks":true,"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+			wantBody:     `{"error":{"code":"400","message":"fields [\"fallbacks\" \"mock_testing_fallbacks\"] are not accepted","param":null,"type":"invalid_request_error"}}` + "\n",
+		},
+		{
+			name:         "a router settings override is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","router_settings_override":{"fallbacks":[{"coding-cheap":["supervisor"]}]},"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "n above 1 is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","n":2,"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "the caller's max_completion_tokens is clamped to the headroom",
+			task:         &Task{Classes: coder, ID: "42", BudgetEUR: 0.01, Status: "running"},
+			reqBody:      `{"model":"coding-cheap","max_completion_tokens":50000,"messages":[]}`,
+			resp:         stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.001"}},
+			wantStatus:   http.StatusOK,
+			wantDecision: "allowed",
+			// 0.01 free: 68 body bytes + 64 = 132 input tokens at 1e-6 leave
+			// 0.009868, 2467 output tokens at 4e-6
+			wantUpstreamReq: `{"max_completion_tokens":2467,"messages":[],"model":"coding-cheap"}`,
+			wantSpent:       ptr(0.001),
 			wantUpstreamHit: 1,
-			wantAlias:       "coding-cheap",
+		},
+		{
+			name:       "a headroom below the minimum call refuses 402",
+			wantNoMint: true,
+			// 0.004 free: 132 input tokens leave room for 967 output tokens
+			task:         &Task{Classes: coder, ID: "42", BudgetEUR: 0.004, Status: "running"},
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusPaymentRequired,
+			wantDecision: "refused_budget",
+			wantErrType:  "budget_exceeded",
+		},
+		{
+			name:         "an alias LiteLLM cannot price refuses 503",
+			wantNoMint:   true,
+			task:         &Task{Classes: []string{"odd"}, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"},
+			reqBody:      chatBody("unpriced"),
+			wantStatus:   http.StatusServiceUnavailable,
+			wantDecision: "error_price",
+			wantErrType:  "server_error",
 		},
 		{
 			name:            "a repeated model key counts by its last value and is forwarded once",
@@ -556,12 +689,13 @@ func TestChatCompletions(t *testing.T) {
 			wantErrType:  "invalid_request_error",
 		},
 		{
-			name:            "missing cost header leaves spent untouched",
+			name:            "missing cost header books the hold",
 			task:            &runningTask,
 			reqBody:         chatBody("coding-frontier"),
 			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
+			wantSpent:       ptr(2.131207), // 135 input and 32768 output tokens
 			wantBody:        `{"choices":[]}`,
 			wantUpstreamHit: 1,
 		},
@@ -595,6 +729,7 @@ func TestChatCompletions(t *testing.T) {
 				Store:      store,
 				Minter:     minter,
 				LiteLLMURL: url,
+				Prices:     testPrices,
 			})
 
 			rr := doChat(t, s.Routes("test"), tt.reqBody)
@@ -678,11 +813,20 @@ func TestChatCompletions(t *testing.T) {
 				if want == "" {
 					want = tt.reqBody
 				}
+				if !strings.Contains(want, `"max_`) {
+					want = withMaxTokens(t, want, 32768)
+				}
 				if bodies[i] != want {
 					t.Fatalf("upstream body[%d] = %q, want %q", i, bodies[i], want)
 				}
 			}
 
+			if n := store.openHolds(); n != 0 {
+				t.Fatalf("%d holds left open, want every hold released", n)
+			}
+			if last.Decision == "allowed" && (last.OutputLimit == nil || last.HoldEUR == nil) {
+				t.Fatalf("allowed audit row lacks its output limit and hold: %+v", last)
+			}
 			if tt.wantAlias != "" && last.ModelAlias != tt.wantAlias {
 				t.Fatalf("audited model = %q, want %q", last.ModelAlias, tt.wantAlias)
 			}
@@ -704,6 +848,7 @@ func TestKeyCachedPerTask(t *testing.T) {
 		Store:      store,
 		Minter:     minter,
 		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
 	})
 
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
@@ -746,7 +891,7 @@ func TestKeyMintsDoNotSerializeTasks(t *testing.T) {
 	release := make(chan struct{})
 	minter := &fakeMinter{hold: map[string]chan struct{}{"slow": release}}
 	auth := authByTask{}
-	s := NewServer(ServerOptions{Auth: auth, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	s := NewServer(ServerOptions{Auth: auth, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
 	h := s.Routes("test")
 
 	slowDone := make(chan int, 3)
@@ -825,7 +970,7 @@ func TestKeyRemintedForNewServiceAccount(t *testing.T) {
 	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	id := Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}
-	s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
 
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
@@ -859,6 +1004,7 @@ func TestBodyLimit(t *testing.T) {
 		Store:      store,
 		Minter:     &fakeMinter{},
 		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
 	})
 
 	rr := doChat(t, s.Routes("test"), strings.Repeat("x", 32))
@@ -880,6 +1026,7 @@ func TestRoutes(t *testing.T) {
 		Store:      newMemStore(),
 		Minter:     &fakeMinter{},
 		LiteLLMURL: "http://127.0.0.1:1",
+		Prices:     testPrices,
 	})
 	h := s.Routes("test")
 
@@ -935,7 +1082,7 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	)
 	store.setPolicy(testPolicy(3, 1))
 	minter := &fakeMinter{}
-	s := NewServer(ServerOptions{Auth: authByTask{}, Store: store, Minter: minter, LiteLLMURL: stub.URL})
+	s := NewServer(ServerOptions{Auth: authByTask{}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
 	call := func(task, cost string) *httptest.ResponseRecorder {
 		stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": cost}})
 		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
@@ -952,13 +1099,13 @@ func TestDayCapAcrossTasks(t *testing.T) {
 		t.Fatalf("b's first call = %d, want 200", rr.Code)
 	}
 	// a minted at min(5, 1), b at min(5, 1 - 0.625)
-	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", 1}) || calls[1] != (mintCall{"b", 0.375}) {
+	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", 1, "coding-cheap,coding-frontier"}) || calls[1] != (mintCall{"b", 0.375, "coding-cheap,coding-frontier"}) {
 		t.Fatalf("mint calls = %+v, want a at 1, b at 0.375", calls)
 	}
 	for _, task := range []string{"a", "b"} {
 		rr := call(task, "0.1")
-		if rr.Code != http.StatusPaymentRequired || !strings.Contains(rr.Body.String(), "day cap 1.0000") {
-			t.Fatalf("%s after the day's 1.125 = %d %s, want 402 naming the day cap", task, rr.Code, rr.Body.String())
+		if rr.Code != http.StatusPaymentRequired || !strings.Contains(rr.Body.String(), "day -0.125000") {
+			t.Fatalf("%s after the day's 1.125 = %d %s, want 402 naming the day's headroom", task, rr.Code, rr.Body.String())
 		}
 	}
 	audits := store.auditRows()
@@ -978,7 +1125,7 @@ func TestPolicyCachedForAtMost30s(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0"}})
 	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
-	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
 
@@ -1000,5 +1147,94 @@ func TestPolicyCachedForAtMost30s(t *testing.T) {
 	}
 	if fmt.Sprint(versions) != "[1 1 2]" || store.polReads != 2 {
 		t.Fatalf("audited versions %v with %d store reads, want [1 1 2] with 2", versions, store.polReads)
+	}
+}
+
+// withMaxTokens is body as the gateway forwards it when the caller set no
+// output limit and the headroom allows limit tokens.
+func withMaxTokens(t *testing.T, body string, limit int) string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["max_tokens"] = json.RawMessage(fmt.Sprint(limit))
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// A key is minted for one run, policy version and UTC day, limited to the
+// classes' aliases; a new version or day mints a new key and blocks the old.
+func TestKeyRemintedOnPolicyVersionAndDay(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
+	now := time.Date(2026, 9, 27, 23, 59, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	call := func() {
+		t.Helper()
+		if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d %s", rr.Code, rr.Body.String())
+		}
+	}
+
+	call()                         // version 1, 2026-09-27: headroom 8
+	call()                         // cached
+	now = now.Add(2 * time.Minute) // UTC midnight passed
+	call()                         // headroom 7
+	next := testPolicy(2, 20)
+	next.Document.Classes["coder"] = policy.Class{Models: []string{"coding-cheap"}}
+	store.setPolicy(next)
+	now = now.Add(policyTTL)
+	call() // version 2: headroom 6.5, only coding-cheap
+
+	want := []mintCall{
+		{"42", 8, "coding-cheap,coding-frontier"},
+		{"42", 7, "coding-cheap,coding-frontier"},
+		{"42", 6.5, "coding-cheap"},
+	}
+	if calls := minter.mintCalls(); !reflect.DeepEqual(calls, want) {
+		t.Fatalf("mints = %+v, want %+v", calls, want)
+	}
+	if blocked := minter.blockedKeys(); !reflect.DeepEqual(blocked, []string{"sk-task-key-1", "sk-task-key-2"}) {
+		t.Fatalf("blocked = %v, want the two superseded keys", blocked)
+	}
+}
+
+// Two concurrent calls, headroom for one: one gets through, the other is
+// refused while the first holds the headroom.
+func TestConcurrentCallsCannotShareTheLastHeadroom(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		<-release
+		w.Header().Set("x-litellm-response-cost", "0.1")
+		w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+	// 0.135 free: the first call holds 132e-6 + 32768 * 4e-6 = 0.131204,
+	// leaving 0.003796, below 1024 output tokens
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 0.135, Status: "running"})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: up.URL, Prices: testPrices})
+
+	codes := make(chan int, 2)
+	go func() { codes <- doChat(t, s.Routes("test"), chatBody("coding-cheap")).Code }()
+	<-started
+	codes <- doChat(t, s.Routes("test"), chatBody("coding-cheap")).Code
+	close(release)
+	got := []int{<-codes, <-codes}
+	if got[0] != http.StatusPaymentRequired || got[1] != http.StatusOK {
+		t.Fatalf("codes = %v, want the second call refused 402 while the first holds, then the first 200", got)
+	}
+	if spent, _ := store.spentOf("42"); spent != 0.1 {
+		t.Fatalf("spent = %v, want the first call's 0.1", spent)
+	}
+	audits := store.auditRows()
+	last := audits[len(audits)-1]
+	if last.Decision != "allowed" || *last.OutputLimit != 32768 || math.Abs(*last.HoldEUR-0.131204) > 1e-12 {
+		t.Fatalf("allowed audit = %+v, want output limit 32768 and hold 0.131204", last)
 	}
 }

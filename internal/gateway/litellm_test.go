@@ -52,7 +52,7 @@ func TestLiteLLMMint(t *testing.T) {
 			defer srv.Close()
 
 			l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-			key, err := l.Mint(context.Background(), "42", 8)
+			key, err := l.Mint(context.Background(), "42", 8, []string{"coding-cheap", "coding-frontier"})
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -78,10 +78,41 @@ func TestLiteLLMMint(t *testing.T) {
 			if gotPayload["max_budget"] != 8.0 {
 				t.Fatalf("max_budget = %v, want 8", gotPayload["max_budget"])
 			}
+			if models, _ := json.Marshal(gotPayload["models"]); string(models) != `["coding-cheap","coding-frontier"]` {
+				t.Fatalf("models = %s, want the task's aliases", models)
+			}
 			meta, _ := gotPayload["metadata"].(map[string]any)
 			if meta["task_id"] != "42" {
 				t.Fatalf("metadata.task_id = %v, want 42", meta["task_id"])
 			}
 		})
+	}
+}
+
+func TestLiteLLMMintRefusesNoModels(t *testing.T) {
+	l := &LiteLLM{BaseURL: "http://127.0.0.1:1", MasterKey: "sk-master"}
+	if _, err := l.Mint(context.Background(), "42", 8, nil); err == nil || !strings.Contains(err.Error(), "no models") {
+		t.Fatalf("Mint without models = %v, want a refusal", err)
+	}
+}
+
+func TestLiteLLMBlock(t *testing.T) {
+	var got map[string]string
+	var path, auth string
+	status := http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &got)
+		path, auth = r.URL.Path, r.Header.Get("Authorization")
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master"}
+	if err := l.Block(context.Background(), "sk-old"); err != nil || path != "/key/block" || auth != "Bearer sk-master" || got["key"] != "sk-old" {
+		t.Fatalf("Block = %v: %s %s %v", err, path, auth, got)
+	}
+	status = http.StatusNotFound
+	if err := l.Block(context.Background(), "sk-old"); err == nil {
+		t.Fatal("Block with a 404 succeeded")
 	}
 }

@@ -165,6 +165,7 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	return policy.Version{ID: 4, SHA256: "c9d98bb0aa", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
+		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
 			Classes: map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}}}}, true, nil
 }
@@ -618,7 +619,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
-	for _, want := range []string{"<dd>4</dd>", "c9d98bb0aa", "2026-09-27T22:50:07Z", `&#34;day_eur&#34;: 20`,
+	for _, want := range []string{"<dd>4</dd>", "c9d98bb0aa", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
 		`href="https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/policy lacks %q", want)

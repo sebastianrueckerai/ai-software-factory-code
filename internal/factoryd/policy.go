@@ -9,28 +9,34 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// PolicyStore holds the loaded policy versions and the cost ledger.
+// PolicyStore holds the loaded policy versions, the holds and the cost
+// ledger.
 type PolicyStore interface {
-	// RecordPolicy stores doc under sha unless known and makes it current.
+	Metering
+	// RecordPolicy stores doc under sha unless known and activates it.
 	RecordPolicy(ctx context.Context, sha string, doc policy.Document) (policy.Version, bool, error)
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
-	// DayTotal is today's (UTC) ledger total over all tasks.
-	DayTotal(ctx context.Context) (float64, error)
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
+	// SweepHolds books the holds whose caller never released them.
+	SweepHolds(ctx context.Context) (int, error)
 }
 
 // PolicyLoader turns the mounted policy file into policy versions: each new
-// valid content becomes an immutable row and the current version; invalid
-// content is logged and the previous version stays current.
+// valid content becomes an immutable row and the version in force; invalid
+// content is logged and the previous version stays in force. A version must
+// let the agent capability classes call every model of the ladder
+// (LadderModels), else a task would be refused mid-run.
 type PolicyLoader struct {
-	Path  string
-	Store PolicyStore
+	Path         string
+	Store        PolicyStore
+	LadderModels []string
 
 	mu      sync.Mutex
 	current policy.Version
@@ -46,9 +52,14 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 		return fmt.Errorf("read current policy: %w", err)
 	}
 	if ok {
-		l.mu.Lock()
-		l.current, l.loaded = v, true
-		l.mu.Unlock()
+		if err := l.fitsLadder(v.Document); err != nil {
+			log.Printf("POLICY REJECTED: stored version %d: %v", v.ID, err)
+			ok = false
+		} else {
+			l.mu.Lock()
+			l.current, l.loaded = v, true
+			l.mu.Unlock()
+		}
 	}
 	if err := l.Load(ctx); err != nil && !ok {
 		return fmt.Errorf("no valid policy version: %w", err)
@@ -72,6 +83,9 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 		return nil
 	}
 	doc, err := policy.Parse(b)
+	if err == nil {
+		err = l.fitsLadder(doc)
+	}
 	if err != nil {
 		l.mu.Lock()
 		l.seen = sha
@@ -130,13 +144,35 @@ func (l *PolicyLoader) Current() policy.Version {
 
 func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budget }
 
-// DayHeadroom is what the day cap leaves of today's spend over all tasks.
-func (l *PolicyLoader) DayHeadroom(ctx context.Context) (float64, error) {
-	total, err := l.Store.DayTotal(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("today's spend: %w", err)
+func (l *PolicyLoader) DayEUR() float64 { return l.Budget().DayEUR }
+
+func (l *PolicyLoader) fitsLadder(d policy.Document) error {
+	for _, m := range l.LadderModels {
+		if !d.AllowsModel(AgentCapabilities, m) {
+			return fmt.Errorf("capability classes %q do not allow the ladder model %q", AgentCapabilities, m)
+		}
 	}
-	return l.Budget().DayEUR - total, nil
+	return nil
+}
+
+// SweepLoop books expired holds every interval until ctx ends.
+func SweepLoop(ctx context.Context, store PolicyStore, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			n, err := store.SweepHolds(ctx)
+			if err != nil {
+				log.Printf("sweep holds: %v", err)
+			}
+			if n > 0 {
+				log.Printf("sweep holds: booked %d expired holds at their full amount", n)
+			}
+		}
+	}
 }
 
 // PolicyHandler serves GET /policy: the version in force.
@@ -213,8 +249,16 @@ func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, erro
 	return policy.Current(ctx, s.db)
 }
 
-func (s *PGStore) DayTotal(ctx context.Context) (float64, error) {
-	return policy.DayTotal(ctx, s.db)
+func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error) {
+	return policy.TakeHold(ctx, s.db, r)
+}
+
+func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error) {
+	return policy.ReleaseHold(ctx, s.db, h, cost)
+}
+
+func (s *PGStore) SweepHolds(ctx context.Context) (int, error) {
+	return policy.SweepHolds(ctx, s.db)
 }
 
 func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, error) {
@@ -222,3 +266,16 @@ func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, 
 }
 
 var _ PolicyStore = (*PGStore)(nil)
+
+// Aliases are the ladder's models as the gateway sees them: without the
+// opencode provider prefix ("factory/coding-cheap" is "coding-cheap").
+func (l ModelLadder) Aliases() []string {
+	var out []string
+	for _, m := range []string{l.Start, l.Stronger} {
+		if _, alias, ok := strings.Cut(m, "/"); ok {
+			m = alias
+		}
+		out = append(out, m)
+	}
+	return out
+}

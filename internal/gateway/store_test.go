@@ -23,7 +23,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, policy_current, policy_versions CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -53,41 +53,19 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
 
-	if total, err := s.DayTotal(ctx); err != nil || total != 0 {
-		t.Fatalf("DayTotal before spend = (%v, %v), want (0, nil)", total, err)
+	// a hold and its release book the task and the ledger together
+	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "coding-cheap",
+		InTokens: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6}, WantOut: 1024, DayEUR: 20})
+	if err != nil || h.MaxOut != 1024 || h.Headroom != 8 {
+		t.Fatalf("TakeHold = (%+v, %v), want 1024 tokens under headroom 8", h, err)
 	}
-	if total, err := s.AddSpent(ctx, "t1", "coding-cheap", 0.5); err != nil || total != 2.5 {
-		t.Fatalf("AddSpent = (%v, %v), want (2.5, nil)", total, err)
+	cost := 0.5
+	if total, err := s.ReleaseHold(ctx, h, &cost); err != nil || total != 2.5 {
+		t.Fatalf("ReleaseHold = (%v, %v), want (2.5, nil)", total, err)
 	}
-	if total, err := s.AddSpent(ctx, "t1", "coding-frontier", 0.25); err != nil || total != 2.75 {
-		t.Fatalf("second AddSpent = (%v, %v), want (2.75, nil)", total, err)
-	}
-	got, _, _ = s.Task(ctx, "t1")
-	if got.SpentEUR != 2.75 {
-		t.Fatalf("spent after adds = %v, want 2.75", got.SpentEUR)
-	}
-	if _, err := s.AddSpent(ctx, "missing", "coding-cheap", 1); err == nil {
-		t.Fatal("AddSpent on a missing task succeeded, want an error")
-	}
-	// the day total is the ledger's: the task's opening spend of 2 was
-	// never booked, the missing task's call booked nothing
-	if total, err := s.DayTotal(ctx); err != nil || total != 0.75 {
-		t.Fatalf("DayTotal = (%v, %v), want (0.75, nil)", total, err)
-	}
-	var ledger []string
-	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || kind || ' ' || ref || ' ' || eur::text FROM ledger ORDER BY id`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		var l string
-		if err := rows.Scan(&l); err != nil {
-			t.Fatal(err)
-		}
-		ledger = append(ledger, l)
-	}
-	if want := []string{"t1 model coding-cheap 0.5", "t1 model coding-frontier 0.25"}; !reflect.DeepEqual(ledger, want) {
-		t.Fatalf("ledger = %q, want %q", ledger, want)
+	var ledger string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(task_id || ' ' || kind || ' ' || ref || ' ' || eur::text, ';') FROM ledger`).Scan(&ledger); err != nil || ledger != "t1 model coding-cheap 0.5" {
+		t.Fatalf("ledger = (%q, %v)", ledger, err)
 	}
 
 	if _, ok, err := s.CurrentPolicy(ctx); err != nil || ok {
@@ -106,6 +84,7 @@ func TestPGStore(t *testing.T) {
 	spend := 2.75
 	if err := s.InsertAudit(ctx, AuditRow{
 		TaskID: "t1", Decision: "allowed", Reason: "", ModelAlias: "coding-cheap", SpendEUR: &spend, PolicyVersion: &v.ID,
+		OutputLimit: &h.MaxOut, HoldEUR: &h.EUR,
 	}); err != nil {
 		t.Fatalf("InsertAudit: %v", err)
 	}
@@ -131,8 +110,11 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("spend_eur of refusal = %v, want NULL", nullSpend)
 	}
 	var auditVersion int64
+	var limit int
+	var held float64
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT policy_version_id FROM audit WHERE decision = 'allowed'`).Scan(&auditVersion); err != nil || auditVersion != v.ID {
-		t.Fatalf("audit policy_version_id = (%d, %v), want %d", auditVersion, err, v.ID)
+		`SELECT policy_version_id, output_limit, hold_eur::float8 FROM audit WHERE decision = 'allowed'`).Scan(&auditVersion, &limit, &held); err != nil ||
+		auditVersion != v.ID || limit != 1024 || held != h.EUR {
+		t.Fatalf("audit = version %d, limit %d, hold %v (%v); want %d, 1024, %v", auditVersion, limit, held, err, v.ID, h.EUR)
 	}
 }

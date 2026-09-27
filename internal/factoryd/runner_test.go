@@ -847,8 +847,9 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	if !strings.Contains(joined, "supervisor guidance: the check needs a file") || !strings.Contains(joined, "c-wip") {
 		t.Fatalf("findings = %v, want the guidance and the pushed work", res.Findings)
 	}
-	if len(f.mints) != 1 || f.mints[0]["max_budget"] != 0.25 {
-		t.Fatalf("mints = %v, want one key capped at the remaining 0.25", f.mints)
+	meter := runner.supervisor.Meter.(*memPolicy)
+	if len(f.mints) != 1 || len(meter.released) != 1 || f.mints[0]["max_budget"] != meter.released[0].hold.EUR {
+		t.Fatalf("mints = %v, released = %+v; want one key capped at the call's hold", f.mints, meter.released)
 	}
 	if len(kube.deletedPods) == 0 {
 		t.Fatal("the worker was not stopped")

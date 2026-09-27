@@ -22,7 +22,7 @@ type Document struct {
 }
 
 // Budget caps spend in EUR: per task (default and maximum at intake) and
-// per UTC day over all tasks together.
+// per UTC day over all tasks together; a day cap of 0 stops all spend.
 type Budget struct {
 	TaskDefaultEUR float64 `yaml:"task_default_eur" json:"task_default_eur"`
 	TaskMaxEUR     float64 `yaml:"task_max_eur" json:"task_max_eur"`
@@ -65,8 +65,11 @@ func (d Document) Validate() error {
 		return fmt.Errorf("policy: version %d, want 1", d.Version)
 	}
 	b := d.Budget
-	if b.TaskDefaultEUR <= 0 || b.TaskMaxEUR <= 0 || b.DayEUR <= 0 {
-		return errors.New("policy: budget.task_default_eur, task_max_eur and day_eur must all be positive")
+	if b.TaskDefaultEUR <= 0 || b.TaskMaxEUR <= 0 {
+		return errors.New("policy: budget.task_default_eur and task_max_eur must be positive")
+	}
+	if b.DayEUR < 0 {
+		return errors.New("policy: budget.day_eur must not be negative (0 stops all spend)")
 	}
 	if b.TaskDefaultEUR > b.TaskMaxEUR {
 		return fmt.Errorf("policy: budget.task_default_eur %g exceeds task_max_eur %g", b.TaskDefaultEUR, b.TaskMaxEUR)
@@ -101,6 +104,16 @@ func (d Document) AllowsModel(classes []string, model string) bool {
 		}
 	}
 	return false
+}
+
+// Models are the aliases any of classes may call, sorted, once each.
+func (d Document) Models(classes []string) []string {
+	var out []string
+	for _, c := range classes {
+		out = append(out, d.Classes[c].Models...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // ClampBudget is a new task's budget: the default when none (or a

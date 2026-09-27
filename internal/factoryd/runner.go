@@ -412,14 +412,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 }
 
-// askSupervisor builds the supervisor's input and calls it with the task's
-// remaining budget as the key's cap.
+// askSupervisor builds the supervisor's input and calls it; the call is
+// metered against the task's and the day's headroom.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
-	cur, ok, err := r.store.Task(ctx, t.ID)
-	if err != nil || !ok {
-		return Decision{Action: ActionEscalate, Reason: fmt.Sprintf("supervisor not called: task unreadable (%v)", err)}
-	}
-	return r.supervisor.Decide(ctx, t.ID, cur.BudgetEUR, cur.SpentEUR, SupervisorInput{
+	return r.supervisor.Decide(ctx, t.ID, SupervisorInput{
 		Brief:   harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings},
 		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},
 		Digest:  digest.digest(),

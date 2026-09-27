@@ -4,14 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The supervisor (architecture 6.6) is a model factoryd asks after a
@@ -228,67 +230,55 @@ const supervisorPrompt = `You supervise an autonomous coding agent that works on
 You cannot raise a time limit, a budget or a model beyond the next rung; only a human can.
 Answer with one JSON object and nothing else: {"action": "continue|redirect|retry_stronger|escalate", "guidance": "...", "reason": "..."}. guidance is required for redirect, reason for escalate; each under 1000 characters.`
 
-// SupervisorModel calls the supervisor alias on LiteLLM directly, with a
-// virtual key it mints per call: metadata task_id, so the settlement loop
-// books the spend onto the task and the session-end reconcile blocks it
-// with the task's other keys; max_budget the smaller of the task's remaining
-// budget and the day cap's headroom; and the supervisor alias as its only
-// model.
+// Metering admits a model call into the task's and the day's free headroom
+// and books its cost (see policy.TakeHold and policy.ReleaseHold).
+type Metering interface {
+	TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error)
+	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error)
+}
+
+// Pricer is an alias's worst-case price. Implemented by policy.PriceBook.
+type Pricer interface {
+	Price(ctx context.Context, alias string) (policy.Price, error)
+}
+
+// SupervisorModel calls the supervisor alias on LiteLLM directly, metered
+// like an agent call through the gateway: the answer limit is clamped to
+// what the free headroom pays for at the alias's price, that worst case is
+// held, and the call's cost is booked as a model ledger row (ref the alias)
+// right after it. Its virtual key, minted per call, carries metadata
+// task_id (the settlement pass reconciles it and the session end blocks
+// it), max_budget the hold and the supervisor alias as its only model.
 type SupervisorModel struct {
 	BaseURL string // LiteLLM
 	Admin   *LiteLLMAdmin
 	Alias   string // "supervisor"
 	Budget  TokenBudget
-	// DayHeadroom is what the policy's day cap leaves of today's spend.
-	DayHeadroom func(ctx context.Context) (float64, error)
-	HTTP        *http.Client // nil = supervisorTimeout
+	Prices  Pricer
+	Meter   Metering
+	DayEUR  func() float64 // the policy in force's day cap
+	HTTP    *http.Client   // nil = supervisorTimeout
 }
 
 // supervisorTimeout bounds one call: GLM reasons before it answers.
 const supervisorTimeout = 4 * time.Minute
 
-// Decide never fails: a failed or invalid answer is an escalation.
-func (m *SupervisorModel) Decide(ctx context.Context, taskID string, budgetEUR, spentEUR float64, in SupervisorInput) Decision {
-	d, err := m.decide(ctx, taskID, budgetEUR, spentEUR, in)
+// Decide never fails: a failed or invalid answer, or a call the headroom
+// cannot pay for, is an escalation.
+func (m *SupervisorModel) Decide(ctx context.Context, taskID string, in SupervisorInput) Decision {
+	d, err := m.decide(ctx, taskID, in)
 	if err != nil {
 		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + truncate(err.Error(), 500)}
 	}
 	return d
 }
 
-// The key's cap is the budget minus what the task has spent: the settled
-// spent_eur, or the spend LiteLLM already shows on the task's keys (the
-// running session's key settles only at the task's end), whichever is more.
-func (m *SupervisorModel) decide(ctx context.Context, taskID string, budgetEUR, spentEUR float64, in SupervisorInput) (Decision, error) {
-	keySpend, err := m.Admin.TaskSpend(ctx, taskID)
-	if err != nil {
-		return Decision{}, fmt.Errorf("the task's spend is unknown: %w", err)
-	}
-	remainingEUR := budgetEUR - max(spentEUR, keySpend)
-	if remainingEUR <= 0 {
-		return Decision{}, errors.New("the task has no budget left")
-	}
-	dayEUR, err := m.DayHeadroom(ctx)
-	if err != nil {
-		return Decision{}, err
-	}
-	if dayEUR <= 0 {
-		return Decision{}, errors.New("the day cap is reached")
-	}
-	remainingEUR = min(remainingEUR, dayEUR)
-	limit, err := m.Budget.OutputLimit()
-	if err != nil {
-		return Decision{}, err
-	}
-	key, err := m.Admin.MintKey(ctx, taskID, remainingEUR, []string{m.Alias}, "supervisor")
-	if err != nil {
-		return Decision{}, err
-	}
+func (m *SupervisorModel) payload(in SupervisorInput, limit int) ([]byte, error) {
 	user, err := json.MarshalIndent(in, "", " ")
 	if err != nil {
-		return Decision{}, err
+		return nil, err
 	}
-	payload, err := json.Marshal(map[string]any{
+	return json.Marshal(map[string]any{
 		"model":           m.Alias,
 		"max_tokens":      limit,
 		"response_format": map[string]string{"type": "json_object"},
@@ -297,11 +287,48 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, budgetEUR, 
 			{"role": "user", "content": string(user)},
 		},
 	})
+}
+
+func (m *SupervisorModel) decide(ctx context.Context, taskID string, in SupervisorInput) (Decision, error) {
+	limit, err := m.Budget.OutputLimit()
 	if err != nil {
+		return Decision{}, err
+	}
+	price, err := m.Prices.Price(ctx, m.Alias)
+	if err != nil {
+		return Decision{}, err
+	}
+	payload, err := m.payload(in, limit)
+	if err != nil {
+		return Decision{}, err
+	}
+	hold, err := m.Meter.TakeHold(ctx, policy.HoldRequest{
+		TaskID: taskID, Kind: policy.KindModel, Ref: m.Alias,
+		InTokens: len(payload), Price: price, WantOut: limit, DayEUR: m.DayEUR(),
+	})
+	if err != nil {
+		return Decision{}, fmt.Errorf("no headroom for the supervisor: %w", err)
+	}
+	// unknown until the call answers with its cost: the hold is booked
+	var cost *float64
+	defer func() {
+		if _, err := m.Meter.ReleaseHold(context.WithoutCancel(ctx), hold, cost); err != nil {
+			log.Printf("task %s: book the supervisor call: %v", taskID, err)
+		}
+	}()
+	zero := 0.0
+	if payload, err = m.payload(in, hold.MaxOut); err != nil {
+		cost = &zero
+		return Decision{}, err
+	}
+	key, err := m.Admin.MintKey(ctx, taskID, hold.EUR, []string{m.Alias}, "supervisor")
+	if err != nil {
+		cost = &zero
 		return Decision{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.BaseURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
+		cost = &zero
 		return Decision{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
@@ -315,6 +342,11 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, budgetEUR, 
 		return Decision{}, err
 	}
 	defer res.Body.Close()
+	if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
+		cost = &v
+	} else if res.StatusCode != http.StatusOK {
+		cost = &zero
+	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return Decision{}, err

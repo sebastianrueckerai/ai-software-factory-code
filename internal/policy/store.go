@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -26,28 +25,29 @@ const (
 )
 
 // Version is one loaded policy document, immutable once written.
+// ActivatedAt is when it last became the version in force.
 type Version struct {
-	ID       int64     `json:"id"`
-	SHA256   string    `json:"sha256"`
-	Document Document  `json:"document"`
-	LoadedAt time.Time `json:"loaded_at"`
+	ID          int64     `json:"id"`
+	SHA256      string    `json:"sha256"`
+	Document    Document  `json:"document"`
+	LoadedAt    time.Time `json:"loaded_at"`
+	ActivatedAt time.Time `json:"activated_at"`
 }
 
+// Migrate applies the schema as one statement batch: one implicit
+// transaction under an advisory lock, so two binaries booting at once do
+// not race on it.
 func Migrate(ctx context.Context, db *sql.DB) error {
-	for _, stmt := range strings.Split(schema, ";") {
-		if strings.TrimSpace(stmt) == "" {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			return fmt.Errorf("migrate policy schema: %w", err)
-		}
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		return fmt.Errorf("migrate policy schema: %w", err)
 	}
 	return nil
 }
 
 // Record stores doc under its file's sha256 unless that content is known
-// already, and makes it the current version. inserted is false when the
-// content was loaded before (a revert makes the earlier row current again).
+// already, and activates it unless it is in force already. inserted is
+// false when the content was loaded before (a revert activates the earlier
+// row again).
 func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Version, inserted bool, err error) {
 	body, err := json.Marshal(doc)
 	if err != nil {
@@ -58,6 +58,9 @@ func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Versio
 		return Version{}, false, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	if _, err := tx.ExecContext(ctx, `LOCK TABLE policy_activations IN EXCLUSIVE MODE`); err != nil {
+		return Version{}, false, err
+	}
 	err = tx.QueryRowContext(ctx,
 		`INSERT INTO policy_versions (sha256, document) VALUES ($1, $2::jsonb)
 		 ON CONFLICT (sha256) DO NOTHING RETURNING id`, sha, body).Scan(&v.ID)
@@ -69,8 +72,9 @@ func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Versio
 		return Version{}, false, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO policy_current (version_id) VALUES ($1)
-		 ON CONFLICT (singleton) DO UPDATE SET version_id = EXCLUDED.version_id`, v.ID); err != nil {
+		`INSERT INTO policy_activations (version_id)
+		 SELECT $1 WHERE $1 IS DISTINCT FROM (SELECT version_id FROM policy_activations ORDER BY id DESC LIMIT 1)`,
+		v.ID); err != nil {
 		return Version{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -80,14 +84,16 @@ func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Versio
 	return v, inserted, err
 }
 
-// Current is the version being enforced; false when none was loaded yet.
+// Current is the version in force, the latest activation; false when none
+// was loaded yet.
 func Current(ctx context.Context, db *sql.DB) (Version, bool, error) {
 	var v Version
 	var body []byte
 	err := db.QueryRowContext(ctx,
-		`SELECT v.id, v.sha256, v.document, v.loaded_at
-		 FROM policy_current c JOIN policy_versions v ON v.id = c.version_id`,
-	).Scan(&v.ID, &v.SHA256, &body, &v.LoadedAt)
+		`SELECT v.id, v.sha256, v.document, v.loaded_at, a.activated_at
+		 FROM policy_activations a JOIN policy_versions v ON v.id = a.version_id
+		 ORDER BY a.id DESC LIMIT 1`,
+	).Scan(&v.ID, &v.SHA256, &body, &v.LoadedAt, &v.ActivatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Version{}, false, nil
 	}
@@ -98,14 +104,6 @@ func Current(ctx context.Context, db *sql.DB) (Version, bool, error) {
 		return Version{}, false, fmt.Errorf("policy version %d: %w", v.ID, err)
 	}
 	return v, true, nil
-}
-
-// DayTotal is today's (UTC) ledger total over all tasks.
-func DayTotal(ctx context.Context, db *sql.DB) (float64, error) {
-	var total float64
-	err := db.QueryRowContext(ctx,
-		`SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date`).Scan(&total)
-	return total, err
 }
 
 // Costs is the ledger between two UTC days, both included.

@@ -4,6 +4,7 @@
 <dt>Version</dt><dd>{{.Version.ID}}</dd>
 <dt>sha256</dt><dd><code>{{.Version.SHA256}}</code></dd>
 <dt>Loaded</dt><dd>{{.LoadedAt}}</dd>
+<dt>In force since</dt><dd>{{.ActivatedAt}}</dd>
 </dl>
 <p>The policy is a file in Git; every change is a commit there. <a href="{{.URL}}">Edit it in the infra repository</a>.</p>
 <pre><code>{{.Document}}</code></pre>

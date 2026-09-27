@@ -19,9 +19,13 @@ type LiteLLM struct {
 	HTTP      *http.Client // nil = a client with a mint-sized timeout
 }
 
-func (l *LiteLLM) Mint(ctx context.Context, taskID string, maxBudget float64) (string, error) {
+func (l *LiteLLM) Mint(ctx context.Context, taskID string, maxBudget float64, models []string) (string, error) {
+	if len(models) == 0 {
+		return "", fmt.Errorf("key generate: no models (an empty list would allow every alias)")
+	}
 	payload, err := json.Marshal(map[string]any{
 		"max_budget": maxBudget,
+		"models":     models,
 		"metadata":   map[string]string{"task_id": taskID},
 	})
 	if err != nil {
@@ -34,11 +38,7 @@ func (l *LiteLLM) Mint(ctx context.Context, taskID string, maxBudget float64) (s
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+l.MasterKey)
 
-	client := l.HTTP
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
-	res, err := client.Do(req)
+	res, err := l.client().Do(req)
 	if err != nil {
 		return "", fmt.Errorf("key generate: %w", err)
 	}
@@ -64,4 +64,35 @@ func (l *LiteLLM) Mint(ctx context.Context, taskID string, maxBudget float64) (s
 		return keyRes.Token, nil
 	}
 	return "", fmt.Errorf("key generate: response has no key")
+}
+
+// Block blocks a superseded virtual key.
+func (l *LiteLLM) Block(ctx context.Context, key string) error {
+	payload, err := json.Marshal(map[string]string{"key": key})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.BaseURL+"/key/block", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+l.MasterKey)
+	res, err := l.client().Do(req)
+	if err != nil {
+		return fmt.Errorf("key block: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(res.Body, 1<<16))
+		return fmt.Errorf("key block: status %d: %s", res.StatusCode, body)
+	}
+	return nil
+}
+
+func (l *LiteLLM) client() *http.Client {
+	if l.HTTP != nil {
+		return l.HTTP
+	}
+	return &http.Client{Timeout: 15 * time.Second}
 }

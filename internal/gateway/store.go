@@ -36,19 +36,24 @@ type AuditRow struct {
 	// PolicyVersion is the policy version the decision was made under; nil
 	// only when no version could be read.
 	PolicyVersion *int64
+	// OutputLimit and HoldEUR are an admitted call's clamped output limit
+	// and the worst case held for it.
+	OutputLimit *int
+	HoldEUR     *float64
 }
 
 // Store is the task and audit state every gateway decision reads and writes.
 // The production implementation is Postgres; tests use an in-memory fake.
 type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
-	// AddSpent books one model call's cost onto the task and the ledger and
-	// returns the task's new total.
-	AddSpent(ctx context.Context, id, alias string, cost float64) (float64, error)
 	InsertAudit(ctx context.Context, row AuditRow) error
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
-	// DayTotal is today's (UTC) ledger total over all tasks.
-	DayTotal(ctx context.Context) (float64, error)
+	// TakeHold admits a call into the free task and day headroom (see
+	// policy.TakeHold); a *policy.Refusal when it does not fit.
+	TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error)
+	// ReleaseHold books the call's cost (nil = the hold) onto the task and
+	// the ledger and returns the task's spend.
+	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error)
 }
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
@@ -119,26 +124,11 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, true, nil
 }
 
-// AddSpent is one statement, so the task's spend and its ledger row are
-// booked together or not at all; the increment is atomic, so concurrent
-// calls of one task add up.
-func (s *PGStore) AddSpent(ctx context.Context, id, alias string, cost float64) (float64, error) {
-	var total float64
-	err := s.db.QueryRowContext(ctx,
-		`WITH t AS (UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1 RETURNING spent_eur),
-		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT $1, $3, $4, $2 FROM t)
-		 SELECT spent_eur::float8 FROM t`, id, cost, policy.KindModel, alias,
-	).Scan(&total)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("add spent: no task row for %s", id)
-	}
-	return total, err
-}
-
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, spend_eur, policy_version_id) VALUES ($1, $2, $3, $4, $5, $6)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.SpendEUR, row.PolicyVersion)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, spend_eur, policy_version_id, output_limit, hold_eur)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR)
 	return err
 }
 
@@ -146,6 +136,10 @@ func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, erro
 	return policy.Current(ctx, s.db)
 }
 
-func (s *PGStore) DayTotal(ctx context.Context) (float64, error) {
-	return policy.DayTotal(ctx, s.db)
+func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error) {
+	return policy.TakeHold(ctx, s.db, r)
+}
+
+func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error) {
+	return policy.ReleaseHold(ctx, s.db, h, cost)
 }

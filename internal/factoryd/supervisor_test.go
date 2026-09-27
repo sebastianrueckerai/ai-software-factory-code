@@ -3,8 +3,8 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func TestDigestCollectsCommandsFilesErrorsAndDiff(t *testing.T) {
@@ -117,6 +118,7 @@ type fakeLiteLLM struct {
 	content string
 	delay   time.Duration
 	keys    string // /key/list body; empty = no keys
+	cost    string // x-litellm-response-cost of a completion; "" = none
 }
 
 func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
@@ -146,6 +148,9 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			f.auth = append(f.auth, r.Header.Get("Authorization"))
+			if f.cost != "" {
+				w.Header().Set("x-litellm-response-cost", f.cost)
+			}
 			if f.status != 0 {
 				w.WriteHeader(f.status)
 				io.WriteString(w, `{"error":"boom"}`)
@@ -161,13 +166,22 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 	return srv
 }
 
+var supervisorPrice = policy.Price{In: 1e-6, Out: 4e-6}
+
+type onePrice policy.Price
+
+func (p onePrice) Price(context.Context, string) (policy.Price, error) { return policy.Price(p), nil }
+
+// testSupervisorModel meters against 20 EUR of free task and day headroom.
 func testSupervisorModel(url string) *SupervisorModel {
 	return &SupervisorModel{
-		BaseURL:     url,
-		Admin:       &LiteLLMAdmin{BaseURL: url, MasterKey: "master"},
-		Alias:       "supervisor",
-		Budget:      TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
-		DayHeadroom: func(context.Context) (float64, error) { return 20, nil },
+		BaseURL: url,
+		Admin:   &LiteLLMAdmin{BaseURL: url, MasterKey: "master"},
+		Alias:   "supervisor",
+		Budget:  TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
+		Prices:  onePrice(supervisorPrice),
+		Meter:   &memPolicy{taskFree: 20, dayFree: 20},
+		DayEUR:  func() float64 { return 20 },
 	}
 }
 
@@ -184,20 +198,27 @@ func testInput() SupervisorInput {
 }
 
 func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
-	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read the script first"}`}
+	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read the script first"}`, cost: "0.02"}
 	m := testSupervisorModel(f.srv(t).URL)
-	d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput())
+	meter := m.Meter.(*memPolicy)
+	d := m.Decide(context.Background(), "t1", testInput())
 	if d != (Decision{Action: ActionRedirect, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
+	payload, _ := m.payload(testInput(), 9000)
+	if len(meter.holds) != 1 || meter.holds[0] != (policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "supervisor",
+		InTokens: len(payload), Price: supervisorPrice, WantOut: 9000, DayEUR: 20}) {
+		t.Fatalf("holds = %+v, want one for the payload's bytes and 9000 output tokens", meter.holds)
+	}
+	holdEUR := float64(len(payload))*1e-6 + 9000*4e-6
 	if len(f.mints) != 1 {
 		t.Fatalf("mints = %d", len(f.mints))
 	}
 	mint := f.mints[0]
 	meta, _ := mint["metadata"].(map[string]any)
 	models, _ := mint["models"].([]any)
-	if mint["max_budget"] != 0.25 || meta["task_id"] != "t1" || meta["purpose"] != "supervisor" || len(models) != 1 || models[0] != "supervisor" {
-		t.Fatalf("mint = %v, want the task's remaining budget, its task_id, the supervisor alias only", mint)
+	if math.Abs(mint["max_budget"].(float64)-holdEUR) > 1e-12 || meta["task_id"] != "t1" || meta["purpose"] != "supervisor" || len(models) != 1 || models[0] != "supervisor" {
+		t.Fatalf("mint = %v, want max_budget the hold %v, its task_id, the supervisor alias only", mint, holdEUR)
 	}
 	if len(f.chats) != 1 || f.auth[0] != "Bearer sk-super-1" {
 		t.Fatalf("chats = %d, auth = %v, want one call with the minted key", len(f.chats), f.auth)
@@ -216,22 +237,55 @@ func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
 			t.Fatalf("user message lacks %q: %s", want, user)
 		}
 	}
+	// booked at call time with the call's own cost
+	if len(meter.released) != 1 || meter.released[0].cost == nil || *meter.released[0].cost != 0.02 || meter.released[0].hold.Ref != "supervisor" {
+		t.Fatalf("released = %+v, want the hold booked at 0.02", meter.released)
+	}
+}
+
+// Hand-derived: the free headroom pays for the payload's bytes at 1e-6 and
+// 2000 output tokens at 4e-6, so the call's 9000 are clamped to 2000.
+func TestSupervisorOutputClampedToTheHeadroom(t *testing.T) {
+	f := &fakeLiteLLM{content: `{"action":"continue"}`, cost: "0.001"}
+	m := testSupervisorModel(f.srv(t).URL)
+	payload, _ := m.payload(testInput(), 9000)
+	meter := &memPolicy{taskFree: float64(len(payload))*1e-6 + 2000*4e-6, dayFree: 20}
+	m.Meter = meter
+	if d := m.Decide(context.Background(), "t1", testInput()); d.Action != ActionContinue {
+		t.Fatalf("decision = %+v", d)
+	}
+	if got := f.chats[0]["max_tokens"]; got != float64(2000) {
+		t.Fatalf("max_tokens = %v, want 2000", got)
+	}
+
+	// below the minimum call: no key, no call, nothing to release
+	f2 := &fakeLiteLLM{content: `{"action":"continue"}`}
+	m2 := testSupervisorModel(f2.srv(t).URL)
+	m2.Meter = &memPolicy{taskFree: 20, dayFree: float64(len(payload))*1e-6 + 1000*4e-6}
+	d := m2.Decide(context.Background(), "t1", testInput())
+	if d.Action != ActionEscalate || !strings.Contains(d.Reason, "no headroom") || len(f2.mints)+len(f2.chats) != 0 || len(m2.Meter.(*memPolicy).released) != 0 {
+		t.Fatalf("no headroom: %+v, mints %d, chats %d; want escalate without a call", d, len(f2.mints), len(f2.chats))
+	}
 }
 
 func TestSupervisorModelFailureEscalates(t *testing.T) {
 	f := &fakeLiteLLM{status: http.StatusInternalServerError}
-	d := testSupervisorModel(f.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.05, testInput())
+	m := testSupervisorModel(f.srv(t).URL)
+	d := m.Decide(context.Background(), "t1", testInput())
 	if d.Action != ActionEscalate || !strings.Contains(d.Reason, "500") {
 		t.Fatalf("decision = %+v, want escalate naming the failure", d)
 	}
+	if r := m.Meter.(*memPolicy).released; len(r) != 1 || r[0].cost == nil || *r[0].cost != 0 {
+		t.Fatalf("released = %+v, want the failed call booked at 0", r)
+	}
+	// an answer without a cost books the hold
 	f2 := &fakeLiteLLM{content: "sure, continue"}
-	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate {
+	m2 := testSupervisorModel(f2.srv(t).URL)
+	if d := m2.Decide(context.Background(), "t1", testInput()); d.Action != ActionEscalate {
 		t.Fatalf("prose answer: %+v, want escalate", d)
 	}
-	// no budget left: no key, no call
-	f3 := &fakeLiteLLM{content: `{"action":"continue"}`}
-	if d := testSupervisorModel(f3.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.3, testInput()); d.Action != ActionEscalate || len(f3.mints)+len(f3.chats) != 0 {
-		t.Fatalf("no budget: %+v, mints %d, chats %d; want escalate without a call", d, len(f3.mints), len(f3.chats))
+	if r := m2.Meter.(*memPolicy).released; len(r) != 1 || r[0].cost != nil {
+		t.Fatalf("released = %+v, want the hold booked in full (cost unknown)", r)
 	}
 }
 
@@ -250,49 +304,5 @@ func TestSessionSupervisionCapsCallsPerSession(t *testing.T) {
 	d, called := s.onTrip(context.Background(), trip)
 	if called || calls != 3 || d.Action != ActionEscalate || !strings.Contains(d.Reason, "same_call") {
 		t.Fatalf("4th trip: %+v called=%v calls=%d, want escalate without a call", d, called, calls)
-	}
-}
-
-// M1: spend the running session's key already shows counts before it is
-// settled into spent_eur.
-func TestSupervisorKeyCapCountsUnsettledSpend(t *testing.T) {
-	f := &fakeLiteLLM{content: `{"action":"continue"}`, keys: `{"keys":[` +
-		`{"token":"h1","spend":0.12,"metadata":{"task_id":"t1"}},` +
-		`{"token":"h2","spend":0.08,"metadata":{"task_id":"t1"}},` +
-		`{"token":"h3","spend":5,"metadata":{"task_id":"other"}}],"total_pages":1}`}
-	m := testSupervisorModel(f.srv(t).URL)
-	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionContinue {
-		t.Fatalf("decision = %+v", d)
-	}
-	// 0.3 - max(0.05, 0.12+0.08)
-	if got := f.mints[0]["max_budget"].(float64); got < 0.0999 || got > 0.1001 {
-		t.Fatalf("max_budget = %v, want 0.1", got)
-	}
-	f.keys = `{"keys":[{"token":"h1","spend":0.31,"metadata":{"task_id":"t1"}}],"total_pages":1}`
-	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate || len(f.mints) != 1 {
-		t.Fatalf("spent out: %+v after %d mints, want escalate without a key", d, len(f.mints))
-	}
-}
-
-func TestSupervisorKeyCapTakesTheDayHeadroom(t *testing.T) {
-	f := &fakeLiteLLM{content: `{"action":"continue"}`}
-	m := testSupervisorModel(f.srv(t).URL)
-	day := 0.125
-	m.DayHeadroom = func(context.Context) (float64, error) { return day, nil }
-	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionContinue {
-		t.Fatalf("decision = %+v", d)
-	}
-	// min(0.3 - 0.05, 0.125)
-	if got := f.mints[0]["max_budget"]; got != 0.125 {
-		t.Fatalf("max_budget = %v, want the day headroom 0.125", got)
-	}
-	day = 0
-	d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput())
-	if d.Action != ActionEscalate || !strings.Contains(d.Reason, "day cap") || len(f.mints) != 1 {
-		t.Fatalf("day cap reached: %+v after %d mints, want escalate without a key", d, len(f.mints))
-	}
-	m.DayHeadroom = func(context.Context) (float64, error) { return 0, errors.New("db down") }
-	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate || len(f.mints) != 1 {
-		t.Fatalf("unknown day spend: %+v after %d mints, want escalate without a key", d, len(f.mints))
 	}
 }

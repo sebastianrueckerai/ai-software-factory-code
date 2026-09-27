@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 var version = "dev"
@@ -35,6 +36,7 @@ func main() {
 		Auth:       auth,
 		Store:      store,
 		Minter:     lite,
+		Prices:     &policy.PriceBook{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey},
 		LiteLLMURL: cfg.LiteLLMURL,
 	})
 

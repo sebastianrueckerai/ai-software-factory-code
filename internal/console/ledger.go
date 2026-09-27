@@ -76,5 +76,6 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	}
 	s := current(r)
 	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Version": v,
-		"LoadedAt": v.LoadedAt.UTC().Format(time.RFC3339), "Document": string(doc), "URL": c.cfg.PolicyURL})
+		"LoadedAt":    v.LoadedAt.UTC().Format(time.RFC3339),
+		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "URL": c.cfg.PolicyURL})
 }

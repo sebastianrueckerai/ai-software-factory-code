@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -24,15 +25,23 @@ type Authenticator interface {
 	Authenticate(r *http.Request) (Identity, error)
 }
 
-// KeyMinter mints a per-task LiteLLM virtual key with a spend cap of
-// maxBudget. Implemented by LiteLLM; tests substitute a fake.
+// KeyMinter mints a per-task LiteLLM virtual key capped at maxBudget and
+// limited to models, and blocks a superseded one. Implemented by LiteLLM;
+// tests substitute a fake.
 type KeyMinter interface {
-	Mint(ctx context.Context, taskID string, maxBudget float64) (string, error)
+	Mint(ctx context.Context, taskID string, maxBudget float64, models []string) (string, error)
+	Block(ctx context.Context, key string) error
+}
+
+// Pricer is an alias's worst-case price. Implemented by policy.PriceBook.
+type Pricer interface {
+	Price(ctx context.Context, alias string) (policy.Price, error)
 }
 
 var (
 	_ Authenticator = (*Auth)(nil)
 	_ KeyMinter     = (*LiteLLM)(nil)
+	_ Pricer        = (*policy.PriceBook)(nil)
 )
 
 // maxBodyBytes caps the proxied request body at the trust boundary. Large
@@ -44,13 +53,19 @@ type ServerOptions struct {
 	Auth       Authenticator
 	Store      Store
 	Minter     KeyMinter
+	Prices     Pricer
 	LiteLLMURL string
 	HTTP       *http.Client // proxy client; nil = no timeout, streaming-safe
 }
 
+// cachedKey is a task's virtual key and what it was minted for: a new run,
+// policy version or UTC day mints a new key (its models and max_budget
+// follow from them) and blocks this one.
 type cachedKey struct {
-	key   string
-	saUID string // the run the key was minted for
+	key     string
+	saUID   string
+	version int64
+	day     string
 }
 
 type Server struct {
@@ -107,12 +122,16 @@ func (s *Server) Routes(version string) http.Handler {
 	return mux
 }
 
-// Budget consumer contract: the GLM upstream behind coding-frontier and
-// review-frontier always reasons before answering, 200+ tokens billed at the
-// output rate even for trivial prompts. Task budgets set by factoryd and the
-// remaining-budget caps minted here must leave headroom for that reasoning
-// overhead, and audit reasons carry the upstream refusal messages verbatim
-// so an exhausted-by-reasoning task stays explainable after the fact.
+// inTokenSlack covers the bytes the output limit adds to the body after the
+// input bound is taken.
+const inTokenSlack = 64
+
+// handleChat admits a call only if its worst case fits the task's and the
+// day's free headroom: the output limit is clamped to what the headroom can
+// pay for at the alias's LiteLLM price, and that worst case is held until
+// the call's cost is booked. GLM always reasons before answering (200+
+// output tokens even for trivial prompts), so a call that cannot fit
+// policy.MinCallTokens is refused.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -139,7 +158,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	chatReq, err := parseChat(body)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
@@ -162,19 +181,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	taskHeadroom := task.BudgetEUR - task.SpentEUR
-	if taskHeadroom <= 0 {
-		s.refuseSpend(w, pid, task, "refused_budget", chatReq.Model, fmt.Sprintf("spent %.4f >= budget %.4f EUR", task.SpentEUR, task.BudgetEUR))
-		return
-	}
-	dayTotal, err := s.opts.Store.DayTotal(ctx)
+	price, err := s.opts.Prices.Price(ctx, chatReq.Model)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
-		return
-	}
-	dayHeadroom := pv.Document.Budget.DayEUR - dayTotal
-	if dayHeadroom <= 0 {
-		s.refuseSpend(w, pid, task, "refused_day_cap", chatReq.Model, fmt.Sprintf("today's spend %.4f >= day cap %.4f EUR (UTC day, all tasks)", dayTotal, pv.Document.Budget.DayEUR))
+		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, chatReq.Model, err)
+		s.refuse(w, pid, id.TaskID, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
@@ -189,19 +199,59 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := s.keyFor(ctx, task, id.SAUID, min(taskHeadroom, dayHeadroom))
+	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
+		TaskID: task.ID, Kind: policy.KindModel, Ref: chatReq.Model,
+		InTokens: len(body) + inTokenSlack, Price: price, WantOut: chatReq.WantOut,
+		DayEUR: pv.Document.Budget.DayEUR,
+	})
+	var refusal *policy.Refusal
+	if errors.As(err, &refusal) {
+		s.refuseSpend(w, pid, task, refusal.Decision, chatReq.Model, refusal.Reason)
+		return
+	}
 	if err != nil {
+		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
+		return
+	}
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model}
+
+	if body, err = chatReq.withOutputLimit(hold.MaxOut); err != nil {
+		s.finish(call, zeroCost, "")
+		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	key, err := s.keyFor(ctx, task, id.SAUID, pv, hold.Headroom)
+	if err != nil {
+		s.finish(call, zeroCost, "")
 		s.refuse(w, pid, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
 
-	s.proxy(w, r, pid, task, key, body, chatReq.Model, chatReq.Stream)
+	s.proxy(w, r, call, key, body, chatReq.Stream)
+}
+
+// forwardedFields are the request fields LiteLLM receives: the OpenAI chat
+// parameters. Everything else is refused, above all LiteLLM's own routing
+// overrides (fallbacks, context_window_fallbacks, content_policy_fallbacks,
+// router_settings_override, mock_testing_*), which would reach aliases
+// outside the task's classes.
+var forwardedFields = map[string]bool{
+	"model": true, "messages": true, "stream": true, "stream_options": true,
+	"max_tokens": true, "max_completion_tokens": true, "n": true,
+	"temperature": true, "top_p": true, "stop": true, "seed": true,
+	"presence_penalty": true, "frequency_penalty": true, "logit_bias": true,
+	"logprobs": true, "top_logprobs": true, "user": true,
+	"tools": true, "tool_choice": true, "parallel_tool_calls": true,
+	"response_format": true, "reasoning_effort": true, "thinking": true,
 }
 
 type chatRequest struct {
 	Model  string
 	Stream bool
-	fields map[string]json.RawMessage
+	// WantOut is the caller's output limit, the smaller of max_tokens and
+	// max_completion_tokens; 0 = none.
+	WantOut int
+	fields  map[string]json.RawMessage
 }
 
 // parseChat reads model and stream by exact key, as LiteLLM does (Go's
@@ -218,12 +268,57 @@ func parseChat(body []byte) (chatRequest, error) {
 			return req, errors.New("model is not a string")
 		}
 	}
+	var refused []string
+	for k := range req.fields {
+		if !forwardedFields[k] {
+			refused = append(refused, k)
+		}
+	}
+	if len(refused) > 0 {
+		slices.Sort(refused)
+		return req, fmt.Errorf("fields %q are not accepted", refused)
+	}
 	if raw, ok := req.fields["stream"]; ok {
 		if err := json.Unmarshal(raw, &req.Stream); err != nil {
 			return req, errors.New("stream is not a boolean")
 		}
 	}
+	if raw, ok := req.fields["n"]; ok && string(raw) != "null" {
+		var n int
+		if err := json.Unmarshal(raw, &n); err != nil || n != 1 {
+			return req, errors.New("n must be 1")
+		}
+	}
+	for _, f := range []string{"max_tokens", "max_completion_tokens"} {
+		raw, ok := req.fields[f]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var n int
+		if err := json.Unmarshal(raw, &n); err != nil || n <= 0 {
+			return req, fmt.Errorf("%s is not a positive integer", f)
+		}
+		if req.WantOut == 0 || n < req.WantOut {
+			req.WantOut = n
+		}
+	}
 	return req, nil
+}
+
+// withOutputLimit writes the clamped output limit into the field(s) the
+// caller used, max_tokens when it used neither, and re-encodes the body.
+func (c chatRequest) withOutputLimit(limit int) ([]byte, error) {
+	set := false
+	for _, f := range []string{"max_tokens", "max_completion_tokens"} {
+		if raw, ok := c.fields[f]; ok && string(raw) != "null" {
+			c.fields[f] = json.RawMessage(strconv.Itoa(limit))
+			set = true
+		}
+	}
+	if !set {
+		c.fields["max_tokens"] = json.RawMessage(strconv.Itoa(limit))
+	}
+	return json.Marshal(c.fields)
 }
 
 // withStreamUsage makes a streaming request end with a usage chunk, which
@@ -241,27 +336,36 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 	return err
 }
 
-// keyFor returns the virtual key of the task's current run or mints one
-// capped at maxBudget, the smaller of the task's and the day's headroom, so
-// a task can never spend past either even if the gateway's own check lags.
-// A requeue blocks the old key and recreates the service account, so a new
-// SA UID gets a new key.
-func (s *Server) keyFor(ctx context.Context, task Task, saUID string, maxBudget float64) (string, error) {
-	if key, ok := s.cachedKey(task.ID, saUID); ok {
+// keyFor returns the virtual key of the task's current run, policy version
+// and UTC day, or mints one: limited to the aliases the task's classes
+// allow (so LiteLLM refuses any other target) and capped at maxBudget, the
+// smaller of the task's and the day's headroom. The key it supersedes is
+// blocked.
+func (s *Server) keyFor(ctx context.Context, task Task, saUID string, pv *policy.Version, maxBudget float64) (string, error) {
+	want := cachedKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout)}
+	if key, ok := s.cachedKey(task.ID, want); ok {
 		return key, nil
 	}
 	// one mint per run at a time, and no task waits on another's mint
-	v, err, _ := s.mints.Do(task.ID+"\x00"+saUID, func() (any, error) {
-		if key, ok := s.cachedKey(task.ID, saUID); ok {
+	v, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", task.ID, saUID, pv.ID, want.day), func() (any, error) {
+		if key, ok := s.cachedKey(task.ID, want); ok {
 			return key, nil
 		}
-		key, err := s.opts.Minter.Mint(context.WithoutCancel(ctx), task.ID, maxBudget)
+		ctx := context.WithoutCancel(ctx)
+		key, err := s.opts.Minter.Mint(ctx, task.ID, maxBudget, pv.Document.Models(task.Classes))
 		if err != nil {
 			return "", fmt.Errorf("mint virtual key: %w", err)
 		}
 		s.mu.Lock()
-		s.keysByTask[task.ID] = cachedKey{key: key, saUID: saUID}
+		old, had := s.keysByTask[task.ID]
+		want.key = key
+		s.keysByTask[task.ID] = want
 		s.mu.Unlock()
+		if had {
+			if err := s.opts.Minter.Block(ctx, old.key); err != nil {
+				log.Printf("task %s: block superseded key (version %d, day %s): %v", task.ID, old.version, old.day, err)
+			}
+		}
 		return key, nil
 	})
 	if err != nil {
@@ -270,18 +374,54 @@ func (s *Server) keyFor(ctx context.Context, task Task, saUID string, maxBudget 
 	return v.(string), nil
 }
 
-func (s *Server) cachedKey(taskID, saUID string) (string, bool) {
+func (s *Server) cachedKey(taskID string, want cachedKey) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.keysByTask[taskID]
-	return c.key, ok && c.saUID == saUID
+	return c.key, ok && c.saUID == want.saUID && c.version == want.version && c.day == want.day
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, pid *int64, task Task, key string, body []byte, alias string, stream bool) {
+// modelCall is one admitted call: its hold is released exactly once.
+type modelCall struct {
+	pid   *int64
+	task  Task
+	hold  policy.Hold
+	alias string
+}
+
+var zero = 0.0
+
+// zeroCost is the cost of a call that never reached a provider.
+var zeroCost = &zero
+
+// finish releases the call's hold into the ledger, at cost or, when the
+// cost is unknown (nil), at the hold's full amount, and audits the call
+// unless it was refused on the way (decision ""). Booking runs on a
+// background context: the billing happened, so it must be recorded even if
+// the caller disconnected.
+func (s *Server) finish(c *modelCall, cost *float64, decision string) {
+	reason := ""
+	if cost == nil {
+		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
+	}
+	spend, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost)
+	if err != nil {
+		reason = fmt.Sprintf("hold %d not released: %v", c.hold.ID, err)
+		log.Printf("task %s: %s", c.task.ID, reason)
+		spend = c.task.SpentEUR
+	}
+	if decision == "" {
+		return
+	}
+	s.auditCall(c, decision, reason, &spend)
+}
+
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key string, body []byte, stream bool) {
 	ctx := r.Context()
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		s.refuse(w, pid, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
+		s.finish(c, zeroCost, "")
+		s.refuse(w, c.pid, c.task.ID, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	upReq.Header.Set("Content-Type", contentType(r))
@@ -289,13 +429,16 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, pid *int64, task 
 
 	res, err := s.http.Do(upReq)
 	if err != nil {
-		s.refuse(w, pid, task.ID, "error_upstream", err.Error(), alias, http.StatusBadGateway, "upstream_error")
+		// the provider may have run part of the call: book the hold
+		s.finish(c, nil, "")
+		s.refuse(w, c.pid, c.task.ID, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode/100 != 2 {
 		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+		s.finish(c, zeroCost, "")
 		if res.StatusCode == http.StatusTooManyRequests && isBudgetExceeded(respBody) {
 			var liteErr struct {
 				Error struct {
@@ -303,10 +446,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, pid *int64, task 
 				} `json:"error"`
 			}
 			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-			s.refuseSpend(w, pid, task, "refused_budget", alias, "litellm budget_exceeded: "+liteErr.Error.Message)
+			s.refuseSpend(w, c.pid, c.task, "refused_budget", c.alias, "litellm budget_exceeded: "+liteErr.Error.Message)
 			return
 		}
-		s.audit(pid, task.ID, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), alias, &task.SpentEUR)
+		s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 		w.WriteHeader(res.StatusCode)
 		w.Write(respBody) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
@@ -318,34 +461,22 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, pid *int64, task 
 
 	// Each call's own cost is booked onto the task. x-litellm-key-spend is
 	// not: it is a cached read that lags, and a stream's headers leave before
-	// its cost exists. A stream's cost arrives in its final usage chunk. Costs
-	// are LiteLLM's USD prices booked 1:1 as EUR, the unit of budget_eur and
-	// of the key's max_budget.
-	var cost float64
-	costErr := error(nil)
+	// its cost exists. A stream's cost arrives in its final usage chunk; a
+	// stream the client broke off never shows it, and books the hold.
+	var cost *float64
 	if stream {
 		usage := &usageScanner{}
 		s.stream(w, io.TeeReader(res.Body, usage))
-		cost, costErr = usage.cost, usage.err()
+		if usage.seen {
+			cost = &usage.cost
+		}
 	} else {
-		cost, costErr = strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64)
 		s.stream(w, res.Body)
+		if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
+			cost = &v
+		}
 	}
-
-	// Booked on a background context: the billing happened, so it must be
-	// recorded even if the caller disconnects.
-	spend, reason := task.SpentEUR, ""
-	if costErr != nil {
-		reason = "cost not reported, not booked: " + costErr.Error()
-	} else if total, err := s.opts.Store.AddSpent(context.Background(), task.ID, alias, cost); err != nil {
-		reason = "cost " + strconv.FormatFloat(cost, 'g', -1, 64) + " not booked: " + err.Error()
-	} else {
-		spend = total
-	}
-	if reason != "" {
-		log.Printf("task %s: %s", task.ID, reason)
-	}
-	s.audit(pid, task.ID, "allowed", reason, alias, &spend)
+	s.finish(c, cost, "allowed")
 }
 
 // maxSSELine bounds what usageScanner buffers of one line. The usage chunk
@@ -396,13 +527,6 @@ func (u *usageScanner) line(l []byte) {
 	}
 }
 
-func (u *usageScanner) err() error {
-	if !u.seen {
-		return errors.New("stream ended without a usage cost")
-	}
-	return nil
-}
-
 // stream copies the upstream body with per-write flushes so SSE streaming
 // responses pass through unbuffered.
 func (s *Server) stream(w http.ResponseWriter, body io.Reader) {
@@ -451,6 +575,16 @@ func (s *Server) refuseSpend(w http.ResponseWriter, pid *int64, task Task, decis
 func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, decision, reason, alias string, status int, typ string) {
 	s.audit(pid, taskID, decision, reason, alias, nil)
 	writeError(w, status, typ, reason)
+}
+
+// auditCall audits an admitted call with its output limit and hold.
+func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
+	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
+		TaskID: c.task.ID, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
+		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR,
+	}); err != nil {
+		log.Printf("insert audit row (task %s, decision %s): %v", c.task.ID, decision, err)
+	}
 }
 
 // audit persists the decision on a background context: audit rows are the

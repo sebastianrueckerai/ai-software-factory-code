@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,8 +33,40 @@ type memPolicy struct {
 	versions []policy.Version
 	current  int64
 	records  int
-	day      float64
 	costs    [][2]time.Time
+	// free is the task's and the day's free headroom TakeHold fits into
+	taskFree, dayFree float64
+	holds             []policy.HoldRequest
+	released          []releasedHold
+	sweeps            int
+}
+
+type releasedHold struct {
+	hold policy.Hold
+	cost *float64
+}
+
+func (m *memPolicy) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hold, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.holds = append(m.holds, r)
+	h, err := policy.Fit(m.taskFree, m.dayFree, r)
+	h.ID = int64(len(m.holds))
+	return h, err
+}
+
+func (m *memPolicy) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (float64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.released = append(m.released, releasedHold{h, cost})
+	return 0, nil
+}
+
+func (m *memPolicy) SweepHolds(context.Context) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sweeps++
+	return 0, nil
 }
 
 func (m *memPolicy) RecordPolicy(_ context.Context, sha string, doc policy.Document) (policy.Version, bool, error) {
@@ -60,8 +93,6 @@ func (m *memPolicy) CurrentPolicy(context.Context) (policy.Version, bool, error)
 	}
 	return m.versions[m.current-1], true, nil
 }
-
-func (m *memPolicy) DayTotal(context.Context) (float64, error) { return m.day, nil }
 
 func (m *memPolicy) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	m.mu.Lock()
@@ -104,8 +135,8 @@ func TestPolicyLoader(t *testing.T) {
 	if cur := l.Current(); cur.ID != 2 || cur.Document.Budget.DayEUR != 7 {
 		t.Fatalf("after edit current = %+v, want version 2 with day_eur 7", cur)
 	}
-	if h, err := l.DayHeadroom(ctx); err != nil || h != 7 {
-		t.Fatalf("DayHeadroom = (%v, %v), want 7", h, err)
+	if l.DayEUR() != 7 {
+		t.Fatalf("DayEUR = %v, want 7", l.DayEUR())
 	}
 
 	// invalid content: rejected, version 2 stays current, and not retried
@@ -140,6 +171,41 @@ func TestPolicyLoader(t *testing.T) {
 	}
 }
 
+// A version whose coder class leaves out a ladder model is rejected: the
+// ladder's next rung would be refused mid-task.
+func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	store := &memPolicy{}
+	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}
+	if got := ladder.Aliases(); !slices.Equal(got, []string{"coding-cheap", "coding-frontier"}) {
+		t.Fatalf("aliases = %v", got)
+	}
+	l := &PolicyLoader{Path: path, Store: store, LadderModels: ladder.Aliases()}
+	narrow := strings.Replace(testPolicyYAML, "[coding-cheap, coding-frontier]", "[coding-cheap]", 1)
+
+	// the only valid version leaves out a rung: no boot
+	writePolicy(t, path, narrow)
+	if err := l.Boot(ctx); err == nil || store.records != 0 {
+		t.Fatalf("boot with a policy that drops coding-frontier = %v after %d records, want a refusal", err, store.records)
+	}
+	writePolicy(t, path, testPolicyYAML)
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// a later edit that drops a rung is rejected, version 1 stays
+	writePolicy(t, path, narrow)
+	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), "coding-frontier") || l.Current().ID != 1 {
+		t.Fatalf("edit dropping a rung = %v with version %d current, want a rejection with 1", err, l.Current().ID)
+	}
+	// a stored version that drops a rung does not count as valid at boot
+	store.RecordPolicy(ctx, "narrow", func() policy.Document { d, _ := policy.Parse([]byte(narrow)); return d }()) // #nosec G104 -- the fake never fails
+	restarted := &PolicyLoader{Path: path, Store: store, LadderModels: ladder.Aliases()}
+	if err := restarted.Boot(ctx); err == nil {
+		t.Fatal("boot with only a stored narrow version and a narrow file succeeded")
+	}
+}
+
 func TestPolicyLoaderBootNeedsAValidVersion(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -171,7 +237,7 @@ func TestPolicyHandler(t *testing.T) {
 	if got.ID != 1 || got.SHA256 != "abc" || got.Document.Budget.TaskMaxEUR != 5 || got.LoadedAt.IsZero() {
 		t.Fatalf("GET /policy = %+v", got)
 	}
-	for _, key := range []string{`"id"`, `"sha256"`, `"loaded_at"`, `"document"`, `"task_default_eur"`, `"coder"`} {
+	for _, key := range []string{`"id"`, `"sha256"`, `"loaded_at"`, `"activated_at"`, `"document"`, `"task_default_eur"`, `"coder"`} {
 		if !strings.Contains(rr.Body.String(), key) {
 			t.Fatalf("GET /policy body lacks %s: %s", key, rr.Body.String())
 		}

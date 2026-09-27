@@ -66,7 +66,13 @@ func main() {
 	defer store.Close()
 	// no valid policy version at all is the one policy failure that stops
 	// the boot; later invalid edits are logged and the last valid one holds
-	policyLoader := &factoryd.PolicyLoader{Path: env("POLICY_FILE", "/etc/factory-policy/policy.yaml"), Store: store}
+	ladder := factoryd.ModelLadder{
+		Start:    env("MODEL", "factory/coding-cheap"),
+		Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
+	}
+	// a ladder model outside the coder class would be refused mid-task
+	policyLoader := &factoryd.PolicyLoader{Path: env("POLICY_FILE", "/etc/factory-policy/policy.yaml"), Store: store,
+		LadderModels: ladder.Aliases()}
 	if err := policyLoader.Boot(context.Background()); err != nil {
 		log.Fatalf("policy: %v", err)
 	}
@@ -106,15 +112,12 @@ func main() {
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"),
 		GitBaseURL:           gitBase,
-		Models: factoryd.ModelLadder{
-			Start:    env("MODEL", "factory/coding-cheap"),
-			Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
-		},
-		AnswerTokens:   envInt("ANSWER_TOKENS", 8192),
-		HeadroomTokens: envInt("HEADROOM_TOKENS", 16384),
-		MaxSessions:    envInt("MAX_SESSIONS", 3),
-		AnswerSlice:    envDuration("ESCALATION_ANSWER_SLICE", 10*time.Minute),
-		ChecksTimeout:  envDuration("CHECKS_TIMEOUT", 45*time.Minute),
+		Models:               ladder,
+		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
+		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
+		MaxSessions:          envInt("MAX_SESSIONS", 3),
+		AnswerSlice:          envDuration("ESCALATION_ANSWER_SLICE", 10*time.Minute),
+		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
 			WallClockCap:     envDuration("WALL_CLOCK_CAP", 20*time.Minute),
@@ -132,7 +135,9 @@ func main() {
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
 			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
-		DayHeadroom: policyLoader.DayHeadroom,
+		Prices: &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
+		Meter:  store,
+		DayEUR: policyLoader.DayEUR,
 	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)
@@ -207,6 +212,7 @@ func main() {
 	}()
 	go completion.SettleLoop(ctx, time.Minute)
 	go policyLoader.Watch(ctx, 30*time.Second)
+	go factoryd.SweepLoop(ctx, store, time.Minute)
 	go ciSpawner.Run(ctx)
 
 	mux := http.NewServeMux()

@@ -31,16 +31,21 @@ the agents work on.
   runs the CI spawner (see below) in the same process, on the same
   in-cluster Kubernetes client.
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
-  projected ServiceAccount JWT, checks the call against the policy
+  projected ServiceAccount JWT and checks the call against the policy
   version in force (read from Postgres, at most 30 s old; 503 while none
-  is loaded): the task must be running, its capability classes must allow
-  the requested model (403 `refused_capability` otherwise), and both the
-  task's headroom (budget minus spent) and the day's headroom (the day cap
-  minus today's ledger total, all tasks) must be positive (402
-  `refused_budget` or `refused_day_cap`). It mints a per-task LiteLLM
-  virtual key capped at the smaller headroom, forwards the call, books its
-  cost onto the task row and a `model` ledger row in one statement, and
-  writes an audit row per decision naming the policy version.
+  is loaded). It forwards only the OpenAI chat fields (400 `refused_body`
+  for anything else, above all LiteLLM's `fallbacks`,
+  `router_settings_override` and `mock_testing_*`, and for `n` above 1).
+  The task must be running and its capability classes must allow the
+  model (403 `refused_capability`). The call is then metered, see "Policy
+  and costs": its output limit is clamped so its worst case fits the free
+  headroom, the worst case is held, and the real cost is booked after the
+  call (402 `refused_budget` or `refused_day_cap` when it cannot fit). The
+  per-task LiteLLM virtual key is limited to the classes' aliases and
+  capped at the smaller headroom; a new run, policy version or UTC day
+  mints a new key and blocks the old one. Every decision has an audit row
+  naming the policy version; an admitted call's row also carries its
+  output limit and hold.
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
   resumed task branch that only the fork holds is fetched from there),
@@ -227,11 +232,12 @@ the diff against the base last grew, with no command newly passing, 15),
 half way (half the wall-clock cap `WALL_CLOCK_CAP` or half the budget;
 once per task, recorded on the task row). The wall-clock cap ends the
 session. Every other trip asks the supervisor, a model under the LiteLLM
-alias `supervisor`, called directly with a virtual key minted per call
-(metadata `task_id`, `max_budget` the budget minus the larger of
-spent_eur and the spend on the task's LiteLLM keys, never more than the
-day cap's headroom, model `supervisor` only, so the settlement books its
-spend and the session end blocks it).
+alias `supervisor`, called directly and metered like a gateway call: its
+answer limit is clamped to the free headroom, the worst case is held, and
+its cost is booked as a `model` ledger row with ref `supervisor` right
+after the call; a call that cannot fit escalates. Its virtual key is
+minted per call (metadata `task_id`, `max_budget` the hold, model
+`supervisor` only, so the session end blocks it).
 It reads the brief, the trip, a progress digest and the session record's
 tail, and answers one of `continue` (the detector resets, the session
 runs on), `redirect` (new session, same rung, its guidance as findings),
@@ -283,28 +289,52 @@ Unknown keys are rejected. factoryd mounts it read-only at
 `/etc/factory-policy/policy.yaml` (`POLICY_FILE`), reads it on boot and
 every 30 s, and records each new valid content as an immutable
 `policy_versions` row (sha256 of the file, the document as JSON,
-`loaded_at`) made current in `policy_current`; known content (a revert)
-makes its earlier row current again. An invalid file logs
-`POLICY REJECTED` and the previous version stays current; factoryd
-refuses to boot only when no valid version exists at all. The gateway
-never reads the file, only the current version in Postgres.
+`loaded_at`). The version in force is the latest row of the append-only
+`policy_activations`; known content (a revert) activates its earlier row
+again. An invalid file, or one whose `coder` class leaves out a model of
+the ladder (`MODEL`, `STRONGER_MODEL`), logs `POLICY REJECTED` and the
+previous version stays in force; factoryd refuses to boot only when no
+valid version exists at all. The gateway never reads the file, only the
+version in force in Postgres. `day_eur: 0` stops all spend.
 
 Intake gives every agent task the capability class `coder`
 (`tasks.required_capabilities`; a one-shot backfill gave it to older
 agent tasks) and the budget `task_default_eur`, or the requested budget
 capped at `task_max_eur`.
 
-The `ledger` table holds every booked cost: task, UTC day, kind (`model`
-per gateway call with the alias as ref, `settlement` for the raise the
-settlement pass makes when LiteLLM shows more spend than was booked,
-`tool` and `resource` for later connectors), ref, EUR. Its day total is
-what the day cap is measured against. The schema of `policy_versions`,
-`policy_current` and `ledger` lives in `internal/policy/schema.sql` and is
-applied by both binaries, which share the `gateway` database.
+The caps hold on the call itself. Prices per alias come from LiteLLM's
+`GET /model/info` (the figures it bills with; per alias the maximum over
+its deployments of the input rate, the output or reasoning rate and the
+output limit), read every 5 minutes; an alias the policy allows but
+LiteLLM cannot price is refused (503 `error_price`, logged as
+`PRICE MISSING`). A call's input is bounded by its body's byte length (a
+token covers at least one byte). Under one Postgres advisory lock, in one
+transaction, the headroom left after spend and every outstanding hold is
+computed (task: budget minus spent; day: `day_eur` minus today's ledger
+total), the output limit (`max_tokens` or `max_completion_tokens`) is
+clamped to what that pays for, and a `holds` row takes the worst case.
+Fewer than 1024 output tokens (GLM reasons before it answers) is refused
+unless the caller asked for fewer. After the call one transaction
+deletes the hold and books the real cost onto `tasks.spent_eur` and the
+ledger; an unknown cost (no cost header, a broken stream) books the
+hold. A hold whose caller died expires after an hour and factoryd's
+sweep books it in full. `holds` has kinds `model`, `tool` and `resource`
+for the later connectors. LiteLLM's
+`fail_closed_budget_enforcement` is the backstop.
+
+The `ledger` table holds every booked cost, append-only: task, UTC day,
+kind (`model` per call with the alias as ref, `settlement` for the raise
+the settlement pass makes when LiteLLM shows more spend than was booked,
+dated the day the pass runs, `tool` and `resource` for later
+connectors), ref, EUR (never negative). Costs are LiteLLM's USD prices
+booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
+`policy_activations`, `ledger` and `holds` lives in
+`internal/policy/schema.sql` and is applied by both binaries, which share
+the `gateway` database.
 
 Both endpoints take the intake bearer token:
 
-- `GET /policy`: the version in force, `{id, sha256, loaded_at, document}`.
+- `GET /policy`: the version in force, `{id, sha256, document, loaded_at, activated_at}`.
 - `GET /costs?from=YYYY-MM-DD&to=YYYY-MM-DD` (UTC days, both included,
   each defaulting to today, at most 366 days apart): `days` (per day
   `by_kind` and `total`) and `tasks` (per task total, largest first).
