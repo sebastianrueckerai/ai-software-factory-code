@@ -103,7 +103,6 @@ type SessionInput struct {
 	Findings        []string
 	StartRef        string
 	ParentSessionID string
-	HalfWayDone     bool // the task's half-way check-in already fired
 }
 
 type SessionResult struct {
@@ -114,8 +113,7 @@ type SessionResult struct {
 	Findings  []string
 	// Reason is the supervisor's escalation reason with the progress
 	// digest's summary, for the issue.
-	Reason      string
-	HalfWayDone bool
+	Reason string
 }
 
 type PullRequest struct {
@@ -269,7 +267,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			apply(v)
 		}
 	}
-	halfWayDone := false
 	maxAttempts := t.cfg.MaxSessions
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if drained {
@@ -289,7 +286,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		final, why, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
-			Findings: findings, StartRef: startRef, ParentSessionID: parent, HalfWayDone: halfWayDone,
+			Findings: findings, StartRef: startRef, ParentSessionID: parent,
 		})
 		used += workflow.Now(t.ctx).Sub(began)
 		if decided {
@@ -307,7 +304,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		parent = res.SessionID
 		reason = res.Summary
-		halfWayDone = halfWayDone || res.HalfWayDone
 		switch res.Outcome {
 		case OutcomeWallClock:
 			return t.finish("failed", "wall-clock cap reached")

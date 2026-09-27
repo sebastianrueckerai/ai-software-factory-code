@@ -42,6 +42,8 @@ type Task struct {
 	Source string
 	// PRNumber is the pull request the task's workflow opened; 0 = none yet.
 	PRNumber int64
+	// HalfWayDone: the task's half-way check-in fired (once per task).
+	HalfWayDone bool
 }
 
 // IntakeEvent is a Forgejo comment or review recorded against a task's issue
@@ -98,6 +100,8 @@ type Store interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) error
 	// SetTaskPR records the pull request a task's workflow opened.
 	SetTaskPR(ctx context.Context, id string, number int64) error
+	// MarkHalfWay records that the task's half-way check-in fired.
+	MarkHalfWay(ctx context.Context, id string) error
 	// DeliverySeen reports whether a webhook delivery was processed.
 	DeliverySeen(ctx context.Context, id string) (bool, error)
 	// RecordDelivery marks a webhook delivery processed.
@@ -199,13 +203,13 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, branch, kind, issue_number, source, pr_number`
+	objective, repository, sha, branch, kind, issue_number, source, pr_number, half_way_done`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber); err != nil {
+		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -244,6 +248,11 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
 
 func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = $2 WHERE id = $1`, id, number)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) MarkHalfWay(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET half_way_done = true WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 

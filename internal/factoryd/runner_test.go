@@ -62,6 +62,8 @@ type fakePod struct {
 	logs      string
 	logsReady chan struct{} // closed when scriptPods has assigned the body
 	spec      map[string]any
+	opens     int  // log streams opened
+	deleted   bool // deletion requested, grace period running
 }
 
 func newFakeKube() *fakeKube {
@@ -182,14 +184,21 @@ func (k *fakeKube) CreatePod(ctx context.Context, namespace, name string, pod ma
 func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if _, ok := k.pods[namespace+"/"+name]; !ok {
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok || p.deleted {
 		return ErrNotFound
 	}
-	delete(k.pods, namespace+"/"+name)
 	k.deletedPods = append(k.deletedPods, namespace+"/"+name)
 	if k.onDeletePod != nil {
 		k.onDeletePod()
 	}
+	// a worker whose log is cut is still inside its grace period: the pod
+	// stays until the rest of its log has been read
+	if strings.Contains(p.logs, cutLogs) && p.phase == "Running" {
+		p.deleted = true
+		return nil
+	}
+	delete(k.pods, namespace+"/"+name)
 	return nil
 }
 
@@ -203,6 +212,8 @@ func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (strin
 	return p.phase, 0, nil
 }
 
+// PodLog serves the scripted body; reading it to the end means the
+// container exited (phase Succeeded, and a deleted pod goes).
 func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error) {
 	k.mu.Lock()
 	p := k.pods[namespace+"/"+name]
@@ -218,15 +229,54 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 	if p.logs == hangLogs {
 		return io.NopCloser(ctxReader{ctx}), nil
 	}
-	if body, ok := strings.CutPrefix(p.logs, trickleLogs); ok {
-		return io.NopCloser(iotest.HalfReader(strings.NewReader(body))), nil
+	body := p.logs
+	if before, after, ok := strings.Cut(body, cutLogs); ok {
+		k.mu.Lock()
+		p.opens++
+		first := p.opens == 1
+		k.mu.Unlock()
+		if first {
+			// the stream breaks here while the container runs on
+			return io.NopCloser(strings.NewReader(before)), nil
+		}
+		body = before + after
 	}
-	return io.NopCloser(strings.NewReader(p.logs)), nil
+	var r io.Reader = strings.NewReader(body)
+	if rest, ok := strings.CutPrefix(body, trickleLogs); ok {
+		r = iotest.HalfReader(strings.NewReader(rest))
+	}
+	return io.NopCloser(&exitReader{r: r, exited: func() {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+		p.phase = "Succeeded"
+		if p.deleted {
+			delete(k.pods, namespace+"/"+name)
+		}
+	}}), nil
+}
+
+type exitReader struct {
+	r      io.Reader
+	exited func()
+	done   bool
+}
+
+func (e *exitReader) Read(b []byte) (int, error) {
+	n, err := e.r.Read(b)
+	if err == io.EOF && !e.done {
+		e.done = true
+		e.exited()
+	}
+	return n, err
 }
 
 // trickleLogs before a log body serves it in small reads, as a live pod log
 // arrives: the reader's buffer fills and is reused across lines.
 const trickleLogs = "<trickle>"
+
+// cutLogs in a log body breaks the first stream there while the container
+// runs on; a reopened stream serves the whole body.
+const cutLogs = "<cut>"
 
 // scriptPods assigns log bodies to the pods created from index start on,
 // in creation order, and unblocks their log streams.
@@ -239,6 +289,10 @@ func (k *fakeKube) scriptPods(start int, bodies ...string) {
 			break
 		}
 		p := k.podOrder[idx]
+		// the worker ends every line it prints
+		if body != hangLogs && body != "" && !strings.HasSuffix(body, "\n") {
+			body += "\n"
+		}
 		p.logs = body
 		select {
 		case <-p.logsReady:
@@ -688,9 +742,11 @@ func TestRunSessionRetryAfterSetupFailureStartsClean(t *testing.T) {
 	}
 }
 
+// loopFailure is one turn of "edit, test, same failure".
 func loopFailure(i int) string {
-	return envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{
-		"command": "sh scripts/loopcheck.sh", "exit": 1, "output": fmt.Sprintf("loopcheck: FAIL at 10:00:%02d", i)}}) + "\n"
+	return envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "notes.md", "sha256": fmt.Sprint("h", i)}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{
+			"command": "sh scripts/loopcheck.sh", "exit": 1, "output": fmt.Sprintf("loopcheck: FAIL at 10:00:%02d", i)}}) + "\n"
 }
 
 func supervisedTask(id string) Task {
@@ -741,7 +797,7 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 			t.Fatalf("supervisor event = %v", ev.Detail)
 		}
 	}
-	if strings.Join(kinds, ",") != "command,command,command,supervisor,finished,pushed" {
+	if strings.Join(kinds, ",") != "file_change,command,file_change,command,file_change,command,supervisor,finished,pushed" {
 		t.Fatalf("record kinds = %v", kinds)
 	}
 	timeline := string(objGet(objects, "sessions/t2/timeline.jsonl"))
@@ -822,17 +878,41 @@ func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	}
 }
 
-// What the session did reaches its result: the findings of a session that
-// ended without a push, and the half-way flag the workflow carries on.
-func TestRunSessionResultCarriesFindingsAndHalfWay(t *testing.T) {
+// What a session that ended without a push did reaches its result.
+func TestRunSessionResultCarriesFindings(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "go test ./...", "exit": 1}}) + "\n" + resultLine(false, "gave up")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", HalfWayDone: true}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") || !res.HalfWayDone {
-		t.Fatalf("result = %+v, want the command in the findings and the half-way flag kept", res)
+	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") {
+		t.Fatalf("result = %+v, want the command in the findings", res)
+	}
+}
+
+// I1: the half-way check-in is once per task: it fires in the session that
+// crosses the point, is recorded on the task, and no later session (a new
+// attempt, a retried activity, a restarted workflow) fires it again.
+func TestRunSessionHalfWayIsOncePerTask(t *testing.T) {
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	// the test activity deadline is 10 minutes out: with a 20 minute cap the
+	// session starts past half way
+	runner.cfg.Supervisor.WallClockCap = 20 * time.Minute
+	f := &fakeLiteLLM{content: `{"action":"continue"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(false, "x")
+	for i := 1; i <= 2; i++ {
+		kube := newFakeKube() // runSession scripts pods by creation index
+		kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
+		runner.kube = kube
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: i, Model: "m"}, nil, logs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(f.chats) != 1 || !store.tasks["t2"].HalfWayDone {
+		t.Fatalf("%d supervisor calls, half_way_done = %v; want one call in the first session, recorded on the task", len(f.chats), store.tasks["t2"].HalfWayDone)
 	}
 }
 
@@ -1025,4 +1105,81 @@ func TestFreshNamespaceReplacesLeftover(t *testing.T) {
 func objGet(s *fakeObjectStore, key string) []byte {
 	b, _ := s.Get(context.Background(), key)
 	return b
+}
+
+func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
+	s := sessionSpec{id: "s1"}
+	trip := &Trip{Kind: TripSameFailure, Detail: "x", Findings: []string{"ran y"}}
+	redirect := &Decision{Action: ActionRedirect, Guidance: "g"}
+
+	res := sessionResult(s, sessionOutcome{trip: trip, decision: redirect,
+		result: &harness.Result{Summary: "push failed: refusing to push: .forgejo/x changes .forgejo/"}})
+	if res.Outcome != OutcomeRedirect || !slices.Contains(res.Findings, "the stopped worker reported: push failed: refusing to push: .forgejo/x changes .forgejo/") {
+		t.Fatalf("refused push: %+v", res)
+	}
+	res = sessionResult(s, sessionOutcome{trip: trip, decision: redirect, noResult: "the stopped worker did not report within 1m5s"})
+	if !slices.Contains(res.Findings, "work in progress not pushed: the stopped worker did not report within 1m5s") {
+		t.Fatalf("timed-out stop: %+v", res)
+	}
+	res = sessionResult(s, sessionOutcome{trip: &Trip{Kind: TripWallClock}, noResult: "the stopped worker exited without a result"})
+	if res.Outcome != OutcomeWallClock || !slices.Contains(res.Findings, "work in progress not pushed: the stopped worker exited without a result") {
+		t.Fatalf("wall-clock stop: %+v", res)
+	}
+	// the worker finished and pushed while the supervisor was asked
+	res = sessionResult(s, sessionOutcome{trip: trip, decision: redirect, commit: "c1", result: &harness.Result{Success: true, Summary: "pushed branch b at c1"}})
+	if res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("pushed during the call: %+v, want verification of c1", res)
+	}
+}
+
+// C1: the log stream breaks while the worker still runs (here during the
+// stop's grace period); the log is reopened and the worker's report and
+// pushed work in progress are not lost, nor recorded twice.
+func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"stop"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.stopWait = 10 * time.Second
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + cutLogs +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed to factory/t2 at c-wip") + "\n"
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeRedirect || res.Commit != "c-wip" ||
+		!slices.Contains(res.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") {
+		t.Fatalf("result = %+v, want the redirect with the pushed work in progress", res)
+	}
+	record := strings.TrimSpace(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")))
+	if n := strings.Count(record, `"kind":"command"`); n != 3 || strings.Count(record, `"kind":"pushed"`) != 1 {
+		t.Fatalf("record has %d commands, want each event once:\n%s", n, record)
+	}
+}
+
+// A break outside a stop: the session reads on after the reopen.
+func TestRunSessionReadsOnAfterABrokenLogStream(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + cutLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
+	}
+}
+
+func TestReadLogLinesSkipsDropsLongLinesAndHoldsBrokenTails(t *testing.T) {
+	long := strings.Repeat("x", maxLogLine+10)
+	body := "a\nb\n" + long + "\nc\nunterminated"
+	out := make(chan []byte, 10)
+	n, err := readLogLines(context.Background(), strings.NewReader(body), 1, out)
+	close(out)
+	var got []string
+	for l := range out {
+		got = append(got, string(l))
+	}
+	if n != 4 || err != io.EOF || !slices.Equal(got, []string{"b", "c"}) {
+		t.Fatalf("n = %d, err = %v, lines = %q; want 4 lines seen (the long one dropped), b and c delivered, the broken tail held", n, err, got)
+	}
 }

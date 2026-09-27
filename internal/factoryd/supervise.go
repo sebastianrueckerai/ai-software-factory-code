@@ -104,14 +104,16 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	case harness.EventFileChange:
 		s.sinceChange = 0
 	}
+	// every detector sees every event, whichever trips
+	traced := s.traces.observe(ev)
 	if !at.Before(s.deadline) {
 		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}
+	if traced != nil {
+		return s.trip(traced)
+	}
 	if s.sinceChange >= s.cfg.RepetitionEvents {
 		return s.trip(&Trip{Kind: TripRepetition, Detail: fmt.Sprintf("%d tool calls and commands without a file change", s.sinceChange)})
-	}
-	if trip := s.traces.observe(ev); trip != nil {
-		return s.trip(trip)
 	}
 	return s.halfWay(at)
 }
@@ -249,24 +251,27 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	return c
 }
 
-type failRun struct {
-	sig string
-	n   int
+// outputRun is a command's current run of identical output.
+type outputRun struct {
+	sig     string
+	n       int
+	changed bool // a file changed since the run's last occurrence
 }
 
 // traceDetectors holds the per-session state of the trace detectors.
 type traceDetectors struct {
 	cfg      SupervisorConfig
-	failRuns map[string]failRun  // by command: the current run of identical failures
-	failed   map[string]bool     // commands whose last run failed
-	calls    map[string]int      // by tool + argument hash
-	contents map[string][]string // by path: content hashes in the order they appeared
-	churn    int                 // file changes since the diff last grew
-	maxDiff  int                 // largest diff (insertions + deletions) seen
+	runs     map[string]outputRun // by command
+	failed   map[string]bool      // commands whose last run failed
+	lastDiff string               // the last checkpoint's diff numbers
+	calls    map[string]int       // by tool + argument hash
+	contents map[string][]string  // by path: content hashes in the order they appeared
+	churn    int                  // file changes since the diff last grew
+	maxDiff  int                  // largest diff (insertions + deletions) seen
 }
 
 func newTraceDetectors(cfg SupervisorConfig) *traceDetectors {
-	return &traceDetectors{cfg: cfg, failRuns: map[string]failRun{}, failed: map[string]bool{},
+	return &traceDetectors{cfg: cfg, runs: map[string]outputRun{}, failed: map[string]bool{},
 		calls: map[string]int{}, contents: map[string][]string{}}
 }
 
@@ -280,39 +285,67 @@ func (d *traceDetectors) observe(ev harness.Event) *Trip {
 	case harness.EventFileChange:
 		return d.fileChange(ev)
 	case harness.EventCheckpoint:
-		if size, ok := diffSize(ev); ok && size > d.maxDiff {
-			d.maxDiff, d.churn = size, 0
+		if size, ok := diffSize(ev); ok {
+			if size > d.maxDiff {
+				d.maxDiff, d.churn = size, 0
+			}
+			// edits made through a shell show only here
+			if key := fmt.Sprint(ev.Detail["diff"]); key != d.lastDiff {
+				d.lastDiff = key
+				d.changed()
+			}
 		}
 	}
 	return nil
 }
 
+// changed notes a file change for every command's output run.
+func (d *traceDetectors) changed() {
+	for cmd, run := range d.runs {
+		run.changed = true
+		d.runs[cmd] = run
+	}
+}
+
+// command runs the same-failure detector: the circle "edit, test, same
+// failure". A run is the same command giving the same output signature
+// (exit code folded in, so `cmd; echo $?` does not hide a failure behind
+// exit 0) with a file change before each repeat; a rerun with nothing
+// changed and a command without output are no evidence.
 func (d *traceDetectors) command(ev harness.Event) *Trip {
 	cmd := detailString(ev, "command")
-	exit, ok := detailInt(ev, "exit")
-	if !ok {
-		return nil
-	}
-	if exit == 0 {
+	exit, hasExit := detailInt(ev, "exit")
+	if hasExit && exit == 0 {
 		if d.failed[cmd] {
 			d.churn = 0 // newly passing
 		}
 		delete(d.failed, cmd)
-		delete(d.failRuns, cmd)
+	} else if hasExit {
+		d.failed[cmd] = true
+	}
+	out := detailString(ev, "output")
+	if strings.TrimSpace(out) == "" {
 		return nil
 	}
-	d.failed[cmd] = true
-	sig := ErrorSignature(cmd, detailString(ev, "output"))
-	run := d.failRuns[cmd]
-	if run.sig == sig {
-		run.n++
-	} else {
-		run = failRun{sig: sig, n: 1}
+	code := "?"
+	if hasExit {
+		code = strconv.Itoa(exit)
 	}
-	d.failRuns[cmd] = run
+	sig := ErrorSignature(cmd, "exit "+code+"\n"+out)
+	run := d.runs[cmd]
+	switch {
+	case run.sig != sig:
+		run = outputRun{sig: sig, n: 1}
+	case run.changed:
+		run.n++
+	default:
+		return nil
+	}
+	run.changed = false
+	d.runs[cmd] = run
 	if run.n >= d.cfg.SameFailure {
 		return &Trip{Kind: TripSameFailure, key: cmd,
-			Detail: fmt.Sprintf("`%s` failed %d times in a row with the same error (signature %s)", cmd, run.n, sig)}
+			Detail: fmt.Sprintf("`%s` gave the same output %d times, with file changes in between (exit %s, signature %s)", cmd, run.n, code, sig)}
 	}
 	return nil
 }
@@ -336,6 +369,7 @@ func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
 func (d *traceDetectors) fileChange(ev harness.Event) *Trip {
 	path, h := detailString(ev, "path"), detailString(ev, "sha256")
 	d.churn++
+	d.changed()
 	var trip *Trip
 	if h != "" {
 		seen := d.contents[path]
@@ -361,7 +395,7 @@ func (d *traceDetectors) fileChange(ev harness.Event) *Trip {
 func (d *traceDetectors) reset(trip *Trip) {
 	switch trip.Kind {
 	case TripSameFailure:
-		delete(d.failRuns, trip.key)
+		delete(d.runs, trip.key)
 	case TripSameCall:
 		delete(d.calls, trip.key)
 	case TripFlipFlop:

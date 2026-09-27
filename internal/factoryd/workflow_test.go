@@ -592,15 +592,3 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 		t.Fatalf("sessions = %+v", h.sessions)
 	}
 }
-
-func TestWorkflowCarriesHalfWayAcrossSessions(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.onSessions(
-		SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", HalfWayDone: true},
-		SessionResult{Outcome: OutcomeRedirect, SessionID: "s2"},
-		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"})
-	h.run(t)
-	if h.sessions[0].HalfWayDone || !h.sessions[1].HalfWayDone || !h.sessions[2].HalfWayDone {
-		t.Fatalf("half-way flags = %v %v %v, want false true true", h.sessions[0].HalfWayDone, h.sessions[1].HalfWayDone, h.sessions[2].HalfWayDone)
-	}
-}

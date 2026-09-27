@@ -250,48 +250,84 @@ func TestSameFailureTripsOnTheNthIdenticalFailureInARow(t *testing.T) {
 	if trip := d.observe(fail("10:00:01")); trip != nil {
 		t.Fatalf("first failure tripped: %+v", trip)
 	}
-	d.observe(fileEvent("a.go", "h1")) // edits in between do not break the run
+	d.observe(fileEvent("a.go", "h1"))
 	if trip := d.observe(fail("10:00:09")); trip != nil {
 		t.Fatalf("second failure tripped: %+v", trip)
 	}
+	// an edit made through the shell shows as a changed diff
+	d.observe(diffEvent(1, 0))
 	trip := d.observe(fail("10:01:30"))
 	if trip == nil || trip.Kind != TripSameFailure {
 		t.Fatalf("third identical failure: trip = %+v, want same_failure", trip)
 	}
-	if !strings.Contains(trip.Detail, "sh scripts/loopcheck.sh") || !strings.Contains(trip.Detail, "3") {
+	if !strings.Contains(trip.Detail, "sh scripts/loopcheck.sh") || !strings.Contains(trip.Detail, "3 times") {
 		t.Fatalf("detail = %q, want the command and the count", trip.Detail)
 	}
 }
 
-func TestSameFailureNonTrips(t *testing.T) {
+// `cmd; echo "EXIT: $?"` exits 0 whatever cmd did: the output decides.
+func TestSameFailureSeesThroughAnEchoedExitCode(t *testing.T) {
 	d := newTraces()
+	var trip *Trip
+	for i := 0; i < 3; i++ {
+		d.observe(fileEvent("notes.md", fmt.Sprint("h", i)))
+		trip = d.observe(cmdEvent(`sh scripts/loopcheck.sh; echo "EXIT: $?"`, 0,
+			fmt.Sprintf("loopcheck: FAIL at 2026-09-27T12:0%d:00Z in /tmp/tmp.X%d\nloopcheck: checksum prefix b9a18334, want 00000000\nEXIT: 1", i, i)))
+	}
+	if trip == nil || trip.Kind != TripSameFailure || !strings.Contains(trip.Detail, "exit 0") {
+		t.Fatalf("trip = %+v, want same_failure on the echoed exit code", trip)
+	}
+}
+
+func TestSameFailureNonTrips(t *testing.T) {
+	edit := 0
+	step := func(d *traceDetectors, ev harness.Event) *Trip {
+		edit++
+		d.observe(fileEvent("a.go", fmt.Sprint("h", edit)))
+		return d.observe(ev)
+	}
 	// a different signature restarts the run
-	d.observe(cmdEvent("go test ./...", 1, "want 1"))
-	d.observe(cmdEvent("go test ./...", 1, "want 1"))
-	d.observe(cmdEvent("go test ./...", 1, "want 2"))
-	if trip := d.observe(cmdEvent("go test ./...", 1, "want 2")); trip != nil {
+	d := newTraces()
+	step(d, cmdEvent("go test ./...", 1, "want 1"))
+	step(d, cmdEvent("go test ./...", 1, "want 1"))
+	step(d, cmdEvent("go test ./...", 1, "want 2"))
+	if trip := step(d, cmdEvent("go test ./...", 1, "want 2")); trip != nil {
 		t.Fatalf("different signatures tripped: %+v", trip)
+	}
+	// a different exit code with the same output is a different result
+	d = newTraces()
+	step(d, cmdEvent("go test ./...", 1, "same"))
+	step(d, cmdEvent("go test ./...", 1, "same"))
+	if trip := step(d, cmdEvent("go test ./...", 2, "same")); trip != nil {
+		t.Fatalf("a different exit code tripped: %+v", trip)
 	}
 	// interleaved success of the same command restarts the run
 	d = newTraces()
-	d.observe(cmdEvent("go test ./...", 1, "want 1"))
-	d.observe(cmdEvent("go test ./...", 1, "want 1"))
-	d.observe(cmdEvent("go test ./...", 0, "ok"))
-	if trip := d.observe(cmdEvent("go test ./...", 1, "want 1")); trip != nil {
+	step(d, cmdEvent("go test ./...", 1, "want 1"))
+	step(d, cmdEvent("go test ./...", 1, "want 1"))
+	step(d, cmdEvent("go test ./...", 0, "ok"))
+	if trip := step(d, cmdEvent("go test ./...", 1, "want 1")); trip != nil {
 		t.Fatalf("failure after an interleaved success tripped: %+v", trip)
 	}
 	// the same output from different commands is different
 	d = newTraces()
-	d.observe(cmdEvent("go test ./a", 1, "boom"))
-	d.observe(cmdEvent("go test ./b", 1, "boom"))
-	if trip := d.observe(cmdEvent("go test ./c", 1, "boom")); trip != nil {
+	step(d, cmdEvent("go test ./a", 1, "boom"))
+	step(d, cmdEvent("go test ./b", 1, "boom"))
+	if trip := step(d, cmdEvent("go test ./c", 1, "boom")); trip != nil {
 		t.Fatalf("different commands tripped: %+v", trip)
 	}
-	// a command without an exit code is no evidence either way
+	// reruns with nothing changed in between are no new evidence
 	d = newTraces()
 	for i := 0; i < 5; i++ {
-		if trip := d.observe(harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"command": "x"}}); trip != nil {
-			t.Fatalf("exit-less command tripped: %+v", trip)
+		if trip := d.observe(cmdEvent("go test ./...", 1, "want 1")); trip != nil {
+			t.Fatalf("rerun %d without a change tripped: %+v", i, trip)
+		}
+	}
+	// a command without output is no evidence either
+	d = newTraces()
+	for i := 0; i < 5; i++ {
+		if trip := step(d, cmdEvent("true", 0, "")); trip != nil {
+			t.Fatalf("silent command tripped: %+v", trip)
 		}
 	}
 }
@@ -401,19 +437,22 @@ func TestChurnResetsOnDiffGrowthOrNewlyPassingCommand(t *testing.T) {
 
 func TestResetClearsOnlyTheTrippedDetector(t *testing.T) {
 	d := newTraces()
-	for i := 0; i < 2; i++ {
-		d.observe(cmdEvent("go test", 1, "same"))
+	run := func(i int) *Trip {
+		d.observe(fileEvent("a.go", fmt.Sprint("h", i)))
+		return d.observe(cmdEvent("go test", 1, "same"))
 	}
-	trip := d.observe(cmdEvent("go test", 1, "same"))
+	run(1)
+	run(2)
+	trip := run(3)
 	if trip == nil {
 		t.Fatal("no trip")
 	}
 	d.reset(trip)
-	if trip := d.observe(cmdEvent("go test", 1, "same")); trip != nil {
+	if trip := run(4); trip != nil {
 		t.Fatalf("tripped right after the reset: %+v", trip)
 	}
-	d.observe(cmdEvent("go test", 1, "same"))
-	if trip := d.observe(cmdEvent("go test", 1, "same")); trip == nil || trip.Kind != TripSameFailure {
+	run(5)
+	if trip := run(6); trip == nil || trip.Kind != TripSameFailure {
 		t.Fatalf("trip = %+v, want same_failure again after 3 more", trip)
 	}
 }
@@ -463,13 +502,15 @@ func TestSupervisorRoutesEventsThroughTheTraceDetectors(t *testing.T) {
 	t0 := time.Unix(0, 0)
 	var trip *Trip
 	for i := 0; i < 3; i++ {
+		s.Event(fileEvent("a.go", fmt.Sprint("h", i)), t0.Add(time.Duration(i)*time.Second))
 		trip = s.Event(cmdEvent("sh scripts/loopcheck.sh", 1, "loopcheck: impossible"), t0.Add(time.Duration(i)*time.Second))
 	}
-	if trip == nil || trip.Kind != TripSameFailure || len(trip.Findings) != 3 {
-		t.Fatalf("trip = %+v, want same_failure with the three runs as findings", trip)
+	if trip == nil || trip.Kind != TripSameFailure || len(trip.Findings) != 6 {
+		t.Fatalf("trip = %+v, want same_failure with the three edits and runs as findings", trip)
 	}
 	// continue: the detector starts over, the session runs on
 	s.Resume(t0.Add(time.Minute))
+	s.Event(fileEvent("a.go", "h9"), t0.Add(61*time.Second))
 	if trip := s.Event(cmdEvent("sh scripts/loopcheck.sh", 1, "loopcheck: impossible"), t0.Add(61*time.Second)); trip != nil {
 		t.Fatalf("tripped right after continue: %+v", trip)
 	}
@@ -493,5 +534,19 @@ func TestSupervisorResumeResetsReadingWithoutWriting(t *testing.T) {
 		if trip := s.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint(i)}), t0); trip != nil {
 			t.Fatalf("read %d tripped after the reset: %+v", i, trip)
 		}
+	}
+}
+
+// M5: the event that trips reading-without-writing still reaches the trace
+// detectors.
+func TestSupervisorTracesSeeTheEventThatTripsRepetition(t *testing.T) {
+	s := mustSupervisor(t, time.Hour, 10*time.Hour, 2)
+	t0 := time.Unix(0, 0)
+	s.Event(cmdEvent("go test", 1, "boom"), t0)
+	if trip := s.Event(cmdEvent("go vet", 1, "vet says"), t0); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	if !s.traces.failed["go vet"] {
+		t.Fatal("the tripping event never reached the trace detectors")
 	}
 }

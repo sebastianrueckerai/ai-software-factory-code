@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -130,26 +129,24 @@ func (r *Runner) BootSweep(ctx context.Context) {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id          string
-	parent      string
-	findings    []string
-	model       string
-	startRef    string
-	halfWayDone bool
+	id       string
+	parent   string
+	findings []string
+	model    string
+	startRef string
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
 // a trip (with the supervisor's decision unless it was the wall-clock
 // cap), or the pod dying without either.
 type sessionOutcome struct {
-	result      *harness.Result
-	commit      string
-	trip        *Trip
-	decision    *Decision
-	digest      string
-	noResult    string
-	findings    []string
-	halfWayDone bool
+	result   *harness.Result
+	commit   string
+	trip     *Trip
+	decision *Decision
+	digest   string
+	noResult string
+	findings []string
 }
 
 // workerTerminationGrace is how long a stopped worker gets to commit and
@@ -163,8 +160,8 @@ const workerTerminationGrace = 60
 // decision stops it. A stopped worker commits and pushes its work in
 // progress before it exits. progress receives the event count and
 // findings so far, for the activity heartbeat.
-// out is a named result so the deferred findings and half-way flag reach
-// the caller on every return.
+// out is a named result so the deferred findings reach the caller on
+// every return.
 func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (out sessionOutcome, err error) {
 	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
 	if err != nil {
@@ -174,8 +171,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	sup.halfWayDone = s.halfWayDone
-	defer func() { out.findings, out.halfWayDone = sup.Findings(), sup.HalfWayDone() }()
+	// the half-way check-in fires once per task: the flag lives on the task
+	sup.halfWayDone = t.HalfWayDone
+	defer func() { out.findings = sup.Findings() }()
 	digest := newDigestBuilder(time.Now())
 	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
 		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls)
@@ -204,29 +202,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
-	stream, err := r.kube.PodLog(sessCtx, ns, podName)
-	if err != nil {
-		out.noResult = "open pod log: " + err.Error()
-		return out, nil
-	}
-	defer stream.Close()
-
-	lines := make(chan []byte)
-	doneReading := make(chan struct{})
-	defer close(doneReading)
-	go func() {
-		sc := bufio.NewScanner(stream)
-		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-		for sc.Scan() {
-			select {
-			// a copy: the next Scan reuses the buffer while this line is parsed
-			case lines <- bytes.Clone(sc.Bytes()):
-			case <-doneReading:
-				return
-			}
-		}
-		close(lines)
-	}()
+	lines := followPodLog(sessCtx, r.kube, ns, podName, t.ID)
 
 	// read takes one log line: the result ends the session; an event is
 	// recorded and returned for supervision.
@@ -273,9 +249,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			case <-ctx.Done():
 				return
 			case <-timeout:
+				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", r.stopWait)
 				return
 			case line, ok := <-lines:
 				if !ok {
+					out.noResult = "the stopped worker exited without a result"
 					return
 				}
 				if _, done := read(line); done {
@@ -286,6 +264,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	// onTrip returns true when the session stops.
 	onTrip := func(trip *Trip) bool {
+		if trip.Kind == TripHalfWay {
+			if err := r.store.MarkHalfWay(ctx, t.ID); err != nil {
+				log.Printf("task %s: record the half-way check-in: %v", t.ID, err)
+			}
+		}
 		if trip.Kind == TripWallClock {
 			stop(trip)
 			return true

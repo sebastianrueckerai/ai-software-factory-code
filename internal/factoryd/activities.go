@@ -164,7 +164,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model, halfWayDone: in.HalfWayDone}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model}
 	// the branch head, when the branch exists, is where every attempt
 	// continues: the push of an earlier attempt, or of a session that died
 	// after pushing, which a non-force push must build on
@@ -230,20 +230,34 @@ func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) 
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
-	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, HalfWayDone: out.halfWayDone}
-	switch {
-	case out.trip != nil && out.trip.Kind == TripWallClock:
-		res.Outcome, res.Commit, res.Findings = OutcomeWallClock, out.commit, out.trip.Findings
-		res.Summary = "supervision trip: " + string(TripWallClock)
+	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush}
+	// a session that finished and pushed goes to verification, even when a
+	// stop raced its finish
+	if out.result != nil && out.result.Success && out.commit != "" {
+		res.Outcome, res.Commit, res.Summary = OutcomePushed, out.commit, out.result.Summary
+		res.Findings = out.findings
 		return res
-	case out.trip != nil && out.decision != nil:
-		d := out.decision
+	}
+	if out.trip != nil {
 		res.Commit = out.commit
-		res.Summary = fmt.Sprintf("supervisor: %s after %s: %s", d.Action, out.trip.Kind, out.trip.Detail)
 		res.Findings = slices.Clone(out.trip.Findings)
 		if out.commit != "" {
 			res.Findings = append(res.Findings, "the stopped session's work in progress is on the branch at "+out.commit)
 		}
+		switch {
+		case out.result != nil:
+			res.Findings = append(res.Findings, "the stopped worker reported: "+out.result.Summary)
+		case out.noResult != "":
+			res.Findings = append(res.Findings, "work in progress not pushed: "+out.noResult)
+		}
+	}
+	switch {
+	case out.trip != nil && out.trip.Kind == TripWallClock:
+		res.Outcome, res.Summary = OutcomeWallClock, "supervision trip: "+string(TripWallClock)
+		return res
+	case out.trip != nil && out.decision != nil:
+		d := out.decision
+		res.Summary = fmt.Sprintf("supervisor: %s after %s: %s", d.Action, out.trip.Kind, out.trip.Detail)
 		if d.Guidance != "" {
 			res.Findings = append(res.Findings, "supervisor guidance: "+d.Guidance)
 		}
@@ -256,10 +270,6 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Outcome = OutcomeEscalate
 			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)
 		}
-		return res
-	case out.result != nil && out.result.Success && out.commit != "":
-		res.Outcome, res.Commit, res.Summary = OutcomePushed, out.commit, out.result.Summary
-		res.Findings = out.findings
 		return res
 	case out.result != nil:
 		res.Summary = out.result.Summary

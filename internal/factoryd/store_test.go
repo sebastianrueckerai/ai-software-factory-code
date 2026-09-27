@@ -111,6 +111,16 @@ func (s *fakeStore) SetTaskPR(ctx context.Context, id string, number int64) erro
 	return nil
 }
 
+func (s *fakeStore) MarkHalfWay(ctx context.Context, id string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.HalfWayDone = true
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
 	return s.deliveries[id], nil
 }
@@ -281,8 +291,14 @@ func TestPGStore(t *testing.T) {
 	if err := s.SetTaskPR(ctx, "t1", 12); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
-		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
+	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 || got.HalfWayDone {
+		t.Fatalf("pr_number = %d, half_way_done = %v, want 12 and false", got.PRNumber, got.HalfWayDone)
+	}
+	if err := s.MarkHalfWay(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); !got.HalfWayDone {
+		t.Fatal("half_way_done not kept")
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 0 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)
