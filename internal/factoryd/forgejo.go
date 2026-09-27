@@ -41,14 +41,18 @@ type Forgejo struct {
 
 	// CIRegistrarToken authenticates the Actions runner-registration API
 	// and the writer lookups behind the trust gate (task 41, rulings 78,
-	// 101, 101a): a write:repository and read:organization token of the
-	// dedicated user factory-ci, its repository access scoped to the code
-	// repository (read:organization lists the team members). Forgejo's repository runner API demands the repository
+	// 101, 101a): a write:repository token of the dedicated user
+	// factory-ci scoped to the code repository. Forgejo's repository runner API demands the repository
 	// owner (reqOwner), so factory-ci sits in the org's Owners team; main's
 	// push and merge whitelist excludes it with apply_to_admins on, so the
 	// token can neither push nor merge main. Never a registry credential,
 	// never mounted into a runner pod.
 	CIRegistrarToken string
+	// CIOrgToken is factory-ci's second token, read:organization only and
+	// no repository (ruling 108: Forgejo refuses read:organization on a
+	// repository-limited token): the trust gate reads the org's teams,
+	// their repositories and members with it.
+	CIOrgToken string
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -147,6 +151,13 @@ func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte,
 // user's basic auth (task 41): the CI Actions API takes a bearer-style
 // `token <T>` header, not basic auth, and the registrar credential carries
 // none of the bot user's repository-write scope.
+// orgCall authenticates with the org-read token.
+func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
+	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
+		r.Header.Set("Authorization", "token "+f.CIOrgToken)
+	})
+}
+
 func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
 	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
 		r.Header.Set("Authorization", "token "+f.CIRegistrarToken)
@@ -196,76 +207,80 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 }
 
 // RepoWriters lists the users who may write the repository's code, the
-// users the trust gate lets steer a task (I-2): members of the
-// repository's teams with write or more on the code unit, and direct
+// users the trust gate lets steer a task (I-2): members of the owner org's
+// teams with write or more on the code unit of this repository, and direct
 // collaborators with write or more. Forgejo shows no collaborator's
 // permission to a scoped token (the per-user endpoint refuses every one
 // that is not a site admin's, rulings 101 and 101a), so a collaborator
 // counts by being on the assignee list (write or more, or a team's pull
 // request read) and in no team without code write, which could be what
-// put them there: such a collaborator fails closed. The registrar token
-// reads the teams, collaborators and assignees (repository scope) and the
-// team members (organization scope; factory-ci is an org owner). A
-// repository not owned by an organization has no teams: Forgejo refuses
-// the team list, and the gate trusts no one.
+// put them there: such a collaborator fails closed. The org-read token
+// reads the teams, their repositories and members (ruling 108); the
+// registrar token reads the collaborators and assignees. An owner that is
+// no organization has no team list, and the gate trusts no one.
 func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string, error) {
 	type user struct {
 		Login string `json:"login"`
 	}
-	logins := func(path string, paged bool) (map[string]bool, error) {
-		var users []user
-		var err error
-		if paged {
-			users, err = getPages[user](ctx, f.ciCall, path+"?")
-		} else {
-			var body []byte
-			if body, err = f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK); err == nil {
-				err = json.Unmarshal(body, &users)
-			}
-		}
-		if err != nil {
-			return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
-		}
+	type repository struct {
+		FullName string `json:"full_name"`
+	}
+	fail := func(err error) ([]string, error) {
+		return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
+	}
+	logins := func(users []user) map[string]bool {
 		set := map[string]bool{}
 		for _, u := range users {
 			set[u.Login] = true
 		}
-		return set, nil
+		return set
 	}
-	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/teams", owner, repo), nil, http.StatusOK)
-	if err != nil {
-		return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
-	}
-	var teams []struct {
+	teams, err := getPages[struct {
 		ID         int64             `json:"id"`
 		Permission string            `json:"permission"`
+		AllRepos   bool              `json:"includes_all_repositories"`
 		UnitsMap   map[string]string `json:"units_map"`
+	}](ctx, f.orgCall, fmt.Sprintf("/api/v1/orgs/%s/teams?", owner))
+	if err != nil {
+		return fail(err)
 	}
-	if err := json.Unmarshal(body, &teams); err != nil {
-		return nil, fmt.Errorf("forgejo teams of %s/%s: %w", owner, repo, err)
-	}
+	full := owner + "/" + repo
 	writers, others := map[string]bool{}, map[string]bool{}
 	for _, t := range teams {
-		members, err := logins(fmt.Sprintf("/api/v1/teams/%d/members", t.ID), true)
+		if !t.AllRepos {
+			repos, err := getPages[repository](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/repos?", t.ID))
+			if err != nil {
+				return fail(err)
+			}
+			if !slices.Contains(repos, repository{full}) {
+				continue
+			}
+		}
+		members, err := getPages[user](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/members?", t.ID))
 		if err != nil {
-			return nil, err
+			return fail(err)
 		}
 		into := others
 		if codeWrite(t.Permission) || codeWrite(t.UnitsMap["repo.code"]) {
 			into = writers
 		}
-		maps.Copy(into, members)
+		maps.Copy(into, logins(members))
 	}
-	assignees, err := logins(fmt.Sprintf("/api/v1/repos/%s/%s/assignees", owner, repo), false)
+	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/assignees", full), nil, http.StatusOK)
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
-	collaborators, err := logins(fmt.Sprintf("/api/v1/repos/%s/%s/collaborators", owner, repo), true)
+	var assignees []user
+	if err := json.Unmarshal(body, &assignees); err != nil {
+		return fail(err)
+	}
+	collaborators, err := getPages[user](ctx, f.ciCall, fmt.Sprintf("/api/v1/repos/%s/collaborators?", full))
 	if err != nil {
-		return nil, err
+		return fail(err)
 	}
-	for login := range collaborators {
-		if assignees[login] && !others[login] {
+	assigned := logins(assignees)
+	for login := range logins(collaborators) {
+		if assigned[login] && !others[login] {
 			writers[login] = true
 		}
 	}

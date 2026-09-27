@@ -770,31 +770,43 @@ func TestForgejoClosePullRequest(t *testing.T) {
 	}
 }
 
-// The trust gate trusts code writers only (I-2): members of the
-// repository's teams with code write, and direct collaborators with write.
-// A collaborator's own permission is unreadable with a scoped token, so a
-// collaborator counts by being on the assignee list (write or more on some
-// unit), unless a team without code write could be what put them there
-// (Forgejo lists a read-only team's members as assignees through its pull
-// request read): then they fail closed. Every call carries the registrar
-// token.
+// The trust gate trusts code writers only (I-2): members of the org's
+// teams with code write on the repository, and direct collaborators with
+// write. A collaborator's own permission is unreadable with a scoped
+// token, so a collaborator counts by being on the assignee list (write or
+// more on some unit), unless a team without code write could be what put
+// them there (Forgejo lists a read-only team's members as assignees
+// through its pull request read): then they fail closed. Team reads carry
+// the org-read token (ruling 108: a repository-limited token cannot hold
+// read:organization), repository reads the registrar token.
 func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "token tok" {
-			t.Errorf("%s read without the registrar token: %q", r.URL.Path, r.Header.Get("Authorization"))
+		want := "token registrar"
+		if strings.HasPrefix(r.URL.Path, "/api/v1/orgs/") || strings.HasPrefix(r.URL.Path, "/api/v1/teams/") {
+			want = "token org-read"
+		}
+		if got := r.Header.Get("Authorization"); got != want {
+			t.Errorf("%s read with %q, want %q", r.URL.Path, got, want)
 		}
 		switch r.URL.Path {
-		case "/api/v1/repos/sf/r/teams":
-			io.WriteString(w, `[
-				{"id":1,"name":"Owners","permission":"owner","units_map":{"repo.code":"owner","repo.pulls":"owner"}},
-				{"id":2,"name":"reviewers","permission":"read","units_map":{"repo.code":"read","repo.pulls":"read"}},
-				{"id":3,"name":"devs","permission":"read","units_map":{"repo.code":"write","repo.issues":"read"}}]`)
+		case "/api/v1/orgs/sf/teams":
+			servePage(w, r, 2,
+				`{"id":1,"name":"Owners","permission":"owner","includes_all_repositories":true,"units_map":{"repo.code":"owner","repo.pulls":"owner"}}`,
+				`{"id":2,"name":"reviewers","permission":"read","units_map":{"repo.code":"read","repo.pulls":"read"}}`,
+				`{"id":3,"name":"devs","permission":"read","units_map":{"repo.code":"write","repo.issues":"read"}}`,
+				`{"id":4,"name":"infra","permission":"write","units_map":{"repo.code":"write"}}`)
+		case "/api/v1/teams/2/repos", "/api/v1/teams/3/repos":
+			servePage(w, r, 1, `{"full_name":"sf/other"}`, `{"full_name":"sf/r"}`)
+		case "/api/v1/teams/4/repos":
+			servePage(w, r, 1, `{"full_name":"sf/other"}`)
 		case "/api/v1/teams/1/members":
 			servePage(w, r, 1, `{"login":"sebastian"}`, `{"login":"factory-ci"}`)
 		case "/api/v1/teams/2/members":
 			servePage(w, r, 1, `{"login":"rita"}`, `{"login":"carol"}`)
 		case "/api/v1/teams/3/members":
 			servePage(w, r, 1, `{"login":"dave"}`)
+		case "/api/v1/teams/4/members":
+			servePage(w, r, 1, `{"login":"ivan"}`)
 		case "/api/v1/repos/sf/r/collaborators":
 			servePage(w, r, 2, `{"login":"factory-agent"}`, `{"login":"carol"}`, `{"login":"erin"}`)
 		case "/api/v1/repos/sf/r/assignees":
@@ -804,14 +816,14 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
+	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar", CIOrgToken: "org-read"}
 	got, err := f.RepoWriters(context.Background(), "sf", "r")
 	// rita: a read-only team's member; carol: a collaborator who is one too;
-	// erin: a read collaborator, no assignee
+	// erin: a read collaborator, no assignee; ivan: a code writer elsewhere
 	if want := []string{"dave", "factory-agent", "factory-ci", "sebastian"}; err != nil || !slices.Equal(got, want) {
 		t.Fatalf("writers = %q, %v; want %q", got, err, want)
 	}
-	if _, err := f.RepoWriters(context.Background(), "sf", "gone"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("missing repository: %v, want ErrNotFound", err)
+	if _, err := f.RepoWriters(context.Background(), "nobody", "r"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("owner that is no org: %v, want ErrNotFound", err)
 	}
 }

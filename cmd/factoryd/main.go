@@ -68,6 +68,7 @@ func main() {
 		BotUser:          env("FORGEJO_BOT_USER", "factory-agent"),
 		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
 		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
+		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
 	}
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{

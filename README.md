@@ -160,8 +160,10 @@ checks; green checks wait for them at no cost. `human_comment` (a new
 comment on the task's issue) answers an escalation. Comments and reviews
 signal only when their author may write the repository's code: a member
 of one of its teams with code write, or a direct collaborator with write
-(read with the registrar token, which needs `read:organization` for the
-team members; a collaborator's own permission is unreadable with a scoped
+(the org's teams, their repositories and members read with factory-ci's
+`read:organization`-only token `forgejo-ci-org-read`, since Forgejo refuses
+that scope on a repository-limited token; collaborators and assignees
+with the registrar token; a collaborator's own permission is unreadable with a scoped
 token, so a collaborator counts by being on the assignee list and in no
 team without code write, which could be what lists them there; a grant is
 reused for 60 s, a denial checked every time); others are recorded only. The same holds for
