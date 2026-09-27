@@ -60,7 +60,7 @@ func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, e
 		return false, fmt.Errorf("permission of %s: %w", user, err)
 	}
 	if perm != "owner" && perm != "admin" && perm != "write" {
-		log.Printf("webhook intake: %s has %q on %s: recorded, not signalled", user, perm, repository)
+		log.Printf("intake: %s has %q on %s: not trusted to steer a task", user, perm, repository)
 		return false, nil
 	}
 	in.trustMu.Lock()
@@ -328,9 +328,6 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	return nil
 }
 
-// handleIssueClosed signals the task's workflow that its issue closed (the
-// workflow asks Forgejo whether a merge closed it); a human-lane task is
-// simply done.
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
 	t, ok, err := in.Store.TaskByIssue(ctx, p.Repository.FullName, p.Issue.Index)
 	if err != nil {
@@ -339,16 +336,24 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 	if !ok {
 		return nil
 	}
-	// an issue's author can close it without any repository access
-	if p.Sender.UserName != in.BotUser {
-		if ok, err := in.trusted(ctx, p.Repository.FullName, p.Sender.UserName); err != nil || !ok {
+	return in.issueClosed(ctx, t, p.Sender.UserName)
+}
+
+// issueClosed acts on task t's issue closed by closer, from the webhook or
+// the heal pass alike: the task's workflow is signalled (it asks Forgejo
+// whether a merge closed it), a human-lane task is simply done. An issue's
+// author can close it without any repository access, so only the bot
+// (closing what factoryd filed) and a user trusted to steer count.
+func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
+	if closer != in.BotUser {
+		if ok, err := in.trusted(ctx, t.Repository, closer); err != nil || !ok {
 			return err
 		}
 	}
 	if t.Kind == "human" {
 		return in.finishHumanTask(ctx, t)
 	}
-	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: p.Sender.UserName})
+	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: closer})
 }
 
 // finishHumanTask: a human-lane task has no workflow; its closed issue is
@@ -508,7 +513,9 @@ func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, error
 // signalEvent delivers a trusted event not yet signalled to the task's
 // workflow, once: a pull request comment or rejecting review on pull
 // request pr asks for changes, an issue comment may answer an escalation,
-// an approval is only recorded.
+// an approval is only recorded. The event is claimed before the signal,
+// so the webhook path and a heal pass holding the same one send it once
+// between them; a failed signal releases the claim.
 func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent, pr int64) error {
 	if !e.Trusted || e.Signalled {
 		return nil
@@ -523,10 +530,16 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 	default:
 		return nil
 	}
-	if err := in.Workflows.Signal(ctx, taskID, name, sig); err != nil {
+	if claimed, err := in.Store.SetSignalled(ctx, e.ID, true); err != nil || !claimed {
 		return err
 	}
-	return in.Store.MarkSignalled(ctx, e.ID)
+	if err := in.Workflows.Signal(ctx, taskID, name, sig); err != nil {
+		if _, release := in.Store.SetSignalled(ctx, e.ID, false); release != nil {
+			log.Printf("intake: event %d of task %s: signal failed (%v) and its claim stays: %v; nothing will resend it", e.ID, taskID, err, release)
+		}
+		return err
+	}
+	return nil
 }
 
 // handleReview records a pull request review as an intake event, resolved to
@@ -573,10 +586,11 @@ const healAuthor = "factoryd heal pass"
 // or comment made while factoryd was down or erroring is otherwise lost.
 // Terminal states (pull request merged or closed, issue closed) are
 // signalled on every pass they hold; the workflow ignores a signal it has
-// already acted on. Comments are recorded once and signalled once; a
-// trusted event recorded but not signalled (factoryd died between the two)
-// is signalled now. Reviews carry no id in their webhook payload and are
-// not re-read.
+// already acted on. A closed issue is credited to its last closer per the
+// timeline and gated like a webhook's sender. Comments are recorded once
+// and signalled once; a trusted event recorded but not signalled
+// (factoryd died between the two) is signalled now. Reviews carry no id
+// in their webhook payload and are not re-read.
 func (in *Intake) Resync(ctx context.Context, t Task) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
@@ -586,11 +600,11 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		if t.IssueNumber == 0 {
 			return nil
 		}
-		closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
-		if err != nil || !closed {
+		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if err != nil || closer == "" {
 			return err
 		}
-		return in.finishHumanTask(ctx, t)
+		return in.issueClosed(ctx, t, closer)
 	}
 	events, err := in.Store.IntakeEvents(ctx, t.ID)
 	if err != nil {
@@ -615,12 +629,12 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		}
 	}
 	if t.IssueNumber != 0 {
-		closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if err != nil {
 			return fmt.Errorf("issue state: %w", err)
 		}
-		if closed {
-			if err := in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: healAuthor}); err != nil {
+		if closer != "" {
+			if err := in.issueClosed(ctx, t, closer); err != nil {
 				return err
 			}
 		}
@@ -637,7 +651,10 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 }
 
 // resyncComments records and signals the comments on issue or pull request
-// number that none of the task's known events cover.
+// number that none of the task's known events cover. A comment event
+// recorded before comment ids were (migration 0010) has id 0 and matches
+// no comment, so any comment no newer than the latest such event counts
+// as covered rather than recorded and signalled twice.
 func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number int64, known []IntakeEvent) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
@@ -651,8 +668,14 @@ func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number 
 	if onPR {
 		kind = "pull_request_comment"
 	}
+	var idless time.Time
+	for _, e := range known {
+		if e.CommentID == 0 && (e.Kind == "issue_comment" || e.Kind == "pull_request_comment") && e.CreatedAt.After(idless) {
+			idless = e.CreatedAt
+		}
+	}
 	for _, c := range comments {
-		if c.Author == in.BotUser || slices.ContainsFunc(known, func(e IntakeEvent) bool { return e.Kind == kind && e.CommentID == c.ID }) {
+		if c.Author == in.BotUser || !c.CreatedAt.After(idless) || slices.ContainsFunc(known, func(e IntakeEvent) bool { return e.Kind == kind && e.CommentID == c.ID }) {
 			continue
 		}
 		if err := in.recordComment(ctx, t, onPR, number, c, ""); err != nil {

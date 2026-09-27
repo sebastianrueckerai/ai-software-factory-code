@@ -649,6 +649,49 @@ func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 	}
 }
 
+// IssueClosedBy pages the closed issue's timeline for the last close
+// event's user: a reopened and re-closed issue names the last closer. An
+// open issue reads no timeline; a closed one without a close event is an
+// error, not a closer factoryd would trust.
+func TestForgejoIssueClosedBy(t *testing.T) {
+	timeline := map[string]string{
+		"7": `[{"type":"close","user":{"login":"mallory"}},{"type":"reopen","user":{"login":"sebastian"}}]`,
+		"8": `[{"type":"comment","user":{"login":"sebastian"}}]`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		switch {
+		case r.URL.Path == "/api/v1/repos/sf/r/issues/6":
+			io.WriteString(w, `{"state":"open"}`)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/r/issues/") && !strings.HasSuffix(r.URL.Path, "/timeline"):
+			io.WriteString(w, `{"state":"closed"}`)
+		case r.URL.Path == "/api/v1/repos/sf/r/issues/7/timeline" && q.Get("page") == "1" && q.Get("limit") == "2":
+			io.WriteString(w, timeline["7"])
+		case r.URL.Path == "/api/v1/repos/sf/r/issues/7/timeline" && q.Get("page") == "2":
+			io.WriteString(w, `[{"type":"close","user":{"login":"sebastian"}}]`)
+		case r.URL.Path == "/api/v1/repos/sf/r/issues/8/timeline" && q.Get("page") == "1":
+			io.WriteString(w, timeline["8"])
+		default:
+			t.Errorf("unexpected %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ctx := context.Background()
+	defer func(n int) { timelinePage = n }(timelinePage)
+	timelinePage = 2
+	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 6); err != nil || closer != "" {
+		t.Fatalf("open issue = (%q, %v), want no closer", closer, err)
+	}
+	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 7); err != nil || closer != "sebastian" {
+		t.Fatalf("reclosed issue = (%q, %v), want the last closer, sebastian", closer, err)
+	}
+	if _, err := f.IssueClosedBy(ctx, "sf", "r", 8); err == nil || !strings.Contains(err.Error(), "no close event") {
+		t.Fatalf("closed issue without a close event = %v, want an error", err)
+	}
+}
+
 // A 4xx no retry can fix is a refusal (I4): the activity interceptor ends
 // the retries on it. 404 stays ErrNotFound, and 408, 409 and 429 are as
 // transient as a 5xx.

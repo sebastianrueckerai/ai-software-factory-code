@@ -50,7 +50,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
 	store.CreateTask(context.Background(), Task{ID: "th", Status: "waiting-human", Kind: "human", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	wf := &fakeWorkflows{}
-	forgejo, _ := resyncForgejoStub(t)
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, newCompletion(store, fjURL, llURL))
@@ -59,8 +59,8 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
 	}
 	slices.Sort(wf.signals)
-	want := []string{"tv human_comment sebastian #0 c80: answer: do X", "tv issue_closed factoryd heal pass #0: ",
-		"tw human_comment sebastian #0 c80: answer: do X", "tw issue_closed factoryd heal pass #0: "}
+	want := []string{"tv human_comment sebastian #0 c80: answer: do X", "tv issue_closed sebastian #0: ",
+		"tw human_comment sebastian #0 c80: answer: do X", "tw issue_closed sebastian #0: "}
 	if !slices.Equal(wf.signals, want) {
 		t.Fatalf("signals = %q, want the closed issue and the owner's comment re-read for the in-review and waiting-human tasks only", wf.signals)
 	}

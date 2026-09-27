@@ -93,14 +93,15 @@ func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEv
 	return out, nil
 }
 
-func (s *fakeStore) MarkSignalled(ctx context.Context, id int64) error {
+func (s *fakeStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {
 	for i := range s.intakeEvents {
 		if s.intakeEvents[i].ID == id {
-			s.intakeEvents[i].Signalled = true
-			return nil
+			changed := s.intakeEvents[i].Signalled != signalled
+			s.intakeEvents[i].Signalled = signalled
+			return changed, nil
 		}
 	}
-	return fmt.Errorf("intake event %d: no such row", id)
+	return false, fmt.Errorf("intake event %d: no such row", id)
 }
 
 func (s *fakeStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
@@ -317,8 +318,15 @@ func TestPGStore(t *testing.T) {
 	if again, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "nit", CommentID: 80, DeliveryID: "d-80"}); err != nil || again != 0 {
 		t.Fatalf("InsertIntakeEvent same comment = (%d, %v), want 0", again, err)
 	}
-	if err := s.MarkSignalled(ctx, commentEvent); err != nil {
-		t.Fatal(err)
+	// a claim is exclusive: the second claimant does not signal
+	if claimed, err := s.SetSignalled(ctx, commentEvent, true); err != nil || !claimed {
+		t.Fatalf("SetSignalled first claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if claimed, err := s.SetSignalled(ctx, commentEvent, true); err != nil || claimed {
+		t.Fatalf("SetSignalled second claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if _, err := s.SetSignalled(ctx, 999999, true); err == nil {
+		t.Fatal("SetSignalled on no row = nil, want an error")
 	}
 	events, err := s.IntakeEvents(ctx, "t1")
 	if err != nil || len(events) != 2 || events[1].CommentID != 80 || !events[1].Trusted || !events[1].Signalled || events[0].Signalled {

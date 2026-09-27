@@ -856,6 +856,49 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 	return res.State == "closed", nil
 }
 
+// timelinePage is the issue timeline page size; a var so the test can page.
+var timelinePage = 50
+
+// IssueClosedBy is the user who closed issue number, "" while it is open:
+// the last close event on its timeline, who a webhook's sender would have
+// been. A closed issue with no close event is an error rather than a
+// closer to trust.
+func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number int64) (string, error) {
+	closed, err := f.IssueClosed(ctx, owner, repo, number)
+	if err != nil || !closed {
+		return "", err
+	}
+	closer := ""
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/timeline?page=%d&limit=%d", owner, repo, number, page, timelinePage)
+		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+		if err != nil {
+			return "", err
+		}
+		var res []struct {
+			Type string `json:"type"`
+			User struct {
+				UserName string `json:"login"`
+			} `json:"user"`
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			return "", fmt.Errorf("forgejo timeline of %s/%s#%d: %w", owner, repo, number, err)
+		}
+		for _, e := range res {
+			if e.Type == "close" {
+				closer = e.User.UserName
+			}
+		}
+		if len(res) < timelinePage {
+			break
+		}
+	}
+	if closer == "" {
+		return "", fmt.Errorf("forgejo issue %s/%s#%d: closed with no close event on its timeline", owner, repo, number)
+	}
+	return closer, nil
+}
+
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
 // every agent task is stamped with at intake; branch is the default branch
 // when the caller already knows it (a webhook payload), else it is read.

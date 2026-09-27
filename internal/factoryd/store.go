@@ -125,8 +125,11 @@ type Store interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	// IntakeEvents lists a task's events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
-	// MarkSignalled records that event id reached the task's workflow.
-	MarkSignalled(ctx context.Context, id int64) error
+	// SetSignalled sets whether event id reached the task's workflow and
+	// reports whether that changed it: setting true is the claim to signal
+	// it, exclusive between the webhook path and the heal pass; setting
+	// false releases a claim whose signal failed.
+	SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error)
 	// UnaddressedChangeRequests lists the signalled change requests no
 	// session has started on yet: newer than the task's latest session.
 	UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error)
@@ -318,9 +321,16 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	return out, rows.Err()
 }
 
-func (s *PGStore) MarkSignalled(ctx context.Context, id int64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE intake_events SET signalled = true WHERE id = $1`, id)
-	return oneRow(res, err, fmt.Sprintf("intake event %d", id))
+func (s *PGStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {
+	var changed bool
+	err := s.db.QueryRowContext(ctx,
+		`WITH before AS (SELECT signalled FROM intake_events WHERE id = $1 FOR UPDATE)
+		 UPDATE intake_events e SET signalled = $2 FROM before WHERE e.id = $1 RETURNING before.signalled <> $2`,
+		id, signalled).Scan(&changed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("intake event %d: no such row", id)
+	}
+	return changed, err
 }
 
 func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error {
