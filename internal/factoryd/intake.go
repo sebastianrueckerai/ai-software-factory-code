@@ -582,7 +582,7 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 	}
 	if err := in.Workflows.Signal(ctx, taskID, name, sig); err != nil {
 		if _, release := in.Store.SetSignalled(ctx, e.ID, false); release != nil {
-			log.Printf("intake: event %d of task %s: signal failed (%v) and its claim stays: %v; nothing will resend it", e.ID, taskID, err, release)
+			log.Printf("intake: event %d of task %s: signal failed (%v) and its claim stays: %v; the heal pass re-sends a decision after 15 min, a comment never", e.ID, taskID, err, release)
 		}
 		return err
 	}
