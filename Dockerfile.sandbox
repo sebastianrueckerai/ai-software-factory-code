@@ -2,7 +2,8 @@ FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec702
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-COPY . .
+COPY cmd/ cmd/
+COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-worker ./cmd/agent-worker
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
@@ -26,15 +27,6 @@ RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp
       && tar -xzf /tmp/go.tar.gz -C /usr/local \
       && rm /tmp/go.tar.gz
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
-# Pre-bake the npm provider so a running sandbox never needs registry.npmjs.org
-# (egress stays off the CNP allowlist). HOME here is NOT the runtime HOME —
-# the pod mounts an emptyDir over /home/worker, so the worker copies this
-# bake into place at start. The dead baseURL makes opencode fail after the
-# install, which is all this step needs.
-RUN mkdir -p /opt/opencode-home \
-      && chown -R 1000:1000 /opt/opencode-home \
-      && HOME=/opt/opencode-home OPENCODE_CONFIG_CONTENT='{"provider":{"factory":{"npm":"@ai-sdk/openai-compatible","name":"Factory gateway","options":{"baseURL":"http://127.0.0.1:9/v1","apiKey":"sandbox-dummy"},"models":{"bake":{"name":"Factory model","reasoning":true,"interleaved":{"field":"reasoning_content"},"limit":{"context":200000,"output":1000}}}}}}' \
-         timeout 300 opencode run --format json --model factory/bake "warm the provider cache" || true
 USER 1000:1000
 # every one of these phones home past the egress allowlist and stalls on the drop;
 # ripgrep is installed because opencode otherwise downloads it from GitHub.

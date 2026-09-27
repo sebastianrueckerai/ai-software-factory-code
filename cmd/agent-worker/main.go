@@ -57,15 +57,6 @@ func run(log func(string, ...any)) int {
 	ctx := context.Background()
 	log("task %s session %s", env.taskID, env.sessionID)
 
-	// The pod mounts an emptyDir over HOME (the image root is read-only), so
-	// restore the image-baked opencode provider packages into it.
-	if _, err := os.Stat(filepath.Join(env.home, ".config", "opencode")); os.IsNotExist(err) {
-		if err := os.CopyFS(filepath.Join(env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
-			log("restore pre-baked opencode config: %v", err)
-			return 1
-		}
-	}
-
 	repoDir := filepath.Join(workspace, "repo")
 	if err := cloneBase(env, repoDir); err != nil {
 		log("clone: %v", err)
@@ -195,10 +186,7 @@ func killOthers() error {
 	}
 }
 
-const (
-	bakedConfigDir = "/opt/opencode-home/.config/opencode"
-	workspace      = "/workspace"
-)
+const workspace = "/workspace"
 
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
 // the task's repository (the base); pushURL/pushToken write the task branch
@@ -209,7 +197,6 @@ type workerEnv struct {
 	gatewayURL, tokenFile, model                              string
 	answerTokens, headroomTokens                              int
 	findings                                                  []string
-	home                                                      string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -229,7 +216,6 @@ func loadEnv() (workerEnv, error) {
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
-	e.home = str("HOME")
 	for name, val := range map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
 		"BRANCH": e.branch, "PUSH_URL": e.pushURL, "PUSH_TOKEN": e.pushToken, "GATEWAY_URL": e.gatewayURL,
@@ -238,9 +224,6 @@ func loadEnv() (workerEnv, error) {
 		if val == "" {
 			return e, fmt.Errorf("%s is required", name)
 		}
-	}
-	if e.home == "" {
-		e.home = "/home/worker"
 	}
 	var err error
 	if e.answerTokens, err = strconv.Atoi(str("ANSWER_TOKENS")); err != nil {
