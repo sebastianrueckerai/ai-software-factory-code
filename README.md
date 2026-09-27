@@ -158,9 +158,13 @@ its pod and namespace and revokes its credentials first), and they are
 drained before every attempt, before a PR is opened and after the
 checks; green checks wait for them at no cost. `human_comment` (a new
 comment on the task's issue) answers an escalation. Comments and reviews
-signal only when their author has write access or more to the repository
-(the repository's assignee list, read with the registrar token; a grant
-is reused for 60 s, a denial checked every time); others are recorded only. The same holds for
+signal only when their author may write the repository's code: a member
+of one of its teams with code write, or a direct collaborator with write
+(read with the registrar token, which needs `read:organization` for the
+team members; a collaborator's own permission is unreadable with a scoped
+token, so a collaborator counts by being on the assignee list and in no
+team without code write, which could be what lists them there; a grant is
+reused for 60 s, a denial checked every time); others are recorded only. The same holds for
 closing the issue, which only a writer or factoryd's bot can use to fail
 the task. `changes_requested` (a review requesting changes, a review
 comment, or a PR comment by a non-bot user) starts one more attempt, all

@@ -40,12 +40,12 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/assignees"):
+		case isWriterRead(r.URL.Path):
 			// the registrar token lists the writers
 			if r.Header.Get("Authorization") != "token registrar-tok" {
 				t.Errorf("writers read without the registrar token: %q", r.Header.Get("Authorization"))
 			}
-			io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
+			serveWriters(w, r)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code":
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
@@ -590,11 +590,11 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/labels"):
 			io.WriteString(w, `[]`)
-		case strings.HasSuffix(r.URL.Path, "/assignees"):
+		case isWriterRead(r.URL.Path):
 			if r.Header.Get("Authorization") != "token registrar-tok" {
 				t.Errorf("writers read without the registrar token: %q", r.Header.Get("Authorization"))
 			}
-			io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
+			serveWriters(w, r)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/pulls/5":
 			io.WriteString(w, `{"number":5,"state":"closed","merged":true,"head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30":
@@ -612,6 +612,29 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 	}))
 	t.Cleanup(srv.Close)
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}, &requests
+}
+
+// isWriterRead is one of RepoWriters' reads.
+func isWriterRead(path string) bool {
+	return strings.HasSuffix(path, "/assignees") || strings.HasSuffix(path, "/collaborators") ||
+		strings.HasSuffix(path, "/teams") || strings.HasPrefix(path, "/api/v1/teams/")
+}
+
+// serveWriters answers RepoWriters' reads for a code repository whose
+// Owners team holds sebastian and whose bot is a write collaborator.
+func serveWriters(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/teams"):
+		io.WriteString(w, `[{"id":1,"permission":"owner","units_map":{"repo.code":"owner"}}]`)
+	case r.URL.Path == "/api/v1/teams/1/members":
+		servePage(w, r, 50, `{"login":"sebastian"}`)
+	case strings.HasSuffix(r.URL.Path, "/collaborators"):
+		servePage(w, r, 50, `{"login":"factory-agent"}`)
+	case strings.HasSuffix(r.URL.Path, "/assignees"):
+		io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
+	default:
+		http.NotFound(w, r)
+	}
 }
 
 func writerReads(requests []string) int {

@@ -41,7 +41,7 @@ type Intake struct {
 const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
-// reviews: write access or more to the repository. A comment by anyone
+// reviews: code write on the repository (RepoWriters). A comment by anyone
 // else is recorded, never signalled.
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
 	key := repository + "\x00" + user

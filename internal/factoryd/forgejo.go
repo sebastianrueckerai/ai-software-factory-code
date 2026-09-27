@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -40,8 +41,9 @@ type Forgejo struct {
 
 	// CIRegistrarToken authenticates the Actions runner-registration API
 	// and the writer lookups behind the trust gate (task 41, rulings 78,
-	// 101, 101a): a token of the dedicated user factory-ci scoped to the code
-	// repository. Forgejo's repository runner API demands the repository
+	// 101, 101a): a write:repository and read:organization token of the
+	// dedicated user factory-ci, its repository access scoped to the code
+	// repository (read:organization lists the team members). Forgejo's repository runner API demands the repository
 	// owner (reqOwner), so factory-ci sits in the org's Owners team; main's
 	// push and merge whitelist excludes it with apply_to_admins on, so the
 	// token can neither push nor merge main. Never a registry credential,
@@ -193,27 +195,86 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 	return body, nil
 }
 
-// RepoWriters lists the users with write access or more to the repository:
-// Forgejo's assignee list, which is exactly that set and readable by any
-// collaborator. The per-user permission endpoint is not an option: it
-// refuses every scoped token that is not a site admin's, the registrar's
-// included (rulings 101 and 101a).
+// RepoWriters lists the users who may write the repository's code, the
+// users the trust gate lets steer a task (I-2): members of the
+// repository's teams with write or more on the code unit, and direct
+// collaborators with write or more. Forgejo shows no collaborator's
+// permission to a scoped token (the per-user endpoint refuses every one
+// that is not a site admin's, rulings 101 and 101a), so a collaborator
+// counts by being on the assignee list (write or more, or a team's pull
+// request read) and in no team without code write, which could be what
+// put them there: such a collaborator fails closed. The registrar token
+// reads the teams, collaborators and assignees (repository scope) and the
+// team members (organization scope; factory-ci is an org owner). A
+// repository not owned by an organization has no teams: Forgejo refuses
+// the team list, and the gate trusts no one.
 func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string, error) {
-	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/assignees", owner, repo), nil, http.StatusOK)
+	type user struct {
+		Login string `json:"login"`
+	}
+	logins := func(path string, paged bool) (map[string]bool, error) {
+		var users []user
+		var err error
+		if paged {
+			users, err = getPages[user](ctx, f.ciCall, path+"?")
+		} else {
+			var body []byte
+			if body, err = f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK); err == nil {
+				err = json.Unmarshal(body, &users)
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
+		}
+		set := map[string]bool{}
+		for _, u := range users {
+			set[u.Login] = true
+		}
+		return set, nil
+	}
+	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/teams", owner, repo), nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
+	}
+	var teams []struct {
+		ID         int64             `json:"id"`
+		Permission string            `json:"permission"`
+		UnitsMap   map[string]string `json:"units_map"`
+	}
+	if err := json.Unmarshal(body, &teams); err != nil {
+		return nil, fmt.Errorf("forgejo teams of %s/%s: %w", owner, repo, err)
+	}
+	writers, others := map[string]bool{}, map[string]bool{}
+	for _, t := range teams {
+		members, err := logins(fmt.Sprintf("/api/v1/teams/%d/members", t.ID), true)
+		if err != nil {
+			return nil, err
+		}
+		into := others
+		if codeWrite(t.Permission) || codeWrite(t.UnitsMap["repo.code"]) {
+			into = writers
+		}
+		maps.Copy(into, members)
+	}
+	assignees, err := logins(fmt.Sprintf("/api/v1/repos/%s/%s/assignees", owner, repo), false)
 	if err != nil {
 		return nil, err
 	}
-	var users []struct {
-		Login string `json:"login"`
+	collaborators, err := logins(fmt.Sprintf("/api/v1/repos/%s/%s/collaborators", owner, repo), true)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(body, &users); err != nil {
-		return nil, fmt.Errorf("forgejo writers of %s/%s: %w", owner, repo, err)
+	for login := range collaborators {
+		if assignees[login] && !others[login] {
+			writers[login] = true
+		}
 	}
-	logins := make([]string, len(users))
-	for i, u := range users {
-		logins[i] = u.Login
-	}
-	return logins, nil
+	return slices.Sorted(maps.Keys(writers)), nil
+}
+
+// codeWrite is a Forgejo access mode of write or more.
+func codeWrite(mode string) bool {
+	return mode == "write" || mode == "admin" || mode == "owner"
 }
 
 // CIJob is one Forgejo Actions job waiting for a runner matching its labels
