@@ -337,7 +337,7 @@ func (h *forgejoHub) minted() []string {
 
 func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		defer h.mu.Unlock()
 		switch {

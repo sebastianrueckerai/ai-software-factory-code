@@ -100,22 +100,27 @@ type TokenRef struct {
 // tokens by name: completion and the boot sweep must revoke a task's token
 // even when the mint's ID was lost to a crash.
 func (f *Forgejo) ListTokens(ctx context.Context) ([]TokenRef, error) {
-	const limit = 50
-	var refs []TokenRef
+	return getPages[TokenRef](ctx, f.call, fmt.Sprintf("/api/v1/users/%s/tokens?", f.BotUser))
+}
+
+// getPages reads every page of a paged Forgejo list; path ends in ? or &.
+// A page may hold fewer items than the limit asked for (the server caps
+// it at its MAX_RESPONSE_ITEMS), so only an empty page ends the list.
+func getPages[T any](ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), path string) ([]T, error) {
+	var all []T
 	for page := 1; ; page++ {
-		body, err := f.call(ctx, http.MethodGet,
-			fmt.Sprintf("/api/v1/users/%s/tokens?page=%d&limit=%d", f.BotUser, page, limit), nil, http.StatusOK)
+		body, err := call(ctx, http.MethodGet, fmt.Sprintf("%spage=%d&limit=50", path, page), nil, http.StatusOK)
 		if err != nil {
 			return nil, err
 		}
-		var res []TokenRef
-		if err := json.Unmarshal(body, &res); err != nil {
-			return nil, fmt.Errorf("forgejo list tokens: %w", err)
+		var items []T
+		if err := json.Unmarshal(body, &items); err != nil {
+			return nil, fmt.Errorf("forgejo GET %s: %w", path, err)
 		}
-		refs = append(refs, res...)
-		if len(res) < limit {
-			return refs, nil
+		if len(items) == 0 {
+			return all, nil
 		}
+		all = append(all, items...)
 	}
 }
 
@@ -638,27 +643,17 @@ func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base
 // across a retried or replayed attempt). A nil ref with a nil error means no
 // open PR exists yet.
 func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo string, headRepo Repo, branch string) (*PullRequestRef, error) {
-	const limit = 50
-	for page := 1; ; page++ {
-		path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&page=%d&limit=%d", owner, repo, page, limit)
-		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
-		if err != nil {
-			return nil, err
-		}
-		var all []wirePR
-		if err := json.Unmarshal(body, &all); err != nil {
-			return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
-		}
-		for _, pr := range all {
-			if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
-				ref := pr.ref()
-				return &ref, nil
-			}
-		}
-		if len(all) < limit {
-			return nil, nil
+	all, err := getPages[wirePR](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&", owner, repo))
+	if err != nil {
+		return nil, err
+	}
+	for _, pr := range all {
+		if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
+			ref := pr.ref()
+			return &ref, nil
 		}
 	}
+	return nil, nil
 }
 
 // FindPullRequestByHead is owner/repo's pull request from branch on headRepo
@@ -748,8 +743,11 @@ func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, n
 			}
 		}
 		seen += len(res.Tree)
-		if len(res.Tree) == 0 || seen >= res.TotalCount {
+		if seen >= res.TotalCount {
 			return entries, nil
+		}
+		if len(res.Tree) == 0 {
+			return nil, fmt.Errorf("forgejo tree %s/%s %s: pages ended at %d of %d entries", owner, repo, commit, seen, res.TotalCount)
 		}
 	}
 }
@@ -799,28 +797,20 @@ type IssueComment struct {
 }
 
 // ListIssueComments lists every comment on issue or pull request number,
-// oldest first, over as many pages as Forgejo serves.
+// oldest first. Forgejo does not page this list: one request holds all.
 func (f *Forgejo) ListIssueComments(ctx context.Context, owner, repo string, number int64) ([]IssueComment, error) {
-	const limit = 50
-	var out []IssueComment
-	for page := 1; ; page++ {
-		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments?page=%d&limit=%d", owner, repo, number, page, limit)
-		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
-		if err != nil {
-			return nil, err
-		}
-		var res []IssueComment
-		if err := json.Unmarshal(body, &res); err != nil {
-			return nil, fmt.Errorf("forgejo comments on %s/%s#%d: %w", owner, repo, number, err)
-		}
-		for _, c := range res {
-			c.Author = c.User.UserName
-			out = append(out, c)
-		}
-		if len(res) < limit {
-			return out, nil
-		}
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, number), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
 	}
+	var out []IssueComment
+	if err := json.Unmarshal(body, &out); err != nil {
+		return nil, fmt.Errorf("forgejo comments on %s/%s#%d: %w", owner, repo, number, err)
+	}
+	for i := range out {
+		out[i].Author = out[i].User.UserName
+	}
+	return out, nil
 }
 
 // PullRequestState reads pull request number: open, closed or merged, and
@@ -852,45 +842,35 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 	return res.State == "closed", nil
 }
 
-// timelinePage is the issue timeline page size; a var so the test can page.
-var timelinePage = 50
+// errNoCloser is a closed issue whose timeline names no one who closed it.
+var errNoCloser = errors.New("closed with no close event on its timeline")
 
 // IssueClosedBy is the user who closed issue number, "" while it is open:
 // the last close event on its timeline, who a webhook's sender would have
-// been. A closed issue with no close event is an error rather than a
+// been. A closed issue with no close event is errNoCloser rather than a
 // closer to trust.
 func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number int64) (string, error) {
 	closed, err := f.IssueClosed(ctx, owner, repo, number)
 	if err != nil || !closed {
 		return "", err
 	}
+	events, err := getPages[struct {
+		Type string `json:"type"`
+		User struct {
+			UserName string `json:"login"`
+		} `json:"user"`
+	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/timeline?", owner, repo, number))
+	if err != nil {
+		return "", err
+	}
 	closer := ""
-	for page := 1; ; page++ {
-		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/timeline?page=%d&limit=%d", owner, repo, number, page, timelinePage)
-		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
-		if err != nil {
-			return "", err
-		}
-		var res []struct {
-			Type string `json:"type"`
-			User struct {
-				UserName string `json:"login"`
-			} `json:"user"`
-		}
-		if err := json.Unmarshal(body, &res); err != nil {
-			return "", fmt.Errorf("forgejo timeline of %s/%s#%d: %w", owner, repo, number, err)
-		}
-		for _, e := range res {
-			if e.Type == "close" {
-				closer = e.User.UserName
-			}
-		}
-		if len(res) < timelinePage {
-			break
+	for _, e := range events {
+		if e.Type == "close" {
+			closer = e.User.UserName
 		}
 	}
 	if closer == "" {
-		return "", fmt.Errorf("forgejo issue %s/%s#%d: closed with no close event on its timeline", owner, repo, number)
+		return "", fmt.Errorf("forgejo issue %s/%s#%d: %w", owner, repo, number, errNoCloser)
 	}
 	return closer, nil
 }

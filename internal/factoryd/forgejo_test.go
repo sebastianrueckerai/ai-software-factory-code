@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -419,7 +420,7 @@ func TestForgejoCreatePullRequest(t *testing.T) {
 }
 
 func TestForgejoFindOpenPullRequestForBranchFindsMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/sf/r/pulls" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
@@ -441,7 +442,7 @@ func TestForgejoFindOpenPullRequestForBranchFindsMatch(t *testing.T) {
 }
 
 func TestForgejoFindOpenPullRequestForBranchNoMatch(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `[{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other","repo":{"full_name":"factory-agent/r"}}}]`)
 	}))
 	defer srv.Close()
@@ -544,56 +545,6 @@ func TestForgejoIssueClosed(t *testing.T) {
 	}
 }
 
-// I3: the bot accumulates a token pair per task; the boot sweep must see
-// every page, or tokens beyond Forgejo's first page are never revoked.
-func TestForgejoListTokensPages(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path + "?" + r.URL.RawQuery {
-		case "/api/v1/users/factory-bot/tokens?page=1&limit=50":
-			var page []string
-			for i := 1; i <= 50; i++ {
-				page = append(page, fmt.Sprintf(`{"id":%d,"name":"task-%d"}`, i, i))
-			}
-			io.WriteString(w, "["+strings.Join(page, ",")+"]")
-		case "/api/v1/users/factory-bot/tokens?page=2&limit=50":
-			io.WriteString(w, `[{"id":51,"name":"task-51"}]`)
-		default:
-			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
-			w.WriteHeader(404)
-		}
-	}))
-	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
-	got, err := f.ListTokens(context.Background())
-	if err != nil || len(got) != 51 || got[0].ID != 1 || got[50].ID != 51 || got[50].Name != "task-51" {
-		t.Fatalf("ListTokens = %d tokens, %v; want all 51 across two pages", len(got), err)
-	}
-}
-
-func TestForgejoFindOpenPullRequestForBranchPages(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path + "?" + r.URL.RawQuery {
-		case "/api/v1/repos/sf/r/pulls?state=open&page=1&limit=50":
-			var page []string
-			for i := 100; i < 150; i++ {
-				page = append(page, fmt.Sprintf(`{"number":%d,"head":{"ref":"other-%d","sha":"x","repo":{"full_name":"factory-agent/r"}}}`, i, i))
-			}
-			io.WriteString(w, "["+strings.Join(page, ",")+"]")
-		case "/api/v1/repos/sf/r/pulls?state=open&page=2&limit=50":
-			io.WriteString(w, `[{"number":9,"html_url":"u9","head":{"ref":"factory/t1","sha":"c1","repo":{"full_name":"factory-agent/r"}}}]`)
-		default:
-			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
-			w.WriteHeader(404)
-		}
-	}))
-	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	got, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1")
-	if err != nil || got == nil || got.Number != 9 || got.URL != "u9" || got.HeadSHA != "c1" {
-		t.Fatalf("FindOpenPullRequestForBranch = (%+v, %v), want #9 from the second page", got, err)
-	}
-}
-
 // The by-base-and-head endpoint finds the pull request in any state, also
 // after its fork branch is gone; a missing one is nil, not an error.
 func TestForgejoFindPullRequestByHead(t *testing.T) {
@@ -629,6 +580,10 @@ func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"README.md","sha":"r"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c3?page=1":
 			w.WriteHeader(404)
+		case "/api/v1/repos/sf/r/git/trees/c4?page=1":
+			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[{"path":"README.md","sha":"r"}]}`)
+		case "/api/v1/repos/sf/r/git/trees/c4?page=2":
+			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[]}`)
 		default:
 			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
 			w.WriteHeader(404)
@@ -647,30 +602,51 @@ func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 	if _, err := f.TreeEntries(ctx, "sf", "r", "c3", WorkflowDirs...); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("c3 = %v, want ErrNotFound: a commit Forgejo does not have", err)
 	}
+	// a listing that ends short of its total names no entry for sure
+	if got, err := f.TreeEntries(ctx, "sf", "r", "c4", WorkflowDirs...); err == nil {
+		t.Fatalf("c4 = %v, want an error: the pages ended short of total_count", got)
+	}
+}
+
+// firstPage serves h for a paged list's first page and an empty page
+// after it, for stubs that answer a list whatever the page asked.
+func firstPage(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p := r.URL.Query().Get("page"); p != "" && p != "1" && !strings.Contains(r.URL.Path, "/git/trees/") {
+			io.WriteString(w, `[]`)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// servePage answers a paged list the way a Forgejo with a smaller
+// MAX_RESPONSE_ITEMS does: per items a page whatever the limit asked,
+// then an empty page.
+func servePage(w http.ResponseWriter, r *http.Request, per int, items ...string) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	lo := min(max(page-1, 0)*per, len(items))
+	io.WriteString(w, "["+strings.Join(items[lo:min(lo+per, len(items))], ",")+"]")
 }
 
 // IssueClosedBy pages the closed issue's timeline for the last close
-// event's user: a reopened and re-closed issue names the last closer. An
-// open issue reads no timeline; a closed one without a close event is an
-// error, not a closer factoryd would trust.
+// event's user: a reopened and re-closed issue names the last closer,
+// however few events a page holds. An open issue reads no timeline; a
+// closed one without a close event is an error, not a closer factoryd
+// would trust.
 func TestForgejoIssueClosedBy(t *testing.T) {
-	timeline := map[string]string{
-		"7": `[{"type":"close","user":{"login":"mallory"}},{"type":"reopen","user":{"login":"sebastian"}}]`,
-		"8": `[{"type":"comment","user":{"login":"sebastian"}}]`,
+	timeline := map[string][]string{
+		"7": {`{"type":"close","user":{"login":"mallory"}}`, `{"type":"reopen","user":{"login":"sebastian"}}`, `{"type":"close","user":{"login":"sebastian"}}`},
+		"8": {`{"type":"comment","user":{"login":"sebastian"}}`},
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
 		switch {
 		case r.URL.Path == "/api/v1/repos/sf/r/issues/6":
 			io.WriteString(w, `{"state":"open"}`)
-		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/r/issues/") && !strings.HasSuffix(r.URL.Path, "/timeline"):
+		case strings.HasSuffix(r.URL.Path, "/timeline"):
+			servePage(w, r, 2, timeline[strings.Split(r.URL.Path, "/")[7]]...)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/r/issues/"):
 			io.WriteString(w, `{"state":"closed"}`)
-		case r.URL.Path == "/api/v1/repos/sf/r/issues/7/timeline" && q.Get("page") == "1" && q.Get("limit") == "2":
-			io.WriteString(w, timeline["7"])
-		case r.URL.Path == "/api/v1/repos/sf/r/issues/7/timeline" && q.Get("page") == "2":
-			io.WriteString(w, `[{"type":"close","user":{"login":"sebastian"}}]`)
-		case r.URL.Path == "/api/v1/repos/sf/r/issues/8/timeline" && q.Get("page") == "1":
-			io.WriteString(w, timeline["8"])
 		default:
 			t.Errorf("unexpected %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
 			w.WriteHeader(404)
@@ -679,16 +655,67 @@ func TestForgejoIssueClosedBy(t *testing.T) {
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	ctx := context.Background()
-	defer func(n int) { timelinePage = n }(timelinePage)
-	timelinePage = 2
 	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 6); err != nil || closer != "" {
 		t.Fatalf("open issue = (%q, %v), want no closer", closer, err)
 	}
 	if closer, err := f.IssueClosedBy(ctx, "sf", "r", 7); err != nil || closer != "sebastian" {
 		t.Fatalf("reclosed issue = (%q, %v), want the last closer, sebastian", closer, err)
 	}
-	if _, err := f.IssueClosedBy(ctx, "sf", "r", 8); err == nil || !strings.Contains(err.Error(), "no close event") {
-		t.Fatalf("closed issue without a close event = %v, want an error", err)
+	if _, err := f.IssueClosedBy(ctx, "sf", "r", 8); !errors.Is(err, errNoCloser) {
+		t.Fatalf("closed issue without a close event = %v, want errNoCloser", err)
+	}
+}
+
+// Every paged list reads on until an empty page: Forgejo may serve fewer
+// items a page than the limit asked for. The boot sweep must see every
+// token (I3), and the open pull request may sit on any page.
+func TestForgejoPagedListsReadEveryPage(t *testing.T) {
+	pr := func(n int, ref string) string {
+		return fmt.Sprintf(`{"number":%d,"state":"open","head":{"ref":%q,"repo":{"full_name":"factory-agent/r"}}}`, n, ref)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/users/factory-agent/tokens":
+			servePage(w, r, 2, `{"id":1}`, `{"id":2}`, `{"id":3}`, `{"id":4}`, `{"id":5}`)
+		case "/api/v1/repos/sf/r/pulls":
+			servePage(w, r, 2, pr(1, "a"), pr(2, "b"), pr(3, "c"), pr(4, "factory/t1"))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ctx := context.Background()
+	if tokens, err := f.ListTokens(ctx); err != nil || len(tokens) != 5 {
+		t.Fatalf("tokens = (%v, %v), want all 5", tokens, err)
+	}
+	if got, err := f.FindOpenPullRequestForBranch(ctx, "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1"); err != nil || got == nil || got.Number != 4 {
+		t.Fatalf("open pull request = (%+v, %v), want #4 from the second page", got, err)
+	}
+}
+
+// Forgejo's issue comment list is not paged: it answers every comment
+// whatever the page asked, so it is read in one request.
+func TestForgejoListIssueCommentsIsOneRequest(t *testing.T) {
+	var comments []string
+	for i := range 60 {
+		comments = append(comments, fmt.Sprintf(`{"id":%d,"user":{"login":"sebastian"},"body":"c"}`, i+1))
+	}
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests++; requests > 1 {
+			t.Errorf("request %d: %s?%s", requests, r.URL.Path, r.URL.RawQuery)
+			io.WriteString(w, `[]`)
+			return
+		}
+		io.WriteString(w, "["+strings.Join(comments, ",")+"]")
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	got, err := f.ListIssueComments(context.Background(), "sf", "r", 3)
+	if err != nil || len(got) != 60 || got[59].Author != "sebastian" {
+		t.Fatalf("comments = %d, %v, want all 60 with their authors", len(got), err)
 	}
 }
 

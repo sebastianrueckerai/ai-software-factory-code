@@ -21,7 +21,7 @@ type recordingBackend struct {
 
 func (r *recordingBackend) srv(t *testing.T) (forgejo, litellm string) {
 	t.Helper()
-	fj := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	fj := httptest.NewServer(firstPage(func(w http.ResponseWriter, req *http.Request) {
 		r.mu.Lock()
 		r.forgejoCalls = append(r.forgejoCalls, req.Method+" "+req.URL.Path)
 		status := r.forgejoStatus

@@ -585,7 +585,7 @@ func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
 func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 	t.Helper()
 	var requests []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/labels"):
@@ -745,6 +745,23 @@ func TestIntakeResyncTrustsTheIssueCloser(t *testing.T) {
 		if (closedSignals == 1) != want || (store.tasks["t-human"].Status == "done") != want {
 			t.Fatalf("closed by %s: %d issue_closed signals, human task %s, want acted on = %v", closer, closedSignals, store.tasks["t-human"].Status, want)
 		}
+	}
+}
+
+// A closed issue whose timeline names no closer is not acted on, but the
+// pass still re-reads and signals its comments; the lookup error is
+// returned after them.
+func TestIntakeResyncReadsCommentsPastAnUnknownCloser(t *testing.T) {
+	forgejo, _ := resyncForgejoStub(t, "")
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+	task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 30}
+	store.tasks["t1"] = task
+	if err := in.Resync(context.Background(), task); !errors.Is(err, errNoCloser) {
+		t.Fatalf("Resync = %v, want errNoCloser", err)
+	}
+	if got, want := workflowsOf(in).signals, []string{"t1 human_comment sebastian #0 c80: answer: do X"}; !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want %q", got, want)
 	}
 }
 

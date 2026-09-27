@@ -647,12 +647,14 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 			return err
 		}
 	}
+	// an issue whose closer cannot be read still has its comments re-read
+	var closeErr error
 	if t.IssueNumber != 0 {
 		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
-		if err != nil {
-			return fmt.Errorf("issue state: %w", err)
-		}
-		if closer != "" {
+		switch {
+		case err != nil:
+			closeErr = fmt.Errorf("issue state: %w", err)
+		case closer != "":
 			if err := in.issueClosed(ctx, t, closer); err != nil {
 				return err
 			}
@@ -666,7 +668,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 			return err
 		}
 	}
-	return nil
+	return closeErr
 }
 
 // resyncComments records and signals the comments on issue or pull request
