@@ -272,7 +272,8 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 // ResyncIssues takes in the open agent and human issues of in.Repositories
 // that no task is linked to yet: Forgejo never retries a failed delivery,
 // so an issue filed or labelled while factoryd was down is otherwise never
-// seen. Each goes through the webhook's own intake.
+// seen. Each goes through the webhook's own intake, which checks the
+// poster and the labels before it looks for a linked task.
 func (in *Intake) ResyncIssues(ctx context.Context) error {
 	var errs []error
 	for _, repo := range in.Repositories {
@@ -283,14 +284,6 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 				continue
 			}
 			for _, issue := range issues {
-				_, linked, err := in.Store.TaskByIssue(ctx, repo.String(), issue.Index)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("task by issue: %w", err))
-					continue
-				}
-				if linked {
-					continue
-				}
 				if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue); err != nil {
 					errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
 				}

@@ -45,6 +45,12 @@ var openIssues = map[string][]string{
 	"human": {
 		`{"number":9,"title":"Needs a decision","user":{"login":"sebastian"},"labels":[{"name":"human"}]}`,
 	},
+	// Forgejo drops a label filter naming a label the repository lacks
+	// and lists every open issue
+	"missing": {
+		`{"number":11,"title":"Unlabelled","user":{"login":"sebastian"},"labels":[]}`,
+		`{"number":12,"title":"Other label","user":{"login":"sebastian"},"labels":[{"name":"bug"}]}`,
+	},
 }
 
 func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
@@ -903,8 +909,41 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" {
 		t.Fatalf("tasks = %+v, want #10's plus an agent task for #7 and a human one for #9", store.tasks)
 	}
-	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID}) {
-		t.Fatalf("started = %q, want only #7's workflow", got)
+	// the second pass starts #7's still-queued workflow again, as the
+	// webhook's redelivery would (Temporal refuses a running one)
+	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, agent.ID}) {
+		t.Fatalf("started = %q, want #7's workflow once a pass", got)
+	}
+}
+
+// countingStore counts task-by-issue lookups.
+type countingStore struct {
+	*fakeStore
+	byIssue int
+}
+
+func (s *countingStore) TaskByIssue(ctx context.Context, repository string, n int64) (Task, bool, error) {
+	s.byIssue++
+	return s.fakeStore.TaskByIssue(ctx, repository, n)
+}
+
+// An issue without the agent or human label costs no store query: were
+// a label missing from the repository, Forgejo would list every open
+// issue, every minute.
+func TestIntakeResyncIssuesSkipsUnlabelledIssuesUnread(t *testing.T) {
+	in, fake, _ := newTestIntake(t)
+	store := &countingStore{fakeStore: fake}
+	in.Store = store
+	in.Repositories = []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}
+	defer func(agent []string) { openIssues["agent"] = agent }(openIssues["agent"])
+	openIssues["agent"] = openIssues["missing"]
+	defer func(human []string) { openIssues["human"] = human }(openIssues["human"])
+	openIssues["human"] = nil
+	if err := in.ResyncIssues(context.Background()); err != nil {
+		t.Fatalf("ResyncIssues: %v", err)
+	}
+	if store.byIssue != 0 || len(fake.tasks) != 0 {
+		t.Fatalf("task-by-issue reads = %d, tasks = %d; want none for issues without the label", store.byIssue, len(fake.tasks))
 	}
 }
 
