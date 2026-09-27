@@ -708,7 +708,13 @@ func TestDeliverPushesFinishedOrStoppedSessionsOnly(t *testing.T) {
 		t.Fatalf("finished session: %+v", res)
 	}
 	failing := func() (string, error) { return "", fmt.Errorf("refusing to push: .forgejo/x changes .forgejo/") }
-	if res := deliver(harness.Result{Success: false}, true, failing, "factory/t1", emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
+	emitted = nil
+	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, failing, "factory/t1", emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
 		t.Fatalf("refused push: %+v", res)
+	}
+	// the session record must say the push failed, not end on the agent's "finished"
+	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushFailed || emitted[0].Detail["branch"] != "factory/t1" ||
+		emitted[0].Detail["error"] != "refusing to push: .forgejo/x changes .forgejo/" {
+		t.Fatalf("events = %+v, want one push_failed event with branch and error", emitted)
 	}
 }

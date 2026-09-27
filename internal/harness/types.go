@@ -40,8 +40,9 @@ const (
 	EventCommand    EventKind = "command"
 	EventCheckpoint EventKind = "checkpoint"
 	EventFinished   EventKind = "finished"
-	EventPushed     EventKind = "pushed"     // the worker pushed the task branch; detail carries branch and commit
-	EventSupervisor EventKind = "supervisor" // factoryd's supervisor decided after a trip; never from a worker
+	EventPushed     EventKind = "pushed"      // the worker pushed the task branch; detail carries branch and commit
+	EventPushFailed EventKind = "push_failed" // the worker's push failed or was refused; detail carries branch and error
+	EventSupervisor EventKind = "supervisor"  // factoryd's supervisor decided after a trip; never from a worker
 )
 
 // Event is one normalized stream item from a running harness. The git

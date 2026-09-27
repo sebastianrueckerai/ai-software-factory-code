@@ -148,6 +148,7 @@ func deliver(res harness.Result, stopped bool, push func() (string, error), bran
 	commit, err := push()
 	switch {
 	case err != nil:
+		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
 		return harness.Result{Success: false, Summary: "push failed: " + err.Error()}
 	case commit != "":
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": branch, "commit": commit}})
