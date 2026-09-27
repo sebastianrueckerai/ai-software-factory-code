@@ -91,6 +91,11 @@ type Store interface {
 	// issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) error
+	// ClaimDelivery records a webhook delivery id; false means it was
+	// already claimed (a redelivery).
+	ClaimDelivery(ctx context.Context, id string) (bool, error)
+	// ReleaseDelivery forgets a claimed delivery whose processing failed.
+	ReleaseDelivery(ctx context.Context, id string) error
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
@@ -225,6 +230,20 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO intake_events (task_id, kind, author, body) VALUES ($1, $2, $3, $4)`,
 		e.TaskID, e.Kind, e.Author, e.Body)
+	return err
+}
+
+func (s *PGStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *PGStore) ReleaseDelivery(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE id = $1`, id)
 	return err
 }
 

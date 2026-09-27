@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -79,7 +81,8 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 // fakeWorkflows records workflow starts and signals.
 type fakeWorkflows struct {
 	started []string
-	signals []string // "<task> <signal> <author>: <body>"
+	signals []string // "<task> <signal> <author> #<pr>: <body>"
+	err     error    // returned by Signal when set
 }
 
 func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
@@ -88,7 +91,10 @@ func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
 }
 
 func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
-	w.signals = append(w.signals, taskID+" "+name+" "+sig.Author+": "+sig.Body)
+	if w.err != nil {
+		return w.err
+	}
+	w.signals = append(w.signals, fmt.Sprintf("%s %s %s #%d: %s", taskID, name, sig.Author, sig.PR, sig.Body))
 	return nil
 }
 
@@ -521,7 +527,7 @@ func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
 	})
 	postWebhook(in, "pull_request_comment", pr, sign(webhookSecret, pr))
 	postWebhook(in, "issue_comment", issue, sign(webhookSecret, issue))
-	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-pr changes_requested sebastian: one nit" {
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-pr changes_requested sebastian #21: one nit" {
 		t.Fatalf("signals = %q, want only the PR comment as changes_requested", got)
 	}
 }
@@ -533,7 +539,7 @@ func TestIntakeReviewRejectedSignalsApprovedDoesNot(t *testing.T) {
 	approved := reviewBody("factory/t1", "sebastian", "pull_request_review_approved", "ship it")
 	postWebhook(in, "pull_request_review_rejected", rejected, sign(webhookSecret, rejected))
 	postWebhook(in, "pull_request_review_approved", approved, sign(webhookSecret, approved))
-	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 changes_requested sebastian: split the function" {
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 changes_requested sebastian #5: split the function" {
 		t.Fatalf("signals = %q", got)
 	}
 }
@@ -556,7 +562,7 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 			t.Fatalf("status = %d", rr.Code)
 		}
 	}
-	if got := workflowsOf(in).signals; len(got) != 2 || got[0] != "t1 pr_merged sebastian: " || got[1] != "t1 pr_closed sebastian: " {
+	if got := workflowsOf(in).signals; len(got) != 2 || got[0] != "t1 pr_merged sebastian #5: " || got[1] != "t1 pr_closed sebastian #5: " {
 		t.Fatalf("signals = %q, want pr_merged and pr_closed for the factory PR only", got)
 	}
 }
@@ -573,7 +579,37 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
-	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 issue_closed sebastian: " {
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 issue_closed sebastian #0: " {
 		t.Fatalf("signals = %q", got)
+	}
+}
+
+// Forgejo can deliver the same webhook twice; the delivery id makes the
+// second a no-op, unless the first failed.
+func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	body := reviewBody("factory/t1", "sebastian", "pull_request_review_rejected", "split it")
+	post := func(delivery string) int {
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/forgejo", bytes.NewReader(body))
+		req.Header.Set("X-Forgejo-Event-Type", "pull_request_review_rejected")
+		req.Header.Set("X-Forgejo-Signature", sign(webhookSecret, body))
+		req.Header.Set("X-Forgejo-Delivery", delivery)
+		rr := httptest.NewRecorder()
+		in.ServeHTTP(rr, req)
+		return rr.Code
+	}
+	workflowsOf(in).err = errors.New("temporal down")
+	if code := post("d-1"); code != http.StatusInternalServerError {
+		t.Fatalf("failed delivery = %d, want 500", code)
+	}
+	workflowsOf(in).err = nil
+	for range 2 {
+		if code := post("d-1"); code != http.StatusOK {
+			t.Fatalf("status = %d", code)
+		}
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 {
+		t.Fatalf("signals = %q, want exactly one across the failed try and two redeliveries", got)
 	}
 }

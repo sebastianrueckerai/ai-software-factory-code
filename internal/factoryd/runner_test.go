@@ -255,6 +255,7 @@ type forgejoHub struct {
 	revoked     []int64
 	nextID      int64
 	calls       []string
+	branchHead  string // the task branch's head; empty = no branch yet
 }
 
 func (h *forgejoHub) minted() []string {
@@ -282,6 +283,12 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.calls = append(h.calls, "list")
 			list, _ := json.Marshal(h.tokens)
 			w.Write(list)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
+			if h.branchHead == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.branchHead)
 		case r.Method == "DELETE":
 			var id int64
 			fmt.Sscanf(r.URL.Path, "/api/v1/users/factory-agent/tokens/%d", &id)
@@ -585,7 +592,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running"}
 	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}}
 
-	dead := &sessionProgress{SessionID: "s-dead", Events: 7, Findings: []string{"changed a.go"}}
+	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7, Findings: []string{"changed a.go"}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
 		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
@@ -611,15 +618,49 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 3 || findings[0] != "earlier note" || findings[1] != "changed a.go" || !strings.Contains(findings[2], "s-dead was interrupted after 7 events") {
+	if len(findings) != 3 || findings[0] != "earlier note" || findings[1] != "changed a.go" || !strings.Contains(findings[2], "s-dead stopped after 7 events") {
 		t.Fatalf("findings = %q, want the input, the dead session's findings, the interruption", findings)
 	}
 	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
 		t.Fatalf("session row = %+v, want parent s-dead", sess)
 	}
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
-	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","changed a.go","session s-dead was interrupted`) {
+	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","changed a.go","session s-dead stopped after 7 events`) {
 		t.Fatalf("timeline = %s, want the session start with its parent and findings", timeline)
+	}
+}
+
+// A dead session may have pushed before its worker was lost; the retry
+// builds on the branch head, not on the ref the attempt was scheduled with,
+// or its non-force push would be refused.
+func TestRunSessionStartsFromTheBranchHead(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	hub.branchHead = "c9"
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m", StartRef: "c1"}, nil, resultLine(false, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "c9" {
+		t.Fatalf("REPO_SHA = %q, want the branch head c9", env["REPO_SHA"])
+	}
+}
+
+// A retry after a setup failure (the pod never ran) has no dead session:
+// no parent, no "stopped" finding.
+func TestRunSessionRetryAfterSetupFailureStartsClean(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	dead := &sessionProgress{SessionID: "s-never-ran"}
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m", Findings: []string{"note"}}, dead, resultLine(false, "x")); err != nil {
+		t.Fatal(err)
+	}
+	env := podEnv(kube.podAt(0))
+	if env["PARENT_SESSION_ID"] != "" || env["FINDINGS"] != `["note"]` {
+		t.Fatalf("pod env = %v, want no parent and only the input findings", env)
 	}
 }
 

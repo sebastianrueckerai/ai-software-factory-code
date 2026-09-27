@@ -177,6 +177,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		out.noResult = err.Error()
 		return out, nil
 	}
+	progress(0, nil)
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()

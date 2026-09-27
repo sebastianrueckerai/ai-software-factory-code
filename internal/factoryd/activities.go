@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -69,14 +70,24 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // SetState moves the task to running (a session starts) or in-review (its
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
-	var err error
-	switch state {
-	case "running":
-		err = r.store.MarkStarted(ctx, taskID)
-	case "in-review":
-		err = r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "in-review")
-	default:
+	from := map[string][]string{
+		"running":   {"queued", "running", "in-review"},
+		"in-review": {"running", "in-review"},
+	}[state]
+	if from == nil {
 		return terminalError("unknown task state %q", state)
+	}
+	cur, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(from, cur.Status) {
+		return terminalError("task %s is %s, cannot move to %s", taskID, cur.Status, state)
+	}
+	if state == "running" {
+		err = r.store.MarkStarted(ctx, taskID)
+	} else {
+		err = r.store.TransitionTask(ctx, taskID, from, state)
 	}
 	if err != nil {
 		return err
@@ -93,8 +104,11 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 // reads it to continue the dead session's chain.
 type sessionProgress struct {
 	SessionID string
-	Events    int
-	Findings  []string
+	// Running is set once the worker pod runs: a retry after a setup or
+	// pod-create failure has no dead session to continue.
+	Running  bool
+	Events   int
+	Findings []string
 }
 
 // heartbeat records the latest session progress now and every
@@ -128,13 +142,13 @@ func startHeartbeat(ctx context.Context, sessionID string) *heartbeat {
 func (h *heartbeat) update(events int, findings []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.p.Events, h.p.Findings = events, findings
+	h.p.Running, h.p.Events, h.p.Findings = true, events, findings
 }
 
 func (h *heartbeat) snapshot() sessionProgress {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return sessionProgress{SessionID: h.p.SessionID, Events: h.p.Events, Findings: slices.Clone(h.p.Findings)}
+	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events, Findings: slices.Clone(h.p.Findings)}
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -148,15 +162,18 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model, startRef: in.StartRef}
-	if s.startRef == "" {
-		s.startRef = t.SHA
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model}
+	// the branch head, when the branch exists, is where every attempt
+	// continues: the push of an earlier attempt, or of a session that died
+	// after pushing, which a non-force push must build on
+	if s.startRef, err = r.startRef(ctx, t, repo, in.StartRef); err != nil {
+		return SessionResult{}, err
 	}
 	var dead sessionProgress
-	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
+	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" && dead.Running {
 		s.parent = dead.SessionID
 		s.findings = slices.Concat(in.Findings, dead.Findings, []string{fmt.Sprintf(
-			"session %s was interrupted after %d events when factoryd restarted; its pushed work, if any, is on the branch", dead.SessionID, dead.Events)})
+			"session %s stopped after %d events without finishing (its worker was lost); continue from the branch as it is", dead.SessionID, dead.Events)})
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
@@ -194,6 +211,19 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": r.branch(t), "commit": res.Commit})
 	}
 	return res, nil
+}
+
+func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) (string, error) {
+	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, r.branch(t))
+	switch {
+	case err == nil:
+		return head, nil
+	case !errors.Is(err, ErrNotFound):
+		return "", fmt.Errorf("branch head: %w", err)
+	case given != "":
+		return given, nil
+	}
+	return t.SHA, nil
 }
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
@@ -247,26 +277,30 @@ func earliest(a, b time.Time) time.Time {
 // OpenPullRequest opens the task's pull request from its branch into main,
 // as the bot, or reuses the one already open for the branch (the
 // idempotency key: a retried or repeated call never opens a second). A
-// branch whose diff touches .forgejo/ gets no pull request (ruling 90): PR
-// workflows run from the PR's own tree, so a task branch must never carry
-// an edit to its own gate.
+// commit whose .forgejo/ differs from the task's base gets no pull request
+// (ruling 90): PR workflows run from the PR's own tree, so a task branch
+// must never carry an edit to its own gate. If an earlier push already
+// opened one, it is closed with the reason.
 func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (PullRequest, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PullRequest{}, err
 	}
 	branch := r.branch(t)
-	files, err := r.forgejo.CompareBranches(ctx, repo.Owner, repo.Name, prBase, commit)
-	if err != nil {
-		return PullRequest{}, fmt.Errorf("compare %s...%s: %w", prBase, commit, err)
-	}
-	for _, f := range files {
-		if f == ".forgejo" || strings.HasPrefix(f, ".forgejo/") {
-			return PullRequest{}, terminalError("branch %s changes %s; factoryd opens no pull request that edits .forgejo/", branch, f)
-		}
-	}
 	existing, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, branch)
 	if err != nil {
+		return PullRequest{}, err
+	}
+	if err := r.refuseForgejoChange(ctx, t, repo, commit); err != nil {
+		if existing != nil && isTerminal(err) {
+			msg := "factoryd: closing this pull request: " + errMessage(err)
+			if err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
+				return PullRequest{}, err
+			}
+			if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, existing.Number); err != nil {
+				return PullRequest{}, err
+			}
+		}
 		return PullRequest{}, err
 	}
 	var ref PullRequestRef
@@ -280,6 +314,31 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	}
 	r.record(ctx, taskID, "pr_opened", map[string]any{"number": ref.Number, "url": ref.URL, "commit": commit, "reused": existing != nil})
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
+}
+
+// refuseForgejoChange returns a terminal error when commit's .forgejo tree
+// entry differs from the task base's.
+func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, commit string) error {
+	base := t.SHA
+	if base == "" {
+		head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+		if err != nil {
+			return err
+		}
+		base = head
+	}
+	was, err := r.forgejo.TreeEntry(ctx, repo.Owner, repo.Name, base, ".forgejo")
+	if err != nil {
+		return err
+	}
+	now, err := r.forgejo.TreeEntry(ctx, repo.Owner, repo.Name, commit, ".forgejo")
+	if err != nil {
+		return err
+	}
+	if was != now {
+		return terminalError("branch %s changes .forgejo/ (commit %s against base %s); factoryd opens no pull request that edits .forgejo/", r.branch(t), commit, base)
+	}
+	return nil
 }
 
 // FirstLine is an objective's first line: the issue and pull request title.

@@ -46,6 +46,20 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// a redelivered webhook (same delivery id) is processed once
+	delivery := r.Header.Get("X-Forgejo-Delivery")
+	if delivery != "" {
+		fresh, err := in.Store.ClaimDelivery(ctx, delivery)
+		if err != nil {
+			log.Printf("webhook intake: claim delivery: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !fresh {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
 	var procErr error
 	switch eventType {
 	case "issues", "issue_assign", "issue_label", "issue_milestone":
@@ -61,6 +75,12 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Forgejo's delivery list reads all 2xx, nothing to process
 	}
 	if procErr != nil {
+		if delivery != "" {
+			// released so that a redelivery can retry what failed here
+			if err := in.Store.ReleaseDelivery(context.WithoutCancel(ctx), delivery); err != nil {
+				log.Printf("webhook intake: release delivery: %v", err)
+			}
+		}
 		log.Printf("webhook intake: %s: %v", strconv.Quote(eventType), procErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -305,7 +325,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if p.PullRequest.Merged {
 		signal = SignalPRMerged
 	}
-	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName})
+	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName, PR: p.PullRequest.Index})
 }
 
 // handleIssueComment records a comment as an intake event against the task
@@ -361,7 +381,7 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 	if !p.IsPull {
 		return nil
 	}
-	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body})
+	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body, PR: p.Issue.Index})
 }
 
 // handleReview records a pull request review as an intake event, resolved to
@@ -396,5 +416,5 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType strin
 	if eventType == "pull_request_review_approved" {
 		return nil
 	}
-	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Sender.UserName, Body: reviewBody})
+	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Sender.UserName, Body: reviewBody, PR: p.PullRequest.Index})
 }

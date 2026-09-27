@@ -36,6 +36,7 @@ type fakeStore struct {
 	started      map[string]bool
 	finished     map[string]time.Time
 	intakeEvents []IntakeEvent
+	deliveries   map[string]bool
 }
 
 func newFakeStore() *fakeStore {
@@ -91,6 +92,22 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t.Status = "running"
 	s.tasks[id] = t
 	s.started[id] = true
+	return nil
+}
+
+func (s *fakeStore) ClaimDelivery(ctx context.Context, id string) (bool, error) {
+	if s.deliveries == nil {
+		s.deliveries = map[string]bool{}
+	}
+	if s.deliveries[id] {
+		return false, nil
+	}
+	s.deliveries[id] = true
+	return true, nil
+}
+
+func (s *fakeStore) ReleaseDelivery(ctx context.Context, id string) error {
+	delete(s.deliveries, id)
 	return nil
 }
 
@@ -213,6 +230,17 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "looks good"}); err != nil {
 		t.Fatalf("InsertIntakeEvent: %v", err)
+	}
+	for i, want := range []bool{true, false} {
+		if fresh, err := s.ClaimDelivery(ctx, "d-1"); err != nil || fresh != want {
+			t.Fatalf("claim %d = (%v, %v), want %v", i, fresh, err, want)
+		}
+	}
+	if err := s.ReleaseDelivery(ctx, "d-1"); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := s.ClaimDelivery(ctx, "d-1"); err != nil || !fresh {
+		t.Fatalf("claim after release = (%v, %v), want fresh", fresh, err)
 	}
 	var intakeCount int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1'`).Scan(&intakeCount); err != nil {

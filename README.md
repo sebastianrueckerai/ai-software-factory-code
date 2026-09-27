@@ -89,30 +89,43 @@ not a transient state on the way to `running`).
 ## Task workflow
 
 Both intake paths store the task row, then start its workflow; a pass
-at boot and every minute starts the workflow of any queued or running
-agent task again (Temporal refuses the duplicate), which heals a failed
-start. The workflow, in order: `EnsureIssue`; up to `MAX_SESSIONS`
+at boot and every minute starts the workflow of any agent task not yet
+done or failed again. Temporal refuses the start while the workflow runs
+or after it completed, and allows it after a failure or termination, so
+no task is stranded (terminating a workflow is not a cancel; closing the
+issue is). The workflow, in order: `EnsureIssue`; up to `MAX_SESSIONS`
 (default 3) attempts, each `SetState running` then `RunSession`, the
-first from the task's base SHA on `MODEL` (default
-`factory/coding-cheap`), a later one from the branch head the previous
-attempt pushed; after a pushed commit `OpenPullRequest` (head
-`factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR for
-the branch, refusing a branch that changes `.forgejo/`), `SetState
-in-review`, `WaitChecks` on the head commit's combined status
-(`CHECKS_TIMEOUT`, default 45m). Red checks or a repetition trip make
-the next attempt climb to `STRONGER_MODEL` (default
-`factory/coding-frontier`) with the failures as findings. Green checks
-wait, at no cost, for a signal from the webhook intake: `pr_merged`
-finishes the task done; `pr_closed` (closed without a merge) finishes it
-failed; `changes_requested` (a review requesting changes, a review
-comment, or a PR comment by a non-bot user) starts another attempt with
-the text as findings; `issue_closed` finishes it done if the PR merged,
-else failed. A failure comments its reason on the issue. The wall-clock
-cap (20 min) bounds the agent's working time summed over the attempts;
-waiting on checks or reviewers does not count. A restarted factoryd
-loses nothing: Temporal retries an interrupted `RunSession` on the new
-pod, which removes the dead session's namespace, pod and credentials
-and starts a new session with the dead one as parent and its findings.
+first on `MODEL` (default `factory/coding-cheap`); every session starts
+from the task branch's head when the branch exists, else from the base
+SHA. After a pushed commit `OpenPullRequest` (head `factory/<id>`, base
+`main`, `Closes #<issue>`, reusing an open PR for the branch; a commit
+whose `.forgejo` tree entry differs from the base's gets no PR, and an
+already open one is closed with the reason), `SetState in-review`,
+`WaitChecks` on the head commit's combined status (`CHECKS_TIMEOUT`,
+default 45m). Red checks or a repetition trip make the next attempt climb
+to `STRONGER_MODEL` (default `factory/coding-frontier`) with the failures
+as findings. Signals from the webhook intake: `pr_merged` (done),
+`pr_closed` (closed without merge: failed), `issue_closed` (done if the
+PR merged, else failed) decide the task wherever they land: they are
+drained before every attempt, before a PR is opened and after the
+checks; green checks wait for them at no cost. `changes_requested` (a
+review requesting changes, a review comment, or a PR comment by a
+non-bot user) starts one more attempt, all pending requests coalesced
+into its findings. Pull request signals count only for the PR the
+workflow opened. Webhook deliveries are processed once per
+`X-Forgejo-Delivery` id. A failure comments its reason on the issue;
+`Finish` retries without limit. The wall-clock cap (20 min) bounds the
+agent's working time summed over the attempts; waiting on checks or
+reviewers does not count. A restarted factoryd loses nothing: Temporal
+retries an interrupted `RunSession` on the new pod, which removes the
+dead session's namespace, pod and credentials and starts a new session
+with the dead one as parent and its findings.
+
+Changing `TaskWorkflow`: a running workflow can wait days for its
+reviewer and replays on the new code, so every change to the commands it
+issues is gated with `workflow.GetVersion` (see the version constants in
+`internal/factoryd/workflow.go`), and `TestWorkflowReplaysLiveHistories`
+replays histories recorded on the cluster (`internal/factoryd/testdata`).
 `GET /tasks/{id}/timeline` serves `sessions/<id>/timeline.jsonl`.
 
 ## Build and test

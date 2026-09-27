@@ -22,9 +22,10 @@ import (
 // workflow activities use.
 type prForgejo struct {
 	mu       sync.Mutex
-	files    []string         // compare main...<sha>
-	open     []map[string]any // open pull requests
-	statuses []string         // combined-status bodies, served in order, the last repeating
+	forgejo  map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	closed   []int64           // PATCH /pulls/{n} closes
+	open     []map[string]any  // open pull requests
+	statuses []string          // combined-status bodies, served in order, the last repeating
 	polls    int
 	created  []map[string]any   // POST /pulls bodies
 	comments []string           // issue comment bodies
@@ -42,12 +43,22 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			io.WriteString(w, `[]`)
-		case r.Method == "GET" && strings.HasPrefix(p, "/compare/"):
-			files := []map[string]string{}
-			for _, name := range f.files {
-				files = append(files, map[string]string{"filename": name})
+		case r.Method == "GET" && strings.HasPrefix(p, "/git/trees/"):
+			sha, ok := f.forgejo[strings.TrimPrefix(p, "/git/trees/")]
+			if !ok {
+				sha = "f0"
 			}
-			json.NewEncoder(w).Encode(map[string]any{"files": files})
+			tree := []map[string]string{{"path": "Makefile", "sha": "m"}}
+			if sha != "" {
+				tree = append(tree, map[string]string{"path": ".forgejo", "sha": sha})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
+			var n int64
+			fmt.Sscanf(p, "/pulls/%d", &n)
+			f.closed = append(f.closed, n)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		case r.Method == "GET" && p == "/pulls":
 			json.NewEncoder(w).Encode(f.open)
 		case r.Method == "POST" && p == "/pulls":
@@ -116,7 +127,7 @@ var prTask = Task{ID: "t1", Status: "running", Objective: "Add a make check targ
 	SHA: "base", Branch: "factory/t1", IssueNumber: 4, Source: "api"}
 
 func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
-	fj := &prForgejo{files: []string{"Makefile"}}
+	fj := &prForgejo{}
 	r, _, objects := newActivityRunner(t, prTask, fj)
 
 	var first, second PullRequest
@@ -146,15 +157,41 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 }
 
 func TestOpenPullRequestRefusesForgejoChanges(t *testing.T) {
-	fj := &prForgejo{files: []string{"Makefile", ".forgejo/workflows/pr.yml"}}
+	// edited, deleted (renamed away), and added: each makes the entry differ from the base's
+	for name, trees := range map[string]map[string]string{
+		"edited":  {"base": "f0", "c1": "f1"},
+		"deleted": {"base": "f0", "c1": ""},
+		"added":   {"base": "", "c1": "f1"},
+	} {
+		fj := &prForgejo{forgejo: trees}
+		r, _, _ := newActivityRunner(t, prTask, fj)
+		_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
+		if err == nil || !strings.Contains(err.Error(), "changes .forgejo/") || !isTerminal(err) {
+			t.Fatalf("%s: err = %v, want a terminal refusal", name, err)
+		}
+		if len(fj.created) != 0 {
+			t.Fatalf("%s: a pull request was opened for a .forgejo change", name)
+		}
+	}
+}
+
+// A later attempt whose push touches .forgejo/ finds the PR an earlier
+// attempt opened: CI already ran from the refused tree, so the PR is
+// closed with the reason, not left open behind a failed task.
+func TestOpenPullRequestRefusalClosesTheOpenPR(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"c2": "f9"},
+		open: []map[string]any{{"number": 12, "html_url": "https://git.example/sf/repo/pulls/12", "head": map[string]any{"ref": "factory/t1"}}}}
 	r, _, _ := newActivityRunner(t, prTask, fj)
 
-	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
-	if err == nil || !strings.Contains(err.Error(), ".forgejo/workflows/pr.yml") || !isTerminal(err) {
-		t.Fatalf("err = %v, want a terminal refusal naming the file", err)
+	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c2")
+	if err == nil || !isTerminal(err) {
+		t.Fatalf("err = %v, want terminal", err)
 	}
-	if len(fj.created) != 0 {
-		t.Fatal("a pull request was opened for a .forgejo change")
+	if len(fj.closed) != 1 || fj.closed[0] != 12 {
+		t.Fatalf("closed = %v, want PR 12", fj.closed)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "changes .forgejo/") {
+		t.Fatalf("comments = %q, want the reason on the PR", fj.comments)
 	}
 }
 
@@ -297,5 +334,19 @@ func TestFinishDoneFromInReview(t *testing.T) {
 	}
 	if len(fj.comments) != 0 || fj.labels[4][1] != "state/done" {
 		t.Fatalf("comments = %q, labels = %v", fj.comments, fj.labels[4])
+	}
+}
+
+// A workflow restarted by the heal pass for a task already closing (its
+// first workflow died mid-completion) cannot run it again: the refusal is
+// terminal, so the new workflow goes straight to Finish.
+func TestSetStateRefusesAFinishingTaskTerminally(t *testing.T) {
+	for _, status := range []string{"closing", "done", "failed"} {
+		task := prTask
+		task.Status = status
+		r, _, _ := newActivityRunner(t, task, &prForgejo{})
+		if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err == nil || !isTerminal(err) {
+			t.Fatalf("%s: err = %v, want terminal", status, err)
+		}
 	}
 }

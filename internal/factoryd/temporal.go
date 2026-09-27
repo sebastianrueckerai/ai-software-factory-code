@@ -23,13 +23,16 @@ type TemporalWorkflows struct {
 }
 
 // Start starts the task's workflow. The workflow id is the idempotency key:
-// a second start for the same task, running or finished, is refused by
-// Temporal and is not an error here.
+// a start while it runs, or after it completed, is refused by Temporal and
+// is not an error here. A workflow that failed, timed out or was
+// terminated may be started again, so the heal pass can pick up its task
+// (terminating a workflow therefore does not cancel a task: closing its
+// issue does).
 func (w TemporalWorkflows) Start(ctx context.Context, taskID string) error {
 	_, err := w.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                    WorkflowID(taskID),
 		TaskQueue:             TaskQueue,
-		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 	}, "TaskWorkflow", taskID)
 	var started *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &started) {
@@ -50,13 +53,13 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	return err
 }
 
-// StartOpenWorkflows starts a workflow for every agent task still queued or
-// running; main runs it at boot and every minute. Starting is idempotent,
-// so this heals an intake that stored its task row but failed to start the
-// workflow, and it carried the rows the claim loop left behind across the
-// cutover to Temporal.
+// StartOpenWorkflows starts a workflow for every agent task not yet done or
+// failed; main runs it at boot and every minute. Starting is idempotent, so
+// this heals an intake that stored its task row but failed to start the
+// workflow, and a task whose workflow died (in review, or mid-completion)
+// before finishing it.
 func StartOpenWorkflows(ctx context.Context, store Store, wf Workflows) {
-	for _, status := range []string{"queued", "running"} {
+	for _, status := range []string{"queued", "running", "in-review", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)

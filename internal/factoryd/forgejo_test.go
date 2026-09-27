@@ -331,24 +331,6 @@ func TestForgejoCombinedStatus(t *testing.T) {
 	}
 }
 
-func TestForgejoCompareBranches(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/sf/r/compare/main...factory/t1" {
-			t.Fatalf("path = %s", r.URL.Path)
-		}
-		io.WriteString(w, `{"files":[{"filename":"main.go"},{"filename":".forgejo/workflows/ci.yml"}]}`)
-	}))
-	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	files, err := f.CompareBranches(context.Background(), "sf", "r", "main", "factory/t1")
-	if err != nil {
-		t.Fatalf("CompareBranches: %v", err)
-	}
-	if len(files) != 2 || files[0] != "main.go" || files[1] != ".forgejo/workflows/ci.yml" {
-		t.Fatalf("files = %v", files)
-	}
-}
-
 func TestForgejoCreateIssueComment(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any
@@ -401,5 +383,52 @@ func TestForgejoPullRequestMerged(t *testing.T) {
 		if err != nil || got != merged {
 			t.Fatalf("PullRequestMerged = (%v, %v), want (%v, nil)", got, err, merged)
 		}
+	}
+}
+
+func TestForgejoTreeEntryPagesAndFailsClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path + "?" + r.URL.RawQuery {
+		case "/api/v1/repos/sf/r/git/trees/c1?page=1":
+			io.WriteString(w, `{"truncated":false,"total_count":3,"tree":[{"path":".github","sha":"g"},{"path":"README.md","sha":"r"}]}`)
+		case "/api/v1/repos/sf/r/git/trees/c1?page=2":
+			io.WriteString(w, `{"truncated":false,"total_count":3,"tree":[{"path":".forgejo","sha":"f1"}]}`)
+		case "/api/v1/repos/sf/r/git/trees/c2?page=1":
+			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"README.md","sha":"r"}]}`)
+		case "/api/v1/repos/sf/r/git/trees/c3?page=1":
+			io.WriteString(w, `{"truncated":true,"total_count":9,"tree":[]}`)
+		default:
+			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ctx := context.Background()
+	if sha, err := f.TreeEntry(ctx, "sf", "r", "c1", ".forgejo"); err != nil || sha != "f1" {
+		t.Fatalf("c1 = (%q, %v), want f1 from page 2", sha, err)
+	}
+	if sha, err := f.TreeEntry(ctx, "sf", "r", "c2", ".forgejo"); err != nil || sha != "" {
+		t.Fatalf("c2 = (%q, %v), want absent", sha, err)
+	}
+	if _, err := f.TreeEntry(ctx, "sf", "r", "c3", ".forgejo"); err == nil {
+		t.Fatal("a truncated tree listing must fail closed")
+	}
+}
+
+func TestForgejoClosePullRequest(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/repos/sf/r/pulls/9" {
+			t.Fatalf("%s %s", r.Method, r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"number":9,"state":"closed"}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if err := f.ClosePullRequest(context.Background(), "sf", "r", 9); err != nil || got["state"] != "closed" {
+		t.Fatalf("ClosePullRequest = %v, body %v", err, got)
 	}
 }

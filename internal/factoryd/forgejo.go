@@ -584,29 +584,53 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
 }
 
-// CompareBranches lists the files changed between base and head (ruling 90:
-// factoryd refuses to open a pull request whose diff touches .forgejo/**,
-// since Actions workflows run with the repository's CI credentials and a
-// task branch must never rewrite its own gate).
-func (f *Forgejo) CompareBranches(ctx context.Context, owner, repo, base, head string) ([]string, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", owner, repo, base, head)
-	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+// TreeEntry returns the object id of the top-level entry name in commit's
+// tree, empty when the entry does not exist. Two commits whose .forgejo
+// entries differ changed something under .forgejo/ (ruling 90), renames and
+// deletions included, however large the diff. The listing is paged; a
+// truncated one fails closed.
+func (f *Forgejo) TreeEntry(ctx context.Context, owner, repo, commit, name string) (string, error) {
+	seen := 0
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?page=%d", owner, repo, url.PathEscape(commit), page)
+		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+		if err != nil {
+			return "", err
+		}
+		var res struct {
+			Truncated  bool `json:"truncated"`
+			TotalCount int  `json:"total_count"`
+			Tree       []struct {
+				Path string `json:"path"`
+				SHA  string `json:"sha"`
+			} `json:"tree"`
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			return "", fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
+		}
+		if res.Truncated {
+			return "", fmt.Errorf("forgejo tree %s/%s %s: listing truncated", owner, repo, commit)
+		}
+		for _, e := range res.Tree {
+			if e.Path == name {
+				return e.SHA, nil
+			}
+		}
+		seen += len(res.Tree)
+		if len(res.Tree) == 0 || seen >= res.TotalCount {
+			return "", nil
+		}
+	}
+}
+
+// ClosePullRequest closes pull request number without merging it.
+func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, number int64) error {
+	payload, err := json.Marshal(map[string]any{"state": "closed"})
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var res struct {
-		Files []struct {
-			Filename string `json:"filename"`
-		} `json:"files"`
-	}
-	if err := json.Unmarshal(body, &res); err != nil {
-		return nil, fmt.Errorf("forgejo compare %s/%s %s...%s: %w", owner, repo, base, head, err)
-	}
-	names := make([]string, 0, len(res.Files))
-	for _, file := range res.Files {
-		names = append(names, file.Filename)
-	}
-	return names, nil
+	_, err = f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), payload, http.StatusCreated)
+	return err
 }
 
 // CreateIssueComment posts a comment on an issue: the workflow uses it to
