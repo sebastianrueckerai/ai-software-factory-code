@@ -174,7 +174,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	}
 	// short activities (Reconcile, SetState, OpenPullRequest, Escalate,
 	// ...) talk to Postgres, Forgejo or the cluster; an outage of any of
-	// them is waited out with capped backoff, never failed, like finish
+	// them is retried with capped backoff for up to a day, like finish
 	short := workflow.WithActivityOptions(ctx, finishOptions())
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
 		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
@@ -660,8 +660,10 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 }
 
 // finish is the one exit of every path. It retries for a day (backoff
-// capped at five minutes): giving up would leave the task running or
-// closing with its credentials live.
+// capped at five minutes). A Finish still failing then fails the
+// workflow; the heal pass starts a new run, which reconciles the task and
+// decides it again (one found closing is finished at once), so no task is
+// left running or closing with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
 	ctx := workflow.WithActivityOptions(t.ctx, finishOptions())
 	if err := workflow.ExecuteActivity(ctx, ActivityFinish, t.taskID, final, reason).Get(t.ctx, nil); err != nil {
