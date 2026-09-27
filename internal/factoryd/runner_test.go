@@ -740,7 +740,7 @@ func TestRunSessionSetupFailureDeletesNamespace(t *testing.T) {
 
 func TestBootSweepKeepsOnlyLiveTaskNamespaces(t *testing.T) {
 	kube := newFakeKube()
-	for _, id := range []string{"trunning", "tqueued", "treview", "tdone", "ghost"} {
+	for _, id := range []string{"trunning", "tqueued", "treview", "tdone", "ghost", "ci-87"} {
 		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
 	}
 	runner, _, store := newTestRunner(t, Task{ID: "trunning", Status: "running", Repository: "sf/repo"}, kube, &fakeObjectStore{})
@@ -750,7 +750,9 @@ func TestBootSweepKeepsOnlyLiveTaskNamespaces(t *testing.T) {
 
 	runner.BootSweep(context.Background())
 
-	for id, kept := range map[string]bool{"trunning": true, "tqueued": true, "treview": false, "tdone": false, "ghost": false} {
+	// factory-agents-ci-* belongs to the CI spawner, which runs PR checks
+	// in it across factoryd restarts
+	for id, kept := range map[string]bool{"trunning": true, "tqueued": true, "treview": false, "tdone": false, "ghost": false, "ci-87": true} {
 		if _, ok := kube.namespaces["factory-agents-"+id]; ok != kept {
 			t.Fatalf("namespace of %s kept = %v, want %v", id, ok, kept)
 		}

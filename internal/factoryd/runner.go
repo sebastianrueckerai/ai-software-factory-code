@@ -96,7 +96,9 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 // BootSweep deletes agent namespaces no session can still be using: those of
 // tasks that are neither queued nor running, and of unknown tasks. A running
 // task's namespace belongs to a RunSession attempt Temporal will retry, and
-// the retry replaces it itself.
+// the retry replaces it itself. CI namespaces (label factory.ai/task
+// ci-<job>, see jobLabel) belong to the CI spawner: their PR check jobs run
+// on across a factoryd restart.
 func (r *Runner) BootSweep(ctx context.Context) {
 	live, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
@@ -105,6 +107,9 @@ func (r *Runner) BootSweep(ctx context.Context) {
 	}
 	for _, ns := range live {
 		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
+		if strings.HasPrefix(id, "ci-") {
+			continue
+		}
 		t, ok, err := r.store.Task(ctx, id)
 		if err != nil {
 			log.Printf("boot sweep: task %s: %v", id, err)
