@@ -1,3 +1,5 @@
+ARG OPENCODE_VERSION=v1.18.32
+
 FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -6,9 +8,25 @@ COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-worker ./cmd/agent-worker
 
+# opencode's first run npm-installs @opencode-ai/plugin (pinned to its own
+# version) into $HOME/.config/opencode if that directory is empty -- proven
+# by direct reproduction: a cold HOME on a reachable network installs it in
+# ~65s; on no network at all it is silently skipped, not fast-failed, which
+# is why the sandbox (default-deny egress) must never hit this path live.
+# package.json/package-lock.json here are opencode's own self-installed
+# lockfile, copied verbatim, so `npm ci` reproduces byte-for-byte what
+# opencode would install itself, without ever running the opencode binary
+# against a network it can't have.
+FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS opencode-plugin
+ARG OPENCODE_VERSION
+WORKDIR /opencode-home/.config/opencode
+COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
+RUN npm ci \
+      && test "$(node -p "require('./node_modules/@opencode-ai/plugin/package.json').version")" = "${OPENCODE_VERSION#v}"
+
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
-ARG OPENCODE_VERSION=v1.18.32
+ARG OPENCODE_VERSION
 ARG GO_VERSION=1.25.9
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep \
@@ -27,6 +45,10 @@ RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp
       && tar -xzf /tmp/go.tar.gz -C /usr/local \
       && rm /tmp/go.tar.gz
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
+# Pre-baked opencode provider packages (see the opencode-plugin stage above).
+# HOME here is NOT the runtime HOME -- the pod mounts an emptyDir over
+# /home/worker, so the worker copies this bake into place at start.
+COPY --from=opencode-plugin --chown=1000:1000 /opencode-home/.config/opencode /opt/opencode-home/.config/opencode
 USER 1000:1000
 # every one of these phones home past the egress allowlist and stalls on the drop;
 # ripgrep is installed because opencode otherwise downloads it from GitHub.
