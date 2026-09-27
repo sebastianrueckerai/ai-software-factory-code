@@ -322,6 +322,7 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
+	log.Printf("webhook intake: issue #%d on %s by %s: %s task %s", p.Issue.Index, repo, p.Issue.Poster.UserName, kind, id)
 	// state/queued for the agent lane; the human lane has no runner to claim
 	// it, so it gets its own terminal-looking label, state/waiting-human,
 	// per architecture 5.6's "waiting on a human" board column.

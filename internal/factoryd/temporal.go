@@ -39,6 +39,9 @@ func (w TemporalWorkflows) Start(ctx context.Context, taskID string) error {
 	if errors.As(err, &started) {
 		return nil
 	}
+	if err == nil {
+		log.Printf("task %s: workflow %s started", taskID, WorkflowID(taskID))
+	}
 	return err
 }
 
@@ -52,6 +55,9 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	if errors.As(err, &started) {
 		log.Printf("task %s: signal %s: workflow already completed", taskID, name)
 		return nil
+	}
+	if err == nil {
+		log.Printf("task %s: signal %s from %s delivered", taskID, name, sig.Author)
 	}
 	return err
 }

@@ -1,8 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
+	"log"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,5 +82,46 @@ func TestTemporalSignalStartsTheWorkflowWhenNoneRuns(t *testing.T) {
 		Return(nil, serviceerror.NewWorkflowExecutionAlreadyStarted("completed", "", ""))
 	if err := (TemporalWorkflows{Client: done}).Signal(context.Background(), "t1", SignalPRMerged, TaskSignal{}); err != nil {
 		t.Fatalf("signal to a completed workflow = %v, want no-op", err)
+	}
+}
+
+// captureLog redirects the standard logger into a buffer for one test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &buf
+}
+
+// An operator reads a task's path in factoryd's log: a real start and a
+// delivered signal each leave a line; a refused duplicate start does not.
+func TestTemporalStartAndSignalAreLogged(t *testing.T) {
+	buf := captureLog(t)
+	c := &mocks.Client{}
+	c.On("ExecuteWorkflow", mock.Anything, mock.Anything, "TaskWorkflow", "t1").Return(nil, nil)
+	c.On("SignalWithStartWorkflow", mock.Anything, "task-t1", SignalPRMerged, mock.Anything, mock.Anything, "TaskWorkflow", "t1").Return(nil, nil)
+	w := TemporalWorkflows{Client: c}
+	if err := w.Start(context.Background(), "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Signal(context.Background(), "t1", SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"task t1: workflow task-t1 started", "task t1: signal pr_merged from sebastian delivered"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("log = %q, want a line containing %q", buf.String(), want)
+		}
+	}
+
+	buf.Reset()
+	dup := &mocks.Client{}
+	dup.On("ExecuteWorkflow", mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Return(nil, serviceerror.NewWorkflowExecutionAlreadyStarted("running", "", ""))
+	if err := (TemporalWorkflows{Client: dup}).Start(context.Background(), "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("log = %q, want nothing for a refused duplicate start (the heal pass tries every minute)", buf.String())
 	}
 }

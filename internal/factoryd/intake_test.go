@@ -213,6 +213,7 @@ func TestIntakeSignatureNeverReadsBodyBeforeVerifying(t *testing.T) {
 }
 
 func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
+	logs := captureLog(t)
 	in, store, requests := newTestIntake(t)
 	body := issueOpenedBody(7, "sebastian", []string{"agent", "priority/p1"}, "Add the runner", "objective body")
 	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
@@ -255,6 +256,9 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	// immediately, not only once a runner later claims it.
 	if labels := issueLabels(t, in.Forgejo, 7); !slices.Contains(labels, "state/queued") {
 		t.Fatalf("labels = %v, want state/queued", labels)
+	}
+	if want := "webhook intake: issue #7 on sf/ai-software-factory-code by sebastian: agent task " + task.ID; !strings.Contains(logs.String(), want) {
+		t.Fatalf("log = %q, want a line containing %q", logs.String(), want)
 	}
 }
 
