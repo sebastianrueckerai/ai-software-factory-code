@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestTimelineAppendsLinesAcrossWriters(t *testing.T) {
@@ -60,21 +62,79 @@ func TestTimelineSerializesConcurrentAppends(t *testing.T) {
 	}
 }
 
-// A task's lock goes with its final line: the map does not grow with
-// every task factoryd ever ran.
-func TestTimelineDropsTheLockOfAFinishedTask(t *testing.T) {
+// No lock outlives its appends: the map does not grow with every task
+// factoryd ever ran.
+func TestTimelineKeepsNoIdleLock(t *testing.T) {
 	tl := &Timeline{Objects: &fakeObjectStore{}}
 	ctx := context.Background()
-	if err := tl.Append(ctx, "t1", "intake", nil); err != nil {
-		t.Fatal(err)
+	for _, step := range []string{"intake", "final"} {
+		if err := tl.Append(ctx, "t1", step, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, ok := tl.locks.Load("t1"); !ok {
-		t.Fatal("no lock while the task runs")
+	if len(tl.locks) != 0 {
+		t.Fatalf("locks = %v, want none once no append runs", tl.locks)
 	}
-	if err := tl.Append(ctx, "t1", "final", map[string]any{"status": "done"}); err != nil {
-		t.Fatal(err)
+}
+
+// gatedObjectStore holds every Get until the test lets it through, and
+// counts the appends inside their read-append-write at once.
+type gatedObjectStore struct {
+	fakeObjectStore
+	gate    chan struct{}
+	entered chan struct{}
+	inside  atomic.Int32
+	most    atomic.Int32
+}
+
+func (s *gatedObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
+	n := s.inside.Add(1)
+	if n > s.most.Load() {
+		s.most.Store(n)
 	}
-	if _, ok := tl.locks.Load("t1"); ok {
-		t.Fatal("the finished task's lock survived")
+	s.entered <- struct{}{}
+	<-s.gate
+	return s.fakeObjectStore.Get(ctx, key)
+}
+
+func (s *gatedObjectStore) Put(ctx context.Context, key string, body []byte) error {
+	defer s.inside.Add(-1)
+	return s.fakeObjectStore.Put(ctx, key, body)
+}
+
+// The final line must not hand a waiter and a newcomer two different
+// locks: the waiter queued on the finished append's lock and a caller
+// arriving after it would both read-append-write at once, losing a line.
+func TestTimelineFinalLineKeepsItsLockForWaiters(t *testing.T) {
+	store := &gatedObjectStore{gate: make(chan struct{}), entered: make(chan struct{}, 3)}
+	tl := &Timeline{Objects: store}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	appendStep := func(step string) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := tl.Append(ctx, "t1", step, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	appendStep("final")
+	<-store.entered // the final append holds the lock
+	appendStep("waiter")
+	time.Sleep(50 * time.Millisecond) // the waiter queues on the lock
+	store.gate <- struct{}{}          // the final append completes
+	<-store.entered                   // the waiter holds the lock
+	appendStep("newcomer")
+	select {
+	case <-store.entered:
+		t.Fatal("a newcomer entered while the waiter held the task's lock")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(store.gate)
+	wg.Wait()
+	body, _ := store.fakeObjectStore.Get(ctx, "sessions/t1/timeline.jsonl")
+	if lines := strings.Split(strings.TrimSpace(string(body)), "\n"); len(lines) != 3 || store.most.Load() != 1 {
+		t.Fatalf("lines = %d, most at once = %d, want 3 lines, one append at a time", len(lines), store.most.Load())
 	}
 }

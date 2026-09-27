@@ -14,19 +14,45 @@ import (
 // signals, final state), next to the per-session histories. race() runs
 // two activities of one task side by side and both record, so the
 // read-append-write is serialized per task (one factoryd replica,
-// strategy Recreate). A task's lock goes with its final line.
+// strategy Recreate). A task's lock lives while an append holds or awaits
+// it.
 type Timeline struct {
 	Objects ObjectStore
-	locks   sync.Map // task id -> *sync.Mutex
+	mu      sync.Mutex
+	locks   map[string]*taskLock
+}
+
+type taskLock struct {
+	sync.Mutex
+	users int // appends holding or awaiting it
+}
+
+// lock takes taskID's lock and returns its release.
+func (tl *Timeline) lock(taskID string) (unlock func()) {
+	tl.mu.Lock()
+	l := tl.locks[taskID]
+	if l == nil {
+		if tl.locks == nil {
+			tl.locks = map[string]*taskLock{}
+		}
+		l = &taskLock{}
+		tl.locks[taskID] = l
+	}
+	l.users++
+	tl.mu.Unlock()
+	l.Lock()
+	return func() {
+		l.Unlock()
+		tl.mu.Lock()
+		if l.users--; l.users == 0 {
+			delete(tl.locks, taskID)
+		}
+		tl.mu.Unlock()
+	}
 }
 
 func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[string]any) error {
-	mu, _ := tl.locks.LoadOrStore(taskID, &sync.Mutex{})
-	mu.(*sync.Mutex).Lock()
-	defer mu.(*sync.Mutex).Unlock()
-	if step == "final" {
-		defer tl.locks.Delete(taskID)
-	}
+	defer tl.lock(taskID)()
 	key := "sessions/" + taskID + "/timeline.jsonl"
 	prev, err := tl.Objects.Get(ctx, key)
 	if err != nil {
