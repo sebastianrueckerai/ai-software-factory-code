@@ -382,7 +382,7 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 // from a plain close.
 func (t *taskRun) issueClosed() (final, reason string, findings []string) {
 	if t.pr.Number == 0 {
-		return "failed", "issue closed before a pull request was opened", nil
+		return "failed", "issue closed while no pull request of this workflow was open", nil
 	}
 	var merged bool
 	if err := workflow.ExecuteActivity(t.short, ActivityPullRequestMerged, t.taskID, t.pr.Number).Get(t.ctx, &merged); err != nil {

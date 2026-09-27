@@ -303,7 +303,7 @@ func TestWorkflowIssueClosedDuringFirstAttemptOpensNoPR(t *testing.T) {
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10*time.Minute).Return(pushed("s1", "c1"), nil)
 	h.signalAfter(5*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "issue closed before a pull request was opened" {
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "issue closed while no pull request of this workflow was open" {
 		t.Fatalf("final = %q (%q)", final, h.finals[0][1])
 	}
 }
