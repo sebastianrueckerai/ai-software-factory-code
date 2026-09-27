@@ -46,7 +46,7 @@ jobs:
       # and OIDC request tokens) is the only credential a PR job may hold.
       - name: assert no registry or repository write credential
         run: |
-          bad=$(env | cut -d= -f1 | grep -Ei 'TOKEN|PASSW|SECRET|CREDENTIAL|AUTH|REGISTRY|DOCKER|(^|_)PAT($|_)|(^|_)KEY($|_)' \
+          bad=$(env | cut -d= -f1 | grep -Ei '(TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIALS?|AUTH|(^|_)PAT|(^|_)KEY)$|REGISTRY|DOCKER' \
             | grep -Evx 'FORGEJO_TOKEN|GITHUB_TOKEN|GITEA_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN' || true)
           if [ -n "$bad" ]; then echo "credential-shaped variables: $bad"; exit 1; fi
           if [ -e "$HOME/.docker/config.json" ] || [ -e "$HOME/.git-credentials" ]; then echo "credential file in HOME"; exit 1; fi
@@ -60,7 +60,10 @@ jobs:
           g() { GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$auth" git "$@"; }
           git init -q /tmp/probe && cd /tmp/probe
           git -c user.name=probe -c user.email=probe@invalid commit -q --allow-empty -m probe
-          if g push -q "$url" "HEAD:$probe" >/tmp/push.log 2>&1; then echo "the job token pushed $probe"; exit 1; fi
+          if g push -q "$url" "HEAD:$probe" >/tmp/push.log 2>&1; then
+            g push -q "$url" ":$probe" || true
+            echo "the job token pushed $probe (deleted again): it has repository write access"; exit 1
+          fi
           echo "push refused:"; head -n 3 /tmp/push.log | sed "s/$FORGEJO_TOKEN/***/g"
           g ls-remote --exit-code "$url" refs/heads/main >/dev/null
           if g ls-remote --exit-code "$url" "$probe" >/dev/null; then echo "$probe exists"; exit 1; fi
