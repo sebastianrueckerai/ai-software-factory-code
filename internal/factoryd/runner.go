@@ -33,6 +33,7 @@ type RunnerConfig struct {
 	AnswerTokens         int
 	HeadroomTokens       int
 	MaxSessions          int
+	AnswerSlice          time.Duration // agent time a human answer guarantees the attempt it buys
 	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
 	Supervisor           SupervisorConfig
@@ -93,6 +94,7 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		Models:        r.cfg.Models,
 		MaxSessions:   r.cfg.MaxSessions,
 		WallClockCap:  r.cfg.Supervisor.WallClockCap,
+		AnswerSlice:   r.cfg.AnswerSlice,
 		ChecksTimeout: r.cfg.ChecksTimeout,
 	}
 }
@@ -150,6 +152,26 @@ type sessionOutcome struct {
 	findings []string
 }
 
+// stopReport is what a stopped worker left for the next session: its
+// pushed work in progress and its last word.
+func (out sessionOutcome) stopReport() []string {
+	var lines []string
+	if out.commit != "" {
+		lines = append(lines, "the stopped session's work in progress is on the branch at "+out.commit)
+	}
+	switch {
+	case out.result != nil:
+		lines = append(lines, "the stopped worker reported: "+out.result.Summary)
+	case out.noResult != "":
+		lines = append(lines, "work in progress not pushed: "+out.noResult)
+	}
+	return lines
+}
+
+// errWorkerStop ends a session because factoryd is stopping: retryable,
+// so Temporal runs the attempt on from the heartbeat on the next factoryd.
+var errWorkerStop = errors.New("factoryd stopping; the session's work in progress is on the branch for the retry")
+
 // workerTerminationGrace is how long a stopped worker gets to commit and
 // push its work in progress before the kubelet kills it; runSession reads
 // its log five seconds longer.
@@ -163,7 +185,11 @@ const workerTerminationGrace = 60
 // findings so far, for the activity heartbeat.
 // out is a named result so the deferred findings reach the caller on
 // every return.
-func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (out sessionOutcome, err error) {
+// runSession supervises one worker pod until it reports, a trip stops it,
+// ctx is cancelled (the workflow decided) or workerStop closes (factoryd
+// is stopping: the worker is stopped gracefully first, so its work in
+// progress is pushed and reported for the retry).
+func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string), workerStop <-chan struct{}) (out sessionOutcome, err error) {
 	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
 	if err != nil {
 		return out, err
@@ -314,6 +340,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
+		case <-workerStop:
+			stop(&Trip{Kind: TripShutdown, Findings: sup.Findings(), Detail: "factoryd is stopping"})
+			progress(events, append(sup.Findings(), out.stopReport()...))
+			return out, errWorkerStop
 		case <-tick.C:
 			if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 				sup.SetSpend(cur.SpentEUR, cur.BudgetEUR)

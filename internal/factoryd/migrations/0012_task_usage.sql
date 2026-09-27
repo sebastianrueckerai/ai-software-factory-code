@@ -1,0 +1,5 @@
+ALTER TABLE tasks
+    ADD COLUMN IF NOT EXISTS agent_time_ns bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS extra_time_ns bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS extra_attempts integer NOT NULL DEFAULT 0;

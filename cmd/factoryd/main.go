@@ -101,6 +101,7 @@ func main() {
 		AnswerTokens:   envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens: envInt("HEADROOM_TOKENS", 16384),
 		MaxSessions:    envInt("MAX_SESSIONS", 3),
+		AnswerSlice:    envDuration("ESCALATION_ANSWER_SLICE", 10*time.Minute),
 		ChecksTimeout:  envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
@@ -146,7 +147,10 @@ func main() {
 	}
 	defer temporal.Close()
 	workflows := factoryd.TemporalWorkflows{Client: temporal}
-	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{})
+	// a stop closes the activities' worker stop channel and cancels them
+	// after the timeout: RunSession stops its worker gracefully within it
+	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{WorkerStopTimeout: 120 * time.Second})
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
@@ -224,8 +228,9 @@ func main() {
 	go func() {
 		<-ctx.Done()
 		log.Printf("factoryd: shutting down, stopping the temporal worker")
-		// a session activity cut short here is retried by Temporal on the
-		// next factoryd, which resumes it from the heartbeat
+		// a running session stops its worker gracefully (work in progress
+		// pushed) and is retried by Temporal on the next factoryd from
+		// its heartbeat
 		taskWorker.Stop()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

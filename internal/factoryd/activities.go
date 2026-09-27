@@ -41,6 +41,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityFinish:            r.Finish,
 		ActivityReconcile:         r.Reconcile,
 		ActivityEscalate:          r.Escalate,
+		ActivityRecordUsage:       r.RecordUsage,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -158,12 +159,19 @@ func (h *heartbeat) snapshot() sessionProgress {
 	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events, Findings: slices.Clone(h.p.Findings)}
 }
 
+// RecordUsage keeps what the task used of its caps on its row.
+func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) error {
+	return r.store.SetTaskUsage(ctx, taskID, u)
+}
+
 // RunSession is one attempt: a fresh namespace with this session's own
 // Forgejo token and service account (so the gateway mints this session its
 // own LiteLLM key), one worker pod, supervision, and the session record.
-// A retry after a crashed worker finds the dead session in the heartbeat,
-// removes its namespace and pod with its credentials, and starts a new
-// session carrying the dead one's findings and id as parent.
+// A retry after a crashed or stopped worker finds the dead session in the
+// heartbeat, removes its namespace and pod with its credentials, and
+// starts a new session carrying the dead one's findings and id as parent.
+// factoryd stopping ends the session gracefully first: the worker pushes
+// its work in progress and the heartbeat carries its report.
 func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult, error) {
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -184,7 +192,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		s.parent = dead.SessionID
 		if dead.Running {
 			s.findings = slices.Concat(in.Findings, dead.Findings, []string{fmt.Sprintf(
-				"session %s stopped after %d events without finishing (its worker was lost); continue from the branch as it is", dead.SessionID, dead.Events)})
+				"session %s stopped after %d events without finishing; continue from the branch as it is", dead.SessionID, dead.Events)})
 		}
 	}
 	hb := startHeartbeat(ctx, s.id)
@@ -218,8 +226,16 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.cfg.Supervisor.WallClockCap))
 	r.record(ctx, t.ID, "session_start", map[string]any{
 		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings})
-	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update)
+	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
 	if err != nil {
+		outcome := "aborted"
+		if errors.Is(err, errWorkerStop) {
+			// the last heartbeat is what the retry resumes from
+			outcome = "stopped"
+			activity.RecordHeartbeat(ctx, hb.snapshot())
+		}
+		r.record(cleanup, t.ID, "session_end", map[string]any{
+			"session": s.id, "parent": s.parent, "model": s.model, "outcome": outcome, "summary": err.Error(), "commit": out.commit})
 		return SessionResult{}, err
 	}
 	res := sessionResult(s, out)
@@ -257,16 +273,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	if out.trip != nil {
 		res.Commit = out.commit
-		res.Findings = slices.Clone(out.trip.Findings)
-		if out.commit != "" {
-			res.Findings = append(res.Findings, "the stopped session's work in progress is on the branch at "+out.commit)
-		}
-		switch {
-		case out.result != nil:
-			res.Findings = append(res.Findings, "the stopped worker reported: "+out.result.Summary)
-		case out.noResult != "":
-			res.Findings = append(res.Findings, "work in progress not pushed: "+out.noResult)
-		}
+		res.Findings = append(slices.Clone(out.trip.Findings), out.stopReport()...)
 	}
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
@@ -426,7 +433,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status}
+	st := RunState{Status: t.Status, Usage: t.Usage}
 	if t.Status == "done" || t.Status == "failed" || t.Kind == "human" {
 		st.Skip = true
 		return st, nil

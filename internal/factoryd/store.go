@@ -43,6 +43,17 @@ type Task struct {
 	PRNumber int64
 	// HalfWayDone: the task's half-way check-in fired (once per task).
 	HalfWayDone bool
+	Usage       TaskUsage
+}
+
+// TaskUsage is what a task has used of its caps and what a human granted
+// on top; the workflow keeps it on the row so a new run continues the
+// count (ruling 93: the caps hold across attempts, so across runs).
+type TaskUsage struct {
+	AgentTime     time.Duration // the agent's working time, summed over the sessions
+	Attempts      int
+	ExtraTime     time.Duration // granted by human answers near the cap
+	ExtraAttempts int           // one per human answer
 }
 
 // IntakeEvent is a Forgejo comment or review recorded against a task's issue
@@ -124,6 +135,8 @@ type Store interface {
 	SetTaskPR(ctx context.Context, id string, number int64) error
 	// MarkHalfWay records that the task's half-way check-in fired.
 	MarkHalfWay(ctx context.Context, id string) error
+	// SetTaskUsage records what the task has used of its caps.
+	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
 	// DeliverySeen reports whether a webhook delivery was processed.
 	DeliverySeen(ctx context.Context, id string) (bool, error)
 	// RecordDelivery marks a webhook delivery processed.
@@ -225,13 +238,15 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done`
+	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
+	agent_time_ns, attempts, extra_time_ns, extra_attempts`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone); err != nil {
+		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -316,6 +331,12 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 
 func (s *PGStore) MarkHalfWay(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET half_way_done = true WHERE id = $1`, id)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -415,7 +436,7 @@ func oneRow(res sql.Result, err error, what string) error {
 		return err
 	}
 	if n != 1 {
-		return fmt.Errorf("%s: not found", what)
+		return fmt.Errorf("%s: %w", what, ErrNotFound)
 	}
 	return nil
 }

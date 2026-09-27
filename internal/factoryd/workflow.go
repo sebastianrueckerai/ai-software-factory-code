@@ -51,6 +51,7 @@ const (
 	ActivityFinish            = "Finish"
 	ActivityReconcile         = "Reconcile"
 	ActivityEscalate          = "Escalate"
+	ActivityRecordUsage       = "RecordUsage"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -77,7 +78,11 @@ type WorkflowConfig struct {
 	MaxSessions int
 	// WallClockCap bounds the agent's working time across all sessions of
 	// a task; waiting on checks or on a reviewer does not count.
-	WallClockCap  time.Duration
+	WallClockCap time.Duration
+	// AnswerSlice is the agent time a human answer guarantees the attempt
+	// it buys, granted on top of the cap when less is left: at most this
+	// much per answer, never more than the cap.
+	AnswerSlice   time.Duration
 	ChecksTimeout time.Duration
 }
 
@@ -135,6 +140,7 @@ type RunState struct {
 	// session began and never taken up: a run that died between the
 	// signal and its next session starts one with them.
 	Findings []string
+	Usage    TaskUsage // what earlier runs used of the caps and were granted
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -174,7 +180,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
 		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
 		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
-		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings)}
+		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
+		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage)}
 	return run.lifecycle()
 }
 
@@ -206,15 +213,21 @@ const (
 	// verifying the judged head; a change request both reconciled and
 	// signalled counts once.
 	versionReconcileFindings workflow.Version = 1
+	// versionPersistUsage (change id "persist-usage"): a run starts from
+	// the task row's usage (agent time, attempts, human grants) and
+	// records it after every session and every answer, so the caps hold
+	// across runs; a human answer near the cap grants a fresh slice of
+	// agent time, and one after a healed wait buys an attempt like any.
+	versionPersistUsage workflow.Version = 1
 )
 
 type taskRun struct {
-	ctx, short    workflow.Context
-	cfg           WorkflowConfig
-	taskID        string
-	v, v2, v3, v4 workflow.Version
-	pr            PullRequest
-	escalation    int64 // the escalation comment human answers must be newer than
+	ctx, short        workflow.Context
+	cfg               WorkflowConfig
+	taskID            string
+	v, v2, v3, v4, v5 workflow.Version
+	pr                PullRequest
+	escalation        int64 // the escalation comment human answers must be newer than
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -233,7 +246,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	model := t.cfg.Models.Start
 	var findings []string
 	startRef, parent := "", ""
-	var used time.Duration
+	var u TaskUsage
 	reason := "no session produced a result"
 	apply := func(v verdict) {
 		if v.stronger {
@@ -245,6 +258,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		var st RunState
 		if err := workflow.ExecuteActivity(t.short, ActivityReconcile, t.taskID).Get(t.ctx, &st); err != nil {
 			return t.finish("failed", "reconcile: "+errMessage(err))
+		}
+		if t.v5 >= versionPersistUsage {
+			u = st.Usage
 		}
 		switch {
 		case st.Skip:
@@ -264,6 +280,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			findings = answer
+			if t.v5 >= versionPersistUsage {
+				t.grant(&u)
+			}
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
@@ -278,8 +297,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			apply(v)
 		}
 	}
-	maxAttempts := t.cfg.MaxSessions
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := u.Attempts + 1; attempt <= t.cfg.MaxSessions+u.ExtraAttempts; attempt++ {
 		if drained {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
@@ -290,7 +308,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		remaining := t.cfg.WallClockCap - used
+		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
@@ -303,7 +321,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			TaskID: t.taskID, Attempt: attempt, Model: model,
 			Findings: findings, StartRef: startRef, ParentSessionID: parent,
 		})
-		used += workflow.Now(t.ctx).Sub(began)
+		u.AgentTime += workflow.Now(t.ctx).Sub(began)
+		u.Attempts = attempt
+		t.recordUsage(u)
 		if decided {
 			return t.finish(final, why)
 		}
@@ -337,9 +357,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			// only a human raises a limit: the answer buys one more attempt
 			findings = append(res.Findings, answer...)
-			maxAttempts++
+			t.grant(&u)
 			continue
 		}
 		startRef = res.Commit
@@ -354,7 +373,34 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		apply(v)
 	}
-	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", maxAttempts, reason))
+	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+}
+
+// grant is what a human answer buys; only a human raises a limit. One
+// more attempt, and when less than AnswerSlice of agent time is left, the
+// difference, so the attempt is not born at the cap.
+func (t *taskRun) grant(u *TaskUsage) {
+	u.ExtraAttempts++
+	if t.v5 < versionPersistUsage {
+		return
+	}
+	slice := min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
+	if left := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime; left < slice {
+		u.ExtraTime += slice - left
+	}
+	t.recordUsage(*u)
+}
+
+// recordUsage puts the usage on the task row for the next run; the row is
+// bookkeeping, so a failure (the workflow cancelled mid-retry) is logged,
+// not the task's end.
+func (t *taskRun) recordUsage(u TaskUsage) {
+	if t.v5 < versionPersistUsage {
+		return
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordUsage, t.taskID, u).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record usage", "task", t.taskID, "error", err)
+	}
 }
 
 // verify takes a pushed commit through its pull request, the checks and

@@ -21,6 +21,7 @@ const (
 	TripNoProgress TripKind = "no_progress"
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
+	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
 )
 
 // Trip is a detector firing: the kind, what it saw, and the session's

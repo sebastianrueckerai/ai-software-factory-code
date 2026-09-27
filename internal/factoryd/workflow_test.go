@@ -22,6 +22,7 @@ var testWorkflowConfig = WorkflowConfig{
 	Models:        ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
 	MaxSessions:   3,
 	WallClockCap:  20 * time.Minute,
+	AnswerSlice:   10 * time.Minute,
 	ChecksTimeout: 45 * time.Minute,
 }
 
@@ -36,6 +37,7 @@ type workflowHarness struct {
 	state     RunState // what Reconcile reports; zero = a fresh task
 	finishAt  time.Time
 	escalated []string // Escalate reasons, in order
+	usage     []TaskUsage
 }
 
 func newWorkflowHarness(t *testing.T) *workflowHarness {
@@ -54,6 +56,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
+		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -63,6 +66,8 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })
 	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(nil)
+	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
@@ -580,6 +585,76 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	}
 	if !slices.Contains(h.states, "running") {
 		t.Fatalf("states = %v", h.states)
+	}
+	if last := h.usage[len(h.usage)-1]; last != (TaskUsage{Attempts: 4, ExtraAttempts: 1}) {
+		t.Fatalf("usage = %+v, want four attempts, one of them granted by the answer", last)
+	}
+}
+
+// A human answer near the cap gets a fresh slice: at least AnswerSlice of
+// agent time is left for the attempt it buys, granted on the task's row.
+func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(19 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "stuck"}, nil
+		}).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s2", "c2"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try the other lock", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, finals = %v; want done after the answer's attempt", final, len(h.sessions), h.finals)
+	}
+	want := TaskUsage{AgentTime: 24 * time.Minute, Attempts: 2, ExtraTime: 9 * time.Minute, ExtraAttempts: 1}
+	if last := h.usage[len(h.usage)-1]; last != want {
+		t.Fatalf("usage = %+v, want %+v", last, want)
+	}
+}
+
+// A new run continues the task's usage from its row (ruling 93: the caps
+// count across attempts, so across runs too): the attempts left and the
+// agent time left are what the earlier run left.
+func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 2}}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"}, nil
+		})
+
+	if final := h.run(t); final != "failed" || !strings.HasPrefix(h.finals[0][1], "3 attempts exhausted") {
+		t.Fatalf("final = %q, finals = %v; want the last attempt, then exhaustion", final, h.finals)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {
+		t.Fatalf("sessions = %+v, want one, the third", h.sessions)
+	}
+	if !slices.Equal(h.usage, []TaskUsage{{AgentTime: 15 * time.Minute, Attempts: 3}}) {
+		t.Fatalf("usage = %+v", h.usage)
+	}
+}
+
+func TestWorkflowNewRunResumesAgentTimeFromTheRow(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 18 * time.Minute}}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeNoPush, SessionID: "s1"}, nil
+		})
+
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q, finals = %v, sessions = %d; want one session, then the cap", final, h.finals, len(h.sessions))
+	}
+	if !slices.Equal(h.usage, []TaskUsage{{AgentTime: 21 * time.Minute, Attempts: 1}}) {
+		t.Fatalf("usage = %+v", h.usage)
 	}
 }
 

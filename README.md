@@ -22,8 +22,11 @@ the agents work on.
   a session record in S3; `sessions/<task>/timeline.jsonl` records the
   task's whole path. Spend settlement against LiteLLM and the orphan
   sweep run beside it. Runs with `strategy: Recreate`; a restart loses
-  nothing: Temporal retries the interrupted attempt on the new pod,
-  which continues the dead session's chain from its heartbeat. It also
+  nothing: a stopping pod stops its running sessions gracefully (the
+  worker pushes its work in progress, within the Temporal worker's 120 s
+  stop, inside the pod's 150 s grace), and Temporal retries the
+  interrupted attempt on the new pod, which continues the chain from the
+  heartbeat and the pushed branch. It also
   runs the CI spawner (see below) in the same process, on the same
   in-cluster Kubernetes client.
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
@@ -156,10 +159,16 @@ processed one is a no-op, and intake events are keyed by delivery id. A
 failure comments its reason on the issue; `Finish` retries without
 limit. The wall-clock cap (20 min) bounds the agent's working time
 summed over the attempts; waiting on checks or reviewers does not count.
-A restarted factoryd loses nothing: Temporal retries an interrupted
-`RunSession` on the new pod, which removes the dead session's namespace,
-pod and credentials and starts a new session with the dead one as parent
-and its findings.
+The used time and the attempts are recorded on the task row
+(`RecordUsage` after every session), so a new workflow run for the same
+task (a resubmitted issue, a run restarted by hand) resumes the count
+instead of starting a fresh cap. A stopping factoryd stops a running
+`RunSession` gracefully: the worker pushes its work in progress, the
+session ends `stopped` and Temporal retries the attempt on the new pod,
+which continues from the pushed branch with the stop report as findings.
+A crashed factoryd loses nothing either: the retry removes the dead
+session's namespace, pod and credentials and starts a new session with
+the dead one as parent and its findings.
 
 ## Supervision
 
@@ -200,7 +209,12 @@ commits and pushes its work in progress through the same clean push
 path, and the next session starts from it. Escalation moves the task to
 `waiting-human`, comments the reason and the digest summary on the
 issue, and waits: a newer non-bot issue comment starts one more attempt
-with the comment as findings, closing the issue fails the task. Every
+with the comment as findings, closing the issue fails the task. The
+human is the one party allowed to raise a limit: the answer buys the
+extra attempt, and if less than `ESCALATION_ANSWER_SLICE` (10 min, never
+more than `WALL_CLOCK_CAP`) of agent time is left under the cap, the
+answer also grants the difference, so every answer gets at least that
+slice of working time. Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.
 

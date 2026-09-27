@@ -210,7 +210,9 @@ metadata:
   labels: {app: factoryd}
 spec:
   replicas: 1
-  # two factoryd pods would race for the same queue
+  # one process: the heal pass, the settle loop, the CI spawner and the
+  # timeline lock assume it; Recreate lets the stopping pod hand its
+  # sessions over before the next one revokes their credentials
   strategy: {type: Recreate, rollingUpdate: null}
   selector: {matchLabels: {app: factoryd}}
   template:
@@ -218,7 +220,8 @@ spec:
       labels: {app: factoryd}
     spec:
       serviceAccountName: factoryd
-      # room to delete the sandbox, revoke credentials and requeue the task in flight
+      # room for the temporal worker's 120 s stop: running sessions stop
+      # their workers gracefully (work in progress pushed), then clean up
       terminationGracePeriodSeconds: 150
       automountServiceAccountToken: true
       # every callee is named in full, so the first DNS query is the one the

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -158,6 +159,16 @@ func (s *fakeStore) MarkHalfWay(ctx context.Context, id string) error {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.HalfWayDone = true
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Usage = u
 	s.tasks[id] = t
 	return nil
 }
@@ -365,6 +376,16 @@ func TestPGStore(t *testing.T) {
 	}
 	if got, _, _ := s.Task(ctx, "t1"); !got.HalfWayDone {
 		t.Fatal("half_way_done not kept")
+	}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, ExtraAttempts: 1}
+	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != usage {
+		t.Fatalf("usage = %+v, want %+v", got.Usage, usage)
+	}
+	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 0 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)

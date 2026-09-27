@@ -22,7 +22,7 @@ import (
 // control flow instead of inspecting messages.
 var (
 	ErrAlreadyExists = errors.New("kubernetes: already exists")
-	ErrNotFound      = errors.New("kubernetes: not found")
+	ErrNotFound      = errors.New("not found") // shared by the kube, S3, Forgejo and store clients
 	ErrForbidden     = errors.New("kubernetes: forbidden")
 )
 

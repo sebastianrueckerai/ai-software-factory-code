@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,8 +17,10 @@ import (
 	"testing/iotest"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
 	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
@@ -465,16 +468,23 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 // pods appear (fakeKube.scriptPods needs the pods to exist first).
 func runSession(t *testing.T, ctx context.Context, r *Runner, in SessionInput, dead *sessionProgress, bodies ...string) (SessionResult, error) {
 	t.Helper()
+	return runSessionIn(t, r, in, bodies, func(env *testsuite.TestActivityEnvironment) {
+		if ctx != nil {
+			env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		}
+		if dead != nil {
+			env.SetHeartbeatDetails(*dead)
+		}
+	})
+}
+
+func runSessionIn(t *testing.T, r *Runner, in SessionInput, bodies []string, setup func(*testsuite.TestActivityEnvironment)) (SessionResult, error) {
+	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
 	r.RegisterActivities(env)
-	if ctx != nil {
-		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
-	}
-	if dead != nil {
-		env.SetHeartbeatDetails(*dead)
-	}
+	setup(env)
 	var res SessionResult
 	var err error
 	done := make(chan struct{})
@@ -1064,24 +1074,76 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 	}
 }
 
-// A worker shutdown cancels the attempt: its pod, namespace and credentials
-// go, and the error hands the attempt back to Temporal for a retry.
-func TestRunSessionShutdownCleansUpAndFails(t *testing.T) {
+// A cancelled attempt (the workflow decided while the session ran) ends
+// it: its pod, namespace and credentials go, the session's end is on the
+// timeline, and the cancel is the activity's error.
+func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
 	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo"}
 	kube := newFakeKube()
-	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	objects := &fakeObjectStore{}
+	runner, hub, _ := newTestRunner(t, task, kube, objects)
 	ctx, cancel := context.WithCancel(context.Background())
 	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); cancel() }() }
 
 	_, err := runSession(t, ctx, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs)
-	if err == nil {
-		t.Fatal("RunSession succeeded through a shutdown")
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Message() != context.Canceled.Error() {
+		t.Fatalf("err = %v, want the cancel to reach the activity", err)
 	}
 	if len(hub.revoked) != 2 {
 		t.Fatalf("revoked = %v: the session's tokens must not survive", hub.revoked)
 	}
 	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
-		t.Fatal("namespace survived the shutdown")
+		t.Fatal("namespace survived the cancel")
+	}
+	if timeline := string(objGet(objects, "sessions/t6/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_end"`) || !strings.Contains(timeline, `"outcome":"aborted"`) {
+		t.Fatalf("timeline = %s, want the aborted session's end", timeline)
+	}
+}
+
+// factoryd stopping (the worker stop channel) is not the session's end:
+// the worker is stopped gracefully and pushes its work in progress, the
+// heartbeat carries its report, and the retry on the next factoryd
+// continues from it.
+func TestRunSessionWorkerStopPushesWorkInProgress(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.stopWait = 10 * time.Second
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	var last sessionProgress
+	var mu sync.Mutex
+
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed to factory/t2 at c-wip") + "\n"
+	_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+		env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = details.Get(&last)
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") || errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want a retryable stop", err)
+	}
+	if !slices.Contains(kube.deletedPods, "factory-agents-t2/worker-"+last.SessionID) {
+		t.Fatalf("deleted pods = %v, want the worker stopped", kube.deletedPods)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !last.Running || !slices.Contains(last.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") ||
+		!slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
+		t.Fatalf("last heartbeat = %+v, want the stopped worker's report for the retry", last)
+	}
+	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"outcome":"stopped"`) || !strings.Contains(timeline, "c-wip") {
+		t.Fatalf("timeline = %s, want the stopped session's end with its push", timeline)
+	}
+	if len(hub.revoked) != 2 {
+		t.Fatalf("revoked = %v: the session's tokens must not survive", hub.revoked)
+	}
+	if _, ok := kube.namespaces["factory-agents-t2"]; ok {
+		t.Fatal("namespace survived the stop")
 	}
 }
 
