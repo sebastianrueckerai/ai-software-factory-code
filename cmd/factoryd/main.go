@@ -25,6 +25,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 var version = "dev"
@@ -61,6 +62,13 @@ func main() {
 		log.Fatalf("open task store (boot migrations): %v", err)
 	}
 	defer store.Close()
+	// no valid policy version at all is the one policy failure that stops
+	// the boot; later invalid edits are logged and the last valid one holds
+	policyLoader := &factoryd.PolicyLoader{Path: env("POLICY_FILE", "/etc/factory-policy/policy.yaml"), Store: store}
+	if err := policyLoader.Boot(context.Background()); err != nil {
+		log.Fatalf("policy: %v", err)
+	}
+	log.Printf("policy: version %d current", policyLoader.Current().ID)
 
 	forgejo := &factoryd.Forgejo{
 		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
@@ -122,6 +130,7 @@ func main() {
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
 			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
+		DayHeadroom: policyLoader.DayHeadroom,
 	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)
@@ -161,12 +170,11 @@ func main() {
 	runner.RegisterActivities(taskWorker)
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
-	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
 	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
 	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), MaxBudgetEUR: maxBudget,
+		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget,
 		Repositories: []factoryd.Repo{upstream},
 	}
 
@@ -196,6 +204,7 @@ func main() {
 		}
 	}()
 	go completion.SettleLoop(ctx, time.Minute)
+	go policyLoader.Watch(ctx, 30*time.Second)
 	go ciSpawner.Run(ctx)
 
 	mux := http.NewServeMux()
@@ -207,7 +216,9 @@ func main() {
 		}
 		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	})
-	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, maxBudget)))
+	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, policyLoader.Budget)))
+	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
+	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
@@ -262,7 +273,7 @@ type taskCreator interface {
 // state/queued before the task row ever exists; a row is created only once
 // the issue exists to back it. The base is always the default branch's
 // head: neither the branch nor the sha is a caller's choice.
-func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, maxBudget float64) http.HandlerFunc {
+func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, budget func() policy.Budget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
@@ -283,7 +294,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
+		in.BudgetEUR = budget().ClampBudget(in.BudgetEUR)
 		sha, err := forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, "")
 		if err != nil {
 			http.Error(w, "base sha: "+err.Error(), http.StatusBadGateway)
@@ -302,7 +313,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		}
 		task := factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard",
-			BudgetEUR: in.BudgetEUR, Status: "queued",
+			BudgetEUR: in.BudgetEUR, Status: "queued", RequiredCapabilities: factoryd.AgentCapabilities,
 			Objective: in.Objective, Repository: in.Repository,
 			SHA:  sha,
 			Kind: "agent", IssueNumber: ref.Number, Source: "api",
@@ -394,16 +405,6 @@ func mustEnv(name string) string {
 		log.Fatalf("%s is required", name)
 	}
 	return v
-}
-
-func envFloat(name string, def float64) float64 {
-	if v := os.Getenv(name); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
-			return f
-		}
-		log.Fatalf("%s: not a positive number", name)
-	}
-	return def
 }
 
 func envDuration(name string, def time.Duration) time.Duration {

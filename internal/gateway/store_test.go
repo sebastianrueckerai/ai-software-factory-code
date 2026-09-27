@@ -23,7 +23,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, policy_current, policy_versions`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, policy_current, policy_versions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 

@@ -265,7 +265,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -490,6 +490,25 @@ func TestPGStore(t *testing.T) {
 			t.Fatalf("%s spent = %v, want %v (max of booked and every LiteLLM figure)", id, got.SpentEUR, want)
 		}
 	}
+	// each raise is booked as its delta: 0.5 -> 0.75, then 0.75 -> 0.875
+	var settled []string
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || kind || ' ' || ref || ' ' || eur::text FROM ledger ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			t.Fatal(err)
+		}
+		settled = append(settled, l)
+	}
+	if want := []string{"s-done settlement litellm 0.25", "s-done settlement litellm 0.125"}; !reflect.DeepEqual(settled, want) {
+		t.Fatalf("ledger = %q, want %q", settled, want)
+	}
+	if err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
+	}
 
 	_, ok, err = s.Task(ctx, "nope")
 	if err != nil || ok {
@@ -540,5 +559,29 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !ok || gw.Priority != 0 || gw.RiskClass != "standard" || len(gw.RequiredCapabilities) != 0 ||
 		gw.Kind != "agent" || gw.IssueNumber != 0 {
 		t.Fatalf("gateway-seeded task = %+v (%v, %v)", gw, ok, err)
+	}
+
+	// the capability backfill gives pre-policy agent tasks "coder", once
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM backfills WHERE name = '0014_task_capabilities';
+		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities) VALUES
+		('b-agent', 1, 'done', 'agent', 'null'), ('b-human', 1, 'done', 'human', 'null')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string][]string{"b-agent": {"coder"}, "b-human": nil, "t-gw": {"coder"}} {
+		if got, _, _ := s2.Task(ctx, id); !reflect.DeepEqual(got.RequiredCapabilities, want) {
+			t.Fatalf("%s capabilities after the backfill = %v, want %v", id, got.RequiredCapabilities, want)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]' WHERE id = 't-gw'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s2.Task(ctx, "t-gw"); len(got.RequiredCapabilities) != 0 {
+		t.Fatalf("the backfill ran twice: t-gw capabilities = %v", got.RequiredCapabilities)
 	}
 }

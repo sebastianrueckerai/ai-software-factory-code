@@ -8,7 +8,8 @@ the agents work on.
 
 - `cmd/factoryd`: the control plane. Task intake (`POST /tasks`,
   `GET /tasks/{id}`, `GET /tasks/{id}/timeline`, bearer token from secret
-  `factoryd-intake`, budget clamped to `MAX_BUDGET_EUR`), the task store
+  `factoryd-intake`, budget from the policy, see "Policy and costs"), the
+  policy loader and `GET /policy`, `GET /costs`, the task store
   in Postgres, and the
   Temporal worker for task queue `factory-tasks`: one `TaskWorkflow` per
   task (workflow id `task-<id>`) runs the attempts, opens the pull
@@ -30,9 +31,16 @@ the agents work on.
   runs the CI spawner (see below) in the same process, on the same
   in-cluster Kubernetes client.
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
-  projected ServiceAccount JWT, mints a per-task LiteLLM virtual key,
-  forwards the call, books each call's cost into the task row, refuses
-  with 402 past the budget, and writes an audit row per decision.
+  projected ServiceAccount JWT, checks the call against the policy
+  version in force (read from Postgres, at most 30 s old; 503 while none
+  is loaded): the task must be running, its capability classes must allow
+  the requested model (403 `refused_capability` otherwise), and both the
+  task's headroom (budget minus spent) and the day's headroom (the day cap
+  minus today's ledger total, all tasks) must be positive (402
+  `refused_budget` or `refused_day_cap`). It mints a per-task LiteLLM
+  virtual key capped at the smaller headroom, forwards the call, books its
+  cost onto the task row and a `model` ledger row in one statement, and
+  writes an audit row per decision naming the policy version.
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
   resumed task branch that only the fork holds is fetched from there),
@@ -221,8 +229,9 @@ once per task, recorded on the task row). The wall-clock cap ends the
 session. Every other trip asks the supervisor, a model under the LiteLLM
 alias `supervisor`, called directly with a virtual key minted per call
 (metadata `task_id`, `max_budget` the budget minus the larger of
-spent_eur and the spend on the task's LiteLLM keys, model `supervisor`
-only, so the settlement books its spend and the session end blocks it).
+spent_eur and the spend on the task's LiteLLM keys, never more than the
+day cap's headroom, model `supervisor` only, so the settlement books its
+spend and the session end blocks it).
 It reads the brief, the trip, a progress digest and the session record's
 tail, and answers one of `continue` (the detector resets, the session
 runs on), `redirect` (new session, same rung, its guidance as findings),
@@ -261,6 +270,44 @@ issues is gated with `workflow.GetVersion` (see the version constants in
 `internal/factoryd/workflow.go`), and `TestWorkflowReplaysLiveHistories`
 replays histories recorded on the cluster (`internal/factoryd/testdata`).
 `GET /tasks/{id}/timeline` serves `sessions/<id>/timeline.jsonl`.
+
+## Policy and costs
+
+The capability policy is a YAML document in the infra repository
+(`k8s/platform/policy/policy.yaml`, ConfigMap `factory-policy`, applied
+by Flux; its README says how to change it), schema v1 in
+`internal/policy`: `budget` (`task_default_eur`, `task_max_eur`,
+`day_eur` for the UTC day over all tasks) and `classes` (per capability
+class the model aliases it may call and its tools with per-task caps).
+Unknown keys are rejected. factoryd mounts it read-only at
+`/etc/factory-policy/policy.yaml` (`POLICY_FILE`), reads it on boot and
+every 30 s, and records each new valid content as an immutable
+`policy_versions` row (sha256 of the file, the document as JSON,
+`loaded_at`) made current in `policy_current`; known content (a revert)
+makes its earlier row current again. An invalid file logs
+`POLICY REJECTED` and the previous version stays current; factoryd
+refuses to boot only when no valid version exists at all. The gateway
+never reads the file, only the current version in Postgres.
+
+Intake gives every agent task the capability class `coder`
+(`tasks.required_capabilities`; a one-shot backfill gave it to older
+agent tasks) and the budget `task_default_eur`, or the requested budget
+capped at `task_max_eur`.
+
+The `ledger` table holds every booked cost: task, UTC day, kind (`model`
+per gateway call with the alias as ref, `settlement` for the raise the
+settlement pass makes when LiteLLM shows more spend than was booked,
+`tool` and `resource` for later connectors), ref, EUR. Its day total is
+what the day cap is measured against. The schema of `policy_versions`,
+`policy_current` and `ledger` lives in `internal/policy/schema.sql` and is
+applied by both binaries, which share the `gateway` database.
+
+Both endpoints take the intake bearer token:
+
+- `GET /policy`: the version in force, `{id, sha256, loaded_at, document}`.
+- `GET /costs?from=YYYY-MM-DD&to=YYYY-MM-DD` (UTC days, both included,
+  each defaulting to today, at most 366 days apart): `days` (per day
+  `by_kind` and `total`) and `tasks` (per task total, largest first).
 
 ## Build and test
 
@@ -352,7 +399,7 @@ DNS query is the admitted one. A new callee needs a rule here first.
   (key `token`) into a shell variable, never print it, and
   `POST /tasks` with `objective`, `repository`, optional `sha` and
   `budget_eur`. Filing an issue labelled `agent` does the same through
-  the webhook, with the default budget.
+  the webhook, with the policy's default budget.
 - Follow a task: its issue's `state/*` label, factoryd's log
   (`webhook intake: issue #N …: agent task <id>`,
   `task <id>: workflow task-<id> started`,

@@ -231,14 +231,17 @@ Answer with one JSON object and nothing else: {"action": "continue|redirect|retr
 // SupervisorModel calls the supervisor alias on LiteLLM directly, with a
 // virtual key it mints per call: metadata task_id, so the settlement loop
 // books the spend onto the task and the session-end reconcile blocks it
-// with the task's other keys; max_budget the task's remaining budget; and
-// the supervisor alias as its only model.
+// with the task's other keys; max_budget the smaller of the task's remaining
+// budget and the day cap's headroom; and the supervisor alias as its only
+// model.
 type SupervisorModel struct {
 	BaseURL string // LiteLLM
 	Admin   *LiteLLMAdmin
 	Alias   string // "supervisor"
 	Budget  TokenBudget
-	HTTP    *http.Client // nil = supervisorTimeout
+	// DayHeadroom is what the policy's day cap leaves of today's spend.
+	DayHeadroom func(ctx context.Context) (float64, error)
+	HTTP        *http.Client // nil = supervisorTimeout
 }
 
 // supervisorTimeout bounds one call: GLM reasons before it answers.
@@ -265,6 +268,14 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, budgetEUR, 
 	if remainingEUR <= 0 {
 		return Decision{}, errors.New("the task has no budget left")
 	}
+	dayEUR, err := m.DayHeadroom(ctx)
+	if err != nil {
+		return Decision{}, err
+	}
+	if dayEUR <= 0 {
+		return Decision{}, errors.New("the day cap is reached")
+	}
+	remainingEUR = min(remainingEUR, dayEUR)
 	limit, err := m.Budget.OutputLimit()
 	if err != nil {
 		return Decision{}, err

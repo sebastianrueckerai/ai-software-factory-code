@@ -283,8 +283,6 @@ spec:
           valueFrom: {secretKeyRef: {name: factoryd-intake, key: token}}
         - name: FORGEJO_WEBHOOK_SECRET
           valueFrom: {secretKeyRef: {name: factoryd-webhook, key: secret}}
-        - name: MAX_BUDGET_EUR
-          value: "5"
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
@@ -296,6 +294,12 @@ spec:
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
+        # the capability policy (infra repo, Flux); factoryd rereads it every 30 s
+        volumeMounts:
+        - {name: policy, mountPath: /etc/factory-policy, readOnly: true}
+      volumes:
+      - name: policy
+        configMap: {name: factory-policy}
 ---
 apiVersion: v1
 kind: Service

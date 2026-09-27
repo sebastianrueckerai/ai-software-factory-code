@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -162,10 +163,11 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 
 func testSupervisorModel(url string) *SupervisorModel {
 	return &SupervisorModel{
-		BaseURL: url,
-		Admin:   &LiteLLMAdmin{BaseURL: url, MasterKey: "master"},
-		Alias:   "supervisor",
-		Budget:  TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
+		BaseURL:     url,
+		Admin:       &LiteLLMAdmin{BaseURL: url, MasterKey: "master"},
+		Alias:       "supervisor",
+		Budget:      TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
+		DayHeadroom: func(context.Context) (float64, error) { return 20, nil },
 	}
 }
 
@@ -269,5 +271,28 @@ func TestSupervisorKeyCapCountsUnsettledSpend(t *testing.T) {
 	f.keys = `{"keys":[{"token":"h1","spend":0.31,"metadata":{"task_id":"t1"}}],"total_pages":1}`
 	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate || len(f.mints) != 1 {
 		t.Fatalf("spent out: %+v after %d mints, want escalate without a key", d, len(f.mints))
+	}
+}
+
+func TestSupervisorKeyCapTakesTheDayHeadroom(t *testing.T) {
+	f := &fakeLiteLLM{content: `{"action":"continue"}`}
+	m := testSupervisorModel(f.srv(t).URL)
+	day := 0.125
+	m.DayHeadroom = func(context.Context) (float64, error) { return day, nil }
+	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionContinue {
+		t.Fatalf("decision = %+v", d)
+	}
+	// min(0.3 - 0.05, 0.125)
+	if got := f.mints[0]["max_budget"]; got != 0.125 {
+		t.Fatalf("max_budget = %v, want the day headroom 0.125", got)
+	}
+	day = 0
+	d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput())
+	if d.Action != ActionEscalate || !strings.Contains(d.Reason, "day cap") || len(f.mints) != 1 {
+		t.Fatalf("day cap reached: %+v after %d mints, want escalate without a key", d, len(f.mints))
+	}
+	m.DayHeadroom = func(context.Context) (float64, error) { return 0, errors.New("db down") }
+	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate || len(f.mints) != 1 {
+		t.Fatalf("unknown day spend: %+v after %d mints, want escalate without a key", d, len(f.mints))
 	}
 }

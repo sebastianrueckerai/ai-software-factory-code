@@ -12,6 +12,8 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 //go:embed migrations/*.sql
@@ -116,7 +118,8 @@ type Store interface {
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
-	// SettleSpend raises spent_eur to at least reported.
+	// SettleSpend raises spent_eur to at least reported and books the
+	// raise as a settlement row in the ledger, together.
 	SettleSpend(ctx context.Context, id string, reported float64) error
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency; false means no task is linked to that
@@ -189,7 +192,7 @@ func (s *PGStore) migrate(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return policy.Migrate(ctx, s.db)
 }
 
 func splitSQL(sqlText string) []string {
@@ -432,10 +435,33 @@ func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duratio
 	return ids, rows.Err()
 }
 
+// SettleSpend locks the task row, so the delta is taken from the spend the
+// raise replaces even while the gateway books calls.
 func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) error {
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE tasks SET spent_eur = GREATEST(spent_eur, $2) WHERE id = $1`, id, reported)
-	return oneRow(res, err, "task "+id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	var spent float64
+	err = tx.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = $1 FOR UPDATE`, id).Scan(&spent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if reported <= spent {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = $2 WHERE id = $1`, id, reported); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, 'litellm', $3)`,
+		id, policy.KindSettlement, reported-spent); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func oneRow(res sql.Result, err error, what string) error {

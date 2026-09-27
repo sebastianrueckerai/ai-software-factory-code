@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func TestRequireBearer(t *testing.T) {
@@ -125,7 +126,7 @@ func TestCreateTaskHandlerFilesIssueBeforeRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -139,7 +140,7 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -169,7 +170,7 @@ func TestCreateTaskHandlerStampsBaseSHA(t *testing.T) {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 		store := &fakeTaskCreator{events: &events}
-		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), body)
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), body)
 		if rec.Code != http.StatusCreated {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 		}
@@ -186,7 +187,7 @@ func TestCreateTaskHandlerLabelsAgentAndQueued(t *testing.T) {
 	var events []string
 	forgejo, _, appliedLabels := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -199,7 +200,7 @@ func TestCreateTaskHandlerIssueBodyIsObjectivePlusFiledByFactoryd(t *testing.T) 
 	var events []string
 	forgejo, issueBody, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -213,7 +214,7 @@ func TestCreateTaskHandlerIssueCreationFailureCreatesNoRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, true)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -226,7 +227,7 @@ func TestCreateTaskHandlerStoreFailureReturnsError(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events, err: errors.New("db unavailable")}
-	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -295,6 +296,36 @@ func TestRecordHandlerServesASessionRecord(t *testing.T) {
 		h(rec, req)
 		if rec.Code != want || (want == http.StatusOK && rec.Body.String() != `{"kind":"supervisor"}`+"\n") {
 			t.Fatalf("%s: %d %q, want %d", session, rec.Code, rec.Body, want)
+		}
+	}
+}
+
+func testBudget() policy.Budget { return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20} }
+
+// The task budget comes from the policy in force: its default when none is
+// asked for, never above its maximum; every API task holds the coder class.
+func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
+	for body, want := range map[string]float64{
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                   1.5,
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":0.01}`: 0.01,
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":9}`:    4,
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events}
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+		}
+		got := store.created[0]
+		if got.BudgetEUR != want || !slices.Equal(got.RequiredCapabilities, []string{"coder"}) {
+			t.Fatalf("%s: task budget %v, capabilities %v; want %v and [coder]", body, got.BudgetEUR, got.RequiredCapabilities, want)
+		}
+		var res struct {
+			BudgetEUR float64 `json:"budget_eur"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res.BudgetEUR != want {
+			t.Fatalf("%s: response budget %v (%v), want %v", body, res.BudgetEUR, err, want)
 		}
 	}
 }

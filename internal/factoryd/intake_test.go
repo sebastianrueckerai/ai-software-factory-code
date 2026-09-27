@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 const webhookSecret = "test-webhook-secret"
@@ -126,11 +128,14 @@ func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig Tas
 	return nil
 }
 
+// testBudget is a policy budget whose default differs from the deployed one.
+func testBudget() policy.Budget { return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20} }
+
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
 	t.Helper()
 	forgejo, requests := intakeForgejoStub(t)
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
 	return in, store, requests
 }
 
@@ -248,8 +253,11 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	if task.SHA != "sha-main-head" {
 		t.Fatalf("sha = %q, want the resolved branch head", task.SHA)
 	}
-	if task.BudgetEUR != 2.0 {
-		t.Fatalf("budget = %v, want the 2.0 default", task.BudgetEUR)
+	if task.BudgetEUR != 1.5 {
+		t.Fatalf("budget = %v, want the policy's 1.5 default", task.BudgetEUR)
+	}
+	if !slices.Equal(task.RequiredCapabilities, []string{"coder"}) {
+		t.Fatalf("capabilities = %v, want [coder]", task.RequiredCapabilities)
 	}
 	// default_branch came from the payload itself; RepoDefaultBranch must not
 	// have been called, only the branch-head lookup.
@@ -279,7 +287,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	for _, tk := range store.tasks {
 		task = tk
 	}
-	if task.Kind != "human" || task.IssueNumber != 9 || task.Status != "waiting-human" {
+	if task.Kind != "human" || task.IssueNumber != 9 || task.Status != "waiting-human" || len(task.RequiredCapabilities) != 0 {
 		t.Fatalf("task = %+v, want a human-lane task waiting on its human from the start", task)
 	}
 	if task.SHA != "" {
@@ -317,7 +325,7 @@ func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 	t.Cleanup(srv.Close)
 	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
 	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
 	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
 	if rr.Code != http.StatusOK {

@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Intake is the Forgejo webhook endpoint: every issue labelled agent or
@@ -26,12 +28,13 @@ import (
 // to it. It implements http.Handler directly; main wires it at POST
 // /webhooks/forgejo.
 type Intake struct {
-	Store        Store
-	Forgejo      *Forgejo
-	Workflows    Workflows
-	BotUser      string // factory-agent: its own issues/comments never spawn tasks or events
-	Secret       string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
-	MaxBudgetEUR float64
+	Store     Store
+	Forgejo   *Forgejo
+	Workflows Workflows
+	BotUser   string // factory-agent: its own issues/comments never spawn tasks or events
+	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
+	// Budget is the policy in force's budget section: a new task's budget.
+	Budget func() policy.Budget
 	// Repositories are where the heal pass looks for agent and human
 	// issues no webhook turned into a task.
 	Repositories []Repo
@@ -249,15 +252,9 @@ func objectiveFromIssue(issue webhookIssue) string {
 	return issue.Title + "\n\n" + issue.Body
 }
 
-// ClampBudget defaults an unset or non-positive requested budget to 2.0 and
-// caps it at max. Shared by POST /tasks and the issue-opened intake path so
-// the two task-creation entry points never drift apart on this rule.
-func ClampBudget(requested, max float64) float64 {
-	if requested <= 0 {
-		requested = 2.0
-	}
-	return min(requested, max)
-}
+// AgentCapabilities are the capability classes every agent task gets at
+// intake, through POST /tasks or an issue alike.
+var AgentCapabilities = []string{"coder"}
 
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.
@@ -337,7 +334,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ID:          id,
 		Priority:    priorityFromLabels(names),
 		RiskClass:   "standard",
-		BudgetEUR:   ClampBudget(0, in.MaxBudgetEUR),
+		BudgetEUR:   in.Budget().ClampBudget(0),
 		Status:      "queued",
 		Objective:   objectiveFromIssue(issue),
 		Repository:  repo,
@@ -346,6 +343,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Source:      "webhook",
 	}
 	if kind == "agent" {
+		task.RequiredCapabilities = AgentCapabilities
 		repoParts, err := SplitRepo(repo)
 		if err != nil {
 			return err
