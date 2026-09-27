@@ -151,7 +151,7 @@ func (r *Runner) execute(ctx context.Context, t Task) {
 	if !claimed {
 		return
 	}
-	r.mirrorState(ctx, t, "running")
+	mirrorTaskState(ctx, r.forgejo, t, "running")
 	// the store measured the elapsed time on its own clock; every deadline
 	// from here on runs on this process's monotonic clock
 	started := time.Now().Add(-elapsed)
@@ -690,24 +690,6 @@ func (r *Runner) workerEgressSpec() map[string]any {
 				}},
 			},
 		},
-	}
-}
-
-// mirrorState swaps a task's linked Forgejo issue onto exactly one state/*
-// label. A task with no linked issue (IssueNumber == 0) has nothing to
-// mirror. Mirroring failures are logged and retried on the next state
-// change, never returned: a Forgejo hiccup must never fail a task.
-func (r *Runner) mirrorState(ctx context.Context, t Task, state string) {
-	if t.IssueNumber == 0 {
-		return
-	}
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		log.Printf("task %s: mirror state %s: %v", t.ID, state, err)
-		return
-	}
-	if err := r.forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, t.IssueNumber, state); err != nil {
-		log.Printf("task %s: mirror state %s: %v", t.ID, state, err)
 	}
 }
 

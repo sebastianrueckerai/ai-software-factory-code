@@ -144,60 +144,7 @@ func main() {
 		}
 		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	})
-	mux.Handle("POST /tasks", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
-		var in struct {
-			Objective  string  `json:"objective"`
-			Repository string  `json:"repository"`
-			SHA        string  `json:"sha"`
-			Branch     string  `json:"branch"`
-			Priority   int     `json:"priority"`
-			BudgetEUR  float64 `json:"budget_eur"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if in.Objective == "" || in.Repository == "" {
-			http.Error(w, "objective and repository are required", http.StatusBadRequest)
-			return
-		}
-		repoParts, err := factoryd.SplitRepo(in.Repository)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
-		id := factoryd.NewTaskID()
-		if in.Branch == "" {
-			in.Branch = "factory/" + id
-		}
-		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, firstLine(in.Objective), in.Objective)
-		if err != nil {
-			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := forgejo.ReplaceIssueLabels(r.Context(), repoParts.Owner, repoParts.Name, ref.Number,
-			[]string{"agent", "state/queued"}); err != nil {
-			log.Printf("task %s: label issue %d: %v", id, ref.Number, err)
-		}
-		task := factoryd.Task{
-			ID: id, Priority: in.Priority, RiskClass: "standard",
-			BudgetEUR: in.BudgetEUR, Status: "queued",
-			Objective: in.Objective, Repository: in.Repository,
-			SHA: in.SHA, Branch: in.Branch,
-			Kind: "agent", IssueNumber: ref.Number,
-		}
-		if err := store.CreateTask(r.Context(), task); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
-			"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR,
-			"issue_number": ref.Number, "issue_url": ref.URL,
-		})
-	}))
+	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, maxBudget)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
@@ -236,6 +183,77 @@ func main() {
 func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return strings.TrimSpace(line)
+}
+
+// taskCreator is the one store dependency POST /tasks needs, narrower than
+// factoryd.Store so a test double is a single method, not the whole
+// interface.
+type taskCreator interface {
+	CreateTask(ctx context.Context, t factoryd.Task) error
+}
+
+// createTaskHandler is the API task-filing path (task 42 brief item 3):
+// every task is a Forgejo issue, whatever its source, so this files the
+// issue — as the bot, title from the objective's first line, body the
+// objective plus "filed by factoryd intake" — and labels it agent and
+// state/queued before the task row ever exists; a row is created only once
+// the issue exists to back it.
+func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, maxBudget float64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Objective  string  `json:"objective"`
+			Repository string  `json:"repository"`
+			SHA        string  `json:"sha"`
+			Branch     string  `json:"branch"`
+			Priority   int     `json:"priority"`
+			BudgetEUR  float64 `json:"budget_eur"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if in.Objective == "" || in.Repository == "" {
+			http.Error(w, "objective and repository are required", http.StatusBadRequest)
+			return
+		}
+		repoParts, err := factoryd.SplitRepo(in.Repository)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
+		id := factoryd.NewTaskID()
+		if in.Branch == "" {
+			in.Branch = "factory/" + id
+		}
+		issueBody := in.Objective + "\n\nfiled by factoryd intake"
+		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, firstLine(in.Objective), issueBody)
+		if err != nil {
+			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := forgejo.ReplaceIssueLabels(r.Context(), repoParts.Owner, repoParts.Name, ref.Number,
+			[]string{"agent", "state/queued"}); err != nil {
+			log.Printf("task %s: label issue %d: %v", id, ref.Number, err)
+		}
+		task := factoryd.Task{
+			ID: id, Priority: in.Priority, RiskClass: "standard",
+			BudgetEUR: in.BudgetEUR, Status: "queued",
+			Objective: in.Objective, Repository: in.Repository,
+			SHA: in.SHA, Branch: in.Branch,
+			Kind: "agent", IssueNumber: ref.Number,
+		}
+		if err := store.CreateTask(r.Context(), task); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
+			"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR,
+			"issue_number": ref.Number, "issue_url": ref.URL,
+		})
+	}
 }
 
 // requireBearer admits only requests carrying the intake token.

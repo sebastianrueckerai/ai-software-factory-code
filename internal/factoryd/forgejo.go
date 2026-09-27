@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -416,6 +417,27 @@ func (f *Forgejo) SetStateLabel(ctx context.Context, owner, repo string, issueNu
 	}
 	next = append(next, "state/"+state)
 	return f.ReplaceIssueLabels(ctx, owner, repo, issueNumber, next)
+}
+
+// mirrorTaskState swaps a task's linked Forgejo issue onto exactly one
+// state/* label. A task with no linked issue (IssueNumber == 0) has nothing
+// to mirror. Mirroring failures are logged, never returned: a Forgejo
+// hiccup must never fail the caller's own transition. The one helper behind
+// every mirror call site: the runner (state/running), completion
+// (state/done, state/failed, ...), and the webhook intake (state/queued,
+// state/waiting-human).
+func mirrorTaskState(ctx context.Context, forgejo *Forgejo, t Task, state string) {
+	if t.IssueNumber == 0 {
+		return
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		log.Printf("task %s: mirror state %s: %v", t.ID, state, err)
+		return
+	}
+	if err := forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, t.IssueNumber, state); err != nil {
+		log.Printf("task %s: mirror state %s: %v", t.ID, state, err)
+	}
 }
 
 // PullRequestHeadBranch reads a pull request's head branch name. Needed

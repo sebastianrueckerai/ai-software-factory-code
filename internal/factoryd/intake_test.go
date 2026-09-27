@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -22,12 +24,16 @@ func sign(secret string, body []byte) string {
 }
 
 // intakeForgejoStub answers the handful of read endpoints handleIssue and
-// handleIssueComment call out to: repo default branch, branch head SHA, and
-// a pull request's head branch. requests records every path hit, so tests
-// can assert a lookup was — or was not — made.
+// handleIssueComment call out to: repo default branch, branch head SHA, a
+// pull request's head branch, and the issue-labels GET/PUT pair behind
+// SetStateLabel (state mirroring, fix round 1). requests records every path
+// hit, so tests can assert a lookup was — or was not — made; a test can read
+// back the labels the stub now holds for an issue via the same *Forgejo's
+// IssueLabels.
 func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	t.Helper()
 	var requests []string
+	labels := map[string][]string{} // keyed by the issue's labels path
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
@@ -35,6 +41,20 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
 			io.WriteString(w, `{"head":{"ref":"factory/t-pr"}}`)
+		case strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodGet:
+			names := labels[r.URL.Path]
+			out := make([]map[string]string, len(names))
+			for i, n := range names {
+				out[i] = map[string]string{"name": n}
+			}
+			json.NewEncoder(w).Encode(out) // #nosec G104 -- best-effort test stub response
+		case strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodPut:
+			var payload struct {
+				Labels []string `json:"labels"`
+			}
+			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub, malformed body just yields nil labels
+			labels[r.URL.Path] = payload.Labels
+			io.WriteString(w, `[]`)
 		case strings.Count(r.URL.Path, "/") == 4: // /api/v1/repos/{owner}/{repo}
 			io.WriteString(w, `{"default_branch":"main"}`)
 		default:
@@ -43,6 +63,17 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	}))
 	t.Cleanup(srv.Close)
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, &requests
+}
+
+// issueLabels reads back the labels a test's Forgejo stub currently holds
+// for an issue, exercising the same GET SetStateLabel itself depends on.
+func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
+	t.Helper()
+	names, err := f.IssueLabels(context.Background(), "sf", "ai-software-factory-code", issueNumber)
+	if err != nil {
+		t.Fatalf("issue labels: %v", err)
+	}
+	return names
 }
 
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
@@ -177,6 +208,11 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 			t.Fatalf("RepoDefaultBranch was called even though the payload carried default_branch: %v", *requests)
 		}
 	}
+	// fix round 1: a webhook-created agent task must carry state/queued
+	// immediately, not only once a runner later claims it.
+	if labels := issueLabels(t, in.Forgejo, 7); !slices.Contains(labels, "state/queued") {
+		t.Fatalf("labels = %v, want state/queued", labels)
+	}
 }
 
 func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
@@ -196,8 +232,46 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	if task.SHA != "" {
 		t.Fatalf("sha = %q, want empty: the human lane never runs the agent", task.SHA)
 	}
-	if len(*requests) != 0 {
-		t.Fatalf("forgejo was called for a human-lane issue: %v", *requests)
+	// no branch/SHA resolution for the human lane: the only forgejo calls
+	// allowed are the state-label mirror's own GET/PUT.
+	for _, p := range *requests {
+		if strings.HasSuffix(p, "/branches/main") || strings.HasSuffix(p, "/repos/sf/ai-software-factory-code") {
+			t.Fatalf("forgejo was called to resolve the agent's branch/SHA for a human-lane issue: %v", *requests)
+		}
+	}
+	// fix round 1: the human lane gets its own consistent label
+	// (architecture 5.6's "waiting on a human" board column), not
+	// state/queued, since no runner will ever claim a human-lane task.
+	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
+		t.Fatalf("labels = %v, want state/waiting-human", labels)
+	}
+}
+
+// TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly asserts a Forgejo hiccup
+// while mirroring state/queued never fails the webhook nor loses the task
+// row: mirroring is log-only, same as the runner's and completion's.
+func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/branches/main"):
+			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
+		case strings.HasSuffix(r.URL.Path, "/labels"):
+			http.Error(w, "forgejo unavailable", http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
+	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
+	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200: a label-mirror failure must not fail the webhook", rr.Code, rr.Body)
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1: the task must still be created despite the mirror failure", len(store.tasks))
 	}
 }
 

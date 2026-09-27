@@ -66,10 +66,18 @@ erroring.
 
 A task's state (`queued`, `running`, `waiting-human`, `in-review`,
 `done`, `failed`) is mirrored onto its issue as exactly one `state/*`
-label, swapped by `Forgejo.SetStateLabel`; the full label set
-(`agent`, `human`, and one `state/*` per status) is created at boot by
-`EnsureLabels` if missing. Mirroring failures are logged and retried on
-the next transition, never fail the task itself.
+label, swapped by `Forgejo.SetStateLabel` through the shared
+`mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
+site behind the runner, completion, and the webhook intake; the full
+label set (`agent`, `human`, and one `state/*` per status) is created
+at boot by `EnsureLabels` if missing. Mirroring failures are logged and
+retried on the next transition, never fail the task itself. A
+webhook-created task is mirrored immediately after its row exists, not
+only once a runner claims it: `state/queued` for the agent lane, and
+`state/waiting-human` for the human lane, since no runner ever claims a
+human-lane task (architecture 5.6's "waiting on a human" board column
+is the human lane's whole lifecycle, not a transient state on the way
+to `running`).
 
 ## Build and test
 

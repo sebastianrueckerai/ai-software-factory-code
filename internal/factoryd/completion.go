@@ -38,8 +38,8 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	return nil
 }
 
-// mirrorState swaps a completed task's linked Forgejo issue onto exactly one
-// state/* label. A task with no linked issue has nothing to mirror.
+// mirrorState looks up a completed task and swaps its linked Forgejo issue
+// onto exactly one state/* label, via the shared mirrorTaskState helper.
 // Mirroring failures are logged, never returned: Complete's own result must
 // never depend on Forgejo being reachable.
 func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
@@ -48,17 +48,10 @@ func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
 		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
 		return
 	}
-	if !ok || t.IssueNumber == 0 {
+	if !ok {
 		return
 	}
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
-		return
-	}
-	if err := c.Forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, t.IssueNumber, state); err != nil {
-		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
-	}
+	mirrorTaskState(ctx, c.Forgejo, t, state)
 }
 
 // Requeue hands an interrupted task back to the queue with its credentials
