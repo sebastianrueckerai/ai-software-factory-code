@@ -205,6 +205,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
 		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls)
 	}}
+	// stopAt is when workerStop closed: the whole stop, an in-flight
+	// supervisor call included, ends within r.stopWait of it
+	var stopAt time.Time
 	podName := "worker-" + s.id
 	pod := r.workerPodSpec(t, s)
 	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
@@ -221,7 +224,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// The pod must leave Pending before its log endpoint is useful; a first
 	// image pull can take minutes, but never past the session deadline.
 	wait := min(10*time.Minute, time.Until(deadline))
-	if err := r.awaitPodStart(ctx, ns, podName, wait); err != nil {
+	if err := r.awaitPodStart(ctx, ns, podName, wait, workerStop); err != nil {
+		if errors.Is(err, errWorkerStop) {
+			return out, err
+		}
 		out.noResult = err.Error()
 		return out, nil
 	}
@@ -278,13 +284,17 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
 		}
-		timeout := time.After(r.stopWait)
+		grace := r.stopWait
+		if !stopAt.IsZero() {
+			grace = min(grace, time.Until(stopAt.Add(r.stopWait)))
+		}
+		timeout := time.After(grace)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-timeout:
-				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", r.stopWait)
+				out.noResult = fmt.Sprintf("the stopped worker did not report within %s", grace.Round(time.Second))
 				return
 			case line, ok := <-lines:
 				if !ok {
@@ -297,8 +307,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		}
 	}
-	// onTrip returns true when the session stops.
-	onTrip := func(trip *Trip) bool {
+	// shutdown is factoryd's own stop: the worker is stopped and the
+	// activity retried on the next factoryd from its report.
+	shutdown := func() error {
+		stop(&Trip{Kind: TripShutdown, Findings: sup.Findings(), Detail: "factoryd is stopping"})
+		progress(events, append(sup.Findings(), out.stopReport()...))
+		return errWorkerStop
+	}
+	// onTrip returns true when the session ends, with the session's error.
+	onTrip := func(trip *Trip) (bool, error) {
 		if trip.Kind == TripHalfWay {
 			if err := r.store.MarkHalfWay(ctx, t.ID); err != nil {
 				log.Printf("task %s: record the half-way check-in: %v", t.ID, err)
@@ -306,12 +323,28 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		if trip.Kind == TripWallClock {
 			stop(trip)
-			return true
+			return true, ctx.Err()
 		}
-		// the call never outlives the session: at the cap the cap decides
+		// the call never outlives the session: at the cap the cap decides,
+		// and factoryd stopping cuts it, its decision unread
 		callCtx, cancel := context.WithDeadline(ctx, deadline)
-		d, called := supervision.onTrip(callCtx, trip)
-		cancel()
+		defer cancel()
+		var d Decision
+		var called bool
+		answered := make(chan struct{})
+		go func() {
+			defer close(answered)
+			d, called = supervision.onTrip(callCtx, trip)
+		}()
+		select {
+		case <-answered:
+		case <-workerStop:
+			stopAt = time.Now()
+			cancel()
+			<-answered
+			log.Printf("task %s: factoryd stopping cut the supervisor call for %s", t.ID, trip.Kind)
+			return true, shutdown()
+		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
 		note := ""
@@ -322,7 +355,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionContinue:
 			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
-			return false
+			return false, nil
 		default:
 			out.decision = &d
 			stop(trip)
@@ -331,7 +364,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the supervisor call; the task goes to verification.", out.commit)
 		}
 		r.commentDecision(ctx, t, s, trip, d, out.digest, note)
-		return true
+		return true, ctx.Err()
 	}
 
 	tick := time.NewTicker(r.supervisionTick())
@@ -341,15 +374,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case <-workerStop:
-			stop(&Trip{Kind: TripShutdown, Findings: sup.Findings(), Detail: "factoryd is stopping"})
-			progress(events, append(sup.Findings(), out.stopReport()...))
-			return out, errWorkerStop
+			stopAt = time.Now()
+			return out, shutdown()
 		case <-tick.C:
 			if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 				sup.SetSpend(cur.SpentEUR, cur.BudgetEUR)
 			}
-			if trip := sup.Tick(time.Now()); trip != nil && onTrip(trip) {
-				return out, ctx.Err()
+			if trip := sup.Tick(time.Now()); trip != nil {
+				if end, err := onTrip(trip); end {
+					return out, err
+				}
 			}
 		case line, ok := <-lines:
 			if !ok {
@@ -369,8 +403,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			digest.add(*ev, now)
 			trip := sup.Event(*ev, now)
 			progress(events, sup.Findings())
-			if trip != nil && onTrip(trip) {
-				return out, ctx.Err()
+			if trip != nil {
+				if end, err := onTrip(trip); end {
+					return out, err
+				}
 			}
 		}
 	}
@@ -443,7 +479,9 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 	return trip
 }
 
-func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration) error {
+// awaitPodStart waits for the pod to leave Pending; factoryd stopping
+// ends the wait with errWorkerStop (the retry creates the pod anew).
+func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		phase, _, err := r.kube.PodStatus(ctx, ns, podName)
@@ -456,6 +494,8 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-workerStop:
+			return errWorkerStop
 		case <-time.After(2 * time.Second):
 		}
 	}

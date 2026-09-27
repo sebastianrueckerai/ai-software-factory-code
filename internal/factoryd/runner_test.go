@@ -44,6 +44,7 @@ type fakeKube struct {
 	objects     map[string]map[string]any    // Create path → object
 	saErr       error                        // injected CreateServiceAccount failure
 	getErr      map[string]error             // ns/name → injected GetSecretData failure
+	statusErr   map[string]error             // ns/name → injected PodStatus failure
 	onDeletePod func()                       // runs on every DeletePod
 	ops         []string                     // namespace deletions and pod creations, in order
 	onCreatePod func()                       // runs on every CreatePod
@@ -209,6 +210,9 @@ func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error 
 func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if err, ok := k.statusErr[namespace+"/"+name]; ok {
+		return "", -1, err
+	}
 	p, ok := k.pods[namespace+"/"+name]
 	if !ok {
 		return "", -1, ErrNotFound
@@ -1161,6 +1165,62 @@ func TestRunSessionWorkerStopPushesWorkInProgress(t *testing.T) {
 	}
 	if _, ok := kube.namespaces["factory-agents-t2"]; ok {
 		t.Fatal("namespace survived the stop")
+	}
+}
+
+// factoryd stopping while the supervisor is still thinking: the call is
+// cut, its decision is not acted on, and the worker is stopped within the
+// grace period, not after the call's own timeout.
+func TestRunSessionWorkerStopCutsAnInFlightSupervisorCall(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.stopWait = 10 * time.Second
+	stop := make(chan struct{})
+	var once sync.Once
+	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/key/list":
+			io.WriteString(w, `{"keys":[],"total_pages":1}`)
+		case "/key/generate":
+			io.WriteString(w, `{"key":"sk-super-1","token":"hash1"}`)
+		case "/v1/chat/completions":
+			// factoryd starts stopping while this call is in flight
+			io.ReadAll(r.Body)
+			once.Do(func() { close(stop) })
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(sup.Close)
+	runner.supervisor = testSupervisorModel(sup.URL)
+	runner.supervisor.HTTP = &http.Client{Timeout: 3 * time.Second}
+	var last sessionProgress
+	var mu sync.Mutex
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + cutLogs +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed to factory/t2 at c-wip") + "\n"
+	began := time.Now()
+	_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+		env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = details.Get(&last)
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the retryable stop, not the cut call's decision", err)
+	}
+	if took := time.Since(began); took > 2*time.Second {
+		t.Fatalf("took %s: the stop waited for the supervisor call", took)
+	}
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want no decision from the cut call", hub.comments)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
+		t.Fatalf("last heartbeat = %+v, want the stopped worker's push for the retry", last)
 	}
 }
 

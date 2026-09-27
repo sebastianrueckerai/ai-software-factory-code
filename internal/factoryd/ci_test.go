@@ -280,6 +280,28 @@ func TestCISpawnerCapsConcurrentRunners(t *testing.T) {
 	}
 }
 
+// A namespace whose pod status cannot be read counts as live: the cap
+// fails closed, not open.
+func TestCISpawnerCapCountsUnreadableNamespacesAsLive(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{
+		{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+	}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.MaxConcurrent = 1
+	ctx := context.Background()
+	spawner.poll(ctx)
+	kube.statusErr = map[string]error{"factory-agents-ci-1/" + ciPodName: fmt.Errorf("apiserver says no")}
+	spawner.poll(ctx)
+	if _, ok := kube.namespaces["factory-agents-ci-2"]; ok {
+		t.Fatal("job 2 spawned past the cap while namespace 1's status was unreadable")
+	}
+	if _, ok := kube.namespaces["factory-agents-ci-1"]; !ok {
+		t.Fatal("namespace 1 torn down on an unreadable status")
+	}
+}
+
 func TestCISpawnerReconcileTearsDownSucceededPod(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 5, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}

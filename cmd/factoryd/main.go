@@ -258,13 +258,13 @@ type taskCreator interface {
 // issue — as the bot, title from the objective's first line, body the
 // objective plus "filed by factoryd intake" — and labels it agent and
 // state/queued before the task row ever exists; a row is created only once
-// the issue exists to back it.
+// the issue exists to back it. The base is always the default branch's
+// head: neither the branch nor the sha is a caller's choice.
 func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, maxBudget float64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
 			Repository string  `json:"repository"`
-			SHA        string  `json:"sha"`
 			Priority   int     `json:"priority"`
 			BudgetEUR  float64 `json:"budget_eur"`
 		}
@@ -282,11 +282,10 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			return
 		}
 		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
-		if in.SHA == "" {
-			if in.SHA, err = forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, ""); err != nil {
-				http.Error(w, "base sha: "+err.Error(), http.StatusBadGateway)
-				return
-			}
+		sha, err := forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, "")
+		if err != nil {
+			http.Error(w, "base sha: "+err.Error(), http.StatusBadGateway)
+			return
 		}
 		id := factoryd.NewTaskID()
 		issueBody := in.Objective + "\n\nfiled by factoryd intake"
@@ -303,7 +302,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			ID: id, Priority: in.Priority, RiskClass: "standard",
 			BudgetEUR: in.BudgetEUR, Status: "queued",
 			Objective: in.Objective, Repository: in.Repository,
-			SHA:  in.SHA,
+			SHA:  sha,
 			Kind: "agent", IssueNumber: ref.Number, Source: "api",
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {

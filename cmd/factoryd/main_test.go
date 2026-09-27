@@ -159,12 +159,12 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 }
 
 // The API intake stamps the base like the webhook path: the default
-// branch's head unless the caller names a sha. The branch is never a
-// caller's choice.
+// branch's head, always. Neither the branch nor the sha is a caller's
+// choice; a sha in the body is ignored.
 func TestCreateTaskHandlerStampsBaseSHA(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                "abc123",
-		`{"objective":"Add X","repository":"sf/ai-software-factory-code","sha":"given1"}`: "given1",
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","sha":"given1"}`: "abc123",
 	} {
 		var events []string
 		forgejo, _, _ := createTaskForgejoStub(t, &events, false)

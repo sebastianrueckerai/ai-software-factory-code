@@ -45,7 +45,11 @@ the agents work on.
   image); its egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB
   by name on 443, and kube-dns for exactly those names; the cloud
-  metadata address is denied outright.
+  metadata address is denied outright. The module proxy is a covert
+  channel: a `go get` of a made-up module path carries that path to
+  proxy.golang.org, so an agent can leak a few hundred bytes per request
+  through it. Ruling 99 accepts this as the price of a usable Go
+  toolchain in the sandbox.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).
@@ -280,7 +284,8 @@ queue for a later tick) holding one
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
 module proxy and checksum DB, `data.forgejo.org`, Docker Hub; nothing
-else, `169.254.169.254/32` explicitly denied). The namespace and the
+else, `169.254.169.254/32` explicitly denied; the module proxy remains
+the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 45-minute deadline passes. Idempotency is the Forgejo job id on the
 namespace label, so a restart or a second poll tick never spawns twice.

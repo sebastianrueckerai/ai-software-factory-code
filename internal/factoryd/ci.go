@@ -298,9 +298,9 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // (a setup crash between the namespace step and the pod step) reads as
 // "not found", torn down the same way. Both PSA levels a CI namespace can
 // carry — restricted (ordinary jobs) and baseline (build jobs, ruling 91)
-// — are listed so build namespaces get reaped too.
-// reconcile tears down finished CI namespaces and reports how many are
-// still live.
+// — are listed so build namespaces get reaped too. It reports how many
+// namespaces are still live; one whose status cannot be read counts as
+// live, so the cap fails closed.
 func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 	var names []string
 	for _, enforce := range []string{"restricted", "baseline"} {
@@ -318,6 +318,7 @@ func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 		phase, _, err := s.kube.PodStatus(ctx, ns, ciPodName)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("ci spawner: reconcile %s status: %v", ns, err)
+			live++
 			continue
 		}
 		if err == nil && phase != "Succeeded" && phase != "Failed" {

@@ -59,3 +59,22 @@ func TestTimelineSerializesConcurrentAppends(t *testing.T) {
 		t.Fatalf("lines = %d, want all 32 appends kept", len(lines))
 	}
 }
+
+// A task's lock goes with its final line: the map does not grow with
+// every task factoryd ever ran.
+func TestTimelineDropsTheLockOfAFinishedTask(t *testing.T) {
+	tl := &Timeline{Objects: &fakeObjectStore{}}
+	ctx := context.Background()
+	if err := tl.Append(ctx, "t1", "intake", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tl.locks.Load("t1"); !ok {
+		t.Fatal("no lock while the task runs")
+	}
+	if err := tl.Append(ctx, "t1", "final", map[string]any{"status": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tl.locks.Load("t1"); ok {
+		t.Fatal("the finished task's lock survived")
+	}
+}
