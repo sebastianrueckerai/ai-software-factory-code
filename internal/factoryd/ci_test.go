@@ -584,7 +584,7 @@ func TestCISpawnerBuildJobCreatesBuildkitdPodAndService(t *testing.T) {
 		t.Fatal("buildkitd egress CNP missing")
 	}
 	cnpStr := fmt.Sprint(buildCNP)
-	for _, want := range []string{"169.254.169.254/32", "deb.debian.org", "registry-1.docker.io", "code.forgejo.org", "go.dev"} {
+	for _, want := range []string{"169.254.169.254/32", "deb.debian.org", "registry-1.docker.io", "code.forgejo.org", "go.dev", "release-assets.githubusercontent.com"} {
 		if !strings.Contains(cnpStr, want) {
 			t.Fatalf("buildkitd egress = %s, missing %q", cnpStr, want)
 		}

@@ -725,8 +725,15 @@ func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 // Docker Hub (base images for all three), the Go module proxy/sumdb (`go
 // mod download` in Dockerfile and Dockerfile.sandbox), the Debian archive
 // (apt in Dockerfile.sandbox and Dockerfile.runner — plain http, not
-// https), and the four release-download hosts Dockerfile.runner's ADD lines
-// fetch forgejo-runner/BuildKit/runc/gosec and the Go toolchain from.
+// https), and the release-download hosts Dockerfile.runner's ADD lines fetch
+// forgejo-runner/BuildKit/runc/gosec and the Go toolchain from. GitHub
+// redirects release-asset blobs to one of two CDN hosts depending on the
+// release: BuildKit/runc/gosec land on objects.githubusercontent.com, but
+// Dockerfile.sandbox's own opencode binary ADD (a hard requirement, unlike
+// the tolerated-failure step below) redirects to
+// release-assets.githubusercontent.com instead — confirmed live from a
+// buildkitd "server misbehaving" DNS-block error, the same failure mode as
+// the Docker Hub CDN hostname fix above.
 // Dockerfile.sandbox's opencode-provider "warm the provider cache" RUN step
 // also reaches for registry.npmjs.org and opencode's own auto-update/model
 // endpoints; that step already tolerates failure (`|| true`, a dead local
@@ -736,7 +743,7 @@ func (s *CISpawner) buildEgressSpec() map[string]any {
 	httpsHosts := []string{
 		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub base images
 		"proxy.golang.org", "sum.golang.org", // go mod download
-		"github.com", "objects.githubusercontent.com", // buildkit, runc, gosec release downloads
+		"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", // buildkit, runc, gosec, opencode release downloads
 		"code.forgejo.org",        // forgejo-runner release download
 		"go.dev", "dl.google.com", // Go toolchain download
 	}
