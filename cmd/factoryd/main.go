@@ -188,6 +188,8 @@ func main() {
 		json.NewEncoder(w).Encode(task) // #nosec G104 -- best-effort response write
 	}))
 
+	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, timelineHandler(store, objects)))
+
 	server := &http.Server{
 		Addr:              *addr,
 		Handler:           mux,
@@ -281,6 +283,37 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR,
 			"issue_number": ref.Number, "issue_url": ref.URL,
 		})
+	}
+}
+
+type taskReader interface {
+	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
+}
+
+// timelineHandler serves a task's timeline record (sessions/<id>/
+// timeline.jsonl). Only an existing task's id reaches the object store.
+func timelineHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		task, ok, err := tasks.Task(r.Context(), r.PathValue("id"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		body, err := objects.Get(r.Context(), "sessions/"+task.ID+"/timeline.jsonl")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if body == nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.Write(body) // #nosec G104 -- best-effort response write
 	}
 }
 

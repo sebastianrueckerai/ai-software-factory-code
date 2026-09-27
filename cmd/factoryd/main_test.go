@@ -209,3 +209,42 @@ func TestCreateTaskHandlerStoreFailureReturnsError(t *testing.T) {
 		t.Fatalf("events = %v: no workflow for a task row that does not exist", events)
 	}
 }
+
+type fakeTaskReader map[string]factoryd.Task
+
+func (s fakeTaskReader) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
+	t, ok := s[id]
+	return t, ok, nil
+}
+
+type fakeObjects map[string][]byte
+
+func (o fakeObjects) Put(ctx context.Context, key string, body []byte) error {
+	o[key] = body
+	return nil
+}
+
+func (o fakeObjects) Get(ctx context.Context, key string) ([]byte, error) { return o[key], nil }
+
+func TestTimelineHandlerServesTheTaskTimeline(t *testing.T) {
+	tasks := fakeTaskReader{"t-1": {ID: "t-1"}, "t-2": {ID: "t-2"}}
+	objects := fakeObjects{"sessions/t-1/timeline.jsonl": []byte(`{"step":"intake"}` + "\n")}
+	h := timelineHandler(tasks, objects)
+	for id, want := range map[string]struct {
+		code int
+		body string
+	}{
+		"t-1":   {http.StatusOK, `{"step":"intake"}` + "\n"},
+		"t-2":   {http.StatusNotFound, ""},
+		"nope":  {http.StatusNotFound, ""},
+		"..%2F": {http.StatusNotFound, ""},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/tasks/"+id+"/timeline", nil)
+		req.SetPathValue("id", id)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != want.code || (want.code == http.StatusOK && rec.Body.String() != want.body) {
+			t.Fatalf("%s: %d %q, want %d %q", id, rec.Code, rec.Body, want.code, want.body)
+		}
+	}
+}
