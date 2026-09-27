@@ -242,7 +242,7 @@ spec:
         # same image as the gateway; the deployment picks the other binary
         image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:5f49ebc8bba368086df124892fe67f2d3a64a4e89f2ba1ce1476e88ac0cfb61e
         command: [factoryd]
-        ports: [{name: http, containerPort: 8080}]
+        ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
         - name: PGUSER
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
@@ -283,6 +283,13 @@ spec:
           valueFrom: {secretKeyRef: {name: factoryd-intake, key: token}}
         - name: FORGEJO_WEBHOOK_SECRET
           valueFrom: {secretKeyRef: {name: factoryd-webhook, key: secret}}
+        # the console's Forgejo OAuth2 app (confidential, PKCE, explicit scopes)
+        - name: CONSOLE_CLIENT_ID
+          valueFrom: {secretKeyRef: {name: console-oauth, key: client_id}}
+        - name: CONSOLE_CLIENT_SECRET
+          valueFrom: {secretKeyRef: {name: console-oauth, key: client_secret}}
+        - name: CONSOLE_PUBLIC_URL
+          value: https://console.aisoftwarefactory.world
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
@@ -311,9 +318,37 @@ spec:
   selector: {app: factoryd}
   ports: [{name: http, port: 8080, targetPort: http}]
 ---
+# The console alone, so the edge route can reach nothing else of factoryd.
+apiVersion: v1
+kind: Service
+metadata:
+  name: factoryd-console
+  namespace: factory
+  labels: {app: factoryd}
+spec:
+  selector: {app: factoryd}
+  ports: [{name: console, port: 8090, targetPort: console}]
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: console
+  namespace: factory
+spec:
+  parentRefs:
+  - name: edge-gateway
+    namespace: forgejo
+    sectionName: https-console
+  hostnames: [console.aisoftwarefactory.world]
+  rules:
+  - backendRefs:
+    - name: factoryd-console
+      port: 8090
+---
 # Intake callers today reach factoryd by kubectl port-forward, which enters
 # the pod's network namespace and is not subject to policy; the node itself
-# (kubelet probes) is the only network source. Forgejo's webhook deliveries
+# (kubelet probes) is the only network source for the API port. The console
+# port is reached through the edge gateway. Forgejo's webhook deliveries
 # (task 42, POST /webhooks/forgejo) are the one caller that arrives over the
 # in-cluster network instead.
 apiVersion: cilium.io/v2
@@ -328,6 +363,10 @@ spec:
   - fromEntities: [host]
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
+  # the edge gateway's Envoy (identity ingress) reaches the console port only
+  - fromEntities: [ingress]
+    toPorts:
+    - ports: [{port: "8090", protocol: TCP}]
   - fromEndpoints:
     - matchLabels:
         app.kubernetes.io/name: forgejo
