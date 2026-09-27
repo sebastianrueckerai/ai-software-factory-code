@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
 func setRequiredEnv(t *testing.T) {
@@ -482,5 +486,153 @@ func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
 				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
 			}
 		})
+	}
+}
+
+func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	dir := filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", dir)
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("1\n2\n3\n"), 0o644)
+	run("-C", dir, "add", "a.txt")
+	run("-C", dir, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if stat, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
+		t.Fatalf("untouched tree: stat = %+v, err = %v, want an empty diff", stat, err)
+	}
+
+	// the agent edits a line, adds a file (untracked), and the adapter's brief lands
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("1\nX\n3\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n1\nn2\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "brief.json"), []byte("{}\n"), 0o600)
+	stat, patch, err := ck.diff(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat != (diffStat{Files: 2, Insertions: 3, Deletions: 1}) {
+		t.Fatalf("stat = %+v, want 2 files, 3 insertions, 1 deletion", stat)
+	}
+	if !strings.Contains(patch, "+X") || !strings.Contains(patch, "+n2") || strings.Contains(patch, "brief.json") {
+		t.Fatalf("patch = %q", patch)
+	}
+
+	// every program the agent can plant for git to run appends to spy.log
+	spyLog := filepath.Join(t.TempDir(), "spy.log")
+	spy := filepath.Join(t.TempDir(), "spy")
+	os.WriteFile(spy, []byte("#!/bin/sh\necho ran >> "+spyLog+"\ncat\n"), 0o755)
+	hooks := filepath.Join(t.TempDir(), "hooks")
+	os.Mkdir(hooks, 0o755)
+	for _, h := range []string{"post-index-change", "reference-transaction", "pre-auto-gc"} {
+		os.WriteFile(filepath.Join(hooks, h), []byte("#!/bin/sh\n"+spy+" </dev/null\n"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".git", "hooks", h), []byte("#!/bin/sh\n"+spy+" </dev/null\n"), 0o755)
+	}
+	for _, kv := range [][]string{
+		{"core.hooksPath", hooks}, {"core.fsmonitor", spy}, {"filter.spy.clean", spy},
+		{"filter.spy.required", "true"}, {"diff.spy.textconv", spy}, {"diff.external", spy},
+	} {
+		run("-C", dir, "config", kv[0], kv[1])
+		run("config", "--global", kv[0], kv[1])
+	}
+	os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte("* filter=spy diff=spy\n"), 0o644)
+	// a program running between two checkpoints may rewrite the base store's config too
+	cfg, err := os.OpenFile(filepath.Join(ck.store, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
+	cfg.Close()
+
+	stat, _, err = ck.diff(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat != (diffStat{Files: 3, Insertions: 4, Deletions: 1}) {
+		t.Fatalf("stat = %+v, want 3 files, 4 insertions, 1 deletion", stat)
+	}
+	if _, err := os.Stat(spyLog); err == nil {
+		t.Fatal("an agent-planted program ran during a checkpoint")
+	}
+	// control: the plants do run under plain git in the agent repo
+	exec.Command("git", "-C", dir, "add", "-A").Run()
+	if _, err := os.Stat(spyLog); err != nil {
+		t.Fatalf("control: planted programs did not run under plain git: %v", err)
+	}
+}
+
+func TestParseShortstat(t *testing.T) {
+	for in, want := range map[string]diffStat{
+		"":                                {},
+		" 1 file changed, 1 insertion(+)": {Files: 1, Insertions: 1},
+		" 1 file changed, 2 deletions(-)": {Files: 1, Deletions: 2},
+		" 3 files changed, 40 insertions(+), 7 deletions(-)": {Files: 3, Insertions: 40, Deletions: 7},
+	} {
+		if got := parseShortstat(in); got != want {
+			t.Fatalf("parseShortstat(%q) = %+v, want %+v", in, got, want)
+		}
+	}
+}
+
+func TestCheckpointLoopEmitsOnlyChanges(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := filepath.Join(t.TempDir(), "repo")
+	for _, args := range [][]string{{"init", "-q", "-b", "main", dir}, {"-C", dir, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "base"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	e := workerEnv{branch: "b"}
+	base, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan harness.Event, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ck.loop(ctx, 20*time.Millisecond, func(ev harness.Event) { events <- ev }, t.Logf)
+	}()
+	time.Sleep(200 * time.Millisecond)
+	if len(events) != 0 {
+		t.Fatalf("%d checkpoints for an untouched tree, want none", len(events))
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)
+	var ev harness.Event
+	select {
+	case ev = <-events:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no checkpoint after a change")
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	<-done
+	if len(events) != 0 {
+		t.Fatalf("%d more checkpoints without a further change", len(events))
+	}
+	diff, _ := ev.Detail["diff"].(map[string]any)
+	if ev.Kind != harness.EventCheckpoint || diff["files"] != 1 || diff["insertions"] != 2 || diff["deletions"] != 0 {
+		t.Fatalf("checkpoint = %+v", ev)
 	}
 }

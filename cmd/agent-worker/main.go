@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -15,8 +16,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -92,14 +95,30 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 
+	ck, err := newCheckpointer(repoDir, env, base)
+	if err != nil {
+		log("checkpoint store: %v", err)
+		return 1
+	}
+	var emitMu sync.Mutex
 	emit := func(ev harness.Event) {
 		line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev})
 		if err != nil {
 			return
 		}
+		emitMu.Lock()
+		defer emitMu.Unlock()
 		fmt.Println(string(line))
 	}
+	ckCtx, stopCheckpoints := context.WithCancel(ctx)
+	ckDone := make(chan struct{})
+	go func() {
+		defer close(ckDone)
+		ck.loop(ckCtx, checkpointEvery, emit, log)
+	}()
 	res := oc.Run(ctx, brief, emit)
+	stopCheckpoints()
+	<-ckDone
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}
@@ -242,10 +261,17 @@ func (e workerEnv) gitAuth(dir string, args ...string) error {
 	return err
 }
 
-// runGit scrubs the token from failures, because worker stderr reaches the
-// factoryd log.
 func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.Command, no shell; args are fixed git subcommands plus this worker's own task-scoped values
+	return e.runGitCtx(context.Background(), dir, env, args...)
+}
+
+// maxGitOutput bounds what one worker git command may print into memory.
+const maxGitOutput = 1 << 20
+
+// runGitCtx scrubs the token from failures, because worker stderr reaches
+// the factoryd log.
+func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -254,7 +280,9 @@ func (e workerEnv) runGit(dir string, env []string, args ...string) (string, err
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
 	), env...)
-	out, err := cmd.CombinedOutput()
+	out := &capBuffer{max: maxGitOutput}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
 	if err != nil {
 		redact := func(s string) string {
 			if e.gitToken == "" {
@@ -263,9 +291,20 @@ func (e workerEnv) runGit(dir string, env []string, args ...string) (string, err
 			s = strings.ReplaceAll(s, e.authHeader(), "Authorization: ***")
 			return strings.ReplaceAll(s, e.gitToken, "***")
 		}
-		return "", fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(string(out)))
+		return "", fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(out.String()))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(out.String()), nil
+}
+
+// capBuffer keeps the first max bytes written to it.
+type capBuffer struct {
+	bytes.Buffer
+	max int
+}
+
+func (b *capBuffer) Write(p []byte) (int, error) {
+	b.Buffer.Write(p[:min(len(p), max(0, b.max-b.Len()))])
+	return len(p), nil
 }
 
 // prepareRepo puts the clone on the task branch at the task SHA and returns
@@ -408,4 +447,134 @@ func commitMessage(e workerEnv) string {
 		subject = subject[:72]
 	}
 	return fmt.Sprintf("factory task %s: %s", e.taskID, subject)
+}
+
+type diffStat struct{ Files, Insertions, Deletions int }
+
+// checkpointer measures the agent's diff against the base commit for the
+// supervisor's churn detector and progress digest. Like the push path it
+// never runs git with the agent repo as its repository: store holds the
+// base objects, fetched before the agent starts, and every measurement
+// indexes the agent's work tree into a fresh repo of the worker's own that
+// borrows those objects. Hooks and fsmonitor are off, diffs run without
+// external diff or textconv, system and global config are ignored, and
+// the token is not in the environment (loadEnv unset it). The agent runs
+// under the same uid and could still write to a fresh repo while it
+// exists; what it could plant there runs with the rights it already has.
+type checkpointer struct {
+	e                 workerEnv
+	work, store, base string
+}
+
+func newCheckpointer(agentRepo string, e workerEnv, base string) (*checkpointer, error) {
+	store, err := os.MkdirTemp(filepath.Dir(agentRepo), ".ckpt-base-")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := e.git(store, "init", "-q"); err != nil {
+		return nil, err
+	}
+	if _, err := e.git(store, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/base"); err != nil {
+		return nil, err
+	}
+	if got, err := e.git(store, "rev-parse", "refs/heads/base"); err != nil {
+		return nil, err
+	} else if got != base {
+		return nil, fmt.Errorf("checkpoint base = %s, want %s", got, base)
+	}
+	return &checkpointer{e: e, work: agentRepo, store: store, base: base}, nil
+}
+
+// maxPatch bounds the diff text a checkpoint carries.
+const maxPatch = 8 << 10
+
+func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
+	tmp, err := os.MkdirTemp(filepath.Dir(c.work), ".ckpt-")
+	if err != nil {
+		return diffStat{}, "", err
+	}
+	defer os.RemoveAll(tmp)
+	if _, err := c.e.runGitCtx(ctx, tmp, nil, "init", "-q"); err != nil {
+		return diffStat{}, "", err
+	}
+	gitDir := filepath.Join(tmp, ".git")
+	if err := os.WriteFile(filepath.Join(gitDir, "objects", "info", "alternates"), []byte(filepath.Join(c.store, ".git", "objects")+"\n"), 0o600); err != nil {
+		return diffStat{}, "", err
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
+		return diffStat{}, "", err
+	}
+	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
+	for _, args := range [][]string{{"read-tree", c.base}, {"add", "-A"}} {
+		if _, err := c.e.runGitCtx(ctx, tmp, env, args...); err != nil {
+			return diffStat{}, "", err
+		}
+	}
+	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
+	short, err := c.e.runGitCtx(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
+	if err != nil {
+		return diffStat{}, "", err
+	}
+	patch, err := c.e.runGitCtx(ctx, tmp, env, append(diff, c.base)...)
+	if err != nil {
+		return diffStat{}, "", err
+	}
+	if len(patch) > maxPatch {
+		patch = patch[:maxPatch] + "\n… (diff truncated)"
+	}
+	return parseShortstat(short), patch, nil
+}
+
+var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)
+
+// parseShortstat reads git diff --shortstat: " 3 files changed, 40
+// insertions(+), 7 deletions(-)", parts absent when zero.
+func parseShortstat(s string) diffStat {
+	var d diffStat
+	for _, m := range shortstatPart.FindAllStringSubmatch(s, -1) {
+		n, _ := strconv.Atoi(m[1])
+		switch m[2] {
+		case "file":
+			d.Files = n
+		case "insertion":
+			d.Insertions = n
+		case "deletion":
+			d.Deletions = n
+		}
+	}
+	return d
+}
+
+// checkpointEvery is how often the worker measures the diff; a checkpoint
+// event goes out only when the numbers changed.
+const checkpointEvery = 15 * time.Second
+
+func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(harness.Event), log func(string, ...any)) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	last := diffStat{}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		measure, cancel := context.WithTimeout(ctx, time.Minute)
+		stat, patch, err := c.diff(measure)
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				log("checkpoint: %v", err)
+			}
+			continue
+		}
+		if stat == last {
+			continue
+		}
+		last = stat
+		emit(harness.Event{Time: time.Now(), Kind: harness.EventCheckpoint, Detail: map[string]any{
+			"diff":  map[string]any{"files": stat.Files, "insertions": stat.Insertions, "deletions": stat.Deletions},
+			"patch": patch,
+		}})
+	}
 }
