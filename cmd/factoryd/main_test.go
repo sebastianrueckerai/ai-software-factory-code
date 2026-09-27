@@ -229,7 +229,7 @@ func (o fakeObjects) Get(ctx context.Context, key string) ([]byte, error) { retu
 func TestTimelineHandlerServesTheTaskTimeline(t *testing.T) {
 	tasks := fakeTaskReader{"t-1": {ID: "t-1"}, "t-2": {ID: "t-2"}}
 	objects := fakeObjects{"sessions/t-1/timeline.jsonl": []byte(`{"step":"intake"}` + "\n")}
-	h := timelineHandler(tasks, objects)
+	h := recordHandler(tasks, objects)
 	for id, want := range map[string]struct {
 		code int
 		body string
@@ -245,6 +245,28 @@ func TestTimelineHandlerServesTheTaskTimeline(t *testing.T) {
 		h(rec, req)
 		if rec.Code != want.code || (want.code == http.StatusOK && rec.Body.String() != want.body) {
 			t.Fatalf("%s: %d %q, want %d %q", id, rec.Code, rec.Body, want.code, want.body)
+		}
+	}
+}
+
+func TestRecordHandlerServesASessionRecord(t *testing.T) {
+	tasks := fakeTaskReader{"t-1": {ID: "t-1"}}
+	objects := fakeObjects{"sessions/t-1/s-0123456789ab.jsonl": []byte(`{"kind":"supervisor"}` + "\n")}
+	h := recordHandler(tasks, objects)
+	for session, want := range map[string]int{
+		"s-0123456789ab": http.StatusOK,
+		"s-ffffffffffff": http.StatusNotFound,
+		"timeline":       http.StatusNotFound,
+		"..%2Ftimeline":  http.StatusNotFound,
+		"s-0123456789a":  http.StatusNotFound,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/tasks/t-1/sessions/x", nil)
+		req.SetPathValue("id", "t-1")
+		req.SetPathValue("session", session)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		if rec.Code != want || (want == http.StatusOK && rec.Body.String() != `{"kind":"supervisor"}`+"\n") {
+			t.Fatalf("%s: %d %q, want %d", session, rec.Code, rec.Body, want)
 		}
 	}
 }

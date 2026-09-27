@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -203,7 +204,8 @@ func main() {
 		json.NewEncoder(w).Encode(task) // #nosec G104 -- best-effort response write
 	}))
 
-	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, timelineHandler(store, objects)))
+	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, recordHandler(store, objects)))
+	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{
 		Addr:              *addr,
@@ -305,10 +307,23 @@ type taskReader interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
 }
 
-// timelineHandler serves a task's timeline record (sessions/<id>/
-// timeline.jsonl). Only an existing task's id reaches the object store.
-func timelineHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerFunc {
+// sessionID is the shape factoryd gives session ids (newID("s-")).
+var sessionID = regexp.MustCompile(`^s-[0-9a-f]{12}$`)
+
+// recordHandler serves a task's records: its timeline
+// (sessions/<id>/timeline.jsonl) or, with a session path value, one
+// session's event history (sessions/<id>/<session>.jsonl). Only an
+// existing task's id and a well-formed session id reach the object store.
+func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		name := "timeline"
+		if s := r.PathValue("session"); s != "" {
+			if !sessionID.MatchString(s) {
+				http.NotFound(w, r)
+				return
+			}
+			name = s
+		}
 		task, ok, err := tasks.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -318,7 +333,7 @@ func timelineHandler(tasks taskReader, objects factoryd.ObjectStore) http.Handle
 			http.NotFound(w, r)
 			return
 		}
-		body, err := objects.Get(r.Context(), "sessions/"+task.ID+"/timeline.jsonl")
+		body, err := objects.Get(r.Context(), "sessions/"+task.ID+"/"+name+".jsonl")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
