@@ -42,7 +42,13 @@ applies from this repository (namespace `factory`).
 ## Webhook intake (task 42)
 
 `POST /webhooks/forgejo` (`internal/factoryd/intake.go`) turns Forgejo
-issue, comment and review events into task rows and intake events.
+issue, comment and review events into task rows and intake events. The
+sender is a repository webhook on the code repository (JSON, all
+issue and pull-request event groups, target
+`http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo`,
+signing secret = key `secret` of secret `factoryd-webhook`). It lives in
+Forgejo's database, so a restore carries it; a new secret must be set on
+both sides.
 `X-Forgejo-Signature` (hex HMAC-SHA256 of the raw body, secret
 `factoryd-webhook`) is checked with a constant-time compare before the
 body is parsed at all; a bad or missing signature is a 401 and only the
@@ -289,6 +295,35 @@ and the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`). Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 
+## Operating it
+
+- Submit a task through the authenticated intake: port-forward to
+  factoryd with an explicit PID
+  (`kubectl -n factory port-forward deploy/factoryd <port>:8080 &`, then
+  `kill <pid>`), read the bearer token from secret `factoryd-intake`
+  (key `token`) into a shell variable, never print it, and
+  `POST /tasks` with `objective`, `repository`, optional `sha` and
+  `budget_eur`. Filing an issue labelled `agent` does the same through
+  the webhook, with the default budget.
+- Follow a task: its issue's `state/*` label, factoryd's log
+  (`webhook intake: issue #N …: agent task <id>`,
+  `task <id>: workflow task-<id> started`,
+  `task <id>: signal <name> from <user> delivered`),
+  `GET /tasks/{id}/timeline`, and the session records
+  `sessions/<task>/<session>.jsonl` in the sessions bucket.
+- Webhook deliveries: this Forgejo has no delivery-list API; the web UI
+  (repository settings, webhooks) or Forgejo's `hook_task` table shows
+  them (select id, event_type, is_succeed, delivered and the response
+  status only: the request column carries the signature headers).
+- PR job logs: this Forgejo has no job-log API; they are in the Forgejo
+  storage bucket at
+  `actions_log/<owner>/<repo>/<task id % 256, two hex digits>/<task id>.log.zst`.
+- Agents cannot change workflows (ruling 90): the worker refuses to push
+  a diff against the base that touches `.forgejo/` (a `push_failed`
+  event in the session record, the task branch never reaches the fork),
+  and factoryd refuses to open a PR for a commit whose `.forgejo` tree
+  differs from the base's.
+
 ## Ship
 
 CI pushes images by digest. A deploy is a commit that rolls the digests
@@ -296,3 +331,9 @@ in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
 `WORKER_IMAGE` and `CI_RUNNER_IMAGE`), pushed to both remotes:
 
     git push origin main && git push github main
+
+`kubectl rollout restart deployment/factoryd` restarts it twice: Flux
+reverts the `restartedAt` annotation about five minutes later and rolls
+it again. Both restarts are safe (Temporal retries the interrupted
+activity), but plan for the second one, or suspend the `factory`
+Kustomization first.
