@@ -68,17 +68,82 @@ jobs:
           g ls-remote --exit-code "$url" refs/heads/main >/dev/null
           if g ls-remote --exit-code "$url" "$probe" >/dev/null; then echo "$probe exists"; exit 1; fi
           echo "the job token reads the repository and cannot write it"
+  changes:
+    # Build only what a PR changes. This map is the only place that decides
+    # which images image-build builds, and it lives only here: .forgejo is
+    # closed to agent edits (ruling 90/100), so a PR cannot widen or narrow
+    # its own build coverage by editing a script elsewhere in the repo. Each
+    # entry's inputs mirror that Dockerfile's own COPY lines from the build
+    # context (a base image and ADD-fetched tools come from outside the
+    # context and never change with the PR, so they need no entry):
+    #   Dockerfile          COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/
+    #   Dockerfile.sandbox  COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/
+    #   Dockerfile.runner   copies nothing from the build context
+    runs-on: pr-untrusted
+    outputs:
+      images: ${{ steps.select.outputs.images }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: select images to build
+        id: select
+        run: |
+          set -euo pipefail
+          base=${{ github.event.pull_request.base.sha }}
+          # checkout is shallow (HEAD only); fetch just the one base commit to diff against.
+          git fetch -q --depth=1 origin "$base"
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"
+          echo "$changed"
+
+          images=""
+          for df in Dockerfile Dockerfile.sandbox Dockerfile.runner; do
+            case "$df" in
+              Dockerfile|Dockerfile.sandbox) inputs="go.mod go.sum cmd/ internal/" ;;
+              Dockerfile.runner) inputs="" ;;
+            esac
+            build=0
+            echo "$changed" | grep -qxF "$df" && build=1
+            echo "$changed" | grep -qxF ".dockerignore" && build=1
+            for p in $inputs; do
+              echo "$changed" | grep -q "^$p" && build=1
+            done
+            [ "$build" = 1 ] && images="$images $df"
+          done
+          images=$(echo "$images" | xargs)
+          echo "images to build: $images"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
   image-build:
     # ruling 91: builds only, never pushes — output goes to /dev/null on the
     # runner pod (BuildKit 0.33 has no cacheonly exporter). The buildkitd
     # pod holds no token, Secret or ServiceAccount token; the runner reaches
     # it over BUILDKIT_HOST, which factoryd's CI spawner injects.
+    needs: changes
+    if: needs.changes.outputs.images != ''
     runs-on: pr-untrusted-build
     steps:
       - uses: actions/checkout@v4
-      - name: build Dockerfile
-        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile --output type=oci,dest=/dev/null
-      - name: build Dockerfile.sandbox
-        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile.sandbox --output type=oci,dest=/dev/null
-      - name: build Dockerfile.runner
-        run: buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. --opt filename=Dockerfile.runner --output type=oci,dest=/dev/null
+      - name: build changed images in parallel
+        run: |
+          set -uo pipefail
+          images="${{ needs.changes.outputs.images }}"
+          echo "building:$images"
+          logdir=$(mktemp -d)
+          declare -A pid_for
+          for df in $images; do
+            buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+              --opt filename="$df" --output type=oci,dest=/dev/null \
+              >"$logdir/$df.log" 2>&1 &
+            pid_for[$df]=$!
+          done
+          status=0
+          for df in $images; do
+            if wait "${pid_for[$df]}"; then
+              echo "ok: $df"
+            else
+              status=1
+              echo "FAILED: $df"
+              echo "---- $df build log ----"
+              cat "$logdir/$df.log"
+            fi
+          done
+          exit $status
