@@ -48,7 +48,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
-	store.CreateTask(context.Background(), Task{ID: "th", Status: "queued", Kind: "human"})
+	store.CreateTask(context.Background(), Task{ID: "th", Status: "waiting-human", Kind: "human", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t)
 	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"})
@@ -67,6 +67,9 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	}
 	if got, _, _ := store.Task(context.Background(), "tbroken"); got.Status != "failed" {
 		t.Fatalf("broken task = %q, want failed outside any workflow, so the pass skips it next time", got.Status)
+	}
+	if got, _, _ := store.Task(context.Background(), "th"); got.Status != "done" {
+		t.Fatalf("human task = %q, want done: its issue closed while the webhook was missed", got.Status)
 	}
 }
 

@@ -274,7 +274,6 @@ func TestPGStore(t *testing.T) {
 		Objective:            "Add the runner",
 		Repository:           "sf/ai-software-factory-code",
 		SHA:                  "abc123",
-		Branch:               "factory/t1",
 		Kind:                 "agent",
 		IssueNumber:          42,
 		Source:               "api",

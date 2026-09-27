@@ -30,6 +30,9 @@ type CIConfig struct {
 	GitBaseURL   string // in-cluster Forgejo — same host RunnerConfig.GitBaseURL uses, not the public API host
 	PollInterval time.Duration
 	JobTimeout   time.Duration // activeDeadlineSeconds
+	// MaxConcurrent caps the live CI namespaces; jobs beyond it stay
+	// waiting in Forgejo for a later tick. 0 = 8.
+	MaxConcurrent int
 }
 
 func (c *CIConfig) setDefaults() {
@@ -47,6 +50,9 @@ func (c *CIConfig) setDefaults() {
 	}
 	if c.JobTimeout <= 0 {
 		c.JobTimeout = 45 * time.Minute
+	}
+	if c.MaxConcurrent <= 0 {
+		c.MaxConcurrent = 8
 	}
 }
 
@@ -123,7 +129,7 @@ func (s *CISpawner) jobKinds() []ciJobKind {
 }
 
 func (s *CISpawner) poll(ctx context.Context) {
-	s.reconcile(ctx)
+	slots := s.cfg.MaxConcurrent - s.reconcile(ctx)
 
 	for _, kind := range s.jobKinds() {
 		jobs, err := s.forgejo.WaitingRunJobs(ctx, s.cfg.Owner, s.cfg.Repo, kind.label)
@@ -140,9 +146,15 @@ func (s *CISpawner) poll(ctx context.Context) {
 			if served {
 				continue
 			}
+			if slots <= 0 {
+				log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, kind.label, s.cfg.MaxConcurrent)
+				continue
+			}
 			if err := s.spawn(ctx, job.ID, kind); err != nil {
 				log.Printf("ci spawner: spawn for job %d: %v", job.ID, err)
+				continue
 			}
+			slots--
 		}
 	}
 }
@@ -287,7 +299,9 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // "not found", torn down the same way. Both PSA levels a CI namespace can
 // carry — restricted (ordinary jobs) and baseline (build jobs, ruling 91)
 // — are listed so build namespaces get reaped too.
-func (s *CISpawner) reconcile(ctx context.Context) {
+// reconcile tears down finished CI namespaces and reports how many are
+// still live.
+func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 	var names []string
 	for _, enforce := range []string{"restricted", "baseline"} {
 		found, err := s.kube.NamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", enforce)
@@ -307,11 +321,13 @@ func (s *CISpawner) reconcile(ctx context.Context) {
 			continue
 		}
 		if err == nil && phase != "Succeeded" && phase != "Failed" {
-			continue // still running
+			live++
+			continue
 		}
 		s.teardown(ctx, ns)
 	}
 	s.sweepOrphanRunners(ctx)
+	return live
 }
 
 func isCINamespace(prefix, ns string) bool {

@@ -299,7 +299,6 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		Status:      "queued",
 		Objective:   objectiveFromIssue(p.Issue),
 		Repository:  repo,
-		Branch:      "factory/" + id,
 		Kind:        kind,
 		IssueNumber: p.Issue.Index,
 		Source:      "webhook",
@@ -309,45 +308,35 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		if err != nil {
 			return err
 		}
-		branch := p.Repository.DefaultBranch
-		if branch == "" {
-			branch, err = in.Forgejo.RepoDefaultBranch(ctx, repoParts.Owner, repoParts.Name)
-			if err != nil {
-				return fmt.Errorf("repo default branch: %w", err)
-			}
+		if task.SHA, err = in.Forgejo.DefaultBranchHeadSHA(ctx, repoParts.Owner, repoParts.Name, p.Repository.DefaultBranch); err != nil {
+			return fmt.Errorf("base sha: %w", err)
 		}
-		sha, err := in.Forgejo.BranchHeadSHA(ctx, repoParts.Owner, repoParts.Name, branch)
-		if err != nil {
-			return fmt.Errorf("branch head sha: %w", err)
-		}
-		task.SHA = sha
+	} else {
+		// no runner ever claims the human lane: it waits on a human from
+		// the start (architecture 5.6's board column) and closing its
+		// issue finishes it
+		task.Status = "waiting-human"
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
 	log.Printf("webhook intake: issue #%d on %s by %s: %s task %s", p.Issue.Index, repo, p.Issue.Poster.UserName, kind, id)
-	// state/queued for the agent lane; the human lane has no runner to claim
-	// it, so it gets its own terminal-looking label, state/waiting-human,
-	// per architecture 5.6's "waiting on a human" board column.
-	label := "queued"
-	if kind == "human" {
-		label = "waiting-human"
-	}
-	mirrorTaskState(ctx, in.Forgejo, task, label)
+	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
 	if kind == "agent" {
 		return in.Workflows.Start(ctx, id)
 	}
 	return nil
 }
 
-// handleIssueClosed signals the task's workflow that its issue closed; the
-// workflow asks Forgejo whether a merge closed it.
+// handleIssueClosed signals the task's workflow that its issue closed (the
+// workflow asks Forgejo whether a merge closed it); a human-lane task is
+// simply done.
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
 	t, ok, err := in.Store.TaskByIssue(ctx, p.Repository.FullName, p.Issue.Index)
 	if err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	}
-	if !ok || t.Kind != "agent" {
+	if !ok {
 		return nil
 	}
 	// an issue's author can close it without any repository access
@@ -356,7 +345,23 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 			return err
 		}
 	}
+	if t.Kind == "human" {
+		return in.finishHumanTask(ctx, t)
+	}
 	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: p.Sender.UserName})
+}
+
+// finishHumanTask: a human-lane task has no workflow; its closed issue is
+// its end.
+func (in *Intake) finishHumanTask(ctx context.Context, t Task) error {
+	if t.Status != "waiting-human" {
+		return nil
+	}
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+		return err
+	}
+	mirrorTaskState(ctx, in.Forgejo, t, "done")
+	return nil
 }
 
 // handlePullRequest signals a closed factory pull request to its task's
@@ -576,6 +581,16 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
+	}
+	if t.Kind == "human" {
+		if t.IssueNumber == 0 {
+			return nil
+		}
+		closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if err != nil || !closed {
+			return err
+		}
+		return in.finishHumanTask(ctx, t)
 	}
 	events, err := in.Store.IntakeEvents(ctx, t.ID)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 )
 
 type fakeObjectStore struct {
+	mu   sync.Mutex
 	puts []struct {
 		key  string
 		body []byte
@@ -19,6 +21,8 @@ type fakeObjectStore struct {
 }
 
 func (s *fakeObjectStore) Put(ctx context.Context, key string, body []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.puts = append(s.puts, struct {
 		key  string
 		body []byte
@@ -28,6 +32,8 @@ func (s *fakeObjectStore) Put(ctx context.Context, key string, body []byte) erro
 
 // Get returns the last body put under key, nil when none was.
 func (s *fakeObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for i := len(s.puts) - 1; i >= 0; i-- {
 		if s.puts[i].key == key {
 			return s.puts[i].body, nil

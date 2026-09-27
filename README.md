@@ -253,7 +253,9 @@ file, and a push with the job token refused.
 polls Forgejo for Actions jobs waiting on that label, registers a
 repo-scoped ephemeral runner (`forgejo-ci-registrar` token, never the
 repository or registry credential, never mounted into the runner pod),
-and creates a namespace `factory-agents-ci-<job id>` holding one
+and creates a namespace `factory-agents-ci-<job id>` (at most
+`CI_MAX_CONCURRENT`, 8, live at a time; further jobs wait in Forgejo's
+queue for a later tick) holding one
 `runtimeClassName: gvisor` pod running `forgejo-runner one-job --wait` —
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go

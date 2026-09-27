@@ -629,22 +629,49 @@ func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base
 // across a retried or replayed attempt). A nil ref with a nil error means no
 // open PR exists yet.
 func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo string, headRepo Repo, branch string) (*PullRequestRef, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&limit=50", owner, repo)
+	const limit = 50
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&page=%d&limit=%d", owner, repo, page, limit)
+		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var all []wirePR
+		if err := json.Unmarshal(body, &all); err != nil {
+			return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
+		}
+		for _, pr := range all {
+			if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
+				ref := pr.ref()
+				return &ref, nil
+			}
+		}
+		if len(all) < limit {
+			return nil, nil
+		}
+	}
+}
+
+// FindPullRequestByHead is owner/repo's pull request from branch on headRepo
+// into base, whatever its state, or nil. Reconcile uses it while no number
+// is recorded: a crash between opening the pull request and recording it
+// leaves one the open list stops showing once the reviewer merges or closes
+// it.
+func (f *Forgejo) FindPullRequestByHead(ctx context.Context, owner, repo, base string, headRepo Repo, branch string) (*PullRequestRef, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%s/%s:%s", owner, repo, url.PathEscape(base), headRepo.String(), branch)
 	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	var all []wirePR
-	if err := json.Unmarshal(body, &all); err != nil {
-		return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
+	var pr wirePR
+	if err := json.Unmarshal(body, &pr); err != nil {
+		return nil, fmt.Errorf("forgejo find pull request %s/%s %s: %w", owner, repo, branch, err)
 	}
-	for _, pr := range all {
-		if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
-			ref := pr.ref()
-			return &ref, nil
-		}
-	}
-	return nil, nil
+	ref := pr.ref()
+	return &ref, nil
 }
 
 // CommitStatus is one check reported against a commit (most often a
@@ -822,6 +849,19 @@ func (f *Forgejo) IssueClosed(ctx context.Context, owner, repo string, number in
 // RepoDefaultBranch reads a repository's default branch name. A defensive
 // fallback for when a webhook payload's own repository.default_branch field
 // is empty (the payload shape is reconstructed, not documented upstream).
+// DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
+// every agent task is stamped with at intake; branch is the default branch
+// when the caller already knows it (a webhook payload), else it is read.
+func (f *Forgejo) DefaultBranchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	if branch == "" {
+		var err error
+		if branch, err = f.RepoDefaultBranch(ctx, owner, repo); err != nil {
+			return "", err
+		}
+	}
+	return f.BranchHeadSHA(ctx, owner, repo, branch)
+}
+
 func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s", owner, repo)
 	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)

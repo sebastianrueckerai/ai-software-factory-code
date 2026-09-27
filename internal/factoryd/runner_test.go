@@ -689,6 +689,35 @@ func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 // A crashed factoryd's attempt is retried by Temporal on the next worker:
 // the dead session's namespace (and pod) and token go first, then a new
 // session carries the dead one's findings and id as parent.
+// A session whose worker was lost before it ever ran (pod never
+// scheduled, image pull stuck) still gets linked as the parent of its
+// replacement; only a session that ran adds the interruption finding.
+func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	dead := &sessionProgress{SessionID: "s-dead"}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
+		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := podEnv(kube.podAt(0))
+	if env["PARENT_SESSION_ID"] != "s-dead" {
+		t.Fatalf("PARENT_SESSION_ID = %q, want s-dead", env["PARENT_SESSION_ID"])
+	}
+	var findings []string
+	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0] != "earlier note" {
+		t.Fatalf("findings = %q, want the input only: nothing ran, nothing was interrupted", findings)
+	}
+	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
+		t.Fatalf("session row = %+v, want parent s-dead", sess)
+	}
+}
+
 func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()
@@ -750,23 +779,6 @@ func TestRunSessionStartsFromTheBranchHead(t *testing.T) {
 	}
 	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "c9" {
 		t.Fatalf("REPO_SHA = %q, want the branch head c9", env["REPO_SHA"])
-	}
-}
-
-// A retry after a setup failure (the pod never ran) has no dead session:
-// no parent, no "stopped" finding.
-func TestRunSessionRetryAfterSetupFailureStartsClean(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
-	kube := newFakeKube()
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-
-	dead := &sessionProgress{SessionID: "s-never-ran"}
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m", Findings: []string{"note"}}, dead, resultLine(false, "x")); err != nil {
-		t.Fatal(err)
-	}
-	env := podEnv(kube.podAt(0))
-	if env["PARENT_SESSION_ID"] != "" || env["FINDINGS"] != `["note"]` {
-		t.Fatalf("pod env = %v, want no parent and only the input findings", env)
 	}
 }
 

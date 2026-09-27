@@ -30,7 +30,6 @@ type Task struct {
 	Objective            string
 	Repository           string
 	SHA                  string
-	Branch               string
 	// Kind is "agent" (an agent run, the default) or "human" (Stage 7's
 	// console lane: no agent run).
 	Kind string
@@ -211,10 +210,10 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, branch, kind, issue_number, source)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		                    objective, repository, sha, kind, issue_number, source)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, t.Branch, defaultKind(t.Kind), t.IssueNumber, t.Source)
+		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source)
 	return err
 }
 
@@ -226,13 +225,13 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, branch, kind, issue_number, source, pr_number, half_way_done`
+	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Branch, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone); err != nil {
+		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone); err != nil {
 		return Task{}, err
 	}
 	var err error

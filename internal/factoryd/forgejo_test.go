@@ -553,6 +553,52 @@ func TestForgejoListTokensPages(t *testing.T) {
 	}
 }
 
+func TestForgejoFindOpenPullRequestForBranchPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path + "?" + r.URL.RawQuery {
+		case "/api/v1/repos/sf/r/pulls?state=open&page=1&limit=50":
+			var page []string
+			for i := 100; i < 150; i++ {
+				page = append(page, fmt.Sprintf(`{"number":%d,"head":{"ref":"other-%d","sha":"x","repo":{"full_name":"factory-agent/r"}}}`, i, i))
+			}
+			io.WriteString(w, "["+strings.Join(page, ",")+"]")
+		case "/api/v1/repos/sf/r/pulls?state=open&page=2&limit=50":
+			io.WriteString(w, `[{"number":9,"html_url":"u9","head":{"ref":"factory/t1","sha":"c1","repo":{"full_name":"factory-agent/r"}}}]`)
+		default:
+			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	got, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1")
+	if err != nil || got == nil || got.Number != 9 || got.URL != "u9" || got.HeadSHA != "c1" {
+		t.Fatalf("FindOpenPullRequestForBranch = (%+v, %v), want #9 from the second page", got, err)
+	}
+}
+
+// The by-base-and-head endpoint finds the pull request in any state, also
+// after its fork branch is gone; a missing one is nil, not an error.
+func TestForgejoFindPullRequestByHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/r/pulls/main/factory-agent/r:factory/t1":
+			io.WriteString(w, `{"number":43,"html_url":"u43","state":"closed","merged":true,"head":{"ref":"refs/pull/43/head","sha":"b4d5","repo":{"full_name":"factory-agent/r"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	got, err := f.FindPullRequestByHead(context.Background(), "sf", "r", "main", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1")
+	if err != nil || got == nil || got.Number != 43 || !got.Merged || got.State != "closed" || got.HeadSHA != "b4d5" {
+		t.Fatalf("FindPullRequestByHead = (%+v, %v), want the merged #43", got, err)
+	}
+	if got, err := f.FindPullRequestByHead(context.Background(), "sf", "r", "main", Repo{Owner: "factory-agent", Name: "r"}, "factory/t2"); err != nil || got != nil {
+		t.Fatalf("unknown head = (%+v, %v), want nil, nil", got, err)
+	}
+}
+
 func TestForgejoTreeEntriesPagesAndFailsClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path + "?" + r.URL.RawQuery {

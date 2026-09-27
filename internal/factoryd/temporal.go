@@ -94,6 +94,11 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake) {
 		}
 		for _, t := range tasks {
 			if t.Kind == "human" {
+				if status == "waiting-human" {
+					if err := in.Resync(ctx, t); err != nil {
+						log.Printf("heal pass: resync task %s: %v", t.ID, err)
+					}
+				}
 				continue
 			}
 			// a task no workflow can run (its repository is not owner/name)

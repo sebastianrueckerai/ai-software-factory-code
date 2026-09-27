@@ -130,6 +130,7 @@ func main() {
 		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
 		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
 		GitBaseURL:       gitBase,
+		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
 	}, forgejo, kube)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)
@@ -255,7 +256,6 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			Objective  string  `json:"objective"`
 			Repository string  `json:"repository"`
 			SHA        string  `json:"sha"`
-			Branch     string  `json:"branch"`
 			Priority   int     `json:"priority"`
 			BudgetEUR  float64 `json:"budget_eur"`
 		}
@@ -273,10 +273,13 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			return
 		}
 		in.BudgetEUR = factoryd.ClampBudget(in.BudgetEUR, maxBudget)
-		id := factoryd.NewTaskID()
-		if in.Branch == "" {
-			in.Branch = "factory/" + id
+		if in.SHA == "" {
+			if in.SHA, err = forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, ""); err != nil {
+				http.Error(w, "base sha: "+err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
+		id := factoryd.NewTaskID()
 		issueBody := in.Objective + "\n\nfiled by factoryd intake"
 		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, factoryd.FirstLine(in.Objective), issueBody)
 		if err != nil {
@@ -291,7 +294,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			ID: id, Priority: in.Priority, RiskClass: "standard",
 			BudgetEUR: in.BudgetEUR, Status: "queued",
 			Objective: in.Objective, Repository: in.Repository,
-			SHA: in.SHA, Branch: in.Branch,
+			SHA:  in.SHA,
 			Kind: "agent", IssueNumber: ref.Number, Source: "api",
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {
@@ -305,7 +308,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
-			"id": id, "branch": in.Branch, "budget_eur": in.BudgetEUR,
+			"id": id, "budget_eur": in.BudgetEUR,
 			"issue_number": ref.Number, "issue_url": ref.URL,
 		})
 	}

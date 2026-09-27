@@ -239,9 +239,6 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	if task.SHA != "sha-main-head" {
 		t.Fatalf("sha = %q, want the resolved branch head", task.SHA)
 	}
-	if task.Branch != "factory/"+task.ID {
-		t.Fatalf("branch = %q", task.Branch)
-	}
 	if task.BudgetEUR != 2.0 {
 		t.Fatalf("budget = %v, want the 2.0 default", task.BudgetEUR)
 	}
@@ -273,8 +270,8 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	for _, tk := range store.tasks {
 		task = tk
 	}
-	if task.Kind != "human" || task.IssueNumber != 9 {
-		t.Fatalf("task = %+v", task)
+	if task.Kind != "human" || task.IssueNumber != 9 || task.Status != "waiting-human" {
+		t.Fatalf("task = %+v, want a human-lane task waiting on its human from the start", task)
 	}
 	if task.SHA != "" {
 		t.Fatalf("sha = %q, want empty: the human lane never runs the agent", task.SHA)
@@ -597,6 +594,8 @@ func resyncForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/labels"):
+			io.WriteString(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/permission"):
 			if r.Header.Get("Authorization") != "token registrar-tok" {
 				t.Errorf("permission read without the registrar token: %q", r.Header.Get("Authorization"))
@@ -756,6 +755,36 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 	}
 	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 issue_closed sebastian #0: " {
 		t.Fatalf("signals = %q", got)
+	}
+}
+
+// A human-lane task has no workflow: its issue closing by someone trusted
+// finishes it as done, mirrored on the label; a stranger's close is
+// ignored.
+func TestIntakeIssueClosedFinishesHumanTask(t *testing.T) {
+	for _, tc := range []struct{ sender, want string }{{"reader", "waiting-human"}, {"sebastian", "done"}} {
+		in, store, _ := newTestIntake(t)
+		store.tasks["t-human"] = Task{ID: "t-human", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "human", IssueNumber: 9}
+		body, _ := json.Marshal(map[string]any{
+			"action":     "closed",
+			"issue":      map[string]any{"number": 9, "user": map[string]string{"login": "sebastian"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": tc.sender},
+		})
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if got := store.tasks["t-human"].Status; got != tc.want {
+			t.Fatalf("closed by %s: status = %q, want %q", tc.sender, got, tc.want)
+		}
+		if len(workflowsOf(in).signals) != 0 {
+			t.Fatalf("signals = %q, want none: the human lane has no workflow", workflowsOf(in).signals)
+		}
+		if tc.want == "done" {
+			if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/done") {
+				t.Fatalf("labels = %v, want state/done", labels)
+			}
+		}
 	}
 }
 

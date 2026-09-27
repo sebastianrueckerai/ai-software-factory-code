@@ -180,10 +180,12 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	var dead sessionProgress
-	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" && dead.Running {
+	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		s.parent = dead.SessionID
-		s.findings = slices.Concat(in.Findings, dead.Findings, []string{fmt.Sprintf(
-			"session %s stopped after %d events without finishing (its worker was lost); continue from the branch as it is", dead.SessionID, dead.Events)})
+		if dead.Running {
+			s.findings = slices.Concat(in.Findings, dead.Findings, []string{fmt.Sprintf(
+				"session %s stopped after %d events without finishing (its worker was lost); continue from the branch as it is", dead.SessionID, dead.Events)})
+		}
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
@@ -436,7 +438,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		pr = &got
-	} else if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo), r.branch(t)); err != nil {
+	} else if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), r.branch(t)); err != nil {
 		return RunState{}, err
 	}
 	switch {

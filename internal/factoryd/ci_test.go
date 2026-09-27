@@ -250,6 +250,36 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	}
 }
 
+// At most MaxConcurrent runner namespaces live at once; further waiting
+// jobs stay queued in Forgejo until a slot frees.
+func TestCISpawnerCapsConcurrentRunners(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{
+		{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 3, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+	}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.MaxConcurrent = 2
+	ctx := context.Background()
+	spawner.poll(ctx)
+	spawner.poll(ctx)
+	for id, want := range map[string]bool{"factory-agents-ci-1": true, "factory-agents-ci-2": true, "factory-agents-ci-3": false} {
+		if _, ok := kube.namespaces[id]; ok != want {
+			t.Fatalf("namespace %s present = %v, want %v with a cap of 2", id, ok, want)
+		}
+	}
+	kube.pods["factory-agents-ci-1/"+ciPodName].phase = "Succeeded"
+	hub.jobs[0].Status = "success"
+	spawner.poll(ctx)
+	if _, ok := kube.namespaces["factory-agents-ci-1"]; ok {
+		t.Fatal("finished namespace survived the poll")
+	}
+	if _, ok := kube.namespaces["factory-agents-ci-3"]; !ok {
+		t.Fatal("job 3 not spawned once a slot freed")
+	}
+}
+
 func TestCISpawnerReconcileTearsDownSucceededPod(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 5, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}

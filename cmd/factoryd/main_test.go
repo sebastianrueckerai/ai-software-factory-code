@@ -61,6 +61,10 @@ func createTaskForgejoStub(t *testing.T, events *[]string, failIssueCreate bool)
 			*issueBody = payload.Body
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"number":42,"html_url":"https://git.example/sf/repo/issues/42"}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code":
+			io.WriteString(w, `{"default_branch":"main"}`)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/branches/main"):
+			io.WriteString(w, `{"commit":{"id":"abc123"}}`)
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/labels"):
 			*events = append(*events, "replace-labels")
 			var payload struct {
@@ -151,6 +155,30 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 	}
 	if len(store.created) != 1 || store.created[0].IssueNumber != 42 || store.created[0].Source != "api" {
 		t.Fatalf("created task = %+v, want IssueNumber 42", store.created)
+	}
+}
+
+// The API intake stamps the base like the webhook path: the default
+// branch's head unless the caller names a sha. The branch is never a
+// caller's choice.
+func TestCreateTaskHandlerStampsBaseSHA(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                "abc123",
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","sha":"given1"}`: "given1",
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events}
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+		}
+		if len(store.created) != 1 || store.created[0].SHA != want {
+			t.Fatalf("created = %+v, want sha %q", store.created, want)
+		}
+		if strings.Contains(rec.Body.String(), `"branch"`) {
+			t.Fatalf("response = %s, want no branch field", rec.Body)
+		}
 	}
 }
 

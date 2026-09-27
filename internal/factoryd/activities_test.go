@@ -33,6 +33,7 @@ type prForgejo struct {
 	pulls      map[int64]string  // GET /pulls/{n} bodies
 	issueOff   bool              // GET /issues/{n} reports closed
 	open       []map[string]any  // open pull requests
+	byHead     map[string]string // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
 	statuses   []string          // combined-status bodies, served in order, the last repeating
 	polls      int
 	created    []map[string]any   // POST /pulls bodies
@@ -64,6 +65,20 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				tree = append(tree, map[string]string{"path": ".github", "sha": sha})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
+		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/main/"):
+			head := strings.TrimPrefix(p, "/pulls/main/")
+			if body, ok := f.byHead[head]; ok {
+				io.WriteString(w, body)
+				return
+			}
+			for _, pr := range f.open {
+				h := pr["head"].(map[string]any)
+				if h["repo"].(map[string]any)["full_name"].(string)+":"+h["ref"].(string) == head {
+					json.NewEncoder(w).Encode(pr)
+					return
+				}
+			}
+			http.NotFound(w, r)
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
 			var n int64
 			fmt.Sscanf(p, "/pulls/%d", &n)
@@ -159,7 +174,7 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 }
 
 var prTask = Task{ID: "t1", Status: "running", Objective: "Add a make check target\n\nand wire it into CI", Repository: "sf/repo",
-	SHA: "base", Branch: "factory/t1", IssueNumber: 4, Source: "api"}
+	SHA: "base", IssueNumber: 4, Source: "api"}
 
 func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 	fj := &prForgejo{}
@@ -521,6 +536,8 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",
 			"head": map[string]any{"ref": "factory/t1", "sha": "c8", "repo": map[string]any{"full_name": "stranger/repo"}}}}},
 			RunState{Status: "running"}},
+		"no recorded PR, merged before its number was recorded": {prTask, &prForgejo{byHead: map[string]string{"factory-agent/repo:factory/t1": `{"number":12,"state":"closed","merged":true}`}},
+			RunState{Status: "running", Merged: true}},
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
 			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},

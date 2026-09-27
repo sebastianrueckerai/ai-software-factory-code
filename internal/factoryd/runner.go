@@ -48,7 +48,7 @@ type Runner struct {
 	forgejo    *Forgejo
 	completion *Completion
 	objects    ObjectStore
-	timeline   Timeline
+	timeline   *Timeline
 	supervisor *SupervisorModel
 	stopWait   time.Duration
 }
@@ -84,7 +84,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.ChecksPoll = 30 * time.Second
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		objects: objects, timeline: Timeline{Objects: objects}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
+		objects: objects, timeline: &Timeline{Objects: objects}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
 }
 
 // WorkflowConfig is the task policy TaskWorkflow captures at start.
@@ -577,12 +577,7 @@ func (r *Runner) agentNamespace(taskID string) string {
 	return r.cfg.AgentNamespacePrefix + taskID
 }
 
-func (r *Runner) branch(t Task) string {
-	if t.Branch != "" {
-		return t.Branch
-	}
-	return "factory/" + t.ID
-}
+func (r *Runner) branch(t Task) string { return "factory/" + t.ID }
 
 func (r *Runner) repoURL(repo Repo) string {
 	return strings.TrimSuffix(r.cfg.GitBaseURL, "/") + "/" + repo.String() + ".git"
