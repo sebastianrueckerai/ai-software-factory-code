@@ -63,6 +63,7 @@ func main() {
 
 	forgejo := &factoryd.Forgejo{
 		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		PublicURL:        env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
 		BotUser:          env("FORGEJO_BOT_USER", "factory-agent"),
 		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
 		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),

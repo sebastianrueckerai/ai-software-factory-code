@@ -28,7 +28,8 @@ type Repo struct {
 // end, so a leaked token can push exactly one repository for exactly one
 // task.
 type Forgejo struct {
-	BaseURL     string // e.g. https://git.aisoftwarefactory.world
+	BaseURL     string // API calls: the in-cluster service
+	PublicURL   string // links meant for people, e.g. https://git.aisoftwarefactory.world
 	BotUser     string
 	BotPassword string
 	HTTP        *http.Client // nil = a mint-sized timeout
@@ -162,6 +163,27 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)
 	}
 	return body, nil
+}
+
+// RepoPermission is user's effective permission on the repository ("owner",
+// "admin", "write", "read"; "none" when Forgejo knows no access). Reading
+// another user's permission needs repository admin, which the bot lacks:
+// it runs on the registrar token (the repository owner's, repo-scoped).
+func (f *Forgejo) RepoPermission(ctx context.Context, owner, repo, user string) (string, error) {
+	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", owner, repo, url.PathEscape(user)), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return "none", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Permission string `json:"permission"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo permission of %s on %s/%s: %w", user, owner, repo, err)
+	}
+	return res.Permission, nil
 }
 
 // CIJob is one Forgejo Actions job waiting for a runner matching its labels

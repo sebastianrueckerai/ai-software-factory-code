@@ -87,6 +87,19 @@ func (l *LiteLLMAdmin) MintKey(ctx context.Context, taskID string, maxBudget flo
 	return res.Key, nil
 }
 
+// TaskSpend sums the spend LiteLLM has recorded on one task's keys.
+func (l *LiteLLMAdmin) TaskSpend(ctx context.Context, taskID string) (float64, error) {
+	keys, err := l.keysByTask(ctx)
+	if err != nil {
+		return 0, err
+	}
+	spend := 0.0
+	for _, k := range keys[taskID] {
+		spend += k.Spend
+	}
+	return spend, nil
+}
+
 // SpendByTask sums the spend LiteLLM has recorded on each task's keys.
 func (l *LiteLLMAdmin) SpendByTask(ctx context.Context) (map[string]float64, error) {
 	keys, err := l.keysByTask(ctx)

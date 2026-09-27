@@ -247,10 +247,12 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	}
 	fj := &prForgejo{statuses: []string{statusBody("failure", test)}}
 	r, _, _ := newActivityRunner(t, prTask, fj)
+	// API calls go to the in-cluster address, links for people to the public one
+	r.forgejo.PublicURL = "https://git.example.org"
 	var res ChecksResult
 	val, _ := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
 	val.Get(&res)
-	want := `check "pr / test (pull_request)": failure — Failure after 2m (` + r.forgejo.BaseURL + `/sf/repo/actions/runs/7/jobs/0)`
+	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
 	if len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
 	}

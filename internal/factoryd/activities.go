@@ -460,7 +460,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			return ChecksResult{}, err
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
-		res := checksResult(cs, r.forgejo.BaseURL)
+		res := checksResult(cs, r.forgejo.PublicURL)
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
 		}

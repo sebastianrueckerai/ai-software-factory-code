@@ -39,6 +39,19 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.URL.Path)
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/permission"):
+			// the registrar token reads permissions; the bot cannot
+			if r.Header.Get("Authorization") != "token registrar-tok" {
+				t.Errorf("permission read without the registrar token: %q", r.Header.Get("Authorization"))
+			}
+			switch strings.Split(r.URL.Path, "/")[7] {
+			case "sebastian":
+				io.WriteString(w, `{"permission":"owner"}`)
+			case "reader":
+				io.WriteString(w, `{"permission":"read"}`)
+			default:
+				http.NotFound(w, r)
+			}
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
@@ -64,7 +77,7 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, &requests
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}, &requests
 }
 
 // issueLabels reads back the labels a test's Forgejo stub currently holds
@@ -629,5 +642,43 @@ func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
 	}
 	if len(store.intakeEvents) != 1 || store.intakeEvents[0].DeliveryID != "d-1" {
 		t.Fatalf("intake events = %+v, want one, keyed by the delivery", store.intakeEvents)
+	}
+}
+
+// M2: only people with write access steer a task; anyone else's comment or
+// review is recorded and signals nothing. Verdicts are cached.
+func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
+	in, store, requests := newTestIntake(t)
+	store.tasks["t-issue"] = Task{ID: "t-issue", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 30, Kind: "agent"}
+	comment := func(user string, id int) {
+		b, _ := json.Marshal(map[string]any{
+			"action":     "created",
+			"issue":      map[string]any{"number": 30},
+			"comment":    map[string]any{"id": id, "user": map[string]string{"login": user}, "body": "do X"},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		})
+		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", user, rr.Code)
+		}
+	}
+	comment("mallory", 1)
+	comment("reader", 2)
+	comment("sebastian", 3)
+	comment("sebastian", 4)
+	want := []string{"t-issue human_comment sebastian #0 c3: do X", "t-issue human_comment sebastian #0 c4: do X"}
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want only the owner's", got)
+	}
+	if len(store.intakeEvents) != 4 {
+		t.Fatalf("intake events = %d, want every comment recorded", len(store.intakeEvents))
+	}
+	checks := 0
+	for _, r := range *requests {
+		if strings.HasSuffix(r, "/sebastian/permission") {
+			checks++
+		}
+	}
+	if checks != 1 {
+		t.Fatalf("permission reads for sebastian = %d, want 1 (cached)", checks)
 	}
 }

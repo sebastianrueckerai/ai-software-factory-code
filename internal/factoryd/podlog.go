@@ -29,7 +29,7 @@ func followPodLog(ctx context.Context, kube Kube, ns, pod, taskID string) <-chan
 			stream, err := kube.PodLog(ctx, ns, pod)
 			if err == nil {
 				seen, err = readLogLines(ctx, stream, seen, lines)
-				stream.Close()
+				stream.Close() // #nosec G104 -- a read-only log stream; its close error changes nothing
 			}
 			if ctx.Err() != nil {
 				return

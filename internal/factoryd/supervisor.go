@@ -245,15 +245,23 @@ type SupervisorModel struct {
 const supervisorTimeout = 4 * time.Minute
 
 // Decide never fails: a failed or invalid answer is an escalation.
-func (m *SupervisorModel) Decide(ctx context.Context, taskID string, remainingEUR float64, in SupervisorInput) Decision {
-	d, err := m.decide(ctx, taskID, remainingEUR, in)
+func (m *SupervisorModel) Decide(ctx context.Context, taskID string, budgetEUR, spentEUR float64, in SupervisorInput) Decision {
+	d, err := m.decide(ctx, taskID, budgetEUR, spentEUR, in)
 	if err != nil {
 		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + truncate(err.Error(), 500)}
 	}
 	return d
 }
 
-func (m *SupervisorModel) decide(ctx context.Context, taskID string, remainingEUR float64, in SupervisorInput) (Decision, error) {
+// The key's cap is the budget minus what the task has spent: the settled
+// spent_eur, or the spend LiteLLM already shows on the task's keys (the
+// running session's key settles only at the task's end), whichever is more.
+func (m *SupervisorModel) decide(ctx context.Context, taskID string, budgetEUR, spentEUR float64, in SupervisorInput) (Decision, error) {
+	keySpend, err := m.Admin.TaskSpend(ctx, taskID)
+	if err != nil {
+		return Decision{}, fmt.Errorf("the task's spend is unknown: %w", err)
+	}
+	remainingEUR := budgetEUR - max(spentEUR, keySpend)
 	if remainingEUR <= 0 {
 		return Decision{}, errors.New("the task has no budget left")
 	}

@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Intake is the Forgejo webhook endpoint: every issue labelled agent or
@@ -29,6 +31,49 @@ type Intake struct {
 	BotUser      string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret       string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	MaxBudgetEUR float64
+
+	trustMu sync.Mutex
+	trust   map[string]trustEntry // repo + user → cached verdict
+}
+
+type trustEntry struct {
+	ok  bool
+	exp time.Time
+}
+
+// trustTTL is how long a permission verdict is reused.
+const trustTTL = 10 * time.Minute
+
+// trusted reports whether user may steer a task through comments and
+// reviews: write access or more to the repository. A comment by anyone
+// else is recorded, never signalled.
+func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
+	key := repository + "\x00" + user
+	in.trustMu.Lock()
+	e, ok := in.trust[key]
+	in.trustMu.Unlock()
+	if ok && time.Now().Before(e.exp) {
+		return e.ok, nil
+	}
+	repo, err := SplitRepo(repository)
+	if err != nil {
+		return false, err
+	}
+	perm, err := in.Forgejo.RepoPermission(ctx, repo.Owner, repo.Name, user)
+	if err != nil {
+		return false, fmt.Errorf("permission of %s: %w", user, err)
+	}
+	e = trustEntry{ok: perm == "owner" || perm == "admin" || perm == "write", exp: time.Now().Add(trustTTL)}
+	in.trustMu.Lock()
+	if in.trust == nil {
+		in.trust = map[string]trustEntry{}
+	}
+	in.trust[key] = e
+	in.trustMu.Unlock()
+	if !e.ok {
+		log.Printf("webhook intake: %s has %q on %s: comment recorded, not signalled", user, perm, repository)
+	}
+	return e.ok, nil
 }
 
 func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -382,6 +427,9 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 	}); err != nil {
 		return err
 	}
+	if ok, err := in.trusted(ctx, repo, p.Comment.Poster.UserName); err != nil || !ok {
+		return err
+	}
 	if !p.IsPull {
 		// a new comment on the task's issue may answer an escalation
 		if p.Action != "created" {
@@ -423,6 +471,9 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	}
 	if eventType == "pull_request_review_approved" {
 		return nil
+	}
+	if ok, err := in.trusted(ctx, p.Repository.FullName, p.Sender.UserName); err != nil || !ok {
+		return err
 	}
 	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Sender.UserName, Body: reviewBody, PR: p.PullRequest.Index})
 }

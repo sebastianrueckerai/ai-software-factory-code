@@ -115,6 +115,7 @@ type fakeLiteLLM struct {
 	status  int
 	content string
 	delay   time.Duration
+	keys    string // /key/list body; empty = no keys
 }
 
 func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
@@ -124,6 +125,12 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 		var body map[string]any
 		json.Unmarshal(b, &body)
 		switch r.URL.Path {
+		case "/key/list":
+			if f.keys == "" {
+				io.WriteString(w, `{"keys":[],"total_pages":1}`)
+				return
+			}
+			io.WriteString(w, f.keys)
 		case "/key/generate":
 			if r.Header.Get("Authorization") != "Bearer master" {
 				t.Errorf("mint auth = %q", r.Header.Get("Authorization"))
@@ -177,7 +184,7 @@ func testInput() SupervisorInput {
 func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
 	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read the script first"}`}
 	m := testSupervisorModel(f.srv(t).URL)
-	d := m.Decide(context.Background(), "t1", 0.25, testInput())
+	d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput())
 	if d != (Decision{Action: ActionRedirect, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
@@ -211,17 +218,17 @@ func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
 
 func TestSupervisorModelFailureEscalates(t *testing.T) {
 	f := &fakeLiteLLM{status: http.StatusInternalServerError}
-	d := testSupervisorModel(f.srv(t).URL).Decide(context.Background(), "t1", 0.25, testInput())
+	d := testSupervisorModel(f.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.05, testInput())
 	if d.Action != ActionEscalate || !strings.Contains(d.Reason, "500") {
 		t.Fatalf("decision = %+v, want escalate naming the failure", d)
 	}
 	f2 := &fakeLiteLLM{content: "sure, continue"}
-	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", 0.25, testInput()); d.Action != ActionEscalate {
+	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate {
 		t.Fatalf("prose answer: %+v, want escalate", d)
 	}
 	// no budget left: no key, no call
 	f3 := &fakeLiteLLM{content: `{"action":"continue"}`}
-	if d := testSupervisorModel(f3.srv(t).URL).Decide(context.Background(), "t1", 0, testInput()); d.Action != ActionEscalate || len(f3.mints)+len(f3.chats) != 0 {
+	if d := testSupervisorModel(f3.srv(t).URL).Decide(context.Background(), "t1", 0.3, 0.3, testInput()); d.Action != ActionEscalate || len(f3.mints)+len(f3.chats) != 0 {
 		t.Fatalf("no budget: %+v, mints %d, chats %d; want escalate without a call", d, len(f3.mints), len(f3.chats))
 	}
 }
@@ -241,5 +248,26 @@ func TestSessionSupervisionCapsCallsPerSession(t *testing.T) {
 	d, called := s.onTrip(context.Background(), trip)
 	if called || calls != 3 || d.Action != ActionEscalate || !strings.Contains(d.Reason, "same_call") {
 		t.Fatalf("4th trip: %+v called=%v calls=%d, want escalate without a call", d, called, calls)
+	}
+}
+
+// M1: spend the running session's key already shows counts before it is
+// settled into spent_eur.
+func TestSupervisorKeyCapCountsUnsettledSpend(t *testing.T) {
+	f := &fakeLiteLLM{content: `{"action":"continue"}`, keys: `{"keys":[` +
+		`{"token":"h1","spend":0.12,"metadata":{"task_id":"t1"}},` +
+		`{"token":"h2","spend":0.08,"metadata":{"task_id":"t1"}},` +
+		`{"token":"h3","spend":5,"metadata":{"task_id":"other"}}],"total_pages":1}`}
+	m := testSupervisorModel(f.srv(t).URL)
+	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionContinue {
+		t.Fatalf("decision = %+v", d)
+	}
+	// 0.3 - max(0.05, 0.12+0.08)
+	if got := f.mints[0]["max_budget"].(float64); got < 0.0999 || got > 0.1001 {
+		t.Fatalf("max_budget = %v, want 0.1", got)
+	}
+	f.keys = `{"keys":[{"token":"h1","spend":0.31,"metadata":{"task_id":"t1"}}],"total_pages":1}`
+	if d := m.Decide(context.Background(), "t1", 0.3, 0.05, testInput()); d.Action != ActionEscalate || len(f.mints) != 1 {
+		t.Fatalf("spent out: %+v after %d mints, want escalate without a key", d, len(f.mints))
 	}
 }
