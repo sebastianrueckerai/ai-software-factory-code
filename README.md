@@ -7,8 +7,9 @@ the agents work on.
 ## Binaries
 
 - `cmd/factoryd`: the control plane. Task intake (`POST /tasks`,
-  `GET /tasks/{id}`, bearer token from secret `factoryd-intake`, budget
-  clamped to `MAX_BUDGET_EUR`), the task store in Postgres, and the
+  `GET /tasks/{id}`, `GET /tasks/{id}/timeline`, bearer token from secret
+  `factoryd-intake`, budget clamped to `MAX_BUDGET_EUR`), the task store
+  in Postgres, and the
   Temporal worker for task queue `factory-tasks`: one `TaskWorkflow` per
   task (workflow id `task-<id>`) runs the attempts, opens the pull
   request, waits for its checks and for the reviewer. Each attempt
