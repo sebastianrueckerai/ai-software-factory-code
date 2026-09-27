@@ -118,9 +118,9 @@ every session starts from the task branch's head on the fork when the
 branch exists, else from the base SHA. After a pushed commit
 `OpenPullRequest` (head `factory-agent:factory/<id>`, base `main`,
 `Closes #<issue>`, reusing an open PR for that fork branch and recording
-its number on the task; a commit whose `.forgejo` tree entry differs
-from the base's gets no PR, and an already open one is closed with the
-reason), `SetState in-review`, `WaitChecks` on the head commit's
+its number on the task; a commit whose `.forgejo`, `.gitea` or `.github`
+tree entry differs from the base's gets no PR, and an already open one is
+closed with the reason), `SetState in-review`, `WaitChecks` on the head commit's
 combined status, which Forgejo records on the base repository
 (`CHECKS_TIMEOUT`, default 45m). A task that fails (its issue closed,
 its PR closed unmerged, the ladder exhausted) closes its open PR, found
@@ -319,11 +319,15 @@ DNS query is the admitted one. A new callee needs a rule here first.
 - PR job logs: this Forgejo has no job-log API; they are in the Forgejo
   storage bucket at
   `actions_log/<owner>/<repo>/<task id % 256, two hex digits>/<task id>.log.zst`.
-- Agents cannot change workflows (ruling 90): the worker refuses to push
-  a diff against the base that touches `.forgejo/` (a `push_failed`
-  event in the session record, the task branch never reaches the fork),
-  and factoryd refuses to open a PR for a commit whose `.forgejo` tree
-  differs from the base's.
+- Agents cannot change workflows (rulings 90, 100): the worker compares
+  the tree entries of `.forgejo`, `.gitea` and `.github` between the base
+  and the commit it is about to push and refuses when any differs (a
+  `push_failed` event in the session record; the commit never reaches
+  the fork, so a follow-up push on an open PR cannot trigger the head's
+  workflows either), and factoryd refuses to open a PR for a commit whose
+  entries differ from the base's, closing an already open one. Object ids
+  are compared, not diff path listings, so renames out of the directory
+  and quoted non-ASCII names cannot slip past.
 
 ## Ship
 

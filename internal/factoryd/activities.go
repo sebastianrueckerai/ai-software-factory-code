@@ -16,6 +16,11 @@ import (
 // prBase is the branch every task pull request targets.
 const prBase = "main"
 
+// WorkflowDirs are the top-level directories whose contents run as
+// workflows on push; an agent branch must never change any of them
+// (ruling 100). The worker refuses the push, OpenPullRequest re-checks.
+var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
+
 // heartbeatEvery is how often a long activity reports progress; the
 // workflow's heartbeat timeout is four times this.
 const heartbeatEvery = 30 * time.Second
@@ -337,11 +342,11 @@ func earliest(a, b time.Time) time.Time {
 // OpenPullRequest opens the task's pull request from its branch on the
 // bot's fork into main, as the bot, or reuses the one already open for the
 // branch (the idempotency key: a retried or repeated call never opens a
-// second). A
-// commit whose .forgejo/ differs from the task's base gets no pull request
-// (ruling 90): PR workflows run from the PR's own tree, so a task branch
-// must never carry an edit to its own gate. If an earlier push already
-// opened one, it is closed with the reason.
+// second). A commit whose .forgejo/, .gitea/ or .github/ differs from the
+// task's base gets no pull request (rulings 90, 100): PR workflows run
+// from the PR's own tree, so a task branch must never carry an edit to its
+// own gate. If an earlier push already opened one, it is closed with the
+// reason.
 func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (PullRequest, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -352,7 +357,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if err != nil {
 		return PullRequest{}, err
 	}
-	if err := r.refuseForgejoChange(ctx, t, repo, commit); err != nil {
+	if err := r.refuseWorkflowDirChange(ctx, t, repo, commit); err != nil {
 		if existing != nil && isTerminal(err) {
 			msg := "factoryd: closing this pull request: " + errMessage(err)
 			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, existing.Number, msg); err != nil {
@@ -380,10 +385,10 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
 }
 
-// refuseForgejoChange returns a terminal error when commit's .forgejo tree
-// entry (on the fork, where the branch was pushed) differs from the task
-// base's (on the task's repository).
-func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, commit string) error {
+// refuseWorkflowDirChange returns a terminal error when any workflow
+// directory's tree entry in commit (on the fork, where the branch was
+// pushed) differs from the task base's (on the task's repository).
+func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo, commit string) error {
 	base := t.SHA
 	if base == "" {
 		head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
@@ -392,17 +397,19 @@ func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, com
 		}
 		base = head
 	}
-	was, err := r.forgejo.TreeEntry(ctx, repo.Owner, repo.Name, base, ".forgejo")
+	was, err := r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, base, WorkflowDirs...)
 	if err != nil {
 		return err
 	}
 	fork := r.forgejo.Fork(repo)
-	now, err := r.forgejo.TreeEntry(ctx, fork.Owner, fork.Name, commit, ".forgejo")
+	now, err := r.forgejo.TreeEntries(ctx, fork.Owner, fork.Name, commit, WorkflowDirs...)
 	if err != nil {
 		return err
 	}
-	if was != now {
-		return terminalError("branch %s changes .forgejo/ (commit %s against base %s); factoryd opens no pull request that edits .forgejo/", r.branch(t), commit, base)
+	for _, dir := range WorkflowDirs {
+		if was[dir] != now[dir] {
+			return terminalError("branch %s changes %s/ (commit %s against base %s); factoryd opens no pull request that edits a workflow directory", r.branch(t), dir, commit, base)
+		}
 	}
 	return nil
 }

@@ -421,7 +421,7 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if head == base {
 		return "", nil
 	}
-	if err := refuseForgejoPathChange(e, own, base, head); err != nil {
+	if err := refuseWorkflowDirChange(e, own, base, head); err != nil {
 		return "", err
 	}
 	if err := killAgent(); err != nil {
@@ -448,23 +448,47 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	return head, nil
 }
 
-// refuseForgejoPathChange stops a push whose diff against base touches
-// .forgejo/: Forgejo's protected_file_patterns rejects every new factory/*
-// branch outright (ruling 90), so branch protection cannot gate this — the
-// worker, trusted and running with the agent already dead, is where the
-// guard has to live instead. Computed against own, the repo the worker
-// itself fetched and staged, never against the agent-controlled repo.
-func refuseForgejoPathChange(e workerEnv, own, base, head string) error {
-	diff, err := e.git(own, "diff", "--name-only", base, head)
+// refuseWorkflowDirChange stops a push whose tree entries for the workflow
+// directories (.forgejo, .gitea, .github) differ from the base's (ruling
+// 100): Forgejo's protected_file_patterns rejects every new factory/*
+// branch outright, so branch protection cannot gate this — the worker,
+// trusted and running with the agent already dead, is where the guard
+// lives. Object ids are compared, never a diff's path listing, so a
+// rename out of the directory, a quoted non-ASCII name or a mode change
+// all show. Computed against own, the repo the worker itself fetched and
+// staged, never against the agent-controlled repo.
+func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
+	was, err := workflowTreeEntries(e, own, base)
 	if err != nil {
 		return err
 	}
-	for _, path := range strings.Split(diff, "\n") {
-		if path == ".forgejo" || strings.HasPrefix(path, ".forgejo/") {
-			return fmt.Errorf("refusing to push: %s changes .forgejo/", path)
+	now, err := workflowTreeEntries(e, own, head)
+	if err != nil {
+		return err
+	}
+	for _, dir := range factoryd.WorkflowDirs {
+		if was[dir] != now[dir] {
+			return fmt.Errorf("refusing to push: %s/ differs from the base (%s)", dir, base)
 		}
 	}
 	return nil
+}
+
+// workflowTreeEntries maps each workflow directory to its ls-tree line
+// (mode, type, object id) in commit; an absent entry has no key. A commit
+// that does not exist fails, it never reads as "no workflow directories".
+func workflowTreeEntries(e workerEnv, own, commit string) (map[string]string, error) {
+	out, err := e.git(own, append([]string{"ls-tree", commit, "--"}, factoryd.WorkflowDirs...)...)
+	if err != nil {
+		return nil, err
+	}
+	entries := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if _, name, ok := strings.Cut(line, "\t"); ok {
+			entries[name] = line
+		}
+	}
+	return entries, nil
 }
 
 var botIdentity = []string{

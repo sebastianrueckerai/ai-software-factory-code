@@ -454,9 +454,11 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 }
 
 // Forgejo's protected_file_patterns rejects every new factory/* branch
-// outright, so branch protection cannot keep an agent from editing
-// .forgejo/ (ruling 90): the worker itself must refuse the push instead.
-func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
+// outright, so branch protection cannot keep an agent from editing a
+// workflow directory (rulings 90, 100): the worker itself must refuse the
+// push, by comparing the tree entries of .forgejo, .gitea and .github,
+// never by parsing a diff's path listing.
+func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	run := func(args ...string) string {
@@ -470,33 +472,59 @@ func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
 	remote := filepath.Join(t.TempDir(), "remote.git")
 	seed := t.TempDir()
 	run("init", "-q", "-b", "main", seed)
-	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	os.MkdirAll(filepath.Join(seed, ".forgejo", "workflows"), 0o755)
+	os.WriteFile(filepath.Join(seed, ".forgejo", "workflows", "pr.yml"), []byte("gate: true\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "-m", "init")
 	run("clone", "-q", "--bare", seed, remote)
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
+	commitAll := func(dir string) {
+		run("-C", dir, "add", "-A")
+		run("-C", dir, "commit", "-q", "-m", "agent")
+	}
+	write := func(dir string, rel ...string) {
+		path := filepath.Join(append([]string{dir}, rel...)...)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte("evil: true\n"), 0o644)
+	}
 	for _, tc := range []struct {
 		name       string
 		agent      func(dir string)
-		wantRefuse bool
+		wantRefuse string // the directory the refusal must name; "" = the push goes through
 	}{
-		{name: "agent-commit-touches-forgejo", wantRefuse: true, agent: func(dir string) {
-			os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
-			os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "pr.yml"), []byte("evil: true\n"), 0o644)
-			run("-C", dir, "add", "-A")
-			run("-C", dir, "commit", "-q", "-m", "agent")
+		{name: "agent-commit-edits-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			write(dir, ".forgejo", "workflows", "pr.yml")
+			commitAll(dir)
 		}},
-		{name: "leftover-change-touches-forgejo", wantRefuse: true, agent: func(dir string) {
+		{name: "leftover-change-touches-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
 			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
-			run("-C", dir, "add", "a.txt")
-			run("-C", dir, "commit", "-q", "-m", "agent")
-			os.MkdirAll(filepath.Join(dir, ".forgejo"), 0o755)
-			os.WriteFile(filepath.Join(dir, ".forgejo", "config.yml"), []byte("evil: true\n"), 0o644)
+			commitAll(dir)
+			write(dir, ".forgejo", "config.yml")
+		}},
+		{name: "non-ascii-name-under-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			write(dir, ".forgejo", "workflows", "b\u00f6se \"pr\".yml")
+			commitAll(dir)
+		}},
+		{name: "rename-out-of-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			run("-C", dir, "mv", ".forgejo/workflows/pr.yml", "pr.yml")
+			commitAll(dir)
+		}},
+		{name: "new-github-workflow", wantRefuse: ".github", agent: func(dir string) {
+			write(dir, ".github", "workflows", "x.yml")
+			commitAll(dir)
+		}},
+		{name: "new-gitea-workflow", wantRefuse: ".gitea", agent: func(dir string) {
+			write(dir, ".gitea", "workflows", "x.yml")
+			commitAll(dir)
 		}},
 		{name: "lookalike-path-is-not-forgejo", agent: func(dir string) {
-			os.MkdirAll(filepath.Join(dir, ".forgejo-lookalike"), 0o755)
-			os.WriteFile(filepath.Join(dir, ".forgejo-lookalike", "x"), []byte("x\n"), 0o644)
-			run("-C", dir, "add", "-A")
-			run("-C", dir, "commit", "-q", "-m", "agent")
+			write(dir, ".forgejo-lookalike", "x")
+			commitAll(dir)
+		}},
+		{name: "unrelated-change-passes", agent: func(dir string) {
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+			commitAll(dir)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -514,12 +542,12 @@ func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
 
 			commit, err := commitAndPush(dir, e, base, func() error { return nil })
 			remoteHead, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
-			if tc.wantRefuse {
+			if tc.wantRefuse != "" {
 				if err == nil {
 					t.Fatalf("commitAndPush succeeded, commit = %q, want refusal", commit)
 				}
-				if !strings.Contains(err.Error(), ".forgejo") {
-					t.Fatalf("error = %q, want it to name .forgejo", err)
+				if !strings.Contains(err.Error(), tc.wantRefuse+"/") {
+					t.Fatalf("error = %q, want it to name %s/", err, tc.wantRefuse)
 				}
 				if len(remoteHead) != 0 {
 					t.Fatalf("remote branch = %q, want nothing pushed", remoteHead)

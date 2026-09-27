@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -526,7 +527,7 @@ func TestForgejoIssueClosed(t *testing.T) {
 	}
 }
 
-func TestForgejoTreeEntryPagesAndFailsClosed(t *testing.T) {
+func TestForgejoTreeEntriesPagesAndFailsClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path + "?" + r.URL.RawQuery {
 		case "/api/v1/repos/sf/r/git/trees/c1?page=1":
@@ -545,13 +546,14 @@ func TestForgejoTreeEntryPagesAndFailsClosed(t *testing.T) {
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	ctx := context.Background()
-	if sha, err := f.TreeEntry(ctx, "sf", "r", "c1", ".forgejo"); err != nil || sha != "f1" {
-		t.Fatalf("c1 = (%q, %v), want f1 from page 2", sha, err)
+	got, err := f.TreeEntries(ctx, "sf", "r", "c1", WorkflowDirs...)
+	if err != nil || !maps.Equal(got, map[string]string{".github": "g", ".forgejo": "f1"}) {
+		t.Fatalf("c1 = (%v, %v), want .github from page 1 and .forgejo from page 2", got, err)
 	}
-	if sha, err := f.TreeEntry(ctx, "sf", "r", "c2", ".forgejo"); err != nil || sha != "" {
-		t.Fatalf("c2 = (%q, %v), want absent", sha, err)
+	if got, err := f.TreeEntries(ctx, "sf", "r", "c2", WorkflowDirs...); err != nil || len(got) != 0 {
+		t.Fatalf("c2 = (%v, %v), want none", got, err)
 	}
-	if _, err := f.TreeEntry(ctx, "sf", "r", "c3", ".forgejo"); err == nil {
+	if _, err := f.TreeEntries(ctx, "sf", "r", "c3", WorkflowDirs...); err == nil {
 		t.Fatal("a truncated tree listing must fail closed")
 	}
 }

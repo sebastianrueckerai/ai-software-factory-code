@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 )
@@ -668,18 +669,19 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
 }
 
-// TreeEntry returns the object id of the top-level entry name in commit's
-// tree, empty when the entry does not exist. Two commits whose .forgejo
-// entries differ changed something under .forgejo/ (ruling 90), renames and
-// deletions included, however large the diff. The listing is paged; a
-// truncated one fails closed.
-func (f *Forgejo) TreeEntry(ctx context.Context, owner, repo, commit, name string) (string, error) {
+// TreeEntries maps each of names to its object id as a top-level entry
+// of commit's tree; an absent entry has no key. Two commits whose entry
+// for a workflow directory differs changed something under it (rulings
+// 90, 100), renames and deletions included, however large the diff. The
+// listing is paged; a truncated one fails closed.
+func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, names ...string) (map[string]string, error) {
+	entries := map[string]string{}
 	seen := 0
 	for page := 1; ; page++ {
 		path := fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?page=%d", owner, repo, url.PathEscape(commit), page)
 		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		var res struct {
 			Truncated  bool `json:"truncated"`
@@ -690,19 +692,19 @@ func (f *Forgejo) TreeEntry(ctx context.Context, owner, repo, commit, name strin
 			} `json:"tree"`
 		}
 		if err := json.Unmarshal(body, &res); err != nil {
-			return "", fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
+			return nil, fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
 		}
 		if res.Truncated {
-			return "", fmt.Errorf("forgejo tree %s/%s %s: listing truncated", owner, repo, commit)
+			return nil, fmt.Errorf("forgejo tree %s/%s %s: listing truncated", owner, repo, commit)
 		}
 		for _, e := range res.Tree {
-			if e.Path == name {
-				return e.SHA, nil
+			if slices.Contains(names, e.Path) {
+				entries[e.Path] = e.SHA
 			}
 		}
 		seen += len(res.Tree)
 		if len(res.Tree) == 0 || seen >= res.TotalCount {
-			return "", nil
+			return entries, nil
 		}
 	}
 }

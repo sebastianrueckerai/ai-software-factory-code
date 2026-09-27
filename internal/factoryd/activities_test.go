@@ -24,6 +24,7 @@ import (
 type prForgejo struct {
 	mu         sync.Mutex
 	forgejo    map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	github     map[string]string // commit → its top-level .github tree id; unlisted commits have none
 	closed     []int64           // PATCH /pulls/{n} closes
 	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
 	branchGone bool              // DELETE /branches/{b} answers 404
@@ -57,6 +58,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			tree := []map[string]string{{"path": "Makefile", "sha": "m"}}
 			if sha != "" {
 				tree = append(tree, map[string]string{"path": ".forgejo", "sha": sha})
+			}
+			if sha, ok := f.github[strings.TrimPrefix(p, "/git/trees/")]; ok {
+				tree = append(tree, map[string]string{"path": ".github", "sha": sha})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
@@ -193,21 +197,25 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 	}
 }
 
-func TestOpenPullRequestRefusesForgejoChanges(t *testing.T) {
+func TestOpenPullRequestRefusesWorkflowDirChanges(t *testing.T) {
 	// edited, deleted (renamed away), and added: each makes the entry differ from the base's
-	for name, trees := range map[string]map[string]string{
-		"edited":  {"base": "f0", "c1": "f1"},
-		"deleted": {"base": "f0", "c1": ""},
-		"added":   {"base": "", "c1": "f1"},
+	for name, tc := range map[string]struct {
+		forgejo, github map[string]string
+		want            string
+	}{
+		"edited":       {forgejo: map[string]string{"base": "f0", "c1": "f1"}, want: ".forgejo/"},
+		"deleted":      {forgejo: map[string]string{"base": "f0", "c1": ""}, want: ".forgejo/"},
+		"added":        {forgejo: map[string]string{"base": "", "c1": "f1"}, want: ".forgejo/"},
+		"github-added": {github: map[string]string{"c1": "g1"}, want: ".github/"},
 	} {
-		fj := &prForgejo{forgejo: trees}
+		fj := &prForgejo{forgejo: tc.forgejo, github: tc.github}
 		r, _, _ := newActivityRunner(t, prTask, fj)
 		_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
-		if err == nil || !strings.Contains(err.Error(), "changes .forgejo/") || !isTerminal(err) {
-			t.Fatalf("%s: err = %v, want a terminal refusal", name, err)
+		if err == nil || !strings.Contains(err.Error(), "changes "+tc.want) || !isTerminal(err) {
+			t.Fatalf("%s: err = %v, want a terminal refusal naming %s", name, err, tc.want)
 		}
 		if len(fj.created) != 0 {
-			t.Fatalf("%s: a pull request was opened for a .forgejo change", name)
+			t.Fatalf("%s: a pull request was opened for a workflow directory change", name)
 		}
 	}
 }
