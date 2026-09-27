@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -189,5 +190,13 @@ func TestInClusterKubeWire(t *testing.T) {
 	fk := &InClusterKube{Host: forbidden.URL, HTTP: forbidden.Client()}
 	if err := fk.CreateNamespace(ctx, "x", nil); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("forbidden = %v, want ErrForbidden", err)
+	}
+}
+
+func TestInClusterKubeNeedsTheServiceAddress(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	if _, err := NewInClusterKube(); err == nil || !strings.Contains(err.Error(), "KUBERNETES_SERVICE_HOST") {
+		t.Fatalf("err = %v, want the missing service address named", err)
 	}
 }

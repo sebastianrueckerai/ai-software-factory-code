@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -55,13 +56,19 @@ type Kube interface {
 // InClusterKube is the raw-REST Kubernetes client. No client-go: the runner
 // needs a dozen endpoints, and owning the wire keeps the dependency out.
 type InClusterKube struct {
-	Host string // https://kubernetes.default.svc
+	Host string // https://<KUBERNETES_SERVICE_HOST>:<KUBERNETES_SERVICE_PORT>
 	HTTP *http.Client
 }
 
 // NewInClusterKube loads the pod's CA bundle; the bearer token is re-read
-// on every request so rotation needs no restart.
+// on every request so rotation needs no restart. The API server is
+// addressed by the service address the kubelet injects, as client-go does:
+// no DNS lookup, which factoryd's egress policy does not admit.
 func NewInClusterKube() (*InClusterKube, error) {
+	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return nil, errors.New("kube in-cluster: KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are not set")
+	}
 	caPEM, err := os.ReadFile(filepath.Join(saDir, "ca.crt"))
 	if err != nil {
 		return nil, fmt.Errorf("kube in-cluster: %w", err)
@@ -71,7 +78,7 @@ func NewInClusterKube() (*InClusterKube, error) {
 		return nil, errors.New("kube in-cluster: ca.crt holds no certificates")
 	}
 	return &InClusterKube{
-		Host: "https://kubernetes.default.svc",
+		Host: "https://" + net.JoinHostPort(host, port),
 		HTTP: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}},
 	}, nil
 }
