@@ -585,8 +585,10 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 
 // Finish is the terminal step. A failed task's open pull request is closed
 // first, with the reason, and the task's branch on the fork deleted; both
-// return their error, so a Forgejo blip retries them before the task turns
-// final. Then completion (credentials revoked, keys blocked, final status,
+// return a transient error, so a Forgejo blip retries them before the task
+// turns final, while one Forgejo refuses is logged and passed: no retry
+// fixes it, and failing here would have the heal pass restart the
+// workflow every minute. Then completion (credentials revoked, keys blocked, final status,
 // issue label) and, for a failure, the reason as an issue comment.
 // Finishing an already-finished task is a no-op, so a retried Finish never
 // double-completes.
@@ -604,12 +606,12 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	repo, repoErr := SplitRepo(t.Repository)
 	if repoErr == nil {
 		if final == "failed" {
-			if err := r.closeTaskPullRequest(ctx, repo, t, msg); err != nil {
+			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err
 			}
 		}
 		fork := r.forgejo.Fork(repo)
-		if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t)); err != nil {
+		if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t))); err != nil {
 			return err
 		}
 	}
@@ -623,6 +625,16 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
 	return nil
+}
+
+// cleanup passes a Finish cleanup step's Forgejo refusal, logged, and
+// returns any other error for a retry.
+func cleanup(taskID, step string, err error) error {
+	if forgejoTerminal(err) {
+		log.Printf("task %s: finish: could not %s, completing anyway: %v", taskID, step, err)
+		return nil
+	}
+	return err
 }
 
 // closeTaskPullRequest closes the task's pull request while it is still

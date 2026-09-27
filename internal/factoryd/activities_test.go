@@ -32,6 +32,7 @@ type prForgejo struct {
 	closed     []int64           // PATCH /pulls/{n} closes
 	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
 	branchGone bool              // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
+	refuse     bool              // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
 	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
 	pulls      map[int64]string  // GET /pulls/{n} bodies
 	issueOff   bool              // GET /issues/{n} reports closed
@@ -97,6 +98,10 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
+			if f.refuse {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if f.closeFail > 0 {
 				f.closeFail--
 				http.Error(w, "forgejo down", http.StatusInternalServerError)
@@ -116,6 +121,10 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			io.WriteString(w, `{}`)
 		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
+			if f.refuse {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			if f.branchGone {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
@@ -554,6 +563,24 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	}
 	if len(fj.comments) != 2 {
 		t.Fatalf("after the retry: comments = %q, want the reason once on the PR and once on the issue", fj.comments)
+	}
+}
+
+// A cleanup Forgejo refuses (closing the PR, deleting the branch) cannot
+// succeed on a retry: Finish logs it and completes the task, or the failed
+// workflow would be restarted by the heal pass every minute.
+func TestFinishCompletesPastARefusedCleanup(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, refuse: true}
+	r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
+		t.Fatalf("Finish past a refused cleanup = %v, want nil", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "issue closed") {
+		t.Fatalf("comments = %q, want the reason on the issue", fj.comments)
 	}
 }
 
