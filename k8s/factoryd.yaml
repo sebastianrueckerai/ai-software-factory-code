@@ -142,41 +142,66 @@ spec:
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
        has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
     message: sandbox pods must run under gVisor without an automounted API token
+  # fix round 3: the label must never buy root by itself. These checks
+  # apply to every factory.ai/build-pod pod in factory-agents-ci-*
+  # unconditionally, not only when the pod happens to set an explicit
+  # runAsUser: 0 — an implicitly-root labelled pod (neither runAsUser nor
+  # runAsNonRoot set) used to skip them entirely. runtimeClassName and
+  # automountServiceAccountToken are not re-checked here: the rule above
+  # already requires both, for every pod, unconditionally.
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       !(
-        (has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0) ||
-        object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0)
+        variables.target.startsWith('factory-agents-ci-') &&
+        has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
+        object.metadata.labels['factory.ai/build-pod'] == 'true'
       ) ||
+      (
+        !(object.spec.containers +
+          (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+          (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : []))
+          .exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true) &&
+        !(object.spec.containers +
+          (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+          (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : []))
+          .exists(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
+            has(c.securityContext.capabilities.add) && size(c.securityContext.capabilities.add) > 0) &&
+        (!has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.hostPath))) &&
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      )
+    message: factory.ai/build-pod pods in factory-agents-ci-* namespaces must still have no privileged containers, no added capabilities, no hostPath volumes, and no hostNetwork, hostPID or hostIPC, unconditionally
+  # fix round 3: effective, not per-field. A container's own runAsNonRoot
+  # or runAsUser wins over the pod's; if the container sets neither, the
+  # pod's value applies; if neither sets it, it counts as not proven
+  # non-root. Checked across containers, initContainers and
+  # ephemeralContainers, for every pod factoryd creates anywhere under
+  # factory-agents-*, except the labelled build-pod shape above (fix
+  # rounds 1 and 2 checked only object.spec.containers and only pod-level
+  # runAsNonRoot, so a labelled pod's implicit root, a container
+  # overriding runAsNonRoot back to false, and a root initContainer all
+  # passed unnoticed).
+  - expression: >-
+      variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (
         variables.target.startsWith('factory-agents-ci-') &&
         has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
-        object.metadata.labels['factory.ai/build-pod'] == 'true' &&
-        !object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged == true) &&
-        !object.spec.containers.exists(c, has(c.securityContext) && has(c.securityContext.capabilities) &&
-          has(c.securityContext.capabilities.add) && size(c.securityContext.capabilities.add) > 0) &&
-        (!has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.hostPath))) &&
-        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
-        (!has(object.spec.hostPID) || object.spec.hostPID == false)
+        object.metadata.labels['factory.ai/build-pod'] == 'true'
+      ) ||
+      (object.spec.containers +
+       (has(object.spec.initContainers) ? object.spec.initContainers : []) +
+       (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : []))
+      .all(c,
+        (has(c.securityContext) && has(c.securityContext.runAsNonRoot)
+          ? c.securityContext.runAsNonRoot
+          : (has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot))
+        &&
+        !(has(c.securityContext) && has(c.securityContext.runAsUser)
+          ? c.securityContext.runAsUser == 0
+          : (has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0))
       )
-    message: only factory.ai/build-pod pods in factory-agents-ci-* namespaces may run as root, and only without privileged containers, added capabilities, hostPath volumes, hostNetwork or hostPID
-  # baseline (not restricted) is what factory-agents-ci-* namespaces carry
-  # so the build pod above can run as root; baseline does not require
-  # runAsNonRoot at all, and the rule above only catches an EXPLICIT
-  # runAsUser: 0 — a pod that sets neither runAsUser nor runAsNonRoot runs
-  # as root by its image's default user and passed both checks unnoticed
-  # (fix round 2). Every other pod in these namespaces must declare
-  # non-root explicitly; the build pod keeps only its checks above.
-  - expression: >-
-      variables.kind != 'Pod' || request.operation == 'DELETE' ||
-      !variables.target.startsWith('factory-agents-ci-') ||
-      (has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
-       object.metadata.labels['factory.ai/build-pod'] == 'true') ||
-      (has(object.spec.securityContext) && has(object.spec.securityContext.runAsNonRoot) &&
-       object.spec.securityContext.runAsNonRoot == true) ||
-      object.spec.containers.all(c, has(c.securityContext) && has(c.securityContext.runAsNonRoot) &&
-       c.securityContext.runAsNonRoot == true)
-    message: pods in factory-agents-ci-* namespaces must explicitly set runAsNonRoot (pod-level or on every container), unless they are the labelled factory.ai/build-pod shape
+    message: every container, initContainer and ephemeralContainer must have an effective runAsNonRoot of true and an effective runAsUser other than 0 (container overrides pod), unless the pod is the labelled factory.ai/build-pod shape in factory-agents-ci-*
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
