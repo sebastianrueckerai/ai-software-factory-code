@@ -527,6 +527,32 @@ func TestForgejoIssueClosed(t *testing.T) {
 	}
 }
 
+// I3: the bot accumulates a token pair per task; the boot sweep must see
+// every page, or tokens beyond Forgejo's first page are never revoked.
+func TestForgejoListTokensPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path + "?" + r.URL.RawQuery {
+		case "/api/v1/users/factory-bot/tokens?page=1&limit=50":
+			var page []string
+			for i := 1; i <= 50; i++ {
+				page = append(page, fmt.Sprintf(`{"id":%d,"name":"task-%d"}`, i, i))
+			}
+			io.WriteString(w, "["+strings.Join(page, ",")+"]")
+		case "/api/v1/users/factory-bot/tokens?page=2&limit=50":
+			io.WriteString(w, `[{"id":51,"name":"task-51"}]`)
+		default:
+			t.Errorf("unexpected %s?%s", r.URL.Path, r.URL.RawQuery)
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	got, err := f.ListTokens(context.Background())
+	if err != nil || len(got) != 51 || got[0].ID != 1 || got[50].ID != 51 || got[50].Name != "task-51" {
+		t.Fatalf("ListTokens = %d tokens, %v; want all 51 across two pages", len(got), err)
+	}
+}
+
 func TestForgejoTreeEntriesPagesAndFailsClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path + "?" + r.URL.RawQuery {

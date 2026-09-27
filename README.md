@@ -16,7 +16,9 @@ the agents work on.
   (`RunSession`) gets a fresh namespace, its own pair of Forgejo tokens
   (read on the repository, write on the bot's fork, nothing else) and
   service account (so its own LiteLLM key), one gVisor pod, supervision
-  (stall watchdog, wall-clock cap, tool calls without file changes) and
+  (wall-clock cap, stall, reading without writing, same failure, same
+  call, flip-flop, churn and half-way detectors; see `supervise.go`
+  below) and
   a session record in S3; `sessions/<task>/timeline.jsonl` records the
   task's whole path. Spend settlement against LiteLLM and the orphan
   sweep run beside it. Runs with `strategy: Recreate`; a restart loses

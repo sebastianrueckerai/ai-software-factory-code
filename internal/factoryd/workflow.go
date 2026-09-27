@@ -166,15 +166,10 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	if err := workflow.SideEffect(ctx, func(workflow.Context) any { return w.Config }).Get(&cfg); err != nil {
 		return "", err
 	}
-	short := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 2 * time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        5 * time.Second,
-			MaximumInterval:        time.Minute,
-			MaximumAttempts:        10,
-			NonRetryableErrorTypes: []string{errTerminal},
-		},
-	})
+	// short activities (Reconcile, SetState, OpenPullRequest, Escalate,
+	// ...) talk to Postgres, Forgejo or the cluster; an outage of any of
+	// them is waited out with capped backoff, never failed, like finish
+	short := workflow.WithActivityOptions(ctx, finishOptions())
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
 		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
 		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
@@ -630,7 +625,7 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 }
 
 // finishOptions: MaximumAttempts 0 is unlimited, and no schedule-to-close
-// bounds the retries.
+// bounds the retries; only a terminal error ends them.
 func finishOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		StartToCloseTimeout: 2 * time.Minute,

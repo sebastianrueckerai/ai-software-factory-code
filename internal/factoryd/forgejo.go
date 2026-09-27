@@ -39,9 +39,13 @@ type Forgejo struct {
 	HTTP        *http.Client // nil = a mint-sized timeout
 
 	// CIRegistrarToken authenticates the Actions runner-registration API
-	// (task 41, ruling 78): a token scoped to registering and deleting
-	// ephemeral runners and reading the waiting-job queue, never repository
-	// or registry credentials.
+	// and the collaborator permission lookups (task 41, rulings 78, 101):
+	// a repo-scoped token of the dedicated user factory-ci, an admin
+	// collaborator on the code repository only (runner registration and
+	// permission reads need repository admin), kept out of main's push and
+	// merge whitelist with apply_to_admins on, so the token can neither
+	// push nor merge main. Never a registry credential, never mounted into
+	// a runner pod.
 	CIRegistrarToken string
 }
 
@@ -96,16 +100,23 @@ type TokenRef struct {
 // tokens by name: completion and the boot sweep must revoke a task's token
 // even when the mint's ID was lost to a crash.
 func (f *Forgejo) ListTokens(ctx context.Context) ([]TokenRef, error) {
-	body, err := f.call(ctx, http.MethodGet,
-		fmt.Sprintf("/api/v1/users/%s/tokens", f.BotUser), nil, http.StatusOK)
-	if err != nil {
-		return nil, err
-	}
+	const limit = 50
 	var refs []TokenRef
-	if err := json.Unmarshal(body, &refs); err != nil {
-		return nil, fmt.Errorf("forgejo list tokens: %w", err)
+	for page := 1; ; page++ {
+		body, err := f.call(ctx, http.MethodGet,
+			fmt.Sprintf("/api/v1/users/%s/tokens?page=%d&limit=%d", f.BotUser, page, limit), nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var res []TokenRef
+		if err := json.Unmarshal(body, &res); err != nil {
+			return nil, fmt.Errorf("forgejo list tokens: %w", err)
+		}
+		refs = append(refs, res...)
+		if len(res) < limit {
+			return refs, nil
+		}
 	}
-	return refs, nil
 }
 
 // RevokeToken deletes a token. A 404 means it is already gone — a revoke
@@ -174,7 +185,8 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 // RepoPermission is user's effective permission on the repository ("owner",
 // "admin", "write", "read"; "none" when Forgejo knows no access). Reading
 // another user's permission needs repository admin, which the bot lacks:
-// it runs on the registrar token (the repository owner's, repo-scoped).
+// it runs on the registrar token (factory-ci, a repository admin that
+// cannot push or merge main, ruling 101).
 func (f *Forgejo) RepoPermission(ctx context.Context, owner, repo, user string) (string, error) {
 	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", owner, repo, url.PathEscape(user)), nil, http.StatusOK)
 	if errors.Is(err, ErrNotFound) {
@@ -209,10 +221,10 @@ type CIJob struct {
 // WaitingRunJobs lists owner/repo's queued Actions jobs carrying label. The
 // search endpoint has no status filter, so this filters client-side to jobs
 // Forgejo itself marked "waiting" — running or already-done jobs matching
-// the label must not inflate the spawn count. The spawner uses the count,
-// never the identity of a specific job: forgejo-runner registers by label
-// only and the server itself — not the caller — assigns whichever waiting
-// job a given runner instance ends up serving.
+// the label must not spawn a runner. The spawner names one namespace per
+// job id (its idempotency key), but the runner it starts registers by
+// label only and the server, not the caller, assigns it whichever waiting
+// job it serves.
 func (f *Forgejo) WaitingRunJobs(ctx context.Context, owner, repo, label string) ([]CIJob, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners/jobs?labels=%s", owner, repo, url.QueryEscape(label))
 	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
