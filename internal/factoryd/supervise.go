@@ -289,14 +289,22 @@ func (d *traceDetectors) observe(ev harness.Event) *Trip {
 			if size > d.maxDiff {
 				d.maxDiff, d.churn = size, 0
 			}
-			// edits made through a shell show only here
+			// edits made through a shell show only here; the first
+			// checkpoint is the baseline
 			if key := fmt.Sprint(ev.Detail["diff"]); key != d.lastDiff {
+				if d.lastDiff != "" {
+					d.changed()
+				}
 				d.lastDiff = key
-				d.changed()
 			}
 		}
 	}
 	return nil
+}
+
+// masksExitStatus: the command's exit code need not be its test's.
+func masksExitStatus(cmd string) bool {
+	return strings.ContainsAny(cmd, ";|") || strings.Contains(cmd, "$?")
 }
 
 // changed notes a file change for every command's output run.
@@ -309,9 +317,10 @@ func (d *traceDetectors) changed() {
 
 // command runs the same-failure detector: the circle "edit, test, same
 // failure". A run is the same command giving the same output signature
-// (exit code folded in, so `cmd; echo $?` does not hide a failure behind
-// exit 0) with a file change before each repeat; a rerun with nothing
-// changed and a command without output are no evidence.
+// (exit code folded in) with a file change before each repeat; a rerun
+// with nothing changed and a command without output are no evidence. A
+// pass ends the run, unless the command masks its own exit status (`;`,
+// `|`, `||`, `$?`, as in `cmd; echo $?`): then only its output tells.
 func (d *traceDetectors) command(ev harness.Event) *Trip {
 	cmd := detailString(ev, "command")
 	exit, hasExit := detailInt(ev, "exit")
@@ -320,6 +329,10 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 			d.churn = 0 // newly passing
 		}
 		delete(d.failed, cmd)
+		if !masksExitStatus(cmd) {
+			delete(d.runs, cmd)
+			return nil
+		}
 	} else if hasExit {
 		d.failed[cmd] = true
 	}

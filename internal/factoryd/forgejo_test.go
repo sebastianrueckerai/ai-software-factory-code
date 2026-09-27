@@ -448,3 +448,31 @@ func TestForgejoClosePullRequest(t *testing.T) {
 		t.Fatalf("ClosePullRequest = %v, body %v", err, got)
 	}
 }
+
+// m4: a 404 for the user means no access; a 404 for the repository is an
+// error, not a silent "none".
+func TestForgejoRepoPermissionTellsAMissingRepositoryFromAMissingUser(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/r/collaborators/alice/permission":
+			io.WriteString(w, `{"permission":"write"}`)
+		case "/api/v1/repos/sf/r":
+			io.WriteString(w, `{"name":"r"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
+	for _, tc := range []struct{ repo, user, want string }{
+		{"r", "alice", "write"},
+		{"r", "nobody", "none"},
+	} {
+		if got, err := f.RepoPermission(context.Background(), "sf", tc.repo, tc.user); err != nil || got != tc.want {
+			t.Fatalf("%s on %s = %q, %v; want %q", tc.user, tc.repo, got, err, tc.want)
+		}
+	}
+	if got, err := f.RepoPermission(context.Background(), "sf", "gone", "alice"); err == nil || !strings.Contains(err.Error(), "repository sf/gone") {
+		t.Fatalf("missing repository = %q, %v; want an error naming it", got, err)
+	}
+}

@@ -202,7 +202,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
-	lines := followPodLog(sessCtx, r.kube, ns, podName, t.ID)
+	followed := followPodLog(sessCtx, r.kube, ns, podName, t.ID)
+	lines := followed.lines
+	// ended names why the log ended without a result
+	ended := func(plain string) string {
+		if err := followed.err(); err != nil {
+			return err.Error()
+		}
+		return plain
+	}
 
 	// read takes one log line: the result ends the session; an event is
 	// recorded and returned for supervision.
@@ -253,7 +261,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return
 			case line, ok := <-lines:
 				if !ok {
-					out.noResult = "the stopped worker exited without a result"
+					out.noResult = ended("the stopped worker exited without a result")
 					return
 				}
 				if _, done := read(line); done {
@@ -279,16 +287,23 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		cancel()
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
-		if !time.Now().Before(deadline) {
+		note := ""
+		switch {
+		case !time.Now().Before(deadline):
 			stop(&Trip{Kind: TripWallClock, Findings: trip.Findings, Detail: "the task's wall-clock cap is reached"})
-			return true
-		}
-		if d.Action == ActionContinue {
+			note = "Superseded: the task's wall-clock cap was reached during the supervisor call."
+		case d.Action == ActionContinue:
+			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
 			return false
+		default:
+			out.decision = &d
+			stop(trip)
 		}
-		out.decision = &d
-		stop(trip)
+		if out.result != nil && out.result.Success && out.commit != "" {
+			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the supervisor call; the task goes to verification.", out.commit)
+		}
+		r.commentDecision(ctx, t, s, trip, d, out.digest, note)
 		return true
 	}
 
@@ -308,7 +323,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case line, ok := <-lines:
 			if !ok {
 				if out.result == nil {
-					out.noResult = "pod exited without a result"
+					out.noResult = ended("pod exited without a result")
 				}
 				return out, nil
 			}
@@ -349,8 +364,8 @@ func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recor
 	})
 }
 
-// recordDecision writes a supervisor decision into the session record, the
-// timeline and onto the issue.
+// recordDecision writes a supervisor decision into the session record and
+// the timeline.
 func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, called bool, digest string) {
 	detail := map[string]any{"detector": string(trip.Kind), "trip": trip.Detail, "digest": digest,
 		"decision": string(d.Action), "guidance": d.Guidance, "reason": d.Reason, "called": called}
@@ -359,8 +374,12 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	detail["session"] = s.id
 	r.record(ctx, t.ID, "supervisor", detail)
-	// an escalation is commented here too: the session may still end
-	// pushed (it finished during the call), and then no Escalate follows
+}
+
+// commentDecision puts a decision on the issue, with a note when the
+// session's end superseded it. An escalation is commented too: a session
+// that pushed during the call ends pushed, and then no Escalate follows.
+func (r *Runner) commentDecision(ctx context.Context, t Task, s sessionSpec, trip *Trip, d Decision, digest, note string) {
 	if t.IssueNumber == 0 {
 		return
 	}
@@ -375,6 +394,9 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	if d.Reason != "" {
 		body += "\nReason: " + d.Reason
+	}
+	if note != "" {
+		body += "\n\n" + note
 	}
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 		log.Printf("task %s: comment supervisor decision: %v", t.ID, err)

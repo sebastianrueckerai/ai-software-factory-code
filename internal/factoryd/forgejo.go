@@ -172,6 +172,11 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 func (f *Forgejo) RepoPermission(ctx context.Context, owner, repo, user string) (string, error) {
 	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", owner, repo, url.PathEscape(user)), nil, http.StatusOK)
 	if errors.Is(err, ErrNotFound) {
+		// Forgejo answers 404 for an unknown user and for an unknown (or
+		// invisible) repository alike: only the first means "no access"
+		if _, rerr := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s", owner, repo), nil, http.StatusOK); rerr != nil {
+			return "", fmt.Errorf("forgejo permission of %s: repository %s/%s: %w", user, owner, repo, rerr)
+		}
 		return "none", nil
 	}
 	if err != nil {

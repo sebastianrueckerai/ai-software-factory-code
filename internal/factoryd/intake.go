@@ -33,16 +33,12 @@ type Intake struct {
 	MaxBudgetEUR float64
 
 	trustMu sync.Mutex
-	trust   map[string]trustEntry // repo + user → cached verdict
+	trust   map[string]time.Time // repo + user → trusted until
 }
 
-type trustEntry struct {
-	ok  bool
-	exp time.Time
-}
-
-// trustTTL is how long a permission verdict is reused.
-const trustTTL = 10 * time.Minute
+// trustTTL is how long a positive verdict is reused; a denial is checked
+// again every time, so a newly granted user is heard at once.
+const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
 // reviews: write access or more to the repository. A comment by anyone
@@ -50,10 +46,10 @@ const trustTTL = 10 * time.Minute
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
 	key := repository + "\x00" + user
 	in.trustMu.Lock()
-	e, ok := in.trust[key]
+	until, ok := in.trust[key]
 	in.trustMu.Unlock()
-	if ok && time.Now().Before(e.exp) {
-		return e.ok, nil
+	if ok && time.Now().Before(until) {
+		return true, nil
 	}
 	repo, err := SplitRepo(repository)
 	if err != nil {
@@ -63,17 +59,17 @@ func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, e
 	if err != nil {
 		return false, fmt.Errorf("permission of %s: %w", user, err)
 	}
-	e = trustEntry{ok: perm == "owner" || perm == "admin" || perm == "write", exp: time.Now().Add(trustTTL)}
+	if perm != "owner" && perm != "admin" && perm != "write" {
+		log.Printf("webhook intake: %s has %q on %s: recorded, not signalled", user, perm, repository)
+		return false, nil
+	}
 	in.trustMu.Lock()
 	if in.trust == nil {
-		in.trust = map[string]trustEntry{}
+		in.trust = map[string]time.Time{}
 	}
-	in.trust[key] = e
+	in.trust[key] = time.Now().Add(trustTTL)
 	in.trustMu.Unlock()
-	if !e.ok {
-		log.Printf("webhook intake: %s has %q on %s: comment recorded, not signalled", user, perm, repository)
-	}
-	return e.ok, nil
+	return true, nil
 }
 
 func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +345,12 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 	}
 	if !ok || t.Kind != "agent" {
 		return nil
+	}
+	// an issue's author can close it without any repository access
+	if p.Sender.UserName != in.BotUser {
+		if ok, err := in.trusted(ctx, p.Repository.FullName, p.Sender.UserName); err != nil || !ok {
+			return err
+		}
 	}
 	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: p.Sender.UserName})
 }

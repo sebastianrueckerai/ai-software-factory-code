@@ -102,35 +102,36 @@ finish it failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Then: up to
 `MAX_SESSIONS` (default 3) attempts, each `SetState running` then
 `RunSession`, the first on `MODEL` (default `factory/coding-cheap`);
-every session starts from the task branch's head when the branch
-exists, else from the base SHA. After a pushed commit `OpenPullRequest`
-(head `factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR
-for the branch and recording its number on the task; a commit whose
+every session starts from the task branch's head when the branch exists,
+else from the base SHA. After a pushed commit `OpenPullRequest` (head
+`factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR for
+the branch and recording its number on the task; a commit whose
 `.forgejo` tree entry differs from the base's gets no PR, and an already
 open one is closed with the reason), `SetState in-review`, `WaitChecks`
 on the head commit's combined status (`CHECKS_TIMEOUT`, default 45m).
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
 `factory/coding-frontier`) with the failures as findings; supervision
-(below) can redirect, climb or escalate. Signals from the webhook intake are delivered with
-signal-with-start, so a signal to a task whose run died starts a new one
-(which reconciles first). `pr_merged` (done), `pr_closed` (closed
-without merge: failed) and `issue_closed` (done if the PR merged, else
-failed) decide the task wherever they land: a running session or check
-wait is cancelled at once (the session deletes its pod and namespace
-and revokes its credentials first), and they are drained before every
-attempt, before a PR is opened and after the checks; green checks wait
-for them at no cost. `human_comment` (a new
+(below) can redirect, climb or escalate. Signals from the webhook intake
+are delivered with signal-with-start, so a signal to a task whose run
+died starts a new one (which reconciles first). `pr_merged` (done),
+`pr_closed` (closed without merge: failed) and `issue_closed` (done if
+the PR merged, else failed) decide the task wherever they land: a
+running session or check wait is cancelled at once (the session deletes
+its pod and namespace and revokes its credentials first), and they are
+drained before every attempt, before a PR is opened and after the
+checks; green checks wait for them at no cost. `human_comment` (a new
 comment on the task's issue) answers an escalation. Comments and reviews
-signal only when their author has write access or more to the
-repository (read with the registrar token, cached 10 min); others are
-recorded only.
-`changes_requested` (a review requesting changes, a
-review comment, or a PR comment by a non-bot user) starts one more
-attempt, all pending requests coalesced into its findings. Pull request
-signals count only for the task's own PR. A webhook delivery is marked
-processed (by `X-Forgejo-Delivery`) after it was processed; a redelivery
-of a processed one is a no-op, and intake events are keyed by delivery
-id. A failure comments its reason on the issue; `Finish` retries without
+signal only when their author has write access or more to the repository
+(read with the registrar token; a grant is reused for 60 s, a denial
+checked every time); others are recorded only. The same holds for
+closing the issue, which only a writer or factoryd's bot can use to fail
+the task. `changes_requested` (a review requesting changes, a review
+comment, or a PR comment by a non-bot user) starts one more attempt, all
+pending requests coalesced into its findings. Pull request signals count
+only for the task's own PR. A webhook delivery is marked processed (by
+`X-Forgejo-Delivery`) after it was processed; a redelivery of a
+processed one is a no-op, and intake events are keyed by delivery id. A
+failure comments its reason on the issue; `Finish` retries without
 limit. The wall-clock cap (20 min) bounds the agent's working time
 summed over the attempts; waiting on checks or reviewers does not count.
 A restarted factoryd loses nothing: Temporal retries an interrupted
@@ -146,37 +147,40 @@ Detectors, thresholds with their env overrides: stall (no events for
 (`SUPERVISE_READING_WITHOUT_WRITING` tool calls and commands without a
 file change, 24), same failure (the same command failing with the same
 output signature `SUPERVISE_SAME_FAILURE` times, 3, each repeat after a
-file change: an edit, or a changed diff checkpoint for edits made in
-the shell; reruns with nothing changed and silent commands do not count;
-the signature is the command, its exit code and its output tail with
+file change: an edit, or a changed diff checkpoint for edits made in the
+shell; reruns with nothing changed and silent commands do not count; the
+signature is the command, its exit code and its output tail with
 timestamps, hex addresses, durations, temp paths, line and column
-numbers and pids stripped, so `cmd; echo $?` does not hide a failure), same call (the same tool with the same arguments
+numbers and pids stripped; a pass ends the run unless the command masks
+its exit status with `;`, `|`, `||` or `$?`, so `cmd; echo $?` does not
+hide a failure), same call (the same tool with the same arguments
 `SUPERVISE_SAME_CALL` times in a session, 4), flip-flop (a file returns
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
 half way (half the wall-clock cap `WALL_CLOCK_CAP` or half the budget;
-once per task, recorded on the task row). The wall-clock cap ends the session. Every other trip
-asks the supervisor, a model under the LiteLLM alias `supervisor`,
-called directly with a virtual key minted per call (metadata `task_id`,
-`max_budget` the budget minus the larger of spent_eur and the spend on
-the task's LiteLLM keys, model `supervisor` only, so
-the settlement books its spend and the session end blocks it). It reads
-the brief, the trip, a progress digest and the session record's tail,
-and answers one of `continue` (the detector resets, the session runs
-on), `redirect` (new session, same rung, its guidance as findings),
+once per task, recorded on the task row). The wall-clock cap ends the
+session. Every other trip asks the supervisor, a model under the LiteLLM
+alias `supervisor`, called directly with a virtual key minted per call
+(metadata `task_id`, `max_budget` the budget minus the larger of
+spent_eur and the spend on the task's LiteLLM keys, model `supervisor`
+only, so the settlement books its spend and the session end blocks it).
+It reads the brief, the trip, a progress digest and the session record's
+tail, and answers one of `continue` (the detector resets, the session
+runs on), `redirect` (new session, same rung, its guidance as findings),
 `retry_stronger` (the next rung; at the top rung a redirect) or
 `escalate`; an invalid answer or a failed call escalates. At most
 `SUPERVISOR_MAX_CALLS` (3) calls per session; the next trip escalates
-without one. Nothing it answers changes a cap, a budget or the ladder.
-A stopping session's pod is deleted with a 60 s grace period (a log
-stream that breaks meanwhile, or at any time while the pod runs, is
-reopened and the lines already read are skipped): the worker ends the agent, commits and pushes its work in progress through the
-same clean push path, and the next session starts from it. Escalation
-moves the task to `waiting-human`, comments the reason and the digest
-summary on the issue, and waits: a newer non-bot issue comment starts
-one more attempt with the comment as findings, closing the issue fails
-the task. Every decision is a `supervisor` event in the session record,
-a timeline step and an issue comment.
+without one. Nothing it answers changes a cap, a budget or the ladder. A
+stopping session's pod is deleted with a 60 s grace period (a log stream
+that breaks meanwhile, or at any time while the pod runs, is reopened
+and the lines already read are skipped): the worker ends the agent,
+commits and pushes its work in progress through the same clean push
+path, and the next session starts from it. Escalation moves the task to
+`waiting-human`, comments the reason and the digest summary on the
+issue, and waits: a newer non-bot issue comment starts one more attempt
+with the comment as findings, closing the issue fails the task. Every
+decision is a `supervisor` event in the session record, a timeline step
+and an issue comment.
 
 The worker reports what the detectors read: commands with exit code and
 output tail, tool calls with arguments and their canonical hash, file
@@ -249,15 +253,16 @@ pushes.
 ## factoryd's own network
 
 factoryd holds the LiteLLM master key, the bot password and the S3 keys,
-so its egress is default-deny (`factoryd-egress` in `k8s/factoryd.yaml`):
-kube-dns for exactly the names below, the API server (by entity;
-factoryd dials the injected `KUBERNETES_SERVICE_HOST`, no DNS), the
-`sf-cluster` Postgres instances on 5432, the in-cluster Forgejo on 3000
-(`FORGEJO_URL`; the public host resolves to the edge gateway; links for people use `FORGEJO_PUBLIC_URL`), LiteLLM on
-4000, the Temporal frontend on 7233, and the S3 endpoint on 443 (its FQDN
-must match `S3_ENDPOINT`). Every callee is named in full and the pod
-runs with `ndots: 1`, so the first DNS query is the admitted one. A new
-callee needs a rule here first.
+so its egress is default-deny (`factoryd-egress` in
+`k8s/factoryd.yaml`): kube-dns for exactly the names below, the API
+server (by entity; factoryd dials the injected
+`KUBERNETES_SERVICE_HOST`, no DNS), the `sf-cluster` Postgres instances
+on 5432, the in-cluster Forgejo on 3000 (`FORGEJO_URL`; the public host
+resolves to the edge gateway; links for people use
+`FORGEJO_PUBLIC_URL`), LiteLLM on 4000, the Temporal frontend on 7233,
+and the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`). Every
+callee is named in full and the pod runs with `ndots: 1`, so the first
+DNS query is the admitted one. A new callee needs a rule here first.
 
 ## Ship
 

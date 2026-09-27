@@ -52,6 +52,8 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			default:
 				http.NotFound(w, r)
 			}
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code":
+			io.WriteString(w, `{"default_branch":"main"}`)
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
@@ -663,22 +665,45 @@ func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
 	}
 	comment("mallory", 1)
 	comment("reader", 2)
+	comment("reader", 5)
 	comment("sebastian", 3)
 	comment("sebastian", 4)
 	want := []string{"t-issue human_comment sebastian #0 c3: do X", "t-issue human_comment sebastian #0 c4: do X"}
 	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
 		t.Fatalf("signals = %q, want only the owner's", got)
 	}
-	if len(store.intakeEvents) != 4 {
+	if len(store.intakeEvents) != 5 {
 		t.Fatalf("intake events = %d, want every comment recorded", len(store.intakeEvents))
 	}
-	checks := 0
+	checks := map[string]int{}
 	for _, r := range *requests {
-		if strings.HasSuffix(r, "/sebastian/permission") {
-			checks++
+		if strings.HasSuffix(r, "/permission") {
+			checks[strings.Split(r, "/")[7]]++
 		}
 	}
-	if checks != 1 {
-		t.Fatalf("permission reads for sebastian = %d, want 1 (cached)", checks)
+	// a grant is reused, a denial is checked again every time
+	if checks["sebastian"] != 1 || checks["reader"] != 2 {
+		t.Fatalf("permission reads = %v, want sebastian 1 (cached), reader 2", checks)
+	}
+}
+
+// m5: closing the issue fails the task, so only people with write access,
+// or factoryd's bot, can do it through the webhook.
+func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
+	for closer, want := range map[string]int{"mallory": 0, "reader": 0, "sebastian": 1, "factory-agent": 1} {
+		in, store, _ := newTestIntake(t)
+		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 4}
+		body, _ := json.Marshal(map[string]any{
+			"action":     "closed",
+			"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "mallory"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": closer},
+		})
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", closer, rr.Code)
+		}
+		if got := len(workflowsOf(in).signals); got != want {
+			t.Fatalf("%s closed the issue: %d signals, want %d", closer, got, want)
+		}
 	}
 }

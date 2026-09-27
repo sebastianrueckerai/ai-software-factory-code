@@ -1172,14 +1172,82 @@ func TestRunSessionReadsOnAfterABrokenLogStream(t *testing.T) {
 func TestReadLogLinesSkipsDropsLongLinesAndHoldsBrokenTails(t *testing.T) {
 	long := strings.Repeat("x", maxLogLine+10)
 	body := "a\nb\n" + long + "\nc\nunterminated"
-	out := make(chan []byte, 10)
-	n, err := readLogLines(context.Background(), strings.NewReader(body), 1, out)
-	close(out)
 	var got []string
-	for l := range out {
-		got = append(got, string(l))
-	}
+	n, err := readLogLines(strings.NewReader(body), 1, func(l []byte) bool { got = append(got, string(l)); return true })
 	if n != 4 || err != io.EOF || !slices.Equal(got, []string{"b", "c"}) {
 		t.Fatalf("n = %d, err = %v, lines = %q; want 4 lines seen (the long one dropped), b and c delivered, the broken tail held", n, err, got)
+	}
+}
+
+// m6: the follower reads the whole log ahead while nobody consumes (a
+// supervisor call blocks the session loop), so a pod deleted meanwhile
+// loses nothing; every line is delivered afterwards, in order.
+func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
+	kube := newFakeKube()
+	kube.CreatePod(context.Background(), "ns", "p", nil)
+	var body strings.Builder
+	for i := 0; i < 5000; i++ {
+		fmt.Fprintf(&body, "line %d\n", i)
+	}
+	kube.scriptPods(0, body.String())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pl := followPodLog(ctx, kube, "ns", "p", "t1")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if phase, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the follower stopped reading while nobody consumed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	kube.DeletePod(ctx, "ns", "p")
+	n := 0
+	for l := range pl.lines {
+		if string(l) != fmt.Sprintf("line %d", n) {
+			t.Fatalf("line %d = %q", n, l)
+		}
+		n++
+	}
+	if n != 5000 || pl.err() != nil {
+		t.Fatalf("delivered %d lines, err %v; want 5000, none", n, pl.err())
+	}
+}
+
+// Past the read-ahead cap the follower stops and says so: the session
+// fails loudly instead of losing lines.
+func TestFollowPodLogFailsLoudlyPastItsBuffer(t *testing.T) {
+	kube := newFakeKube()
+	kube.CreatePod(context.Background(), "ns", "p", nil)
+	kube.scriptPods(0, strings.Repeat("0123456789\n", 1000))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pl := followPodLogCap(ctx, kube, "ns", "p", "t1", 5000)
+	time.Sleep(200 * time.Millisecond)
+	n := 0
+	for range pl.lines {
+		n++
+	}
+	if pl.err() == nil || n == 0 || n >= 1000 {
+		t.Fatalf("delivered %d lines, err %v; want what fit, then an error", n, pl.err())
+	}
+}
+
+// m2: an escalation overtaken by the session's own push is commented as
+// superseded; the task goes to verification, not to a human.
+func TestRunSessionEscalationSupersededByAPush(t *testing.T) {
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"escalate","reason":"impossible"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t2 at c1")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want pushed", res, err)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**escalate**") ||
+		!strings.Contains(hub.comments[0], "Superseded: the session finished and pushed c1 during the supervisor call; the task goes to verification.") {
+		t.Fatalf("comments = %q", hub.comments)
 	}
 }

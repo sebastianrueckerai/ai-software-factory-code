@@ -247,6 +247,7 @@ func TestSameFailureTripsOnTheNthIdenticalFailureInARow(t *testing.T) {
 	fail := func(at string) harness.Event {
 		return cmdEvent("sh scripts/loopcheck.sh", 1, "loopcheck: FAIL at "+at+" (took 12ms)\nexpected the impossible")
 	}
+	d.observe(diffEvent(0, 0)) // the baseline checkpoint
 	if trip := d.observe(fail("10:00:01")); trip != nil {
 		t.Fatalf("first failure tripped: %+v", trip)
 	}
@@ -548,5 +549,44 @@ func TestSupervisorTracesSeeTheEventThatTripsRepetition(t *testing.T) {
 	}
 	if !s.traces.failed["go vet"] {
 		t.Fatal("the tripping event never reached the trace detectors")
+	}
+}
+
+// I2': a healthy edit → test (green, same output) loop is progress, not a
+// circle; only a command that masks its exit status is judged by output.
+func TestSameFailureAPassEndsTheRunUnlessTheExitIsMasked(t *testing.T) {
+	d := newTraces()
+	for i := 0; i < 6; i++ {
+		d.observe(fileEvent("a.go", fmt.Sprint("h", i)))
+		if trip := d.observe(cmdEvent("go test ./...", 0, "ok  \texample.com/p\t0.0"+fmt.Sprint(i)+"1s")); trip != nil {
+			t.Fatalf("passing run %d tripped: %+v", i, trip)
+		}
+	}
+	for _, masked := range []string{`sh scripts/loopcheck.sh; echo "EXIT: $?"`, "go test ./... | tail -5", "make check || true"} {
+		d := newTraces()
+		var trip *Trip
+		for i := 0; i < 3; i++ {
+			d.observe(fileEvent("a.go", fmt.Sprint("h", i)))
+			trip = d.observe(cmdEvent(masked, 0, "FAIL: want 1\nEXIT: 1"))
+		}
+		if trip == nil || trip.Kind != TripSameFailure {
+			t.Fatalf("%s: trip = %+v, want same_failure", masked, trip)
+		}
+	}
+}
+
+// m1: the first checkpoint only sets the baseline; it is no change.
+func TestSameFailureFirstCheckpointIsNoChange(t *testing.T) {
+	d := newTraces()
+	d.observe(cmdEvent("go test", 1, "boom"))
+	d.observe(diffEvent(5, 0)) // baseline
+	d.observe(cmdEvent("go test", 1, "boom"))
+	d.observe(diffEvent(6, 0)) // a change
+	if trip := d.observe(cmdEvent("go test", 1, "boom")); trip != nil {
+		t.Fatalf("tripped after one real change: %+v", trip)
+	}
+	d.observe(diffEvent(7, 0))
+	if trip := d.observe(cmdEvent("go test", 1, "boom")); trip == nil {
+		t.Fatal("no trip after the second real change")
 	}
 }
