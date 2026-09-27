@@ -350,8 +350,7 @@ func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recor
 }
 
 // recordDecision writes a supervisor decision into the session record, the
-// timeline and, except for an escalation (the workflow's Escalate comment
-// carries it), onto the issue.
+// timeline and onto the issue.
 func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, called bool, digest string) {
 	detail := map[string]any{"detector": string(trip.Kind), "trip": trip.Detail, "digest": digest,
 		"decision": string(d.Action), "guidance": d.Guidance, "reason": d.Reason, "called": called}
@@ -360,7 +359,9 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	detail["session"] = s.id
 	r.record(ctx, t.ID, "supervisor", detail)
-	if d.Action == ActionEscalate || t.IssueNumber == 0 {
+	// an escalation is commented here too: the session may still end
+	// pushed (it finished during the call), and then no Escalate follows
+	if t.IssueNumber == 0 {
 		return
 	}
 	repo, err := SplitRepo(t.Repository)

@@ -855,8 +855,8 @@ func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
 	if !strings.Contains(res.Reason, "Progress: 12 commands (12 failed)") {
 		t.Fatalf("reason = %q, want the digest summary", res.Reason)
 	}
-	if len(hub.comments) != 3 {
-		t.Fatalf("comments = %d, want one per continue and none for the escalation", len(hub.comments))
+	if len(hub.comments) != 4 || !strings.Contains(hub.comments[3], "**escalate**") {
+		t.Fatalf("comments = %q, want one per decision, the escalation too", hub.comments)
 	}
 }
 
