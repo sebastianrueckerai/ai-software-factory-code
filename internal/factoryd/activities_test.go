@@ -461,14 +461,17 @@ func TestFinishRetriesUntilThePullRequestIsClosed(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err == nil {
 		t.Fatal("Finish with the close refused = nil, want the error for a retry")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.closed) != 0 {
-		t.Fatalf("after the refused close: status = %q, closed = %v, want in-review and nothing closed", got.Status, fj.closed)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.closed) != 0 || len(fj.comments) != 0 {
+		t.Fatalf("after the refused close: status = %q, closed = %v, comments = %q, want in-review and nothing closed or commented", got.Status, fj.closed, fj.comments)
 	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" || !slices.Equal(fj.closed, []int64{12}) {
 		t.Fatalf("after the retry: status = %q, closed = %v, want failed and #12 closed", got.Status, fj.closed)
+	}
+	if len(fj.comments) != 2 {
+		t.Fatalf("after the retry: comments = %q, want the reason once on the PR and once on the issue", fj.comments)
 	}
 }
 

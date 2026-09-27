@@ -568,10 +568,12 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	return nil
 }
 
-// closeTaskPullRequest closes the task's pull request with msg as the
-// reason while it is still open: a failed task leaves no pull request
-// behind. A task whose number never got recorded (a crash between opening
-// and recording) is found by its branch on the fork.
+// closeTaskPullRequest closes the task's pull request while it is still
+// open, then leaves msg as the reason: a failed task leaves no pull
+// request behind. The comment follows the close so a retried close never
+// repeats it, and a retry finds the pull request closed and posts nothing.
+// A task whose number never got recorded (a crash between opening and
+// recording) is found by its branch on the fork.
 func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, msg string) error {
 	var pr *PullRequestRef
 	if t.PRNumber != 0 {
@@ -589,8 +591,11 @@ func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, ms
 	if pr == nil || pr.State != "open" {
 		return nil
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, msg); err != nil {
+	if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number); err != nil {
 		return err
 	}
-	return r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, pr.Number)
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, msg); err != nil {
+		log.Printf("task %s: comment failure reason on pull request #%d: %v", t.ID, pr.Number, err)
+	}
+	return nil
 }
