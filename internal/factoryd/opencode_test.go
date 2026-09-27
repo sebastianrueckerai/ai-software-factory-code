@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -419,5 +420,117 @@ func TestCapWriterKeepsTheHead(t *testing.T) {
 	}
 	if w.String() != "abcd" {
 		t.Fatalf("kept %q, want abcd", w.String())
+	}
+}
+
+func parseLines(p *opencodeParser, lines ...string) []harness.Event {
+	var events []harness.Event
+	for _, l := range lines {
+		p.line([]byte(l), func(ev harness.Event) { events = append(events, ev) })
+	}
+	return events
+}
+
+func TestOpencodeFileChangeCarriesTheContentHash(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("edited-fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join("testdata", "opencode-run-edit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &opencodeParser{workDir: dir}
+	var fc harness.Event
+	for _, ev := range parseLines(p, strings.Split(strings.TrimSpace(string(b)), "\n")...) {
+		if ev.Kind == harness.EventFileChange {
+			fc = ev
+		}
+	}
+	// printf 'edited-fixture\n' | sha256sum
+	if fc.Detail["sha256"] != "885a22e561d3b6d33a8fca3568245bec39ea89852e752dbbdfb891f3d06256ee" {
+		t.Fatalf("file change = %+v, want the sha256 of the content after the edit", fc)
+	}
+}
+
+func TestOpencodeFileHashRefusesNonRegularFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "real"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, name := range []string{"link", "fifo", "missing"} {
+			if h := fileSHA256(filepath.Join(dir, name)); h != "" {
+				t.Errorf("%s hashed to %s, want no hash", name, h)
+			}
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("hashing a fifo blocked")
+	}
+}
+
+func TestOpencodeCommandCarriesTheOutputTail(t *testing.T) {
+	events := fixtureEvents(t, "opencode-run-edit.jsonl")
+	if out := events[1].Detail["output"]; out != "(no output)" {
+		t.Fatalf("output = %v, want the recorded output", out)
+	}
+	var long strings.Builder
+	for i := 0; i < 500; i++ {
+		fmt.Fprintf(&long, "line %03d of a long test log\n", i)
+	}
+	long.WriteString("FAIL: the last line")
+	part, _ := json.Marshal(map[string]any{"tool": "bash", "state": map[string]any{
+		"status": "completed", "input": map[string]any{"command": "go test ./..."},
+		"output": long.String(), "metadata": map[string]any{"exit": 1}}})
+	ev := parseLines(&opencodeParser{}, `{"type":"tool_use","timestamp":1,"part":`+string(part)+`}`)[0]
+	out, _ := ev.Detail["output"].(string)
+	if len(out) > maxOutputTail || !strings.HasSuffix(out, "FAIL: the last line") || !strings.HasPrefix(out, "line ") {
+		t.Fatalf("tail = %d bytes starting %q, want at most %d bytes of whole lines ending in the last line", len(out), out[:min(20, len(out))], maxOutputTail)
+	}
+	if ev.Detail["exit"] != 1 {
+		t.Fatalf("exit = %v", ev.Detail["exit"])
+	}
+}
+
+func TestOpencodeToolCallCarriesArguments(t *testing.T) {
+	ok := `{"type":"tool_use","timestamp":1,"part":{"tool":"read","state":{"status":"completed","input":{"limit":200,"filePath":"/w/a.go"},"output":"..."}}}`
+	ev := parseLines(&opencodeParser{}, ok)[0]
+	args, _ := ev.Detail["args"].(map[string]any)
+	if ev.Kind != harness.EventToolCall || ev.Detail["tool"] != "read" || args["filePath"] != "/w/a.go" || args["limit"] != float64(200) {
+		t.Fatalf("tool call = %+v", ev)
+	}
+	// printf '{"filePath":"/w/a.go","limit":200}' | sha256sum
+	if ev.Detail["args_sha256"] != "9a74113f09559e867b084267f1a0afb67dd1a383c25affe70011f910a0bc18af" {
+		t.Fatalf("args_sha256 = %v, want the hash of the canonical JSON", ev.Detail["args_sha256"])
+	}
+	// long string arguments are capped in the event, the hash covers them whole
+	big := strings.Repeat("x", 5000)
+	e1 := parseLines(&opencodeParser{}, `{"type":"tool_use","timestamp":1,"part":{"tool":"webfetch","state":{"status":"completed","input":{"url":"`+big+`a"}}}}`)[0]
+	e2 := parseLines(&opencodeParser{}, `{"type":"tool_use","timestamp":1,"part":{"tool":"webfetch","state":{"status":"completed","input":{"url":"`+big+`b"}}}}`)[0]
+	if u := e1.Detail["args"].(map[string]any)["url"].(string); len(u) > maxArgString+len("…") {
+		t.Fatalf("argument not capped: %d bytes", len(u))
+	}
+	if e1.Detail["args_sha256"] == e2.Detail["args_sha256"] {
+		t.Fatal("arguments differing past the cap hash the same")
+	}
+	// a failed call carries its arguments too
+	events := fixtureEvents(t, "opencode-run-tools.jsonl")
+	for _, ev := range events {
+		if ev.Kind == harness.EventToolCall && ev.Detail["status"] == "error" {
+			if a, _ := ev.Detail["args"].(map[string]any); a["path"] != "notes.md" || ev.Detail["args_sha256"] == "" {
+				t.Fatalf("failed call = %+v, want its arguments and their hash", ev)
+			}
+		}
 	}
 }

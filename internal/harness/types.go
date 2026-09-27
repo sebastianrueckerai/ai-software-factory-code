@@ -21,6 +21,18 @@ type TaskBrief struct {
 
 type EventKind string
 
+// Detail keys factoryd's supervision reads, per kind:
+//   - command: command, exit, output (the output's last 4 KiB, whole lines)
+//   - tool_call: tool, status, args (long strings capped), args_sha256 (of
+//     the full arguments' canonical JSON), error when status is "error"
+//   - file_change: path, sha256 of the content after the change (absent or
+//     empty when the file is gone or not a regular file)
+//   - checkpoint from the worker: diff {files, insertions, deletions}
+//     against the base commit (git diff --shortstat) and patch, the diff
+//     text capped; the adapter's own checkpoints (a model step starting)
+//     carry no detail
+//   - supervisor (factoryd): detector, trip, digest summary, decision,
+//     guidance, reason
 const (
 	EventModelCall  EventKind = "model_call"
 	EventToolCall   EventKind = "tool_call"
@@ -28,7 +40,8 @@ const (
 	EventCommand    EventKind = "command"
 	EventCheckpoint EventKind = "checkpoint"
 	EventFinished   EventKind = "finished"
-	EventPushed     EventKind = "pushed" // the worker pushed the task branch; detail carries branch and commit
+	EventPushed     EventKind = "pushed"     // the worker pushed the task branch; detail carries branch and commit
+	EventSupervisor EventKind = "supervisor" // factoryd's supervisor decided after a trip; never from a worker
 )
 
 // Event is one normalized stream item from a running harness. The git

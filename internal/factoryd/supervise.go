@@ -1,8 +1,14 @@
 package factoryd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -24,6 +30,8 @@ type Trip struct {
 	Kind               TripKind
 	Findings           []string
 	RetryStrongerModel bool
+	Detail             string // what the detector saw, for the supervisor and the record
+	key                string // which evidence tripped, so a continue resets only that
 }
 
 // SupervisorConfig must be validated at task start so a misconfigured
@@ -32,6 +40,10 @@ type SupervisorConfig struct {
 	NoProgressAfter  time.Duration // no events for this long
 	WallClockCap     time.Duration // hard runtime cap for the whole task, across sessions
 	RepetitionEvents int           // tool calls without a file change before repetition trips
+	SameFailure      int           // 0 = DefaultSameFailure
+	SameCall         int           // 0 = DefaultSameCall
+	Churn            int           // 0 = DefaultChurn
+	MaxCalls         int           // 0 = DefaultMaxCalls
 }
 
 func (c SupervisorConfig) validate() error {
@@ -143,4 +155,257 @@ func (s *Supervisor) noteFinding(ev harness.Event) {
 	if len(s.findings) > 20 {
 		s.findings = append(s.findings[:0], s.findings[len(s.findings)-20:]...)
 	}
+}
+
+// Trace detectors (architecture 6.6): cheap checks over the event stream
+// for the trace a circling agent leaves. A trip of any of them, like a
+// stall or reading without writing, calls the supervisor model.
+const (
+	TripSameFailure TripKind = "same_failure"
+	TripSameCall    TripKind = "same_call"
+	TripFlipFlop    TripKind = "flip_flop"
+	TripChurn       TripKind = "churn"
+	TripHalfWay     TripKind = "half_way"
+)
+
+// Detector defaults; each has an env override in cmd/factoryd.
+const (
+	DefaultSameFailure = 3  // same command, same error signature, in a row
+	DefaultSameCall    = 4  // same tool, same arguments, per session
+	DefaultChurn       = 15 // file changes since the diff last grew, no newly passing command
+	DefaultMaxCalls    = 3  // supervisor calls per session; the next trip escalates without one
+)
+
+// withDefaults fills unset detector thresholds.
+func (c SupervisorConfig) withDefaults() SupervisorConfig {
+	if c.SameFailure == 0 {
+		c.SameFailure = DefaultSameFailure
+	}
+	if c.SameCall == 0 {
+		c.SameCall = DefaultSameCall
+	}
+	if c.Churn == 0 {
+		c.Churn = DefaultChurn
+	}
+	if c.MaxCalls == 0 {
+		c.MaxCalls = DefaultMaxCalls
+	}
+	return c
+}
+
+type failRun struct {
+	sig string
+	n   int
+}
+
+// traceDetectors holds the per-session state of the trace detectors.
+type traceDetectors struct {
+	cfg      SupervisorConfig
+	failRuns map[string]failRun  // by command: the current run of identical failures
+	failed   map[string]bool     // commands whose last run failed
+	calls    map[string]int      // by tool + argument hash
+	contents map[string][]string // by path: content hashes in the order they appeared
+	churn    int                 // file changes since the diff last grew
+	maxDiff  int                 // largest diff (insertions + deletions) seen
+}
+
+func newTraceDetectors(cfg SupervisorConfig) *traceDetectors {
+	return &traceDetectors{cfg: cfg, failRuns: map[string]failRun{}, failed: map[string]bool{},
+		calls: map[string]int{}, contents: map[string][]string{}}
+}
+
+// observe feeds one event to every trace detector and returns the first trip.
+func (d *traceDetectors) observe(ev harness.Event) *Trip {
+	switch ev.Kind {
+	case harness.EventCommand:
+		return d.command(ev)
+	case harness.EventToolCall:
+		return d.toolCall(ev)
+	case harness.EventFileChange:
+		return d.fileChange(ev)
+	case harness.EventCheckpoint:
+		if size, ok := diffSize(ev); ok && size > d.maxDiff {
+			d.maxDiff, d.churn = size, 0
+		}
+	}
+	return nil
+}
+
+func (d *traceDetectors) command(ev harness.Event) *Trip {
+	cmd := detailString(ev, "command")
+	exit, ok := detailInt(ev, "exit")
+	if !ok {
+		return nil
+	}
+	if exit == 0 {
+		if d.failed[cmd] {
+			d.churn = 0 // newly passing
+		}
+		delete(d.failed, cmd)
+		delete(d.failRuns, cmd)
+		return nil
+	}
+	d.failed[cmd] = true
+	sig := ErrorSignature(cmd, detailString(ev, "output"))
+	run := d.failRuns[cmd]
+	if run.sig == sig {
+		run.n++
+	} else {
+		run = failRun{sig: sig, n: 1}
+	}
+	d.failRuns[cmd] = run
+	if run.n >= d.cfg.SameFailure {
+		return &Trip{Kind: TripSameFailure, key: cmd,
+			Detail: fmt.Sprintf("`%s` failed %d times in a row with the same error (signature %s)", cmd, run.n, sig)}
+	}
+	return nil
+}
+
+func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
+	tool := detailString(ev, "tool")
+	h := detailString(ev, "args_sha256")
+	if h == "" {
+		h = argsHash(ev.Detail["args"])
+	}
+	key := tool + "\x00" + h
+	d.calls[key]++
+	if n := d.calls[key]; n >= d.cfg.SameCall {
+		args, _ := json.Marshal(ev.Detail["args"])
+		return &Trip{Kind: TripSameCall, key: key,
+			Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s", tool, n, truncate(string(args), 300))}
+	}
+	return nil
+}
+
+func (d *traceDetectors) fileChange(ev harness.Event) *Trip {
+	path, h := detailString(ev, "path"), detailString(ev, "sha256")
+	d.churn++
+	var trip *Trip
+	if h != "" {
+		seen := d.contents[path]
+		switch {
+		case len(seen) > 0 && seen[len(seen)-1] == h:
+		case slices.Contains(seen, h):
+			trip = &Trip{Kind: TripFlipFlop, key: path,
+				Detail: fmt.Sprintf("%s returned to a content it had before, after other content in between", path)}
+			d.contents[path] = append(seen, h)
+		default:
+			d.contents[path] = append(seen, h)
+		}
+	}
+	if trip == nil && d.churn >= d.cfg.Churn {
+		trip = &Trip{Kind: TripChurn,
+			Detail: fmt.Sprintf("%d file changes since the diff against the base last grew (largest: %d lines), and no command newly passes", d.churn, d.maxDiff)}
+	}
+	return trip
+}
+
+// reset clears the tripped detector after a supervisor's continue, so the
+// same evidence does not trip it again at once; the others keep their state.
+func (d *traceDetectors) reset(trip *Trip) {
+	switch trip.Kind {
+	case TripSameFailure:
+		delete(d.failRuns, trip.key)
+	case TripSameCall:
+		delete(d.calls, trip.key)
+	case TripFlipFlop:
+		if seen := d.contents[trip.key]; len(seen) > 0 {
+			d.contents[trip.key] = seen[len(seen)-1:]
+		}
+	case TripChurn:
+		d.churn = 0
+	}
+}
+
+// ErrorSignature names a failure independent of when and where it ran:
+// the command plus the normalised tail of its output.
+func ErrorSignature(command, output string) string {
+	sum := sha256.Sum256([]byte(command + "\n" + normaliseOutput(output)))
+	return hex.EncodeToString(sum[:8])
+}
+
+// signatureLines is how much of an output's end the signature reads; the
+// adapter's tail is cut by bytes, so its first lines vary with the
+// length of what came before.
+const signatureLines = 20
+
+var volatile = []struct {
+	re   *regexp.Regexp
+	with string
+}{
+	{regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?`), "<ts>"},
+	{regexp.MustCompile(`\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) +\d{1,2} \d{2}:\d{2}:\d{2}(?: [A-Z]{2,5})? \d{4}\b`), "<ts>"},
+	{regexp.MustCompile(`\b\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\b`), "<ts>"},
+	{regexp.MustCompile(`(\.[A-Za-z0-9]+):\d+(?::\d+)?`), "$1:N"},
+	{regexp.MustCompile(`(?:/private)?/(?:tmp|var/tmp|var/folders)/[^\s"':]*`), "<tmp>"},
+	{regexp.MustCompile(`0x[0-9a-fA-F]+`), "0x?"},
+	{regexp.MustCompile(`\b(?:\d+(?:\.\d+)?(?:ns|µs|us|ms|h|m|s))+\b`), "<dur>"},
+	{regexp.MustCompile(`\b\d+(?:\.\d+)? ?(?:seconds?|secs?|minutes?|mins?)\b`), "<dur>"},
+	{regexp.MustCompile(`\b(line|column|col|pid) \d+`), "$1 N"},
+}
+
+// normaliseOutput strips what differs between two runs of the same failure:
+// timestamps, hex addresses, durations, temp paths, line and column numbers
+// and pids, over the output's last signatureLines non-empty lines.
+func normaliseOutput(out string) string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) > signatureLines {
+		lines = lines[len(lines)-signatureLines:]
+	}
+	s := strings.Join(lines, "\n")
+	for _, v := range volatile {
+		s = v.re.ReplaceAllString(s, v.with)
+	}
+	return s
+}
+
+// argsHash is the sha256 of the canonical JSON of a tool's arguments
+// (encoding/json sorts map keys).
+func argsHash(args any) string {
+	b, _ := json.Marshal(args)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+func diffSize(ev harness.Event) (int, bool) {
+	diff, ok := ev.Detail["diff"].(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	ins, ok1 := toInt(diff["insertions"])
+	del, ok2 := toInt(diff["deletions"])
+	return ins + del, ok1 && ok2
+}
+
+func detailString(ev harness.Event, key string) string {
+	s, _ := ev.Detail[key].(string)
+	return s
+}
+
+func detailInt(ev harness.Event, key string) (int, bool) {
+	return toInt(ev.Detail[key])
+}
+
+// toInt reads a number from an event detail: float64 after the JSON trip
+// through the pod log, int when built in process.
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	}
+	return 0, false
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
