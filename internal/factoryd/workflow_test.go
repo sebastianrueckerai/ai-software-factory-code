@@ -263,3 +263,14 @@ func TestWorkflowChecksTimeoutFails(t *testing.T) {
 		t.Fatalf("final = %q, reason = %q", final, h.finals[0][1])
 	}
 }
+
+func TestWorkflowPullRequestClosedWithoutMergeFails(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "pull request closed without merge" {
+		t.Fatalf("final = %q (%q)", final, h.finals[0][1])
+	}
+}

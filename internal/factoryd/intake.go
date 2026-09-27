@@ -284,14 +284,14 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: p.Sender.UserName})
 }
 
-// handlePullRequest signals a merged factory pull request to its task's
-// workflow.
+// handlePullRequest signals a closed factory pull request to its task's
+// workflow: merged, or closed without a merge (the reviewer rejected it).
 func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode pull_request: %w", err)
 	}
-	if p.Action != "closed" || !p.PullRequest.Merged {
+	if p.Action != "closed" {
 		return nil
 	}
 	taskID, ok := strings.CutPrefix(p.PullRequest.Head.Ref, "factory/")
@@ -301,7 +301,11 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if _, ok, err := in.Store.Task(ctx, taskID); err != nil || !ok {
 		return err
 	}
-	return in.Workflows.Signal(ctx, taskID, SignalPRMerged, TaskSignal{Author: p.Sender.UserName})
+	signal := SignalPRClosed
+	if p.PullRequest.Merged {
+		signal = SignalPRMerged
+	}
+	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName})
 }
 
 // handleIssueComment records a comment as an intake event against the task

@@ -556,8 +556,8 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 			t.Fatalf("status = %d", rr.Code)
 		}
 	}
-	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 pr_merged sebastian: " {
-		t.Fatalf("signals = %q, want one pr_merged for the merged factory PR", got)
+	if got := workflowsOf(in).signals; len(got) != 2 || got[0] != "t1 pr_merged sebastian: " || got[1] != "t1 pr_closed sebastian: " {
+		t.Fatalf("signals = %q, want pr_merged and pr_closed for the factory PR only", got)
 	}
 }
 

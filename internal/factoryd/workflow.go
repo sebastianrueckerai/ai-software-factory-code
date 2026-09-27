@@ -20,6 +20,7 @@ func WorkflowID(taskID string) string { return "task-" + taskID }
 // Signals the webhook intake delivers to a task's workflow.
 const (
 	SignalPRMerged         = "pr_merged"
+	SignalPRClosed         = "pr_closed"
 	SignalChangesRequested = "changes_requested"
 	SignalIssueClosed      = "issue_closed"
 )
@@ -225,6 +226,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		switch name {
 		case SignalPRMerged:
 			return t.finish("done", "pull request merged")
+		case SignalPRClosed:
+			return t.finish("failed", "pull request closed without merge")
 		case SignalIssueClosed:
 			var merged bool
 			if err := workflow.ExecuteActivity(t.short, ActivityPullRequestMerged, t.taskID, pr.Number).Get(t.ctx, &merged); err != nil {
@@ -283,7 +286,7 @@ func (t *taskRun) awaitReview() (string, TaskSignal) {
 	var name string
 	var sig TaskSignal
 	sel := workflow.NewSelector(t.ctx)
-	for _, n := range []string{SignalPRMerged, SignalChangesRequested, SignalIssueClosed} {
+	for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed} {
 		sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(c workflow.ReceiveChannel, more bool) {
 			c.Receive(t.ctx, &sig)
 			name = n
