@@ -76,16 +76,44 @@ A task's state (`queued`, `running`, `waiting-human`, `in-review`,
 `done`, `failed`) is mirrored onto its issue as exactly one `state/*`
 label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
-site behind the runner, completion, and the webhook intake; the full
-label set (`agent`, `human`, and one `state/*` per status) is created
-at boot by `EnsureLabels` if missing. Mirroring failures are logged and
-retried on the next transition, never fail the task itself. A
-webhook-created task is mirrored immediately after its row exists, not
-only once a runner claims it: `state/queued` for the agent lane, and
-`state/waiting-human` for the human lane, since no runner ever claims a
-human-lane task (architecture 5.6's "waiting on a human" board column
-is the human lane's whole lifecycle, not a transient state on the way
-to `running`).
+site behind the task workflow's activities, completion, and the webhook
+intake; the full label set (`agent`, `human`, and one `state/*` per
+status) is created at boot by `EnsureLabels` if missing. Mirroring
+failures are logged and retried on the next transition, never fail the
+task itself. A webhook-created task is mirrored immediately after its
+row exists: `state/queued` for the agent lane, and `state/waiting-human`
+for the human lane, which starts no workflow (architecture 5.6's
+"waiting on a human" board column is the human lane's whole lifecycle,
+not a transient state on the way to `running`).
+
+## Task workflow
+
+Both intake paths store the task row, then start its workflow; a pass
+at boot and every minute starts the workflow of any queued or running
+agent task again (Temporal refuses the duplicate), which heals a failed
+start. The workflow, in order: `EnsureIssue`; up to `MAX_SESSIONS`
+(default 3) attempts, each `SetState running` then `RunSession`, the
+first from the task's base SHA on `MODEL` (default
+`factory/coding-cheap`), a later one from the branch head the previous
+attempt pushed; after a pushed commit `OpenPullRequest` (head
+`factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR for
+the branch, refusing a branch that changes `.forgejo/`), `SetState
+in-review`, `WaitChecks` on the head commit's combined status
+(`CHECKS_TIMEOUT`, default 45m). Red checks or a repetition trip make
+the next attempt climb to `STRONGER_MODEL` (default
+`factory/coding-frontier`) with the failures as findings. Green checks
+wait, at no cost, for a signal from the webhook intake: `pr_merged`
+finishes the task done; `pr_closed` (closed without a merge) finishes it
+failed; `changes_requested` (a review requesting changes, a review
+comment, or a PR comment by a non-bot user) starts another attempt with
+the text as findings; `issue_closed` finishes it done if the PR merged,
+else failed. A failure comments its reason on the issue. The wall-clock
+cap (20 min) bounds the agent's working time summed over the attempts;
+waiting on checks or reviewers does not count. A restarted factoryd
+loses nothing: Temporal retries an interrupted `RunSession` on the new
+pod, which removes the dead session's namespace, pod and credentials
+and starts a new session with the dead one as parent and its findings.
+`GET /tasks/{id}/timeline` serves `sessions/<id>/timeline.jsonl`.
 
 ## Build and test
 
