@@ -114,6 +114,7 @@ type fakeLiteLLM struct {
 	auth    []string
 	status  int
 	content string
+	delay   time.Duration
 }
 
 func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
@@ -131,6 +132,11 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"key":"sk-super-1","token":"hash1"}`)
 		case "/v1/chat/completions":
 			f.chats = append(f.chats, body)
+			select {
+			case <-time.After(f.delay):
+			case <-r.Context().Done():
+				return
+			}
 			f.auth = append(f.auth, r.Header.Get("Authorization"))
 			if f.status != 0 {
 				w.WriteHeader(f.status)

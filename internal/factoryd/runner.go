@@ -288,9 +288,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stop(trip)
 			return true
 		}
-		d, called := supervision.onTrip(ctx, trip)
+		// the call never outlives the session: at the cap the cap decides
+		callCtx, cancel := context.WithDeadline(ctx, deadline)
+		d, called := supervision.onTrip(callCtx, trip)
+		cancel()
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
+		if !time.Now().Before(deadline) {
+			stop(&Trip{Kind: TripWallClock, Findings: trip.Findings, Detail: "the task's wall-clock cap is reached"})
+			return true
+		}
 		if d.Action == ActionContinue {
 			sup.Resume(time.Now())
 			return false

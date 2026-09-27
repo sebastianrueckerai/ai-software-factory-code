@@ -796,6 +796,24 @@ func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
 	}
 }
 
+// A supervisor still thinking when the wall-clock cap arrives is cut off:
+// the cap ends the session.
+func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner.cfg.Supervisor.WallClockCap = time.Second
+	f := &fakeLiteLLM{content: `{"action":"continue"}`, delay: time.Minute}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, loopFailure(1)+loopFailure(2)+loopFailure(3))
+	if err != nil || res.Outcome != OutcomeWallClock {
+		t.Fatalf("result = (%+v, %v), want wall_clock", res, err)
+	}
+	if took := time.Since(began); took > 10*time.Second {
+		t.Fatalf("took %s: the supervisor call outlived the session", took)
+	}
+}
+
 func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
