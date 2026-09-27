@@ -221,12 +221,15 @@ spec:
       # room to delete the sandbox, revoke credentials and requeue the task in flight
       terminationGracePeriodSeconds: 150
       automountServiceAccountToken: true
+      # every callee is named in full, so the first DNS query is the one the
+      # egress policy admits; search-path expansions would be refused
+      dnsConfig: {options: [{name: ndots, value: "1"}]}
       imagePullSecrets:
       - name: forgejo-registry
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:91f18561227d80474134f7ea1a73296065bfb392cea8224bf55b465a1c863ea8
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:a764adea1d9df64abc3b7878425a08d582cb2740b1aa1e609e4cda46e70365fe
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}]
         env:
@@ -235,7 +238,12 @@ spec:
         - name: PGPASSWORD
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: password}}
         - name: FACTORYD_DATABASE_URL
-          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
+          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc.cluster.local:5432/gateway
+        # in-cluster Forgejo: the public host resolves to the edge gateway, which the egress policy does not admit
+        - name: FORGEJO_URL
+          value: http://forgejo-http.forgejo.svc.cluster.local:3000
+        - name: LITELLM_URL
+          value: http://litellm.platform.svc.cluster.local:4000
         - name: FORGEJO_BOT_USER
           value: factory-agent
         - name: FORGEJO_BOT_PASSWORD
@@ -243,7 +251,7 @@ spec:
         - name: FORGEJO_CI_REGISTRAR_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:3ecd0d9305b7ba206adecbfb2fb038c876cbf0f174793aa2b4cdf269e5fd2295
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:4c2f274dce0426ef552743fea54aec962ff1f96f430a9eb61afd1337121e97d2
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -255,7 +263,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:5d3ee78326fd6afd7c3c1c16f73d50258e916df43f7100816d3103ef74f8db8e
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:66cc1157dba043256a47cb0e5497ecd4c17e03917c4b1ec21c0afbb876b987dc
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
@@ -309,3 +317,60 @@ spec:
         "k8s:io.kubernetes.pod.namespace": forgejo
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
+---
+# factoryd holds the LiteLLM master key, the bot password and the S3 keys,
+# so its egress is default-deny with exactly its callees. Postgres admits
+# every sf-cluster instance on 5432 so a failover to another primary keeps
+# working; the S3 FQDN must match S3_ENDPOINT above.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factoryd-egress
+  namespace: factory
+spec:
+  endpointSelector:
+    matchLabels: {app: factoryd}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": kube-system
+        "k8s:k8s-app": kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: ANY}]
+      rules:
+        dns:
+        - matchName: sf-cluster-rw.platform.svc.cluster.local
+        - matchName: forgejo-http.forgejo.svc.cluster.local
+        - matchName: litellm.platform.svc.cluster.local
+        - matchName: temporal-frontend.platform.svc.cluster.local
+        - matchName: fsn1.your-objectstorage.com
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        cnpg.io/cluster: sf-cluster
+    toPorts:
+    - ports: [{port: "5432", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": forgejo
+        app.kubernetes.io/name: forgejo
+    toPorts:
+    - ports: [{port: "3000", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: litellm
+    toPorts:
+    - ports: [{port: "4000", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/instance: temporal
+        app.kubernetes.io/component: frontend
+    toPorts:
+    - ports: [{port: "7233", protocol: TCP}]
+  - toFQDNs:
+    - matchName: fsn1.your-objectstorage.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
