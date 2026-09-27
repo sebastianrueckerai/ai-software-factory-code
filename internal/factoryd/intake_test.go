@@ -57,7 +57,7 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
-			io.WriteString(w, `{"head":{"ref":"factory/t-pr"}}`)
+			io.WriteString(w, `{"head":{"ref":"factory/t-pr","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
 		case strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodGet:
 			names := labels[r.URL.Path]
 			out := make([]map[string]string, len(names))
@@ -459,7 +459,7 @@ func TestIntakePullRequestCommentOnNonFactoryBranchIgnored(t *testing.T) {
 
 func reviewBody(ref, sender, reviewType, content string) []byte {
 	b, _ := json.Marshal(map[string]any{
-		"pull_request": map[string]any{"number": 5, "head": map[string]string{"ref": ref}},
+		"pull_request": map[string]any{"number": 5, "head": prHead(ref, "factory-agent/ai-software-factory-code")},
 		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"sender":       map[string]string{"login": sender},
 		"review":       map[string]string{"content": content, "type": reviewType},
@@ -576,10 +576,18 @@ func TestIntakeReviewRejectedSignalsApprovedDoesNot(t *testing.T) {
 	}
 }
 
+func prHead(ref, repo string) map[string]any {
+	return map[string]any{"ref": ref, "repo": map[string]string{"full_name": repo}}
+}
+
 func prClosedBody(ref string, merged bool) []byte {
+	return prClosedBodyFrom(ref, "factory-agent/ai-software-factory-code", merged)
+}
+
+func prClosedBodyFrom(ref, headRepo string, merged bool) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"action":       "closed",
-		"pull_request": map[string]any{"number": 5, "merged": merged, "head": map[string]string{"ref": ref}},
+		"pull_request": map[string]any{"number": 5, "merged": merged, "head": prHead(ref, headRepo)},
 		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"sender":       map[string]string{"login": "sebastian"},
 	})
@@ -589,7 +597,10 @@ func prClosedBody(ref string, merged bool) []byte {
 func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
-	for _, body := range [][]byte{prClosedBody("factory/t1", true), prClosedBody("factory/t1", false), prClosedBody("feature/x", true)} {
+	// only a head on the bot's fork is the task's PR: a same-named branch on
+	// sf or on a stranger's fork is not (ruling 97)
+	for _, body := range [][]byte{prClosedBody("factory/t1", true), prClosedBody("factory/t1", false), prClosedBody("feature/x", true),
+		prClosedBodyFrom("factory/t1", "sf/ai-software-factory-code", true), prClosedBodyFrom("factory/t1", "stranger/ai-software-factory-code", true)} {
 		if rr := postWebhook(in, "pull_request", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 			t.Fatalf("status = %d", rr.Code)
 		}

@@ -31,7 +31,7 @@ func TestLiveRevocationRefusesTaskCredentials(t *testing.T) {
 		Forgejo: &Forgejo{BaseURL: env["FACTORYD_LIVE_FORGEJO_URL"], BotUser: "factory-agent", BotPassword: env["FACTORYD_LIVE_FORGEJO_BOT_PASSWORD"]},
 		LiteLLM: &LiteLLMAdmin{BaseURL: env["FACTORYD_LIVE_LITELLM_URL"], MasterKey: env["FACTORYD_LIVE_LITELLM_MASTER_KEY"]},
 	}
-	tok, err := c.Forgejo.MintToken(ctx, TokenName(taskID), []Repo{repo})
+	tok, err := c.Forgejo.MintToken(ctx, TokenName(taskID), "write:repository", []Repo{repo})
 	if err != nil {
 		t.Fatal(err)
 	}

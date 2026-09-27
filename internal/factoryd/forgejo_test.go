@@ -27,7 +27,7 @@ func TestForgejoMintRepoScopedToken(t *testing.T) {
 	defer srv.Close()
 
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
-	tok, err := f.MintToken(context.Background(), "task-t1", []Repo{{Owner: "sf", Name: "ai-software-factory-code"}})
+	tok, err := f.MintToken(context.Background(), "task-t1", "write:repository", []Repo{{Owner: "sf", Name: "ai-software-factory-code"}})
 	if err != nil {
 		t.Fatalf("MintToken: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestForgejoMintRefused(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
-	_, err := f.MintToken(context.Background(), "task-t1", []Repo{{Owner: "sf", Name: "r"}})
+	_, err := f.MintToken(context.Background(), "task-t1", "write:repository", []Repo{{Owner: "sf", Name: "r"}})
 	if err == nil || !strings.Contains(err.Error(), "422") || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("err = %v, want the 422 body surfaced", err)
 	}
@@ -220,18 +220,104 @@ func TestForgejoSetStateLabelSwapsExactlyOne(t *testing.T) {
 	}
 }
 
-func TestForgejoPullRequestHeadBranch(t *testing.T) {
+func TestForgejoPullRequestStateReadsHeadRepo(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/sf/r/pulls/7" {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
-		io.WriteString(w, `{"head":{"ref":"factory/t1"}}`)
+		io.WriteString(w, `{"head":{"ref":"factory/t1","repo":{"full_name":"factory-agent/r"}}}`)
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	ref, err := f.PullRequestHeadBranch(context.Background(), "sf", "r", 7)
-	if err != nil || ref != "factory/t1" {
-		t.Fatalf("PullRequestHeadBranch = (%q, %v), want (factory/t1, nil)", ref, err)
+	ref, err := f.PullRequestState(context.Background(), "sf", "r", 7)
+	if err != nil || ref.Head != "factory/t1" || ref.HeadRepo != "factory-agent/r" {
+		t.Fatalf("PullRequestState = (%+v, %v), want head factory/t1 on factory-agent/r", ref, err)
+	}
+}
+
+// A read token on the base repository is minted with exactly that scope:
+// the worker clones with it and can write nothing.
+func TestForgejoMintReadScope(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &gotBody)
+		w.WriteHeader(201)
+		io.WriteString(w, `{"id":78,"sha1":"readsecret"}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	if _, err := f.MintToken(context.Background(), "task-t1-base", "read:repository", []Repo{{Owner: "sf", Name: "r"}}); err != nil {
+		t.Fatal(err)
+	}
+	if scopes, _ := gotBody["scopes"].([]any); len(scopes) != 1 || scopes[0] != "read:repository" {
+		t.Fatalf("mint scopes = %v", gotBody["scopes"])
+	}
+}
+
+// The bot's fork of a repository carries the same name under the bot user
+// (ruling 97); EnsureFork creates it once and is a no-op once it exists.
+func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
+	if got := (&Forgejo{BotUser: "factory-agent"}).Fork(Repo{Owner: "sf", Name: "r"}); got != (Repo{Owner: "factory-agent", Name: "r"}) {
+		t.Fatalf("Fork = %+v", got)
+	}
+	var calls []string
+	exists := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/factory-agent/r":
+			if !exists {
+				http.NotFound(w, r)
+				return
+			}
+			io.WriteString(w, `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"sf/r"}}`)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/repos/sf/r/forks":
+			if r.Header.Get("Authorization") != "Basic "+base64.StdEncoding.EncodeToString([]byte("factory-agent:bot-pw")) {
+				t.Errorf("fork auth = %q, want the bot's basic auth", r.Header.Get("Authorization"))
+			}
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["name"] != "r" {
+				t.Errorf("fork body = %v, want the same name", body)
+			}
+			exists = true
+			w.WriteHeader(http.StatusAccepted)
+			io.WriteString(w, `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"sf/r"}}`)
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	for range 2 {
+		if err := f.EnsureFork(context.Background(), Repo{Owner: "sf", Name: "r"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"GET /api/v1/repos/factory-agent/r", "POST /api/v1/repos/sf/r/forks", "GET /api/v1/repos/factory-agent/r"}
+	if strings.Join(calls, ",") != strings.Join(want, ",") {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+// A repository under the bot's name that is not a fork of the upstream, or
+// that went public, is refused: the worker would push there.
+func TestForgejoEnsureForkRefusesAStranger(t *testing.T) {
+	for name, body := range map[string]string{
+		"not a fork":   `{"full_name":"factory-agent/r","fork":false,"private":true}`,
+		"other parent": `{"full_name":"factory-agent/r","fork":true,"private":true,"parent":{"full_name":"else/r"}}`,
+		"public":       `{"full_name":"factory-agent/r","fork":true,"private":false,"parent":{"full_name":"sf/r"}}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			io.WriteString(w, body)
+		}))
+		f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		err := f.EnsureFork(context.Background(), Repo{Owner: "sf", Name: "r"})
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "factory-agent/r") {
+			t.Fatalf("%s: err = %v, want a refusal naming the repository", name, err)
+		}
 	}
 }
 
@@ -283,28 +369,29 @@ func TestForgejoFindOpenPullRequestForBranchFindsMatch(t *testing.T) {
 			t.Fatalf("path = %s", r.URL.Path)
 		}
 		io.WriteString(w, `[
-			{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other"}},
-			{"number":9,"html_url":"https://git.example/sf/r/pulls/9","head":{"ref":"factory/t1"}}
+			{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other","repo":{"full_name":"factory-agent/r"}}},
+			{"number":8,"html_url":"https://git.example/sf/r/pulls/8","head":{"ref":"factory/t1","repo":{"full_name":"stranger/r"}}},
+			{"number":9,"html_url":"https://git.example/sf/r/pulls/9","head":{"ref":"factory/t1","sha":"c9","repo":{"full_name":"factory-agent/r"}}}
 		]`)
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", "factory/t1")
+	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1")
 	if err != nil {
 		t.Fatalf("FindOpenPullRequestForBranch: %v", err)
 	}
-	if ref == nil || ref.Number != 9 {
-		t.Fatalf("ref = %+v, want #9", ref)
+	if ref == nil || ref.Number != 9 || ref.HeadRepo != "factory-agent/r" || ref.HeadSHA != "c9" {
+		t.Fatalf("ref = %+v, want #9 from the bot's fork, not #8 from a stranger's", ref)
 	}
 }
 
 func TestForgejoFindOpenPullRequestForBranchNoMatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `[{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other"}}]`)
+		io.WriteString(w, `[{"number":4,"html_url":"https://git.example/sf/r/pulls/4","head":{"ref":"factory/other","repo":{"full_name":"factory-agent/r"}}}]`)
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", "factory/t1")
+	ref, err := f.FindOpenPullRequestForBranch(context.Background(), "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1")
 	if err != nil {
 		t.Fatalf("FindOpenPullRequestForBranch: %v", err)
 	}

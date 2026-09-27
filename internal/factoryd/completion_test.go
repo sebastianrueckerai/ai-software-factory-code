@@ -28,7 +28,7 @@ func (r *recordingBackend) srv(t *testing.T) (forgejo, litellm string) {
 		tokens := r.forgejoTokens
 		r.mu.Unlock()
 		if tokens == "" {
-			tokens = `[{"id":77,"name":"task-t1"},{"id":78,"name":"other"}]`
+			tokens = `[{"id":77,"name":"task-t1"},{"id":78,"name":"other"},{"id":79,"name":"task-t1-base"}]`
 		}
 		if req.Method == "GET" {
 			io.WriteString(w, tokens)
@@ -73,9 +73,9 @@ func TestCompletionClosesSpendThenRevokesThenDones(t *testing.T) {
 	if task.Status != "done" {
 		t.Fatalf("status = %q, want done", task.Status)
 	}
-	// The token is found by name, never by a remembered ID.
-	if len(back.forgejoCalls) < 2 || back.forgejoCalls[1] != "DELETE /api/v1/users/factory-bot/tokens/77" {
-		t.Fatalf("forgejo calls = %v, want task-t1 (id 77) revoked by name", back.forgejoCalls)
+	// Both task tokens are found by name, never by a remembered ID.
+	if len(back.forgejoCalls) < 3 || back.forgejoCalls[1] != "DELETE /api/v1/users/factory-bot/tokens/77" || back.forgejoCalls[2] != "DELETE /api/v1/users/factory-bot/tokens/79" {
+		t.Fatalf("forgejo calls = %v, want task-t1 (77) and task-t1-base (79) revoked by name", back.forgejoCalls)
 	}
 	if len(back.litellmCalls) == 0 || back.litellmCalls[len(back.litellmCalls)-1] != "POST /key/block" {
 		t.Fatalf("litellm calls = %v", back.litellmCalls)

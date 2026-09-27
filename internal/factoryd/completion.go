@@ -22,7 +22,10 @@ type Completion struct {
 	LiteLLM *LiteLLMAdmin
 }
 
-func TokenName(taskID string) string { return "task-" + taskID }
+// TokenName names the task's write token on the bot's fork; BaseTokenName
+// its read token on the task's repository.
+func TokenName(taskID string) string     { return "task-" + taskID }
+func BaseTokenName(taskID string) string { return TokenName(taskID) + "-base" }
 
 func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
 	if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review", "waiting-human", "closing"}, "closing"); err != nil {
@@ -113,7 +116,7 @@ func (c *Completion) reconcile(ctx context.Context, taskID string) error {
 	}
 	errs := []error{}
 	for _, ref := range refs {
-		if ref.Name != TokenName(taskID) {
+		if ref.Name != TokenName(taskID) && ref.Name != BaseTokenName(taskID) {
 			continue
 		}
 		if err := c.Forgejo.RevokeToken(ctx, ref.ID); err != nil {

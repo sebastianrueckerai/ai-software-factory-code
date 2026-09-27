@@ -22,7 +22,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	for name, val := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo", "REPO_URL": "https://example/repo.git",
-		"BRANCH": "factory/t1", "GIT_TOKEN": "tok", "GATEWAY_URL": "http://gw",
+		"BRANCH": "factory/t1", "REPO_TOKEN": "tok", "PUSH_URL": "https://example/fork.git", "PUSH_TOKEN": "ptok", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10",
 	} {
 		t.Setenv(name, val)
@@ -62,9 +62,41 @@ func TestLoadEnvParsesFindings(t *testing.T) {
 	}
 }
 
+// A resumed session starts from the branch head an earlier session pushed
+// to the fork: the base clone from the task's repository lacks it, so the
+// worker fetches the branch from the fork before the checkout.
+func TestCloneBaseFetchesAResumedHeadFromTheFork(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote, fork := t.TempDir(), filepath.Join(t.TempDir(), "remote.git"), filepath.Join(t.TempDir(), "fork.git")
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	run("-C", seed, "checkout", "-q", "-b", "factory/t1")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "attempt 1")
+	run("-C", seed, "push", "-q", fork, "factory/t1")
+	head := run("-C", seed, "rev-parse", "HEAD")
+
+	e := workerEnv{taskID: "t1", repoSHA: head, branch: "factory/t1", repoURL: remote, pushURL: fork}
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if base, err := prepareRepo(dir, e); err != nil || base != head {
+		t.Fatalf("prepareRepo = (%s, %v), want the fork's branch head %s", base, err, head)
+	}
+}
+
 func TestGitRunRedactsToken(t *testing.T) {
-	e := workerEnv{gitToken: "s3cret-tok"}
-	err := e.gitAuth("", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")
+	e := workerEnv{pushToken: "s3cret-tok"}
+	err := e.gitAuth(e.pushToken, "", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")
 	if err == nil {
 		t.Fatal("clone into a nonexistent dir should fail")
 	}
@@ -79,7 +111,8 @@ func TestGitRunRedactsToken(t *testing.T) {
 func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b",
-		"GIT_TOKEN": "s3cret-tok", "GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
+		"REPO_TOKEN": "s3cret-tok", "PUSH_TOKEN": "pu5h-tok", "PUSH_URL": "https://example/fork.git",
+		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
 		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1",
 	} {
 		t.Setenv(k, v)
@@ -99,22 +132,24 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.gitToken != "s3cret-tok" {
-		t.Fatalf("gitToken = %q", e.gitToken)
+	if e.repoToken != "s3cret-tok" || e.pushToken != "pu5h-tok" {
+		t.Fatalf("tokens = %q, %q", e.repoToken, e.pushToken)
 	}
-	if _, set := os.LookupEnv("GIT_TOKEN"); set {
-		t.Fatal("GIT_TOKEN still in the environment the agent inherits")
+	for _, name := range []string{"REPO_TOKEN", "PUSH_TOKEN"} {
+		if _, set := os.LookupEnv(name); set {
+			t.Fatalf("%s still in the environment the agent inherits", name)
+		}
 	}
 
 	dst := filepath.Join(t.TempDir(), "repo")
-	if err := e.gitAuth("", "clone", e.repoURL, dst); err != nil {
+	if err := e.gitAuth(e.repoToken, "", "clone", e.repoURL, dst); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(dst, ".git", "config"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(cfg), "s3cret-tok") || strings.Contains(string(cfg), "extraHeader") {
+	if strings.Contains(string(cfg), "s3cret-tok") || strings.Contains(string(cfg), "pu5h-tok") || strings.Contains(string(cfg), "extraHeader") {
 		t.Fatalf(".git/config carries the credential:\n%s", cfg)
 	}
 	// only gitAuth carries the header: neither the worker's other git nor the agent's sees one
@@ -125,8 +160,8 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 		t.Fatalf("plain git sees a header: %q", out)
 	}
 	// Basic auth for x-access-token:s3cret-tok, base64 derived by hand
-	if e.authHeader() != "Authorization: Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0LXRvaw==" {
-		t.Fatalf("authHeader = %q", e.authHeader())
+	if authHeader(e.repoToken) != "Authorization: Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0LXRvaw==" {
+		t.Fatalf("authHeader = %q", authHeader(e.repoToken))
 	}
 }
 
@@ -144,10 +179,12 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 		return strings.TrimSpace(string(out))
 	}
 	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
 	seed := t.TempDir()
 	run("init", "-q", "-b", "main", seed)
 	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
 	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
 	for _, tc := range []struct {
@@ -171,9 +208,9 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote}
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: fork}
 			dir := filepath.Join(t.TempDir(), "repo")
-			if err := e.gitAuth("", "clone", remote, dir); err != nil {
+			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
 			}
 			base, err := prepareRepo(dir, e)
@@ -189,7 +226,11 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			remoteHead, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
+			// the branch goes to the fork (PUSH_URL), never to the repository it was cloned from
+			if out, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output(); len(out) != 0 {
+				t.Fatalf("branch %s pushed to the base repository", branch)
+			}
+			remoteHead, _ := exec.Command("git", "-C", fork, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
 			if !tc.wantPushed {
 				if commit != "" || len(remoteHead) != 0 {
 					t.Fatalf("commit = %q, remote branch = %q, want nothing pushed", commit, remoteHead)
@@ -199,12 +240,12 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 			if commit == "" || strings.TrimSpace(string(remoteHead)) != commit {
 				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
 			}
-			for _, author := range strings.Split(run("-C", remote, "log", "--format=%an <%ae>", base+".."+commit), "\n") {
+			for _, author := range strings.Split(run("-C", fork, "log", "--format=%an <%ae>", base+".."+commit), "\n") {
 				if author != "factory-agent <factory-agent@factory.local>" {
 					t.Fatalf("pushed commit author = %q, want factory-agent", author)
 				}
 			}
-			if tc.wantParent && run("-C", remote, "log", "-1", "--format=%s", commit+"^") != "agent" {
+			if tc.wantParent && run("-C", fork, "log", "-1", "--format=%s", commit+"^") != "agent" {
 				t.Fatal("leftover changes were not committed on top of the agent's commit")
 			}
 		})
@@ -240,12 +281,17 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	run("-C", remote, "config", "http.receivepack", "true")
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
-	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", gitToken: "s3cret-tok"}
+	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", repoToken: "r3ad-tok", pushToken: "s3cret-tok"}
 	var pushes, refused, spyHeaders int
 	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Basic auth for x-access-token:s3cret-tok, base64 derived by hand
-		if r.Header.Get("Authorization") != "Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0LXRvaw==" {
+		// Basic auth for x-access-token:r3ad-tok on reads and
+		// x-access-token:s3cret-tok on the push, base64 derived by hand
+		want := "Basic eC1hY2Nlc3MtdG9rZW46cjNhZC10b2s="
+		if strings.Contains(r.URL.RequestURI(), "git-receive-pack") {
+			want = "Basic eC1hY2Nlc3MtdG9rZW46czNjcmV0LXRvaw=="
+		}
+		if r.Header.Get("Authorization") != want {
 			refused++
 			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
 			http.Error(w, "no token", http.StatusUnauthorized)
@@ -261,9 +307,10 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	}))
 	defer srv.Close()
 	e.repoURL = srv.URL + "/repo.git"
+	e.pushURL = e.repoURL
 
 	dir := filepath.Join(t.TempDir(), "repo")
-	if err := e.gitAuth("", "clone", "-q", e.repoURL, dir); err != nil {
+	if err := cloneBase(e, dir); err != nil {
 		t.Fatal(err)
 	}
 	base, err := prepareRepo(dir, e)
@@ -454,9 +501,9 @@ func TestCommitAndPushRefusesForgejoPathChanges(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + tc.name
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote}
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote}
 			dir := filepath.Join(t.TempDir(), "repo")
-			if err := e.gitAuth("", "clone", remote, dir); err != nil {
+			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
 			}
 			base, err := prepareRepo(dir, e)

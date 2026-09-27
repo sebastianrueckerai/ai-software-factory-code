@@ -42,7 +42,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		p := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo")
+		p := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"), "/api/v1/repos/factory-agent/repo")
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			io.WriteString(w, `[]`)
@@ -78,7 +78,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			f.created = append(f.created, body)
-			pr := map[string]any{"number": 12, "html_url": "https://git.example/sf/repo/pulls/12", "head": map[string]any{"ref": body["head"]}}
+			headOwner, headRef, _ := strings.Cut(body["head"].(string), ":")
+			pr := map[string]any{"number": 12, "html_url": "https://git.example/sf/repo/pulls/12",
+				"head": map[string]any{"ref": headRef, "repo": map[string]any{"full_name": headOwner + "/repo"}}}
 			f.open = append(f.open, pr)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(pr)
@@ -162,9 +164,13 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 		t.Fatalf("recorded pr_number = %d, want 12", got.PRNumber)
 	}
 	body := fj.created[0]
-	if body["head"] != "factory/t1" || body["base"] != "main" || body["title"] != "Add a make check target" ||
+	if body["head"] != "factory-agent:factory/t1" || body["base"] != "main" || body["title"] != "Add a make check target" ||
 		!strings.Contains(body["body"].(string), "Closes #4") {
 		t.Fatalf("create body = %v", body)
+	}
+	// the ruling 90 check compares the base tree on sf with the pushed commit's tree on the fork
+	if !slices.Contains(fj.calls, "GET /api/v1/repos/sf/repo/git/trees/base") || !slices.Contains(fj.calls, "GET /api/v1/repos/factory-agent/repo/git/trees/c1") {
+		t.Fatalf("calls = %v", fj.calls)
 	}
 	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
 	if !strings.Contains(string(timeline), `"step":"pr_opened"`) || !strings.Contains(string(timeline), `"number":12`) {
@@ -196,7 +202,7 @@ func TestOpenPullRequestRefusesForgejoChanges(t *testing.T) {
 // closed with the reason, not left open behind a failed task.
 func TestOpenPullRequestRefusalClosesTheOpenPR(t *testing.T) {
 	fj := &prForgejo{forgejo: map[string]string{"c2": "f9"},
-		open: []map[string]any{{"number": 12, "html_url": "https://git.example/sf/repo/pulls/12", "head": map[string]any{"ref": "factory/t1"}}}}
+		open: []map[string]any{{"number": 12, "html_url": "https://git.example/sf/repo/pulls/12", "head": forkHead("factory/t1", "")}}}
 	r, _, _ := newActivityRunner(t, prTask, fj)
 
 	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c2")
@@ -389,16 +395,52 @@ func TestFinishCompletesATaskWithABrokenRepository(t *testing.T) {
 	}
 }
 
+// forkHead is a pull request head on the bot's fork (ruling 97).
+func forkHead(ref, sha string) map[string]any {
+	return map[string]any{"ref": ref, "sha": sha, "repo": map[string]any{"full_name": "factory-agent/repo"}}
+}
+
+// A failed task closes the pull request it opened (a closed issue must not
+// leave the PR behind); an already closed or merged one is left alone.
+func TestFinishFailedClosesTheOpenPR(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pr     string
+		closed []int64
+	}{
+		"open":   {`{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7"}}`, []int64{12}},
+		"closed": {`{"number":12,"state":"closed","merged":false}`, nil},
+		"merged": {`{"number":12,"state":"closed","merged":true}`, nil},
+	} {
+		fj := &prForgejo{pulls: map[int64]string{12: tc.pr}}
+		r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed"); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "failed" {
+			t.Fatalf("%s: status = %q", name, got.Status)
+		}
+		if !slices.Equal(fj.closed, tc.closed) {
+			t.Fatalf("%s: closed = %v, want %v", name, fj.closed, tc.closed)
+		}
+		if want := 1 + len(tc.closed); len(fj.comments) != want || !strings.Contains(fj.comments[want-1], "issue closed") {
+			t.Fatalf("%s: comments = %q, want the reason on the issue and on a closed PR", name, fj.comments)
+		}
+	}
+}
+
 func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
-	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7"}}`
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
 	for name, tc := range map[string]struct {
 		task Task
 		fj   *prForgejo
 		want RunState
 	}{
 		"fresh": {prTask, &prForgejo{}, RunState{Status: "running"}},
-		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": map[string]any{"ref": "factory/t1", "sha": "c7"}}}},
+		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
 			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",
+			"head": map[string]any{"ref": "factory/t1", "sha": "c8", "repo": map[string]any{"full_name": "stranger/repo"}}}}},
+			RunState{Status: "running"}},
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
 			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},

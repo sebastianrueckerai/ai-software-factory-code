@@ -164,7 +164,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, model: in.Model, repo: repo}
+	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
+		return SessionResult{}, err
+	}
 	// the branch head, when the branch exists, is where every attempt
 	// continues: the push of an earlier attempt, or of a session that died
 	// after pushing, which a non-force push must build on
@@ -190,13 +193,19 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			log.Printf("task %s: revoke session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
-	tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), []Repo{repo})
+	// least privilege (ruling 97): read on the task's repository to clone
+	// the base, write on the bot's fork to push the branch, nothing on sf
+	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	if err != nil {
+		return SessionResult{}, err
+	}
+	push, err := r.forgejo.MintToken(ctx, TokenName(t.ID), "write:repository", []Repo{r.forgejo.Fork(repo)})
 	if err != nil {
 		return SessionResult{}, err
 	}
 	// freshNamespace deletes a leftover namespace first, and with it any
 	// pod a dead session left running
-	if err := r.setupNamespace(ctx, t, tok); err != nil {
+	if err := r.setupNamespace(ctx, t, base, push); err != nil {
 		return SessionResult{}, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.cfg.Supervisor.WallClockCap))
@@ -216,7 +225,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 }
 
 func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) (string, error) {
-	head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, r.branch(t))
+	fork := r.forgejo.Fork(repo)
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
 	switch {
 	case err == nil:
 		return head, nil
@@ -324,9 +334,10 @@ func earliest(a, b time.Time) time.Time {
 	return b
 }
 
-// OpenPullRequest opens the task's pull request from its branch into main,
-// as the bot, or reuses the one already open for the branch (the
-// idempotency key: a retried or repeated call never opens a second). A
+// OpenPullRequest opens the task's pull request from its branch on the
+// bot's fork into main, as the bot, or reuses the one already open for the
+// branch (the idempotency key: a retried or repeated call never opens a
+// second). A
 // commit whose .forgejo/ differs from the task's base gets no pull request
 // (ruling 90): PR workflows run from the PR's own tree, so a task branch
 // must never carry an edit to its own gate. If an earlier push already
@@ -336,8 +347,8 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if err != nil {
 		return PullRequest{}, err
 	}
-	branch := r.branch(t)
-	existing, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, branch)
+	branch, fork := r.branch(t), r.forgejo.Fork(repo)
+	existing, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch)
 	if err != nil {
 		return PullRequest{}, err
 	}
@@ -358,7 +369,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 		ref = *existing
 	} else {
 		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", t.Objective, t.IssueNumber, t.ID)
-		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, branch, prBase, FirstLine(t.Objective), body); err != nil {
+		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(t.Objective), body); err != nil {
 			return PullRequest{}, err
 		}
 	}
@@ -370,7 +381,8 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 }
 
 // refuseForgejoChange returns a terminal error when commit's .forgejo tree
-// entry differs from the task base's.
+// entry (on the fork, where the branch was pushed) differs from the task
+// base's (on the task's repository).
 func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, commit string) error {
 	base := t.SHA
 	if base == "" {
@@ -384,7 +396,8 @@ func (r *Runner) refuseForgejoChange(ctx context.Context, t Task, repo Repo, com
 	if err != nil {
 		return err
 	}
-	now, err := r.forgejo.TreeEntry(ctx, repo.Owner, repo.Name, commit, ".forgejo")
+	fork := r.forgejo.Fork(repo)
+	now, err := r.forgejo.TreeEntry(ctx, fork.Owner, fork.Name, commit, ".forgejo")
 	if err != nil {
 		return err
 	}
@@ -416,7 +429,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		pr = &got
-	} else if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.branch(t)); err != nil {
+	} else if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo), r.branch(t)); err != nil {
 		return RunState{}, err
 	}
 	switch {
@@ -530,11 +543,32 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return err
 	}
 	// a malformed repository still completes the task, only uncommented
-	if repo, err := SplitRepo(t.Repository); err == nil && final == "failed" && t.IssueNumber != 0 {
-		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+" failed: "+reason); err != nil {
-			log.Printf("task %s: comment failure reason: %v", taskID, err)
+	if repo, err := SplitRepo(t.Repository); err == nil && final == "failed" {
+		msg := "factoryd: task " + taskID + " failed: " + reason
+		if t.IssueNumber != 0 {
+			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
+				log.Printf("task %s: comment failure reason: %v", taskID, err)
+			}
+		}
+		if t.PRNumber != 0 {
+			if err := r.closeOpenPullRequest(ctx, repo, t.PRNumber, msg); err != nil {
+				log.Printf("task %s: close pull request #%d: %v", taskID, t.PRNumber, err)
+			}
 		}
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
 	return nil
+}
+
+// closeOpenPullRequest closes pull request number with msg as the reason
+// when it is still open: a failed task leaves no pull request behind.
+func (r *Runner) closeOpenPullRequest(ctx context.Context, repo Repo, number int64, msg string) error {
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
+	if err != nil || pr.State != "open" {
+		return err
+	}
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, msg); err != nil {
+		return err
+	}
+	return r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, number)
 }

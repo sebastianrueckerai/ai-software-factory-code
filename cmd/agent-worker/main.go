@@ -67,8 +67,7 @@ func run(log func(string, ...any)) int {
 	}
 
 	repoDir := filepath.Join(workspace, "repo")
-	// no agent process exists yet; the header stays out of .git/config
-	if err := env.gitAuth("", "clone", "-q", env.repoURL, repoDir); err != nil {
+	if err := cloneBase(env, repoDir); err != nil {
 		log("clone: %v", err)
 		return 1
 	}
@@ -200,12 +199,16 @@ const (
 	workspace      = "/workspace"
 )
 
+// workerEnv is the session's contract with factoryd. repoURL/repoToken read
+// the task's repository (the base); pushURL/pushToken write the task branch
+// to the bot's fork, the only place a worker can write (ruling 97).
 type workerEnv struct {
-	taskID, sessionID, objective, repository, repoSHA, branch, gitToken string
-	repoURL, gatewayURL, tokenFile, model                               string
-	answerTokens, headroomTokens                                        int
-	findings                                                            []string
-	home                                                                string
+	taskID, sessionID, objective, repository, repoSHA, branch string
+	repoURL, repoToken, pushURL, pushToken                    string
+	gatewayURL, tokenFile, model                              string
+	answerTokens, headroomTokens                              int
+	findings                                                  []string
+	home                                                      string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -217,17 +220,18 @@ func loadEnv() (workerEnv, error) {
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
 	e.branch = str("BRANCH")
-	e.gitToken = str("GIT_TOKEN")
+	e.repoToken, e.pushToken = str("REPO_TOKEN"), str("PUSH_TOKEN")
 	// opencode inherits this process's environment
-	os.Unsetenv("GIT_TOKEN")
-	e.repoURL = str("REPO_URL")
+	os.Unsetenv("REPO_TOKEN")
+	os.Unsetenv("PUSH_TOKEN")
+	e.repoURL, e.pushURL = str("REPO_URL"), str("PUSH_URL")
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
 	e.home = str("HOME")
 	for name, val := range map[string]string{
-		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL,
-		"BRANCH": e.branch, "GIT_TOKEN": e.gitToken, "GATEWAY_URL": e.gatewayURL,
+		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
+		"BRANCH": e.branch, "PUSH_URL": e.pushURL, "PUSH_TOKEN": e.pushToken, "GATEWAY_URL": e.gatewayURL,
 		"TOKEN_FILE": e.tokenFile, "MODEL": e.model,
 	} {
 		if val == "" {
@@ -253,8 +257,8 @@ func loadEnv() (workerEnv, error) {
 	return e, nil
 }
 
-func (e workerEnv) authHeader() string {
-	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+e.gitToken))
+func authHeader(token string) string {
+	return "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
 }
 
 // safeGit is prepended to every worker git command: agent-planted hooks and
@@ -271,17 +275,33 @@ func (e workerEnv) git(dir string, args ...string) (string, error) {
 	return e.runGit(dir, nil, args...)
 }
 
-// gitAuth runs git with the task token as an http.extraHeader in the
-// environment (never args, never a config file). Only the initial clone,
+// gitAuth runs git with token as an http.extraHeader in the environment
+// (never args, never a config file). Only the initial clone and fetch,
 // before the agent exists, and the final push from the worker's own repo,
 // after every agent process is dead, use it.
-func (e workerEnv) gitAuth(dir string, args ...string) error {
+func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 	_, err := e.runGit(dir, []string{
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=http.extraHeader",
-		"GIT_CONFIG_VALUE_0=" + e.authHeader(),
+		"GIT_CONFIG_VALUE_0=" + authHeader(token),
 	}, args...)
 	return err
+}
+
+// cloneBase clones the task's repository at its base and, when the session
+// resumes a branch head that only the fork holds, fetches that branch from
+// the fork. No agent process exists yet; the headers stay out of .git/config.
+func cloneBase(e workerEnv, repoDir string) error {
+	if err := e.gitAuth(e.repoToken, "", "clone", "-q", e.repoURL, repoDir); err != nil {
+		return err
+	}
+	if e.repoSHA == "" {
+		return nil
+	}
+	if _, err := e.git(repoDir, "cat-file", "-e", e.repoSHA+"^{commit}"); err == nil {
+		return nil
+	}
+	return e.gitAuth(e.pushToken, repoDir, "fetch", "-q", e.pushURL, "refs/heads/"+e.branch)
 }
 
 func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {
@@ -308,11 +328,13 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	err := cmd.Run()
 	if err != nil {
 		redact := func(s string) string {
-			if e.gitToken == "" {
-				return s
+			for _, token := range []string{e.repoToken, e.pushToken} {
+				if token != "" {
+					s = strings.ReplaceAll(s, authHeader(token), "Authorization: ***")
+					s = strings.ReplaceAll(s, token, "***")
+				}
 			}
-			s = strings.ReplaceAll(s, e.authHeader(), "Authorization: ***")
-			return strings.ReplaceAll(s, e.gitToken, "***")
+			return s
 		}
 		return "", fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(out.String()))
 	}
@@ -419,7 +441,7 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	if err := e.gitAuth("", "--git-dir="+send, "push", "-q", e.repoURL, head+":refs/heads/"+e.branch); err != nil {
+	if err := e.gitAuth(e.pushToken, "", "--git-dir="+send, "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil

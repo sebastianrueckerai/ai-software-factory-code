@@ -160,6 +160,13 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// the bot's private fork holds every task branch (ruling 97)
+	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
+	if err := forgejo.EnsureFork(ctx, upstream); err != nil {
+		log.Printf("ensure fork of %s: %v", upstream, err)
+	} else {
+		log.Printf("fork %s ready", forgejo.Fork(upstream))
+	}
 	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, stateLabels); err != nil {
 		log.Printf("ensure labels: %v", err)
 	}

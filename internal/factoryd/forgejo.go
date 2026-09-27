@@ -20,6 +20,8 @@ type Repo struct {
 	Name  string `json:"name"`
 }
 
+func (r Repo) String() string { return r.Owner + "/" + r.Name }
+
 // Forgejo mints and revokes the per-task git tokens (architecture 6.3,
 // research Q3), authenticating as the bot user with basic auth — the live
 // wire (Forgejo 15 / gitea 1.22): /users/{u}/tokens refuses token auth for
@@ -48,14 +50,16 @@ type ForgejoToken struct {
 	Secret string
 }
 
-func (f *Forgejo) MintToken(ctx context.Context, name string, repos []Repo) (ForgejoToken, error) {
+// MintToken mints a bot token limited to one scope ("read:repository" or
+// "write:repository") on exactly the given repositories.
+func (f *Forgejo) MintToken(ctx context.Context, name, scope string, repos []Repo) (ForgejoToken, error) {
 	var tok ForgejoToken
 	if len(repos) == 0 {
 		return tok, fmt.Errorf("forgejo mint %s: at least one repository is required", name)
 	}
 	payload, err := json.Marshal(map[string]any{
 		"name":         name,
-		"scopes":       []string{"write:repository"},
+		"scopes":       []string{scope},
 		"repositories": repos,
 	})
 	if err != nil {
@@ -467,24 +471,40 @@ func mirrorTaskState(ctx context.Context, forgejo *Forgejo, t Task, state string
 	}
 }
 
-// PullRequestHeadBranch reads a pull request's head branch name. Needed
-// because a pull-request comment's nested PR metadata in the webhook payload
-// lacks a head ref.
-func (f *Forgejo) PullRequestHeadBranch(ctx context.Context, owner, repo string, index int64) (string, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, index)
-	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+// Fork is the bot's private fork of upstream: same name under the bot user.
+// Agent branches live there, so a pull request's job token is read-only
+// (ruling 97).
+func (f *Forgejo) Fork(upstream Repo) Repo {
+	return Repo{Owner: f.BotUser, Name: upstream.Name}
+}
+
+// EnsureFork creates the bot's fork of upstream if it is missing and refuses
+// a repository under that name that is not a private fork of upstream.
+func (f *Forgejo) EnsureFork(ctx context.Context, upstream Repo) error {
+	fork := f.Fork(upstream)
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s", fork.Owner, fork.Name), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		payload, _ := json.Marshal(map[string]string{"name": fork.Name})
+		body, err = f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/forks", upstream.Owner, upstream.Name), payload, http.StatusAccepted)
+	}
 	if err != nil {
-		return "", err
+		return err
 	}
 	var res struct {
-		Head struct {
-			Ref string `json:"ref"`
-		} `json:"head"`
+		FullName string `json:"full_name"`
+		IsFork   bool   `json:"fork"`
+		Private  bool   `json:"private"`
+		Parent   struct {
+			FullName string `json:"full_name"`
+		} `json:"parent"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return "", fmt.Errorf("forgejo pull request head %s/%s#%d: %w", owner, repo, index, err)
+		return fmt.Errorf("forgejo fork %s: %w", fork, err)
 	}
-	return res.Head.Ref, nil
+	if !res.IsFork || res.Parent.FullName != upstream.String() || !res.Private {
+		return fmt.Errorf("forgejo fork %s: not a private fork of %s", fork, upstream)
+	}
+	return nil
 }
 
 // BranchHeadSHA reads a branch's current head commit SHA: intake uses it to
@@ -510,12 +530,13 @@ func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string)
 // workflow to record the number and URL, poll its head commit, and tell
 // open, closed and merged apart.
 type PullRequestRef struct {
-	Number  int64
-	URL     string
-	Head    string
-	HeadSHA string
-	State   string // "open" or "closed"
-	Merged  bool
+	Number   int64
+	URL      string
+	Head     string
+	HeadRepo string // "owner/name" of the repository holding Head
+	HeadSHA  string
+	State    string // "open" or "closed"
+	Merged   bool
 }
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
@@ -525,13 +546,16 @@ type wirePR struct {
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
 	Head    struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		Ref  string `json:"ref"`
+		SHA  string `json:"sha"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 }
 
 func (w wirePR) ref() PullRequestRef {
-	return PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadSHA: w.Head.SHA, State: w.State, Merged: w.Merged}
+	return PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA, State: w.State, Merged: w.Merged}
 }
 
 // CreatePullRequest opens a pull request from head into base. The workflow
@@ -564,10 +588,10 @@ func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base
 }
 
 // FindOpenPullRequestForBranch looks for an already-open pull request whose
-// head is branch (the idempotency key OpenPullRequest reuses across a
-// retried or replayed attempt). A nil ref with a nil error means no open PR
-// exists yet.
-func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo, branch string) (*PullRequestRef, error) {
+// head is branch in headRepo (the idempotency key OpenPullRequest reuses
+// across a retried or replayed attempt). A nil ref with a nil error means no
+// open PR exists yet.
+func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo string, headRepo Repo, branch string) (*PullRequestRef, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&limit=50", owner, repo)
 	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
@@ -578,7 +602,7 @@ func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo,
 		return nil, fmt.Errorf("forgejo find open pull request %s/%s %s: %w", owner, repo, branch, err)
 	}
 	for _, pr := range all {
-		if pr.Head.Ref == branch {
+		if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
 			ref := pr.ref()
 			return &ref, nil
 		}

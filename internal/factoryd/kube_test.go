@@ -50,7 +50,7 @@ func TestInClusterKubeWire(t *testing.T) {
 		"POST /api/v1/namespaces/factory-agents-t1/secrets": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			if body["stringData"].(map[string]any)["GIT_TOKEN"] != "s3cret" {
+			if body["stringData"].(map[string]any)["PUSH_TOKEN"] != "s3cret" {
 				t.Errorf("stringData = %v", body["stringData"])
 			}
 			if body["type"] != "Opaque" {
@@ -135,7 +135,7 @@ func TestInClusterKubeWire(t *testing.T) {
 	if err := k.CreateServiceAccount(ctx, "factory-agents-t1", "task-t1"); err != nil {
 		t.Fatalf("CreateServiceAccount: %v", err)
 	}
-	if err := k.CreateSecret(ctx, "factory-agents-t1", "task-git", "", map[string]string{"GIT_TOKEN": "s3cret"}); err != nil {
+	if err := k.CreateSecret(ctx, "factory-agents-t1", "task-git", "", map[string]string{"PUSH_TOKEN": "s3cret"}); err != nil {
 		t.Fatalf("CreateSecret: %v", err)
 	}
 	data, err := k.GetSecretData(ctx, "factory", "forgejo-registry")

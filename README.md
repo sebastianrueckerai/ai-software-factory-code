@@ -13,7 +13,8 @@ the agents work on.
   Temporal worker for task queue `factory-tasks`: one `TaskWorkflow` per
   task (workflow id `task-<id>`) runs the attempts, opens the pull
   request, waits for its checks and for the reviewer. Each attempt
-  (`RunSession`) gets a fresh namespace, its own Forgejo token and
+  (`RunSession`) gets a fresh namespace, its own pair of Forgejo tokens
+  (read on the repository, write on the bot's fork, nothing else) and
   service account (so its own LiteLLM key), one gVisor pod, supervision
   (stall watchdog, wall-clock cap, tool calls without file changes) and
   a session record in S3; `sessions/<task>/timeline.jsonl` records the
@@ -27,11 +28,13 @@ the agents work on.
   projected ServiceAccount JWT, mints a per-task LiteLLM virtual key,
   forwards the call, books each call's cost into the task row, refuses
   with 402 past the budget, and writes an audit row per decision.
-- `cmd/agent-worker`: pid 1 in the sandbox pod. Clones with the task
-  token before the agent starts, runs opencode in its own process group
-  without the token, kills and reaps every other process when the agent
-  is done, then fetches the agent's commits into a clean repository and
-  pushes from there.
+- `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
+  from the repository with the read token before the agent starts (a
+  resumed task branch that only the fork holds is fetched from there),
+  runs opencode in its own process group without either token, kills
+  and reaps every other process when the agent is done, then fetches
+  the agent's commits into a clean repository and pushes `factory/<id>`
+  from there to the fork `factory-agent/<repo>` with the write token.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).
@@ -66,8 +69,10 @@ Priority is the higher of two label scales, default 0 if neither is present:
 PR and issue comments, and PR reviews, are recorded as intake events
 (`intake_events`, task 43's input) rather than acted on directly: an
 issue comment resolves its task by issue number, a PR comment resolves
-it by reading the pull request's own head branch (`factory/<task id>`),
-and a review reads that same head branch straight off its own payload.
+it by reading the pull request's own head (`factory/<task id>` on the
+`factory-agent` fork; the same branch name on any other repository is
+nobody's task), and a review reads that same head straight off its own
+payload.
 A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
@@ -102,13 +107,17 @@ finish it failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Then: up to
 `MAX_SESSIONS` (default 3) attempts, each `SetState running` then
 `RunSession`, the first on `MODEL` (default `factory/coding-cheap`);
-every session starts from the task branch's head when the branch exists,
-else from the base SHA. After a pushed commit `OpenPullRequest` (head
-`factory/<id>`, base `main`, `Closes #<issue>`, reusing an open PR for
-the branch and recording its number on the task; a commit whose
-`.forgejo` tree entry differs from the base's gets no PR, and an already
-open one is closed with the reason), `SetState in-review`, `WaitChecks`
-on the head commit's combined status (`CHECKS_TIMEOUT`, default 45m).
+every session starts from the task branch's head on the fork when the
+branch exists, else from the base SHA. After a pushed commit
+`OpenPullRequest` (head `factory-agent:factory/<id>`, base `main`,
+`Closes #<issue>`, reusing an open PR for that fork branch and recording
+its number on the task; a commit whose `.forgejo` tree entry differs
+from the base's gets no PR, and an already open one is closed with the
+reason), `SetState in-review`, `WaitChecks` on the head commit's
+combined status, which Forgejo records on the base repository
+(`CHECKS_TIMEOUT`, default 45m). A task that fails (its issue closed,
+its PR closed unmerged, the ladder exhausted) closes its open PR with
+the reason.
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
 `factory/coding-frontier`) with the failures as findings; supervision
 (below) can redirect, climb or escalate. Signals from the webhook intake
@@ -214,7 +223,18 @@ into the Forgejo registry.
 
 ## The untrusted pull-request runner (ruling 78)
 
-`.forgejo/workflows/pr.yml` runs on pull requests from agent branches,
+Agent pull requests come from the bot's fork, never from a branch of
+the repository itself (ruling 97): Forgejo hands a same-repository PR
+job a per-run token that can push to the repository, and hands a fork
+PR job a read-only one and no secrets. factoryd creates the private
+fork `factory-agent/<repo>` at boot and before every session if it is
+missing, as the bot; the per-task write token is scoped to the fork
+alone, and the base clone uses a second token scoped read-only to the
+repository. `pr.yml`'s `job-env-audit` job proves both on every PR: no
+credential-shaped variable beyond the job-token names, no credential
+file, and a push with the job token refused.
+
+`.forgejo/workflows/pr.yml` runs on those pull requests,
 `runs-on: pr-untrusted`. factoryd's CI spawner (`internal/factoryd/ci.go`)
 polls Forgejo for Actions jobs waiting on that label, registers a
 repo-scoped ephemeral runner (`forgejo-ci-registrar` token, never the

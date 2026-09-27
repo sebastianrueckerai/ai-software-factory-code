@@ -134,6 +134,7 @@ type sessionSpec struct {
 	findings []string
 	model    string
 	startRef string
+	repo     Repo
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -431,7 +432,10 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 	return fmt.Errorf("pod %s still pending after %s", podName, timeout)
 }
 
-func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) error {
+// setupNamespace builds the session's sandbox: base is the read token on
+// the task's repository (the clone), push the write token on the bot's fork
+// (the branch push).
+func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoToken) error {
 	ns := r.agentNamespace(t.ID)
 	if err := r.freshNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    t.ID,
@@ -480,7 +484,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, tok ForgejoToken) e
 			return r.kube.CreateCiliumNetworkPolicy(ctx, ns, "worker-egress", r.workerEgressSpec())
 		}},
 		{"git token secret", func() error {
-			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"GIT_TOKEN": tok.Secret})
+			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret, "PUSH_TOKEN": push.Secret})
 		}},
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, r.kube, r.cfg.FactoryNamespace, r.cfg.PullSecret, ns)
@@ -580,9 +584,8 @@ func (r *Runner) branch(t Task) string {
 	return "factory/" + t.ID
 }
 
-func (r *Runner) cloneURL(t Task) string {
-	base := strings.TrimSuffix(r.cfg.GitBaseURL, "/")
-	return base + "/" + t.Repository + ".git"
+func (r *Runner) repoURL(repo Repo) string {
+	return strings.TrimSuffix(r.cfg.GitBaseURL, "/") + "/" + repo.String() + ".git"
 }
 
 func (r *Runner) supervisionTick() time.Duration {
@@ -603,11 +606,14 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "SESSION_ID", "value": s.id},
 		{"name": "OBJECTIVE", "value": t.Objective},
 		{"name": "REPOSITORY", "value": t.Repository},
-		{"name": "REPO_URL", "value": r.cloneURL(t)},
+		{"name": "REPO_URL", "value": r.repoURL(s.repo)},
+		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
+			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": r.branch(t)},
-		{"name": "GIT_TOKEN", "valueFrom": map[string]any{
-			"secretKeyRef": map[string]any{"name": "task-git", "key": "GIT_TOKEN"}}},
+		{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
+		{"name": "PUSH_TOKEN", "valueFrom": map[string]any{
+			"secretKeyRef": map[string]any{"name": "task-git", "key": "PUSH_TOKEN"}}},
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},

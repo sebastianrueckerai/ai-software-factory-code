@@ -186,7 +186,10 @@ type issueCommentPayload struct {
 }
 
 type prBranchInfo struct {
-	Ref string `json:"ref"`
+	Ref  string `json:"ref"`
+	Repo struct {
+		FullName string `json:"full_name"`
+	} `json:"repo"`
 }
 
 type webhookPullRequest struct {
@@ -366,7 +369,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if p.Action != "closed" {
 		return nil
 	}
-	taskID, ok := strings.CutPrefix(p.PullRequest.Head.Ref, "factory/")
+	taskID, ok := in.taskOfHead(p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref)
 	if !ok {
 		return nil
 	}
@@ -378,6 +381,17 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 		signal = SignalPRMerged
 	}
 	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName, PR: p.PullRequest.Index})
+}
+
+// taskOfHead is the task whose pull request has head ref in headRepo: a
+// factory/<id> branch on the bot's fork of repo. The same branch name on
+// repo itself or on anyone else's fork is not the task's (ruling 97).
+func (in *Intake) taskOfHead(repo, headRepo, ref string) (string, bool) {
+	base, err := SplitRepo(repo)
+	if err != nil || headRepo != in.Forgejo.Fork(base).String() {
+		return "", false
+	}
+	return strings.CutPrefix(ref, "factory/")
 }
 
 // handleIssueComment records a comment as an intake event against the task
@@ -401,11 +415,11 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 		if err != nil {
 			return err
 		}
-		ref, err := in.Forgejo.PullRequestHeadBranch(ctx, repoParts.Owner, repoParts.Name, p.Issue.Index)
+		pr, err := in.Forgejo.PullRequestState(ctx, repoParts.Owner, repoParts.Name, p.Issue.Index)
 		if err != nil {
-			return fmt.Errorf("pull request head branch: %w", err)
+			return fmt.Errorf("pull request head: %w", err)
 		}
-		id, ok := strings.CutPrefix(ref, "factory/")
+		id, ok := in.taskOfHead(repo, pr.HeadRepo, pr.Head)
 		if !ok {
 			return nil
 		}
@@ -454,7 +468,7 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if p.Sender.UserName == in.BotUser {
 		return nil
 	}
-	taskID, ok := strings.CutPrefix(p.PullRequest.Head.Ref, "factory/")
+	taskID, ok := in.taskOfHead(p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref)
 	if !ok {
 		return nil
 	}

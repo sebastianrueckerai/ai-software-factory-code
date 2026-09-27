@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -334,14 +335,26 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 		defer h.mu.Unlock()
 		switch {
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/tokens"):
-			var body struct{ Name string }
+			var body struct {
+				Name         string
+				Scopes       []string
+				Repositories []Repo
+			}
 			json.NewDecoder(r.Body).Decode(&body)
 			h.nextID++
 			h.tokens = append(h.tokens, TokenRef{ID: h.nextID, Name: body.Name})
 			h.mintedNames = append(h.mintedNames, body.Name)
-			h.calls = append(h.calls, "mint "+body.Name)
+			repos := []string{}
+			for _, repo := range body.Repositories {
+				repos = append(repos, repo.String())
+			}
+			h.calls = append(h.calls, fmt.Sprintf("mint %s %s %s", body.Name, strings.Join(body.Scopes, ","), strings.Join(repos, ",")))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":"tok-%s"}`, h.nextID, body.Name)
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
+			h.calls = append(h.calls, "fork")
+			name := path.Base(r.URL.Path)
+			fmt.Fprintf(w, `{"full_name":"factory-agent/%s","fork":true,"private":true,"parent":{"full_name":"sf/%s"}}`, name, name)
 		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/tokens"):
 			h.calls = append(h.calls, "list")
 			list, _ := json.Marshal(h.tokens)
@@ -353,7 +366,8 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
-			if h.branchHead == "" {
+			// task branches live on the fork only
+			if h.branchHead == "" || !strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") {
 				w.WriteHeader(http.StatusNotFound)
 				return
 			}
@@ -511,14 +525,25 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c0ffee" || !strings.HasPrefix(res.SessionID, "s-") {
 		t.Fatalf("result = %+v, want pushed c0ffee", res)
 	}
-	if minted := hub.minted(); len(minted) != 1 || minted[0] != "task-t1" {
-		t.Fatalf("minted = %v, want one token named task-t1", minted)
+	// read on the base repository to clone, write on the bot's fork to push: nothing else
+	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code") ||
+		!slices.Contains(hub.calls, "mint task-t1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
+		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
 	}
-	if len(hub.revoked) != 1 || hub.revoked[0] != 101 {
-		t.Fatalf("revoked = %v, want the session's token revoked at its end", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101, 102}) {
+		t.Fatalf("revoked = %v, want both session tokens revoked at its end", hub.revoked)
 	}
-	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
+	env := podEnv(kube.podAt(0))
+	if env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
 		t.Fatalf("pod env = %v, want the base SHA and the cheap model", env)
+	}
+	if env["REPO_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/sf/ai-software-factory-code.git" ||
+		env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" ||
+		env["REPO_TOKEN"] != "secret:task-git/REPO_TOKEN" || env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
+		t.Fatalf("pod env = %v, want the clone from sf and the push to the fork, each with its own token", env)
+	}
+	if _, ok := env["GIT_TOKEN"]; ok {
+		t.Fatal("GIT_TOKEN is still set: one way only")
 	}
 	ns := "factory-agents-t1"
 	if _, ok := kube.namespaces[ns]; ok {
@@ -530,8 +555,8 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if l := kube.createdNs[ns]; l["factory.ai/task"] != "t1" || l["pod-security.kubernetes.io/enforce"] != "restricted" {
 		t.Fatalf("task namespace labels = %v", l)
 	}
-	if kube.secrets[ns+"/task-git"]["GIT_TOKEN"] != "tok-task-t1" {
-		t.Fatalf("git token secret = %v", kube.secrets[ns+"/task-git"])
+	if sec := kube.secrets[ns+"/task-git"]; sec["REPO_TOKEN"] != "tok-task-t1-base" || sec["PUSH_TOKEN"] != "tok-task-t1" || len(sec) != 2 {
+		t.Fatalf("git token secret = %v", sec)
 	}
 	if typ := kube.secretTypes[ns+"/forgejo-registry"]; typ != "kubernetes.io/dockerconfigjson" {
 		t.Fatalf("copied pull secret type = %q, want kubernetes.io/dockerconfigjson (kubelet ignores Opaque)", typ)
@@ -632,6 +657,8 @@ func podEnv(p *fakePod) map[string]string {
 	for _, e := range container["env"].([]map[string]any) {
 		if v, ok := e["value"].(string); ok {
 			env[e["name"].(string)] = v
+		} else if ref, ok := e["valueFrom"].(map[string]any)["secretKeyRef"].(map[string]any); ok {
+			env[e["name"].(string)] = fmt.Sprintf("secret:%s/%s", ref["name"], ref["key"])
 		}
 	}
 	return env
@@ -668,7 +695,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	kube.namespaces["factory-agents-t1"] = map[string]string{"factory.ai/task": "t1"}
 	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running"}
-	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}}
+	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}, {ID: 51, Name: "task-t1-base"}}
 
 	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7, Findings: []string{"changed a.go"}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
@@ -685,8 +712,9 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	if !slices.Contains(kube.deletedPods, "factory-agents-t1/worker-s-dead") {
 		t.Fatalf("deleted pods = %v, want the dead session's pod gone", kube.deletedPods)
 	}
-	if len(hub.calls) < 3 || hub.calls[1] != "revoke 50" || hub.calls[2] != "mint task-t1" {
-		t.Fatalf("forgejo calls = %v, want the leftover token revoked before the new mint", hub.calls)
+	mint := slices.IndexFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "mint ") })
+	if r50, r51 := slices.Index(hub.calls, "revoke 50"), slices.Index(hub.calls, "revoke 51"); mint < 0 || r50 < 0 || r51 < 0 || r50 > mint || r51 > mint {
+		t.Fatalf("forgejo calls = %v, want both leftover tokens revoked before the new mints", hub.calls)
 	}
 	env := podEnv(kube.podAt(0))
 	if env["PARENT_SESSION_ID"] != "s-dead" {
@@ -983,7 +1011,7 @@ func TestRunSessionAdapterFailureIsNoPush(t *testing.T) {
 	if res.Outcome != OutcomeNoPush || res.Summary != "model refused" || !strings.Contains(strings.Join(res.Findings, "\n"), "model refused") {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(hub.revoked) != 1 {
+	if len(hub.revoked) != 2 {
 		t.Fatalf("revoked = %v: a failed session must still revoke", hub.revoked)
 	}
 }
@@ -1019,7 +1047,7 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 	if err != nil || res.Outcome != OutcomeWallClock {
 		t.Fatalf("result = (%+v, %v), want wall_clock", res, err)
 	}
-	if len(hub.revoked) != 1 {
+	if len(hub.revoked) != 2 {
 		t.Fatalf("revoked = %v", hub.revoked)
 	}
 }
@@ -1037,8 +1065,8 @@ func TestRunSessionShutdownCleansUpAndFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunSession succeeded through a shutdown")
 	}
-	if len(hub.revoked) != 1 {
-		t.Fatalf("revoked = %v: the session's token must not survive", hub.revoked)
+	if len(hub.revoked) != 2 {
+		t.Fatalf("revoked = %v: the session's tokens must not survive", hub.revoked)
 	}
 	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
 		t.Fatal("namespace survived the shutdown")
@@ -1060,7 +1088,7 @@ func TestRunSessionSetupFailureDeletesNamespace(t *testing.T) {
 	if _, ok := kube.namespaces["factory-agents-t8"]; ok {
 		t.Fatal("half-built namespace survived a setup failure")
 	}
-	if len(hub.revoked) != 1 {
+	if len(hub.revoked) != 2 {
 		t.Fatalf("revoked = %v", hub.revoked)
 	}
 }
