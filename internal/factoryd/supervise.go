@@ -107,6 +107,11 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	return nil
 }
 
+// Findings is a copy of what the session has done so far.
+func (s *Supervisor) Findings() []string {
+	return append([]string(nil), s.findings...)
+}
+
 func (s *Supervisor) trip(kind TripKind, retry bool) *Trip {
 	s.tripped = &Trip{Kind: kind, Findings: append([]string(nil), s.findings...), RetryStrongerModel: retry}
 	return s.tripped

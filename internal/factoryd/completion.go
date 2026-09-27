@@ -25,7 +25,7 @@ type Completion struct {
 func TokenName(taskID string) string { return "task-" + taskID }
 
 func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
-	if err := c.Store.TransitionTask(ctx, taskID, []string{"running", "closing"}, "closing"); err != nil {
+	if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review", "closing"}, "closing"); err != nil {
 		return err
 	}
 	if err := c.reconcile(ctx, taskID); err != nil {
@@ -52,12 +52,6 @@ func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
 		return
 	}
 	mirrorTaskState(ctx, c.Forgejo, t, state)
-}
-
-// Requeue hands an interrupted task back to the queue with its credentials
-// revoked; the next claim mints fresh ones.
-func (c *Completion) Requeue(ctx context.Context, taskID string) error {
-	return c.Complete(ctx, taskID, "queued")
 }
 
 // SpendSettleWindow is how long after a task finishes its spend keeps being

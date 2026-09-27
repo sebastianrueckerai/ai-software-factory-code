@@ -15,6 +15,10 @@ import (
 	"syscall"
 	"time"
 
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/worker"
+	"go.temporal.io/sdk/workflow"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 )
@@ -86,12 +90,14 @@ func main() {
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"),
 		GitBaseURL:           gitBase,
-		Model:                env("MODEL", "factory/coding-frontier"),
-		RetryModel:           env("RETRY_MODEL", "factory/review-frontier"),
-		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
-		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
-		MaxSessions:          envInt("MAX_SESSIONS", 3),
-		PollInterval:         2 * time.Second,
+		Models: factoryd.ModelLadder{
+			Start:    env("MODEL", "factory/coding-cheap"),
+			Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
+		},
+		AnswerTokens:   envInt("ANSWER_TOKENS", 8192),
+		HeadroomTokens: envInt("HEADROOM_TOKENS", 16384),
+		MaxSessions:    envInt("MAX_SESSIONS", 3),
+		ChecksTimeout:  envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  5 * time.Minute,
 			WallClockCap:     20 * time.Minute,
@@ -113,10 +119,24 @@ func main() {
 		log.Fatalf("ci spawner: %v", err)
 	}
 
+	temporal, err := client.Dial(client.Options{
+		HostPort:  env("TEMPORAL_ADDRESS", "temporal-frontend.platform.svc.cluster.local:7233"),
+		Namespace: env("TEMPORAL_NAMESPACE", "default"),
+	})
+	if err != nil {
+		log.Fatalf("temporal client: %v", err)
+	}
+	defer temporal.Close()
+	workflows := factoryd.TemporalWorkflows{Client: temporal}
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{})
+	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
+		workflow.RegisterOptions{Name: "TaskWorkflow"})
+	runner.RegisterActivities(taskWorker)
+
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
 	webhookIntake := &factoryd.Intake{
-		Store: store, Forgejo: forgejo, BotUser: forgejo.BotUser,
+		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), MaxBudgetEUR: maxBudget,
 	}
 	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
@@ -127,13 +147,21 @@ func main() {
 		log.Printf("ensure labels: %v", err)
 	}
 	runner.BootSweep(ctx)
+	if err := taskWorker.Start(); err != nil {
+		log.Fatalf("temporal worker: %v", err)
+	}
+	go func() {
+		for {
+			factoryd.StartOpenWorkflows(ctx, store, workflows)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Minute):
+			}
+		}
+	}()
 	go completion.SettleLoop(ctx, time.Minute)
 	go ciSpawner.Run(ctx)
-	runnerDone := make(chan struct{})
-	go func() {
-		defer close(runnerDone)
-		runner.Run(ctx)
-	}()
 
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
@@ -144,7 +172,7 @@ func main() {
 		}
 		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	})
-	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, maxBudget)))
+	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, maxBudget)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
@@ -167,8 +195,10 @@ func main() {
 	}
 	go func() {
 		<-ctx.Done()
-		log.Printf("factoryd: shutting down, waiting for the runner")
-		<-runnerDone
+		log.Printf("factoryd: shutting down, stopping the temporal worker")
+		// a session activity cut short here is retried by Temporal on the
+		// next factoryd, which resumes it from the heartbeat
+		taskWorker.Stop()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		server.Shutdown(shutdown) // #nosec G104 -- process exits right after; shutdown error is inconsequential
@@ -177,12 +207,6 @@ func main() {
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-}
-
-// firstLine derives an issue title from an objective's first line.
-func firstLine(s string) string {
-	line, _, _ := strings.Cut(s, "\n")
-	return strings.TrimSpace(line)
 }
 
 // taskCreator is the one store dependency POST /tasks needs, narrower than
@@ -198,7 +222,7 @@ type taskCreator interface {
 // objective plus "filed by factoryd intake" — and labels it agent and
 // state/queued before the task row ever exists; a row is created only once
 // the issue exists to back it.
-func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, maxBudget float64) http.HandlerFunc {
+func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, maxBudget float64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
@@ -227,7 +251,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, maxBudget f
 			in.Branch = "factory/" + id
 		}
 		issueBody := in.Objective + "\n\nfiled by factoryd intake"
-		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, firstLine(in.Objective), issueBody)
+		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, factoryd.FirstLine(in.Objective), issueBody)
 		if err != nil {
 			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -246,6 +270,10 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, maxBudget f
 		if err := store.CreateTask(r.Context(), task); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
+		}
+		// a failed start is healed by the next StartOpenWorkflows pass
+		if err := workflows.Start(r.Context(), id); err != nil {
+			log.Printf("task %s: start workflow: %v", id, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -290,6 +318,16 @@ func envFloat(name string, def float64) float64 {
 			return f
 		}
 		log.Fatalf("%s: not a positive number", name)
+	}
+	return def
+}
+
+func envDuration(name string, def time.Duration) time.Duration {
+	if v := os.Getenv(name); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		log.Fatalf("%s: not a positive duration", name)
 	}
 	return def
 }

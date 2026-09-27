@@ -12,16 +12,20 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 )
 
-// Intake is the Forgejo webhook endpoint (task 42): every issue labelled
-// agent or human becomes a task row, and every PR/issue comment or review
-// becomes an intake event for task 43's workflow to consume. It implements
-// http.Handler directly; main wires it at POST /webhooks/forgejo.
+// Intake is the Forgejo webhook endpoint: every issue labelled agent or
+// human becomes a task row (an agent task also starts its workflow), every
+// PR/issue comment or review becomes an intake event, and the events a task
+// workflow waits on (merge, changes requested, issue closed) are signalled
+// to it. It implements http.Handler directly; main wires it at POST
+// /webhooks/forgejo.
 type Intake struct {
 	Store        Store
 	Forgejo      *Forgejo
+	Workflows    Workflows
 	BotUser      string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret       string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	MaxBudgetEUR float64
@@ -36,7 +40,7 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	eventType := r.Header.Get("X-Forgejo-Event-Type")
 	if !validWebhookSignature(in.Secret, body, r.Header.Get("X-Forgejo-Signature")) {
-		log.Printf("webhook intake: rejected %s: bad signature", eventType)
+		log.Printf("webhook intake: rejected %s: bad signature", strconv.Quote(eventType))
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -50,12 +54,14 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		procErr = in.handleIssueComment(ctx, body, eventType)
 	case "pull_request_review_approved", "pull_request_review_rejected", "pull_request_review_comment":
 		procErr = in.handleReview(ctx, body, eventType)
+	case "pull_request":
+		procErr = in.handlePullRequest(ctx, body)
 	default:
 		// an event type this factory does not act on yet: accepted so
 		// Forgejo's delivery list reads all 2xx, nothing to process
 	}
 	if procErr != nil {
-		log.Printf("webhook intake: %s: %v", eventType, procErr)
+		log.Printf("webhook intake: %s: %v", strconv.Quote(eventType), procErr)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -96,8 +102,10 @@ type webhookIssue struct {
 }
 
 type issuesPayload struct {
+	Action     string            `json:"action"`
 	Issue      webhookIssue      `json:"issue"`
 	Repository webhookRepository `json:"repository"`
+	Sender     webhookUser       `json:"sender"`
 }
 
 type webhookComment struct {
@@ -117,8 +125,9 @@ type prBranchInfo struct {
 }
 
 type webhookPullRequest struct {
-	Index int64        `json:"number"`
-	Head  prBranchInfo `json:"head"`
+	Index  int64        `json:"number"`
+	Head   prBranchInfo `json:"head"`
+	Merged bool         `json:"merged"`
 }
 
 type reviewPayload struct {
@@ -126,6 +135,7 @@ type reviewPayload struct {
 }
 
 type pullRequestPayload struct {
+	Action      string             `json:"action"`
 	PullRequest webhookPullRequest `json:"pull_request"`
 	Repository  webhookRepository  `json:"repository"`
 	Sender      webhookUser        `json:"sender"`
@@ -185,6 +195,9 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode %s: %w", eventType, err)
 	}
+	if p.Action == "closed" {
+		return in.handleIssueClosed(ctx, p)
+	}
 	if p.Issue.Poster.UserName == in.BotUser {
 		return nil // the bot's own issues never spawn a second task
 	}
@@ -195,9 +208,13 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		return nil
 	}
 	repo := p.Repository.FullName
-	if _, ok, err := in.Store.TaskByIssue(ctx, repo, p.Issue.Index); err != nil {
+	if t, ok, err := in.Store.TaskByIssue(ctx, repo, p.Issue.Index); err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	} else if ok {
+		// a redelivery retries a workflow start that failed the first time
+		if t.Kind == "agent" && t.Status == "queued" {
+			return in.Workflows.Start(ctx, t.ID)
+		}
 		return nil
 	}
 
@@ -248,7 +265,43 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		label = "waiting-human"
 	}
 	mirrorTaskState(ctx, in.Forgejo, task, label)
+	if kind == "agent" {
+		return in.Workflows.Start(ctx, id)
+	}
 	return nil
+}
+
+// handleIssueClosed signals the task's workflow that its issue closed; the
+// workflow asks Forgejo whether a merge closed it.
+func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
+	t, ok, err := in.Store.TaskByIssue(ctx, p.Repository.FullName, p.Issue.Index)
+	if err != nil {
+		return fmt.Errorf("task by issue: %w", err)
+	}
+	if !ok || t.Kind != "agent" {
+		return nil
+	}
+	return in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: p.Sender.UserName})
+}
+
+// handlePullRequest signals a merged factory pull request to its task's
+// workflow.
+func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
+	var p pullRequestPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return fmt.Errorf("decode pull_request: %w", err)
+	}
+	if p.Action != "closed" || !p.PullRequest.Merged {
+		return nil
+	}
+	taskID, ok := strings.CutPrefix(p.PullRequest.Head.Ref, "factory/")
+	if !ok {
+		return nil
+	}
+	if _, ok, err := in.Store.Task(ctx, taskID); err != nil || !ok {
+		return err
+	}
+	return in.Workflows.Signal(ctx, taskID, SignalPRMerged, TaskSignal{Author: p.Sender.UserName})
 }
 
 // handleIssueComment records a comment as an intake event against the task
@@ -296,9 +349,15 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 	} else if !ok {
 		return nil
 	}
-	return in.Store.InsertIntakeEvent(ctx, IntakeEvent{
+	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
 		TaskID: taskID, Kind: eventType, Author: p.Comment.Poster.UserName, Body: p.Comment.Body,
-	})
+	}); err != nil {
+		return err
+	}
+	if !p.IsPull {
+		return nil
+	}
+	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body})
 }
 
 // handleReview records a pull request review as an intake event, resolved to
@@ -325,7 +384,13 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType strin
 	if p.Review != nil {
 		reviewBody = p.Review.Content
 	}
-	return in.Store.InsertIntakeEvent(ctx, IntakeEvent{
+	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
 		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody,
-	})
+	}); err != nil {
+		return err
+	}
+	if eventType == "pull_request_review_approved" {
+		return nil
+	}
+	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Sender.UserName, Body: reviewBody})
 }

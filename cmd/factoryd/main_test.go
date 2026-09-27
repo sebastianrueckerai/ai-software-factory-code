@@ -97,6 +97,19 @@ func (s *fakeTaskCreator) CreateTask(ctx context.Context, t factoryd.Task) error
 	return nil
 }
 
+// fakeStarter is the workflow seam: it logs starts into the shared events
+// log.
+type fakeStarter struct{ events *[]string }
+
+func (w *fakeStarter) Start(ctx context.Context, taskID string) error {
+	*w.events = append(*w.events, "start-workflow")
+	return nil
+}
+
+func (w *fakeStarter) Signal(ctx context.Context, taskID, name string, sig factoryd.TaskSignal) error {
+	return nil
+}
+
 func postCreateTask(h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	rec := httptest.NewRecorder()
@@ -108,13 +121,13 @@ func TestCreateTaskHandlerFilesIssueBeforeRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
-	want := []string{"create-issue", "replace-labels", "create-row"}
+	want := []string{"create-issue", "replace-labels", "create-row", "start-workflow"}
 	if !slices.Equal(events, want) {
-		t.Fatalf("call order = %v, want %v (issue filed, then labelled, then the row created)", events, want)
+		t.Fatalf("call order = %v, want %v (issue filed, then labelled, then the row created, then its workflow started)", events, want)
 	}
 }
 
@@ -122,7 +135,7 @@ func TestCreateTaskHandlerResponseCarriesIssueRef(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -145,7 +158,7 @@ func TestCreateTaskHandlerLabelsAgentAndQueued(t *testing.T) {
 	var events []string
 	forgejo, _, appliedLabels := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -158,7 +171,7 @@ func TestCreateTaskHandlerIssueBodyIsObjectivePlusFiledByFactoryd(t *testing.T) 
 	var events []string
 	forgejo, issueBody, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
 	}
@@ -172,7 +185,7 @@ func TestCreateTaskHandlerIssueCreationFailureCreatesNoRow(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, true)
 	store := &fakeTaskCreator{events: &events}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
@@ -185,11 +198,14 @@ func TestCreateTaskHandlerStoreFailureReturnsError(t *testing.T) {
 	var events []string
 	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
 	store := &fakeTaskCreator{events: &events, err: errors.New("db unavailable")}
-	rec := postCreateTask(createTaskHandler(store, forgejo, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, 5), `{"objective":"Add X","repository":"sf/ai-software-factory-code"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("db unavailable")) {
 		t.Fatalf("body = %s, want the store error surfaced", rec.Body)
+	}
+	if slices.Contains(events, "start-workflow") {
+		t.Fatalf("events = %v: no workflow for a task row that does not exist", events)
 	}
 }

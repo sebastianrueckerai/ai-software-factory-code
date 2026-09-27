@@ -76,13 +76,31 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 	return names
 }
 
+// fakeWorkflows records workflow starts and signals.
+type fakeWorkflows struct {
+	started []string
+	signals []string // "<task> <signal> <author>: <body>"
+}
+
+func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
+	w.started = append(w.started, taskID)
+	return nil
+}
+
+func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	w.signals = append(w.signals, taskID+" "+name+" "+sig.Author+": "+sig.Body)
+	return nil
+}
+
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
 	t.Helper()
 	forgejo, requests := intakeForgejoStub(t)
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
 	return in, store, requests
 }
+
+func workflowsOf(in *Intake) *fakeWorkflows { return in.Workflows.(*fakeWorkflows) }
 
 func postWebhook(in *Intake, eventType string, body []byte, signature string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/webhooks/forgejo", bytes.NewReader(body))
@@ -264,7 +282,7 @@ func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 	t.Cleanup(srv.Close)
 	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, MaxBudgetEUR: 5}
 	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
 	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
 	if rr.Code != http.StatusOK {
@@ -466,5 +484,96 @@ func TestIntakeBodySizeIsBounded(t *testing.T) {
 	rr := postWebhook(in, "issues", huge, sign(webhookSecret, huge))
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", rr.Code)
+	}
+}
+
+func TestIntakeAgentIssueStartsWorkflowHumanDoesNot(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	agent := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add X", "")
+	human := issueOpenedBody(8, "sebastian", []string{"human"}, "Decide Y", "")
+	postWebhook(in, "issues", agent, sign(webhookSecret, agent))
+	postWebhook(in, "issues", human, sign(webhookSecret, human))
+	agentTask, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 7)
+	if got := workflowsOf(in).started; len(got) != 1 || got[0] != agentTask.ID {
+		t.Fatalf("started = %v, want only the agent task %s", got, agentTask.ID)
+	}
+	// a redelivery while the task is still queued retries the start
+	postWebhook(in, "issue_label", agent, sign(webhookSecret, agent))
+	if got := workflowsOf(in).started; len(got) != 2 || got[1] != agentTask.ID || len(store.tasks) != 2 {
+		t.Fatalf("started = %v, tasks = %d; want a second start for the same task, no new task", got, len(store.tasks))
+	}
+}
+
+func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	store.tasks["t-issue"] = Task{ID: "t-issue", Repository: "sf/ai-software-factory-code", Status: "in-review", IssueNumber: 30}
+	pr, _ := json.Marshal(map[string]any{
+		"issue":      map[string]any{"number": 21},
+		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "one nit"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"is_pull":    true,
+	})
+	issue, _ := json.Marshal(map[string]any{
+		"issue":      map[string]any{"number": 30},
+		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "a note on the issue"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+	})
+	postWebhook(in, "pull_request_comment", pr, sign(webhookSecret, pr))
+	postWebhook(in, "issue_comment", issue, sign(webhookSecret, issue))
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-pr changes_requested sebastian: one nit" {
+		t.Fatalf("signals = %q, want only the PR comment as changes_requested", got)
+	}
+}
+
+func TestIntakeReviewRejectedSignalsApprovedDoesNot(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	rejected := reviewBody("factory/t1", "sebastian", "pull_request_review_rejected", "split the function")
+	approved := reviewBody("factory/t1", "sebastian", "pull_request_review_approved", "ship it")
+	postWebhook(in, "pull_request_review_rejected", rejected, sign(webhookSecret, rejected))
+	postWebhook(in, "pull_request_review_approved", approved, sign(webhookSecret, approved))
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 changes_requested sebastian: split the function" {
+		t.Fatalf("signals = %q", got)
+	}
+}
+
+func prClosedBody(ref string, merged bool) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"action":       "closed",
+		"pull_request": map[string]any{"number": 5, "merged": merged, "head": map[string]string{"ref": ref}},
+		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":       map[string]string{"login": "sebastian"},
+	})
+	return b
+}
+
+func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	for _, body := range [][]byte{prClosedBody("factory/t1", true), prClosedBody("factory/t1", false), prClosedBody("feature/x", true)} {
+		if rr := postWebhook(in, "pull_request", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 pr_merged sebastian: " {
+		t.Fatalf("signals = %q, want one pr_merged for the merged factory PR", got)
+	}
+}
+
+func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 4}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "closed",
+		"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "factory-agent"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":     map[string]string{"login": "sebastian"},
+	})
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 issue_closed sebastian: " {
+		t.Fatalf("signals = %q", got)
 	}
 }

@@ -5,12 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/converter"
+	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -33,6 +40,8 @@ type fakeKube struct {
 	saErr       error                        // injected CreateServiceAccount failure
 	getErr      map[string]error             // ns/name → injected GetSecretData failure
 	onDeletePod func()                       // runs on every DeletePod
+	ops         []string                     // namespace deletions and pod creations, in order
+	onCreatePod func()                       // runs on every CreatePod
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -86,6 +95,13 @@ func (k *fakeKube) DeleteNamespace(ctx context.Context, name string) error {
 	}
 	delete(k.namespaces, name)
 	k.deletedNs = append(k.deletedNs, name)
+	k.ops = append(k.ops, "delete namespace "+name)
+	for key := range k.pods {
+		if strings.HasPrefix(key, name+"/") {
+			delete(k.pods, key)
+			k.deletedPods = append(k.deletedPods, key)
+		}
+	}
 	return nil
 }
 
@@ -155,6 +171,10 @@ func (k *fakeKube) CreatePod(ctx context.Context, namespace, name string, pod ma
 	p := &fakePod{ns: namespace, name: name, phase: "Running", logsReady: make(chan struct{}), spec: pod}
 	k.pods[namespace+"/"+name] = p
 	k.podOrder = append(k.podOrder, p)
+	k.ops = append(k.ops, "create pod "+namespace+"/"+name)
+	if k.onCreatePod != nil {
+		k.onCreatePod()
+	}
 	return nil
 }
 
@@ -301,12 +321,11 @@ func testRunnerConfig() RunnerConfig {
 		FactoryNamespace:     "factory",
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
 		GitBaseURL:           "http://forgejo-http.forgejo.svc.cluster.local:3000",
-		Model:                "factory/coding-frontier",
-		RetryModel:           "factory/review-frontier",
+		Models:               ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		MaxSessions:          3,
-		PollInterval:         time.Millisecond,
+		ChecksPoll:           time.Millisecond,
 		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24},
 	}
 }
@@ -341,26 +360,80 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 	return runner, hub, store
 }
 
-func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
-	task := Task{ID: "t1", Status: "queued", Objective: "add a README line",
+// runSession executes the RunSession activity in a Temporal test activity
+// environment rooted at ctx (nil: background), with heartbeat details from
+// a previous attempt when dead is set, assigning per-pod log bodies as the
+// pods appear (fakeKube.scriptPods needs the pods to exist first).
+func runSession(t *testing.T, ctx context.Context, r *Runner, in SessionInput, dead *sessionProgress, bodies ...string) (SessionResult, error) {
+	t.Helper()
+	var suite testsuite.WorkflowTestSuite
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	env := suite.NewTestActivityEnvironment()
+	r.RegisterActivities(env)
+	if ctx != nil {
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+	}
+	if dead != nil {
+		env.SetHeartbeatDetails(*dead)
+	}
+	var res SessionResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var val converter.EncodedValue
+		if val, err = env.ExecuteActivity(ActivityRunSession, in); err == nil {
+			err = val.Get(&res)
+		}
+	}()
+	kube := r.kube.(*fakeKube)
+	assigned := 0
+	for assigned < len(bodies) {
+		kube.mu.Lock()
+		created := len(kube.podOrder)
+		kube.mu.Unlock()
+		if created > assigned {
+			kube.scriptPods(assigned, bodies[assigned:created]...)
+			assigned = created
+		}
+		select {
+		case <-done:
+			return res, err
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	<-done
+	return res, err
+}
+
+func pushedLine(commit string) string {
+	return envLine(harness.Event{Kind: harness.EventPushed, Time: time.Now(), Detail: map[string]any{"branch": "factory/t1", "commit": commit}})
+}
+
+func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "add a README line",
 		Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	runner, hub, store := newTestRunner(t, task, kube, objects)
+	runner, hub, _ := newTestRunner(t, task, kube, objects)
 
 	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
-		resultLine(true, "done")
-	runWithPodLogs(t, runner, task, []string{logs})
-
-	got, _, _ := store.Task(context.Background(), "t1")
-	if got.Status != "done" {
-		t.Fatalf("status = %q, want done", got.Status)
+		pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	if err != nil {
+		t.Fatalf("RunSession: %v", err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c0ffee" || !strings.HasPrefix(res.SessionID, "s-") {
+		t.Fatalf("result = %+v, want pushed c0ffee", res)
 	}
 	if minted := hub.minted(); len(minted) != 1 || minted[0] != "task-t1" {
 		t.Fatalf("minted = %v, want one token named task-t1", minted)
 	}
 	if len(hub.revoked) != 1 || hub.revoked[0] != 101 {
-		t.Fatalf("revoked = %v, want the minted token", hub.revoked)
+		t.Fatalf("revoked = %v, want the session's token revoked at its end", hub.revoked)
+	}
+	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
+		t.Fatalf("pod env = %v, want the base SHA and the cheap model", env)
 	}
 	ns := "factory-agents-t1"
 	if _, ok := kube.namespaces[ns]; ok {
@@ -456,304 +529,203 @@ func TestRunnerHappyPathRunsSandboxAndCompletes(t *testing.T) {
 	if sat["audience"] != "factory-gateway" {
 		t.Fatalf("projected token audience = %v", sat["audience"])
 	}
-	if len(objects.puts) == 0 || !strings.HasPrefix(objects.puts[0].key, "sessions/t1/") {
-		t.Fatalf("session record puts = %v", objects.puts)
+	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	for _, step := range []string{`"step":"session_start"`, `"step":"session_end"`, `"step":"pushed"`, `"commit":"c0ffee"`} {
+		if !strings.Contains(string(timeline), step) {
+			t.Fatalf("timeline lacks %s:\n%s", step, timeline)
+		}
+	}
+	if _, err := objects.Get(context.Background(), "sessions/t1/"+res.SessionID+".jsonl"); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// runWithPodLogs drives execute with per-attempt log bodies assigned as pods
-// get created (fakeKube.scriptPods needs the pods to exist first).
-func runWithPodLogs(t *testing.T, r *Runner, task Task, bodies []string) {
-	t.Helper()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		r.execute(context.Background(), task)
-	}()
-	assigned := 0
-	for assigned < len(bodies) {
-		kube := r.kube.(*fakeKube)
-		kube.mu.Lock()
-		created := len(kube.podOrder)
-		kube.mu.Unlock()
-		if created > assigned {
-			kube.scriptPods(assigned, bodies[assigned:created]...)
-			assigned = created
-		}
-		select {
-		case <-done:
-			// execute may finish before consuming every scripted body
-			return
-		case <-time.After(5 * time.Millisecond):
+// podEnv flattens a pod's worker container env into name → value.
+func podEnv(p *fakePod) map[string]string {
+	env := map[string]string{}
+	container := p.spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	for _, e := range container["env"].([]map[string]any) {
+		if v, ok := e["value"].(string); ok {
+			env[e["name"].(string)] = v
 		}
 	}
-	<-done
+	return env
 }
 
-func TestRunnerResumesAfterSupervisionTrip(t *testing.T) {
-	task := Task{ID: "t2", Status: "queued", Objective: "do it", Repository: "sf/repo"}
+func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()
-	cfg := testRunnerConfig()
-	cfg.Supervisor.RepetitionEvents = 2
-	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
-	objects := &fakeObjectStore{}
-	hub := &forgejoHub{nextID: 200}
-	fjSrv := hub.srv(t)
-	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"keys":[],"total_pages":0}`)
-	}))
-	t.Cleanup(ll.Close)
-	store := newFakeStore()
-	store.CreateTask(context.Background(), task)
-	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
-		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL}}
-	runner, err := NewRunner(cfg, store, kube, completion.Forgejo, completion, objects)
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/coding-frontier",
+		StartRef: "c1", ParentSessionID: "s-prev", Findings: []string{"check \"pr / test\": failure"}}, nil, resultLine(false, "gave up"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	env := podEnv(kube.podAt(0))
+	if env["REPO_SHA"] != "c1" || env["MODEL"] != "factory/coding-frontier" || env["PARENT_SESSION_ID"] != "s-prev" ||
+		!strings.Contains(env["FINDINGS"], "pr / test") {
+		t.Fatalf("pod env = %v, want the branch head, the stronger model, the parent and the findings", env)
+	}
+	for _, s := range store.sessions {
+		if s.ParentSessionID != "s-prev" {
+			t.Fatalf("session %+v, want parent s-prev", s)
+		}
+	}
+}
 
-	// First session: three commands, no file change → repetition trip.
+// A crashed factoryd's attempt is retried by Temporal on the next worker:
+// the dead session's namespace (and pod) and token go first, then a new
+// session carries the dead one's findings and id as parent.
+func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	kube.namespaces["factory-agents-t1"] = map[string]string{"factory.ai/task": "t1"}
+	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running"}
+	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}}
+
+	dead := &sessionProgress{SessionID: "s-dead", Events: 7, Findings: []string{"changed a.go"}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
+		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(kube.ops) < 2 || kube.ops[0] != "delete namespace factory-agents-t1" || !strings.HasPrefix(kube.ops[1], "create pod factory-agents-t1/worker-s-") {
+		t.Fatalf("kube ops = %v, want the dead session's namespace deleted before the new pod", kube.ops)
+	}
+	if !slices.Contains(kube.deletedPods, "factory-agents-t1/worker-s-dead") {
+		t.Fatalf("deleted pods = %v, want the dead session's pod gone", kube.deletedPods)
+	}
+	if len(hub.calls) < 3 || hub.calls[1] != "revoke 50" || hub.calls[2] != "mint task-t1" {
+		t.Fatalf("forgejo calls = %v, want the leftover token revoked before the new mint", hub.calls)
+	}
+	env := podEnv(kube.podAt(0))
+	if env["PARENT_SESSION_ID"] != "s-dead" {
+		t.Fatalf("PARENT_SESSION_ID = %q, want s-dead", env["PARENT_SESSION_ID"])
+	}
+	var findings []string
+	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 3 || findings[0] != "earlier note" || findings[1] != "changed a.go" || !strings.Contains(findings[2], "s-dead was interrupted after 7 events") {
+		t.Fatalf("findings = %q, want the input, the dead session's findings, the interruption", findings)
+	}
+	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
+		t.Fatalf("session row = %+v, want parent s-dead", sess)
+	}
+}
+
+func TestRunSessionRepetitionTripAsksForStrongerModel(t *testing.T) {
+	task := Task{ID: "t2", Status: "running", Objective: "do it", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Supervisor.RepetitionEvents = 2
+
 	var stalling string
 	for i := 0; i < 3; i++ {
 		stalling += envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": fmt.Sprintf("cmd %d", i), "exit": 0}}) + "\n"
 	}
-	runWithPodLogs(t, runner, task, []string{stalling, resultLine(true, "recovered")})
-
-	got, _, _ := store.Task(context.Background(), "t2")
-	if got.Status != "done" {
-		t.Fatalf("status = %q, want done after resume", got.Status)
-	}
-	if len(kube.podOrder) != 2 {
-		t.Fatalf("pods created = %d, want 2 (stalled + resumed)", len(kube.podOrder))
-	}
-	sessions := 0
-	for _, s := range store.sessions {
-		if s.TaskID == "t2" {
-			sessions++
-		}
-	}
-	if sessions != 2 {
-		t.Fatalf("sessions = %d, want 2", sessions)
-	}
-	var resumed Session
-	for _, s := range store.sessions {
-		if s.ParentSessionID != "" {
-			resumed = s
-		}
-	}
-	if resumed.ID == "" {
-		t.Fatal("no session chained to a parent")
-	}
-	if _, ok := store.sessions[resumed.ParentSessionID]; !ok {
-		t.Fatalf("parent %s not recorded", resumed.ParentSessionID)
-	}
-	// The snapshot carries the trip's findings into the resumed session row.
-	parent := store.sessions[resumed.ParentSessionID]
-	if len(parent.Findings) == 0 {
-		t.Fatal("tripped session left no findings snapshot")
-	}
-
-	second := runner.workerPodSpec(task, "s2", "s1", nil, cfg.RetryModel)
-	secondEnv := second["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any)
-	var model, parentEnv, repository string
-	for _, e := range secondEnv {
-		if e["name"] == "REPOSITORY" {
-			repository = e["value"].(string)
-		}
-		if e["name"] == "MODEL" {
-			model = e["value"].(string)
-		}
-		if e["name"] == "PARENT_SESSION_ID" {
-			parentEnv = e["value"].(string)
-		}
-	}
-	if model != cfg.RetryModel || parentEnv != "s1" || repository != task.Repository {
-		t.Fatalf("resumed pod env: model=%q parent=%q repository=%q", model, parentEnv, repository)
-	}
-}
-
-func TestRunnerFailsAndRevokesWhenAdapterFails(t *testing.T) {
-	task := Task{ID: "t3", Status: "queued", Objective: "break", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-
-	runWithPodLogs(t, runner, task, []string{resultLine(false, "model refused")})
-
-	got, _, _ := store.Task(context.Background(), "t3")
-	if got.Status != "failed" {
-		t.Fatalf("status = %q, want failed", got.Status)
-	}
-	if len(hub.revoked) != 1 {
-		t.Fatalf("revoked = %v: a failed run must still revoke", hub.revoked)
-	}
-}
-
-func TestRunnerRetriesWhenPodDiesWithoutResult(t *testing.T) {
-	task := Task{ID: "t4", Status: "queued", Objective: "flaky", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-
-	runWithPodLogs(t, runner, task, []string{
-		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n",
-		resultLine(true, "second attempt worked"),
-	})
-
-	got, _, _ := store.Task(context.Background(), "t4")
-	if got.Status != "done" {
-		t.Fatalf("status = %q, want done after retrying the dead pod", got.Status)
-	}
-	if len(kube.podOrder) != 2 {
-		t.Fatalf("pods = %d, want 2", len(kube.podOrder))
-	}
-}
-
-func TestRunnerBootSweep(t *testing.T) {
-	kube := newFakeKube()
-	kube.namespaces["factory-agents-t9"] = map[string]string{"factory.ai/task": "t9"}
-	kube.namespaces["factory-agents-tqueued"] = map[string]string{"factory.ai/task": "tqueued"}
-	kube.namespaces["factory-agents-ghost"] = map[string]string{"factory.ai/task": "ghost"}
-	objects := &fakeObjectStore{}
-	hub := &forgejoHub{nextID: 300}
-	fjSrv := hub.srv(t)
-	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"keys":[],"total_pages":0}`)
-	}))
-	t.Cleanup(ll.Close)
-	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t9", Status: "running", Repository: "sf/repo", Objective: "x"})
-	store.CreateTask(context.Background(), Task{ID: "tclosing", Status: "closing", Repository: "sf/repo", Objective: "z"})
-	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo", Objective: "y"})
-	completion := &Completion{Store: store, Forgejo: &Forgejo{BaseURL: fjSrv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
-		LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL}}
-	runner, err := NewRunner(testRunnerConfig(), store, kube, completion.Forgejo, completion, objects)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, stalling)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	runner.BootSweep(context.Background())
-
-	t9, _, _ := store.Task(context.Background(), "t9")
-	if t9.Status != "failed" {
-		t.Fatalf("interrupted task status = %q, want failed", t9.Status)
+	if res.Outcome != OutcomeRetryStronger || len(res.Findings) == 0 {
+		t.Fatalf("result = %+v, want retry_stronger with findings", res)
 	}
-	tc, _, _ := store.Task(context.Background(), "tclosing")
-	if tc.Status != "failed" {
-		t.Fatalf("stuck-closing task status = %q, want failed (sweep finishes the cleanup)", tc.Status)
-	}
-	if _, ok := kube.namespaces["factory-agents-t9"]; ok {
-		t.Fatal("interrupted task's namespace survived the sweep")
-	}
-	if _, ok := kube.namespaces["factory-agents-ghost"]; ok {
-		t.Fatal("orphan namespace survived the sweep")
-	}
-	if _, ok := kube.namespaces["factory-agents-tqueued"]; !ok {
-		t.Fatal("queued task's namespace must NOT be swept")
-	}
-}
-
-func TestRunnerWallClockCapIsPerTask(t *testing.T) {
-	task := Task{ID: "t5", Status: "queued", Objective: "slow", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, WallClockCap: 300 * time.Millisecond, RepetitionEvents: 24}
-
-	runWithPodLogs(t, runner, task, []string{hangLogs, hangLogs, hangLogs})
-
-	got, _, _ := store.Task(context.Background(), "t5")
-	if got.Status != "failed" {
-		t.Fatalf("status = %q, want failed at the task cap", got.Status)
-	}
-	if len(kube.podOrder) != 1 {
-		t.Fatalf("pods = %d, want 1: a wall-clock trip ends the task, it does not resume", len(kube.podOrder))
+	if snap := store.sessions[res.SessionID]; len(snap.Findings) == 0 {
+		t.Fatal("tripped session left no findings snapshot")
 	}
 	if len(hub.revoked) != 1 {
 		t.Fatalf("revoked = %v", hub.revoked)
 	}
 }
 
-func TestRunnerShutdownRequeuesInFlightTask(t *testing.T) {
-	task := Task{ID: "t6", Status: "queued", Objective: "long", Repository: "sf/repo"}
+func TestRunSessionAdapterFailureIsNoPush(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "break", Repository: "sf/repo"}
 	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runner.execute(ctx, task)
-	}()
-	for {
-		kube.mu.Lock()
-		n := len(kube.podOrder)
-		kube.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(false, "model refused"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	kube.scriptPods(0, hangLogs)
-	cancel()
-	<-done
-
-	got, _, _ := store.Task(context.Background(), "t6")
-	if got.Status != "queued" {
-		t.Fatalf("status = %q, want queued (handed back on shutdown)", got.Status)
-	}
-	if len(kube.podOrder) != 1 {
-		t.Fatalf("pods = %d, want 1: no new session after shutdown", len(kube.podOrder))
+	if res.Outcome != OutcomeNoPush || res.Summary != "model refused" || !strings.Contains(strings.Join(res.Findings, "\n"), "model refused") {
+		t.Fatalf("result = %+v", res)
 	}
 	if len(hub.revoked) != 1 {
-		t.Fatalf("revoked = %v: a requeued task's token must not survive", hub.revoked)
+		t.Fatalf("revoked = %v: a failed session must still revoke", hub.revoked)
+	}
+}
+
+func TestRunSessionSuccessWithoutPushIsNoPush(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "noop", Repository: "sf/repo"}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(true, "no changes to push"))
+	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "no changes to push" {
+		t.Fatalf("result = (%+v, %v), want no_push", res, err)
+	}
+}
+
+func TestRunSessionPodDeathIsNoPush(t *testing.T) {
+	task := Task{ID: "t4", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4", Attempt: 1, Model: "m"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
+	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "pod exited without a result" {
+		t.Fatalf("result = (%+v, %v)", res, err)
+	}
+}
+
+func TestRunSessionWallClockTrip(t *testing.T) {
+	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, WallClockCap: 300 * time.Millisecond, RepetitionEvents: 24}
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err != nil || res.Outcome != OutcomeWallClock {
+		t.Fatalf("result = (%+v, %v), want wall_clock", res, err)
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v", hub.revoked)
+	}
+}
+
+// A worker shutdown cancels the attempt: its pod, namespace and credentials
+// go, and the error hands the attempt back to Temporal for a retry.
+func TestRunSessionShutdownCleansUpAndFails(t *testing.T) {
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	ctx, cancel := context.WithCancel(context.Background())
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); cancel() }() }
+
+	_, err := runSession(t, ctx, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err == nil {
+		t.Fatal("RunSession succeeded through a shutdown")
+	}
+	if len(hub.revoked) != 1 {
+		t.Fatalf("revoked = %v: the session's token must not survive", hub.revoked)
 	}
 	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
 		t.Fatal("namespace survived the shutdown")
 	}
 }
 
-// A shutdown that lands after the worker delivered its verdict must not
-// hand the finished task back to the queue.
-func TestRunnerShutdownAfterVerdictCompletes(t *testing.T) {
-	task := Task{ID: "t8", Status: "queued", Objective: "quick", Repository: "sf/repo"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	ctx, cancel := context.WithCancel(context.Background())
-	kube.onDeletePod = cancel // the session's pod teardown runs after the result arrived
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runner.execute(ctx, task)
-	}()
-	for {
-		kube.mu.Lock()
-		n := len(kube.podOrder)
-		kube.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	kube.scriptPods(0, resultLine(true, "pushed branch factory/t8 at abc")+"\n")
-	<-done
-
-	if got, _, _ := store.Task(context.Background(), "t8"); got.Status != "done" {
-		t.Fatalf("status = %q, want done: the verdict came before the shutdown", got.Status)
-	}
-	if len(hub.revoked) != 1 {
-		t.Fatalf("revoked = %v", hub.revoked)
-	}
-}
-
-func TestRunnerSetupFailureDeletesNamespace(t *testing.T) {
-	task := Task{ID: "t8", Status: "queued", Objective: "x", Repository: "sf/repo"}
+func TestRunSessionSetupFailureDeletesNamespace(t *testing.T) {
+	task := Task{ID: "t8", Status: "running", Objective: "x", Repository: "sf/repo"}
 	kube := newFakeKube()
 	kube.saErr = fmt.Errorf("apiserver says no")
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 
-	runner.execute(context.Background(), task)
-
-	if got, _, _ := store.Task(context.Background(), "t8"); got.Status != "failed" {
-		t.Fatalf("status = %q, want failed", got.Status)
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t8", Attempt: 1, Model: "m"}, nil); err == nil {
+		t.Fatal("RunSession succeeded without a sandbox")
 	}
 	if _, ok := kube.createdNs["factory-agents-t8"]; !ok {
 		t.Fatal("setup never created the namespace")
@@ -763,6 +735,28 @@ func TestRunnerSetupFailureDeletesNamespace(t *testing.T) {
 	}
 	if len(hub.revoked) != 1 {
 		t.Fatalf("revoked = %v", hub.revoked)
+	}
+}
+
+func TestBootSweepKeepsOnlyLiveTaskNamespaces(t *testing.T) {
+	kube := newFakeKube()
+	for _, id := range []string{"trunning", "tqueued", "treview", "tdone", "ghost"} {
+		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
+	}
+	runner, _, store := newTestRunner(t, Task{ID: "trunning", Status: "running", Repository: "sf/repo"}, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo"})
+	store.CreateTask(context.Background(), Task{ID: "treview", Status: "in-review", Repository: "sf/repo"})
+	store.CreateTask(context.Background(), Task{ID: "tdone", Status: "done", Repository: "sf/repo"})
+
+	runner.BootSweep(context.Background())
+
+	for id, kept := range map[string]bool{"trunning": true, "tqueued": true, "treview": false, "tdone": false, "ghost": false} {
+		if _, ok := kube.namespaces["factory-agents-"+id]; ok != kept {
+			t.Fatalf("namespace of %s kept = %v, want %v", id, ok, kept)
+		}
+	}
+	if got, _, _ := store.Task(context.Background(), "trunning"); got.Status != "running" {
+		t.Fatalf("running task = %q: the sweep must leave it to its workflow", got.Status)
 	}
 }
 

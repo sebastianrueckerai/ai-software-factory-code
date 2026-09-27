@@ -20,8 +20,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
-// RunnerConfig carries the per-cluster sandbox facts. Defaults are set in
-// newRunnerConfig-from-env (cmd/factoryd); tests set them explicitly.
+// RunnerConfig carries the per-cluster sandbox facts and the task policy the
+// workflow runs under. Defaults are set from the environment in
+// cmd/factoryd; tests set them explicitly.
 type RunnerConfig struct {
 	AgentNamespacePrefix string // "factory-agents-"
 	WorkerImage          string // pinned digest
@@ -29,18 +30,18 @@ type RunnerConfig struct {
 	FactoryNamespace     string // where the pull secret lives
 	GatewayURL           string // http://factory-gateway.factory.svc.cluster.local:8081
 	GitBaseURL           string // http://forgejo-http.forgejo.svc.cluster.local:3000 — sandbox clones; the public host's in-cluster DNS answer is the gateway ClusterIP, which FQDN policy cannot authorize
-	Model                string
-	RetryModel           string
+	Models               ModelLadder
 	AnswerTokens         int
 	HeadroomTokens       int
 	MaxSessions          int
-	PollInterval         time.Duration
+	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
+	ChecksPoll           time.Duration
 	Supervisor           SupervisorConfig
 }
 
-// Runner owns the task lifecycle from queued to done: per-task namespace,
-// credentials, sandbox pods, supervision, session records, and completion.
-// One task runs at a time — the factory's throughput target is one box.
+// Runner owns the sandbox side of a task: per-session namespace,
+// credentials, worker pod, supervision and session records. Its exported
+// methods are the Temporal activities TaskWorkflow calls.
 type Runner struct {
 	cfg        RunnerConfig
 	store      Store
@@ -48,11 +49,15 @@ type Runner struct {
 	forgejo    *Forgejo
 	completion *Completion
 	objects    ObjectStore
+	timeline   Timeline
 }
 
 func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore) (*Runner, error) {
 	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" {
 		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL are required")
+	}
+	if cfg.Models.Start == "" || cfg.Models.Stronger == "" {
+		return nil, fmt.Errorf("runner: both model ladder rungs are required")
 	}
 	for _, raw := range []string{cfg.GatewayURL, cfg.GitBaseURL} {
 		if u, err := url.Parse(raw); err != nil || u.Hostname() == "" {
@@ -68,61 +73,31 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.MaxSessions <= 0 {
 		cfg.MaxSessions = 3
 	}
-	if cfg.PollInterval <= 0 {
-		cfg.PollInterval = 2 * time.Second
+	if cfg.ChecksTimeout <= 0 {
+		cfg.ChecksTimeout = 45 * time.Minute
 	}
-	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, objects: objects}, nil
+	if cfg.ChecksPoll <= 0 {
+		cfg.ChecksPoll = 30 * time.Second
+	}
+	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion,
+		objects: objects, timeline: Timeline{Objects: objects}}, nil
 }
 
-// Run polls for queued tasks and executes them serially until ctx ends. A
-// task in flight when ctx ends is handed back to the queue.
-func (r *Runner) Run(ctx context.Context) {
-	tick := time.NewTicker(r.cfg.PollInterval)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			queued, err := r.store.ListTasksByStatus(ctx, "queued")
-			if err != nil {
-				log.Printf("runner: list queued: %v", err)
-				continue
-			}
-			for _, t := range queued {
-				if ctx.Err() != nil {
-					return
-				}
-				if t.Kind == "human" {
-					continue // Stage 7's console lane: no agent run
-				}
-				r.execute(ctx, t)
-			}
-		}
+// WorkflowConfig is the task policy TaskWorkflow captures at start.
+func (r *Runner) WorkflowConfig() WorkflowConfig {
+	return WorkflowConfig{
+		Models:        r.cfg.Models,
+		MaxSessions:   r.cfg.MaxSessions,
+		WallClockCap:  r.cfg.Supervisor.WallClockCap,
+		ChecksTimeout: r.cfg.ChecksTimeout,
 	}
 }
 
-// BootSweep clears the residue of a crashed factoryd: interrupted tasks are
-// failed (their namespaces die, their credentials get revoked), and
-// namespaces whose task no longer needs one are deleted.
+// BootSweep deletes agent namespaces no session can still be using: those of
+// tasks that are neither queued nor running, and of unknown tasks. A running
+// task's namespace belongs to a RunSession attempt Temporal will retry, and
+// the retry replaces it itself.
 func (r *Runner) BootSweep(ctx context.Context) {
-	// A crash leaves tasks running (interrupted) or closing (cleanup was
-	// already underway and failed); Complete is idempotent, so both are
-	// finished the same way.
-	for _, status := range []string{"running", "closing"} {
-		stuck, err := r.store.ListTasksByStatus(ctx, status)
-		if err != nil {
-			log.Printf("boot sweep: list %s: %v", status, err)
-		}
-		for _, t := range stuck {
-			r.forgetNamespace(ctx, t.ID)
-			if err := r.completion.Complete(ctx, t.ID, "failed"); err != nil {
-				log.Printf("boot sweep: task %s: %v", t.ID, err)
-			} else {
-				log.Printf("boot sweep: task %s failed (interrupted run)", t.ID)
-			}
-		}
-	}
 	live, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
 		log.Printf("boot sweep: list agent namespaces: %v", err)
@@ -142,125 +117,43 @@ func (r *Runner) BootSweep(ctx context.Context) {
 	}
 }
 
-func (r *Runner) execute(ctx context.Context, t Task) {
-	if err := r.store.MarkStarted(ctx, t.ID); err != nil {
-		log.Printf("task %s: claim: %v", t.ID, err)
-		return
-	}
-	elapsed := time.Duration(0)
-	mirrorTaskState(ctx, r.forgejo, t, "running")
-	// the store measured the elapsed time on its own clock; every deadline
-	// from here on runs on this process's monotonic clock
-	started := time.Now().Add(-elapsed)
-	final, reason := r.runTask(ctx, t, started)
-
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-	defer cancel()
-	if final == "" {
-		log.Printf("task %s: shutdown mid-run, requeued (%s)", t.ID, reason)
-		if err := r.completion.Requeue(cleanup, t.ID); err != nil {
-			log.Printf("task %s: requeue stuck in closing: %v", t.ID, err)
-		}
-		return
-	}
-	log.Printf("task %s: %s (%s)", t.ID, final, reason)
-	if err := r.completion.Complete(cleanup, t.ID, final); err != nil {
-		log.Printf("task %s: completion stuck in closing: %v", t.ID, err)
-	}
-}
-
-// runTask provisions the task namespace and runs sessions until one yields
-// a verdict, the task's wall-clock cap (anchored to the task's first start)
-// passes, or the attempts run out. final is empty when shutdown cut the run
-// short before any verdict: the task goes back to the queue. A verdict
-// reached before shutdown stands.
-func (r *Runner) runTask(ctx context.Context, t Task, started time.Time) (final, reason string) {
-	verdict := false
-	defer func() {
-		if !verdict && ctx.Err() != nil {
-			final = ""
-		}
-	}()
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		return "failed", err.Error()
-	}
-	// registered first: a half-built namespace must not outlive the task
-	defer r.forgetNamespace(context.WithoutCancel(ctx), t.ID)
-	tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), []Repo{repo})
-	if err != nil {
-		return "failed", err.Error()
-	}
-	ns := r.agentNamespace(t.ID)
-	if err := r.setupNamespace(ctx, t, tok); err != nil {
-		return "failed", err.Error()
-	}
-
-	findings := []string{}
-	parent := ""
-	model := r.cfg.Model
-	final, reason = "failed", "no session produced a result"
-	for attempt := 0; attempt < r.cfg.MaxSessions && ctx.Err() == nil; attempt++ {
-		if time.Since(started) >= r.cfg.Supervisor.WallClockCap {
-			verdict = true
-			return "failed", "supervision trip: " + string(TripWallClock)
-		}
-		sessionID := newID("s-")
-		out, err := r.runSession(ctx, t, ns, sessionID, parent, findings, model, started)
-		if err != nil {
-			reason = err.Error()
-			continue
-		}
-		if out.result != nil {
-			verdict = true
-			final, reason = "failed", out.result.Summary
-			if out.result.Success {
-				final = "done"
-			}
-			return final, reason
-		}
-		if out.trip != nil {
-			reason = "supervision trip: " + string(out.trip.Kind)
-			if out.trip.Kind == TripWallClock {
-				verdict = true
-				return "failed", reason
-			}
-			parent = sessionID
-			findings = out.trip.Findings
-			if out.trip.RetryStrongerModel {
-				model = r.cfg.RetryModel
-			}
-			continue
-		}
-		if out.noResult != "" {
-			parent = sessionID
-			findings = append(append([]string(nil), findings...), out.noResult)
-			reason = out.noResult
-		}
-	}
-	return final, reason
+// sessionSpec is what one worker pod runs: its identity, the chain it
+// continues, and where it starts.
+type sessionSpec struct {
+	id       string
+	parent   string
+	findings []string
+	model    string
+	startRef string
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
-// a supervision trip (resume), or the pod dying without either (retry).
+// a supervision trip, or the pod dying without either.
 type sessionOutcome struct {
 	result   *harness.Result
+	commit   string
 	trip     *Trip
 	noResult string
+	findings []string
 }
 
-func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent string, findings []string, model string, taskStarted time.Time) (sessionOutcome, error) {
+// runSession runs one worker pod in the task namespace until it yields a
+// result, trips its supervisor (whose wall clock ends at deadline), or
+// dies. progress receives the event count and findings so far, for the
+// activity heartbeat.
+func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string)) (sessionOutcome, error) {
 	out := sessionOutcome{}
-	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, sessionID, parent)
+	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
 	if err != nil {
 		return out, err
 	}
-	sup, err := NewSupervisor(r.cfg.Supervisor, taskStarted, time.Now())
+	sup, err := NewSupervisor(r.cfg.Supervisor, deadline.Add(-r.cfg.Supervisor.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
 	}
-	podName := "worker-" + sessionID
-	pod := r.workerPodSpec(t, sessionID, parent, findings, model)
+	defer func() { out.findings = sup.Findings() }()
+	podName := "worker-" + s.id
+	pod := r.workerPodSpec(t, s)
 	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
 		return out, fmt.Errorf("create pod: %w", err)
 	}
@@ -273,8 +166,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 	}()
 
 	// The pod must leave Pending before its log endpoint is useful; a first
-	// image pull can take minutes, but never past the task's wall-clock cap.
-	wait := min(10*time.Minute, time.Until(taskStarted.Add(r.cfg.Supervisor.WallClockCap)))
+	// image pull can take minutes, but never past the session deadline.
+	wait := min(10*time.Minute, time.Until(deadline))
 	if err := r.awaitPodStart(ctx, ns, podName, wait); err != nil {
 		out.noResult = err.Error()
 		return out, nil
@@ -307,6 +200,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 
 	tick := time.NewTicker(r.supervisionTick())
 	defer tick.Stop()
+	events := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -338,7 +232,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns, sessionID, parent s
 				if err := recorder.Record(ctx, *env.Event); err != nil {
 					log.Printf("task %s: record event: %v", t.ID, err)
 				}
-				if trip := sup.Event(*env.Event, time.Now()); trip != nil {
+				if env.Event.Kind == harness.EventPushed {
+					out.commit, _ = env.Event.Detail["commit"].(string)
+				}
+				events++
+				trip := sup.Event(*env.Event, time.Now())
+				progress(events, sup.Findings())
+				if trip != nil {
 					out.trip = r.abandon(recorder, trip)
 					return out, nil
 				}
@@ -540,27 +440,27 @@ func (r *Runner) supervisionTick() time.Duration {
 	return t
 }
 
-func (r *Runner) workerPodSpec(t Task, sessionID, parent string, findings []string, model string) map[string]any {
-	findingsJSON, _ := json.Marshal(findings)
+func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
+	findingsJSON, _ := json.Marshal(s.findings)
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
-		{"name": "SESSION_ID", "value": sessionID},
+		{"name": "SESSION_ID", "value": s.id},
 		{"name": "OBJECTIVE", "value": t.Objective},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_URL", "value": r.cloneURL(t)},
-		{"name": "REPO_SHA", "value": t.SHA},
+		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": r.branch(t)},
 		{"name": "GIT_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "GIT_TOKEN"}}},
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
-		{"name": "MODEL", "value": model},
+		{"name": "MODEL", "value": s.model},
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "FINDINGS", "value": string(findingsJSON)},
 	}
-	if parent != "" {
-		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": parent})
+	if s.parent != "" {
+		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
 	}
 	pullSecrets := []any{}
 	if r.cfg.PullSecret != "" {

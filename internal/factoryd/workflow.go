@@ -321,3 +321,8 @@ func isWallClockTimeout(err error) bool {
 	}
 	return false
 }
+
+func isTerminal(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errTerminal
+}

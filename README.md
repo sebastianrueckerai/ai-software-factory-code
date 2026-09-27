@@ -8,13 +8,20 @@ the agents work on.
 
 - `cmd/factoryd`: the control plane. Task intake (`POST /tasks`,
   `GET /tasks/{id}`, bearer token from secret `factoryd-intake`, budget
-  clamped to `MAX_BUDGET_EUR`), the task store in Postgres, one namespace
-  and one gVisor pod per task, per-task Forgejo token minting and
-  revocation, session records to S3, supervision (stall watchdog,
-  wall-clock cap, tool calls without file changes), spend settlement
-  against LiteLLM, and the orphan sweep. Runs with `strategy: Recreate`;
-  a restart requeues the running task. It also runs the CI spawner (see
-  below) in the same process, on the same in-cluster Kubernetes client.
+  clamped to `MAX_BUDGET_EUR`), the task store in Postgres, and the
+  Temporal worker for task queue `factory-tasks`: one `TaskWorkflow` per
+  task (workflow id `task-<id>`) runs the attempts, opens the pull
+  request, waits for its checks and for the reviewer. Each attempt
+  (`RunSession`) gets a fresh namespace, its own Forgejo token and
+  service account (so its own LiteLLM key), one gVisor pod, supervision
+  (stall watchdog, wall-clock cap, tool calls without file changes) and
+  a session record in S3; `sessions/<task>/timeline.jsonl` records the
+  task's whole path. Spend settlement against LiteLLM and the orphan
+  sweep run beside it. Runs with `strategy: Recreate`; a restart loses
+  nothing: Temporal retries the interrupted attempt on the new pod,
+  which continues the dead session's chain from its heartbeat. It also
+  runs the CI spawner (see below) in the same process, on the same
+  in-cluster Kubernetes client.
 - `cmd/factory-gateway`: the enforcement point. Validates the pod's
   projected ServiceAccount JWT, mints a per-task LiteLLM virtual key,
   forwards the call, books each call's cost into the task row, refuses
