@@ -79,12 +79,16 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // before finishing it. For a task waiting on Forgejo (in review or on a
 // human) it also re-reads the pull request, issue and comments through
 // in.Resync, so a webhook lost while factoryd was down still reaches the
-// workflow.
+// workflow, and takes in the agent and human issues no webhook turned
+// into a task (in.ResyncIssues).
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
+	}
+	if err := in.ResyncIssues(ctx); err != nil {
+		log.Printf("heal pass: issues: %v", err)
 	}
 	for _, status := range []string{"queued", "running", "in-review", "waiting-human", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)

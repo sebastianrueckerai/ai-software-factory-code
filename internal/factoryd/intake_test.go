@@ -33,6 +33,18 @@ func sign(secret string, body []byte) string {
 // hit, so tests can assert a lookup was — or was not — made; a test can read
 // back the labels the stub now holds for an issue via the same *Forgejo's
 // IssueLabels.
+// openIssues are the open issues intakeForgejoStub lists, by label.
+var openIssues = map[string][]string{
+	"agent": {
+		`{"number":7,"title":"Add the runner","body":"objective body","user":{"login":"sebastian"},"labels":[{"name":"agent"},{"name":"priority/p1"}]}`,
+		`{"number":8,"title":"Filed by the bot","user":{"login":"factory-agent"},"labels":[{"name":"agent"}]}`,
+		`{"number":10,"title":"Already a task","user":{"login":"sebastian"},"labels":[{"name":"agent"}]}`,
+	},
+	"human": {
+		`{"number":9,"title":"Needs a decision","user":{"login":"sebastian"},"labels":[{"name":"human"}]}`,
+	},
+}
+
 func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 	t.Helper()
 	var requests []string
@@ -66,6 +78,13 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub, malformed body just yields nil labels
 			labels[r.URL.Path] = payload.Labels
 			io.WriteString(w, `[]`)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/issues/") && strings.Count(r.URL.Path, "/") == 7:
+			io.WriteString(w, `{"state":"open"}`)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues" && r.Method == http.MethodGet:
+			if q := r.URL.Query(); q.Get("state") != "open" || q.Get("type") != "issues" {
+				t.Errorf("issue list query %q, want open issues only", r.URL.RawQuery)
+			}
+			servePage(w, r, 1, openIssues[r.URL.Query().Get("labels")]...)
 		case strings.Count(r.URL.Path, "/") == 4: // /api/v1/repos/{owner}/{repo}
 			io.WriteString(w, `{"default_branch":"main"}`)
 		default:
@@ -821,6 +840,35 @@ func TestIntakeResyncReadsCommentsPastAnUnknownCloser(t *testing.T) {
 	}
 	if got, want := workflowsOf(in).signals, []string{"t1 human_comment sebastian #0 c80: answer: do X"}; !slices.Equal(got, want) {
 		t.Fatalf("signals = %q, want %q", got, want)
+	}
+}
+
+// Forgejo never retries a failed delivery, so an agent or human issue
+// filed while factoryd was down would never become a task: the heal pass
+// lists the open issues so labelled on the intake's repositories, every
+// page, and runs each through the webhook's own intake. An unlinked one
+// becomes a task; a linked one and a bot-authored one do not, on this pass
+// or the next.
+func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Repositories = []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}
+	store.tasks["t-10"] = Task{ID: "t-10", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 10}
+	for range 2 {
+		if err := in.ResyncIssues(context.Background()); err != nil {
+			t.Fatalf("ResyncIssues: %v", err)
+		}
+	}
+	byIssue := map[int64]Task{}
+	for _, tk := range store.tasks {
+		byIssue[tk.IssueNumber] = tk
+	}
+	agent, human := byIssue[7], byIssue[9]
+	if len(store.tasks) != 3 || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
+		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" {
+		t.Fatalf("tasks = %+v, want #10's plus an agent task for #7 and a human one for #9", store.tasks)
+	}
+	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID}) {
+		t.Fatalf("started = %q, want only #7's workflow", got)
 	}
 }
 

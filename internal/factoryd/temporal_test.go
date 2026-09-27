@@ -185,3 +185,20 @@ func TestTemporalStartIsQuietAgainstARunningWorkflow(t *testing.T) {
 		t.Fatalf("log = %q, want nothing for a start against a running workflow", buf.String())
 	}
 }
+
+// The heal pass takes in an agent issue whose webhook was lost: its task
+// exists and its workflow runs after one pass.
+func TestHealPassTakesInMissedIssues(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Repositories = []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}
+	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
+	var agent string
+	for _, tk := range store.tasks {
+		if tk.IssueNumber == 7 {
+			agent = tk.ID
+		}
+	}
+	if agent == "" || !slices.Contains(workflowsOf(in).started, agent) {
+		t.Fatalf("tasks = %+v, started = %q: want #7's task with its workflow started", store.tasks, workflowsOf(in).started)
+	}
+}

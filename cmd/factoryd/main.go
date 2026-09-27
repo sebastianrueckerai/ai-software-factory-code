@@ -161,16 +161,17 @@ func main() {
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	maxBudget := envFloat("MAX_BUDGET_EUR", 5)
+	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
+	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), MaxBudgetEUR: maxBudget,
+		Repositories: []factoryd.Repo{upstream},
 	}
-	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// the bot's private fork holds every task branch (ruling 97)
-	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	if err := forgejo.EnsureFork(ctx, upstream); err != nil {
 		log.Printf("ensure fork of %s: %v", upstream, err)
 	} else {

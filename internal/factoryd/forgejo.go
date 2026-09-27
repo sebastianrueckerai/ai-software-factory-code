@@ -936,6 +936,12 @@ func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number 
 	return closer, nil
 }
 
+// OpenIssuesLabelled lists owner/repo's open issues, not pull requests,
+// carrying label.
+func (f *Forgejo) OpenIssuesLabelled(ctx context.Context, owner, repo, label string) ([]webhookIssue, error) {
+	return getPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&labels=%s&", owner, repo, url.QueryEscape(label)))
+}
+
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
 // every agent task is stamped with at intake; branch is the default branch
 // when the caller already knows it (a webhook payload), else it is read.

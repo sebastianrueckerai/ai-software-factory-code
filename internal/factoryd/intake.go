@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -31,6 +32,9 @@ type Intake struct {
 	BotUser      string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret       string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	MaxBudgetEUR float64
+	// Repositories are where the heal pass looks for agent and human
+	// issues no webhook turned into a task.
+	Repositories []Repo
 
 	trustMu sync.Mutex
 	trust   map[string]time.Time // repo + user → trusted until
@@ -255,9 +259,8 @@ func ClampBudget(requested, max float64) float64 {
 	return min(requested, max)
 }
 
-// handleIssue turns an issue carrying the agent or human label into a task
-// row, idempotent per (repository, issue number): a redelivery, or a later
-// label event on the same issue, finds the task already linked and no-ops.
+// handleIssue hands an issue event to intakeIssue; a close goes to the
+// task the issue is linked to.
 func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string) error {
 	var p issuesPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -266,17 +269,56 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if p.Action == "closed" {
 		return in.handleIssueClosed(ctx, p)
 	}
-	if p.Issue.Poster.UserName == in.BotUser {
+	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue)
+}
+
+// ResyncIssues takes in the open agent and human issues of in.Repositories
+// that no task is linked to yet: Forgejo never retries a failed delivery,
+// so an issue filed or labelled while factoryd was down is otherwise never
+// seen. Each goes through the webhook's own intake.
+func (in *Intake) ResyncIssues(ctx context.Context) error {
+	var errs []error
+	for _, repo := range in.Repositories {
+		for _, label := range []string{"agent", "human"} {
+			issues, err := in.Forgejo.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, label)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("%s issues of %s: %w", label, repo, err))
+				continue
+			}
+			for _, issue := range issues {
+				_, linked, err := in.Store.TaskByIssue(ctx, repo.String(), issue.Index)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("task by issue: %w", err))
+					continue
+				}
+				if linked {
+					continue
+				}
+				if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue); err != nil {
+					errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
+				}
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// intakeIssue turns an issue of repo carrying the agent or human label
+// into a task row, idempotent per (repository, issue number): a
+// redelivery, a later label event or a heal pass finds the task already
+// linked and no-ops. defaultBranch is the repository's when the caller
+// knows it (a webhook payload), else read. via names the path in the log.
+func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch string, issue webhookIssue) error {
+	if issue.Poster.UserName == in.BotUser {
 		return nil // the bot's own issues never spawn a second task
 	}
-	names := labelNames(p.Issue.Labels)
+	names := labelNames(issue.Labels)
 	hasAgent := slices.Contains(names, "agent")
 	hasHuman := slices.Contains(names, "human")
 	if !hasAgent && !hasHuman {
 		return nil
 	}
-	repo := p.Repository.FullName
-	if t, ok, err := in.Store.TaskByIssue(ctx, repo, p.Issue.Index); err != nil {
+	if t, ok, err := in.Store.TaskByIssue(ctx, repo, issue.Index); err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	} else if ok {
 		// a redelivery retries a workflow start that failed the first time
@@ -297,10 +339,10 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		RiskClass:   "standard",
 		BudgetEUR:   ClampBudget(0, in.MaxBudgetEUR),
 		Status:      "queued",
-		Objective:   objectiveFromIssue(p.Issue),
+		Objective:   objectiveFromIssue(issue),
 		Repository:  repo,
 		Kind:        kind,
-		IssueNumber: p.Issue.Index,
+		IssueNumber: issue.Index,
 		Source:      "webhook",
 	}
 	if kind == "agent" {
@@ -308,7 +350,7 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 		if err != nil {
 			return err
 		}
-		if task.SHA, err = in.Forgejo.DefaultBranchHeadSHA(ctx, repoParts.Owner, repoParts.Name, p.Repository.DefaultBranch); err != nil {
+		if task.SHA, err = in.Forgejo.DefaultBranchHeadSHA(ctx, repoParts.Owner, repoParts.Name, defaultBranch); err != nil {
 			return fmt.Errorf("base sha: %w", err)
 		}
 	} else {
@@ -320,7 +362,7 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
-	log.Printf("webhook intake: issue #%d on %s by %s: %s task %s", p.Issue.Index, repo, p.Issue.Poster.UserName, kind, id)
+	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, issue.Poster.UserName, kind, id)
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
 	if kind == "agent" {
 		return in.Workflows.Start(ctx, id)

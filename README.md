@@ -172,8 +172,11 @@ pending requests coalesced into its findings. Pull request signals count
 only for the task's own PR. A webhook delivery is marked processed (by
 `X-Forgejo-Delivery`) after it was processed; a redelivery of a
 processed one is a no-op, and intake events are keyed by delivery id.
-Forgejo never retries a failed delivery, so for every task in review or
-waiting on a human the heal pass re-reads its pull request, issue
+Forgejo never retries a failed delivery, so the heal pass takes in every
+open `agent` or `human` issue of the code repository that no task is
+linked to, through the webhook's own intake (the same label, bot and
+idempotency rules), and for every task in review or waiting on a human
+it re-reads its pull request, issue
 (closer from the timeline) and comments, and records and signals what
 the webhooks missed, each event once; a decision (merge, close) that has
 not moved the task out of review or the human wait within 15 minutes is
