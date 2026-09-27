@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -522,6 +523,8 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 			RunState{Status: "running"}},
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
 			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
+			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
 			RunState{Status: "running", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
@@ -529,10 +532,22 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Skip: true}},
 		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Skip: true}},
 	} {
-		r, _, _ := newActivityRunner(t, tc.task, tc.fj)
+		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
+		if len(tc.want.Findings) > 0 {
+			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Now().Add(-time.Hour)})
+			// an untrusted one, one never signalled and one an earlier session already took up count for nothing
+			for _, e := range []IntakeEvent{
+				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "rename it", CommentID: 90, Trusted: true, Signalled: true},
+				{TaskID: "t1", Kind: "pull_request_comment", Author: "reader", Body: "drive-by", CommentID: 91},
+				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "not yet signalled", CommentID: 92, Trusted: true},
+				{TaskID: "t1", Kind: "pull_request_review_rejected", Author: "sebastian", Body: "taken up", Trusted: true, Signalled: true, CreatedAt: time.Now().Add(-2 * time.Hour)},
+			} {
+				store.InsertIntakeEvent(context.Background(), e)
+			}
+		}
 		var got RunState
 		val, err := execActivity(t, r, ActivityReconcile, "t1")
-		if err != nil || val.Get(&got) != nil || got != tc.want {
+		if err != nil || val.Get(&got) != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: Reconcile = (%+v, %v), want %+v", name, got, err, tc.want)
 		}
 	}

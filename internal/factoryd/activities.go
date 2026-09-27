@@ -447,6 +447,13 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		st.PRClosed = true
 	default:
 		st.PR, st.Head = PullRequest{Number: pr.Number, URL: pr.URL}, pr.HeadSHA
+		pending, err := r.store.UnaddressedChangeRequests(ctx, taskID)
+		if err != nil {
+			return RunState{}, err
+		}
+		for _, e := range pending {
+			st.Findings = append(st.Findings, changeRequested(e.Author, e.Body))
+		}
 	}
 	if t.IssueNumber != 0 {
 		if st.IssueClosed, err = r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
@@ -454,7 +461,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 	}
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
-		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip})
+		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings)})
 	return st, nil
 }
 

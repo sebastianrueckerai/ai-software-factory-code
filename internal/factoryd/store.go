@@ -52,14 +52,28 @@ type Task struct {
 type IntakeEvent struct {
 	ID        int64
 	TaskID    string
-	Kind      string // the X-Forgejo-Event-Type that produced it
+	Kind      string // issue_comment, pull_request_comment, or the review's X-Forgejo-Event-Type
 	Author    string
 	Body      string
 	CreatedAt time.Time
 	// DeliveryID is the webhook delivery that produced it: a redelivery
 	// inserts no second row.
 	DeliveryID string
+	// CommentID is Forgejo's id of the comment (0 for a review): the heal
+	// pass re-reads comments, and a comment is recorded once whether the
+	// webhook or the re-read saw it first.
+	CommentID int64
+	// Trusted: the author could steer the task when the event was recorded.
+	Trusted bool
+	// Signalled: the task's workflow received it; a trusted event not yet
+	// signalled (factoryd was down or erroring at delivery) is signalled by
+	// the heal pass.
+	Signalled bool
 }
+
+// changeRequestKinds are the intake event kinds that ask for changes on
+// the task's pull request.
+var changeRequestKinds = []string{"pull_request_comment", "pull_request_review_rejected"}
 
 // Session is one agent worker run of a task. ParentSessionID chains a
 // supervision-triggered resume to the session it continues; Findings is the
@@ -97,7 +111,16 @@ type Store interface {
 	// webhook redelivery idempotency; false means no task is linked to that
 	// issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) error
+	// InsertIntakeEvent records e and returns its id; 0 when the same
+	// delivery or comment was recorded before.
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// IntakeEvents lists a task's events, oldest first.
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	// MarkSignalled records that event id reached the task's workflow.
+	MarkSignalled(ctx context.Context, id int64) error
+	// UnaddressedChangeRequests lists the signalled change requests no
+	// session has started on yet: newer than the task's latest session.
+	UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	// SetTaskPR records the pull request a task's workflow opened.
 	SetTaskPR(ctx context.Context, id string, number int64) error
 	// MarkHalfWay records that the task's half-way check-in fired.
@@ -238,12 +261,53 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
 }
 
-func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id) VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (delivery_id) WHERE delivery_id <> '' DO NOTHING`,
-		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID)
-	return err
+func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
+		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return id, err
+}
+
+func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled
+		 FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
+	return scanIntakeEvents(rows, err)
+}
+
+func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled
+		 FROM intake_events WHERE task_id = $1 AND signalled AND kind = ANY($2)
+		 AND created_at > COALESCE((SELECT max(created_at) FROM sessions WHERE task_id = $1), '-infinity')
+		 ORDER BY id`, taskID, changeRequestKinds)
+	return scanIntakeEvents(rows, err)
+}
+
+func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IntakeEvent
+	for rows.Next() {
+		var e IntakeEvent
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) MarkSignalled(ctx context.Context, id int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE intake_events SET signalled = true WHERE id = $1`, id)
+	return oneRow(res, err, fmt.Sprintf("intake event %d", id))
 }
 
 func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error {

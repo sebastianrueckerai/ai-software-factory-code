@@ -431,6 +431,30 @@ func TestWorkflowHealedRunAdoptsTheOpenPR(t *testing.T) {
 	}
 }
 
+// A healed in-review task whose reviewer already asked for changes (the
+// signal reached the run that died before its next session) starts a
+// session with those findings on the PR head, without verifying the head
+// again; the same request arriving once more as a signal counts once.
+func TestWorkflowHealedRunTakesUpReconciledChangeRequests(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c7",
+		Findings: []string{"reviewer sebastian requested changes: rename it"}}
+	h.onSessions(pushed("s2", "c8"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", int64(9)).Return(true, nil)
+	h.env.RegisterDelayedCallback(func() {
+		h.env.SignalWorkflow(SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	}, 0)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q, sessions = %d; want done after one session", final, len(h.sessions))
+	}
+	if in := h.sessions[0]; in.StartRef != "c7" || !slices.Equal(in.Findings, []string{"reviewer sebastian requested changes: rename it"}) {
+		t.Fatalf("session = %+v; want StartRef c7 and the change request once", in)
+	}
+}
+
 // Case 1 variant and 3: the merge (or the close) already happened while no
 // run existed, e.g. a signal started this run.
 func TestWorkflowReconcileFinishesAnAlreadyDecidedTask(t *testing.T) {

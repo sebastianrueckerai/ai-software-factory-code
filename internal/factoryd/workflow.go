@@ -3,6 +3,7 @@ package factoryd
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -130,6 +131,10 @@ type RunState struct {
 	Merged      bool        // the task's pull request merged
 	PRClosed    bool        // the task's pull request closed without merge
 	IssueClosed bool
+	// Findings are the trusted change requests signalled after the last
+	// session began and never taken up: a run that died between the
+	// signal and its next session starts one with them.
+	Findings []string
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -173,7 +178,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
 		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
 		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
-		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor)}
+		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
+		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings)}
 	return run.lifecycle()
 }
 
@@ -199,15 +205,21 @@ const (
 	// answering issue comment, which buys one more attempt, or the issue's
 	// close); a run that finds its task waiting for a human waits again.
 	versionSupervisor workflow.Version = 1
+	// versionReconcileFindings (change id "reconcile-findings"): a run
+	// that adopts an open PR whose reviewer already asked for changes
+	// (Reconcile's Findings) starts a session with them instead of
+	// verifying the judged head; a change request both reconciled and
+	// signalled counts once.
+	versionReconcileFindings workflow.Version = 1
 )
 
 type taskRun struct {
-	ctx, short workflow.Context
-	cfg        WorkflowConfig
-	taskID     string
-	v, v2, v3  workflow.Version
-	pr         PullRequest
-	escalation int64 // the escalation comment human answers must be newer than
+	ctx, short    workflow.Context
+	cfg           WorkflowConfig
+	taskID        string
+	v, v2, v3, v4 workflow.Version
+	pr            PullRequest
+	escalation    int64 // the escalation comment human answers must be newer than
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -257,6 +269,10 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			findings = answer
+		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
+			// the reviewer asked for changes on the pushed head and no
+			// session took them up: start one
+			t.pr, startRef, findings = st.PR, st.Head, st.Findings
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
@@ -273,7 +289,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
 			}
-			findings = append(findings, t.drainChanges()...)
+			for _, f := range t.drainChanges() {
+				if t.v4 < versionReconcileFindings || !slices.Contains(findings, f) {
+					findings = append(findings, f)
+				}
+			}
 		}
 		remaining := t.cfg.WallClockCap - used
 		if remaining <= 0 {
@@ -465,6 +485,12 @@ func (t *taskRun) decided() (final, reason string, ok bool) {
 	return "", "", false
 }
 
+// changeRequested phrases a reviewer's change request as a finding, the
+// same way from a signal and from Reconcile so the two coincide.
+func changeRequested(author, body string) string {
+	return "reviewer " + author + " requested changes: " + body
+}
+
 // drainChanges coalesces every pending change request (one review with
 // many comments sends many) into one findings list for one attempt.
 func (t *taskRun) drainChanges() []string {
@@ -472,7 +498,7 @@ func (t *taskRun) drainChanges() []string {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(&sig) {
 		if t.counted(SignalChangesRequested, sig) {
-			out = append(out, "reviewer "+sig.Author+" requested changes: "+sig.Body)
+			out = append(out, changeRequested(sig.Author, sig.Body))
 		}
 	}
 	return out

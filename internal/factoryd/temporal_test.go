@@ -39,19 +39,28 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 }
 
 // Every agent task not yet finished gets its workflow (re)started: a task
-// whose workflow died in review or mid-completion is not stranded.
+// whose workflow died in review or mid-completion is not stranded. A task
+// waiting on Forgejo (in review, on a human) is re-read there too (I1); a
+// running one is not, its own run reads Forgejo.
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
 	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "td": "done", "tf": "failed"} {
-		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/repo"})
+		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
 	store.CreateTask(context.Background(), Task{ID: "th", Status: "queued", Kind: "human"})
 	wf := &fakeWorkflows{}
-	HealPass(context.Background(), store, wf)
+	forgejo, _ := resyncForgejoStub(t)
+	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"})
 	slices.Sort(wf.started)
 	if want := []string{"tc", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
+	}
+	slices.Sort(wf.signals)
+	want := []string{"tv human_comment sebastian #0 c80: answer: do X", "tv issue_closed factoryd heal pass #0: ",
+		"tw human_comment sebastian #0 c80: answer: do X", "tw issue_closed factoryd heal pass #0: "}
+	if !slices.Equal(wf.signals, want) {
+		t.Fatalf("signals = %q, want the closed issue and the owner's comment re-read for the in-review and waiting-human tasks only", wf.signals)
 	}
 	if len(store.pruned) != 1 || store.pruned[0] != 30*24*time.Hour {
 		t.Fatalf("pruned = %v, want one pass forgetting deliveries older than 30 days", store.pruned)

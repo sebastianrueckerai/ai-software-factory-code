@@ -741,6 +741,43 @@ func (f *Forgejo) CreateIssueComment(ctx context.Context, owner, repo string, is
 	return c.ID, nil
 }
 
+// IssueComment is a comment on an issue or pull request as Forgejo lists
+// it.
+type IssueComment struct {
+	ID        int64     `json:"id"`
+	Author    string    `json:"-"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+	User      struct {
+		UserName string `json:"login"`
+	} `json:"user"`
+}
+
+// ListIssueComments lists every comment on issue or pull request number,
+// oldest first, over as many pages as Forgejo serves.
+func (f *Forgejo) ListIssueComments(ctx context.Context, owner, repo string, number int64) ([]IssueComment, error) {
+	const limit = 50
+	var out []IssueComment
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments?page=%d&limit=%d", owner, repo, number, page, limit)
+		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var res []IssueComment
+		if err := json.Unmarshal(body, &res); err != nil {
+			return nil, fmt.Errorf("forgejo comments on %s/%s#%d: %w", owner, repo, number, err)
+		}
+		for _, c := range res {
+			c.Author = c.User.UserName
+			out = append(out, c)
+		}
+		if len(res) < limit {
+			return out, nil
+		}
+	}
+}
+
 // PullRequestState reads pull request number: open, closed or merged, and
 // its head commit.
 func (f *Forgejo) PullRequestState(ctx context.Context, owner, repo string, number int64) (PullRequestRef, error) {

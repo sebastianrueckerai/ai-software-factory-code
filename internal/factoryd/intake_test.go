@@ -381,8 +381,9 @@ func TestIntakeIssueCommentRecordsEvent(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", IssueNumber: 12, Status: "running", Kind: "agent"}
 	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 12},
-		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "looks good"},
+		"comment":    map[string]any{"id": 61, "user": map[string]string{"login": "sebastian"}, "body": "looks good"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"is_pull":    false,
 	})
@@ -401,10 +402,11 @@ func TestIntakeIssueCommentRecordsEvent(t *testing.T) {
 
 func TestIntakeIssueCommentBotAuthoredIgnored(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", IssueNumber: 12, Status: "running"}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", IssueNumber: 12, Status: "running", Kind: "agent"}
 	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 12},
-		"comment":    map[string]any{"user": map[string]string{"login": "factory-agent"}, "body": "posting status"},
+		"comment":    map[string]any{"id": 62, "user": map[string]string{"login": "factory-agent"}, "body": "posting status"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"is_pull":    false,
 	})
@@ -416,10 +418,11 @@ func TestIntakeIssueCommentBotAuthoredIgnored(t *testing.T) {
 
 func TestIntakePullRequestCommentResolvesByHeadBranch(t *testing.T) {
 	in, store, requests := newTestIntake(t)
-	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "running"}
+	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "running", Kind: "agent"}
 	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 21},
-		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "one nit"},
+		"comment":    map[string]any{"id": 63, "user": map[string]string{"login": "sebastian"}, "body": "one nit"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"is_pull":    true,
 	})
@@ -436,16 +439,17 @@ func TestIntakePullRequestCommentResolvesByHeadBranch(t *testing.T) {
 	if !found {
 		t.Fatalf("PullRequestHeadBranch was not called: %v", *requests)
 	}
-	if len(store.intakeEvents) != 1 || store.intakeEvents[0].TaskID != "t-pr" {
-		t.Fatalf("intake events = %+v", store.intakeEvents)
+	if ev := store.intakeEvents; len(ev) != 1 || ev[0].TaskID != "t-pr" || ev[0].Kind != "pull_request_comment" || ev[0].CommentID != 63 || !ev[0].Trusted || !ev[0].Signalled {
+		t.Fatalf("intake events = %+v, want one trusted, signalled pull_request_comment 63 on t-pr", ev)
 	}
 }
 
 func TestIntakePullRequestCommentOnNonFactoryBranchIgnored(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 99},
-		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "hi"},
+		"comment":    map[string]any{"id": 64, "user": map[string]string{"login": "sebastian"}, "body": "hi"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"is_pull":    true,
 	})
@@ -469,7 +473,7 @@ func reviewBody(ref, sender, reviewType, content string) []byte {
 
 func TestIntakeReviewRecordsEvent(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "running"}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "running", Kind: "agent"}
 	body := reviewBody("factory/t1", "sebastian", "pull_request_review_approved", "ship it")
 	rr := postWebhook(in, "pull_request_review_approved", body, sign(webhookSecret, body))
 	if rr.Code != http.StatusOK {
@@ -479,8 +483,8 @@ func TestIntakeReviewRecordsEvent(t *testing.T) {
 		t.Fatalf("intake events = %d, want 1", len(store.intakeEvents))
 	}
 	ev := store.intakeEvents[0]
-	if ev.TaskID != "t1" || ev.Kind != "pull_request_review_approved" || ev.Author != "sebastian" || ev.Body != "ship it" {
-		t.Fatalf("event = %+v", ev)
+	if ev.TaskID != "t1" || ev.Kind != "pull_request_review_approved" || ev.Author != "sebastian" || ev.Body != "ship it" || !ev.Trusted || ev.Signalled {
+		t.Fatalf("event = %+v, want a trusted approval that signals nothing", ev)
 	}
 }
 
@@ -535,13 +539,28 @@ func TestIntakeAgentIssueStartsWorkflowHumanDoesNot(t *testing.T) {
 
 func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review"}
-	store.tasks["t-issue"] = Task{ID: "t-issue", Repository: "sf/ai-software-factory-code", Status: "in-review", IssueNumber: 30}
+	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
+	store.tasks["t-issue"] = Task{ID: "t-issue", Repository: "sf/ai-software-factory-code", Status: "in-review", IssueNumber: 30, Kind: "agent"}
+	store.tasks["t-human"] = Task{ID: "t-human", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 31, Kind: "human"}
 	pr, _ := json.Marshal(map[string]any{
+		"action":     "created",
 		"issue":      map[string]any{"number": 21},
-		"comment":    map[string]any{"user": map[string]string{"login": "sebastian"}, "body": "one nit"},
+		"comment":    map[string]any{"id": 70, "user": map[string]string{"login": "sebastian"}, "body": "one nit"},
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"is_pull":    true,
+	})
+	prEdited, _ := json.Marshal(map[string]any{
+		"action":     "edited",
+		"issue":      map[string]any{"number": 21},
+		"comment":    map[string]any{"id": 70, "user": map[string]string{"login": "sebastian"}, "body": "one nit, edited"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"is_pull":    true,
+	})
+	human, _ := json.Marshal(map[string]any{
+		"action":     "created",
+		"issue":      map[string]any{"number": 31},
+		"comment":    map[string]any{"id": 78, "user": map[string]string{"login": "sebastian"}, "body": "on the human lane"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 	})
 	issue, _ := json.Marshal(map[string]any{
 		"action":     "created",
@@ -556,17 +575,124 @@ func TestIntakePullRequestCommentSignalsChangesRequested(t *testing.T) {
 		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 	})
 	postWebhook(in, "pull_request_comment", pr, sign(webhookSecret, pr))
+	postWebhook(in, "pull_request_comment", prEdited, sign(webhookSecret, prEdited))
 	postWebhook(in, "issue_comment", issue, sign(webhookSecret, issue))
 	postWebhook(in, "issue_comment", edited, sign(webhookSecret, edited))
+	postWebhook(in, "issue_comment", human, sign(webhookSecret, human))
 	want := []string{"t-pr changes_requested sebastian #21: one nit", "t-issue human_comment sebastian #0 c77: a note on the issue"}
 	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
-		t.Fatalf("signals = %q, want %q: the PR comment requests changes, a new issue comment is a human comment", got, want)
+		t.Fatalf("signals = %q, want %q: a new PR comment requests changes, a new issue comment is a human comment, edits and the human lane signal nothing", got, want)
+	}
+	if ev := store.intakeEvents; len(ev) != 2 || ev[0].CommentID != 70 || ev[1].CommentID != 77 || !ev[0].Signalled || !ev[1].Signalled {
+		t.Fatalf("intake events = %+v, want the two created comments, both signalled", ev)
+	}
+}
+
+// resyncForgejoStub is Forgejo as the heal pass re-reads it for task t1:
+// pull request 5 merged, issue 30 closed, comments on both from the bot,
+// the owner and a stranger.
+func resyncForgejoStub(t *testing.T) (*Forgejo, *[]string) {
+	t.Helper()
+	var requests []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.Path)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/permission"):
+			if r.Header.Get("Authorization") != "token registrar-tok" {
+				t.Errorf("permission read without the registrar token: %q", r.Header.Get("Authorization"))
+			}
+			if strings.Split(r.URL.Path, "/")[7] == "sebastian" {
+				io.WriteString(w, `{"permission":"owner"}`)
+			} else {
+				io.WriteString(w, `{"permission":"read"}`)
+			}
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/pulls/5":
+			io.WriteString(w, `{"number":5,"state":"closed","merged":true,"head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30":
+			io.WriteString(w, `{"state":"closed"}`)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/30/comments":
+			io.WriteString(w, `[{"id":79,"user":{"login":"factory-agent"},"body":"escalation"},{"id":80,"user":{"login":"sebastian"},"body":"answer: do X"},{"id":81,"user":{"login":"reader"},"body":"drive-by"}]`)
+		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/5/comments":
+			io.WriteString(w, `[{"id":90,"user":{"login":"sebastian"},"body":"please rename"}]`)
+		default:
+			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}, &requests
+}
+
+func permissionReads(requests []string) int {
+	n := 0
+	for _, p := range requests {
+		if strings.HasSuffix(p, "/permission") {
+			n++
+		}
+	}
+	return n
+}
+
+// I1: a webhook Forgejo delivered while factoryd was down is gone; the heal
+// pass re-reads the task's pull request, issue and comments. Terminal
+// states are signalled on every pass (the workflow ignores what it acted
+// on); a comment is recorded and signalled once, whichever of the webhook
+// or the re-read saw it first, and a trusted comment recorded but not yet
+// signalled is signalled now.
+func TestIntakeResyncSignalsWhatTheWebhooksMissed(t *testing.T) {
+	forgejo, requests := resyncForgejoStub(t)
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+	task := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 30, PRNumber: 5}
+	store.tasks["t1"] = task
+	// the webhook recorded comment 80 but factoryd died before signalling it
+	store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "answer: do X", CommentID: 80, Trusted: true})
+
+	if err := in.Resync(context.Background(), task); err != nil {
+		t.Fatalf("Resync: %v", err)
+	}
+	want := []string{
+		"t1 pr_merged factoryd heal pass #5: ",
+		"t1 changes_requested sebastian #5: please rename",
+		"t1 issue_closed factoryd heal pass #0: ",
+		"t1 human_comment sebastian #0 c80: answer: do X",
+	}
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want %q", got, want)
+	}
+	var recorded []string
+	for _, e := range store.intakeEvents {
+		recorded = append(recorded, fmt.Sprintf("%s %d %s trusted=%v signalled=%v", e.Kind, e.CommentID, e.Author, e.Trusted, e.Signalled))
+	}
+	wantRecorded := []string{
+		"issue_comment 80 sebastian trusted=true signalled=true",
+		"pull_request_comment 90 sebastian trusted=true signalled=true",
+		"issue_comment 81 reader trusted=false signalled=false",
+	}
+	if !slices.Equal(recorded, wantRecorded) {
+		t.Fatalf("intake events = %q, want %q", recorded, wantRecorded)
+	}
+	if n := permissionReads(*requests); n != 2 {
+		t.Fatalf("permission reads = %d, want one per new author (sebastian, reader)", n)
+	}
+
+	// the next pass: the terminal states again, no comment twice, no
+	// permission read for a comment already recorded
+	*requests = nil
+	if err := in.Resync(context.Background(), task); err != nil {
+		t.Fatalf("second Resync: %v", err)
+	}
+	wantAgain := append(want, "t1 pr_merged factoryd heal pass #5: ", "t1 issue_closed factoryd heal pass #0: ")
+	if got := workflowsOf(in).signals; !slices.Equal(got, wantAgain) {
+		t.Fatalf("signals after the second pass = %q, want %q", got, wantAgain)
+	}
+	if len(store.intakeEvents) != 3 || permissionReads(*requests) != 0 {
+		t.Fatalf("second pass: %d events, %d permission reads; want 3 and 0", len(store.intakeEvents), permissionReads(*requests))
 	}
 }
 
 func TestIntakeReviewRejectedSignalsApprovedDoesNot(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
 	rejected := reviewBody("factory/t1", "sebastian", "pull_request_review_rejected", "split the function")
 	approved := reviewBody("factory/t1", "sebastian", "pull_request_review_approved", "ship it")
 	postWebhook(in, "pull_request_review_rejected", rejected, sign(webhookSecret, rejected))
@@ -600,7 +726,7 @@ func prClosedBodyBy(ref, headRepo, sender string, merged bool) []byte {
 
 func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
 	// only a head on the bot's fork is the task's PR: a same-named branch on
 	// sf or on a stranger's fork is not (ruling 97); the bot's own close
 	// (Finish, a .forgejo refusal) is no signal either, Reconcile reads it
@@ -639,7 +765,7 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 // adds no second intake event.
 func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review"}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
 	body := reviewBody("factory/t1", "sebastian", "pull_request_review_rejected", "split it")
 	post := func(delivery string) int {
 		req := httptest.NewRequest(http.MethodPost, "/webhooks/forgejo", bytes.NewReader(body))

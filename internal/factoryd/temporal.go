@@ -76,10 +76,13 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // failed; main runs it at boot and every minute. Starting is idempotent, so
 // this heals an intake that stored its task row but failed to start the
 // workflow, and a task whose workflow died (in review, or mid-completion)
-// before finishing it.
+// before finishing it. For a task waiting on Forgejo (in review or on a
+// human) it also re-reads the pull request, issue and comments through
+// in.Resync, so a webhook lost while factoryd was down still reaches the
+// workflow.
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
-func HealPass(ctx context.Context, store Store, wf Workflows) {
+func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
 	}
@@ -104,6 +107,12 @@ func HealPass(ctx context.Context, store Store, wf Workflows) {
 			}
 			if err := wf.Start(ctx, t.ID); err != nil {
 				log.Printf("start open workflows: task %s: %v", t.ID, err)
+				continue
+			}
+			if status == "in-review" || status == "waiting-human" {
+				if err := in.Resync(ctx, t); err != nil {
+					log.Printf("heal pass: resync task %s: %v", t.ID, err)
+				}
 			}
 		}
 	}

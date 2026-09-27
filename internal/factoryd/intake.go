@@ -375,7 +375,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if !ok {
 		return nil
 	}
-	if _, ok, err := in.Store.Task(ctx, taskID); err != nil || !ok {
+	if _, ok, err := in.agentTask(ctx, taskID); err != nil || !ok {
 		return err
 	}
 	signal := SignalPRClosed
@@ -383,6 +383,13 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 		signal = SignalPRMerged
 	}
 	return in.Workflows.Signal(ctx, taskID, signal, TaskSignal{Author: p.Sender.UserName, PR: p.PullRequest.Index})
+}
+
+// agentTask is task id when it exists and runs a workflow to signal: a
+// human-lane task has none.
+func (in *Intake) agentTask(ctx context.Context, id string) (Task, bool, error) {
+	t, ok, err := in.Store.Task(ctx, id)
+	return t, ok && t.Kind == "agent", err
 }
 
 // taskOfHead is the task whose pull request has head ref in headRepo: a
@@ -396,17 +403,18 @@ func (in *Intake) taskOfHead(repo, headRepo, ref string) (string, bool) {
 	return strings.CutPrefix(ref, "factory/")
 }
 
-// handleIssueComment records a comment as an intake event against the task
-// it belongs to: directly by issue number for an issue comment, or by
+// handleIssueComment records a new comment as an intake event against the
+// task it belongs to: directly by issue number for an issue comment, or by
 // resolving the pull request's head branch (factory/<task id>) for a pull
 // request comment. A comment on anything else the factory did not file
-// (no matching task) is silently dropped.
+// (no matching task) is silently dropped, and so are edits and deletions:
+// the workflow saw the comment when it was created.
 func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType, delivery string) error {
 	var p issueCommentPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode %s: %w", eventType, err)
 	}
-	if p.Comment.Poster.UserName == in.BotUser {
+	if p.Action != "created" || p.Comment.Poster.UserName == in.BotUser {
 		return nil
 	}
 	repo := p.Repository.FullName
@@ -436,27 +444,84 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 		}
 		taskID = t.ID
 	}
-	if _, ok, err := in.Store.Task(ctx, taskID); err != nil {
+	t, ok, err := in.agentTask(ctx, taskID)
+	if err != nil || !ok {
 		return err
-	} else if !ok {
+	}
+	return in.recordComment(ctx, t, p.IsPull, p.Issue.Index, IssueComment{ID: p.Comment.ID, Author: p.Comment.Poster.UserName, Body: p.Comment.Body}, delivery)
+}
+
+// recordComment records comment c on task t's issue (onPR false) or pull
+// request number and signals it to the workflow when its author is
+// trusted: an issue comment may answer an escalation, a pull request
+// comment asks for changes.
+func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number int64, c IssueComment, delivery string) error {
+	kind := "issue_comment"
+	if onPR {
+		kind = "pull_request_comment"
+	}
+	trusted, err := in.trusted(ctx, t.Repository, c.Author)
+	if err != nil {
+		return err
+	}
+	e, err := in.record(ctx, IntakeEvent{
+		TaskID: t.ID, Kind: kind, Author: c.Author, Body: c.Body, DeliveryID: delivery, CommentID: c.ID, Trusted: trusted,
+	})
+	if err != nil {
+		return err
+	}
+	return in.signalEvent(ctx, t.ID, e, number)
+}
+
+// record stores e once and returns the stored row: the one just inserted,
+// or the one an earlier delivery of the same webhook or a heal-pass
+// re-read of the same comment left, so that a signal that failed then is
+// sent now.
+func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, error) {
+	id, err := in.Store.InsertIntakeEvent(ctx, e)
+	if err != nil {
+		return IntakeEvent{}, err
+	}
+	if id != 0 {
+		e.ID = id
+		return e, nil
+	}
+	events, err := in.Store.IntakeEvents(ctx, e.TaskID)
+	if err != nil {
+		return IntakeEvent{}, err
+	}
+	i := slices.IndexFunc(events, func(have IntakeEvent) bool {
+		return (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
+			(e.CommentID != 0 && have.Kind == e.Kind && have.CommentID == e.CommentID)
+	})
+	if i < 0 {
+		return IntakeEvent{}, fmt.Errorf("intake event for task %s (%s, delivery %q, comment %d) recorded before but not found", e.TaskID, e.Kind, e.DeliveryID, e.CommentID)
+	}
+	return events[i], nil
+}
+
+// signalEvent delivers a trusted event not yet signalled to the task's
+// workflow, once: a pull request comment or rejecting review on pull
+// request pr asks for changes, an issue comment may answer an escalation,
+// an approval is only recorded.
+func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent, pr int64) error {
+	if !e.Trusted || e.Signalled {
 		return nil
 	}
-	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
-		TaskID: taskID, Kind: eventType, Author: p.Comment.Poster.UserName, Body: p.Comment.Body, DeliveryID: delivery,
-	}); err != nil {
+	sig := TaskSignal{Author: e.Author, Body: e.Body}
+	var name string
+	switch e.Kind {
+	case "issue_comment":
+		name, sig.Comment = SignalHumanComment, e.CommentID
+	case "pull_request_comment", "pull_request_review_rejected":
+		name, sig.PR = SignalChangesRequested, pr
+	default:
+		return nil
+	}
+	if err := in.Workflows.Signal(ctx, taskID, name, sig); err != nil {
 		return err
 	}
-	if ok, err := in.trusted(ctx, repo, p.Comment.Poster.UserName); err != nil || !ok {
-		return err
-	}
-	if !p.IsPull {
-		// a new comment on the task's issue may answer an escalation
-		if p.Action != "created" {
-			return nil
-		}
-		return in.Workflows.Signal(ctx, taskID, SignalHumanComment, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body, Comment: p.Comment.ID})
-	}
-	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Comment.Poster.UserName, Body: p.Comment.Body, PR: p.Issue.Index})
+	return in.Store.MarkSignalled(ctx, e.ID)
 }
 
 // handleReview records a pull request review as an intake event, resolved to
@@ -474,25 +539,110 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if !ok {
 		return nil
 	}
-	if _, ok, err := in.Store.Task(ctx, taskID); err != nil {
+	if _, ok, err := in.agentTask(ctx, taskID); err != nil || !ok {
 		return err
-	} else if !ok {
-		return nil
 	}
 	reviewBody := ""
 	if p.Review != nil {
 		reviewBody = p.Review.Content
 	}
-	if err := in.Store.InsertIntakeEvent(ctx, IntakeEvent{
-		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery,
-	}); err != nil {
+	trusted, err := in.trusted(ctx, p.Repository.FullName, p.Sender.UserName)
+	if err != nil {
 		return err
 	}
-	if eventType == "pull_request_review_approved" {
-		return nil
-	}
-	if ok, err := in.trusted(ctx, p.Repository.FullName, p.Sender.UserName); err != nil || !ok {
+	e, err := in.record(ctx, IntakeEvent{
+		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery, Trusted: trusted,
+	})
+	if err != nil {
 		return err
 	}
-	return in.Workflows.Signal(ctx, taskID, SignalChangesRequested, TaskSignal{Author: p.Sender.UserName, Body: reviewBody, PR: p.PullRequest.Index})
+	return in.signalEvent(ctx, taskID, e, p.PullRequest.Index)
+}
+
+// healAuthor names the heal pass as the author of a state change it read
+// from Forgejo rather than received as a webhook.
+const healAuthor = "factoryd heal pass"
+
+// Resync re-reads what Forgejo holds for task t and signals the workflow
+// what it may have missed: a webhook is delivered once, so a merge, close
+// or comment made while factoryd was down or erroring is otherwise lost.
+// Terminal states (pull request merged or closed, issue closed) are
+// signalled on every pass they hold; the workflow ignores a signal it has
+// already acted on. Comments are recorded once and signalled once; a
+// trusted event recorded but not signalled (factoryd died between the two)
+// is signalled now. Reviews carry no id in their webhook payload and are
+// not re-read.
+func (in *Intake) Resync(ctx context.Context, t Task) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	events, err := in.Store.IntakeEvents(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if t.PRNumber != 0 {
+		pr, err := in.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if err != nil {
+			return fmt.Errorf("pull request state: %w", err)
+		}
+		switch {
+		case pr.Merged:
+			err = in.Workflows.Signal(ctx, t.ID, SignalPRMerged, TaskSignal{Author: healAuthor, PR: t.PRNumber})
+		case pr.State == "closed":
+			err = in.Workflows.Signal(ctx, t.ID, SignalPRClosed, TaskSignal{Author: healAuthor, PR: t.PRNumber})
+		}
+		if err != nil {
+			return err
+		}
+		if err := in.resyncComments(ctx, t, true, t.PRNumber, events); err != nil {
+			return err
+		}
+	}
+	if t.IssueNumber != 0 {
+		closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if err != nil {
+			return fmt.Errorf("issue state: %w", err)
+		}
+		if closed {
+			if err := in.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: healAuthor}); err != nil {
+				return err
+			}
+		}
+		if err := in.resyncComments(ctx, t, false, t.IssueNumber, events); err != nil {
+			return err
+		}
+	}
+	for _, e := range events {
+		if err := in.signalEvent(ctx, t.ID, e, t.PRNumber); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resyncComments records and signals the comments on issue or pull request
+// number that none of the task's known events cover.
+func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number int64, known []IntakeEvent) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, number)
+	if err != nil {
+		return fmt.Errorf("comments: %w", err)
+	}
+	kind := "issue_comment"
+	if onPR {
+		kind = "pull_request_comment"
+	}
+	for _, c := range comments {
+		if c.Author == in.BotUser || slices.ContainsFunc(known, func(e IntakeEvent) bool { return e.Kind == kind && e.CommentID == c.ID }) {
+			continue
+		}
+		if err := in.recordComment(ctx, t, onPR, number, c, ""); err != nil {
+			return err
+		}
+	}
+	return nil
 }

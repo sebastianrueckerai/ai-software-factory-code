@@ -176,7 +176,7 @@ func main() {
 	}
 	go func() {
 		for {
-			factoryd.HealPass(ctx, store, workflows)
+			factoryd.HealPass(ctx, store, workflows, webhookIntake)
 			select {
 			case <-ctx.Done():
 				return

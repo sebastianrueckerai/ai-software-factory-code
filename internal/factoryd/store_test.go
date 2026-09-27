@@ -67,14 +67,55 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 	return Task{}, false, nil
 }
 
-func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) error {
+func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	for _, have := range s.intakeEvents {
-		if e.DeliveryID != "" && have.DeliveryID == e.DeliveryID {
+		if (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
+			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) {
+			return 0, nil
+		}
+	}
+	e.ID = int64(len(s.intakeEvents) + 1)
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now()
+	}
+	s.intakeEvents = append(s.intakeEvents, e)
+	return e.ID, nil
+}
+
+func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
+	var out []IntakeEvent
+	for _, e := range s.intakeEvents {
+		if e.TaskID == taskID {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) MarkSignalled(ctx context.Context, id int64) error {
+	for i := range s.intakeEvents {
+		if s.intakeEvents[i].ID == id {
+			s.intakeEvents[i].Signalled = true
 			return nil
 		}
 	}
-	s.intakeEvents = append(s.intakeEvents, e)
-	return nil
+	return fmt.Errorf("intake event %d: no such row", id)
+}
+
+func (s *fakeStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
+	var latest time.Time
+	for _, sess := range s.sessions {
+		if sess.TaskID == taskID && sess.CreatedAt.After(latest) {
+			latest = sess.CreatedAt
+		}
+	}
+	var out []IntakeEvent
+	for _, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Signalled && slices.Contains(changeRequestKinds, e.Kind) && e.CreatedAt.After(latest) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
@@ -255,8 +296,33 @@ func TestPGStore(t *testing.T) {
 	if _, ok, err := s.TaskByIssue(ctx, "sf/ai-software-factory-code", 999); err != nil || ok {
 		t.Fatalf("TaskByIssue unknown issue = (%v, %v), want (false, nil)", ok, err)
 	}
-	if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "looks good"}); err != nil {
-		t.Fatalf("InsertIntakeEvent: %v", err)
+	if id, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "looks good"}); err != nil || id == 0 {
+		t.Fatalf("InsertIntakeEvent = (%d, %v)", id, err)
+	}
+	// a comment is recorded once per task and kind, whichever path saw it first
+	commentEvent, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "nit", CommentID: 80, Trusted: true})
+	if err != nil || commentEvent == 0 {
+		t.Fatalf("InsertIntakeEvent comment = (%d, %v)", commentEvent, err)
+	}
+	if again, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "nit", CommentID: 80, DeliveryID: "d-80"}); err != nil || again != 0 {
+		t.Fatalf("InsertIntakeEvent same comment = (%d, %v), want 0", again, err)
+	}
+	if err := s.MarkSignalled(ctx, commentEvent); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.IntakeEvents(ctx, "t1")
+	if err != nil || len(events) != 2 || events[1].CommentID != 80 || !events[1].Trusted || !events[1].Signalled || events[0].Signalled {
+		t.Fatalf("IntakeEvents = %+v, %v", events, err)
+	}
+	// unaddressed: signalled change requests newer than the latest session
+	if got, err := s.UnaddressedChangeRequests(ctx, "t1"); err != nil || len(got) != 1 || got[0].ID != commentEvent {
+		t.Fatalf("UnaddressedChangeRequests before any session = %+v, %v", got, err)
+	}
+	if err := s.InsertSession(ctx, Session{ID: "s-after", TaskID: "t1", CreatedAt: time.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.UnaddressedChangeRequests(ctx, "t1"); err != nil || len(got) != 0 {
+		t.Fatalf("UnaddressedChangeRequests after a session = %+v, %v, want none", got, err)
 	}
 	if seen, err := s.DeliverySeen(ctx, "d-1"); err != nil || seen {
 		t.Fatalf("unseen delivery = (%v, %v)", seen, err)
@@ -283,9 +349,10 @@ func TestPGStore(t *testing.T) {
 			t.Fatalf("after prune %s seen = %v, want %v", id, seen, want)
 		}
 	}
-	for range 2 {
-		if err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "again", DeliveryID: "d-9"}); err != nil {
-			t.Fatalf("InsertIntakeEvent with delivery: %v", err)
+	for i := range 2 {
+		id, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: "issue_comment", Author: "sebastian", Body: "again", DeliveryID: "d-9"})
+		if err != nil || (id == 0) != (i == 1) {
+			t.Fatalf("InsertIntakeEvent with delivery, round %d = (%d, %v)", i, id, err)
 		}
 	}
 	if err := s.SetTaskPR(ctx, "t1", 12); err != nil {
@@ -307,8 +374,8 @@ func TestPGStore(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE task_id = 't1'`).Scan(&intakeCount); err != nil {
 		t.Fatal(err)
 	}
-	if intakeCount != 2 {
-		t.Fatalf("intake_events for t1 = %d, want 2 (the redelivered d-9 counts once)", intakeCount)
+	if intakeCount != 3 {
+		t.Fatalf("intake_events for t1 = %d, want 3 (the redelivered d-9 and the re-recorded comment 80 count once each)", intakeCount)
 	}
 
 	if err := s.MarkStarted(ctx, "t1"); err != nil {
