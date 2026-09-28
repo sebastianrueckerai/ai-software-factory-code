@@ -873,9 +873,10 @@ func reproOptions() workflow.ActivityOptions {
 	}
 }
 
-// reproActivityTimeout bounds one reproduction attempt: a pod start (an
-// image pull) and the command, at most MaxReproTimeout.
-const reproActivityTimeout = 30 * time.Minute
+// reproActivityTimeout bounds one reproduction attempt: two runs, at the
+// base and at the head, each a pod start (an image pull) and the command,
+// at most MaxReproTimeout.
+const reproActivityTimeout = 2 * (MaxReproTimeout + 10*time.Minute)
 
 // MaxReproTimeout is the longest reproduction command run.
 const MaxReproTimeout = 15 * time.Minute

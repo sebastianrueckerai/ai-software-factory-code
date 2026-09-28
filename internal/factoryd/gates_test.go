@@ -78,6 +78,12 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
 			}
 			json.NewEncoder(w).Encode(pr)
+		case r.Method == "GET" && p == "/issues/9/comments":
+			var out []map[string]any
+			for i, c := range f.comments {
+				out = append(out, map[string]any{"id": 801 + i, "body": c, "user": map[string]string{"login": "factory-agent"}})
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == "POST" && p == "/issues/9/comments":
 			var body struct{ Body string }
 			json.NewDecoder(r.Body).Decode(&body)
@@ -530,21 +536,29 @@ func TestGateReproductionHeartbeatsThroughASlowNamespace(t *testing.T) {
 		_, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
 		done <- err
 	}()
-	for {
-		kube.mu.Lock()
-		n := len(kube.podOrder)
-		kube.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	kube.scriptPods(0, reproLine(0, "ok"))
+	scriptReproPods(kube, reproLine(1, "fails"), reproLine(0, "ok"))
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	if n := atPod.Load(); n < 5 {
 		t.Fatalf("%d heartbeats before the pod after a 300 ms namespace setup at 20 ms, want several", n)
+	}
+}
+
+// scriptReproPods answers the gate's two pods in order, each once it
+// exists: the run at the base, then the run at the head.
+func scriptReproPods(kube *fakeKube, bodies ...string) {
+	for i, body := range bodies {
+		for {
+			kube.mu.Lock()
+			n := len(kube.podOrder)
+			kube.mu.Unlock()
+			if n > i {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		kube.scriptPods(i, body)
 	}
 }
 
@@ -573,24 +587,19 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 			err = val.Get(&res)
 		}
 	}()
-	for {
-		kube.mu.Lock()
-		n := len(kube.podOrder)
-		kube.mu.Unlock()
-		if n > 0 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	kube.scriptPods(0, "agent-worker: fetching\n"+reproLine(1, "--- FAIL: TestY\nFAIL"))
+	scriptReproPods(kube, reproLine(2, "--- FAIL: TestY at the base"), "agent-worker: fetching\n"+reproLine(1, "--- FAIL: TestY\nFAIL"))
 	<-done
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res != (ReproResult{Ran: true, Command: task.ReproCommand, Exit: 1, Output: "--- FAIL: TestY\nFAIL"}) {
+	if res != (ReproResult{Ran: true, Command: task.ReproCommand, Exit: 1, Output: "--- FAIL: TestY\nFAIL", BaseExit: 2}) {
 		t.Fatalf("result = %+v", res)
 	}
-	pod := kube.podAt(0)
+	// the first pod runs at the task's base, in the head's history
+	if spec, _ := json.Marshal(kube.podAt(0).spec); !strings.Contains(string(spec), `{"name":"CHECKOUT_SHA","value":"base"}`) {
+		t.Fatalf("base pod spec lacks CHECKOUT_SHA: %s", spec)
+	}
+	pod := kube.podAt(1)
 	if !strings.HasPrefix(pod.name, "repro-") || pod.ns != "factory-agents-t1" {
 		t.Fatalf("pod = %s/%s", pod.ns, pod.name)
 	}
@@ -645,7 +654,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	if len(hub.tokens) != 0 || !slices.Contains(kube.deletedNs, "factory-agents-t1") {
 		t.Fatalf("tokens left %v, namespaces deleted %v", hub.tokens, kube.deletedNs)
 	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**failed** (exit 1)") || !strings.Contains(hub.comments[0], "--- FAIL: TestY") {
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**failed** at the head (exit 1)") || !strings.Contains(hub.comments[0], "--- FAIL: TestY at the base") {
 		t.Fatalf("comments = %q", hub.comments)
 	}
 	if tl, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl"); !strings.Contains(string(tl), `"step":"gate_reproduction"`) {

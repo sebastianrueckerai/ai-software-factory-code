@@ -18,10 +18,12 @@ import (
 // The repro pod is factoryd's GateReproduction: an init container in
 // repro-fetch mode, the only holder of the read token on the task's
 // repository, fetches ref (the pull request head) into the workspace and
-// checks it is sha; the worker container in repro mode, with no token of
-// any kind, runs command there. No agent, no gateway token, no push token.
+// checks it is sha, then checks out at, when given (the task's base, in
+// the head's history), instead; the worker container in repro mode, with
+// no token of any kind, runs command there. No agent, no gateway token, no
+// push token.
 type fetchEnv struct {
-	repoURL, repoToken, ref, sha string
+	repoURL, repoToken, ref, sha, at string
 }
 
 type reproEnv struct {
@@ -44,7 +46,7 @@ func loadFetchEnv() (fetchEnv, error) {
 	if err != nil {
 		return fetchEnv{}, err
 	}
-	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"]}, nil
+	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"], at: os.Getenv("CHECKOUT_SHA")}, nil
 }
 
 func loadReproEnv() (reproEnv, error) {
@@ -91,7 +93,8 @@ func runRepro(log func(string, ...any)) int {
 	return 0
 }
 
-// fetchHead fetches e.ref into dir and checks out e.sha there, or fails.
+// fetchHead fetches e.ref into dir and checks out e.sha there, or e.at
+// when given, or fails.
 func fetchHead(e fetchEnv, dir string) error {
 	w := workerEnv{repoToken: e.repoToken} // git's failures are scrubbed of it
 	if _, err := w.git("", "init", "-q", dir); err != nil {
@@ -105,6 +108,11 @@ func fetchHead(e fetchEnv, dir string) error {
 	}
 	if head, err := w.git(dir, "rev-parse", "HEAD"); err != nil || head != e.sha {
 		return fmt.Errorf("%s is at %s, not the gated head %s: the pull request moved", e.ref, head, e.sha)
+	}
+	if e.at != "" {
+		if _, err := w.git(dir, "checkout", "-q", "--detach", e.at+"^{commit}"); err != nil {
+			return fmt.Errorf("check out %s in the history of %s: %w", e.at, e.sha, err)
+		}
 	}
 	return nil
 }

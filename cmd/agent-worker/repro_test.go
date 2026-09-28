@@ -154,3 +154,40 @@ func TestReproFetchFailureHidesTheToken(t *testing.T) {
 		t.Fatalf("repro = %+v", got)
 	}
 }
+
+// With CHECKOUT_SHA the fetch checks out that commit of the head's
+// history (the task's base): the command runs before the fix.
+func TestReproRunsAtTheBase(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	commit := func(script string) string {
+		if err := os.WriteFile(filepath.Join(seed, "check.sh"), []byte(script), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run("-C", seed, "add", "check.sh")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	base, head := commit("exit 4\n"), commit("exit 0\n")
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	reproEnvs(t, remote, head, "sh check.sh")
+	for at, want := range map[string]int{base: 4, "": 0, "1234567": -1} {
+		t.Setenv("CHECKOUT_SHA", at)
+		ws := t.TempDir()
+		if code := runReproFetch(nolog, ws); code != 0 {
+			t.Fatalf("fetch exit %d", code)
+		}
+		if got := repro(ws); got.Exit != want {
+			t.Fatalf("at %q: repro = %+v, want exit %d", at, got, want)
+		}
+	}
+}

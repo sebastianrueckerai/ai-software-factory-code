@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/converter"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -22,7 +24,7 @@ func TestAutoMerge(t *testing.T) {
 	yes, no := true, false
 	auto := GateResults{
 		Policy:       PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto},
-		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0},
+		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1},
 	}
 	approve := Review{Verdict: "approve", Summary: "fixes the slug check"}
 	with := func(f func(*GateResults, *Review)) (GateResults, Review) {
@@ -45,17 +47,30 @@ func TestAutoMerge(t *testing.T) {
 		"class migration": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "migration", policy.OutcomeRequiresApproval
 		}, false, "risk class migration is requires_approval"},
-		"reproduction skipped":             {func(g *GateResults, _ *Review) { g.Reproduction = ReproResult{} }, false, "the reproduction gate did not run: the task has no reproduction command"},
-		"reproduction exit 1":              {func(g *GateResults, _ *Review) { g.Reproduction.Exit = 1 }, false, "the reproduction exited 1"},
+		"no command, no note": {func(g *GateResults, _ *Review) { g.Reproduction = ReproResult{} }, false, "no reproduction command and no fault the agent recorded"},
+		"head exit 1":         {func(g *GateResults, _ *Review) { g.Reproduction.Exit = 1 }, false, "the reproduction exited 1 at the head"},
+		"head exit 1, strict note": {func(g *GateResults, rv *Review) {
+			g.Reproduction.Exit, g.Reproduction.NotReproduced, rv.StrictImprovement = 1, "x", &yes
+		}, false, "exited 1 at the head"},
+		"passes at base, no note":       {func(g *GateResults, _ *Review) { g.Reproduction.BaseExit = 0 }, false, "not reproduced at base: the reproduction exited 0 before the fix"},
+		"base run broken (-1), no note": {func(g *GateResults, _ *Review) { g.Reproduction.BaseExit = -1 }, false, "not reproduced at base: the reproduction exited -1"},
+		"passes at base, strict note": {func(g *GateResults, rv *Review) {
+			g.Reproduction.BaseExit, g.Reproduction.NotReproduced, rv.StrictImprovement = 0, "x", &yes
+		}, true, ""},
+		"passes at base, note, not strict": {func(g *GateResults, rv *Review) {
+			g.Reproduction.BaseExit, g.Reproduction.NotReproduced, rv.StrictImprovement = 0, "x", &no
+		}, false, "did not find the change a strict improvement"},
 		"review concerns":                  {func(_ *GateResults, rv *Review) { rv.Verdict = "concerns" }, false, "the model review's verdict is concerns"},
 		"no review":                        {func(_ *GateResults, rv *Review) { *rv = Review{Note: "model review failed: 502"} }, false, "no model review verdict: model review failed: 502"},
-		"not reproduced, strict true":      {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &yes }, true, ""},
-		"not reproduced, strict false":     {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &no }, false, "not reproduced exactly"},
-		"not reproduced, strict missing":   {func(g *GateResults, _ *Review) { g.Reproduction.NotReproduced = "x" }, false, "not reproduced exactly"},
+		"reproduced, note, strict false":   {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &no }, true, ""},
 		"reproduced, strict false ignored": {func(_ *GateResults, rv *Review) { rv.StrictImprovement = &no }, true, ""},
-		"skipped and not reproduced": {func(g *GateResults, rv *Review) {
+		"no command, note, strict true": {func(g *GateResults, rv *Review) {
 			g.Reproduction, rv.StrictImprovement = ReproResult{NotReproduced: "x"}, &yes
-		}, false, "did not run"},
+		}, true, ""},
+		"no command, note, strict false": {func(g *GateResults, rv *Review) {
+			g.Reproduction, rv.StrictImprovement = ReproResult{NotReproduced: "x"}, &no
+		}, false, "did not find the change a strict improvement"},
+		"no command, note, strict missing": {func(g *GateResults, _ *Review) { g.Reproduction = ReproResult{NotReproduced: "x"} }, false, "did not find the change a strict improvement"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ok, unmet := AutoMerge(with(tc.f))
@@ -75,7 +90,7 @@ func TestAutoMerge(t *testing.T) {
 // autoGates is a gate harness where every auto condition holds.
 func autoGates(g *gateHarness) {
 	g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7, Changed: 2}
-	g.repro = []ReproResult{{Ran: true, Command: "make repro", Exit: 0}}
+	g.repro = []ReproResult{{Ran: true, Command: "make repro", Exit: 0, BaseExit: 2}}
 }
 
 // On auto, factory-merge merges after the review with the note on the
@@ -107,7 +122,7 @@ func TestWorkflowAutoUnmetGoesToTheCard(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"the reproduction gate did not run: the task has no reproduction command"}) ||
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"no reproduction command and no fault the agent recorded"}) ||
 		len(g.autoNotes) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
 		t.Fatalf("approvals %+v, notes %q, merges %q", g.approvals, g.autoNotes, g.merges)
 	}
@@ -396,10 +411,13 @@ func TestGatesOnAnAutoProject(t *testing.T) {
 	if !strings.Contains(fj.comments[0], "The project's merge rule is auto: factory-merge merges when") {
 		t.Fatalf("comment = %q", fj.comments[0])
 	}
-	val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
-	if res := getInto[ReproResult](t, val, err); res.Ran || res.NotReproduced != "the reported URL is gone; the check refused every dash" {
-		t.Fatalf("repro = %+v", res)
+	for range 2 {
+		val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+		if res := getInto[ReproResult](t, val, err); res.Ran || res.NotReproduced != "the reported URL is gone; the check refused every dash" {
+			t.Fatalf("repro = %+v", res)
+		}
 	}
+	// the second gate run says nothing new (review M6)
 	if len(fj.comments) != 2 || !strings.Contains(fj.comments[1], "not_reproduced") || !strings.Contains(fj.comments[1], "the check refused every dash") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
@@ -462,12 +480,12 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 		t.Fatalf("spec = %+v", spec)
 	}
 	g := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto", PolicyVersion: 7},
-		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0}}
+		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1}}
 	if _, err := execActivity(t, r, ActivityAutoMergeNote, "t1", int64(9), "c1", g, Review{Verdict: "approve", Summary: "narrow fix"}); err != nil {
 		t.Fatal(err)
 	}
 	note := fj.comments[len(fj.comments)-1]
-	for _, want := range []string{"merge rule auto, without an approval card", "risk class **normal**, whose outcome is auto", "reproduction gate ran and passed", "make repro", "model review approves: narrow fix"} {
+	for _, want := range []string{"merge rule auto, without an approval card", "risk class **normal**, whose outcome is auto", "the reproduction failed at the base (exit 1) and passes at the head", "make repro", "model review approves: narrow fix"} {
 		if !strings.Contains(note, want) {
 			t.Fatalf("note lacks %q: %s", want, note)
 		}
@@ -478,5 +496,39 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"auto_merge"`) {
 		t.Fatal("no auto_merge step")
+	}
+}
+
+// A command the base passes too proves no fix (review I2): the gate
+// records "not reproduced at base", and the result is no reproduction.
+func TestGateReproductionNotReproducedAtBase(t *testing.T) {
+	task := gateTask
+	task.ReproCommand = "true"
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, _ := newTestRunner(t, task, kube, objects)
+	var res ReproResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var val converter.EncodedValue
+		if val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1"); err == nil {
+			err = val.Get(&res)
+		}
+	}()
+	scriptReproPods(kube, reproLine(0, ""), reproLine(0, ""))
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Ran || res.Exit != 0 || res.BaseExit != 0 || res.Reproduced() || !res.Passed() {
+		t.Fatalf("result = %+v, want passed at the head, not reproduced", res)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**not reproduced at base** (exit 0 at base)") {
+		t.Fatalf("comments = %q", hub.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_reproduction"); step["not_reproduced_at_base"] != true || step["base_exit"] != float64(0) {
+		t.Fatalf("step = %v", step)
 	}
 }
