@@ -246,7 +246,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:36dd329a2ef44d930ad075c26113ee2034c9da1c9e773a160f268f6b0fe015b0
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:c8d721c71f64edd35cf7ccc6572cb9ef86fde7e6cbb959ea33993b4a9c6d3c39
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -279,7 +279,7 @@ spec:
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:66d52b26e0f27eb510f8d2f866b3e899fadcfeb2a6532d9a5afab7623c0fd6ec
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:a04f38ba01b1748ae96b42c6525349781655fb4182835b66ae46cea039e3be39
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -291,7 +291,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:d3d5bce56e07f6dbbcbee1baa768c82d38f02cdff3f9f8dca8963de79f467bdd
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:bef3b583a90e0765c453c4f8d961cce66b1fb64ef3d32092627c02ce0c5d96ef
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
