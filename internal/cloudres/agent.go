@@ -206,9 +206,6 @@ type Commission struct {
 // leases factoryd admits into task egress.
 type AgentStore struct{ DB *sql.DB }
 
-// openStates is OpenStates as an SQL list.
-var openStates = "('" + strings.Join(OpenStates, "', '") + "')"
-
 // ResourceSpec is what a resource approval request asks for: Reserve
 // writes it, the console shows it, a project-wide approve widens by it.
 type ResourceSpec struct {
@@ -257,13 +254,13 @@ func envelopeUse(ctx context.Context, q rowQuerier, repo string) (EnvelopeUse, e
 	var u EnvelopeUse
 	err := q.QueryRowContext(ctx,
 		`SELECT (SELECT count(*) FROM cloud_resources
-		          WHERE project = 'agent' AND repo = $1 AND kind = 'server' AND state IN `+openStates+`),
+		          WHERE project = 'agent' AND repo = $1 AND kind = 'server' AND state = ANY($2)),
 		        (COALESCE((SELECT sum(l.eur) FROM ledger l
 		          WHERE l.kind = 'resource' AND l.day >= date_trunc('month', now() AT TIME ZONE 'UTC')::date
 		            AND l.ref IN (SELECT 'resource/' || id FROM cloud_resources WHERE project = 'agent' AND repo = $1)), 0)
 		       + COALESCE((SELECT sum(eur) FROM holds WHERE kind = 'resource'
 		            AND id IN (SELECT hold_id FROM cloud_resources WHERE project = 'agent' AND repo = $1)), 0))::float8`,
-		repo).Scan(&u.OpenServers, &u.MonthEUR)
+		repo, OpenStates).Scan(&u.OpenServers, &u.MonthEUR)
 	return u, err
 }
 
@@ -570,7 +567,7 @@ func (a AgentStore) Owned(ctx context.Context, taskID string) ([]Resource, error
 // Group lists the open rows of one commission (its reservation id).
 func (a AgentStore) Group(ctx context.Context, holdID int64) ([]Resource, error) {
 	return PG(a).query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
-		WHERE project = 'agent' AND hold_id = $1 AND state IN `+openStates+` ORDER BY id`, holdID)
+		WHERE project = 'agent' AND hold_id = $1 AND state = ANY($2) ORDER BY id`, holdID, OpenStates)
 }
 
 // LiveAddresses are the IPv4s of every live agent server by owning task
@@ -634,7 +631,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	var hold int64
 	var ended bool
 	err = tx.QueryRowContext(ctx, `SELECT hold_id, (released_by <> '' OR (NOT promoted AND lease_expires <= now())) FROM cloud_resources
-		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state IN `+openStates+` FOR UPDATE`, id).Scan(&hold, &ended)
+		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state = ANY($2) FOR UPDATE`, id, OpenStates).Scan(&hold, &ended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
 	}
@@ -644,7 +641,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	if ended {
 		return fmt.Errorf("resource %d: %w", id, ErrLeaseEnded)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, promoted_by = $2 WHERE hold_id = $1 AND state IN `+openStates, hold, by); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, promoted_by = $2 WHERE hold_id = $1 AND state = ANY($3)`, hold, by, OpenStates); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hold); err != nil {
@@ -659,7 +656,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 // is the human.
 func (a AgentStore) EndLease(ctx context.Context, id int64, by string) error {
 	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), promoted = false, released_by = $2
-		WHERE state IN `+openStates+` AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id, by)
+		WHERE state = ANY($3) AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id, by, OpenStates)
 	if n, _ := affected(res, err); !n && err == nil {
 		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
 	}
@@ -676,8 +673,8 @@ var (
 // project, task and commission: the console's resources page.
 func (a AgentStore) Commissions(ctx context.Context, since time.Time) ([]Resource, error) {
 	return PG(a).query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
-		WHERE project = 'agent' AND (state IN `+openStates+` OR deleted_at > $1)
-		ORDER BY repo, owner_ref, COALESCE(hold_id, 0), id`, since)
+		WHERE project = 'agent' AND (state = ANY($2) OR deleted_at > $1)
+		ORDER BY repo, owner_ref, COALESCE(hold_id, 0), id`, since, OpenStates)
 }
 
 // EnvelopeRecord is a project's envelope row, who set it last, and what
