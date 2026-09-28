@@ -51,9 +51,15 @@ func TestParseRejects(t *testing.T) {
 		"no classes":        {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\n", "no capability classes"},
 		"class no models":   {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
 		"empty model":       {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
-		"tool without caps": {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
-		"two documents":     {valid + "---\nversion: 1\n", "more than one YAML document"},
-		"not yaml":          {"version: [1", "policy:"},
+		"tool without caps": {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
+		"unknown tool":      {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
+		"escalate listed":   {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "always allowed for coder"},
+		"scrape unpriced":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
+		"replicate sku without rate": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
+			"prices: {replicate: {max_seconds: 90, models: {a/b: gpu-t4}, eur_per_second: {cpu: 0.0001}}}\n", `runs on "gpu-t4", which has no positive eur_per_second`},
+		"fal unbounded": {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
+		"two documents": {valid + "---\nversion: 1\n", "more than one YAML document"},
+		"not yaml":      {"version: [1", "policy:"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.doc))
@@ -61,6 +67,73 @@ func TestParseRejects(t *testing.T) {
 				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+const withTools = `
+version: 1
+budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
+classes:
+  coder:
+    models: [coding-cheap]
+    tools:
+      web_scrape: {max_requests: 30, max_eur: 0.2}
+      replicate_predict: {max_requests: 5, max_eur: 0.5}
+  researcher:
+    models: [coding-cheap]
+    tools:
+      web_scrape: {max_requests: 10, max_eur: 1}
+prices:
+  firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}
+  replicate:
+    max_seconds: 90
+    models: {replicate/hello-world: cpu}
+    eur_per_second: {cpu: 0.0001}
+`
+
+func TestToolCap(t *testing.T) {
+	d, err := Parse([]byte(withTools))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := d.ToolCap([]string{"coder"}, ToolWebScrape); !ok || c != (ToolCap{MaxRequests: 30, MaxEUR: 0.2}) {
+		t.Fatalf("coder web_scrape = (%+v, %v)", c, ok)
+	}
+	// two classes: the most generous of each cap
+	if c, ok := d.ToolCap([]string{"coder", "researcher"}, ToolWebScrape); !ok || c != (ToolCap{MaxRequests: 30, MaxEUR: 1}) {
+		t.Fatalf("coder+researcher web_scrape = (%+v, %v)", c, ok)
+	}
+	if _, ok := d.ToolCap([]string{"researcher"}, ToolReplicate); ok {
+		t.Fatal("researcher got replicate_predict")
+	}
+	if _, ok := d.ToolCap([]string{"coder"}, ToolFal); ok {
+		t.Fatal("coder got fal_run, which the document does not list")
+	}
+}
+
+// Hand-derived: cap 3 requests / 0.10 EUR, worst case 0.03.
+func TestFitTool(t *testing.T) {
+	r := HoldRequest{TaskID: "t", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.03, Cap: ToolCap{MaxRequests: 3, MaxEUR: 0.1}}
+	var ref *Refusal
+	for name, tc := range map[string]struct {
+		taskFree, dayFree, usedEUR float64
+		requests                   int
+		want                       string
+	}{
+		"fits":           {1, 1, 0.07, 2, ""},
+		"requests used":  {1, 1, 0, 3, "refused_tool_requests"},
+		"euros used":     {1, 1, 0.071, 2, "refused_tool_eur"},
+		"task headroom":  {0.029, 1, 0, 0, "refused_budget"},
+		"day headroom":   {1, 0.029, 0, 0, "refused_day_cap"},
+		"exact headroom": {0.03, 0.03, 0, 0, ""},
+	} {
+		h, err := FitTool(tc.taskFree, tc.dayFree, tc.requests, tc.usedEUR, r)
+		switch {
+		case tc.want == "" && (err != nil || h.EUR != 0.03):
+			t.Errorf("%s: (%+v, %v), want a hold of 0.03", name, h, err)
+		case tc.want != "" && (!errors.As(err, &ref) || ref.Decision != tc.want):
+			t.Errorf("%s: %v, want %s", name, err, tc.want)
+		}
 	}
 }
 

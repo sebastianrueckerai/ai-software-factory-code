@@ -89,7 +89,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("InsertAudit: %v", err)
 	}
 	if err := s.InsertAudit(ctx, AuditRow{
-		TaskID: "t1", Decision: "refused_budget", Reason: "budget_exhausted",
+		TaskID: "t1", Decision: "refused_budget", Reason: "budget_exhausted", Tool: "web_scrape",
 	}); err != nil {
 		t.Fatalf("InsertAudit (no spend): %v", err)
 	}
@@ -108,6 +108,19 @@ func TestPGStore(t *testing.T) {
 	}
 	if nullSpend != nil {
 		t.Fatalf("spend_eur of refusal = %v, want NULL", nullSpend)
+	}
+	var tools []string
+	rows, err := s.db.QueryContext(ctx, `SELECT tool FROM audit WHERE task_id = 't1' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var tool string
+		rows.Scan(&tool)
+		tools = append(tools, tool)
+	}
+	if !reflect.DeepEqual(tools, []string{"", "web_scrape"}) {
+		t.Fatalf("audit tools = %q, want a model call's empty tool, then web_scrape", tools)
 	}
 	var auditVersion int64
 	var limit int

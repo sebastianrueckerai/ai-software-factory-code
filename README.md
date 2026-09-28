@@ -45,7 +45,8 @@ the agents work on.
   capped at the smaller headroom; a new run, policy version or UTC day
   mints a new key and blocks the old one. Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
-  output limit and hold.
+  output limit and hold. It also serves the agent's tools over MCP at
+  `/mcp`, see "Tools".
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
   resumed task branch that only the fork holds is fetched from there),
@@ -318,15 +319,15 @@ unless the caller asked for fewer. After the call one transaction
 deletes the hold and books the real cost onto `tasks.spent_eur` and the
 ledger; an unknown cost (no cost header, a broken stream) books the
 hold. A hold whose caller died expires after an hour and factoryd's
-sweep books it in full. `holds` has kinds `model`, `tool` and `resource`
-for the later connectors. LiteLLM's
-`fail_closed_budget_enforcement` is the backstop.
+sweep books it in full. `holds` has kinds `model`, `tool` (see "Tools")
+and `resource`. LiteLLM's `fail_closed_budget_enforcement` is the
+backstop.
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,
 kind (`model` per call with the alias as ref, `settlement` for the raise
 the settlement pass makes when LiteLLM shows more spend than was booked,
-dated the day the pass runs, `tool` and `resource` for later
-connectors), ref, EUR (never negative). Costs are LiteLLM's USD prices
+dated the day the pass runs, `tool` per tool call with the tool as ref,
+`resource` for the later leases), ref, EUR (never negative). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
 `policy_activations`, `ledger` and `holds` lives in
 `internal/policy/schema.sql` and is applied by both binaries, which share
@@ -338,6 +339,68 @@ Both endpoints take the intake bearer token:
 - `GET /costs?from=YYYY-MM-DD&to=YYYY-MM-DD` (UTC days, both included,
   each defaulting to today, at most 366 days apart): `days` (per day
   `by_kind` and `total`) and `tasks` (per task total, largest first).
+
+## Tools
+
+The gateway serves the agent's tools over MCP at `/mcp` (streamable
+HTTP, stateless, `github.com/modelcontextprotocol/go-sdk`), behind the
+same task-JWT check and task lookup as the model path. The sandbox's
+identity proxy forwards `/mcp` with the pod JWT like the model calls;
+opencode's config names it the remote MCP server `factory-tools`
+(timeout 150 s, above the slowest connector; the pinned opencode cuts a
+tool call at this timeout), and the model sees the tools as
+`factory-tools_<tool>`. The provider keys live only in the gateway
+(secret `gateway-tool-keys`).
+
+- `web_scrape` (`url`): Firecrawl `/v2/scrape`, markdown only, basic
+  proxy, no PDF parser, the text capped at 64 KiB.
+- `web_search` (`query`, `limit` 1 to 10): Firecrawl `/v2/search`.
+- `replicate_predict` (`model` owner/name, optional `version`, `input`):
+  a Replicate prediction with `Prefer: wait=60`; one still running then
+  is cancelled. Only models the policy maps to a hardware SKU run.
+- `fal_run` (`endpoint`, `input`): `https://fal.run/<endpoint>`, priced
+  from fal's pricing API (cached an hour per endpoint); only endpoints
+  priced per request or per megapixel run.
+- `escalate_to_human` (`question`, `reason`): free, for the `coder`
+  class. The gateway posts it to factoryd's `POST /internal/escalations`
+  (bearer from secret `gateway-factoryd`, key `token`); factoryd records
+  an `agent_escalation` intake event and trips the running session's
+  supervision with an escalation, no supervisor call: the worker pushes
+  its work in progress, the task goes `waiting-human`, the question is
+  commented on the issue, and a trusted answer resumes the task. The
+  agent reads "escalated; this session will end".
+
+Every paid call, in order: the task is running; one of its classes lists
+the tool (`classes.<c>.tools`, the most generous cap when several do);
+the arguments are valid and the call's worst case is priced (Firecrawl:
+`scrape_credits` or `search_credits` at `eur_per_credit`; Replicate:
+`max_seconds` at the model's hardware rate; fal: the endpoint's unit
+price, times `max_megapixels` for a megapixel endpoint); under the
+headroom lock, the task's requests and euros on the tool (booked rows
+and open holds) and the free task and day headroom must fit it, and a
+`tool` hold takes it; then the provider is called and one transaction
+books the real cost onto the task and a `tool` ledger row (every
+admitted call writes one, at 0 EUR too: the rows count the requests).
+Real costs: Firecrawl's `creditsUsed` (a call that returns no result is
+not charged), Replicate's `metrics.predict_time` at the hardware rate,
+fal's unit price times the units (1 per request, megapixels rounded up
+per returned image). An unknown cost (a 5xx, a transport error, a
+missing field) books the hold; a 4xx books 0. Prices not in any API
+response live in the policy's `prices`. A refusal (`refused_capability`,
+`refused_task_status`, `refused_arguments`, `refused_price`,
+`refused_tool_requests`, `refused_tool_eur`, `refused_budget`,
+`refused_day_cap`) comes back as an MCP tool error that says the policy
+refused and the tool did not run; a provider failure (`error_tool`) says
+the tool failed. Every call has an audit row with the decision, the tool
+(`audit.tool`), the policy version and, when admitted, the hold.
+
+The gateway's egress (`factory-gateway-egress` in `k8s/deployment.yaml`)
+is default-deny plus LiteLLM, the `sf-cluster` Postgres instances,
+factoryd on 8080, the API server (by entity, dialled at the injected
+`KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
+`api.replicate.com`, `fal.run` and `api.fal.ai` by name on 443, with
+kube-dns for exactly those names (`ndots: 1`, every callee named in
+full). factoryd's ingress admits the gateway on 8080.
 
 ## Console (task 54)
 
@@ -452,8 +515,8 @@ and the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`). Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
-webhooks on 8080, and the edge gateway's Envoy (entity `ingress`) on the
-console port 8090 only.
+webhooks and the gateway's escalation hand-over on 8080, and the edge
+gateway's Envoy (entity `ingress`) on the console port 8090 only.
 
 ## Operating it
 

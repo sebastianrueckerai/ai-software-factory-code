@@ -19,6 +19,7 @@ type Document struct {
 	Version int              `yaml:"version" json:"version"`
 	Budget  Budget           `yaml:"budget" json:"budget"`
 	Classes map[string]Class `yaml:"classes" json:"classes"`
+	Prices  ToolPrices       `yaml:"prices" json:"prices"`
 }
 
 // Budget caps spend in EUR: per task (default and maximum at intake) and
@@ -39,6 +40,53 @@ type Class struct {
 type ToolCap struct {
 	MaxRequests int     `yaml:"max_requests" json:"max_requests"`
 	MaxEUR      float64 `yaml:"max_eur" json:"max_eur"`
+}
+
+// ClassCoder is the class intake gives agent tasks.
+const ClassCoder = "coder"
+
+// The gateway's paid tools, the names classes.<c>.tools caps.
+// ToolEscalate is free and always allowed for the coder class.
+const (
+	ToolWebScrape = "web_scrape"
+	ToolWebSearch = "web_search"
+	ToolReplicate = "replicate_predict"
+	ToolFal       = "fal_run"
+	ToolEscalate  = "escalate_to_human"
+)
+
+// PaidTools are the tools a class may list.
+var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
+
+// ToolPrices are the tool prices no provider API reports.
+type ToolPrices struct {
+	Firecrawl FirecrawlPrices `yaml:"firecrawl" json:"firecrawl"`
+	Replicate ReplicatePrices `yaml:"replicate" json:"replicate"`
+	Fal       FalPrices       `yaml:"fal" json:"fal"`
+}
+
+// FirecrawlPrices: a call costs its creditsUsed at EURPerCredit; the
+// credit figures are the worst case a call is held at.
+type FirecrawlPrices struct {
+	EURPerCredit  float64 `yaml:"eur_per_credit" json:"eur_per_credit"`
+	ScrapeCredits int     `yaml:"scrape_credits" json:"scrape_credits"`
+	SearchCredits int     `yaml:"search_credits" json:"search_credits"`
+}
+
+// ReplicatePrices: a prediction costs its predict_time at its hardware's
+// rate. Replicate's API names no model's hardware, so Models maps each
+// usable model (owner/name) to its hardware SKU; any other model is
+// refused. A prediction is held at MaxSeconds of its hardware.
+type ReplicatePrices struct {
+	EURPerSecond map[string]float64 `yaml:"eur_per_second" json:"eur_per_second"`
+	Models       map[string]string  `yaml:"models" json:"models"`
+	MaxSeconds   float64            `yaml:"max_seconds" json:"max_seconds"`
+}
+
+// FalPrices: fal's pricing API prices each endpoint per unit; a call
+// priced per megapixel is held at MaxMegapixels.
+type FalPrices struct {
+	MaxMegapixels float64 `yaml:"max_megapixels" json:"max_megapixels"`
 }
 
 // Parse decodes and validates a policy file. Unknown keys are an error, so
@@ -88,12 +136,61 @@ func (d Document) Validate() error {
 			return fmt.Errorf("policy: class %s lists an empty model", name)
 		}
 		for tool, tc := range c.Tools {
-			if tool == "" || tc.MaxRequests <= 0 || tc.MaxEUR <= 0 {
-				return fmt.Errorf("policy: class %s tool %q needs a name, a positive max_requests and max_eur", name, tool)
+			if tool == ToolEscalate {
+				return fmt.Errorf("policy: class %s lists %s, which is free and always allowed for coder", name, tool)
+			}
+			if !slices.Contains(PaidTools, tool) {
+				return fmt.Errorf("policy: class %s lists unknown tool %q (known: %v)", name, tool, PaidTools)
+			}
+			if tc.MaxRequests <= 0 || tc.MaxEUR <= 0 {
+				return fmt.Errorf("policy: class %s tool %q needs a positive max_requests and max_eur", name, tool)
+			}
+			if err := d.Prices.validate(tool); err != nil {
+				return fmt.Errorf("policy: class %s lists %s: %w", name, tool, err)
 			}
 		}
 	}
 	return nil
+}
+
+func (p ToolPrices) validate(tool string) error {
+	switch tool {
+	case ToolWebScrape, ToolWebSearch:
+		f := p.Firecrawl
+		if f.EURPerCredit <= 0 || f.ScrapeCredits <= 0 || f.SearchCredits <= 0 {
+			return errors.New("prices.firecrawl needs a positive eur_per_credit, scrape_credits and search_credits")
+		}
+	case ToolReplicate:
+		r := p.Replicate
+		if r.MaxSeconds <= 0 || len(r.Models) == 0 {
+			return errors.New("prices.replicate needs a positive max_seconds and at least one model")
+		}
+		for model, sku := range r.Models {
+			if rate := r.EURPerSecond[sku]; rate <= 0 {
+				return fmt.Errorf("prices.replicate model %s runs on %q, which has no positive eur_per_second", model, sku)
+			}
+		}
+	case ToolFal:
+		if p.Fal.MaxMegapixels <= 0 {
+			return errors.New("prices.fal needs a positive max_megapixels")
+		}
+	}
+	return nil
+}
+
+// ToolCap is the most generous cap any of classes grants tool; false when
+// none lists it.
+func (d Document) ToolCap(classes []string, tool string) (ToolCap, bool) {
+	var best ToolCap
+	found := false
+	for _, c := range classes {
+		if tc, ok := d.Classes[c].Tools[tool]; ok {
+			best.MaxRequests = max(best.MaxRequests, tc.MaxRequests)
+			best.MaxEUR = max(best.MaxEUR, tc.MaxEUR)
+			found = true
+		}
+	}
+	return best, found
 }
 
 // AllowsModel reports whether any of classes may call model.

@@ -56,6 +56,11 @@ type ServerOptions struct {
 	Prices     Pricer
 	LiteLLMURL string
 	HTTP       *http.Client // proxy client; nil = no timeout, streaming-safe
+	// the MCP tools' connectors and the escalation hand-over
+	Firecrawl *Firecrawl
+	Replicate *Replicate
+	Fal       *Fal
+	Escalator Escalator
 }
 
 // cachedKey is a task's virtual key and what it was minted for: a new run,
@@ -113,11 +118,12 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 	return &v, nil
 }
 
-// Routes is the gateway's full HTTP surface: the single model route plus the
-// pinned healthz shape from internal/health.
+// Routes is the gateway's full HTTP surface: the model route, the MCP
+// tools and the pinned healthz shape from internal/health.
 func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
+	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
 	return mux
 }

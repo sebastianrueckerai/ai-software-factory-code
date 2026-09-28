@@ -107,3 +107,26 @@ func TestIdentityProxyPassesMethodPathQueryAndStatus(t *testing.T) {
 		t.Fatalf("upstream saw %s %s", gotMethod, gotPath)
 	}
 }
+
+// opencode's MCP client posts to /mcp and accepts JSON or SSE; the proxy
+// forwards it like the model path, under the task identity.
+func TestIdentityProxyForwardsMCP(t *testing.T) {
+	var path, auth, accept string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, auth, accept = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+	}))
+	defer upstream.Close()
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("pod-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	rec := httptest.NewRecorder()
+	(&IdentityProxy{GatewayURL: upstream.URL, TokenFile: tokenFile}).ServeHTTP(rec, req)
+	if rec.Code != 200 || path != "/mcp" || auth != "Bearer pod-jwt" || accept != "application/json, text/event-stream" {
+		t.Fatalf("forwarded %s with auth %q accept %q, status %d", path, auth, accept, rec.Code)
+	}
+}

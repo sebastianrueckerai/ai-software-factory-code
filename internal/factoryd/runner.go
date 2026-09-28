@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -52,6 +53,50 @@ type Runner struct {
 	timeline   *Timeline
 	supervisor *SupervisorModel
 	stopWait   time.Duration
+
+	liveMu sync.Mutex
+	live   map[string]chan agentEscalation // by task: its running session's escalations
+}
+
+type agentEscalation struct{ question, reason string }
+
+// ErrNoLiveSession: the task has no session running in this factoryd.
+var ErrNoLiveSession = errors.New("the task has no running session")
+
+// EscalateSession hands an agent's escalate_to_human to its task's running
+// session, which stops the way a supervisor's escalate stops it.
+func (r *Runner) EscalateSession(taskID, question, reason string) error {
+	r.liveMu.Lock()
+	ch, ok := r.live[taskID]
+	r.liveMu.Unlock()
+	if !ok {
+		return ErrNoLiveSession
+	}
+	select {
+	case ch <- agentEscalation{question, reason}:
+		return nil
+	default:
+		return errors.New("the session is already ending on an escalation")
+	}
+}
+
+// liveSession registers a running session for EscalateSession until the
+// returned func ends it.
+func (r *Runner) liveSession(taskID string) (<-chan agentEscalation, func()) {
+	ch := make(chan agentEscalation, 1)
+	r.liveMu.Lock()
+	if r.live == nil {
+		r.live = map[string]chan agentEscalation{}
+	}
+	r.live[taskID] = ch
+	r.liveMu.Unlock()
+	return ch, func() {
+		r.liveMu.Lock()
+		if r.live[taskID] == ch {
+			delete(r.live, taskID)
+		}
+		r.liveMu.Unlock()
+	}
 }
 
 func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, completion *Completion, objects ObjectStore, supervisor *SupervisorModel) (*Runner, error) {
@@ -334,6 +379,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		answered := make(chan struct{})
 		go func() {
 			defer close(answered)
+			if trip.decided != nil {
+				d = *trip.decided
+				return
+			}
 			d, called = supervision.onTrip(callCtx, trip)
 		}()
 		select {
@@ -363,16 +412,27 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if out.result != nil && out.result.Success && out.commit != "" {
 			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the supervisor call; the task goes to verification.", out.commit)
 		}
-		r.commentDecision(ctx, t, s, trip, d, out.digest, note)
+		// the agent's own escalation reaches the issue through Escalate
+		if trip.decided == nil || note != "" {
+			r.commentDecision(ctx, t, s, trip, d, out.digest, note)
+		}
 		return true, ctx.Err()
 	}
 
+	escalations, unregister := r.liveSession(t.ID)
+	defer unregister()
 	tick := time.NewTicker(r.supervisionTick())
 	defer tick.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return out, ctx.Err()
+		case esc := <-escalations:
+			// the session is ending: a second escalation finds none
+			unregister()
+			if end, err := onTrip(sup.AgentEscalation(esc.question, esc.reason)); end {
+				return out, err
+			}
 		case <-workerStop:
 			stopAt = time.Now()
 			return out, shutdown()

@@ -177,6 +177,7 @@ func main() {
 	runner.RegisterActivities(taskWorker)
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
+	gatewayToken := mustEnv("GATEWAY_TOKEN")
 	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
 	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	webhookIntake := &factoryd.Intake{
@@ -228,6 +229,8 @@ func main() {
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
+	// the gateway's hand-over of an agent's escalate_to_human
+	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -420,7 +423,13 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 	}
 }
 
-// requireBearer admits only requests carrying the intake token.
+// escalationRoute is the gateway's hand-over of escalate_to_human, behind
+// the bearer only the gateway holds (secret factory/gateway-factoryd).
+func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {
+	return requireBearer(gatewayToken, factoryd.EscalationHandler(store, sessions))
+}
+
+// requireBearer admits only requests carrying token.
 func requireBearer(token string, next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")

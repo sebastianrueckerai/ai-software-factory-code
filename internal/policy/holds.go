@@ -18,17 +18,21 @@ const MinCallTokens = 1024
 // an expired hold at its full amount.
 const HoldTTL = time.Hour
 
-// HoldRequest asks for the headroom of one model call.
+// HoldRequest asks for the headroom of one model or tool call.
 type HoldRequest struct {
 	TaskID string
 	Kind   string // KindModel, KindTool or KindResource
-	Ref    string // the alias for a model call
+	Ref    string // the alias of a model call, the name of a tool call
 	// InTokens bounds the input tokens: the request body's byte length,
 	// since a token covers at least one byte.
 	InTokens int
 	Price    Price
 	WantOut  int // the caller's output limit; 0 = none
 	DayEUR   float64
+	// EUR is a tool call's worst case, held as is, and Cap the task's caps
+	// on the tool.
+	EUR float64
+	Cap ToolCap
 }
 
 // Hold is headroom taken for one call: EUR at the worst case of InTokens
@@ -44,9 +48,9 @@ type Hold struct {
 	Headroom float64
 }
 
-// Refusal is a call the headroom cannot fit.
+// Refusal is a call the headroom or a tool cap cannot fit.
 type Refusal struct {
-	Decision string // refused_budget or refused_day_cap
+	Decision string // refused_budget, refused_day_cap, refused_tool_requests or refused_tool_eur
 	Reason   string
 }
 
@@ -81,6 +85,29 @@ func Fit(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
 }
 
+// FitTool admits a tool call at its worst case if the task has requests
+// and euros left on the tool (used so far: requests, usedEUR, holds
+// included) and the free task and day headroom pay for it.
+func FitTool(taskFree, dayFree float64, requests int, usedEUR float64, r HoldRequest) (Hold, error) {
+	if requests >= r.Cap.MaxRequests {
+		return Hold{}, &Refusal{Decision: "refused_tool_requests", Reason: fmt.Sprintf(
+			"%s: %d of the task's %d requests used", r.Ref, requests, r.Cap.MaxRequests)}
+	}
+	if usedEUR+r.EUR > r.Cap.MaxEUR+1e-12 {
+		return Hold{}, &Refusal{Decision: "refused_tool_eur", Reason: fmt.Sprintf(
+			"%s: %.6f EUR used and a worst case of %.6f EUR exceed the task's cap of %.6f EUR on it", r.Ref, usedEUR, r.EUR, r.Cap.MaxEUR)}
+	}
+	free, decision := taskFree, "refused_budget"
+	if dayFree < taskFree {
+		free, decision = dayFree, "refused_day_cap"
+	}
+	if r.EUR > free {
+		return Hold{}, &Refusal{Decision: decision, Reason: fmt.Sprintf(
+			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (task %.6f, day %.6f)", r.Ref, r.EUR, free, taskFree, dayFree)}
+	}
+	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, EUR: r.EUR}, nil
+}
+
 // TakeHold fits the call into the headroom left after spend and every
 // outstanding hold, and records the hold, in one transaction under one
 // advisory lock: two calls never both take the last headroom.
@@ -107,7 +134,22 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	if err != nil {
 		return Hold{}, err
 	}
-	h, err := Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+	var h Hold
+	if r.Kind == KindTool {
+		var requests int
+		var usedEUR float64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT (SELECT count(*) FROM ledger WHERE task_id = $1 AND kind = 'tool' AND ref = $2)
+			      + (SELECT count(*) FROM holds WHERE task_id = $1 AND kind = 'tool' AND ref = $2),
+			        (COALESCE((SELECT sum(eur) FROM ledger WHERE task_id = $1 AND kind = 'tool' AND ref = $2), 0)
+			      + COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1 AND kind = 'tool' AND ref = $2), 0))::float8`,
+			r.TaskID, r.Ref).Scan(&requests, &usedEUR); err != nil {
+			return Hold{}, err
+		}
+		h, err = FitTool(taskHeadroom-taskHeld, dayHeadroom-dayHeld, requests, usedEUR, r)
+	} else {
+		h, err = Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+	}
 	if err != nil {
 		return Hold{}, err
 	}
@@ -123,8 +165,9 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 // ReleaseHold turns a hold into spend: the call's cost when known, else the
 // hold's full amount (a worst case, and settlement only ever raises). It
 // books the task's spent_eur and the ledger row in the transaction that
-// deletes the hold, and returns the task's spend. A hold the sweep already
-// booked is not booked twice.
+// deletes the hold, and returns the task's spend. A tool call's row is
+// written even at 0 EUR: the rows count the task's requests of the tool. A
+// hold the sweep already booked is not booked twice.
 func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float64, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,6 +180,7 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float6
 	if cost != nil {
 		amount = *cost
 	}
+	found := err == nil
 	if errors.Is(err, sql.ErrNoRows) {
 		amount = 0
 	} else if err != nil {
@@ -148,7 +192,7 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float6
 	).Scan(&spent); err != nil {
 		return 0, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
 	}
-	if amount > 0 {
+	if amount > 0 || found && h.Kind == KindTool {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, $3, $4)`,
 			h.TaskID, h.Kind, h.Ref, amount); err != nil {
 			return 0, err

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,21 +42,25 @@ const (
 	// GATEWAY_AUDIENCE.
 	defaultAudience = "factory-gateway"
 
-	// InClusterFetchBase is the JWKS fetch override in production. The token's
-	// issuer is the cluster's public endpoint URL (Talos default), which pods
-	// cannot reach; the in-cluster API Service serves the same keys.
-	InClusterFetchBase = "https://kubernetes.default.svc"
-
 	defaultOwnTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- projected token file path, not a credential value
 
 	// InClusterCACertPath is the pod's mounted CA bundle; the JWKS fetch to
-	// InClusterFetchBase presents a certificate signed by it, so production
+	// InClusterFetchBase() presents a certificate signed by it, so production
 	// wiring must pass this as CACertPath (a missing bundle fails boot).
 	InClusterCACertPath = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 	// keyfuncCacheCap bounds the JWKS client cache below.
 	keyfuncCacheCap = 8
 )
+
+// InClusterFetchBase is the JWKS fetch override in production. The token's
+// issuer is the cluster's public endpoint URL (Talos default), which pods
+// cannot reach; the in-cluster API Service serves the same keys. Its
+// address comes from the pod environment, so no DNS name is needed: the
+// gateway's egress policy admits the API server, not its names.
+func InClusterFetchBase() string {
+	return "https://" + net.JoinHostPort(os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT"))
+}
 
 type AuthOptions struct {
 	Audience     string

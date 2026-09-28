@@ -263,6 +263,91 @@ func TestHolds(t *testing.T) {
 	}
 }
 
+// Tool holds count the tool's requests and euros per task, holds and
+// ledger rows alike, and fit the task's and the day's headroom.
+func TestToolHolds(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('a', 0.1, 'running'), ('b', 1, 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	req := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.02, DayEUR: 20,
+		Cap: ToolCap{MaxRequests: 2, MaxEUR: 0.05}}
+	var r *Refusal
+	h1, err := TakeHold(ctx, db, req)
+	if err != nil || h1.EUR != 0.02 {
+		t.Fatalf("first hold = (%+v, %v)", h1, err)
+	}
+	// the open hold counts: a second request fits, a third does not
+	h2, err := TakeHold(ctx, db, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeHold(ctx, db, req); !errors.As(err, &r) || r.Decision != "refused_tool_requests" {
+		t.Fatalf("third hold = %v, want refused_tool_requests", err)
+	}
+	// a free call still books a row: it was a request
+	if spent, err := ReleaseHold(ctx, db, h1, &zeroEUR); err != nil || spent != 0 {
+		t.Fatalf("free release = (%v, %v)", spent, err)
+	}
+	cost := 0.005
+	if _, err := ReleaseHold(ctx, db, h2, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeHold(ctx, db, req); !errors.As(err, &r) || r.Decision != "refused_tool_requests" {
+		t.Fatalf("hold after two booked requests = %v, want refused_tool_requests", err)
+	}
+	// euros: 0.005 used, 0.02 + 0.02 more fit 0.05, a third 0.02 does not
+	req.Cap.MaxRequests = 10
+	h3, err := TakeHold(ctx, db, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeHold(ctx, db, req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TakeHold(ctx, db, req); !errors.As(err, &r) || r.Decision != "refused_tool_eur" {
+		t.Fatalf("hold past 0.05 EUR = %v, want refused_tool_eur", err)
+	}
+	// an unknown cost books the hold; the caps count it
+	if spent, err := ReleaseHold(ctx, db, h3, nil); err != nil || !near(spent, 0.025) {
+		t.Fatalf("release without a cost = (%v, %v), want spent 0.025", spent, err)
+	}
+	// another tool has its own caps
+	other := req
+	other.Ref = ToolWebSearch
+	if _, err := TakeHold(ctx, db, other); err != nil {
+		t.Fatalf("web_search hold = %v", err)
+	}
+	// task headroom: 0.1 - 0.025 spent - 0.04 held = 0.035; 0.04 does not fit
+	big := req
+	big.Ref, big.EUR, big.Cap = ToolReplicate, 0.04, ToolCap{MaxRequests: 5, MaxEUR: 1}
+	if _, err := TakeHold(ctx, db, big); !errors.As(err, &r) || r.Decision != "refused_budget" {
+		t.Fatalf("hold past the task headroom = %v, want refused_budget", err)
+	}
+	// the day: 0.025 booked, 0.04 held; a day cap of 0.1 leaves b 0.035
+	big.TaskID, big.DayEUR = "b", 0.1
+	if _, err := TakeHold(ctx, db, big); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
+		t.Fatalf("hold past the day = %v, want refused_day_cap", err)
+	}
+	var rows []string
+	res, err := db.QueryContext(ctx, `SELECT kind || ' ' || ref || ' ' || eur::text FROM ledger ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for res.Next() {
+		var l string
+		res.Scan(&l)
+		rows = append(rows, l)
+	}
+	want := []string{"tool web_scrape 0", "tool web_scrape 0.005", "tool web_scrape 0.02"}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("ledger = %q, want %q", rows, want)
+	}
+}
+
+var zeroEUR = 0.0
+
 // Many concurrent calls of two tasks against a day with room for exactly
 // four: exactly four get a hold.
 func TestHoldsConcurrent(t *testing.T) {

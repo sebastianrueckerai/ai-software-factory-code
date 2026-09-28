@@ -106,6 +106,28 @@ func TestOpencodeMapsToolErrorAsToolCall(t *testing.T) {
 	}
 }
 
+// opencode-run-mcp.jsonl is recorded from the pinned binary calling a
+// remote MCP server (task 52 step 0): one call completes, one is refused.
+func TestOpencodeMapsMCPToolCalls(t *testing.T) {
+	var calls []harness.Event
+	for _, ev := range fixtureEvents(t, "opencode-run-mcp.jsonl") {
+		if ev.Kind == harness.EventToolCall {
+			calls = append(calls, ev)
+		}
+	}
+	if len(calls) != 2 {
+		t.Fatalf("tool calls = %+v, want 2", calls)
+	}
+	if calls[0].Detail["tool"] != "factory-tools_echo" || calls[0].Detail["status"] != "completed" ||
+		calls[0].Detail["args"].(map[string]any)["text"] != "hello-from-model" {
+		t.Fatalf("completed MCP call = %+v", calls[0])
+	}
+	if calls[1].Detail["tool"] != "factory-tools_refuse" || calls[1].Detail["status"] != "error" ||
+		calls[1].Detail["error"] != "refused: cap reached (smoke)" {
+		t.Fatalf("refused MCP call = %+v", calls[1])
+	}
+}
+
 func TestOpencodeParserFlagsAPIError(t *testing.T) {
 	p := &opencodeParser{}
 	p.line([]byte(`{"type":"error","timestamp":1790437441579,"sessionID":"ses_x","error":{"name":"APIError","data":{"message":"stub boom","statusCode":500}}}`), func(ev harness.Event) {})
@@ -141,7 +163,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678/v1", "factory", "factory-main", 10000)
+	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +189,12 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 	limit := model["limit"].(map[string]any)
 	if limit["output"] != float64(10000) {
 		t.Fatalf("limit.output = %v (answer + reasoning headroom)", limit["output"])
+	}
+	// the entry the step 0 smoke test proved against v1.18.32, with the
+	// timeout above the slowest connector
+	want := map[string]any{"type": "remote", "url": "http://127.0.0.1:45678/mcp", "enabled": true, "oauth": false, "timeout": float64(150000)}
+	if got := cfg["mcp"].(map[string]any)["factory-tools"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("mcp factory-tools = %v, want %v", got, want)
 	}
 }
 

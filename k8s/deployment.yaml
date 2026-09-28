@@ -13,6 +13,9 @@ spec:
     spec:
       serviceAccountName: factory-gateway
       automountServiceAccountToken: true # the JWKS fetch authenticates with this token
+      # every callee is named in full, so the first DNS query is the one the
+      # egress policy admits; search-path expansions would be refused
+      dnsConfig: {options: [{name: ndots, value: "1"}]}
       imagePullSecrets:
       - name: forgejo-registry
       containers:
@@ -21,17 +24,29 @@ spec:
         ports: [{name: http, containerPort: 8081}]
         env:
         - name: LITELLM_URL
-          value: http://litellm.platform.svc:4000
+          value: http://litellm.platform.svc.cluster.local:4000
         - name: PGUSER
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
         - name: PGPASSWORD
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: password}}
         - name: DATABASE_URL
-          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc:5432/gateway
+          value: postgres://$(PGUSER):$(PGPASSWORD)@sf-cluster-rw.platform.svc.cluster.local:5432/gateway
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: GATEWAY_AUDIENCE
           value: factory-gateway
+        # the MCP tools' provider keys: only the gateway holds them
+        - name: FIRECRAWL_KEY
+          valueFrom: {secretKeyRef: {name: gateway-tool-keys, key: FIRECRAWL_KEY}}
+        - name: REPLICATE_KEY
+          valueFrom: {secretKeyRef: {name: gateway-tool-keys, key: REPLICATE_KEY}}
+        - name: FAL_AI_KEY
+          valueFrom: {secretKeyRef: {name: gateway-tool-keys, key: FAL_AI_KEY}}
+        # escalate_to_human's hand-over to factoryd's internal endpoint
+        - name: FACTORYD_URL
+          value: http://factoryd.factory.svc.cluster.local:8080
+        - name: FACTORYD_TOKEN
+          valueFrom: {secretKeyRef: {name: gateway-factoryd, key: token}}
         readinessProbe: {httpGet: {path: /healthz, port: http}}
         livenessProbe: {httpGet: {path: /healthz, port: http}}
         securityContext:
@@ -43,3 +58,57 @@ spec:
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
+---
+# The gateway holds the LiteLLM master key and the tool providers' keys, so
+# its egress is default-deny with exactly its callees: LiteLLM, Postgres
+# (every sf-cluster instance, so a failover keeps working), factoryd's
+# internal endpoint, the API server (JWKS, by the Service address from the
+# pod environment), and the tool providers by name on 443.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-gateway-egress
+  namespace: factory
+spec:
+  endpointSelector:
+    matchLabels: {app: factory-gateway}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": kube-system
+        "k8s:k8s-app": kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: ANY}]
+      rules:
+        dns:
+        - matchName: sf-cluster-rw.platform.svc.cluster.local
+        - matchName: litellm.platform.svc.cluster.local
+        - matchName: factoryd.factory.svc.cluster.local
+        - matchName: api.firecrawl.dev
+        - matchName: api.replicate.com
+        - matchName: fal.run
+        - matchName: api.fal.ai
+  - toEntities: [kube-apiserver]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        cnpg.io/cluster: sf-cluster
+    toPorts:
+    - ports: [{port: "5432", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: litellm
+    toPorts:
+    - ports: [{port: "4000", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels: {app: factoryd}
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]
+  - toFQDNs:
+    - matchName: api.firecrawl.dev
+    - matchName: api.replicate.com
+    - matchName: fal.run
+    - matchName: api.fal.ai
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]

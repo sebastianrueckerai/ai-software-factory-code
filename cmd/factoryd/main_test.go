@@ -39,6 +39,47 @@ func TestRequireBearer(t *testing.T) {
 	}
 }
 
+type escalationStub struct{ delivered int }
+
+func (e *escalationStub) Task(context.Context, string) (factoryd.Task, bool, error) {
+	return factoryd.Task{ID: "t1", Status: "running"}, true, nil
+}
+
+func (e *escalationStub) InsertIntakeEvent(context.Context, factoryd.IntakeEvent) (int64, error) {
+	return 1, nil
+}
+
+func (e *escalationStub) EscalateSession(string, string, string) error {
+	e.delivered++
+	return nil
+}
+
+// Only the gateway's bearer reaches the escalation handler; the intake
+// token does not.
+func TestEscalationRouteNeedsTheGatewayToken(t *testing.T) {
+	stub := &escalationStub{}
+	h := escalationRoute("gw-token", stub, stub)
+	for header, want := range map[string]int{
+		"":                  http.StatusUnauthorized,
+		"Bearer intake":     http.StatusUnauthorized,
+		"Bearer gw-token":   http.StatusAccepted,
+		"Bearer gw-token\n": http.StatusUnauthorized,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(`{"task_id":"t1","question":"q","reason":"r"}`))
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("Authorization %q: status %d, want %d", header, rec.Code, want)
+		}
+	}
+	if stub.delivered != 1 {
+		t.Fatalf("delivered %d escalations, want 1", stub.delivered)
+	}
+}
+
 // createTaskForgejoStub answers CreateIssue and ReplaceIssueLabels, the two
 // Forgejo calls createTaskHandler makes; it appends into the shared events
 // log passed in so a test can assert call order against the fake store's

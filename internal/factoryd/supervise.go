@@ -22,6 +22,9 @@ const (
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
 	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
+	// TripAgentEscalation: the agent called escalate_to_human; decided
+	// already, no supervisor call
+	TripAgentEscalation TripKind = "agent_escalation"
 )
 
 // Trip is a detector firing: the kind, what it saw, and the session's
@@ -32,6 +35,7 @@ type Trip struct {
 	Findings []string
 	Detail   string // what the detector saw, for the supervisor and the record
 	key      string // which evidence tripped, so a continue resets only that
+	decided  *Decision
 }
 
 // SupervisorConfig must be validated at task start so a misconfigured
@@ -135,6 +139,16 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
 	}
 	return nil
+}
+
+// AgentEscalation trips on the agent's own escalate_to_human: an
+// escalation with its question, the supervisor model not asked.
+func (s *Supervisor) AgentEscalation(question, reason string) *Trip {
+	if s.tripped != nil {
+		return s.tripped
+	}
+	return s.trip(&Trip{Kind: TripAgentEscalation, Detail: "the agent called escalate_to_human",
+		decided: &Decision{Action: ActionEscalate, Reason: "The agent asks: " + question + "\nWhy: " + reason}})
 }
 
 // SetSpend tells the supervisor the task's spend so far.

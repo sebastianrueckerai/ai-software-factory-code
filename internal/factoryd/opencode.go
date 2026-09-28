@@ -118,7 +118,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	defer func() { proxy.Shutdown(context.Background()); <-done }() // #nosec G104 -- shutdown error is inconsequential once the run is over
 
 	provider, modelID := o.model()
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String()+"/v1", provider, modelID, outputLimit)
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -251,12 +251,27 @@ func objectiveText(brief harness.TaskBrief) string {
 	return b.String()
 }
 
-// buildOpencodeConfig produces the pinned v1.18.32 config (provider
-// singular, options.baseURL under the provider block; the current docs'
-// top-level baseURL shape is the v2 line and yields
-// "undefined/chat/completions" at this version).
-func buildOpencodeConfig(baseURL, provider, modelID string, outputLimit int) ([]byte, error) {
+// mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP
+// tools, which also cuts a tool call (5000 ms by default): above the
+// gateway's slowest connector, fal's 120 s client timeout (Replicate:
+// a 60 s wait, a cancel and a read within 75 s).
+const mcpTimeoutMS = 150000
+
+// buildOpencodeConfig produces the pinned v1.18.32 config for the identity
+// proxy at proxyURL (provider singular, options.baseURL under the provider
+// block; the current docs' top-level baseURL shape is the v2 line and
+// yields "undefined/chat/completions" at this version), with the gateway's
+// MCP tools as the remote server factory-tools: the proxy attaches the
+// task identity, so the entry carries no header. The model sees the tools
+// as factory-tools_<tool>.
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit int) ([]byte, error) {
+	baseURL := proxyURL + "/v1"
 	cfg := map[string]any{
+		"mcp": map[string]any{
+			"factory-tools": map[string]any{
+				"type": "remote", "url": proxyURL + "/mcp", "enabled": true, "oauth": false, "timeout": mcpTimeoutMS,
+			},
+		},
 		"provider": map[string]any{
 			provider: map[string]any{
 				"npm":  "@ai-sdk/openai-compatible",

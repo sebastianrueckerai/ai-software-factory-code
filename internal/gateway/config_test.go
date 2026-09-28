@@ -10,7 +10,7 @@ func TestConfigFromEnv(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Config{Audience: "factory-gateway", Port: "8081"},
+			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080"},
 		},
 		{
 			name: "all set",
@@ -20,6 +20,11 @@ func TestConfigFromEnv(t *testing.T) {
 				"LITELLM_MASTER_KEY": "sk-master",
 				"DATABASE_URL":       "postgres://user:pass@db:5432/gateway",
 				"PORT":               "9090",
+				"FIRECRAWL_KEY":      "fc",
+				"REPLICATE_KEY":      "r8",
+				"FAL_AI_KEY":         "fal",
+				"FACTORYD_URL":       "http://fd:8080",
+				"FACTORYD_TOKEN":     "tok",
 			},
 			want: Config{
 				Audience:         "other-aud",
@@ -27,12 +32,17 @@ func TestConfigFromEnv(t *testing.T) {
 				LiteLLMMasterKey: "sk-master",
 				DatabaseURL:      "postgres://user:pass@db:5432/gateway",
 				Port:             "9090",
+				FirecrawlKey:     "fc",
+				ReplicateKey:     "r8",
+				FalKey:           "fal",
+				FactorydURL:      "http://fd:8080",
+				FactorydToken:    "tok",
 			},
 		},
 		{
 			name: "empty database url falls through to pgx pg vars",
 			env:  map[string]string{"PGHOST": "db-host"},
-			want: Config{Audience: "factory-gateway", Port: "8081"},
+			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080"},
 		},
 	}
 	for _, tt := range tests {

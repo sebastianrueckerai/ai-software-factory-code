@@ -36,6 +36,7 @@ func testPolicy(id int64, dayEUR float64) policy.Version {
 type ledgerRow struct {
 	taskID, ref string
 	eur         float64
+	kind        string
 }
 
 // testPrice prices every test alias: 1e-6 in, 4e-6 out per token, at most
@@ -104,7 +105,24 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 		}
 	}
 	taskHeadroom, dayHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal
-	h, err := policy.Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+	var h policy.Hold
+	var err error
+	if r.Kind == policy.KindTool {
+		requests, used := 0, 0.0
+		for _, l := range m.ledger {
+			if l.taskID == r.TaskID && l.kind == policy.KindTool && l.ref == r.Ref {
+				requests, used = requests+1, used+l.eur
+			}
+		}
+		for _, o := range m.holds {
+			if o.TaskID == r.TaskID && o.Kind == policy.KindTool && o.Ref == r.Ref {
+				requests, used = requests+1, used+o.EUR
+			}
+		}
+		h, err = policy.FitTool(taskHeadroom-taskHeld, dayHeadroom-dayHeld, requests, used, r)
+	} else {
+		h, err = policy.Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+	}
 	if err != nil {
 		return h, err
 	}
@@ -127,11 +145,11 @@ func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) 
 		amount = 0
 	}
 	t := m.tasks[h.TaskID]
-	if amount > 0 {
+	if amount > 0 || ok && h.Kind == policy.KindTool {
 		t.SpentEUR += amount
 		m.tasks[h.TaskID] = t
 		m.spends[h.TaskID] = t.SpentEUR
-		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount})
+		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount, h.Kind})
 	}
 	return t.SpentEUR, nil
 }
@@ -1114,7 +1132,7 @@ func TestDayCapAcrossTasks(t *testing.T) {
 			t.Fatalf("audit %d = %+v, want %s under policy version 3", i, audits[i], want)
 		}
 	}
-	if len(store.ledger) != 2 || store.ledger[0] != (ledgerRow{"a", "coding-cheap", 0.625}) || store.ledger[1] != (ledgerRow{"b", "coding-cheap", 0.5}) {
+	if len(store.ledger) != 2 || store.ledger[0] != (ledgerRow{"a", "coding-cheap", 0.625, "model"}) || store.ledger[1] != (ledgerRow{"b", "coding-cheap", 0.5, "model"}) {
 		t.Fatalf("ledger = %+v, want one model row per allowed call", store.ledger)
 	}
 }

@@ -382,8 +382,13 @@ func TestInClusterCACertWiring(t *testing.T) {
 	if InClusterCACertPath != "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" {
 		t.Fatalf("InClusterCACertPath = %q, want the mounted serviceaccount CA path", InClusterCACertPath)
 	}
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.96.0.1")
+	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
+	if got := InClusterFetchBase(); got != "https://10.96.0.1:443" {
+		t.Fatalf("InClusterFetchBase = %q, want the API Service address", got)
+	}
 
-	absent := AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase, CACertPath: filepath.Join(t.TempDir(), "absent.crt")}
+	absent := AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase(), CACertPath: filepath.Join(t.TempDir(), "absent.crt")}
 	if _, err := NewAuth(absent); err == nil {
 		t.Fatal("absent CA bundle must fail NewAuth, want fail-fast boot")
 	}
@@ -396,7 +401,7 @@ func TestInClusterCACertWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	auth, err := NewAuth(AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase, CACertPath: caPath})
+	auth, err := NewAuth(AuthOptions{Audience: testAudience, FetchBase: InClusterFetchBase(), CACertPath: caPath})
 	if err != nil {
 		t.Fatal(err)
 	}

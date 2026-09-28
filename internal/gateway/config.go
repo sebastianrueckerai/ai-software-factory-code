@@ -10,6 +10,13 @@ type Config struct {
 	LiteLLMMasterKey string
 	DatabaseURL      string
 	Port             string
+	// the tool connectors' keys (secret factory/gateway-tool-keys) and
+	// factoryd's internal endpoint with its bearer (factory/gateway-factoryd)
+	FirecrawlKey  string
+	ReplicateKey  string
+	FalKey        string
+	FactorydURL   string
+	FactorydToken string
 }
 
 func ConfigFromEnv() Config {
@@ -19,6 +26,11 @@ func ConfigFromEnv() Config {
 		LiteLLMMasterKey: os.Getenv("LITELLM_MASTER_KEY"),
 		DatabaseURL:      os.Getenv("DATABASE_URL"),
 		Port:             getEnv("PORT", "8081"),
+		FirecrawlKey:     os.Getenv("FIRECRAWL_KEY"),
+		ReplicateKey:     os.Getenv("REPLICATE_KEY"),
+		FalKey:           os.Getenv("FAL_AI_KEY"),
+		FactorydURL:      getEnv("FACTORYD_URL", "http://factoryd.factory.svc.cluster.local:8080"),
+		FactorydToken:    os.Getenv("FACTORYD_TOKEN"),
 	}
 }
 

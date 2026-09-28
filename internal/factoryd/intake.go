@@ -254,7 +254,7 @@ func objectiveFromIssue(issue webhookIssue) string {
 
 // AgentCapabilities are the capability classes every agent task gets at
 // intake, through POST /tasks or an issue alike.
-var AgentCapabilities = []string{"coder"}
+var AgentCapabilities = []string{policy.ClassCoder}
 
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.

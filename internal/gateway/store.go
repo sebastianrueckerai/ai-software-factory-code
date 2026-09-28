@@ -32,7 +32,9 @@ type AuditRow struct {
 	Decision   string
 	Reason     string
 	ModelAlias string
-	SpendEUR   *float64
+	// Tool is the tool of an MCP tool call ("" for a model call).
+	Tool     string
+	SpendEUR *float64
 	// PolicyVersion is the policy version the decision was made under; nil
 	// only when no version could be read.
 	PolicyVersion *int64
@@ -126,9 +128,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, spend_eur, policy_version_id, output_limit, hold_eur)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR)
 	return err
 }
 
