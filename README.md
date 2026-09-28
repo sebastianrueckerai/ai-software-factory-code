@@ -330,7 +330,16 @@ hide a failure), same call (the same tool with the same arguments
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
 half way (half the wall-clock cap `WALL_CLOCK_CAP` or half the budget;
-once per task, recorded on the task row). The wall-clock cap ends the
+once per task, recorded on the task row), and three progress detectors
+(ruling 141) whose waits are the policy's `supervisor` section in seconds,
+read at each session start (`no_write` 900, `no_commit` 2700,
+`events_without_writes` 1800): no write (no write, edit or patch tool
+call since the last one or the session's start), no commit (no command
+running `git [options] commit` that exited 0), and events without writes
+(an agent event, a tool call, command or model call, arriving that long
+after the last write; a tick or the worker's checkpoint never trips it,
+silence is the stall's). A `continue` on events without writes restarts
+no write too. The wall-clock cap ends the
 session. Every other trip asks the supervisor, a model under the LiteLLM
 alias `supervisor`, called directly and metered like a gateway call: its
 answer limit is clamped to the free headroom, the worst case is held, and
@@ -371,6 +380,40 @@ answer also grants the difference, so every answer gets at least that
 slice of working time. Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.
+
+A machine gate past its bound goes to the gate supervisor (ruling 141,
+change id `gate-supervisor`). `GateWatch` writes the `gate_bound` alert
+and, for the session, checks, policy, migration, reproduction, review,
+approval request and merge activities, signals `gate_bound` to the task's
+workflow with the activity, its run's id, the attempt, the alert and the
+bound. The workflow takes the signal while that activity runs and calls
+`SuperviseGate` once per trip. factoryd assembles a read-only bundle, the
+model gets no tools: the task's objective and timeline tail, the
+activity's input, bound and elapsed time, the run's last failure
+(Temporal's pending activity info), and per activity the check statuses
+of the commit with the CI runner queue (`WaitChecks`), the sandbox pod's
+phase, conditions, container states and last 100 log lines with the
+task's git tokens and any JWT replaced by `***` (`RunSession`,
+`GateReproduction`), the pull request's state and mergeability (`Merge`)
+or the gateway's last 20 audit rows for the task (`ModelReview`). The
+`supervisor` alias answers through the same metered call as the session
+supervisor, on the task's account (purpose `gate-supervisor`): `wait`
+(the attempt's bound is extended once by its own length, so a second
+trip comes at twice the bound), `retry` (the attempt running in this
+factoryd is stopped with the retryable error `gate_supervisor_retry`, so
+the activity's retry policy runs it again), `cancel` (the workflow
+cancels the activity and fails the task with the diagnosis) or
+`escalate` (the workflow cancels it and escalates like the session
+supervisor, the diagnosis and the recommendation in the reason; the
+human's wait is no agent time, and the answer buys the next attempt).
+One `wait` and one `retry` per run; a trip after both offers only
+`cancel` and `escalate`, and a disallowed or malformed answer or a
+failed call escalates. The action, the diagnosis and the recommendation
+go on the alert (`detail`, verdict `noise` for `wait`, `real` otherwise,
+`resolved_by` `supervisor`) and on the timeline (`gate_supervisor`). An
+attempt that ended before the supervisor looked costs no call: its alert
+is `noise`. A workflow started before the change leaves the signal
+unread.
 
 The worker reports what the detectors read: commands with exit code and
 output tail, tool calls with arguments and their canonical hash, file
@@ -775,7 +818,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   per activity and `default`), `supervisor_trip` (every detector trip the
   supervisor decided; `continue` is `noise`, any other action `real`) and
   `escalation` (every escalation, not a healed run's repeat of it; open until an approver clicks `real
-  problem` or `noise`, here or on the escalation's board card).
+  problem` or `noise`, here or on the escalation's board card). A
+  supervisor column shows the action and diagnosis of a machine alert;
+  the timeline shows them on its `supervisor` and `gate_supervisor`
+  steps. An escalation's detail stays off the page.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the
