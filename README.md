@@ -757,7 +757,21 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
 - `/`: the agent lane by task status (done and failed for 7 days, at most
   300 tasks, open ones first), the human lane (approval requests,
   escalations with their reason, read from the escalation's intake event,
-  and an answer box, human tasks); htmx polls `/board` every 10 s.
+  and an answer box, human tasks); htmx polls `/board` every 10 s. A card
+  shows the task's time in all (from the issue's `created_at`) and the gate
+  it is in with the gate's age, from the row's `gate` and `gate_since`.
+- `/tasks/{id}/timeline`: a gates table above the raw steps, one row per
+  step that ended a gate (`factoryd.StepGates`, each carrying `started`)
+  with its attempt, start, duration, outcome and a `<meter>` against the
+  longest gate, the CI jobs of a `checks` step under it, and the row's
+  current gate "open for N min" while no step ended it.
+- `/alerts`: the newest 200 alerts (ruling 140): `gate_bound` (an activity
+  still running at its policy bound, written once per run by the
+  `GateWatch` worker interceptor; the policy's `bounds` section, seconds
+  per activity and `default`), `supervisor_trip` (every detector trip the
+  supervisor decided; `continue` is `noise`, any other action `real`) and
+  `escalation` (every Escalate; open until an approver clicks `real
+  problem` or `noise`, here or on the escalation's board card).
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the

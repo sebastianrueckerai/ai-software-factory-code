@@ -57,12 +57,12 @@ func escalationSource(reason string) string {
 }
 
 func (s *PGStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
+	if a.Detail == nil {
+		a.Detail = map[string]any{}
+	}
 	detail, err := json.Marshal(a.Detail)
 	if err != nil {
 		return 0, err
-	}
-	if a.Detail == nil {
-		detail = []byte("{}")
 	}
 	var id int64
 	err = s.db.QueryRowContext(ctx,
