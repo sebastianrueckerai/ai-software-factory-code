@@ -273,9 +273,19 @@ dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 task finishes done. main's protection lets factory-merge merge but not
 push, and only after an approval by a user on the approvals whitelist, so
 Forgejo itself refuses the merge without the human (405; a moved head or
-a conflict is 409). A refusal is commented and the wait goes on. A human
-merging in Forgejo stays valid (`pr_merged`). An approval signalled before
-the request opened, or for another pull request, does nothing.
+a conflict is 409). A refusal is commented and the wait goes on. Merge
+refuses by itself a pull request whose base is not `main`. A merge that
+fails otherwise (Forgejo unreachable) is retried five times, then
+commented and recorded (`merge_failed`); the approval stands and the
+merge is tried again after 10 minutes. A human merging in Forgejo stays
+valid (`pr_merged`, or found by Merge and credited to that human, with
+the head they merged). An approval signalled before the request opened,
+or for another pull request, does nothing. From change id
+`gates-pinned` on, `GatePolicy` and `ModelReview` check that the pull
+request's head is still the gated commit (a moved head fails the policy
+gate and skips the review with a note), and the model review races the
+terminal signals like the checks and the reproduction; a task without a
+reproduction command gets a `gate_reproduction` step saying so.
 
 The first pull request merged this way added this sentence.
 

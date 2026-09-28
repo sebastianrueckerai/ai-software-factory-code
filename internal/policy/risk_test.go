@@ -27,7 +27,8 @@ func TestClassify(t *testing.T) {
 		"deep ** under migrations":                     {[]string{"internal/gateway/migrations/a/b.sql"}, "migration", []string{"internal/gateway/migrations/a/b.sql"}, []string{"internal/gateway/migrations/a/b.sql"}},
 		"* is one segment":                             {[]string{"internal/a/b/migrations/x.sql"}, "normal", []string{"internal/a/b/migrations/x.sql"}, nil},
 		"high by Dockerfile* and go.sum":               {[]string{"Dockerfile.runner", "go.sum"}, "high", []string{"Dockerfile.runner", "go.sum"}, nil},
-		"a nested Dockerfile is not high":              {[]string{"cmd/Dockerfile"}, "normal", []string{"cmd/Dockerfile"}, nil},
+		"a Dockerfile at any depth is high":            {[]string{"cmd/x/Dockerfile.dev", "README.md"}, "high", []string{"cmd/x/Dockerfile.dev"}, nil},
+		"Dockerfile* names a file, not a dir":          {[]string{"docs/Dockerfiles/x.md"}, "normal", []string{"docs/Dockerfiles/x.md"}, nil},
 		"migrations flagged under a more severe class": {[]string{"internal/policy/schema.sql", ".forgejo/x"}, "forbidden", []string{".forgejo/x"}, []string{"internal/policy/schema.sql"}},
 		"k8s is high, over normal":                     {[]string{"k8s/factoryd.yaml", "main.go"}, "high", []string{"k8s/factoryd.yaml"}, nil},
 	} {

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,7 +28,11 @@ type gateForgejo struct {
 	diff        string
 	mergeStatus []int // answers in order, the last repeating
 	merges      []map[string]any
-	merged      bool // GET /pulls/9 reports merged
+	merged      bool   // GET /pulls/9 reports merged
+	mergedBy    string // and by whom; "" = factory-merge
+	head        string // GET /pulls/9's head sha; "" = c1
+	base        string // and its base; "" = main
+	stateFail   int    // GET /pulls/9 answers 502 this many times first
 	comments    []string
 }
 
@@ -52,7 +57,17 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(status)
 			io.WriteString(w, `{"message":"not allowed to merge"}`)
 		case r.Method == "GET" && p == "/pulls/9":
-			fmt.Fprintf(w, `{"number":9,"state":%q,"merged":%v}`, map[bool]string{true: "closed", false: "open"}[f.merged], f.merged)
+			if f.stateFail > 0 {
+				f.stateFail--
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			pr := map[string]any{"number": 9, "state": map[bool]string{true: "closed", false: "open"}[f.merged], "merged": f.merged,
+				"head": map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
+			if f.merged {
+				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
+			}
+			json.NewEncoder(w).Encode(pr)
 		case r.Method == "POST" && p == "/issues/9/comments":
 			var body struct{ Body string }
 			json.NewDecoder(r.Body).Decode(&body)
@@ -103,7 +118,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 		`{"filename":"k8s/factoryd.yaml"}`,
 	}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
-	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9))
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
 		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, PolicyVersion: 7}
@@ -126,7 +141,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
 	fj := &gateForgejo{files: []string{`{"filename":"ci.yml","previous_filename":".forgejo/workflows/ci.yml","status":"renamed"}`}}
 	r, _, _ := newGateRunner(t, gateTask, fj)
-	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9))
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	if g.Outcome != policy.OutcomeForbidden || !slices.Equal(g.Paths, []string{".forgejo/workflows/ci.yml"}) {
 		t.Fatalf("gate = %+v", g)
@@ -303,7 +318,7 @@ func TestMergeRefusal(t *testing.T) {
 	if res.Merged || !strings.Contains(res.Refusal, "405") {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Forgejo refused the merge") || store.approvals[0].Status != "pending" {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "was refused: forgejo POST") || store.approvals[0].Status != "pending" {
 		t.Fatalf("comments = %q, approval = %+v", fj.comments, store.approvals[0])
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
@@ -378,10 +393,14 @@ func TestApproveMerge(t *testing.T) {
 // No reproduction command: nothing runs.
 func TestGateReproductionWithoutACommand(t *testing.T) {
 	kube := newFakeKube()
-	r, hub, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
+	objects := &fakeObjectStore{}
+	r, hub, _ := newTestRunner(t, gateTask, kube, objects)
 	val, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
 	if res := getInto[ReproResult](t, val, err); res.Ran || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
 		t.Fatalf("result = %+v, pods %d, mints %v", res, len(kube.podOrder), hub.minted())
+	}
+	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"gate_reproduction"`) || !strings.Contains(tl, `"skipped":"no reproduction command"`) {
+		t.Fatalf("timeline = %s", tl)
 	}
 }
 
@@ -455,5 +474,77 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	}
 	if tl, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl"); !strings.Contains(string(tl), `"step":"gate_reproduction"`) {
 		t.Fatalf("timeline = %s", tl)
+	}
+}
+
+// A head that moved after the checks is not gated: GatePolicy refuses it
+// terminally, ModelReview notes it without a model call.
+func TestGatesRefuseAMovedHead(t *testing.T) {
+	fj := &gateForgejo{head: "c2", files: []string{`{"filename":"README.md"}`}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isTerminal(err) || !strings.Contains(err.Error(), "head moved to c2") {
+		t.Fatalf("GatePolicy on a moved head = %v, want a terminal refusal", err)
+	}
+	// a workflow from before versionGatesPinned passes no commit
+	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9)); err != nil {
+		t.Fatalf("GatePolicy without a commit = %v", err)
+	}
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "head moved to c2") || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d model calls", rv, len(ll.chats))
+	}
+}
+
+// A pull request into another branch than main is not merged.
+func TestMergeOnlyIntoMain(t *testing.T) {
+	fj := &gateForgejo{base: "release", mergeStatus: []int{http.StatusOK}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	if res := getInto[MergeResult](t, val, err); res.Merged || !strings.Contains(res.Refusal, `"release", not main`) || len(fj.merges) != 0 {
+		t.Fatalf("result = %+v, merges %d", res, len(fj.merges))
+	}
+}
+
+// A human's merge in Forgejo, of another head, is credited to the human:
+// the approval row and the result name them and the head they merged.
+func TestMergeCreditsAHumanMerge(t *testing.T) {
+	fj := &gateForgejo{merged: true, mergedBy: "sebastian", head: "c2"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "alice")
+	if res := getInto[MergeResult](t, val, err); !res.Merged || res.By != "sebastian" || len(fj.merges) != 0 {
+		t.Fatalf("result = %+v", res)
+	}
+	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "merged in Forgejo by sebastian at c2, not the gated c1" {
+		t.Fatalf("approval = %+v", a)
+	}
+}
+
+// A merge that fails other than by refusal is an error for the retry; the
+// last attempt reports it on the timeline and the pull request instead.
+func TestMergeFailureOnTheLastAttempt(t *testing.T) {
+	fj := &gateForgejo{stateFail: 2}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	ctx := context.Background()
+	if _, err := r.mergeAttempt(ctx, gateTask, Repo{"sf", "repo"}, 9, "c1", "sebastian", false); err == nil {
+		t.Fatal("a transient failure before the last attempt was not an error")
+	}
+	res, err := r.mergeAttempt(ctx, gateTask, Repo{"sf", "repo"}, 9, "c1", "sebastian", true)
+	if err != nil || res.Merged || !strings.Contains(res.Failed, "502") {
+		t.Fatalf("last attempt = %+v, %v", res, err)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "The approval stands") || !strings.Contains(timeline(t, objects), `"step":"merge_failed"`) {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+}
+
+func TestFencedCannotBeClosedEarly(t *testing.T) {
+	if got := fenced("a\n"); got != "```\na\n```" {
+		t.Fatalf("fenced = %q", got)
+	}
+	if got := fenced("x ```` y"); got != "`````\nx ```` y\n`````" {
+		t.Fatalf("fenced = %q", got)
 	}
 }

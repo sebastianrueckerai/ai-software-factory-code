@@ -26,8 +26,11 @@ type gateHarness struct {
 	review    Review
 	merge     []MergeResult // in order, the last repeating
 	// policyDelay is how long GatePolicy takes; reviewErr fails ModelReview
-	policyDelay time.Duration
-	reviewErr   error
+	policyDelay   time.Duration
+	reviewErr     error
+	reviewDelay   time.Duration
+	policyCommits []string
+	started       time.Time
 }
 
 // newGateHarness registers the gate mocks after setup adjusted the
@@ -43,8 +46,10 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 	for _, f := range setup {
 		f(g)
 	}
-	g.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything).After(g.policyDelay).Return(
-		func(ctx context.Context, taskID string, pr int64) (PolicyGate, error) {
+	g.started = g.env.Now()
+	g.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything).After(g.policyDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string) (PolicyGate, error) {
+			g.policyCommits = append(g.policyCommits, commit)
 			g.steps = append(g.steps, "policy")
 			return g.gate, nil
 		})
@@ -60,7 +65,7 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			g.steps = append(g.steps, "repro "+commit)
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
-	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (Review, error) {
 			g.steps = append(g.steps, "review "+commit)
 			return g.review, g.reviewErr
@@ -254,5 +259,56 @@ func TestWorkflowBeforeGatesRunsNoGate(t *testing.T) {
 
 	if final := g.run(t); final != "done" || len(g.steps) != 0 {
 		t.Fatalf("final = %q, steps = %v", final, g.steps)
+	}
+}
+
+// GatePolicy gets the gated commit (versionGatesPinned).
+func TestWorkflowGatePolicyGetsTheGatedCommit(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || !slices.Equal(g.policyCommits, []string{"c1"}) {
+		t.Fatalf("final = %q, GatePolicy commits = %q", final, g.policyCommits)
+	}
+}
+
+// A terminal signal during the model review decides at once: no approval
+// request, no waiting for the review.
+func TestWorkflowTerminalSignalDuringTheReviewDecides(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "failed" || len(g.approvals) != 0 {
+		t.Fatalf("final = %q, approvals %d", final, len(g.approvals))
+	}
+	if g.finishAt.Sub(g.started) > time.Hour {
+		t.Fatalf("finished %s after the start, want right after the close", g.finishAt.Sub(g.started))
+	}
+}
+
+// A merge that failed (not refused) keeps the approval: it is tried again
+// after mergeRetryAfter with the same approver, without a new signal.
+func TestWorkflowFailedMergeIsRetriedWithTheSameApproval(t *testing.T) {
+	g := newGateHarness(t)
+	g.merge = []MergeResult{{Failed: "forgejo 502"}, {Merged: true}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c1 sebastian"}) {
+		t.Fatalf("final = %q, merges = %v", final, g.merges)
+	}
+}
+
+// A human's merge found by Merge finishes the task credited to them.
+func TestWorkflowMergeFoundDoneByAHuman(t *testing.T) {
+	g := newGateHarness(t)
+	g.merge = []MergeResult{{Merged: true, By: "sebastian"}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "alice", PR: 9})
+	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged by sebastian" {
+		t.Fatalf("final = %q (%v)", final, g.finals)
 	}
 }

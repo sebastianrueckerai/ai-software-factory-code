@@ -57,8 +57,10 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
 		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
-		ActivityGatePolicy:        func(ctx context.Context, taskID string, pr int64) (PolicyGate, error) { return PolicyGate{}, nil },
-		ActivityGateMigration:     func(ctx context.Context, taskID string, pr int64, migrations []string) error { return nil },
+		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string) (PolicyGate, error) {
+			return PolicyGate{}, nil
+		},
+		ActivityGateMigration: func(ctx context.Context, taskID string, pr int64, migrations []string) error { return nil },
 		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			return ReproResult{}, nil
 		},

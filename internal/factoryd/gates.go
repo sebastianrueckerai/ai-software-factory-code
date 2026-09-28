@@ -82,12 +82,19 @@ type ApprovalInput struct {
 	Review Review
 }
 
-// MergeResult is how an approved merge went: Refusal is Forgejo's reason
-// when it refused.
+// MergeResult is how an approved merge went: By names who merged when it
+// was not factory-merge (a human in Forgejo); Refusal is why it was
+// refused; Failed why it could not be tried (the approval stands).
 type MergeResult struct {
 	Merged  bool
+	By      string
 	Refusal string
+	Failed  string
 }
+
+// MergeUser is the dedicated Forgejo user the Merge activity merges as
+// (ruling 109).
+const MergeUser = "factory-merge"
 
 // maxListed bounds the paths one gate comment lists.
 const maxListed = 50
@@ -104,14 +111,33 @@ func listPaths(paths []string) string {
 	return b.String()
 }
 
+// headIs refuses, terminally, a pull request whose head is not the gated
+// commit: the gates would judge another tree than the one checked.
+func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) error {
+	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return err
+	}
+	if st.HeadSHA != commit {
+		return terminalError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
+	}
+	return nil
+}
+
 // GatePolicy classifies the pull request's changed paths (a rename counts
 // both names) under the policy version in force, records the class on the
 // task and comments it on the pull request. A forbidden class is returned,
 // not an error: the workflow fails the task with the reason.
-func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64) (PolicyGate, error) {
+func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit string) (PolicyGate, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PolicyGate{}, err
+	}
+	// a workflow from before versionGatesPinned passes no commit
+	if commit != "" {
+		if err := r.headIs(ctx, repo, pr, commit); err != nil {
+			return PolicyGate{}, err
+		}
 	}
 	paths, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
@@ -167,6 +193,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		return ReproResult{}, err
 	}
 	if t.ReproCommand == "" {
+		r.record(ctx, t.ID, "gate_reproduction", map[string]any{"pr": pr, "commit": commit, "skipped": "no reproduction command"})
 		return ReproResult{}, nil
 	}
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -203,7 +230,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if !res.Passed() {
 		verdict = "**failed**"
 	}
-	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n```\n%s\n```\n\nOutput tail:\n\n```\n%s\n```", verdict, res.Exit, commit, res.Command, res.Output)
+	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n%s\n\nOutput tail:\n\n%s", verdict, res.Exit, commit, fenced(res.Command), fenced(res.Output))
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		log.Printf("task %s: comment the reproduction: %v", t.ID, err)
 	}
@@ -239,6 +266,22 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 			return *env.Repro, nil
 		}
 	}
+}
+
+// fenced puts s in a markdown code fence longer than any backtick run in
+// it, so the text cannot close the fence early.
+func fenced(s string) string {
+	run, longest := 0, 0
+	for _, c := range s {
+		if c == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	f := strings.Repeat("`", max(3, longest+1))
+	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
 }
 
 func tail(s string, n int) string {
@@ -334,6 +377,15 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
+		if !isTerminal(err) {
+			return Review{}, err
+		}
+		rv := Review{Note: "model review not run: " + errMessage(err)}
+		r.comment(ctx, t, repo, pr.Number, reviewComment(r.cfg.ReviewModel, commit, rv))
+		r.record(ctx, t.ID, "model_review", map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note})
+		return rv, nil
+	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, reviewDiffMax)
 	if err != nil {
 		return Review{}, err
@@ -402,40 +454,109 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 }
 
 // Merge merges the approved pull request as factory-merge, at the head the
-// gates passed. Forgejo refuses it unless a human on main's approvals
-// whitelist approved that head; a refusal is commented and returned, not
-// an error: the workflow keeps waiting. A refusal on a pull request that
-// is merged after all (a retry after a merge whose answer was lost, or a
-// human merge) is a merge.
+// gates passed, into main only. Forgejo refuses it unless a human on main's
+// approvals whitelist approved that head; a refusal is commented and
+// returned, not an error: the workflow keeps waiting. A pull request found
+// merged (a retry after a merge whose answer was lost, or a human's merge)
+// is a merge, credited to whoever merged it. Any other failure is retried;
+// the last attempt reports it (timeline, comment) as Failed instead, so the
+// workflow keeps the approval and tries again later.
 func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by factory-merge", t.ID, t.IssueNumber, approver)
+	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, lastAttempt(ctx))
+}
+
+// mergeAttempt is one Merge attempt; last reports a transient failure
+// instead of returning it.
+func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, last bool) (MergeResult, error) {
+	res, err := r.merge(ctx, t, repo, pr, commit, approver)
+	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
+		res = MergeResult{Failed: truncate(err.Error(), 500)}
+		r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
+			commit, approver, res.Failed, mergeRetryAfter))
+		r.record(ctx, t.ID, "merge_failed", map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": res.Failed})
+		return res, nil
+	}
+	return res, err
+}
+
+// lastAttempt reports whether this activity attempt is the last its retry
+// policy allows.
+func lastAttempt(ctx context.Context) bool {
+	info := activity.GetInfo(ctx)
+	return info.RetryPolicy != nil && info.RetryPolicy.MaximumAttempts > 0 && info.Attempt >= info.RetryPolicy.MaximumAttempts
+}
+
+func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string) (MergeResult, error) {
+	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	if st.Merged {
+		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+	}
+	if st.Base != prBase {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
+	}
+	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by %s", t.ID, t.IssueNumber, approver, MergeUser)
 	err = r.forgejo.MergePullRequest(ctx, repo.Owner, repo.Name, pr, commit, msg)
 	if errors.Is(err, ErrRefused) {
 		if st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr); serr == nil && st.Merged {
-			err = nil
-		} else {
-			res := MergeResult{Refusal: truncate(err.Error(), 500)}
-			if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, fmt.Sprintf(
-				"factoryd: Forgejo refused the merge of %s after %s's approval: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
-				commit, approver, res.Refusal)); err != nil {
-				log.Printf("task %s: comment the merge refusal: %v", t.ID, err)
-			}
-			r.record(ctx, t.ID, "merge_refused", map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal})
-			return res, nil
+			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
 		}
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, err.Error()), nil
 	}
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by factory-merge at "+commit); err != nil {
+	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver})
+	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser})
 	return MergeResult{Merged: true}, nil
+}
+
+// mergedAlready credits a pull request found merged to whoever merged it:
+// factory-merge (an earlier attempt whose answer was lost) on approver's
+// approval, or a human, at whatever head they merged.
+func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, approver string, st PullRequestRef) MergeResult {
+	if st.MergedBy == MergeUser {
+		if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
+			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
+		}
+		r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser})
+		return MergeResult{Merged: true}
+	}
+	by := cmp.Or(st.MergedBy, "an unknown user")
+	note := fmt.Sprintf("merged in Forgejo by %s at %s", by, st.HeadSHA)
+	if st.HeadSHA != commit {
+		note += ", not the gated " + commit
+	}
+	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", by, note); err != nil {
+		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
+	}
+	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": st.HeadSHA, "gated": commit, "merged_by": by})
+	return MergeResult{Merged: true, By: by}
+}
+
+func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
+	res := MergeResult{Refusal: truncate(why, 500)}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf(
+		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
+		commit, approver, res.Refusal))
+	r.record(ctx, t.ID, "merge_refused", map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal})
+	return res
+}
+
+// comment posts on the pull request; a failure is logged, the comment is
+// evidence, not a step.
+func (r *Runner) comment(ctx context.Context, t Task, repo Repo, pr int64, body string) {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, body); err != nil {
+		log.Printf("task %s: comment on #%d: %v", t.ID, pr, err)
+	}
 }
 
 // ApproveMerge is the console's approve, after it submitted the human's

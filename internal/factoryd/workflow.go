@@ -204,7 +204,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
 		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
 		v6: workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates),
-		v7: workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers)}
+		v7: workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers),
+		v8: workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned)}
 	return run.lifecycle()
 }
 
@@ -255,6 +256,12 @@ const (
 	// session gets all of them as SessionInput.Answers instead of the
 	// newest as a finding.
 	versionAnswers workflow.Version = 1
+	// versionGatesPinned (change id "gates-pinned"): GatePolicy gets the
+	// gated commit and refuses a pull request whose head moved; the model
+	// review races the terminal signals; a merge that fails other than by
+	// Forgejo's refusal (after its bounded retries) keeps the approval and
+	// is tried again after mergeRetryAfter.
+	versionGatesPinned workflow.Version = 1
 )
 
 type taskRun struct {
@@ -262,7 +269,7 @@ type taskRun struct {
 	cfg               WorkflowConfig
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
-	v6, v7            workflow.Version
+	v6, v7, v8        workflow.Version
 	pr                PullRequest
 	answers           []string // the human's answers, newest first (versionAnswers)
 	escalation        int64    // the escalation comment human answers must be newer than
@@ -494,7 +501,11 @@ func (t *taskRun) verify(commit string) verdict {
 // review and the human's approval to its merge.
 func (t *taskRun) gate(commit string) verdict {
 	var g GateResults
-	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number).Get(t.ctx, &g.Policy); err != nil {
+	policyArgs := []any{t.taskID, t.pr.Number}
+	if t.v8 >= versionGatesPinned {
+		policyArgs = append(policyArgs, commit)
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, policyArgs...).Get(t.ctx, &g.Policy); err != nil {
 		return verdict{final: "failed", reason: "policy gate: " + errMessage(err)}
 	}
 	if g.Policy.Outcome == policy.OutcomeForbidden {
@@ -519,9 +530,19 @@ func (t *taskRun) gate(commit string) verdict {
 			g.Reproduction.Exit, commit, g.Reproduction.Command, g.Reproduction.Output)}}
 	}
 	var review Review
-	reviewCtx := workflow.WithActivityOptions(t.ctx, reviewOptions())
-	if err := workflow.ExecuteActivity(reviewCtx, ActivityModelReview, t.taskID, t.pr, commit, g).Get(t.ctx, &review); err != nil {
-		review = Review{Note: "model review failed: " + errMessage(err)}
+	if t.v8 >= versionGatesPinned {
+		final, why, decided, err := t.race(reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
+		if decided {
+			return verdict{final: final, reason: why}
+		}
+		if err != nil {
+			review = Review{Note: "model review failed: " + errMessage(err)}
+		}
+	} else {
+		reviewCtx := workflow.WithActivityOptions(t.ctx, reviewOptions())
+		if err := workflow.ExecuteActivity(reviewCtx, ActivityModelReview, t.taskID, t.pr, commit, g).Get(t.ctx, &review); err != nil {
+			review = Review{Note: "model review failed: " + errMessage(err)}
+		}
 	}
 	if final, why, ok := t.decided(); ok {
 		return verdict{final: final, reason: why}
@@ -541,12 +562,20 @@ func (t *taskRun) gate(commit string) verdict {
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
 // task, a reviewer requests changes, or an approval merges the pull
-// request as factory-merge. A merge Forgejo refuses keeps the wait.
+// request as factory-merge. A merge Forgejo refuses keeps the wait; one
+// that fails otherwise keeps the approval and is tried again after
+// mergeRetryAfter (versionGatesPinned).
 func (t *taskRun) awaitApproval(commit string) verdict {
+	approver := ""
+	var retry workflow.Future
 	for {
+		retried := false
 		sel := workflow.NewSelector(t.ctx)
 		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		if retry != nil {
+			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
 		sel.Select(t.ctx)
 		if final, why, ok := t.decided(); ok {
@@ -555,26 +584,63 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		if findings := t.drainChanges(); len(findings) > 0 {
 			return verdict{findings: findings, reason: "changes requested"}
 		}
-		approver := ""
+		if t.v8 < versionGatesPinned {
+			approver = ""
+		}
 		var sig TaskSignal
+		signalled := false
 		for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 			if t.counted(SignalApproved, sig) {
-				approver = sig.Author
+				approver, signalled = sig.Author, true
 			}
 		}
-		if approver == "" {
+		if approver == "" || !signalled && !retried {
 			continue
 		}
+		retry = nil
+		opts := t.short
+		if t.v8 >= versionGatesPinned {
+			opts = workflow.WithActivityOptions(t.ctx, mergeOptions())
+		}
 		var res MergeResult
-		if err := workflow.ExecuteActivity(t.short, ActivityMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, &res); err != nil {
+		if err := workflow.ExecuteActivity(opts, ActivityMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, &res); err != nil {
 			workflow.GetLogger(t.ctx).Warn("merge", "task", t.taskID, "error", err)
 			continue
 		}
-		if res.Merged {
+		switch {
+		case res.Merged && res.By != "":
+			return verdict{final: "done", reason: "pull request merged by " + res.By}
+		case res.Merged:
 			return verdict{final: "done", reason: "pull request merged by factory-merge after " + approver + "'s approval"}
+		case res.Failed != "":
+			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
+		default:
+			approver = ""
 		}
 	}
 }
+
+// mergeRetryAfter is how long a merge that failed (Forgejo unreachable,
+// not refusing) waits before the kept approval is tried again.
+const mergeRetryAfter = 10 * time.Minute
+
+// mergeOptions: a merge is retried a few times; its last attempt reports
+// the failure (timeline, comment) instead of failing, and the workflow
+// tries again later with the same approval.
+func mergeOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    2 * time.Minute,
+		ScheduleToCloseTimeout: 20 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumInterval:        time.Minute,
+			MaximumAttempts:        mergeAttempts,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
+const mergeAttempts = 5
 
 // recordIgnored records a received signal that does not count.
 func (t *taskRun) recordIgnored(name string, sig TaskSignal, why string) {

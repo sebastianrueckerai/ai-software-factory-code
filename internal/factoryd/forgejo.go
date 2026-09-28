@@ -684,6 +684,8 @@ type PullRequestRef struct {
 	HeadSHA  string
 	State    string // "open" or "closed"
 	Merged   bool
+	Base     string // the branch it merges into
+	MergedBy string // who merged it, when Merged
 }
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
@@ -692,7 +694,13 @@ type wirePR struct {
 	HTMLURL string `json:"html_url"`
 	State   string `json:"state"`
 	Merged  bool   `json:"merged"`
-	Head    struct {
+	Base    struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	MergedBy *struct {
+		Login string `json:"login"`
+	} `json:"merged_by"`
+	Head struct {
 		Ref  string `json:"ref"`
 		SHA  string `json:"sha"`
 		Repo struct {
@@ -702,7 +710,12 @@ type wirePR struct {
 }
 
 func (w wirePR) ref() PullRequestRef {
-	return PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA, State: w.State, Merged: w.Merged}
+	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
+		State: w.State, Merged: w.Merged, Base: w.Base.Ref}
+	if w.MergedBy != nil {
+		ref.MergedBy = w.MergedBy.Login
+	}
+	return ref
 }
 
 // CreatePullRequest opens a pull request from head into base. The workflow
