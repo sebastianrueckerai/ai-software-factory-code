@@ -5,8 +5,11 @@ import "testing"
 func TestStringRemovesKeys(t *testing.T) {
 	s := New("hunter2-master", "short")
 	for in, want := range map[string]string{
-		"Authorization: Bearer abc.def":                                                          "Authorization: Bearer [redacted]",
-		"Authorization: Basic dXNlcjpwYXNzd29yZA==":                                              "Authorization: Basic [redacted]",
+		"Authorization: Bearer abc.def": "Authorization: Bearer [redacted]",
+		// the gateway's refused_auth reason (auth.go), redacted live as
+		// "missing bearer [redacted]"
+		"missing bearer token":                      "missing bearer token",
+		"Authorization: Basic dXNlcjpwYXNzd29yZA==": "Authorization: Basic [redacted]",
 		"clone https://x-access-token:ghp_abc123shortpass@git.example/sf/repo.git failed":        "clone https://[redacted]@git.example/sf/repo.git failed",
 		"litellm refused key sk-task-key-1: blocked":                                             "litellm refused key [redacted]: blocked",
 		"token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused":                                "token [redacted] refused",

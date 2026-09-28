@@ -17,8 +17,11 @@ type Scrubber struct {
 var (
 	pemBlock   = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----`)
 	userinfo   = regexp.MustCompile(`(\w+://)[^/\s@]+@`)
-	credential = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^\s"',;]+`)
-	keyLike    = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|[\w+/=-]{32,}`)
+	credential = regexp.MustCompile(`(?i)\b(bearer|basic)\s+([^\s"',;]+)`)
+	// shortWord is a credential position holding a word ("missing bearer
+	// token"), not a credential
+	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
+	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|[\w+/=-]{32,}`)
 )
 
 // minSecret keeps a short configured value from redacting common words.
@@ -43,6 +46,12 @@ func (s *Scrubber) String(v string) string {
 		v = strings.ReplaceAll(v, secret, "[redacted]")
 	}
 	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
-	v = credential.ReplaceAllString(v, "$1 [redacted]")
+	v = credential.ReplaceAllStringFunc(v, func(m string) string {
+		p := credential.FindStringSubmatch(m)
+		if shortWord.MatchString(p[2]) {
+			return m
+		}
+		return p[1] + " [redacted]"
+	})
 	return keyLike.ReplaceAllString(v, "[redacted]")
 }
