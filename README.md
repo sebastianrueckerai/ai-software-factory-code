@@ -419,7 +419,12 @@ unless the caller asked for fewer. After the call one transaction
 deletes the hold and books the real cost onto `tasks.spent_eur` and the
 ledger; an unknown cost (no cost header, a broken stream, a value that
 is not a finite non-negative number) books the hold, and a failed call
-books the cost LiteLLM reports for it, else nothing. A hold whose caller
+books the cost LiteLLM reports for it, else nothing. A known cost above
+the hold (a stale price table, a wrong input bound) is booked in full and
+flagged by the booking itself (`policy.OverHold`), the one flag of every
+path: model, supervisor and review, tool and resource accrual log
+`COST OVER HOLD` with both figures, and the gateway's audited calls take
+decision `allowed_over_hold` with that reason. A hold whose caller
 died expires after an hour and factoryd's sweep books it in full; a late
 release books only what the real cost exceeds it by. Settlement leaves a
 task alone while it has an open hold. Output limits bound reasoning:
