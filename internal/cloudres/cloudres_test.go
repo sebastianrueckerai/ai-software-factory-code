@@ -36,6 +36,8 @@ type fakeProvider struct {
 	deleteTook time.Duration
 	goneAt     map[int64]time.Time
 	calledAt   map[string]time.Time // delete calls by "kind/id"
+	// detachRefusal answers a detach from a deleting server; nil = locked
+	detachRefusal *hcloud.APIError
 }
 
 func newFakeProvider() *fakeProvider {
@@ -152,6 +154,9 @@ func (f *fakeProvider) DetachVolume(ctx context.Context, id int64) error {
 	v := f.volumes[id]
 	if v.Server != nil {
 		if _, deleting := f.goneAt[*v.Server]; deleting {
+			if f.detachRefusal != nil {
+				return f.detachRefusal
+			}
 			return &hcloud.APIError{Status: 423, Code: "locked"}
 		}
 	}
@@ -776,10 +781,18 @@ func TestCollectAdoptsALateCreate(t *testing.T) {
 // commission, the volume waiting for its server's delete to detach it, and
 // both deletes are issued before the lease ends. Modelled on the fake
 // clock: every API call takes 1 s, a server delete completes 20 s after its
-// call, retries wait 3 s.
+// call, retries wait 3 s. The detach from the deleting server is refused
+// as locked, or with the 500 server_error Hetzner answered live.
 func TestCollectEndsACommissionWithAVolumeBeforeItsHour(t *testing.T) {
+	for _, refusal := range []*hcloud.APIError{nil, {Status: 500, Code: "server_error", Message: "internal server error"}} {
+		testCommissionWithAVolumeEnds(t, refusal)
+	}
+}
+
+func testCommissionWithAVolumeEnds(t *testing.T, refusal *hcloud.APIError) {
 	ctx := context.Background()
 	h := newHarness()
+	h.prov.detachRefusal = refusal
 	h.col.Interval = 2 * time.Minute
 	h.col.RetryWait = 3 * time.Second
 	h.col.After = func(d time.Duration) <-chan time.Time {

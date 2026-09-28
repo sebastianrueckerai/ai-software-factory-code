@@ -480,7 +480,7 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 	}
 	for attempt := 1; ; attempt++ {
 		err := c.Delete(ctx, row, id)
-		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || hcloud.IsCode(err, "locked") || errors.Is(err, ErrDetaching)) || attempt >= attempts {
+		if err == nil || !retryable(err) || attempt >= attempts {
 			return err
 		}
 		select {
@@ -489,6 +489,14 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 		case <-c.after(wait):
 		}
 	}
+}
+
+// retryable is a delete its server's own delete may still block: in use,
+// locked, a detach under way, or a 5xx (Hetzner answered a volume detach
+// from a deleting server with 500 server_error, 2026-09-28).
+func retryable(err error) bool {
+	var ae *hcloud.APIError
+	return errors.Is(err, ErrDetaching) || (errors.As(err, &ae) && (ae.Code == "resource_in_use" || ae.Code == "locked" || ae.Status >= 500))
 }
 
 // providerID is the row's recorded provider id, or the id of the resource

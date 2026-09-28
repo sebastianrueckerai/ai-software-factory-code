@@ -630,7 +630,8 @@ before its next pass (within the interval plus 90 s, ruling 124, so a
 lease of N started hours never lives into hour N+1), unless promoted, or
 whose task is `done` or `failed`, each with its whole commission through
 the retrying release (server, volume, firewall: the volume waits, 3 s at a
-time up to 10 tries, for the server's delete to detach it), so both
+time up to 10 tries, for the server's delete to detach it; a detach the
+deleting server refuses, `locked` or a 5xx, is retried), so both
 billed deletes are issued within the pass; a pass that takes longer than
 the 90 s is logged. It deletes every
 server, firewall and volume the registry does not know as open and every
