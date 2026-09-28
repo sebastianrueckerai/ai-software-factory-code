@@ -3,7 +3,8 @@
 # credential beyond the per-run job token Forgejo injects, default-deny
 # egress. Every tool a step needs (Go, gosec) ships pre-installed in
 # Dockerfile.runner so no step reaches past the egress allowlist for
-# tooling; only actions/checkout itself, the Go module proxy and, for
+# tooling; only actions/checkout itself, the Go module proxy, Docker Hub's
+# token service (buildctl answers the build VM's token requests) and, for
 # image-build, the job's own build VM are reachable (see ciEgressSpec in
 # internal/factoryd/ci.go).
 #

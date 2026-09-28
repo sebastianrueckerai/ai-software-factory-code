@@ -441,10 +441,7 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)
 		}
 	}
-	// base images are the build VM's to pull, never the runner's
-	if strings.Contains(cnpStr, "docker.io") || strings.Contains(cnpStr, "docker.com") {
-		t.Fatalf("runner egress reaches Docker Hub: %s", cnpStr)
-	}
+
 	var fqdnRule, dnsRule map[string]any
 	for _, rule := range cnp["egress"].([]any) {
 		r := rule.(map[string]any)
@@ -460,6 +457,14 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "storage.googleapis.com") {
 		t.Fatalf("DNS rule missing storage.googleapis.com: %v", dnsRule)
+	}
+	// buildctl's session answers the VM's registry token requests, so the
+	// runner reaches Docker Hub's token service; the layers are the VM's
+	if !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "auth.docker.io") || !strings.Contains(fmt.Sprint(dnsRule), "auth.docker.io") {
+		t.Fatalf("runner egress lacks auth.docker.io in the 443 or DNS rule: %s", cnpStr)
+	}
+	if strings.Contains(cnpStr, "registry-1.docker.io") || strings.Contains(cnpStr, "docker.com") {
+		t.Fatalf("runner egress reaches Docker Hub's registry or CDN: %s", cnpStr)
 	}
 	if !strings.Contains(cnpStr, "k8s:app.kubernetes.io/name:forgejo") || !strings.Contains(cnpStr, "port:3000") {
 		t.Fatal("egress missing the in-cluster forgejo allow")

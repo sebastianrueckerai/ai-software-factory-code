@@ -495,14 +495,16 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
 // proxy and checksum database, and the host actions/checkout resolves
 // against. No Kubernetes API, no other namespace, no LiteLLM, no gateway.
-// A build job additionally reaches its own VM's buildkitd, and nothing
-// else: base images and release downloads are the VM's to fetch.
+// A build job additionally reaches its own VM's buildkitd. BuildKit fetches
+// registry tokens through the client session, so Docker Hub's token service
+// is the runner's to reach; layers and release downloads are the VM's.
 func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
 		"storage.googleapis.com", // proxy.golang.org redirects zip downloads there
 		"data.forgejo.org",       // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
+		"auth.docker.io",         // buildctl's session fetches the build VM's registry tokens
 	}
 	dnsNames := make([]any, 0, len(fqdns)+1)
 	for _, host := range fqdns {

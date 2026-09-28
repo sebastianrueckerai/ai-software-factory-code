@@ -582,8 +582,9 @@ queue for a later tick) holding one
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
 module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
-redirects zip downloads there), `data.forgejo.org`; nothing
-else, `169.254.169.254/32` explicitly denied; the module proxy remains
+redirects zip downloads there), `data.forgejo.org`, `auth.docker.io`
+(BuildKit fetches the build VM's registry tokens through the `buildctl`
+session); nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 45-minute deadline passes. Idempotency is the Forgejo job id on the
