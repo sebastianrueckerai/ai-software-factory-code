@@ -127,9 +127,9 @@ func signallingEnv(g *GateWatch) *testsuite.TestActivityEnvironment {
 	return env
 }
 
-// A machine gate's activity past its bound signals its task's workflow
-// with the alert; an activity that opens no gate, or the human gate, only
-// alerts.
+// A long gate's activity past its bound signals its task's workflow with
+// the alert; a short gate, an activity that opens no gate and the human
+// gate only alert (ruling 162).
 func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
@@ -143,16 +143,17 @@ func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityWaitChecks})
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivitySetState})
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityEscalate})
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityGatePolicy})
 	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
 		t.Fatal(err)
 	}
 	checks := info
-	for _, name := range []string{ActivitySetState, ActivityEscalate} {
+	for _, name := range []string{ActivitySetState, ActivityEscalate, ActivityGatePolicy} {
 		if _, err := env.ExecuteActivity(name, "t1", "x"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if n := len(store.alertRows()); n != 3 {
+	if n := len(store.alertRows()); n != 4 {
 		t.Fatalf("alerts = %d, want one per overrun", n)
 	}
 	trips, wfIDs := sig.got()
@@ -175,7 +176,7 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	var mu sync.Mutex
 	var waits []bool
 	sig.onTrip = func(wf string, tr GateTrip) {
-		w := g.Wait(wf, tr.ActivityID)
+		w := g.Wait(wf, tr.ActivityID, tr.Attempt)
 		mu.Lock()
 		defer mu.Unlock()
 		waits = append(waits, w)
@@ -198,7 +199,7 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	if len(alerts) != 2 || alerts[0].BoundS != 1 || alerts[1].Detail["extended"] != true || trips[1].AlertID != 2 || trips[1].Bound != 200*time.Millisecond {
 		t.Fatalf("alerts = %+v, second trip %+v", alerts, trips[1])
 	}
-	if g.Running("any", trips[0].ActivityID) || g.Wait("any", "x") || g.Retry("any", "x") {
+	if g.Running("any", trips[0].ActivityID, 1) || g.Wait("any", "x", 1) || g.Retry("any", "x", 1) {
 		t.Fatal("an unknown run is running, or took a wait or a retry")
 	}
 }
@@ -214,9 +215,10 @@ func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
 	running := false
 	sig.onTrip = func(wf string, tr GateTrip) {
 		mu.Lock()
-		running = g.Running(wf, tr.ActivityID)
+		// another attempt of the run is not the one that tripped
+		running = g.Running(wf, tr.ActivityID, tr.Attempt) && !g.Running(wf, tr.ActivityID, tr.Attempt+1) && !g.Retry(wf, tr.ActivityID, tr.Attempt+1)
 		mu.Unlock()
-		g.Retry(wf, tr.ActivityID)
+		g.Retry(wf, tr.ActivityID, tr.Attempt)
 	}
 	env := signallingEnv(g)
 	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error {

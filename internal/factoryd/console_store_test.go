@@ -199,8 +199,8 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 }
 
 // The gate supervisor judges an open gate_bound alert once, its action
-// merged into the detail, and reads the task's newest gateway audit rows.
-func TestPGStoreResolveAlertAndAuditRows(t *testing.T) {
+// merged into the detail.
+func TestPGStoreResolveAlert(t *testing.T) {
 	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
@@ -211,7 +211,7 @@ func TestPGStoreResolveAlertAndAuditRows(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts, audit`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	bound, err := s.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 30, Detail: map[string]any{"attempt": 1}})
@@ -241,23 +241,4 @@ func TestPGStoreResolveAlertAndAuditRows(t *testing.T) {
 		t.Fatalf("alert = %+v", a)
 	}
 
-	for _, row := range []string{
-		`('t1', '2026-09-28T10:00:00Z', 'allow', 'ok', 'coder', '', 0.012)`,
-		`('t2', '2026-09-28T10:01:00Z', 'allow', 'ok', 'coder', '', 0.5)`,
-		`('t1', '2026-09-28T10:02:00Z', 'deny', 'budget exhausted', 'review-frontier', '', NULL)`,
-	} {
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, ts, decision, reason, model_alias, tool, spend_eur) VALUES `+row); err != nil {
-			t.Fatal(err)
-		}
-	}
-	rows, err := s.AuditRows(ctx, "t1", 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spend := 0.012
-	want := []AuditRow{{Time: time.Date(2026, 9, 28, 10, 2, 0, 0, time.UTC), Decision: "deny", Reason: "budget exhausted", Model: "review-frontier"},
-		{Time: time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC), Decision: "allow", Reason: "ok", Model: "coder", SpendEUR: &spend}}
-	if jsonOf(rows) != jsonOf(want) {
-		t.Fatalf("audit rows = %s, want %s", jsonOf(rows), jsonOf(want))
-	}
 }

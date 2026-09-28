@@ -33,6 +33,7 @@ type gateHarness struct {
 	reviewErr     error
 	reviewDelay   time.Duration
 	mergeDelay    time.Duration
+	reproDelay    time.Duration
 	policyCommits []string
 	started       time.Time
 	requested     []time.Time // when each approval was requested, on the workflow's clock
@@ -64,7 +65,7 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			return nil
 		})
 	n := 0
-	g.env.OnActivity(ActivityGateReproduction, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+	g.env.OnActivity(ActivityGateReproduction, mock.Anything, "t1", mock.Anything, mock.Anything).After(g.reproDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			n++
 			g.steps = append(g.steps, "repro "+commit)

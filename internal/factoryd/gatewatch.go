@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"math"
+	"slices"
 	"sync"
 	"time"
 
@@ -59,9 +60,14 @@ type GateStore interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 }
 
-// SignalGateBound hands a machine gate's bound trip to its task's
-// workflow, which asks the gate supervisor (ruling 141).
+// SignalGateBound hands a long gate's bound trip to its task's workflow,
+// which asks the gate supervisor (rulings 141, 162).
 const SignalGateBound = "gate_bound"
+
+// supervisedGates are the long gates (ruling 162): a short gate's attempt
+// times out before any supervisor answer could arrive, so its gate_bound
+// alert is its record.
+var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityMerge}
 
 // GateTrip is one gate_bound alert of a machine gate's activity run: the
 // run is the activity the workflow scheduled (its id), across attempts.
@@ -83,9 +89,11 @@ var errGateRetry = errors.New("the gate supervisor stopped this attempt for a re
 
 // GateWatch is the worker interceptor that moves a task's row to the gate
 // an activity opens, since the activity's first schedule, and raises one
-// gate_bound alert for a run still going at its policy bound. A machine
+// gate_bound alert for a run still going at its policy bound. A long
 // gate's alert is signalled to its task's workflow; the gate supervisor
-// then acts on the attempt running here through Wait and Retry.
+// then acts on the attempt that tripped through Wait and Retry. factoryd
+// runs one replica (k8s/factoryd.yaml), so an attempt runs in this
+// process or not at all.
 type GateWatch struct {
 	interceptor.WorkerInterceptorBase
 	Store GateStore
@@ -94,10 +102,11 @@ type GateWatch struct {
 	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
 
 	mu   sync.Mutex
-	runs map[string]*watchedRun // the attempts running here, by workflow and activity id
+	runs map[string]*watchedRun // the attempt of each run running here, by workflow and activity id
 }
 
 type watchedRun struct {
+	attempt  int32
 	started  time.Time
 	bound    time.Duration
 	timer    *time.Timer
@@ -127,7 +136,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	run := &watchedRun{started: time.Now(), bound: i.g.Bound(name), cancel: cancel}
+	run := &watchedRun{attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(name), cancel: cancel}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
 	i.g.mu.Lock()
@@ -166,7 +175,7 @@ func (g *GateWatch) raise(info activity.Info, taskID string, started time.Time, 
 		log.Printf("task %s: %s passed its bound of %s; the alert was not stored: %v", taskID, name, bound, err)
 		return
 	}
-	if gate, ok := activityGates[name]; !ok || gate == GateHuman || g.Signal == nil || taskID == "" {
+	if !slices.Contains(supervisedGates, name) || g.Signal == nil || taskID == "" {
 		return
 	}
 	trip := GateTrip{Activity: name, ActivityID: info.ActivityID, Attempt: info.Attempt, AlertID: id, Started: started, Bound: bound}
@@ -175,34 +184,41 @@ func (g *GateWatch) raise(info activity.Info, taskID string, started time.Time, 
 	}
 }
 
-// Running reports whether the run has an attempt running here.
-func (g *GateWatch) Running(workflowID, activityID string) bool {
+// run is the attempt that tripped when it still runs here.
+func (g *GateWatch) run(workflowID, activityID string, attempt int32) (*watchedRun, bool) {
+	run, ok := g.runs[runKey(workflowID, activityID)]
+	return run, ok && run.attempt == attempt
+}
+
+// Running reports whether the attempt runs here.
+func (g *GateWatch) Running(workflowID, activityID string, attempt int32) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	_, ok := g.runs[runKey(workflowID, activityID)]
+	_, ok := g.run(workflowID, activityID, attempt)
 	return ok
 }
 
-// Wait extends the running attempt's bound once by its own length; false
-// when it runs here no more or was extended already.
-func (g *GateWatch) Wait(workflowID, activityID string) bool {
+// Wait extends the attempt's bound once by its own length; false when it
+// runs here no more or was extended already. An answer after that moment
+// still gives the attempt half a bound before it trips again.
+func (g *GateWatch) Wait(workflowID, activityID string, attempt int32) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	run, ok := g.runs[runKey(workflowID, activityID)]
+	run, ok := g.run(workflowID, activityID, attempt)
 	if !ok || run.extended {
 		return false
 	}
 	run.extended = true
 	run.timer.Stop()
-	run.timer = time.AfterFunc(time.Until(run.started.Add(2*run.bound)), func() { run.raise(2*run.bound, true) })
+	run.timer = time.AfterFunc(max(time.Until(run.started.Add(2*run.bound)), run.bound/2), func() { run.raise(2*run.bound, true) })
 	return true
 }
 
-// Retry stops the running attempt with a retryable error; false when it
-// runs here no more.
-func (g *GateWatch) Retry(workflowID, activityID string) bool {
+// Retry stops the attempt with a retryable error; false when it runs here
+// no more.
+func (g *GateWatch) Retry(workflowID, activityID string, attempt int32) bool {
 	g.mu.Lock()
-	run, ok := g.runs[runKey(workflowID, activityID)]
+	run, ok := g.run(workflowID, activityID, attempt)
 	g.mu.Unlock()
 	if ok {
 		run.cancel(errGateRetry)

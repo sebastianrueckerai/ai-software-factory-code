@@ -1,18 +1,21 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
+	"maps"
 	"slices"
 	"strings"
 	"time"
 
 	"go.temporal.io/sdk/activity"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -60,7 +63,7 @@ type gateBundle struct {
 	Bound     string             `json:"bound"`
 	Elapsed   string             `json:"elapsed"`
 	Objective string             `json:"objective"`
-	Input     []any              `json:"input"`
+	Input     string             `json:"input"`    // the activity's input as JSON, its head
 	Timeline  string             `json:"timeline"` // the task's timeline so far, JSONL, its tail
 	LastError string             `json:"last_error,omitempty"`
 	State     map[string]any     `json:"state,omitempty"`
@@ -69,24 +72,27 @@ type gateBundle struct {
 
 const (
 	bundleTimeline = 8 << 10  // bytes of the timeline's tail
+	bundleInput    = 8 << 10  // bytes of the activity's input
 	bundleLogLines = 100      // sandbox log lines
 	bundleLogBytes = 12 << 10 // and at most this many bytes of them
-	bundleAudit    = 20       // gateway audit rows
+	bundleReads    = time.Minute
 )
 
-const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, and the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model gateway's audit rows). Then choose exactly one of allowed_actions:
+const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, and the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's last result). Then choose exactly one of allowed_actions:
 - "wait": the activity makes progress and needs more time (checks queued or running, a pod pulling its image). Its bound is extended once by its own length.
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
 - "escalate": a human must decide or act (access, infrastructure, a judgement). The task waits for a human with your diagnosis and recommendation.
 Answer with one JSON object and nothing else: {"action": "wait|retry|cancel|escalate", "diagnosis": "...", "recommendation": "..."}. diagnosis (what is happening and why) is required, recommendation (what a human should do) for escalate; each under 1000 characters.`
 
-// SuperviseGate asks the supervisor model what to do with a machine gate's
-// run past its bound, acts on the attempt running here (wait extends its
-// bound, retry stops it for the retry policy), judges the alert with the
-// action and records it on the timeline; the workflow acts on cancel and
-// escalate. The call is metered and booked to the task like every model
-// call; a failed call or a malformed answer escalates.
+// SuperviseGate asks the supervisor model what to do with a long gate's
+// attempt past its bound, acts on that attempt when it still runs here
+// (wait extends its bound, retry stops it for the retry policy), judges
+// the alert with the action and records it on the timeline; the workflow
+// acts on cancel and escalate. factoryd runs one replica, so the attempt
+// that tripped runs in this process or has ended. The call is metered and
+// booked to the task like every model call; a failed or refused call and
+// a malformed answer escalate. The bundle is scrubbed whole.
 func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
 	defer beatUntilDone(ctx, "gate supervisor")()
 	t, _, err := r.task(ctx, taskID)
@@ -95,11 +101,13 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	}
 	workflowID := activity.GetInfo(ctx).WorkflowExecution.ID
 	var d GateDecision
-	if !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID) {
+	if !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt) {
 		d = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
 	} else {
-		bundle := r.gateBundle(ctx, t, workflowID, in)
-		content, err := r.supervisor.Chat(ctx, t.ID, r.supervisor.Alias, "gate-supervisor", gateSupervisorPrompt, bundle)
+		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
+		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in)
+		cancel()
+		content, err := r.supervisor.Chat(ctx, t.ID, r.supervisor.Alias, "gate-supervisor", gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}
@@ -108,9 +116,9 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		}
 		switch d.Action {
 		case ActionWait:
-			r.cfg.Gates.Wait(workflowID, in.Trip.ActivityID)
+			r.cfg.Gates.Wait(workflowID, in.Trip.ActivityID, in.Trip.Attempt)
 		case ActionRetry:
-			r.cfg.Gates.Retry(workflowID, in.Trip.ActivityID)
+			r.cfg.Gates.Retry(workflowID, in.Trip.ActivityID, in.Trip.Attempt)
 		}
 	}
 	verdict := tripVerdict(d.Action)
@@ -126,12 +134,16 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	return d, nil
 }
 
-// gateBundle reads what the supervisor needs for the activity; a read that
-// fails puts its error in the bundle instead.
-func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision) gateBundle {
+// gateBundle reads what the supervisor needs for the activity, and the
+// task's git tokens the bundle is scrubbed of; a read that fails puts its
+// error in the bundle instead.
+func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision) (gateBundle, []string) {
+	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
-		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: t.Objective, Input: in.Input, Allowed: in.allowed()}
-	if tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl"); err != nil {
+		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: t.Objective,
+		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
+	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+	if err != nil {
 		b.Timeline = "unreadable: " + err.Error()
 	} else {
 		b.Timeline = textutil.Tail(string(tl), bundleTimeline)
@@ -141,9 +153,16 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 	} else {
 		b.LastError = last
 	}
+	tokens, err := r.kube.GetSecretData(ctx, r.agentNamespace(t.ID), "task-git")
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		b.State = map[string]any{"withheld": "the task's tokens are unreadable to scrub the bundle: " + err.Error()}
+		b.Timeline, b.LastError, b.Input = "", "", ""
+		return b, nil
+	}
+	secrets := slices.Collect(maps.Values(tokens))
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
-		return b
+		return b, secrets
 	}
 	switch in.Trip.Activity {
 	case ActivityWaitChecks:
@@ -169,17 +188,29 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 		}
 		b.State = map[string]any{"pull_request": pr}
 	case ActivityModelReview:
-		if rows, err := r.store.AuditRows(ctx, t.ID, bundleAudit); err != nil {
-			b.State = map[string]any{"audit": "unreadable: " + err.Error()}
-		} else {
-			b.State = map[string]any{"audit": rows}
+		review := map[string]any{"model": r.cfg.ReviewModel, "last_result": "none on this task's timeline"}
+		if step := lastStep(tl, "model_review"); step != nil {
+			review["last_result"] = step
+		}
+		b.State = map[string]any{"review": review}
+	}
+	return b, secrets
+}
+
+// lastStep is the timeline's last step named step, nil when none.
+func lastStep(timeline []byte, step string) map[string]any {
+	lines := bytes.Split(timeline, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var m map[string]any
+		if json.Unmarshal(lines[i], &m) == nil && m["step"] == step {
+			return m
 		}
 	}
-	return b
+	return nil
 }
 
 // podState is the task's running sandbox pod: phase, conditions and the
-// log's last lines with the task's secrets scrubbed.
+// log's last lines.
 func (r *Runner) podState(ctx context.Context, taskID string) map[string]any {
 	ns, name, ok := r.sandboxPod(taskID)
 	if !ok {
@@ -191,31 +222,36 @@ func (r *Runner) podState(ctx context.Context, taskID string) map[string]any {
 	} else {
 		out["phase"], out["conditions"], out["containers"] = d.Phase, d.Conditions, d.Containers
 	}
-	tail, err := r.kube.PodLogTail(ctx, ns, name, bundleLogLines)
-	if err != nil {
+	if tail, err := r.kube.PodLogTail(ctx, ns, name, bundleLogLines); err != nil {
 		out["log"] = "unreadable: " + err.Error()
-		return out
+	} else {
+		out["log"] = textutil.Tail(tail, bundleLogBytes)
 	}
-	secrets, err := r.kube.GetSecretData(ctx, ns, "task-git")
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		out["log"] = "withheld: the task's secrets are unreadable to scrub it: " + err.Error()
-		return out
-	}
-	out["log"] = textutil.Tail(scrub(tail, secrets), bundleLogBytes)
 	return out
 }
 
-// bearerJWT is a JSON web token, as a projected service account token.
-var bearerJWT = regexp.MustCompile(`eyJ[\w-]+\.[\w-]+\.[\w-]+`)
-
-// scrub replaces every secret value, and any JWT, with ***.
-func scrub(s string, secrets map[string]string) string {
-	for _, v := range secrets {
-		if v != "" {
-			s = strings.ReplaceAll(s, v, "***")
+// scrubbed is the bundle as JSON values with every string scrubbed.
+func scrubbed(b gateBundle, s *redact.Scrubber) any {
+	raw, _ := json.Marshal(b) // #nosec G104 -- plain values
+	var v any
+	_ = json.Unmarshal(raw, &v)
+	var walk func(any) any
+	walk = func(v any) any {
+		switch x := v.(type) {
+		case string:
+			return s.String(x)
+		case []any:
+			for i := range x {
+				x[i] = walk(x[i])
+			}
+		case map[string]any:
+			for k := range x {
+				x[k] = walk(x[k])
+			}
 		}
+		return v
 	}
-	return bearerJWT.ReplaceAllString(s, "***")
+	return walk(v)
 }
 
 // parseGateDecision validates the answer like parseDecision: one JSON

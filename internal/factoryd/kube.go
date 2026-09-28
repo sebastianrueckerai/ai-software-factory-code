@@ -354,8 +354,11 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 	return d, nil
 }
 
+// podLogTailBytes bounds a log tail however long its lines are.
+const podLogTailBytes = 64 << 10
+
 func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
-	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d", namespace, name, lines), nil, nil)
+	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d&limitBytes=%d", namespace, name, lines, podLogTailBytes), nil, nil)
 	return string(b), err
 }
 

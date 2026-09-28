@@ -169,3 +169,86 @@ func TestWorkflowBeforeGateSupervisorIgnoresTrips(t *testing.T) {
 		t.Fatalf("final = %q after %d supervisor calls, want done after none", final, len(*calls))
 	}
 }
+
+// A human's answer to a check wait's escalation runs the check wait again
+// on the same commit, not a new session: the agent has nothing to change.
+func TestWorkflowGateEscalationAnswerRunsTheGateAgain(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	var waits []string
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30 * time.Minute).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		}).Once()
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		})
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "no runner serves the label", Recommendation: "register a runner"})
+	g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+	g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "runner registered", Comment: 700})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.sessions) != 1 || len(g.escalated) != 1 || !slices.Equal(g.states, []string{"running", "in-review", "in-review"}) {
+		t.Fatalf("sessions %d, escalations %q, states %v; want one session, one escalation, in-review again after the answer", len(g.sessions), g.escalated, g.states)
+	}
+	if last := g.usage[len(g.usage)-1]; last.ExtraAttempts != 0 {
+		t.Fatalf("usage = %+v, want no granted attempt: the gate used no agent time", last)
+	}
+	if !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "approval c1", "merge"}) {
+		t.Fatalf("steps = %v", g.steps)
+	}
+}
+
+// A merge's escalation answered runs the merge again with its approval.
+func TestWorkflowMergeEscalationKeepsTheApproval(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.mergeDelay = 20 * time.Minute })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "Forgejo hangs on the merge", Recommendation: "restart Forgejo"})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.tripAfter(time.Hour+5*time.Minute, ActivityMerge, 4)
+	g.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "restarted", Comment: 700})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if n := len(g.approvals); n != 1 || len(g.sessions) != 1 || !strings.Contains(g.finals[0][1], "after sebastian's approval") {
+		t.Fatalf("approval requests %d, sessions %d, reason %q; want the one approval merged", n, len(g.sessions), g.finals[0][1])
+	}
+	if want := []string{"9 c1 sebastian", "9 c1 sebastian"}; !slices.Equal(g.merges, want) {
+		t.Fatalf("merges = %v, want %v", g.merges, want)
+	}
+}
+
+// No retry on the last allowed attempt (GateReproduction has two), no
+// wait for a session.
+func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.reproDelay = 20 * time.Minute })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	calls := g.onGateSupervisor(GateDecision{Action: ActionWait, Diagnosis: "running"})
+	g.env.RegisterDelayedCallback(func() {
+		g.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityGateReproduction, ActivityID: "11", Attempt: 2, AlertID: 1})
+	}, 10*time.Minute)
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(*calls) != 1 || !(*calls)[0].CanWait || (*calls)[0].CanRetry {
+		t.Fatalf("final %q, calls %+v; want wait but no retry on attempt 2 of 2", final, *calls)
+	}
+
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(15*time.Minute).Return(pushed("s1", "c1"), nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	sessionCalls := h.onGateSupervisor(GateDecision{Action: ActionRetry, Diagnosis: "hung"})
+	h.tripAfter(5*time.Minute, ActivityRunSession, 1)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(*sessionCalls) != 1 || (*sessionCalls)[0].CanWait || !(*sessionCalls)[0].CanRetry {
+		t.Fatalf("final %q, calls %+v; want retry but no wait for a session", final, *sessionCalls)
+	}
+}

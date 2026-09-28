@@ -298,14 +298,16 @@ const (
 	// began: the approval request, or the last refused merge or the
 	// exhausted retries that ask for a new approval.
 	versionGateStarted workflow.Version = 1
-	// versionGateSupervisor (change id "gate-supervisor", ruling 141): a
-	// machine gate's activity (the session, the checks, the policy,
-	// migration and reproduction gates, the model review, the approval
-	// request and the merge) takes GateWatch's gate_bound signal while it
-	// runs and asks SuperviseGate once per trip: wait and retry act in the
-	// activity's worker, at most once each per run; cancel stops the
-	// activity and fails the task with the diagnosis; escalate stops it
-	// and waits for a human like the session supervisor's escalation.
+	// versionGateSupervisor (change id "gate-supervisor", rulings 141,
+	// 162): a long gate's activity (the session, the checks, the
+	// reproduction, the model review and the merge) takes GateWatch's
+	// gate_bound signal while it runs and asks SuperviseGate once per trip:
+	// wait and retry act in the activity's worker, at most once each per
+	// run (no wait for a session, no retry on the last attempt); cancel
+	// stops the activity and fails the task with the diagnosis; escalate
+	// stops it and waits for a human like the session supervisor's
+	// escalation, whose answer buys a session after a session and runs a
+	// gate again (a merge with its approval).
 	versionGateSupervisor workflow.Version = 1
 )
 
@@ -328,10 +330,8 @@ type verdict struct {
 	final, reason string
 	findings      []string
 	stronger      bool
-	// escalate is the gate supervisor's reason for a human (settle waits
-	// for one); granted: a human's answer bought the next attempt
+	// escalate is the gate supervisor's reason for a human
 	escalate string
-	granted  bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -347,9 +347,6 @@ func (t *taskRun) lifecycle() (string, error) {
 	apply := func(v verdict) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
-		}
-		if v.granted {
-			t.grant(&u)
 		}
 		findings, reason = v.findings, v.reason
 	}
@@ -430,12 +427,18 @@ func (t *taskRun) lifecycle() (string, error) {
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
 		t.recordUsage(u)
-		if decided {
-			if v = t.settle(v); v.final != "" {
-				return t.finish(v.final, v.reason)
+		if decided && v.escalate != "" {
+			// a human's answer to a stopped session buys the next one
+			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
+			if final != "" {
+				return t.finish(final, why)
 			}
-			apply(v)
+			findings = append(findings, answer...)
+			t.grant(&u)
 			continue
+		}
+		if decided {
+			return t.finish(v.final, v.reason)
 		}
 		if isWallClockTimeout(err) {
 			return t.finish("failed", "wall-clock cap reached")
@@ -523,9 +526,9 @@ func (t *taskRun) verify(commit string) verdict {
 		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
 	}
 	var checks ChecksResult
-	v, decided, err := t.race(t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
+	v, decided, err := t.gateActivity(true, t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
 	if decided {
-		return t.settle(v)
+		return v
 	}
 	if err != nil {
 		return verdict{final: "failed", reason: "wait for checks: " + errMessage(err)}
@@ -563,9 +566,7 @@ func (t *taskRun) gate(commit string) verdict {
 	if t.v8 >= versionGatesPinned {
 		policyArgs = append(policyArgs, commit)
 	}
-	if v, decided, err := t.call(finishOptions(), &g.Policy, ActivityGatePolicy, policyArgs...); decided {
-		return t.settle(v)
-	} else if err != nil {
+	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, policyArgs...).Get(t.ctx, &g.Policy); err != nil {
 		return verdict{final: "failed", reason: "policy gate: " + errMessage(err)}
 	}
 	if g.Policy.Outcome == policy.OutcomeForbidden {
@@ -573,15 +574,13 @@ func (t *taskRun) gate(commit string) verdict {
 			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
 	}
 	if len(g.Policy.Migrations) > 0 {
-		if v, decided, err := t.call(finishOptions(), nil, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations); decided {
-			return t.settle(v)
-		} else if err != nil {
+		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
 		}
 	}
-	v, decided, err := t.race(reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+	v, decided, err := t.gateActivity(true, reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
 	if decided {
-		return t.settle(v)
+		return v
 	}
 	if err != nil {
 		return verdict{final: "failed", reason: "reproduction gate: " + errMessage(err)}
@@ -593,9 +592,9 @@ func (t *taskRun) gate(commit string) verdict {
 	}
 	var review Review
 	if t.v8 >= versionGatesPinned {
-		v, decided, err := t.race(reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
+		v, decided, err := t.gateActivity(true, reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
 		if decided {
-			return t.settle(v)
+			return v
 		}
 		if err != nil {
 			review = Review{Note: "model review failed: " + errMessage(err)}
@@ -615,10 +614,8 @@ func (t *taskRun) gate(commit string) verdict {
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 	}
-	if v, decided, err := t.call(finishOptions(), nil, ActivityRequestApproval, t.taskID,
-		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}); decided {
-		return t.settle(v)
-	} else if err != nil {
+	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
+		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}).Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	if t.v11 >= versionGateStarted {
@@ -681,9 +678,9 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 			opts = mergeOptions()
 		}
 		var res MergeResult
-		v, decided, err := t.call(opts, &res, ActivityMerge, t.taskID, t.pr.Number, commit, approver)
+		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.taskID, t.pr.Number, commit, approver)
 		if decided {
-			return t.settle(v)
+			return v
 		}
 		if err != nil {
 			workflow.GetLogger(t.ctx).Warn("merge", "task", t.taskID, "error", err)
@@ -807,13 +804,39 @@ func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, 
 	return t.watch(true, opts, out, activity, args...)
 }
 
-// call runs a gate activity that races no terminal signal: from
-// versionGateSupervisor on it takes the gate supervisor's trips.
-func (t *taskRun) call(opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
-	if t.v12 < versionGateSupervisor {
+// gateActivity runs a long gate's activity: WaitChecks, GateReproduction
+// and ModelReview race the terminal signals (terminal), Merge does not.
+// From versionGateSupervisor on it takes the gate supervisor's trips, and
+// a human's answer to its escalation runs the gate again with the same
+// arguments (a merge keeps its approval); a change request sent meanwhile
+// goes back to the agent.
+func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
+	if !terminal && t.v12 < versionGateSupervisor {
 		return verdict{}, false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
 	}
-	return t.watch(false, opts, out, activity, args...)
+	for {
+		var v verdict
+		var decided bool
+		var err error
+		if terminal {
+			v, decided, err = t.race(opts, out, activity, args...)
+		} else {
+			v, decided, err = t.watch(false, opts, out, activity, args...)
+		}
+		if !decided || v.escalate == "" {
+			return v, decided, err
+		}
+		final, why, changes := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
+		switch {
+		case final != "":
+			return verdict{final: final, reason: why}, true, nil
+		case len(changes) > 0:
+			return verdict{findings: changes, reason: "changes requested"}, true, nil
+		}
+		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
+			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}, true, nil
+		}
+	}
 }
 
 // watch runs the activity until it returns, a terminal signal decides the
@@ -859,7 +882,7 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 			if trip.Activity != activity {
 				continue
 			}
-			if v, stop := t.superviseGate(trip, args, &run, fut); stop {
+			if v, stop := t.superviseGate(trip, opts, args, &run, fut); stop {
 				cancel()
 				_ = fut.Get(t.ctx, nil)
 				return v, true, nil
@@ -874,9 +897,13 @@ type gateRun struct{ waited, retried bool }
 // superviseGate asks SuperviseGate about one trip of the running activity;
 // stop with the task's verdict on cancel and escalate. A decision that
 // arrives after the activity returned changes nothing.
-func (t *taskRun) superviseGate(trip GateTrip, args []any, run *gateRun, fut workflow.Future) (verdict, bool) {
+func (t *taskRun) superviseGate(trip GateTrip, opts workflow.ActivityOptions, args []any, run *gateRun, fut workflow.Future) (verdict, bool) {
 	var d GateDecision
-	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited, CanRetry: !run.retried}
+	// a session's wait would trip again past its own start-to-close; a
+	// retry on the last attempt would fail the activity
+	maxAttempts := opts.RetryPolicy.MaximumAttempts
+	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession,
+		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts)}
 	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in).Get(t.ctx, &d); err != nil {
 		d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor failed: " + errMessage(err),
 			Recommendation: "look at the activity and its alert yourself"}
@@ -900,19 +927,6 @@ func (t *taskRun) superviseGate(trip GateTrip, args []any, run *gateRun, fut wor
 		return verdict{escalate: reason}, true
 	}
 	return verdict{}, false
-}
-
-// settle waits for a human when the gate supervisor escalated: their
-// answer buys the next attempt, a terminal signal decides the task.
-func (t *taskRun) settle(v verdict) verdict {
-	if v.escalate == "" {
-		return v
-	}
-	final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
-	if final != "" {
-		return verdict{final: final, reason: why}
-	}
-	return verdict{findings: answer, granted: true, reason: "a human answered the gate supervisor's escalation"}
 }
 
 // sessionOptions: the RunSession activity heartbeats; a factoryd that dies

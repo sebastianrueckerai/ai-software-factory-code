@@ -16,11 +16,15 @@ import (
 // environment runs.
 const testWorkflowID = "default-test-workflow-id"
 
-// liveRun puts an attempt of activity run id into g as if it ran there;
+// liveRun puts attempt 1 of activity run id into g as if it ran there;
 // the returned slice receives what cancelled it.
 func liveRun(g *GateWatch, id string, started time.Time, bound time.Duration) *[]error {
+	return liveAttempt(g, id, 1, started, bound)
+}
+
+func liveAttempt(g *GateWatch, id string, attempt int32, started time.Time, bound time.Duration) *[]error {
 	var causes []error
-	run := &watchedRun{started: started, bound: bound, timer: time.NewTimer(time.Hour), raise: func(time.Duration, bool) {},
+	run := &watchedRun{attempt: attempt, started: started, bound: bound, timer: time.NewTimer(time.Hour), raise: func(time.Duration, bool) {},
 		cancel: func(err error) { causes = append(causes, err) }}
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -132,13 +136,14 @@ func TestSuperviseGateWaitChecks(t *testing.T) {
 	}
 	elapsed, _ := time.ParseDuration(fmt.Sprint(bundle["elapsed"]))
 	if bundle["activity"] != ActivityWaitChecks || bundle["bound"] != "30s" || elapsed < 45*time.Second || elapsed > 50*time.Second ||
-		bundle["objective"] != "fix the short link" || jsonOf(bundle["input"]) != `["t1","c1"]` ||
+		bundle["objective"] != "fix the short link" || bundle["input"] != `["t1","c1"]` ||
 		!strings.Contains(fmt.Sprint(bundle["timeline"]), `"step":"intake"`) ||
 		jsonOf(bundle["allowed_actions"]) != `["wait","retry","cancel","escalate"]` {
 		t.Fatalf("bundle = %s", jsonOf(bundle))
 	}
+	// the scrubber's 32-character rule takes the long URL path (review I7's known cost)
 	want := `{"checks":{"commit":"c1","runner_queue":[{"job":"build","label":"ubuntu","waiting_s":0}],"state":"pending",` +
-		`"statuses":[{"context":"ci / lint","description":"ok","status":"success","target_url":"https://git.example/sf/r/actions/runs/4/jobs/0"},` +
+		`"statuses":[{"context":"ci / lint","description":"ok","status":"success","target_url":"https://git.[redacted]"},` +
 		`{"context":"ci / test","description":"running","status":"pending","target_url":""}]}}`
 	if got := jsonOf(bundle["state"]); got != want {
 		t.Fatalf("state = %s\nwant    %s", got, want)
@@ -189,7 +194,7 @@ func TestSuperviseGateRunSessionRetries(t *testing.T) {
 	logTail := fmt.Sprint(pod["log"])
 	lines := strings.Split(strings.TrimSpace(logTail), "\n")
 	if pod["name"] != "worker-s-1" || pod["phase"] != "Running" || jsonOf(pod["conditions"]) != `[{"status":"True","type":"Ready"}]` ||
-		len(lines) != 100 || lines[0] != "line 52" || lines[99] != "push with *** and ***" || strings.Contains(logTail, "secret") {
+		len(lines) != 100 || lines[0] != "line 52" || lines[99] != "push with [redacted] and [redacted]" || strings.Contains(logTail, "secret") {
 		t.Fatalf("pod = %s", jsonOf(pod))
 	}
 	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "retry" {
@@ -220,41 +225,42 @@ func TestSuperviseGateMergeCancels(t *testing.T) {
 	}
 }
 
-// A model review past its bound: the model reads the gateway's last audit
-// rows for the task; its escalation carries the recommendation.
+// A model review past its bound: the model reads the review's last result
+// from the timeline and its last error; its escalation carries the
+// recommendation.
 func TestSuperviseGateModelReviewEscalates(t *testing.T) {
-	c := newGateCase(t, ActivityModelReview, `{"action":"escalate","diagnosis":"the review alias is refused by its budget","recommendation":"raise the task budget or skip the review"}`, nil)
-	spend := 0.02
-	c.store.audit = []AuditRow{{Time: time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC), Decision: "deny", Reason: "budget exhausted", Model: "review-frontier"},
-		{Time: time.Date(2026, 9, 28, 9, 59, 0, 0, time.UTC), Decision: "allow", Reason: "ok", Model: "review-frontier", SpendEUR: &spend}}
+	c := newGateCase(t, ActivityModelReview, `{"action":"escalate","diagnosis":"the review alias answers in minutes","recommendation":"skip the review for this head"}`, nil)
+	c.failure = "model review: context deadline exceeded"
+	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"model_review","time":"2026-09-28T10:00:00Z","commit":"c0","verdict":"approve"}`+"\n"+
+		`{"step":"checks","time":"2026-09-28T10:30:00Z","state":"success"}`+"\n"))
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
 
 	d, bundle := c.supervise(t, ActivityModelReview, nil, true, true)
-	if d != (GateDecision{Action: ActionEscalate, Diagnosis: "the review alias is refused by its budget", Recommendation: "raise the task budget or skip the review"}) {
+	if d != (GateDecision{Action: ActionEscalate, Diagnosis: "the review alias answers in minutes", Recommendation: "skip the review for this head"}) {
 		t.Fatalf("decision = %+v", d)
 	}
-	want := `{"audit":[{"decision":"deny","model":"review-frontier","reason":"budget exhausted","time":"2026-09-28T10:00:00Z"},` +
-		`{"decision":"allow","model":"review-frontier","reason":"ok","spend_eur":0.02,"time":"2026-09-28T09:59:00Z"}]}`
-	if got := jsonOf(bundle["state"]); got != want {
-		t.Fatalf("state = %s\nwant    %s", got, want)
+	want := `{"review":{"last_result":{"commit":"c0","step":"model_review","time":"2026-09-28T10:00:00Z","verdict":"approve"},"model":"review-frontier"}}`
+	if got := jsonOf(bundle["state"]); got != want || bundle["last_error"] != c.failure {
+		t.Fatalf("state = %s, last error %v\nwant    %s", got, bundle["last_error"], want)
 	}
 	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["recommendation"] != d.Recommendation {
 		t.Fatalf("alert = %+v", a)
 	}
 }
 
-// Any other gate gets the last error and no state; a malformed answer is
-// an escalation that says so.
+// A malformed answer is an escalation that says so.
 func TestSuperviseGateMalformedAnswerEscalates(t *testing.T) {
-	c := newGateCase(t, ActivityGatePolicy, `sure, let it wait`, nil)
-	c.failure = "gate policy: forgejo GET /pulls/9/files: status 502"
+	c := newGateCase(t, ActivityMerge, `sure, let it wait`, map[string]string{
+		"GET /api/v1/repos/sf/r/pulls/9": `{"number":9,"state":"open","mergeable":true,"head":{"sha":"c1"}}`,
+	})
+	c.failure = "merge: forgejo POST /pulls/9/merge: status 502"
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
 
-	d, bundle := c.supervise(t, ActivityGatePolicy, []any{"t1", 9, "c1"}, true, true)
+	d, bundle := c.supervise(t, ActivityMerge, []any{"t1", 9, "c1", "sebastian"}, true, true)
 	if d.Action != ActionEscalate || !strings.HasPrefix(d.Diagnosis, "supervisor answer invalid") {
 		t.Fatalf("decision = %+v", d)
 	}
-	if bundle["last_error"] != c.failure || bundle["state"] != nil {
+	if bundle["last_error"] != c.failure {
 		t.Fatalf("bundle = %s", jsonOf(bundle))
 	}
 	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "escalate" {
@@ -305,5 +311,57 @@ func TestGateActionsAllowed(t *testing.T) {
 		if got := (GateSupervision{CanWait: tc.wait, CanRetry: tc.retry}).allowed(); !slices.Equal(got, tc.want) {
 			t.Errorf("wait %v retry %v: %v, want %v", tc.wait, tc.retry, got, tc.want)
 		}
+	}
+}
+
+// The trip's attempt ended and the run's next attempt runs here: that one
+// is not the supervisor's, so no call, no extension, no cancel.
+func TestSuperviseGateOnlyActsOnTheAttemptThatTripped(t *testing.T) {
+	c := newGateCase(t, ActivityRunSession, `{"action":"retry","diagnosis":"x"}`, nil)
+	live := liveAttempt(c.runner.cfg.Gates, "7", 2, time.Now(), 30*time.Second)
+	d, _ := c.supervise(t, ActivityRunSession, nil, true, true)
+	if d.Action != "" || len(c.model.chats) != 0 || len(*live) != 0 || c.runner.cfg.Gates.runs[runKey(testWorkflowID, "7")].extended {
+		t.Fatalf("decision = %+v, %d calls, cancels %v", d, len(c.model.chats), *live)
+	}
+	if a := c.alertRow(t); a.Verdict != VerdictNoise {
+		t.Fatalf("alert = %+v", a)
+	}
+}
+
+// A call the task's headroom cannot pay for is not made: escalate.
+func TestSuperviseGateRefusedCallEscalates(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
+	c.runner.supervisor.Meter.(*memPolicy).taskFree = 0
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis, "could not be asked") || len(c.model.chats) != 0 {
+		t.Fatalf("decision = %+v after %d calls", d, len(c.model.chats))
+	}
+	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "escalate" {
+		t.Fatalf("alert = %+v", a)
+	}
+}
+
+// The whole bundle is scrubbed: the task's git tokens and a JWT in the
+// timeline, the last error and the input are gone.
+func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
+	c := newGateCase(t, ActivityMerge, `{"action":"wait","diagnosis":"x"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/pulls/9": `{"number":9,"state":"open","mergeable":true,"head":{"sha":"c1"}}`,
+	})
+	c.kube.secrets["factory-agents-t1/task-git"] = map[string]string{"REPO_TOKEN": "tok-read-secret", "PUSH_TOKEN": "tok-push-secret"}
+	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"x","error":"push tok-push-secret refused"}`+"\n"))
+	c.failure = "merge as eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0In0.c2lnbmF0dXJl refused"
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+	_, bundle := c.supervise(t, ActivityMerge, []any{"t1", 9, "c1", "tok-read-secret"}, true, true)
+	all := jsonOf(bundle)
+	for _, gone := range []string{"tok-read-secret", "tok-push-secret", "eyJhbGci"} {
+		if strings.Contains(all, gone) {
+			t.Errorf("bundle keeps %q: %s", gone, all)
+		}
+	}
+	if !strings.Contains(fmt.Sprint(bundle["timeline"]), "push [redacted] refused") || bundle["input"] != `["t1",9,"c1","[redacted]"]` {
+		t.Fatalf("bundle = %s", all)
 	}
 }

@@ -49,7 +49,6 @@ type fakeStore struct {
 	gates        []string // "task gate since", in order
 	alertsMu     sync.Mutex
 	alerts       []Alert
-	audit        []AuditRow // what AuditRows returns
 }
 
 func newFakeStore() *fakeStore {
@@ -357,10 +356,6 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, verdict, by stri
 		}
 	}
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
-}
-
-func (s *fakeStore) AuditRows(ctx context.Context, taskID string, limit int) ([]AuditRow, error) {
-	return s.audit[:min(limit, len(s.audit))], nil
 }
 
 func (s *fakeStore) alertRows() []Alert {

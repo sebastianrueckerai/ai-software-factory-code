@@ -276,8 +276,8 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 				`{"type":"Ready","status":"False","reason":"ContainersNotReady","message":"containers with unready status: [worker]"}],`+
 				`"containerStatuses":[{"name":"worker","restartCount":2,"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}`)
 		case "/api/v1/namespaces/factory-agents-t1/pods/worker-s1/log":
-			if q := r.URL.Query(); q.Get("tailLines") != "100" || q.Has("follow") {
-				t.Errorf("log query = %v, want tailLines=100 and no follow", q)
+			if q := r.URL.Query(); q.Get("tailLines") != "100" || q.Get("limitBytes") != "65536" || q.Has("follow") {
+				t.Errorf("log query = %v, want tailLines=100, limitBytes=65536 and no follow", q)
 			}
 			io.WriteString(w, "a\nb\n")
 		default:

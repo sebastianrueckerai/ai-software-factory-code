@@ -126,8 +126,9 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
-		"running":   {"queued", "running", "in-review", "waiting-human"},
-		"in-review": {"running", "in-review"},
+		"running": {"queued", "running", "in-review", "waiting-human"},
+		// waiting-human: a human answered a gate's escalation and the gate runs again
+		"in-review": {"running", "in-review", "waiting-human"},
 	}[state]
 	if from == nil {
 		return terminalError("unknown task state %q", state)

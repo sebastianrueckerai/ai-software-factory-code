@@ -119,37 +119,6 @@ func (s *PGStore) ResolveAlert(ctx context.Context, id int64, verdict, by string
 	return oneRow(res, err, "open gate_bound alert")
 }
 
-// AuditRow is one of the gateway's audit rows: a model or tool call's
-// decision.
-type AuditRow struct {
-	Time     time.Time `json:"time"`
-	Decision string    `json:"decision"`
-	Reason   string    `json:"reason"`
-	Model    string    `json:"model,omitempty"`
-	Tool     string    `json:"tool,omitempty"`
-	SpendEUR *float64  `json:"spend_eur,omitempty"`
-}
-
-// AuditRows are the task's newest limit gateway audit rows, newest first.
-func (s *PGStore) AuditRows(ctx context.Context, taskID string, limit int) ([]AuditRow, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ts, decision, reason, model_alias, tool, spend_eur::float8 FROM audit WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, taskID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []AuditRow
-	for rows.Next() {
-		var a AuditRow
-		if err := rows.Scan(&a.Time, &a.Decision, &a.Reason, &a.Model, &a.Tool, &a.SpendEUR); err != nil {
-			return nil, err
-		}
-		a.Time = a.Time.UTC()
-		out = append(out, a)
-	}
-	return out, rows.Err()
-}
-
 // AlertCount is the number of alerts of one kind and verdict ("open" for
 // none yet).
 type AlertCount struct {
