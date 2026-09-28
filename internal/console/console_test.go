@@ -1501,3 +1501,50 @@ func TestTimelineApprovalWaitOutcomes(t *testing.T) {
 		t.Errorf("%d closed approval waits, want 2 (the pull request's and the issue's)", n)
 	}
 }
+
+// A machine alert shows what the supervisor did and why; a human
+// escalation's detail stays off the page.
+func TestAlertsShowTheSupervisorsActionAndDiagnosis(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	r.alerts.rows = []factoryd.Alert{
+		{ID: 3, Kind: factoryd.AlertEscalation, Source: "supervisor", TaskID: "t-e", RaisedAt: raised, Detail: map[string]any{"reason": "a private reason"}},
+		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: "t-e", RaisedAt: raised, Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
+			Detail: map[string]any{"action": "redirect", "diagnosis": "stop rereading the spec; write the handler"}},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 30, Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
+			Detail: map[string]any{"action": "escalate", "diagnosis": "no runner serves the label", "recommendation": "register a runner"}},
+	}
+	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
+	for _, want := range []string{`<th scope="col">Supervisor</th>`,
+		"<td><strong>redirect</strong>: stop rereading the spec; write the handler</td>",
+		"<td><strong>escalate</strong>: no runner serves the label Recommendation: register a runner</td>"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("/alerts lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "a private reason") {
+		t.Error("/alerts shows an escalation's detail")
+	}
+}
+
+// The timeline names the supervisor's action and diagnosis on its steps:
+// the session supervisor's decision and the gate supervisor's.
+func TestTimelineShowsTheSupervisorsAction(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "work"})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"supervisor","time":"2026-09-28T10:10:00Z","detector":"no_write","decision":"continue","reason":"it is compiling"}
+{"step":"gate_supervisor","time":"2026-09-28T10:40:00Z","activity":"WaitChecks","action":"wait","diagnosis":"two checks run","recommendation":""}
+{"step":"checks","time":"2026-09-28T10:45:00Z","state":"success"}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	for _, want := range []string{`<th scope="col">Supervisor</th>`,
+		"<td>supervisor</td><td><strong>continue</strong>: it is compiling</td>",
+		"<td>gate_supervisor</td><td><strong>wait</strong>: two checks run</td>",
+		"<td>checks</td><td></td>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("timeline lacks %q", want)
+		}
+	}
+}

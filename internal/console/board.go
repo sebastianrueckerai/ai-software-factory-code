@@ -32,6 +32,28 @@ var funcs = template.FuncMap{
 	},
 	"utc":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
 	"verdictForm": func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
+	// alertSupervisor is what the supervisor did on a machine alert; an
+	// escalation's detail stays off the page
+	"alertSupervisor": func(a factoryd.Alert) supervised {
+		if a.Kind == factoryd.AlertEscalation {
+			return supervised{}
+		}
+		return supervisedBy(a.Detail["action"], a.Detail["diagnosis"], a.Detail["recommendation"])
+	},
+}
+
+// supervised is a supervisor's action and diagnosis, for the "supervised"
+// template.
+type supervised struct{ Action, Diagnosis string }
+
+func supervisedBy(action, diagnosis, recommendation any) supervised {
+	s := supervised{}
+	s.Action, _ = action.(string)
+	s.Diagnosis, _ = diagnosis.(string)
+	if rec, _ := recommendation.(string); rec != "" {
+		s.Diagnosis += " Recommendation: " + rec
+	}
+	return s
 }
 
 // verdictForm is the "verdict" template's data: an alert's two buttons.
@@ -176,10 +198,11 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 }
 
 type timelineEntry struct {
-	Time   string
-	Step   string
-	Detail string
-	Reason string
+	Time       string
+	Step       string
+	Detail     string
+	Reason     string
+	Supervisor supervised // the session or the gate supervisor's decision
 }
 
 // readTimeline reads the task's timeline steps, oldest first.
@@ -205,6 +228,14 @@ func entry(m map[string]any) timelineEntry {
 	e.Time, _ = m["time"].(string)
 	e.Step, _ = m["step"].(string)
 	e.Reason, _ = m["reason"].(string)
+	switch e.Step {
+	case "supervisor":
+		why, _ := m["reason"].(string)
+		guidance, _ := m["guidance"].(string)
+		e.Supervisor = supervisedBy(m["decision"], cmp.Or(why, guidance), nil)
+	case "gate_supervisor":
+		e.Supervisor = supervisedBy(m["action"], m["diagnosis"], m["recommendation"])
+	}
 	rest := maps.Clone(m)
 	delete(rest, "time")
 	delete(rest, "step")

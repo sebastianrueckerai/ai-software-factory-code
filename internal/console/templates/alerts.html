@@ -1,10 +1,10 @@
 {{template "head" .}}
 <h2>Alerts</h2>
-<p>The newest {{.Limit}} alerts: activities past their policy bound, session supervisor trips (the supervisor's action is the verdict) and escalations to a human (an approver gives the verdict).</p>
+<p>The newest {{.Limit}} alerts: activities past their policy bound (the gate supervisor's action is the verdict of a machine gate's), session supervisor trips (the supervisor's action is the verdict) and escalations to a human (an approver gives the verdict).</p>
 {{if not .Approver}}<p class="meta">Only the policy's approvers may judge an alert.</p>{{end}}
 <table>
 <caption class="visually-hidden">Alerts, newest first</caption>
-<thead><tr><th scope="col">Alert</th><th scope="col">Kind</th><th scope="col">Task</th><th scope="col">Source</th><th scope="col">Raised</th><th scope="col">Resolved</th><th scope="col">Verdict</th></tr></thead>
+<thead><tr><th scope="col">Alert</th><th scope="col">Kind</th><th scope="col">Task</th><th scope="col">Source</th><th scope="col">Raised</th><th scope="col">Resolved</th><th scope="col">Verdict</th><th scope="col">Supervisor</th></tr></thead>
 <tbody>
 {{range .Alerts}}<tr>
 <td>{{.ID}}</td>
@@ -14,8 +14,9 @@
 <td>{{utc .RaisedAt}}</td>
 <td>{{if .ResolvedAt}}{{utc .ResolvedAt}}{{end}}</td>
 <td>{{if .Verdict}}{{.Verdict}} ({{.ResolvedBy}}){{else if and $.Approver (eq .Kind "escalation")}}{{template "verdict" (verdictForm .ID $.CSRF "/alerts")}}{{else}}open{{end}}</td>
+<td>{{template "supervised" (alertSupervisor .)}}</td>
 </tr>
-{{else}}<tr><td colspan="7">No alerts.</td></tr>{{end}}
+{{else}}<tr><td colspan="8">No alerts.</td></tr>{{end}}
 </tbody>
 </table>
 {{template "foot"}}
