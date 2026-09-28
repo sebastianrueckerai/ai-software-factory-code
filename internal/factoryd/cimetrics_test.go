@@ -12,34 +12,40 @@ import (
 	"time"
 )
 
-// tasksHub serves actions/tasks page 1 from a testdata file, later pages
-// empty, and checks the tasks token.
-type tasksHub struct {
-	mu    sync.Mutex
-	file  string
-	pages []int
+// ciAPIHub serves actions/tasks and actions/runs page 1 from testdata
+// files, later pages empty, and checks the registrar token.
+type ciAPIHub struct {
+	mu                  sync.Mutex
+	tasksFile, runsFile string
+	pages               []string // "tasks 1", "runs 1", ...
 }
 
-func (h *tasksHub) serve(t *testing.T) *httptest.Server {
+func (h *ciAPIHub) serve(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v1/repos/sf/ai-software-factory-code/actions/tasks" {
+		if got := r.Header.Get("Authorization"); got != "token registrar-tok" {
+			t.Errorf("auth %q, want the registrar token", got)
+		}
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		var file, kind string
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/ai-software-factory-code/actions/tasks":
+			file, kind = h.tasksFile, "tasks"
+		case "/api/v1/repos/sf/ai-software-factory-code/actions/runs":
+			file, kind = h.runsFile, "runs"
+		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.Header.Get("Authorization"); got != "token tasks-tok" {
-			t.Errorf("auth %q, want the tasks token", got)
-		}
-		h.mu.Lock()
-		defer h.mu.Unlock()
 		page := r.URL.Query().Get("page")
-		h.pages = append(h.pages, map[string]int{"1": 1, "2": 2, "3": 3}[page])
-		if page != "1" {
+		h.pages = append(h.pages, kind+" "+page)
+		if page != "1" || file == "" {
 			w.Write([]byte(`{"workflow_runs":[],"total_count":0}`))
 			return
 		}
-		body, err := os.ReadFile("testdata/" + h.file)
+		body, err := os.ReadFile("testdata/" + file)
 		if err != nil {
 			t.Error(err)
 		}
@@ -49,40 +55,34 @@ func (h *tasksHub) serve(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func (h *tasksHub) set(file string) {
+func (h *ciAPIHub) set(tasks, runs string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.file, h.pages = file, nil
+	h.tasksFile, h.runsFile, h.pages = tasks, runs, nil
 }
 
 func TestCIRunsEmitsEachFinishedJobAndRunOnce(t *testing.T) {
 	m, reader := testMetrics(t)
-	hub := &tasksHub{file: "actions-tasks-boot.json"}
+	hub := &ciAPIHub{tasksFile: "actions-tasks-boot.json", runsFile: "actions-runs-boot.json"}
 	srv := hub.serve(t)
-	now := time.Date(2026, 9, 28, 10, 1, 0, 0, time.UTC)
-	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL, CITasksToken: "tasks-tok"}, Owner: "sf", Repo: "ai-software-factory-code",
-		Metrics: m, now: func() time.Time { return now }}
+	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}, Owner: "sf", Repo: "ai-software-factory-code", Metrics: m}
 	ctx := context.Background()
 
-	// boot: what already finished (100, 102, run 50) is history
+	// boot: what already finished (tasks 100, 102, run 50) is history
 	c.poll(ctx)
 	if got := histograms(t, reader, "factory.ci.job.duration"); len(got) != 0 {
 		t.Fatalf("boot emitted jobs %v", got)
 	}
-	if !reflect.DeepEqual(hub.pages, []int{1}) {
-		t.Fatalf("boot read pages %v, want only the newest", hub.pages)
+	if got := histograms(t, reader, "factory.ci.run.duration"); len(got) != 0 {
+		t.Fatalf("boot emitted runs %v", got)
+	}
+	if !reflect.DeepEqual(hub.pages, []string{"tasks 1", "runs 1"}) {
+		t.Fatalf("boot read %v, want only the newest pages", hub.pages)
 	}
 
-	hub.set("actions-tasks-2.json")
-	now = now.Add(4 * time.Minute) // 10:05
+	hub.set("actions-tasks-2.json", "actions-runs-2.json")
 	c.poll(ctx)
-	hub.set("actions-tasks-3.json")
-	now = now.Add(time.Minute) // 10:06, run 51 finished 10:05:13, not settled
-	c.poll(ctx)
-	if got := histograms(t, reader, "factory.ci.run.duration"); len(got) != 0 {
-		t.Fatalf("run emitted before it settled: %v", got)
-	}
-	now = now.Add(5 * time.Minute) // 10:11
+	hub.set("actions-tasks-3.json", "actions-runs-3.json")
 	c.poll(ctx)
 	c.poll(ctx)
 
@@ -96,35 +96,40 @@ func TestCIRunsEmitsEachFinishedJobAndRunOnce(t *testing.T) {
 	if !reflect.DeepEqual(jobs, want) {
 		t.Fatalf("job durations %v, want %v", jobs, want)
 	}
-	// run 51: first created 10:00:00 to last updated 10:05:13; run 50 was
-	// history at boot, run 52 still runs
+	// run 51: created 09:59:58, stopped 10:05:13; run 52: created
+	// 10:05:39, stopped 10:09:40; run 50 was history at boot
 	runs := histograms(t, reader, "factory.ci.run.duration")
-	if !reflect.DeepEqual(runs, map[string]histPoint{"event=pull_request,status=success": {1, 313}}) {
+	if !reflect.DeepEqual(runs, map[string]histPoint{
+		"event=pull_request,status=success": {1, 315},
+		"event=push,status=failure":         {1, 241},
+	}) {
 		t.Fatalf("run durations %v", runs)
-	}
-	if at, ok := c.PushedAt("9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f"); !ok || !at.Equal(time.Date(2026, 9, 28, 10, 5, 40, 0, time.UTC)) {
-		t.Fatalf("pushed at %v %v", at, ok)
-	}
-	if _, ok := c.PushedAt("c62cd2d1ad2dd06b8e73354a0ff07fde47321184"); ok {
-		t.Fatal("a pull_request run is no push")
 	}
 }
 
-func TestCIRunsFailedJobFailsTheRun(t *testing.T) {
-	m, reader := testMetrics(t)
-	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
-	c := &CIRuns{Metrics: m, now: func() time.Time { return now }}
-	c.started = true
-	c.observe(context.Background(), []ActionTask{
-		{ID: 3, Name: "security", RunNumber: 9, Event: "push", Status: "failure",
-			CreatedAt: now.Add(-9 * time.Minute), RunStartedAt: now.Add(-9 * time.Minute), UpdatedAt: now.Add(-7 * time.Minute)},
-		{ID: 2, Name: "test", RunNumber: 9, Event: "push", Status: "success",
-			CreatedAt: now.Add(-10 * time.Minute), RunStartedAt: now.Add(-10 * time.Minute), UpdatedAt: now.Add(-6 * time.Minute)},
-	})
-	// 10:50 to 10:54 = 240 s
-	runs := histograms(t, reader, "factory.ci.run.duration")
-	if !reflect.DeepEqual(runs, map[string]histPoint{"event=push,status=failure": {1, 240}}) {
-		t.Fatalf("run durations %v", runs)
+// A run that finishes after a newer one is still emitted once.
+func TestFreshEmitsOutOfOrderFinishesOnce(t *testing.T) {
+	type item struct {
+		id   int64
+		done bool
+	}
+	id := func(i item) int64 { return i.id }
+	done := func(i item) bool { return i.done }
+	var f idFloor
+	if got := fresh(&f, []item{{3, false}, {2, true}}, id, done); len(got) != 0 {
+		t.Fatalf("boot gave %v", got)
+	}
+	if got := fresh(&f, []item{{4, true}, {3, false}, {2, true}}, id, done); !reflect.DeepEqual(got, []item{{4, true}}) {
+		t.Fatalf("second read gave %v", got)
+	}
+	if f.floor != 2 {
+		t.Fatalf("floor %d, want 2: below the open 3", f.floor)
+	}
+	if got := fresh(&f, []item{{4, true}, {3, true}}, id, done); !reflect.DeepEqual(got, []item{{3, true}}) {
+		t.Fatalf("third read gave %v", got)
+	}
+	if f.floor != 4 || len(f.emitted) != 0 {
+		t.Fatalf("floor %d emitted %v, want 4 and none", f.floor, f.emitted)
 	}
 }
 
@@ -168,15 +173,37 @@ func TestCIQueueMeasuresWaitingToPickedUp(t *testing.T) {
 	if _, ok := q.Seconds(209); ok {
 		t.Fatal("an unknown task has no queue time")
 	}
+	if got := sums(t, reader, "factory.ci.job.queue.unmeasured"); len(got) != 0 {
+		t.Fatalf("measured jobs counted unmeasured: %v", got)
+	}
+}
+
+// A job already taken when first seen counts as unmeasured, once; at a
+// label's first poll nothing counts.
+func TestCIQueueCountsJobsTakenBeforeTheyWereSeen(t *testing.T) {
+	m, reader := testMetrics(t)
+	q := NewCIQueue(m)
+	ctx := context.Background()
+	q.Observe(ctx, "ubuntu-latest", []CIJob{{ID: 1, Name: "test", Status: "running", TaskID: 11}})
+	for range 2 {
+		q.Observe(ctx, "ubuntu-latest", []CIJob{{ID: 1, Name: "test", Status: "running", TaskID: 11},
+			{ID: 2, Name: "image", Status: "running", TaskID: 12}})
+	}
+	if got := sums(t, reader, "factory.ci.job.queue.unmeasured"); !reflect.DeepEqual(got, map[string]float64{"job=image,label=ubuntu-latest": 1}) {
+		t.Fatalf("unmeasured %v", got)
+	}
+	if got := histograms(t, reader, "factory.ci.job.queue"); len(got) != 0 {
+		t.Fatalf("queue %v", got)
+	}
 }
 
 func TestCIJobsOfAHeadListsNameQueueAndRun(t *testing.T) {
-	hub := &tasksHub{file: "actions-tasks-3.json"}
+	hub := &ciAPIHub{tasksFile: "actions-tasks-3.json"}
 	srv := hub.serve(t)
 	m, _ := testMetrics(t)
 	q := NewCIQueue(m)
 	q.byTask[101] = queued{seconds: 30}
-	jobs, err := CIJobsOf(context.Background(), &Forgejo{BaseURL: srv.URL, CITasksToken: "tasks-tok"}, "sf", "ai-software-factory-code",
+	jobs, err := CIJobsOf(context.Background(), &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}, "sf", "ai-software-factory-code",
 		"c62cd2d1ad2dd06b8e73354a0ff07fde47321184", q)
 	if err != nil {
 		t.Fatal(err)

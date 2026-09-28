@@ -63,16 +63,19 @@ func (h *throttledHandler) Handle(err error) {
 type Metrics struct {
 	Meter metric.Meter
 
-	CIJobDuration   metric.Float64Histogram
-	CIRunDuration   metric.Float64Histogram
-	CIJobQueue      metric.Float64Histogram
-	BuildVMLifetime metric.Float64Histogram
-	BuildVMReady    metric.Float64Histogram
-	BuildVMCost     metric.Float64Counter
-	RollDuration    metric.Float64Histogram
-	RollApply       metric.Float64Histogram
-	RollReady       metric.Float64Histogram
-	GateDuration    metric.Float64Histogram
+	CIJobDuration metric.Float64Histogram
+	CIRunDuration metric.Float64Histogram
+	CIJobQueue    metric.Float64Histogram
+	// CIJobQueueUnmeasured counts jobs first seen already taken: the
+	// runner-jobs list holds no creation time, so their queue is unknown.
+	CIJobQueueUnmeasured metric.Int64Counter
+	BuildVMLifetime      metric.Float64Histogram
+	BuildVMReady         metric.Float64Histogram
+	BuildVMCost          metric.Float64Counter
+	RollDuration         metric.Float64Histogram
+	RollApply            metric.Float64Histogram
+	RollReady            metric.Float64Histogram
+	GateDuration         metric.Float64Histogram
 }
 
 // Noop is Metrics on the no-op meter, for tests and callers without one.
@@ -102,6 +105,11 @@ func New(meter metric.Meter) (*Metrics, error) {
 	m.RollApply = hist("factory.roll.apply", "roll push to Flux applying it")
 	m.RollReady = hist("factory.roll.ready", "Flux applying a roll to both Deployments live")
 	m.GateDuration = hist("factory.task.gate.duration", "one task gate from start to end")
+	if err != nil {
+		return nil, err
+	}
+	m.CIJobQueueUnmeasured, err = meter.Int64Counter("factory.ci.job.queue.unmeasured",
+		metric.WithDescription("CI jobs a runner took before a poll saw them waiting"))
 	if err != nil {
 		return nil, err
 	}

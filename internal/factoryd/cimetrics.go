@@ -4,7 +4,9 @@ import (
 	"cmp"
 	"context"
 	"log"
+	"net/url"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,51 +17,90 @@ import (
 )
 
 // CIRuns turns the code repository's actions/tasks into
-// factory.ci.job.duration once per finished job and factory.ci.run.duration
-// once per finished run, and remembers each push run's start for the roll
-// record. It keeps what it emitted in memory: after a restart it starts
-// from the newest page, and jobs that finished while it was down are lost.
+// factory.ci.job.duration once per finished job, and its actions/runs into
+// factory.ci.run.duration once per finished run. It keeps what it emitted
+// in memory: after a restart it starts from the newest page, and what
+// finished while it was down is lost.
 type CIRuns struct {
 	Forgejo     *Forgejo
 	Owner, Repo string
 	Metrics     *telemetry.Metrics
-	now         func() time.Time
 	lastErr     string // logged once until the next success
 
-	mu      sync.Mutex
-	started bool
-	// floor: every task at or below it is handled; emitted holds the
-	// finished ones above it
-	floor   int64
-	emitted map[int64]bool
-	runs    map[int64]*ciRun
-	pushes  map[string]time.Time // head sha of a push run → its first job's created_at
-}
-
-type ciRun struct {
-	event       string
-	first, last time.Time
-	status      string
-	open        map[int64]bool // tasks not yet finished
-	done        bool
+	jobs, runs idFloor
 }
 
 const (
 	ciRunsInterval = time.Minute
-	// ciRunSettle: a run whose known jobs all finished this long ago is
-	// finished. actions/tasks lists a job only once a runner took it, so a
-	// job still blocked on its needs is invisible until then.
-	ciRunSettle = 5 * time.Minute
-	// ciRunsPages bounds one poll's read; older tasks count as handled.
+	// ciRunsPages bounds one poll's read; older entries count as handled.
 	ciRunsPages = 10
 	ciMemory    = 24 * time.Hour
 )
 
-func (c *CIRuns) clock() time.Time {
-	if c.now == nil {
-		return time.Now()
+// idFloor remembers which entries of a newest-first list were handled:
+// every id at or below floor, and the finished ones above it in emitted.
+// Entries finish out of order, so the floor stops below the oldest one
+// still open.
+type idFloor struct {
+	started bool
+	floor   int64
+	emitted map[int64]bool
+}
+
+// readPages reads a newest-first list down to the floor; the first read
+// takes the newest page only.
+func readPages[T any](ctx context.Context, f *idFloor, fetch func(ctx context.Context, page int) ([]T, error), id func(T) int64) ([]T, error) {
+	var all []T
+	for page := 1; page <= ciRunsPages; page++ {
+		items, err := fetch(ctx, page)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if !f.started || len(items) == 0 || id(items[len(items)-1]) <= f.floor {
+			break
+		}
 	}
-	return c.now()
+	return all, nil
+}
+
+// fresh returns the entries of one read that finished since the last,
+// oldest first; at the first read what already finished is history.
+func fresh[T any](f *idFloor, items []T, id func(T) int64, finished func(T) bool) []T {
+	if f.emitted == nil {
+		f.emitted = map[int64]bool{}
+	}
+	items = slices.DeleteFunc(slices.Clone(items), func(t T) bool { return id(t) <= f.floor })
+	slices.SortFunc(items, func(a, b T) int { return cmp.Compare(id(a), id(b)) })
+	boot := !f.started
+	f.started = true
+	var out []T
+	floor, open := f.floor, false
+	for _, t := range items {
+		if !finished(t) {
+			if !open {
+				floor, open = id(t)-1, true
+			}
+			continue
+		}
+		if !open {
+			floor = id(t)
+		}
+		if f.emitted[id(t)] {
+			continue
+		}
+		f.emitted[id(t)] = true
+		if !boot {
+			out = append(out, t)
+		}
+	}
+	f.floor = floor
+	for i := range f.emitted {
+		if i <= floor {
+			delete(f.emitted, i)
+		}
+	}
+	return out
 }
 
 // Run polls until ctx ends; a failed poll logs and waits for the next.
@@ -75,151 +116,67 @@ func (c *CIRuns) Run(ctx context.Context) {
 }
 
 func (c *CIRuns) poll(ctx context.Context) {
-	c.mu.Lock()
-	floor, boot := c.floor, !c.started
-	c.mu.Unlock()
-	var tasks []ActionTask
-	for page := 1; page <= ciRunsPages; page++ {
-		items, err := c.Forgejo.ActionTasks(ctx, c.Owner, c.Repo, page)
-		if err != nil {
-			if err.Error() != c.lastErr {
-				log.Printf("ci metrics: actions tasks: %v", err)
-				c.lastErr = err.Error()
-			}
-			return
-		}
-		c.lastErr = ""
-		tasks = append(tasks, items...)
-		if boot || len(items) == 0 || items[len(items)-1].ID <= floor {
-			break
-		}
+	err := c.pollJobs(ctx)
+	if err == nil {
+		err = c.pollRuns(ctx)
 	}
-	c.observe(ctx, tasks)
+	switch {
+	case err == nil:
+		c.lastErr = ""
+	case err.Error() != c.lastErr:
+		log.Printf("ci metrics: %v", err)
+		c.lastErr = err.Error()
+	}
 }
 
-// observe handles one read of tasks, newest first as Forgejo lists them.
-func (c *CIRuns) observe(ctx context.Context, tasks []ActionTask) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.emitted == nil {
-		c.emitted, c.runs, c.pushes = map[int64]bool{}, map[int64]*ciRun{}, map[string]time.Time{}
+func (c *CIRuns) pollJobs(ctx context.Context) error {
+	taskID := func(t ActionTask) int64 { return t.ID }
+	tasks, err := readPages(ctx, &c.jobs, func(ctx context.Context, page int) ([]ActionTask, error) {
+		return c.Forgejo.ActionTasks(ctx, c.Owner, c.Repo, page)
+	}, taskID)
+	if err != nil {
+		return err
 	}
-	now := c.clock()
-	tasks = slices.DeleteFunc(slices.Clone(tasks), func(t ActionTask) bool { return t.ID <= c.floor })
-	slices.SortFunc(tasks, func(a, b ActionTask) int { return cmp.Compare(a.ID, b.ID) })
-	boot := !c.started
-	c.started = true
-	for _, t := range tasks {
-		if t.Event == "push" {
-			if at, ok := c.pushes[t.HeadSHA]; !ok || t.CreatedAt.Before(at) {
-				c.pushes[t.HeadSHA] = t.CreatedAt
-			}
-		}
-		c.observeRun(t)
-		if !t.Finished() || c.emitted[t.ID] {
-			continue
-		}
-		c.emitted[t.ID] = true
-		if boot {
-			continue
-		}
+	for _, t := range fresh(&c.jobs, tasks, taskID, ActionTask.Finished) {
 		c.Metrics.CIJobDuration.Record(ctx, t.RunSeconds(), metric.WithAttributes(
 			attribute.String("job", t.Name), attribute.String("event", t.Event), attribute.String("status", t.Status)))
 	}
-	for number, r := range c.runs {
-		if r.done || len(r.open) > 0 {
-			continue
-		}
-		if boot {
-			r.done = true
-			continue
-		}
-		if now.Sub(r.last) < ciRunSettle {
-			continue
-		}
-		r.done = true
-		c.Metrics.CIRunDuration.Record(ctx, r.last.Sub(r.first).Seconds(), metric.WithAttributes(
-			attribute.String("event", r.event), attribute.String("status", r.status)))
-		log.Printf("ci metrics: run %d (%s) %s in %.0f s", number, r.event, r.status, r.last.Sub(r.first).Seconds())
-	}
-	c.advance(tasks, now)
+	return nil
 }
 
-func (c *CIRuns) observeRun(t ActionTask) {
-	r := c.runs[t.RunNumber]
-	if r == nil {
-		r = &ciRun{event: t.Event, first: t.CreatedAt, status: "success", open: map[int64]bool{}}
-		c.runs[t.RunNumber] = r
+// pollRuns emits each finished run's wall time, from the event that
+// created it (the push) to its last job's finish: queue time included.
+func (c *CIRuns) pollRuns(ctx context.Context) error {
+	runID := func(r ActionRun) int64 { return r.ID }
+	runs, err := readPages(ctx, &c.runs, func(ctx context.Context, page int) ([]ActionRun, error) {
+		return c.Forgejo.ActionRuns(ctx, c.Owner, c.Repo, url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(actionTasksPage)}})
+	}, runID)
+	if err != nil {
+		return err
 	}
-	if r.done {
-		return
+	for _, r := range fresh(&c.runs, runs, runID, ActionRun.Finished) {
+		c.Metrics.CIRunDuration.Record(ctx, r.Stopped.Sub(r.Created).Seconds(), metric.WithAttributes(
+			attribute.String("event", r.Event), attribute.String("status", r.Status)))
 	}
-	if t.CreatedAt.Before(r.first) {
-		r.first = t.CreatedAt
-	}
-	if !t.Finished() {
-		r.open[t.ID] = true
-		return
-	}
-	delete(r.open, t.ID)
-	if t.UpdatedAt.After(r.last) {
-		r.last = t.UpdatedAt
-	}
-	switch {
-	case t.Status == "failure":
-		r.status = "failure"
-	case t.Status == "cancelled" && r.status != "failure":
-		r.status = "cancelled"
-	}
-}
-
-// advance moves the floor below the oldest unfinished task read, or to
-// the newest read, and forgets what lies under it.
-func (c *CIRuns) advance(tasks []ActionTask, now time.Time) {
-	floor := c.floor
-	for _, t := range tasks {
-		if !t.Finished() {
-			floor = t.ID - 1
-			break
-		}
-		floor = t.ID
-	}
-	c.floor = floor
-	for id := range c.emitted {
-		if id <= floor {
-			delete(c.emitted, id)
-		}
-	}
-	for n, r := range c.runs {
-		if r.done && now.Sub(r.first) > ciMemory {
-			delete(c.runs, n)
-		}
-	}
-	for sha, at := range c.pushes {
-		if now.Sub(at) > ciMemory {
-			delete(c.pushes, sha)
-		}
-	}
-}
-
-// PushedAt is the created_at of sha's push run: its first job.
-func (c *CIRuns) PushedAt(sha string) (time.Time, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	at, ok := c.pushes[sha]
-	return at, ok
+	return nil
 }
 
 // CIQueue measures how long each Actions job waits for a runner: from the
-// first poll that sees it waiting to the first that sees it picked up
-// (the spawner's 10 s poll is the resolution). It emits
-// factory.ci.job.queue and remembers the result by task id for the checks
-// step. In memory only: a restart loses the jobs waiting across it.
+// first poll that sees it waiting to the first that sees it taken (the
+// spawner's 10 s poll is the resolution). It emits factory.ci.job.queue
+// and remembers the result by task id for the checks step. A job already
+// taken when first seen has no measurable queue (the list carries no
+// creation time): it counts in factory.ci.job.queue.unmeasured instead, so
+// the share of short queues the histogram misses stays visible. In memory
+// only: a restart loses the jobs waiting across it.
 type CIQueue struct {
 	metrics *telemetry.Metrics
 	now     func() time.Time
 	mu      sync.Mutex
 	waiting map[int64]waitingJob // job id
+	// taken: job id → label of jobs seen taken and still listed
+	taken   map[int64]string
+	started map[string]bool // labels observed at least once
 	byTask  map[int64]queued
 }
 
@@ -234,16 +191,20 @@ type queued struct {
 }
 
 func NewCIQueue(m *telemetry.Metrics) *CIQueue {
-	return &CIQueue{metrics: m, now: time.Now, waiting: map[int64]waitingJob{}, byTask: map[int64]queued{}}
+	return &CIQueue{metrics: m, now: time.Now, waiting: map[int64]waitingJob{}, taken: map[int64]string{},
+		started: map[string]bool{}, byTask: map[int64]queued{}}
 }
 
 // Observe takes one poll's jobs for label. A job that vanishes while
 // waiting (cancelled, or taken and finished between two polls) is dropped
-// unmeasured.
+// unmeasured. At a label's first poll the jobs already taken were queued
+// before factoryd looked: neither measured nor counted.
 func (q *CIQueue) Observe(ctx context.Context, label string, jobs []CIJob) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	now := q.now()
+	boot := !q.started[label]
+	q.started[label] = true
 	listed := map[int64]bool{}
 	for _, j := range jobs {
 		listed[j.ID] = true
@@ -254,7 +215,14 @@ func (q *CIQueue) Observe(ctx context.Context, label string, jobs []CIJob) {
 			}
 			continue
 		}
+		if _, seen := q.taken[j.ID]; seen {
+			continue
+		}
+		q.taken[j.ID] = label
 		if !tracked {
+			if !boot {
+				q.metrics.CIJobQueueUnmeasured.Add(ctx, 1, metric.WithAttributes(attribute.String("label", label), attribute.String("job", j.Name)))
+			}
 			continue
 		}
 		delete(q.waiting, j.ID)
@@ -267,6 +235,11 @@ func (q *CIQueue) Observe(ctx context.Context, label string, jobs []CIJob) {
 	for id, w := range q.waiting {
 		if w.label == label && !listed[id] {
 			delete(q.waiting, id)
+		}
+	}
+	for id, l := range q.taken {
+		if l == label && !listed[id] {
+			delete(q.taken, id)
 		}
 	}
 	for id, e := range q.byTask {

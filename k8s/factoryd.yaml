@@ -86,7 +86,8 @@ metadata:
 rules:
 - apiGroups: [apps]
   resources: [deployments]
-  verbs: [get, list, watch]
+  verbs: [get]
+  resourceNames: [factoryd, factory-gateway]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -268,9 +269,6 @@ spec:
           valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         - name: FORGEJO_CI_ORG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-ci-org-read, key: token}}
-        # reads actions/tasks for the CI metrics and the checks step's jobs
-        - name: FORGEJO_CI_TASKS_TOKEN
-          valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         # the Hetzner CI project's token (build VMs, ruling 110) and the
         # nodes' public IPv4s, the only sources a build VM admits (ruling 112)
         - name: HETZNER_CI_KEY
@@ -472,11 +470,4 @@ spec:
         app.kubernetes.io/component: otel-collector
     toPorts:
     - ports: [{port: "4318", protocol: TCP}]
-  # a build VM's buildkitd, whose first answer factoryd times: the VMs'
-  # addresses are Hetzner's to pick, so the port bounds it; each VM's own
-  # firewall admits only the cluster's nodes
-  - toCIDRSet:
-    - cidr: 0.0.0.0/0
-      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
-    toPorts:
-    - ports: [{port: "1234", protocol: TCP}]
+

@@ -147,7 +147,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(pr)
 		case r.Method == "GET" && p == "/actions/tasks":
-			if r.Header.Get("Authorization") != "token tasks-tok" {
+			if r.Header.Get("Authorization") != "token registrar-tok" {
 				t.Errorf("actions/tasks auth %q", r.Header.Get("Authorization"))
 			}
 			body := `{"workflow_runs":[],"total_count":0}`
@@ -199,7 +199,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 func newActivityRunner(t *testing.T, task Task, fj *prForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}
 	runner.completion.Forgejo = runner.forgejo
 	return runner, store, runner.objects.(*fakeObjectStore)
 }
@@ -395,7 +395,6 @@ func TestWaitChecksRecordsTheHeadsJobs(t *testing.T) {
 	head := "c62cd2d1ad2dd06b8e73354a0ff07fde47321184"
 	fj := &prForgejo{statuses: []string{statusBody("success", [4]string{"success", "pr / test", "", ""})}, tasks: "actions-tasks-3.json"}
 	r, _, objects := newActivityRunner(t, prTask, fj)
-	r.forgejo.CITasksToken = "tasks-tok"
 	r.cfg.CIQueue = NewCIQueue(telemetry.Noop())
 	r.cfg.CIQueue.byTask[103] = queued{seconds: 40}
 	if _, err := execActivity(t, r, ActivityWaitChecks, "t1", head); err != nil {

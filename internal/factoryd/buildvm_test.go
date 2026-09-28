@@ -302,11 +302,6 @@ func newTestBuildVMs(t *testing.T, max int) (*BuildVMs, *fakeHetzner, *cloudres.
 		t.Fatal(err)
 	}
 	b.now = func() time.Time { return buildVMNow }
-	// no test VM ever answers: no dial to a documentation address
-	b.probe = func(ctx context.Context, addr string, pki buildPKI) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
 	return b, hz, reg
 }
 
@@ -530,30 +525,16 @@ func TestBuildVMDeletionEmitsLifetimeReadyAndCost(t *testing.T) {
 	b.metrics = m
 	b.collector.Deleted = b.Deleted
 	reg.Now = func() time.Time { return buildVMNow }
-	b.now = func() time.Time { return buildVMNow.Add(45 * time.Second) } // buildkitd answers 45 s after create
-	b.probe = func(ctx context.Context, addr string, pki buildPKI) error { return nil }
 	ctx := context.Background()
 
-	waitReady := func(job string) {
-		t.Helper()
-		rows, _ := reg.OpenByOwner(ctx, "ci", job)
-		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
-			b.readyMu.Lock()
-			_, ok := b.ready[rows[len(rows)-1].ID]
-			b.readyMu.Unlock()
-			if ok {
-				return
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("job %s never ready", job)
-			}
-		}
-	}
 	if _, err := b.Provision(ctx, 50); err != nil {
 		t.Fatal(err)
 	}
-	waitReady("50")
-	// the job's own teardown 7 minutes after create: one started hour
+	// buildkitd answered 45 s after create; the job's own teardown 7
+	// minutes after create: one started hour
+	if err := b.SetReady(ctx, 50, buildVMNow.Add(45*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	b.collector.Now = func() time.Time { return buildVMNow.Add(7 * time.Minute) }
 	if err := b.Release(ctx, 50); err != nil {
 		t.Fatal(err)
@@ -562,12 +543,18 @@ func TestBuildVMDeletionEmitsLifetimeReadyAndCost(t *testing.T) {
 	if _, err := b.Provision(ctx, 51); err != nil {
 		t.Fatal(err)
 	}
-	waitReady("51")
-	// the job died with its VM: the collector deletes it at its lease,
-	// 1 h 1 s after create, two started hours
+	// the job died with its VM before buildkitd answered: the collector
+	// deletes it at its lease, 1 h 1 s after create, two started hours
 	b.collector.Now = func() time.Time { return buildVMNow.Add(time.Hour + time.Second) }
 	if err := b.collector.Collect(ctx); err != nil {
 		t.Fatal(err)
+	}
+	// a ready time for a job whose rows are closed is not kept
+	if err := b.SetReady(ctx, 50, buildVMNow); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.ready) != 0 {
+		t.Fatalf("ready entries left: %v", b.ready)
 	}
 
 	lifetimes := histograms(t, reader, "factory.ci.buildvm.lifetime")
@@ -578,62 +565,12 @@ func TestBuildVMDeletionEmitsLifetimeReadyAndCost(t *testing.T) {
 		t.Fatalf("lifetimes %v", lifetimes)
 	}
 	ready := histograms(t, reader, "factory.ci.buildvm.ready")
-	if !reflect.DeepEqual(ready, map[string]histPoint{
-		"deleted_by=teardown,server_type=cx23":  {1, 45},
-		"deleted_by=collector,server_type=cx23": {1, 45},
-	}) {
+	if !reflect.DeepEqual(ready, map[string]histPoint{"deleted_by=teardown,server_type=cx23": {1, 45}}) {
 		t.Fatalf("ready %v", ready)
 	}
 	costs := sums(t, reader, "factory.ci.buildvm.cost")
 	if len(costs) != 2 || math.Abs(costs["deleted_by=teardown,server_type=cx23"]-0.0096) > 1e-12 ||
 		math.Abs(costs["deleted_by=collector,server_type=cx23"]-0.0192) > 1e-12 {
 		t.Fatalf("costs %v", costs)
-	}
-}
-
-// The probe answers once buildkitd completes an mTLS handshake with the
-// VM's own CA and client pair, and not for a server of another CA.
-func TestBuildkitdAnswers(t *testing.T) {
-	p, err := newBuildPKI(time.Now(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := newBuildPKI(time.Now(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serve := func(pki buildPKI) string {
-		pool := x509.NewCertPool()
-		pool.AppendCertsFromPEM(pki.CACert)
-		pair, err := tls.X509KeyPair(pki.ServerCert, pki.ServerKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{pair}, ClientCAs: pool,
-			ClientAuth: tls.RequireAndVerifyClientCert, MinVersion: tls.VersionTLS12})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { ln.Close() })
-		go func() {
-			for {
-				c, err := ln.Accept()
-				if err != nil {
-					return
-				}
-				go func() {
-					defer c.Close()
-					c.(*tls.Conn).Handshake()
-				}()
-			}
-		}()
-		return ln.Addr().String()
-	}
-	ctx := context.Background()
-	if err := buildkitdAnswers(ctx, serve(p), p); err != nil {
-		t.Fatalf("own buildkitd: %v", err)
-	}
-	if err := buildkitdAnswers(ctx, serve(other), p); err == nil {
-		t.Fatal("a buildkitd of another CA answered")
 	}
 }

@@ -356,12 +356,28 @@ func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 		if err == nil { // a runner ran: its job may still be listed waiting
 			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns, s.cfg.NamespacePrefix), 10, 64); perr == nil {
 				s.tornDown[id] = s.now()
+				s.recordReady(ctx, ns, id)
 			}
 		}
 		s.teardown(ctx, ns)
 	}
 	s.sweepOrphanRunners(ctx)
 	return live
+}
+
+// recordReady hands a build runner's buildkitd-ready time to its VM's
+// row before the teardown releases it.
+func (s *CISpawner) recordReady(ctx context.Context, ns string, jobID int64) {
+	at, ok, err := s.kube.PodInitFinished(ctx, ns, ciPodName)
+	if err != nil {
+		log.Printf("ci spawner: %s buildkitd ready: %v", ns, err)
+	}
+	if !ok {
+		return
+	}
+	if err := s.builds.SetReady(ctx, jobID, at); err != nil {
+		log.Printf("ci spawner: %s buildkitd ready: %v", ns, err)
+	}
 }
 
 func isCINamespace(prefix, ns string) bool {
@@ -480,10 +496,34 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 		map[string]any{"name": "registration", "secret": map[string]any{"secretName": ciSecretName}},
 	}
+	securityContext := map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                1000,
+		"runAsGroup":               1000,
+		"allowPrivilegeEscalation": false,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"readOnlyRootFilesystem":   true,
+	}
+	resources := map[string]any{"requests": ciRequests, "limits": ciLimits}
+	initContainers := []any{}
 	if vm != nil {
 		env = append(env, buildVMEnv(vm.IPv4)...)
 		mounts = append(mounts, map[string]any{"name": buildTLSSecret, "mountPath": buildTLSDir, "readOnly": true})
 		volumes = append(volumes, map[string]any{"name": buildTLSSecret, "secret": map[string]any{"secretName": buildTLSSecret}})
+		// trusted code waits for buildkitd before the job's own steps run;
+		// its finish, written by the kubelet, is the VM's ready time
+		initContainers = append(initContainers, map[string]any{
+			"name":    buildReadyContainer,
+			"image":   s.cfg.RunnerImage,
+			"command": []any{"timeout", strconv.Itoa(int(buildReadyTimeout / time.Second)), "sh", "-c", buildReadyScript},
+			"env":     buildVMEnv(vm.IPv4),
+			"volumeMounts": []any{
+				map[string]any{"name": "tmp", "mountPath": "/tmp"},
+				map[string]any{"name": buildTLSSecret, "mountPath": buildTLSDir, "readOnly": true},
+			},
+			"resources":       resources,
+			"securityContext": securityContext,
+		})
 	}
 	return map[string]any{
 		"metadata": map[string]any{
@@ -515,26 +555,23 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 					"--label", kind.label + ":host",
 					"--wait",
 				},
-				"env": env,
-				"resources": map[string]any{
-					"requests": ciRequests,
-					"limits":   ciLimits,
-				},
-				"volumeMounts": mounts,
-				"workingDir":   "/workspace",
-				"securityContext": map[string]any{
-					"runAsNonRoot":             true,
-					"runAsUser":                1000,
-					"runAsGroup":               1000,
-					"allowPrivilegeEscalation": false,
-					"capabilities":             map[string]any{"drop": []any{"ALL"}},
-					"readOnlyRootFilesystem":   true,
-				},
+				"env":             env,
+				"resources":       resources,
+				"volumeMounts":    mounts,
+				"workingDir":      "/workspace",
+				"securityContext": securityContext,
 			}},
-			"volumes": volumes,
+			"initContainers": initContainers,
+			"volumes":        volumes,
 		},
 	}
 }
+
+const (
+	buildReadyContainer = "buildkitd-ready"
+	buildReadyTimeout   = 3 * time.Minute
+	buildReadyScript    = `until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers >/dev/null; do sleep 2; done`
+)
 
 // buildCacheHost is the in-cluster registry pr.yml's image-build reads
 // layer caches from (infra k8s/platform/build-cache, ruling 111).

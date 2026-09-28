@@ -592,12 +592,10 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		}
 		if res.State != "" {
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
-			if r.forgejo.CITasksToken != "" {
-				if jobs, err := CIJobsOf(ctx, r.forgejo, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {
-					log.Printf("task %s: ci jobs of %s: %v", t.ID, sha, err)
-				} else {
-					detail["jobs"] = jobs
-				}
+			if jobs, err := CIJobsOf(ctx, r.forgejo, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {
+				log.Printf("task %s: ci jobs of %s: %v", t.ID, sha, err)
+			} else {
+				detail["jobs"] = jobs
 			}
 			r.record(ctx, t.ID, "checks", gateEnd(t, GateChecks, detail))
 			return res, nil

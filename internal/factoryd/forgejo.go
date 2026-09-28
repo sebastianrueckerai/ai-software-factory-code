@@ -59,9 +59,6 @@ type Forgejo struct {
 	// merges only after an approval by a whitelisted human. The workflow's
 	// Merge activity is its one user.
 	MergeToken string
-	// CITasksToken reads the code repository's actions/tasks for the CI
-	// metrics (factory.ci.*) and the checks step's per-job detail.
-	CITasksToken string
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -356,8 +353,11 @@ type ActionTask struct {
 	RunStartedAt time.Time `json:"run_started_at"`
 }
 
-func (t ActionTask) Finished() bool {
-	switch t.Status {
+func (t ActionTask) Finished() bool { return doneStatus(t.Status) }
+
+// doneStatus is a final Actions status.
+func doneStatus(status string) bool {
+	switch status {
 	case "success", "failure", "cancelled", "skipped":
 		return true
 	}
@@ -368,12 +368,10 @@ func (t ActionTask) Finished() bool {
 func (t ActionTask) RunSeconds() float64 { return t.UpdatedAt.Sub(t.RunStartedAt).Seconds() }
 
 // ActionTasks reads one page (from 1) of owner/repo's actions/tasks,
-// newest first, with the CI tasks token.
+// newest first.
 func (f *Forgejo) ActionTasks(ctx context.Context, owner, repo string, page int) ([]ActionTask, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/tasks?page=%d&limit=%d", owner, repo, page, actionTasksPage)
-	body, err := f.do(ctx, http.MethodGet, path, nil, http.StatusOK, func(r *http.Request) {
-		r.Header.Set("Authorization", "token "+f.CITasksToken)
-	})
+	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -388,23 +386,61 @@ func (f *Forgejo) ActionTasks(ctx context.Context, owner, repo string, page int)
 
 const actionTasksPage = 50
 
-// LatestCommit is the sha of the newest commit on branch that touched path.
-func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path string) (string, error) {
+// ActionRun is one entry of actions/runs. Status aggregates every job of
+// the run, those still blocked or waiting included; Created is when the
+// event (the push) created the run, Stopped when its last job finished.
+type ActionRun struct {
+	ID        int64     `json:"id"`
+	CommitSHA string    `json:"commit_sha"`
+	Event     string    `json:"event"`
+	Status    string    `json:"status"`
+	Created   time.Time `json:"created"`
+	Started   time.Time `json:"started"`
+	Stopped   time.Time `json:"stopped"`
+}
+
+func (r ActionRun) Finished() bool { return doneStatus(r.Status) }
+
+// ActionRuns reads owner/repo's actions/runs, newest first, filtered by
+// query (page, limit, event, head_sha, ...).
+func (f *Forgejo) ActionRuns(ctx context.Context, owner, repo string, query url.Values) ([]ActionRun, error) {
+	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs?%s", owner, repo, query.Encode()), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Entries []ActionRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo actions runs: %w", err)
+	}
+	return res.Entries, nil
+}
+
+// LatestCommit is the newest commit on branch that touched path, and its
+// first parent ("" for a root commit).
+func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path string) (sha, parent string, err error) {
 	q := url.Values{"sha": {branch}, "path": {path}, "limit": {"1"}, "stat": {"false"}, "verification": {"false"}, "files": {"false"}}
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo, q.Encode()), nil, http.StatusOK)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var commits []struct {
-		SHA string `json:"sha"`
+		SHA     string `json:"sha"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
 	}
 	if err := json.Unmarshal(body, &commits); err != nil {
-		return "", fmt.Errorf("forgejo commits of %s: %w", path, err)
+		return "", "", fmt.Errorf("forgejo commits of %s: %w", path, err)
 	}
 	if len(commits) == 0 || commits[0].SHA == "" {
-		return "", fmt.Errorf("forgejo: no commit on %s touched %s", branch, path)
+		return "", "", fmt.Errorf("forgejo: no commit on %s touched %s", branch, path)
 	}
-	return commits[0].SHA, nil
+	if len(commits[0].Parents) > 0 {
+		parent = commits[0].Parents[0].SHA
+	}
+	return commits[0].SHA, parent, nil
 }
 
 // FileAt reads path at ref.

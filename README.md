@@ -880,8 +880,12 @@ Image builds run outside the cluster instead (ruling 110,
   the server exists) and a client certificate, and drops the CA key. The
   CA and the client pair go into secret `buildkit-client` in the job's
   namespace, mounted into the runner pod; the pod gets `BUILDKIT_HOST`,
-  `BUILDKIT_TLS_DIR` and `BUILDKIT_TLS_SERVERNAME`. `image-build` waits up
-  to three minutes for `buildctl debug workers`, then builds the changed
+  `BUILDKIT_TLS_DIR` and `BUILDKIT_TLS_SERVERNAME`. Before the runner
+  starts, the pod's init container `buildkitd-ready` (same image, same
+  mount and egress) waits up to three minutes for `buildctl debug
+  workers`; a VM that never answers fails the pod before any job code
+  runs, and the job is claimed again after the teardown. `image-build`
+  waits for it the same way, then builds the changed
   Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
 - **The cache.** Before each build the runner pod copies the image's
   cache, which main CI wrote, from the in-cluster build cache into a local
@@ -944,30 +948,39 @@ unset, the meter is a no-op. A failed export drops its samples and logs
 at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
 60, 120, 300, 600, 900, 1200, 1800, 2700 and 3600, money in `EUR`.
 
-- `factory.ci.job.duration{job,event,status}` and
-  `factory.ci.run.duration{event,status}`: a 60 s poll of the code
-  repository's `actions/tasks` (token `FORGEJO_CI_TASKS_TOKEN`), once per
-  finished job (updated minus started) and run (first job created to last
-  job finished, emitted once its known jobs finished 5 minutes ago: a job
-  appears there only once a runner took it). What finishes while factoryd
-  is down is lost.
+- `factory.ci.job.duration{job,event,status}`: a 60 s poll of the code
+  repository's `actions/tasks` (the registrar token), once per finished
+  job, its `updated_at` minus `run_started_at`.
+- `factory.ci.run.duration{event,status}`: the same poll of
+  `actions/runs`, once per finished run, `stopped` minus `created`: from
+  the push (or pull request event) to the last job's finish, queue time
+  included. What finishes while factoryd is down is lost.
 - `factory.ci.job.queue{label,job}`: the CI spawner's 10 s poll of
   `actions/runners/jobs` for `pr-untrusted`, `pr-untrusted-build` and main
   CI's `ubuntu-latest`, from the first poll that sees a job waiting to the
-  first that sees it taken. The `checks` timeline step lists the head's
-  jobs under `jobs`: `name`, `status`, `run_s` and, where measured,
-  `queue_s`.
+  first that sees it taken. The list holds waiting and running jobs only,
+  with no creation time, so a job a runner takes before a poll sees it
+  waiting (the near-zero queues, mostly on the persistent trusted runner)
+  is not measured: it counts in `factory.ci.job.queue.unmeasured{label,job}`,
+  and the histogram's low quantiles read high by that share. The `checks`
+  timeline step lists the head's jobs under `jobs`: `name`, `status`,
+  `run_s` and, where measured, `queue_s`.
 - `factory.ci.buildvm.lifetime`, `.ready` (create to buildkitd's first
-  mTLS answer, probed every 2 s by factoryd and kept in memory) and
+  answer: a build runner pod's init container `buildkitd-ready` polls
+  `buildctl debug workers` against its own VM, at most 3 minutes, before
+  the job starts; the spawner reads its `finishedAt` before the teardown)
+  and
   `.cost` (started hours times the row's hourly price), each
   `{server_type,deleted_by}` with `deleted_by` `teardown` or `collector`,
   at the moment a build VM's row closes.
 - `factory.roll.duration`, `.apply` and `.ready`: at boot factoryd reads
-  the newest `main` commit that touched `k8s/`, waits until both
-  Deployments run its images and are available (`NewReplicaSetAvailable`
-  after the `kustomize-controller` apply), records the roll once in
-  `rolls` and logs `roll <sha> live: push to apply <n> s, apply to ready
-  <n> s`; the push is the push run's first job.
+  the newest `main` commit that touched `k8s/`; if it changed a
+  Deployment's images against its parent, it waits until both Deployments
+  run them and are available (`NewReplicaSetAvailable` after the
+  `kustomize-controller` apply), records the roll once in `rolls` and logs
+  `roll <sha> live: push to apply <n> s, apply to ready <n> s`. The push is
+  the `created` time of the commit's push run in `actions/runs`; without
+  one nothing is recorded.
 - `factory.task.gate.duration{gate,outcome,model_alias}` from every
   timeline step carrying `started`.
 - `factory.activity.open_age{activity}`: the age of the oldest running
@@ -986,9 +999,8 @@ on 5432, the in-cluster Forgejo on 3000 (`FORGEJO_URL`; the public host
 resolves to the edge gateway; links for people use
 `FORGEJO_PUBLIC_URL`), LiteLLM on 4000, the Temporal frontend on 7233,
 the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`), and
-`api.hetzner.cloud` on 443 (build VMs), SigNoz's collector
-(`signoz-otel-collector.platform`) on 4318, and any public IPv4 on 1234,
-the build VMs' buildkitd, whose first answer factoryd times. Every
+`api.hetzner.cloud` on 443 (build VMs), and SigNoz's collector
+(`signoz-otel-collector.platform`) on 4318. Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's

@@ -153,10 +153,11 @@ func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
 	if got := histograms(t, reader, "factory.task.gate.duration"); len(got) != 0 {
 		t.Fatalf("emitted %v without started", got)
 	}
-	if err := tl.Append(ctx, "t1", "checks", map[string]any{"state": "success", "started": "2026-09-28T10:28:38Z"}); err != nil {
+	// typed as WaitChecks and RunSession record them
+	if err := tl.Append(ctx, "t1", "checks", map[string]any{"state": ChecksSuccess, "started": "2026-09-28T10:28:38Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": "pushed", "model": "factory/coding-cheap",
+	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": OutcomePushed, "model": "factory/coding-cheap",
 		"started": now.Add(-10 * time.Minute)}); err != nil {
 		t.Fatal(err)
 	}

@@ -33,26 +33,27 @@ import (
 // fakeKube scripts the Kubernetes seam: pods are created with a phase and a
 // log body; everything else is recorded for assertions.
 type fakeKube struct {
-	mu          sync.Mutex
-	namespaces  map[string]map[string]string // name → labels
-	pods        map[string]*fakePod
-	podOrder    []*fakePod // creation order; entries survive deletion
-	deletedPods []string
-	deletedNs   []string
-	secrets     map[string]map[string]string // ns/name → data
-	secretTypes map[string]string            // ns/name → type
-	sourceData  map[string]map[string]string // read-only source secrets
-	cnps        map[string]map[string]any    // ns/name → spec
-	createdNs   map[string]map[string]string // survives deletion
-	objects     map[string]map[string]any    // Create path → object
-	saErr       error                        // injected CreateServiceAccount failure
-	getErr      map[string]error             // ns/name → injected GetSecretData failure
-	statusErr   map[string]error             // ns/name → injected PodStatus failure
-	onDeletePod func()                       // runs on every DeletePod
-	ops         []string                     // namespace deletions and pod creations, in order
-	applies     []string                     // ns/name of every applied CNP, in order
-	onCreatePod func()                       // runs on every CreatePod
-	nsDelay     time.Duration                // every CreateNamespace takes this long
+	mu           sync.Mutex
+	namespaces   map[string]map[string]string // name → labels
+	pods         map[string]*fakePod
+	podOrder     []*fakePod // creation order; entries survive deletion
+	deletedPods  []string
+	deletedNs    []string
+	secrets      map[string]map[string]string // ns/name → data
+	secretTypes  map[string]string            // ns/name → type
+	sourceData   map[string]map[string]string // read-only source secrets
+	cnps         map[string]map[string]any    // ns/name → spec
+	createdNs    map[string]map[string]string // survives deletion
+	objects      map[string]map[string]any    // Create path → object
+	saErr        error                        // injected CreateServiceAccount failure
+	getErr       map[string]error             // ns/name → injected GetSecretData failure
+	statusErr    map[string]error             // ns/name → injected PodStatus failure
+	initFinished map[string]time.Time         // ns/name → the first init container's successful finish
+	onDeletePod  func()                       // runs on every DeletePod
+	ops          []string                     // namespace deletions and pod creations, in order
+	applies      []string                     // ns/name of every applied CNP, in order
+	onCreatePod  func()                       // runs on every CreatePod
+	nsDelay      time.Duration                // every CreateNamespace takes this long
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -233,6 +234,13 @@ func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error 
 	}
 	delete(k.pods, namespace+"/"+name)
 	return nil
+}
+
+func (k *fakeKube) PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	at, ok := k.initFinished[namespace+"/"+name]
+	return at, ok, nil
 }
 
 func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {

@@ -13,9 +13,19 @@ import (
 	"time"
 )
 
-const rollSHA = "9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f"
+const (
+	rollSHA    = "9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f"
+	rollParent = "8e2d4c6a0b1f3e5d7c9a1b3d5f7e9c1a3b5d7f9e"
+)
 
-func rollForgejo(t *testing.T) *Forgejo {
+// rollHub scripts the Forgejo reads of a roll: the newest k8s commit, the
+// manifests at it and at its parent, and its push run.
+type rollHub struct {
+	parentPrefix string // "parent-", or "" when the parent's images are the commit's
+	pushRun      bool
+}
+
+func (h *rollHub) forgejo(t *testing.T) *Forgejo {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		const base = "/api/v1/repos/sf/ai-software-factory-code"
@@ -24,10 +34,19 @@ func rollForgejo(t *testing.T) *Forgejo {
 		switch {
 		case r.URL.Path == base+"/commits" && q.Get("sha") == "main" && q.Get("path") == "k8s" && q.Get("limit") == "1":
 			file = "roll/commits.json"
-		case r.URL.Path == base+"/raw/k8s/factoryd.yaml" && q.Get("ref") == rollSHA:
-			file = "roll/factoryd.yaml"
-		case r.URL.Path == base+"/raw/k8s/deployment.yaml" && q.Get("ref") == rollSHA:
-			file = "roll/deployment.yaml"
+		case strings.HasPrefix(r.URL.Path, base+"/raw/k8s/") && q.Get("ref") == rollSHA:
+			file = "roll/" + strings.TrimPrefix(r.URL.Path, base+"/raw/k8s/")
+		case strings.HasPrefix(r.URL.Path, base+"/raw/k8s/") && q.Get("ref") == rollParent:
+			file = "roll/" + h.parentPrefix + strings.TrimPrefix(r.URL.Path, base+"/raw/k8s/")
+		case r.URL.Path == base+"/actions/runs" && q.Get("event") == "push" && q.Get("head_sha") == rollSHA:
+			if r.Header.Get("Authorization") != "token registrar-tok" {
+				t.Errorf("actions/runs auth %q", r.Header.Get("Authorization"))
+			}
+			if !h.pushRun {
+				w.Write([]byte(`{"workflow_runs":[],"total_count":0}`))
+				return
+			}
+			file = "roll/push-run.json"
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
@@ -40,7 +59,7 @@ func rollForgejo(t *testing.T) *Forgejo {
 		w.Write(body)
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw", CIRegistrarToken: "registrar-tok"}
 }
 
 // fakeDeployments serves each Deployment from a testdata file the test can
@@ -91,13 +110,6 @@ func (s *fakeRolls) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	return true, nil
 }
 
-type fixedPushes map[string]time.Time
-
-func (p fixedPushes) PushedAt(sha string) (time.Time, bool) {
-	at, ok := p[sha]
-	return at, ok
-}
-
 func at(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
 	if err != nil {
@@ -106,13 +118,12 @@ func at(s string) time.Time {
 	return t
 }
 
-func newTestRollWatcher(t *testing.T, deps *fakeDeployments, rolls *fakeRolls) *RollWatcher {
+func newTestRollWatcher(t *testing.T, hub *rollHub, deps *fakeDeployments, rolls *fakeRolls) *RollWatcher {
 	t.Helper()
 	m, _ := testMetrics(t)
-	return &RollWatcher{Forgejo: rollForgejo(t), Owner: "sf", Repo: "ai-software-factory-code", Branch: "main", Namespace: "factory",
+	return &RollWatcher{Forgejo: hub.forgejo(t), Owner: "sf", Repo: "ai-software-factory-code", Branch: "main", Namespace: "factory",
 		Deployments: map[string]string{"factoryd": "k8s/factoryd.yaml", "factory-gateway": "k8s/deployment.yaml"},
-		Kube:        deps, Store: rolls, Pushes: fixedPushes{rollSHA: at("2026-09-28T10:05:40Z")}, Metrics: m,
-		Poll: time.Millisecond, Timeout: 5 * time.Second, now: func() time.Time { return at("2026-09-28T10:10:00Z") }}
+		Kube:        deps, Store: rolls, Metrics: m, Poll: time.Millisecond, Timeout: 5 * time.Second}
 }
 
 // A roll waits until Flux applied the commit's images to both
@@ -121,7 +132,7 @@ func TestRollWaitsForApplyAndLiveThenRecordsOnce(t *testing.T) {
 	logs := captureLog(t)
 	deps := &fakeDeployments{files: map[string]string{"factory/factoryd": "factoryd-before.json", "factory/factory-gateway": "gateway-live.json"}}
 	rolls := &fakeRolls{rows: map[string]Roll{}}
-	w := newTestRollWatcher(t, deps, rolls)
+	w := newTestRollWatcher(t, &rollHub{parentPrefix: "parent-", pushRun: true}, deps, rolls)
 	m, reader := testMetrics(t)
 	w.Metrics = m
 
@@ -152,7 +163,7 @@ func TestRollWaitsForApplyAndLiveThenRecordsOnce(t *testing.T) {
 	}
 
 	// a second boot during the same roll finds the row: no second emission
-	again := newTestRollWatcher(t, deps, rolls)
+	again := newTestRollWatcher(t, &rollHub{parentPrefix: "parent-", pushRun: true}, deps, rolls)
 	again.Metrics = m
 	reads := deps.reads
 	again.Run(ctx)
@@ -164,15 +175,35 @@ func TestRollWaitsForApplyAndLiveThenRecordsOnce(t *testing.T) {
 	}
 }
 
-// Deployments applied before the commit was pushed are not its roll: the
-// newest k8s commit changed no Deployment.
-func TestRollIgnoresACommitThatChangedNoDeployment(t *testing.T) {
+// A newest k8s commit that changed no Deployment image is no roll, even
+// with both Deployments live on its images and a push run.
+func TestRollIgnoresACommitThatChangedNoImage(t *testing.T) {
+	logs := captureLog(t)
 	deps := &fakeDeployments{files: map[string]string{"factory/factoryd": "factoryd-live.json", "factory/factory-gateway": "gateway-live.json"}}
 	rolls := &fakeRolls{rows: map[string]Roll{}}
-	w := newTestRollWatcher(t, deps, rolls)
-	w.Pushes = fixedPushes{rollSHA: at("2026-09-28T10:08:00Z")}
+	newTestRollWatcher(t, &rollHub{pushRun: true}, deps, rolls).Run(context.Background())
+	if len(rolls.rows) != 0 || deps.reads != 0 {
+		t.Fatalf("recorded %v after %d Deployment reads", rolls.rows, deps.reads)
+	}
+	if !strings.Contains(logs.String(), "changed no Deployment image") {
+		t.Fatalf("log %q", logs.String())
+	}
+}
+
+// Without a push run there is no push time: nothing is recorded or emitted.
+func TestRollWithoutAPushRunRecordsNothing(t *testing.T) {
+	deps := &fakeDeployments{files: map[string]string{"factory/factoryd": "factoryd-live.json", "factory/factory-gateway": "gateway-live.json"}}
+	rolls := &fakeRolls{rows: map[string]Roll{}}
+	w := newTestRollWatcher(t, &rollHub{parentPrefix: "parent-"}, deps, rolls)
+	m, reader := testMetrics(t)
+	w.Metrics = m
 	w.Run(context.Background())
 	if len(rolls.rows) != 0 {
 		t.Fatalf("recorded %v", rolls.rows)
+	}
+	for _, name := range []string{"factory.roll.duration", "factory.roll.apply", "factory.roll.ready"} {
+		if got := histograms(t, reader, name); len(got) != 0 {
+			t.Fatalf("%s emitted %v", name, got)
+		}
 	}
 }

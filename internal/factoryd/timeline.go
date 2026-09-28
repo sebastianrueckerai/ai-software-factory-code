@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"maps"
+	"reflect"
 	"slices"
 	"sync"
 	"time"
@@ -108,8 +109,9 @@ func (tl *Timeline) gate(ctx context.Context, step string, detail map[string]any
 	}
 	outcome := ""
 	for _, k := range []string{"outcome", "state", "verdict"} {
-		if s, ok := detail[k].(string); ok && s != "" {
-			outcome = s
+		// the named string types (ChecksState, SessionOutcome) too
+		if v := reflect.ValueOf(detail[k]); v.Kind() == reflect.String && v.String() != "" {
+			outcome = v.String()
 			break
 		}
 	}

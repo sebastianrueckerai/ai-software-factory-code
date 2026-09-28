@@ -677,12 +677,8 @@ func (s *PGStore) RollRecorded(ctx context.Context, sha string) (bool, error) {
 }
 
 func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
-	var pushed sql.NullTime
-	if !r.PushedAt.IsZero() {
-		pushed = sql.NullTime{Time: r.PushedAt, Valid: true}
-	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO rolls (sha, pushed_at, applied_at, live_at) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (sha) DO NOTHING`, r.SHA, pushed, r.AppliedAt, r.LiveAt)
+		ON CONFLICT (sha) DO NOTHING`, r.SHA, r.PushedAt, r.AppliedAt, r.LiveAt)
 	if err != nil {
 		return false, err
 	}

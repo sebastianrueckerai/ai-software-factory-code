@@ -97,7 +97,6 @@ func main() {
 		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
 		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
 		MergeToken:       mustEnv("FORGEJO_MERGE_TOKEN"),
-		CITasksToken:     mustEnv("FORGEJO_CI_TASKS_TOKEN"),
 	}
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
@@ -261,7 +260,7 @@ func main() {
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Metrics: metrics}
 	go ciRuns.Run(ctx)
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Branch: "main",
-		Namespace: kube.Namespace(), Kube: kube, Store: store, Pushes: ciRuns, Metrics: metrics,
+		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics,
 		Deployments: map[string]string{"factoryd": "k8s/factoryd.yaml", "factory-gateway": "k8s/deployment.yaml"},
 		Poll:        10 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)

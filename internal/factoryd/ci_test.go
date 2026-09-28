@@ -957,3 +957,59 @@ func TestCISpawnerTimesTrustedJobsWithoutServingThem(t *testing.T) {
 		t.Fatalf("task 300 queue %v %v", s, ok)
 	}
 }
+
+// A build runner pod waits for its VM's buildkitd in a trusted init
+// container; its finish, read before the teardown, is the VM's ready time.
+func TestCISpawnerBuildRunnerWaitsForBuildkitdAndReportsReady(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 50, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	_, reg := ciBuildFakes(spawner)
+	m, reader := testMetrics(t)
+	spawner.builds.metrics = m
+	spawner.builds.collector.Deleted = spawner.builds.Deleted
+	reg.Now = func() time.Time { return buildVMNow }
+	ctx := context.Background()
+	spawner.poll(ctx)
+
+	ns := "factory-agents-ci-50"
+	spec, container := podContainer(t, kube, ns)
+	inits := spec["initContainers"].([]any)
+	if len(inits) != 1 {
+		t.Fatalf("init containers %v", inits)
+	}
+	init := inits[0].(map[string]any)
+	cmd := fmt.Sprint(init["command"])
+	if init["name"] != "buildkitd-ready" || init["image"] != "reg/runner@sha256:abc" ||
+		!strings.HasPrefix(cmd, "[timeout 180 sh -c until buildctl") || !strings.Contains(cmd, "debug workers") {
+		t.Fatalf("init container %v", init)
+	}
+	if !reflect.DeepEqual(init["securityContext"], container["securityContext"]) || !reflect.DeepEqual(init["resources"], container["resources"]) {
+		t.Fatalf("init container runs under %v %v, the runner under %v %v", init["securityContext"], init["resources"],
+			container["securityContext"], container["resources"])
+	}
+	if env := fmt.Sprint(init["env"]); !strings.Contains(env, "tcp://203.0.113.102:1234") || !strings.Contains(fmt.Sprint(init["volumeMounts"]), "buildkit-client") {
+		t.Fatalf("init container env %s mounts %v", env, init["volumeMounts"])
+	}
+
+	kube.mu.Lock()
+	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
+	kube.initFinished = map[string]time.Time{ns + "/" + ciPodName: buildVMNow.Add(47 * time.Second)}
+	kube.mu.Unlock()
+	spawner.builds.collector.Now = func() time.Time { return buildVMNow.Add(5 * time.Minute) }
+	spawner.poll(ctx)
+	if got := histograms(t, reader, "factory.ci.buildvm.ready"); !reflect.DeepEqual(got, map[string]histPoint{"deleted_by=teardown,server_type=cx23": {1, 47}}) {
+		t.Fatalf("ready %v", got)
+	}
+}
+
+func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 52, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	spec, _ := podContainer(t, kube, "factory-agents-ci-52")
+	if inits := spec["initContainers"].([]any); len(inits) != 0 {
+		t.Fatalf("init containers %v", inits)
+	}
+}

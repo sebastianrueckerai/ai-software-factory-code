@@ -867,20 +867,21 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls; DROP TABLE IF EXISTS alerts`); err != nil {
 		t.Fatal(err)
 	}
-	r := Roll{SHA: "abc", AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
+	r := Roll{SHA: "abc", PushedAt: at("2026-09-28T10:05:40Z"), AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
 	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || ok {
 		t.Fatalf("recorded before insert: %v %v", ok, err)
 	}
 	if ok, err := s.RecordRoll(ctx, r); err != nil || !ok {
 		t.Fatalf("first record: %v %v", ok, err)
 	}
-	r.PushedAt = at("2026-09-28T10:05:40Z")
-	if ok, err := s.RecordRoll(ctx, r); err != nil || ok {
+	second := r
+	second.PushedAt = at("2026-09-28T11:00:00Z")
+	if ok, err := s.RecordRoll(ctx, second); err != nil || ok {
 		t.Fatalf("second record of the same sha: %v %v", ok, err)
 	}
-	var pushedNull bool
-	if err := s.db.QueryRowContext(ctx, `SELECT pushed_at IS NULL FROM rolls WHERE sha = 'abc'`).Scan(&pushedNull); err != nil || !pushedNull {
-		t.Fatalf("the first row stands with no push time: %v %v", pushedNull, err)
+	var pushed time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT pushed_at FROM rolls WHERE sha = 'abc'`).Scan(&pushed); err != nil || !pushed.Equal(r.PushedAt) {
+		t.Fatalf("the first row stands: pushed %v, %v", pushed, err)
 	}
 	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || !ok {
 		t.Fatalf("recorded: %v %v", ok, err)

@@ -61,6 +61,9 @@ type Kube interface {
 	// PodStatus reports the pod phase and the container exit code (-1 while
 	// the container has not terminated).
 	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error)
+	// PodInitFinished is when the pod's first init container exited 0;
+	// false when it has none or it did not succeed.
+	PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error)
 	// PodLog streams the pod's stdout, following until the pod terminates or
 	// ctx is cancelled. The caller closes the stream.
 	PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error)
@@ -247,6 +250,32 @@ func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (
 		exitCode = pod.Status.ContainerStatuses[0].State.Terminated.ExitCode
 	}
 	return pod.Status.Phase, exitCode, nil
+}
+
+func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error) {
+	var pod struct {
+		Status struct {
+			InitContainerStatuses []struct {
+				State struct {
+					Terminated *struct {
+						ExitCode   int32     `json:"exitCode"`
+						FinishedAt time.Time `json:"finishedAt"`
+					} `json:"terminated"`
+				} `json:"state"`
+			} `json:"initContainerStatuses"`
+		} `json:"status"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
+		return time.Time{}, false, err
+	}
+	if len(pod.Status.InitContainerStatuses) == 0 {
+		return time.Time{}, false, nil
+	}
+	t := pod.Status.InitContainerStatuses[0].State.Terminated
+	if t == nil || t.ExitCode != 0 {
+		return time.Time{}, false, nil
+	}
+	return t.FinishedAt, true, nil
 }
 
 func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error) {

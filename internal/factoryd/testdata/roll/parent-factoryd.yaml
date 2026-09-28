@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factoryd
+  namespace: factory
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: factoryd
+  namespace: factory
+spec:
+  template:
+    spec:
+      containers:
+      - name: factoryd
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:old
+        command: [factoryd]
+        env:
+        - name: CI_RUNNER_IMAGE
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:runner

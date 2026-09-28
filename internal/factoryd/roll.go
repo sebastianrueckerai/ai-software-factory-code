@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"slices"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // Deployments available on it.
 type Roll struct {
 	SHA       string
-	PushedAt  time.Time // zero when the push run was not seen
+	PushedAt  time.Time
 	AppliedAt time.Time
 	LiveAt    time.Time
 }
@@ -95,15 +96,11 @@ type RollStore interface {
 	RecordRoll(ctx context.Context, r Roll) (bool, error)
 }
 
-// PushTimes knows when a push run started on main.
-type PushTimes interface {
-	PushedAt(sha string) (time.Time, bool)
-}
-
 // RollWatcher records factoryd's own roll once, at boot: the newest main
-// commit that touched k8s/, once both Deployments run its images and are
-// available on them. A boot that finds the roll recorded (factoryd restarts
-// during a roll) does nothing.
+// commit that touched k8s/, if it changed a Deployment's images, once both
+// Deployments run them and are available on them. The push is the created
+// time of the commit's push run. A boot that finds the roll recorded
+// (factoryd restarts during a roll) does nothing.
 type RollWatcher struct {
 	Forgejo             *Forgejo
 	Owner, Repo, Branch string
@@ -112,25 +109,12 @@ type RollWatcher struct {
 	Deployments map[string]string
 	Kube        DeploymentReader
 	Store       RollStore
-	Pushes      PushTimes
 	Metrics     *telemetry.Metrics
 	Poll        time.Duration
 	Timeout     time.Duration
-	now         func() time.Time
 
-	sha    string
-	images map[string][]string
-}
-
-// rollPushGrace is how long after both are live the record waits for the
-// CI poll to see the push run before it records without a push time.
-const rollPushGrace = 3 * time.Minute
-
-func (w *RollWatcher) clock() time.Time {
-	if w.now == nil {
-		return time.Now()
-	}
-	return w.now()
+	sha, parent string
+	images      map[string][]string
 }
 
 // Run polls until the roll is recorded, found recorded, or Timeout passes.
@@ -160,28 +144,34 @@ func (w *RollWatcher) Run(ctx context.Context) {
 
 func (w *RollWatcher) step(ctx context.Context) (bool, error) {
 	if w.sha == "" {
-		sha, err := w.Forgejo.LatestCommit(ctx, w.Owner, w.Repo, w.Branch, "k8s")
+		sha, parent, err := w.Forgejo.LatestCommit(ctx, w.Owner, w.Repo, w.Branch, "k8s")
 		if err != nil {
 			return false, err
 		}
-		w.sha = sha
+		w.sha, w.parent = sha, parent
 	}
 	recorded, err := w.Store.RollRecorded(ctx, w.sha)
 	if err != nil || recorded {
 		return recorded, err
 	}
 	if w.images == nil {
-		images := map[string][]string{}
-		for name, path := range w.Deployments {
-			raw, err := w.Forgejo.FileAt(ctx, w.Owner, w.Repo, w.sha, path)
+		images, err := w.imagesAt(ctx, w.sha)
+		if err != nil {
+			return false, err
+		}
+		changed := w.parent == ""
+		if !changed {
+			before, err := w.imagesAt(ctx, w.parent)
 			if err != nil {
 				return false, err
 			}
-			img, err := manifestImages(raw, name)
-			if err != nil {
-				return false, fmt.Errorf("%s at %s: %w", path, w.sha, err)
+			for name := range images {
+				changed = changed || !slices.Equal(images[name], before[name])
 			}
-			images[name] = img
+		}
+		if !changed {
+			log.Printf("roll: newest k8s commit %s changed no Deployment image; no roll to record", w.sha)
+			return true, nil
 		}
 		w.images = images
 	}
@@ -204,31 +194,42 @@ func (w *RollWatcher) step(ctx context.Context) (bool, error) {
 		}
 		applied, live = latest(applied, a), latest(live, l)
 	}
-	pushed, ok := w.Pushes.PushedAt(w.sha)
-	if !ok && w.clock().Sub(live) < rollPushGrace {
-		return false, nil
+	runs, err := w.Forgejo.ActionRuns(ctx, w.Owner, w.Repo, url.Values{"event": {"push"}, "head_sha": {w.sha}, "limit": {"1"}})
+	if err != nil {
+		return false, err
 	}
-	if ok && applied.Before(pushed) {
-		log.Printf("roll: newest k8s commit %s changed no Deployment (applied %s, pushed %s)", w.sha,
-			applied.Format(time.RFC3339), pushed.Format(time.RFC3339))
+	if len(runs) == 0 {
+		log.Printf("roll %s: no push run for the commit; not recorded", w.sha)
 		return true, nil
 	}
-	r := Roll{SHA: w.sha, PushedAt: pushed, AppliedAt: applied, LiveAt: live}
-	inserted, err := w.Store.RecordRoll(ctx, r)
+	pushed := runs[0].Created
+	inserted, err := w.Store.RecordRoll(ctx, Roll{SHA: w.sha, PushedAt: pushed, AppliedAt: applied, LiveAt: live})
 	if err != nil || !inserted {
-		return !inserted && err == nil, err
+		return err == nil, err
 	}
-	ready := live.Sub(applied).Seconds()
-	w.Metrics.RollReady.Record(ctx, ready)
-	if !ok {
-		log.Printf("roll %s live: push time unknown, apply to ready %.0f s", w.sha, ready)
-		return true, nil
-	}
-	apply := applied.Sub(pushed).Seconds()
+	apply, ready := applied.Sub(pushed).Seconds(), live.Sub(applied).Seconds()
 	w.Metrics.RollApply.Record(ctx, apply)
+	w.Metrics.RollReady.Record(ctx, ready)
 	w.Metrics.RollDuration.Record(ctx, live.Sub(pushed).Seconds())
 	log.Printf("roll %s live: push to apply %.0f s, apply to ready %.0f s", w.sha, apply, ready)
 	return true, nil
+}
+
+// imagesAt reads each Deployment's container images from its manifest at ref.
+func (w *RollWatcher) imagesAt(ctx context.Context, ref string) (map[string][]string, error) {
+	images := map[string][]string{}
+	for name, path := range w.Deployments {
+		raw, err := w.Forgejo.FileAt(ctx, w.Owner, w.Repo, ref, path)
+		if err != nil {
+			return nil, err
+		}
+		img, err := manifestImages(raw, name)
+		if err != nil {
+			return nil, fmt.Errorf("%s at %s: %w", path, ref, err)
+		}
+		images[name] = img
+	}
+	return images, nil
 }
 
 func latest(a, b time.Time) time.Time {
