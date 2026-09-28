@@ -58,11 +58,6 @@ rules:
   # finding 1) — still confined per-namespace by the RoleBinding above.
   resources: [secrets]
   verbs: [create, get]
-- apiGroups: [""]
-  # the buildkitd Service a pr-untrusted-build job's namespace holds
-  # (ruling 91), giving the runner pod a stable in-namespace DNS name.
-  resources: [services]
-  verbs: [create]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   verbs: [create]
@@ -120,43 +115,31 @@ spec:
   validations:
   - expression: variables.target.startsWith('factory-agents-')
     message: factoryd may only act in factory-agents-* namespaces
-  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod', 'Service']
+  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod']
     message: factoryd may not create this kind of object
   - expression: >-
       variables.kind != 'Namespace' || request.operation == 'DELETE' ||
       (has(object.metadata.labels) &&
        'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
        ('factory.ai/task' in object.metadata.labels) &&
-       (object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' ||
-        (object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'baseline' &&
-         object.metadata.name.startsWith('factory-agents-ci-'))))
-    message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted (baseline only for factory-agents-ci-* build namespaces)
+       object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted')
+    message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted
   - expression: >-
       variables.kind != 'RoleBinding' || request.operation == 'DELETE' ||
       (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'factoryd-task' &&
        has(object.subjects) && object.subjects.all(s, s.kind == 'ServiceAccount' &&
        s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory'))
     message: factoryd may only bind factoryd-task to itself
-  # The buildkitd Service (ruling 91) is the only one factoryd creates: a
-  # ClusterIP inside its namespace, never a node port or an external IP.
-  - expression: >-
-      variables.kind != 'Service' || request.operation == 'DELETE' ||
-      ((!has(object.spec.type) || object.spec.type == 'ClusterIP') &&
-       (!has(object.spec.externalIPs) || size(object.spec.externalIPs) == 0) &&
-       (!has(object.spec.ports) || !object.spec.ports.exists(p, has(p.nodePort) && p.nodePort != 0)))
-    message: services must be ClusterIP without externalIPs or nodePorts
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
        has(object.spec.automountServiceAccountToken) && object.spec.automountServiceAccountToken == false)
     message: sandbox pods must run under gVisor without an automounted API token
-  # No pod factoryd creates (worker, CI runner, buildkitd) needs privileged
+  # No pod factoryd creates (worker, CI runner) needs privileged
   # containers, added capabilities, hostPath volumes or host namespaces, so
-  # these checks apply to every pod, whatever its labels or namespace. The
-  # factory.ai/build-pod label buys exactly one thing: the root exemption in
-  # the rule below, and only inside factory-agents-ci-*. runtimeClassName and
-  # automountServiceAccountToken are not re-checked here: the rule above
-  # already requires both for every pod.
+  # these checks apply to every pod, whatever its labels or namespace.
+  # runtimeClassName and automountServiceAccountToken are not re-checked
+  # here: the rule above already requires both for every pod.
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (
@@ -179,15 +162,9 @@ spec:
   # wins over the pod's; if the container sets neither, the pod's value
   # applies; if neither sets it, it counts as not proven non-root. Checked
   # across containers, initContainers and ephemeralContainers, for every
-  # pod factoryd creates anywhere under factory-agents-*, except the
-  # labelled build-pod shape in factory-agents-ci-* (ruling 91).
+  # pod factoryd creates anywhere under factory-agents-*.
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
-      (
-        variables.target.startsWith('factory-agents-ci-') &&
-        has(object.metadata.labels) && 'factory.ai/build-pod' in object.metadata.labels &&
-        object.metadata.labels['factory.ai/build-pod'] == 'true'
-      ) ||
       (object.spec.containers +
        (has(object.spec.initContainers) ? object.spec.initContainers : []) +
        (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : []))
@@ -200,7 +177,7 @@ spec:
           ? c.securityContext.runAsUser == 0
           : (has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0))
       )
-    message: every container, initContainer and ephemeralContainer must have an effective runAsNonRoot of true and an effective runAsUser other than 0 (container overrides pod), unless the pod is the labelled factory.ai/build-pod shape in factory-agents-ci-*
+    message: every container, initContainer and ephemeralContainer must have an effective runAsNonRoot of true and an effective runAsUser other than 0 (container overrides pod)
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -263,6 +240,12 @@ spec:
           valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         - name: FORGEJO_CI_ORG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-ci-org-read, key: token}}
+        # the Hetzner CI project's token (build VMs, ruling 110) and the
+        # nodes' public IPv4s, the only sources a build VM admits (ruling 112)
+        - name: HETZNER_CI_KEY
+          valueFrom: {secretKeyRef: {name: hetzner-ci, key: token}}
+        - name: CI_BUILD_VM_SOURCES
+          valueFrom: {configMapKeyRef: {name: cluster-facts, key: node_public_ips}}
         - name: CI_RUNNER_IMAGE
           value: git.aisoftwarefactory.world/sf/ci-runner@sha256:b01cf4514cedffd4b4a02c892479934fc7b911de3d19bc56572e9496a7bce35d
         - name: LITELLM_MASTER_KEY
@@ -381,8 +364,9 @@ spec:
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
 ---
-# factoryd holds the LiteLLM master key, the bot password and the S3 keys,
-# so its egress is default-deny with exactly its callees. Postgres admits
+# factoryd holds the LiteLLM master key, the bot password, the S3 keys and
+# the Hetzner CI token, so its egress is default-deny with exactly its
+# callees. Postgres admits
 # every sf-cluster instance on 5432 so a failover to another primary keeps
 # working; the S3 FQDN must match S3_ENDPOINT above.
 apiVersion: cilium.io/v2
@@ -407,6 +391,7 @@ spec:
         - matchName: litellm.platform.svc.cluster.local
         - matchName: temporal-frontend.platform.svc.cluster.local
         - matchName: fsn1.your-objectstorage.com
+        - matchName: api.hetzner.cloud
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -435,5 +420,6 @@ spec:
     - ports: [{port: "7233", protocol: TCP}]
   - toFQDNs:
     - matchName: fsn1.your-objectstorage.com
+    - matchName: api.hetzner.cloud
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
