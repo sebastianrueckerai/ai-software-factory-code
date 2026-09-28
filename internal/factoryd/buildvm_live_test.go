@@ -27,7 +27,7 @@ func TestLiveBuildVM(t *testing.T) {
 	ctx := context.Background()
 	hc := hcloud.New(env["FACTORYD_LIVE_HETZNER_CI_KEY"])
 	reg := cloudres.NewMemory()
-	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hc}
+	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hc, NodeIPs: []string{env["FACTORYD_LIVE_BUILD_SOURCE"]}}
 	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{env["FACTORYD_LIVE_BUILD_SOURCE"]}, Lease: time.Hour}, hc, reg, col)
 	if err != nil {
 		t.Fatal(err)

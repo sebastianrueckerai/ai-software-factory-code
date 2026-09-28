@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
@@ -37,6 +39,10 @@ type Collector struct {
 	Project  string // ci | agent
 	Registry Registry
 	Provider Provider
+	// NodeIPs are the cluster nodes' public IPv4s (addresses or CIDRs,
+	// cluster-facts): a listed server on one of them means the token opens
+	// the cluster's own project, and the pass refuses (ruling 123).
+	NodeIPs []string
 	// OwnerDone reports whether a resource's owner (ci: the Forgejo job) is
 	// finished; nil means owners never finish early and only leases end.
 	OwnerDone func(ctx context.Context, ownerRef string) (bool, error)
@@ -47,7 +53,11 @@ type Collector struct {
 	// RetryWait spaces Release's retries of a firewall or volume its
 	// deleting server still holds. 0 = 3 seconds.
 	RetryWait time.Duration
-	Now       func() time.Time
+	// ReleaseAttempts bounds Release's tries per resource (0 = 10). An
+	// owner releasing from a loop that must not stall sets 1: what is still
+	// held stays deleting for the next pass.
+	ReleaseAttempts int
+	Now             func() time.Time
 }
 
 func (c *Collector) now() time.Time {
@@ -93,6 +103,10 @@ func (c *Collector) Collect(ctx context.Context) error {
 	servers, err := c.Provider.Servers(ctx, "")
 	if err != nil {
 		return fmt.Errorf("list servers: %w", err)
+	}
+	if err := c.interlock(servers); err != nil {
+		log.Printf("cloud collector (%s): refusing the pass: %v", c.Project, err)
+		return fmt.Errorf("refusing the pass: %w", err)
 	}
 	firewalls, err := c.Provider.Firewalls(ctx, "")
 	if err != nil {
@@ -159,6 +173,39 @@ func (c *Collector) Collect(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// interlock is ruling 123: the collector deletes whatever its project
+// holds, so a token that opens another project (the cluster's, another
+// factory project's) must stop it before anything is deleted.
+func (c *Collector) interlock(servers []hcloud.Server) error {
+	if len(c.NodeIPs) == 0 {
+		return errors.New("no cluster node IPs to check the project against")
+	}
+	var nodes []*net.IPNet
+	for _, n := range c.NodeIPs {
+		n = strings.TrimSpace(n)
+		if !strings.Contains(n, "/") {
+			n += "/32"
+		}
+		_, cidr, err := net.ParseCIDR(n)
+		if err != nil {
+			return fmt.Errorf("node ip %q: %w", n, err)
+		}
+		nodes = append(nodes, cidr)
+	}
+	for _, s := range servers {
+		if p, ok := s.Labels["factory"]; ok && p != c.Project {
+			return fmt.Errorf("server %d carries factory=%s: the token opens another project", s.ID, p)
+		}
+		ip := net.ParseIP(s.IPv4())
+		for _, n := range nodes {
+			if ip != nil && n.Contains(ip) {
+				return fmt.Errorf("server %d is on cluster node address %s: the token opens the cluster's project", s.ID, ip)
+			}
+		}
+	}
+	return nil
 }
 
 type providerKey struct {
@@ -363,9 +410,13 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 	if wait <= 0 {
 		wait = 3 * time.Second
 	}
+	attempts := c.ReleaseAttempts
+	if attempts <= 0 {
+		attempts = 10
+	}
 	for attempt := 1; ; attempt++ {
 		err := c.Delete(ctx, row, id)
-		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || errors.Is(err, ErrDetaching)) || attempt == 10 {
+		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || errors.Is(err, ErrDetaching)) || attempt >= attempts {
 			return err
 		}
 		select {

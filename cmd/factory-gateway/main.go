@@ -50,7 +50,7 @@ func main() {
 		Store:    cloudres.AgentStore{DB: store.DB()},
 		Registry: registry,
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: registry, Provider: hetzner,
-			OwnerDone: gateway.TaskOwnerDone(store)},
+			OwnerDone: gateway.TaskOwnerDone(store), NodeIPs: sshSources},
 		Signer: &gateway.OpenBao{BaseURL: cfg.OpenBaoURL, AuthRole: "factory-gateway", SSHRole: "factory-agent",
 			TokenFile: gateway.InClusterTokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
 		Sources: sshSources,

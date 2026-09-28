@@ -367,7 +367,7 @@ func newCloudEnv(t *testing.T, task Task) *cloudEnv {
 	store := newMemStore(task)
 	store.setPolicy(cloudPolicy())
 	cloud := &Cloud{Provider: hz, Store: cs, Registry: reg, Signer: signer, Sources: []string{"198.51.100.1/32", "198.51.100.2/32"},
-		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: reg, Provider: hz, RetryWait: time.Nanosecond},
+		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}},
 		Now:       func() time.Time { return cloudNow }}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{},
 		Prices: testPrices, Escalator: &fakeEscalator{}, Cloud: cloud})

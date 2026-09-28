@@ -141,11 +141,13 @@ func main() {
 	// the collector deletes whatever there the registry does not know
 	hetznerCI := hcloud.New(mustEnv("HETZNER_CI_KEY"))
 	cloudRegistry := store.CloudResources()
-	ciCollector := &cloudres.Collector{Project: "ci", Registry: cloudRegistry, Provider: hetznerCI, OwnerDone: factoryd.CIOwnerDone(kube)}
+	nodeIPs := strings.Split(mustEnv("CI_BUILD_VM_SOURCES"), ",")
+	ciCollector := &cloudres.Collector{Project: "ci", Registry: cloudRegistry, Provider: hetznerCI,
+		OwnerDone: factoryd.CIOwnerDone(kube), NodeIPs: nodeIPs, ReleaseAttempts: 1}
 	const ciJobTimeout = 45 * time.Minute
 	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
 		Max:            envInt("CI_BUILD_VMS_MAX", 2),
-		AllowedSources: strings.Split(mustEnv("CI_BUILD_VM_SOURCES"), ","),
+		AllowedSources: nodeIPs,
 		Lease:          ciJobTimeout + 15*time.Minute,
 	}, hetznerCI, cloudRegistry, ciCollector)
 	if err != nil {

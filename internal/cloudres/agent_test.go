@@ -408,7 +408,7 @@ func TestFailedCreateRowIsClosedAndCostsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '11 minutes' WHERE hold_id = $1`, c.Hold.ID)
-	col := &Collector{Project: AgentProject, Registry: PG{DB: db}, Provider: newFakeProvider()}
+	col := &Collector{Project: AgentProject, Registry: PG{DB: db}, Provider: newFakeProvider(), NodeIPs: testNodeIPs}
 	if err := col.Collect(ctx); err != nil {
 		t.Fatal(err)
 	}

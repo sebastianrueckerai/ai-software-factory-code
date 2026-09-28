@@ -201,7 +201,7 @@ type harness struct {
 func newHarness() *harness {
 	h := &harness{reg: NewMemory(), prov: newFakeProvider(), clk: &clock{t: t0}, done: map[string]bool{}}
 	h.reg.Now = h.clk.now
-	h.col = &Collector{Project: "ci", Registry: h.reg, Provider: h.prov, Now: h.clk.now,
+	h.col = &Collector{Project: "ci", Registry: h.reg, Provider: h.prov, Now: h.clk.now, NodeIPs: testNodeIPs,
 		OwnerDone: func(ctx context.Context, owner string) (bool, error) { return h.done[owner], nil }}
 	return h
 }
@@ -358,6 +358,71 @@ func TestCollectDeletesFinishedOwner(t *testing.T) {
 	}
 }
 
+var testNodeIPs = []string{"198.51.100.10/32", "198.51.100.11"}
+
+func serverAt(id int64, ip string, labels map[string]string) hcloud.Server {
+	s := hcloud.Server{ID: id, Labels: labels}
+	s.PublicNet.IPv4 = &struct {
+		IP string `json:"ip"`
+	}{IP: ip}
+	return s
+}
+
+// Ruling 123: a pass that sees a cluster node or another project's server
+// holds the wrong token; it deletes nothing, not even what it would
+// otherwise collect.
+func TestCollectRefusesAPassOverTheWrongProject(t *testing.T) {
+	for name, wrong := range map[string]hcloud.Server{
+		"a node's IPv4, no labels":    serverAt(900, "198.51.100.11", nil),
+		"a node's IPv4 as /32 source": serverAt(900, "198.51.100.10", map[string]string{"factory": "ci"}),
+		"another project's label":     serverAt(900, "203.0.113.9", map[string]string{"factory": "agent", "resource": "1"}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			h.prov.servers[900] = wrong
+			h.prov.servers[300] = serverAt(300, "203.0.113.30", nil) // hand-made: would be deleted
+			expired := h.create(t, KindServer, "5", 301, time.Minute)
+			h.clk.t = t0.Add(time.Hour)
+			err := h.col.Collect(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "refusing the pass") {
+				t.Fatalf("err = %v, want a refused pass", err)
+			}
+			if len(h.prov.deleted) != 0 {
+				t.Fatalf("deleted = %v, want nothing", h.prov.deleted)
+			}
+			if h.state(t, expired.ID) != StateLive {
+				t.Fatalf("expired row = %s, want untouched", h.state(t, expired.ID))
+			}
+		})
+	}
+}
+
+// Without the node IPs to compare with, the interlock cannot hold: refuse.
+func TestCollectRefusesWithoutNodeIPs(t *testing.T) {
+	h := newHarness()
+	h.col.NodeIPs = nil
+	h.prov.servers[300] = serverAt(300, "203.0.113.30", nil)
+	if err := h.col.Collect(context.Background()); err == nil || !strings.Contains(err.Error(), "refusing the pass") {
+		t.Fatalf("err = %v, want a refused pass", err)
+	}
+	if len(h.prov.deleted) != 0 {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+}
+
+// A hand-made unlabelled server off the node IPs is still collected (proof e).
+func TestCollectDeletesHandMadeServerOffTheNodes(t *testing.T) {
+	h := newHarness()
+	h.prov.servers[300] = serverAt(300, "203.0.113.30", nil)
+	h.prov.servers[301] = serverAt(301, "203.0.113.31", map[string]string{"factory": "ci"})
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/300,server/301" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+}
+
 func TestCollectDeletesUnknownAndClosedResources(t *testing.T) {
 	h := newHarness()
 	h.prov.servers[300] = hcloud.Server{ID: 300}                                                                   // made by hand, no labels
@@ -445,11 +510,12 @@ func TestCollectRetriesFirewallInUseAndClosesOn404(t *testing.T) {
 func TestCollectIgnoresOtherProjectRows(t *testing.T) {
 	h := newHarness()
 	r, _ := h.reg.Insert(context.Background(), Resource{Project: "agent", Kind: KindServer, OwnerRef: "t", LeaseExpires: t0})
-	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: r.Labels}
+	// same resource id, no factory label: only the ci registry decides
+	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: map[string]string{"resource": r.Labels["resource"]}}
 	if err := h.col.Collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// the ci collector owns the ci project: an agent-labelled server here is unknown
+	// the ci collector owns the ci project: a server its registry does not know is unknown
 	if strings.Join(h.prov.deleted, ",") != "server/100" {
 		t.Fatalf("deleted = %v", h.prov.deleted)
 	}
