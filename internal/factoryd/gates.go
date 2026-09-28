@@ -524,6 +524,7 @@ func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string,
 	}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: merge retries exhausted for %s after %s's approval (%d retries). A new approval restarts the merge.",
 		commit, approver, maxMergeRetries))
+	r.note(ctx, t, fmt.Sprintf("waiting: the merge after %s's approval failed %d times; approve again to retry", approver, maxMergeRetries))
 	r.record(ctx, t.ID, "merge_retries_exhausted", map[string]any{"pr": pr, "commit": commit, "approver": approver, "retries": maxMergeRetries})
 	return nil
 }

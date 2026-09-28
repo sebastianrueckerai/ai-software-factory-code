@@ -604,9 +604,13 @@ func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 
 func TestReportMergeFailure(t *testing.T) {
 	fj := &gateForgejo{}
-	r, _, objects := newGateRunner(t, gateTask, fj)
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	if _, err := execActivity(t, r, ActivityReportMergeFailure, "t1", int64(9), "c1", "sebastian", "forgejo: not found"); err != nil {
 		t.Fatal(err)
+	}
+	if note := store.approvals[0].DecisionNote; note != "waiting: the merge after sebastian's approval failed and is retried: forgejo: not found" {
+		t.Fatalf("approval note = %q", note)
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "failed: forgejo: not found") || !strings.Contains(fj.comments[0], "The approval stands") {
 		t.Fatalf("comments = %q", fj.comments)
@@ -638,9 +642,13 @@ func TestModelReviewHeartbeatsThroughASlowDiffFetch(t *testing.T) {
 
 func TestReportMergeRetriesExhausted(t *testing.T) {
 	fj := &gateForgejo{}
-	r, _, objects := newGateRunner(t, gateTask, fj)
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	if _, err := execActivity(t, r, ActivityReportMergeRetriesExhausted, "t1", int64(9), "c1", "sebastian"); err != nil {
 		t.Fatal(err)
+	}
+	if note := store.approvals[0].DecisionNote; note != "waiting: the merge after sebastian's approval failed 6 times; approve again to retry" {
+		t.Fatalf("approval note = %q", note)
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "merge retries exhausted") || !strings.Contains(fj.comments[0], "A new approval restarts the merge") {
 		t.Fatalf("comments = %q", fj.comments)
