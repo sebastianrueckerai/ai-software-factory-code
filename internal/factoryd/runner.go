@@ -100,11 +100,9 @@ type Runner struct {
 // completes only when the session reads it; done closes when the session
 // takes no more.
 type liveSession struct {
-	ch   chan agentEscalation
+	ch   chan AgentAsk
 	done chan struct{}
 }
-
-type agentEscalation struct{ question, reason string }
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
 var ErrNoLiveSession = errors.New("the task has no running session")
@@ -113,7 +111,7 @@ var ErrNoLiveSession = errors.New("the task has no running session")
 // session, which stops the way a supervisor's escalate stops it. It returns
 // nil only once the session took the escalation; a session that ends or
 // stops first answers ErrNoLiveSession.
-func (r *Runner) EscalateSession(ctx context.Context, taskID, question, reason string) error {
+func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
 	r.liveMu.Unlock()
@@ -121,7 +119,7 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID, question, reason s
 		return ErrNoLiveSession
 	}
 	select {
-	case ls.ch <- agentEscalation{question, reason}:
+	case ls.ch <- ask:
 		return nil
 	case <-ls.done:
 		return ErrNoLiveSession
@@ -157,8 +155,8 @@ func (r *Runner) sandboxPod(taskID string) (ns, name string, ok bool) {
 
 // liveSession registers a running session for EscalateSession until the
 // returned func (idempotent) ends it.
-func (r *Runner) liveSession(taskID string) (<-chan agentEscalation, func()) {
-	ls := &liveSession{ch: make(chan agentEscalation), done: make(chan struct{})}
+func (r *Runner) liveSession(taskID string) (<-chan AgentAsk, func()) {
+	ls := &liveSession{ch: make(chan AgentAsk), done: make(chan struct{})}
 	r.liveMu.Lock()
 	if r.live == nil {
 		r.live = map[string]*liveSession{}
@@ -292,13 +290,15 @@ type sessionSpec struct {
 // a trip (with the supervisor's decision unless it was the wall-clock
 // cap), or the pod dying without either.
 type sessionOutcome struct {
-	result   *harness.Result
-	commit   string
-	trip     *Trip
-	decision *Decision
-	digest   string
-	noResult string
-	findings []string
+	result *harness.Result
+	// agentText is the agent's last message (the adapter's finished event)
+	agentText string
+	commit    string
+	trip      *Trip
+	decision  *Decision
+	digest    string
+	noResult  string
+	findings  []string
 }
 
 // stopReport is what a stopped worker left for the next session: its
@@ -420,8 +420,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := recorder.Record(ctx, *env.Event); err != nil {
 			log.Printf("task %s: record event: %v", t.ID, err)
 		}
-		if env.Event.Kind == harness.EventPushed {
+		switch env.Event.Kind {
+		case harness.EventPushed:
 			out.commit, _ = env.Event.Detail["commit"].(string)
+		case harness.EventFinished:
+			out.agentText, _ = env.Event.Detail["summary"].(string)
 		}
 		events++
 		return env.Event, false
@@ -490,7 +493,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		// the agent was told "escalated" once the session took it: its
 		// escalation during the call wins over whatever the supervisor
 		// answers, and cuts the call
-		var esc *agentEscalation
+		var esc *AgentAsk
 		if trip.decided != nil {
 			d = *trip.decided
 		} else {
@@ -521,7 +524,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if esc != nil {
 			log.Printf("task %s: the agent escalated during the supervisor call for %s", t.ID, trip.Kind)
 			sup.tripped = nil
-			trip = sup.AgentEscalation(esc.question, esc.reason)
+			trip = sup.AgentAsk(*esc)
 			d = *trip.decided
 		}
 		out.digest = digest.digest().Summary()
@@ -556,7 +559,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case esc := <-escalations:
-			if end, err := onTrip(sup.AgentEscalation(esc.question, esc.reason)); end {
+			if end, err := onTrip(sup.AgentAsk(esc)); end {
 				return out, err
 			}
 		case <-workerStop:
@@ -631,8 +634,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	detail["session"] = s.id
 	r.record(ctx, t.ID, "supervisor", detail)
-	if trip.Kind == TripAgentEscalation {
-		return // the agent's question: the workflow's escalation alert
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest {
+		return // the agent's question: the workflow's escalation or info_request alert
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "supervisor",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}

@@ -297,6 +297,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
 		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": r.branch(t), "commit": res.Commit})
+		if err := r.store.SetAgentSummary(ctx, t.ID, textutil.Truncate(out.agentText, maxAgentSummary)); err != nil {
+			return SessionResult{}, err
+		}
 	}
 	return res, nil
 }
@@ -339,10 +342,12 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		if d.Guidance != "" {
 			res.Findings = append(res.Findings, "supervisor guidance: "+d.Guidance)
 		}
-		switch d.Action {
-		case ActionRedirect:
+		switch {
+		case out.trip.Kind == TripAgentInfoRequest:
+			res.Outcome, res.Reason = OutcomeNeedsInfo, d.Reason
+		case d.Action == ActionRedirect:
 			res.Outcome = OutcomeRedirect
-		case ActionRetryStronger:
+		case d.Action == ActionRetryStronger:
 			res.Outcome = OutcomeRetryStronger
 		default:
 			res.Outcome = OutcomeEscalate

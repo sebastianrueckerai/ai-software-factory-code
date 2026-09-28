@@ -105,7 +105,8 @@ type WorkflowConfig struct {
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
 // on it. redirect, retry_stronger and escalate are the supervisor's
-// verdicts (architecture 6.6, ruling 87).
+// verdicts (architecture 6.6, ruling 87); needs_info is the agent's
+// request_info (ruling 150).
 type SessionOutcome string
 
 const (
@@ -115,6 +116,7 @@ const (
 	OutcomeRetryStronger SessionOutcome = "retry_stronger"
 	OutcomeEscalate      SessionOutcome = "escalate"
 	OutcomeWallClock     SessionOutcome = "wall_clock"
+	OutcomeNeedsInfo     SessionOutcome = "needs_info"
 )
 
 // SessionInput is one attempt: StartRef is the commit the worker starts

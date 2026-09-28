@@ -130,10 +130,10 @@ type fakeEscalator struct {
 	err   error
 }
 
-func (f *fakeEscalator) Escalate(_ context.Context, taskID, question, reason string) error {
+func (f *fakeEscalator) Escalate(_ context.Context, taskID string, e Escalation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, taskID+"|"+question+"|"+reason)
+	f.calls = append(f.calls, strings.Join([]string{taskID, e.Kind, e.Question, e.Reason, e.Recommendation, e.Tried, e.Needs}, "|"))
 	return f.err
 }
 
@@ -221,7 +221,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "escalate_to_human,fal_run,replicate_predict,web_scrape,web_search"
+	want := "escalate_to_human,fal_run,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -457,11 +457,12 @@ func TestToolRefusesBadArguments(t *testing.T) {
 
 func TestEscalateToHuman(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "the issue names none"})
+	text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "the issue names none",
+		"recommendation": "MIT, as the other repositories"})
 	if isErr || !strings.HasPrefix(text, "escalated; this session will end") {
 		t.Fatalf("result = %q", text)
 	}
-	if len(e.escalator.calls) != 1 || e.escalator.calls[0] != "42|Which license?|the issue names none" {
+	if len(e.escalator.calls) != 1 || e.escalator.calls[0] != "42|escalation|Which license?|the issue names none|MIT, as the other repositories||" {
 		t.Fatalf("escalations = %v", e.escalator.calls)
 	}
 	if a := e.lastAudit(t); a.Decision != "escalated" || a.Tool != policy.ToolEscalate || len(e.toolLedger()) != 0 {
@@ -469,19 +470,74 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 
 	e.escalator.err = errors.New("factoryd answered 409")
-	if text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "q", "reason": "r"}); !isErr || !strings.Contains(text, "did not reach factoryd") {
+	if text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); !isErr || !strings.Contains(text, "did not reach factoryd") {
 		t.Fatalf("failed hand-over = %q", text)
 	}
 
 	other := newToolEnv(t, running("odd"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
-	if text, isErr := other.call(t, policy.ToolEscalate, map[string]any{"question": "q", "reason": "r"}); !isErr || !strings.Contains(text, "refused_capability") {
+	if text, isErr := other.call(t, policy.ToolEscalate, map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); !isErr || !strings.Contains(text, "refused_capability") {
 		t.Fatalf("non-coder = %q", text)
 	}
 	if len(other.escalator.calls) != 0 {
 		t.Fatal("non-coder escalated")
 	}
-	if text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": " ", "reason": "r"}); !isErr || !strings.Contains(text, "refused_arguments") {
+	if text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": " ", "reason": "r", "recommendation": "x"}); !isErr || !strings.Contains(text, "refused_arguments") {
 		t.Fatalf("empty question = %q", text)
+	}
+}
+
+// The recommendation is required, at most 2000 bytes (ruling 149); a
+// refused call reaches no factoryd.
+func TestEscalateNeedsARecommendation(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for name, rec := range map[string]any{"missing": nil, "blank": "  ", "2001 bytes": strings.Repeat("x", 2001)} {
+		args := map[string]any{"question": "q", "reason": "r"}
+		if rec != nil {
+			args["recommendation"] = rec
+		}
+		// a missing field fails the tool's input schema, a blank or long one the gateway's check
+		want := "refused_arguments"
+		if rec == nil {
+			want = `missing properties: ["recommendation"]`
+		}
+		if text, isErr := e.call(t, policy.ToolEscalate, args); !isErr || !strings.Contains(text, want) || !strings.Contains(text, "recommendation") {
+			t.Errorf("%s: %q, want a refusal naming the recommendation", name, text)
+		}
+	}
+	if text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "q", "reason": "r", "recommendation": strings.Repeat("x", 2000)}); isErr {
+		t.Fatalf("2000 bytes: %q, want accepted", text)
+	}
+	if len(e.escalator.calls) != 1 {
+		t.Fatalf("escalations = %d, want only the valid one", len(e.escalator.calls))
+	}
+}
+
+// request_info asks the issue's author (ruling 150): question, what the
+// agent tried and what it needs, each required; through the class's tool
+// list like every tool.
+func TestRequestInfo(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolRequestInfo, map[string]any{"question": "Which browser?", "tried": "the steps on Go 1.26", "needs": "the browser and its version"})
+	if isErr || !strings.HasPrefix(text, "asked the issue's author; this session will end") {
+		t.Fatalf("result = %q", text)
+	}
+	if len(e.escalator.calls) != 1 || e.escalator.calls[0] != "42|info_request|Which browser?|||the steps on Go 1.26|the browser and its version" {
+		t.Fatalf("calls = %v", e.escalator.calls)
+	}
+	if a := e.lastAudit(t); a.Decision != "info_requested" || a.Tool != policy.ToolRequestInfo {
+		t.Fatalf("audit = %+v", a)
+	}
+	if text, isErr := e.call(t, policy.ToolRequestInfo, map[string]any{"question": "q", "tried": " ", "needs": "n"}); !isErr || !strings.Contains(text, "refused_arguments") {
+		t.Fatalf("blank tried = %q", text)
+	}
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	delete(v.Document.Classes["coder"].Tools, policy.ToolRequestInfo)
+	unlisted := newToolEnv(t, running("coder"), v)
+	if text, isErr := unlisted.call(t, policy.ToolRequestInfo, map[string]any{"question": "q", "tried": "t", "needs": "n"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted = %q", text)
+	}
+	if len(e.escalator.calls) != 1 || len(unlisted.escalator.calls) != 0 {
+		t.Fatalf("calls = %v / %v", e.escalator.calls, unlisted.escalator.calls)
 	}
 }
 
@@ -498,10 +554,10 @@ func TestFactorydEscalateClient(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
-	if err := f.Escalate(context.Background(), "t-1", "q?", "why"); err != nil {
+	if err := f.Escalate(context.Background(), "t-1", Escalation{Kind: "escalation", Question: "q?", Reason: "why", Recommendation: "do x"}); err != nil {
 		t.Fatal(err)
 	}
-	if auth != "Bearer shared" || body != `{"question":"q?","reason":"why","task_id":"t-1"}` {
+	if auth != "Bearer shared" || body != `{"task_id":"t-1","kind":"escalation","question":"q?","reason":"why","recommendation":"do x"}` {
 		t.Fatalf("auth %q body %s", auth, body)
 	}
 }

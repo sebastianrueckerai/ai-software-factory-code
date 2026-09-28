@@ -24,9 +24,11 @@ const (
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
 	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
-	// TripAgentEscalation: the agent called escalate_to_human; decided
-	// already, no supervisor call
-	TripAgentEscalation TripKind = "agent_escalation"
+	// TripAgentEscalation: the agent called escalate_to_human, and
+	// TripAgentInfoRequest request_info; decided already, no supervisor
+	// call
+	TripAgentEscalation  TripKind = "agent_escalation"
+	TripAgentInfoRequest TripKind = "agent_info_request"
 )
 
 // Trip is a detector firing: the kind, what it saw, and the session's
@@ -157,17 +159,25 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	return nil
 }
 
-// agentAsks opens an agent escalation's reason, before its question.
-const agentAsks = "The agent asks: "
+// agentAsks opens an agent escalation's reason, before its question;
+// agentAsksAuthor an information request's.
+const (
+	agentAsks       = "The agent asks: "
+	agentAsksAuthor = "The agent asks the issue's author: "
+)
 
-// AgentEscalation trips on the agent's own escalate_to_human: an
-// escalation with its question, the supervisor model not asked.
-func (s *Supervisor) AgentEscalation(question, reason string) *Trip {
+// AgentAsk trips on the agent's own escalate_to_human or request_info: an
+// escalation with its question, or the information request, the
+// supervisor model not asked.
+func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	return s.trip(&Trip{Kind: TripAgentEscalation, Detail: "the agent called escalate_to_human",
-		decided: &Decision{Action: ActionEscalate, Reason: agentAsks + question + "\nWhy: " + reason}})
+	kind, detail := TripAgentEscalation, "the agent called escalate_to_human"
+	if a.Kind == AskInfo {
+		kind, detail = TripAgentInfoRequest, "the agent called request_info"
+	}
+	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason()}})
 }
 
 // SetSpend tells the supervisor the task's spend so far.

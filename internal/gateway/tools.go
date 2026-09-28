@@ -21,8 +21,26 @@ import (
 // Escalator hands an agent's question to the running session's supervision.
 // Implemented by Factoryd; tests substitute a fake.
 type Escalator interface {
-	Escalate(ctx context.Context, taskID, question, reason string) error
+	Escalate(ctx context.Context, taskID string, e Escalation) error
 }
+
+// Escalation is what an agent asks: a human (escalate_to_human: the
+// question, why, and what the agent would do) or the issue's author
+// (request_info: the question, what it tried, what it needs).
+type Escalation struct {
+	Kind           string `json:"kind"`
+	Question       string `json:"question"`
+	Reason         string `json:"reason,omitempty"`
+	Recommendation string `json:"recommendation,omitempty"`
+	Tried          string `json:"tried,omitempty"`
+	Needs          string `json:"needs,omitempty"`
+}
+
+// Escalation kinds.
+const (
+	KindEscalation  = "escalation"
+	KindInfoRequest = "info_request"
+)
 
 var _ Escalator = (*Factoryd)(nil)
 
@@ -33,10 +51,13 @@ type Factoryd struct {
 	HTTP    *http.Client
 }
 
-func (f *Factoryd) Escalate(ctx context.Context, taskID, question, reason string) error {
+func (f *Factoryd) Escalate(ctx context.Context, taskID string, e Escalation) error {
 	_, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/escalations",
 		http.Header{"Authorization": {"Bearer " + f.Token}},
-		map[string]string{"task_id": taskID, "question": question, "reason": reason})
+		struct {
+			TaskID string `json:"task_id"`
+			Escalation
+		}{taskID, e})
 	return err
 }
 
@@ -108,12 +129,23 @@ type FalIn struct {
 }
 
 type EscalateIn struct {
-	Question string `json:"question" jsonschema:"what the human must answer or decide"`
-	Reason   string `json:"reason" jsonschema:"why the task cannot go on without it"`
+	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
+	Reason         string `json:"reason" jsonschema:"why the task cannot go on without it"`
+	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
 }
 
-// maxQuestion bounds an escalation's question and reason.
-const maxQuestion = 4000
+type RequestInfoIn struct {
+	Question string `json:"question" jsonschema:"what you ask the issue's author"`
+	Tried    string `json:"tried" jsonschema:"what you tried to reproduce or find the fault"`
+	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
+}
+
+// maxQuestion bounds an escalation's question and reason and an
+// information request's fields; maxRecommendation the recommendation.
+const (
+	maxQuestion       = 4000
+	maxRecommendation = 2000
+)
 
 // toolServer is the MCP server of one request. Every tool is listed; a
 // call the task's classes, caps or headroom do not allow is refused with
@@ -141,6 +173,11 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"This session ends; the task resumes with the human's answer. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestInfo, Description: "Ask the issue's author for information when you could not reproduce the problem and found no fault: " +
+		"what you tried and what you need. This session ends; the task resumes with the author's answer, or the issue closes as not reproducible after 14 days. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
+			return s.requestInfo(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -437,17 +474,42 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 	if r := s.admitTool(c, tool); r != nil {
 		return r
 	}
-	q, why := strings.TrimSpace(in.Question), strings.TrimSpace(in.Reason)
-	if q == "" || why == "" || len(q) > maxQuestion || len(why) > maxQuestion {
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("question and reason are required, each at most %d bytes", maxQuestion))
+	q, why, rec := strings.TrimSpace(in.Question), strings.TrimSpace(in.Reason), strings.TrimSpace(in.Recommendation)
+	if q == "" || why == "" || rec == "" || len(q) > maxQuestion || len(why) > maxQuestion || len(rec) > maxRecommendation {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
+			"question, reason and recommendation are required, question and reason at most %d bytes, the recommendation at most %d", maxQuestion, maxRecommendation))
 	}
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec}, "escalated",
+		"escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now.")
+}
+
+// requestInfo hands the agent's information request to factoryd, which
+// stops the session and asks the issue's author on the issue. Free, for
+// the classes that list it.
+func (s *Server) requestInfo(ctx context.Context, c *toolCaller, in RequestInfoIn) *mcp.CallToolResult {
+	tool := policy.ToolRequestInfo
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	q, tried, needs := strings.TrimSpace(in.Question), strings.TrimSpace(in.Tried), strings.TrimSpace(in.Needs)
+	if q == "" || tried == "" || needs == "" || len(q) > maxQuestion || len(tried) > maxQuestion || len(needs) > maxQuestion {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("question, tried and needs are required, each at most %d bytes", maxQuestion))
+	}
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindInfoRequest, Question: q, Tried: tried, Needs: needs}, "info_requested",
+		"asked the issue's author; this session will end. The task resumes with the author's answer. Stop working now.")
+}
+
+// handOver gives factoryd what the agent asks, which stops the session.
+func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Escalation, decision, answer string) *mcp.CallToolResult {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
-	if err := s.opts.Escalator.Escalate(ctx, c.task.ID, q, why); err != nil {
+	if err := s.opts.Escalator.Escalate(ctx, c.task.ID, e); err != nil {
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())
 	}
-	s.auditTool(c, tool, "escalated", textutil.Truncate(q, 500), &c.task.SpentEUR, nil)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-		Text: "escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now."}}}
+	s.auditTool(c, tool, decision, textutil.Truncate(e.Question, 500), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: answer}}}
 }

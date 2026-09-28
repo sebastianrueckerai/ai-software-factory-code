@@ -50,7 +50,7 @@ func (e *escalationStub) InsertIntakeEvent(context.Context, factoryd.IntakeEvent
 	return 1, nil
 }
 
-func (e *escalationStub) EscalateSession(context.Context, string, string, string) error {
+func (e *escalationStub) EscalateSession(context.Context, string, factoryd.AgentAsk) error {
 	e.delivered++
 	return nil
 }
@@ -66,7 +66,7 @@ func TestEscalationRouteNeedsTheGatewayToken(t *testing.T) {
 		"Bearer gw-token":   http.StatusAccepted,
 		"Bearer gw-token\n": http.StatusUnauthorized,
 	} {
-		req := httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(`{"task_id":"t1","question":"q","reason":"r"}`))
+		req := httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(`{"task_id":"t1","kind":"escalation","question":"q","reason":"r","recommendation":"x"}`))
 		if header != "" {
 			req.Header.Set("Authorization", header)
 		}
