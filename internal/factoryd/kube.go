@@ -414,7 +414,7 @@ func (k *InClusterKube) request(ctx context.Context, method, path string, body a
 		}
 		reader = bytes.NewReader(enc)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, k.Host+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, k.Host+path, reader) // #nosec G704 -- the API server the kubelet injects; paths are built from validated names
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +433,7 @@ func (k *InClusterKube) request(ctx context.Context, method, path string, body a
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // #nosec G704 -- the API server the kubelet injects; paths are built from validated names
 	if err != nil {
 		return nil, fmt.Errorf("kube %s %s: %w", method, path, err)
 	}

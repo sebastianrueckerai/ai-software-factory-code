@@ -59,12 +59,16 @@ func getAlerts(h http.Handler, path, token string) *httptest.ResponseRecorder {
 
 func TestProjectAlertsAuth(t *testing.T) {
 	_, alerts, _, h, token := alertsRig(t)
+	wrong := token[:63] + "0"
+	if wrong == token {
+		wrong = token[:63] + "1"
+	}
 	for name, tc := range map[string]struct {
 		path, token string
 		code        int
 	}{
 		"no bearer":         {"/projects/demo-app/alerts?namespace=demo-staging", "", http.StatusUnauthorized},
-		"wrong token":       {"/projects/demo-app/alerts?namespace=demo-staging", token[:63] + "0", http.StatusUnauthorized},
+		"wrong token":       {"/projects/demo-app/alerts?namespace=demo-staging", wrong, http.StatusUnauthorized},
 		"another project's": {"/projects/demo-app/alerts?namespace=demo-staging", "other-token", http.StatusUnauthorized},
 		"unknown project":   {"/projects/nope/alerts?namespace=demo-staging", token, http.StatusUnauthorized},
 		"hash as the token": {"/projects/demo-app/alerts?namespace=demo-staging", HashToken(token), http.StatusUnauthorized},

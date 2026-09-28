@@ -88,7 +88,7 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		p, ok, err := projects.Project(r.Context(), name)
 		if err != nil {
-			log.Printf("project %s alerts: %v", name, err)
+			log.Printf("project %q alerts: %v", name, err) // #nosec G706 -- %q escapes every control character
 			http.Error(w, "cannot read the project", http.StatusInternalServerError)
 			return
 		}
@@ -108,7 +108,7 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 		if !hit || time.Since(e.at) >= alertsCacheFor {
 			list, err := namespaceAlerts(r.Context(), alerts, deploys, ns)
 			if err != nil {
-				log.Printf("project %s alerts for %s: %v", name, ns, err)
+				log.Printf("project %q alerts for %q: %v", name, ns, err) // #nosec G706 -- %q escapes every control character
 				http.Error(w, "cannot read the alerts: "+err.Error(), http.StatusBadGateway)
 				return
 			}
@@ -176,12 +176,12 @@ func (s *SigNoz) FiringAlerts(ctx context.Context) ([]FiringAlert, error) {
 				return nil, err
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/api/v1/alerts", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/api/v1/alerts", nil) // #nosec G704 -- SigNoz's in-cluster address from the environment
 		if err != nil {
 			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+s.token)
-		res, err := s.client().Do(req)
+		res, err := s.client().Do(req) // #nosec G704 -- SigNoz's in-cluster address from the environment
 		if err != nil {
 			return nil, err
 		}
@@ -240,14 +240,14 @@ func (s *SigNoz) login(ctx context.Context) error {
 }
 
 func (s *SigNoz) json(ctx context.Context, method, path string, payload []byte, into any) error {
-	req, err := http.NewRequestWithContext(ctx, method, s.BaseURL+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, s.BaseURL+path, bytes.NewReader(payload)) // #nosec G704 -- SigNoz's in-cluster address from the environment
 	if err != nil {
 		return err
 	}
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	res, err := s.client().Do(req)
+	res, err := s.client().Do(req) // #nosec G704 -- SigNoz's in-cluster address from the environment
 	if err != nil {
 		return err
 	}
