@@ -58,7 +58,7 @@ type Store interface {
 	TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error)
 	// ReleaseHold books the call's cost (nil = the hold) onto the task and
 	// the ledger and returns the task's spend.
-	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error)
+	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error)
 }
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
@@ -145,7 +145,7 @@ func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Ho
 	return policy.TakeHold(ctx, s.db, r)
 }
 
-func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error) {
+func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
 	return policy.ReleaseHold(ctx, s.db, h, cost)
 }
 

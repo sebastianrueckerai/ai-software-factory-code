@@ -67,11 +67,11 @@ func (m *memPolicy) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Ho
 	return h, err
 }
 
-func (m *memPolicy) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (float64, error) {
+func (m *memPolicy) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.released = append(m.released, releasedHold{h, cost})
-	return 0, nil
+	return policy.Booking{}, nil
 }
 
 func (m *memPolicy) SweepHolds(context.Context) (int, error) {

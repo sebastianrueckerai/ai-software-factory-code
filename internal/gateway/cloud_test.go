@@ -658,17 +658,17 @@ func TestCertificateForAnotherTasksServerIsRefused(t *testing.T) {
 	}
 }
 
-// ruling 124: an accrual past its reservation is booked in full by the
-// store and flagged here, in the log and the audit.
-func TestAccrualOverrunIsFlagged(t *testing.T) {
+// ruling 124: an accrual past its reservation is booked in full and
+// flagged by the store, and audited here.
+func TestAccrualOverrunIsAudited(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
-	e.cs.overruns = []cloudres.Overrun{{TaskID: "42", ResourceID: 38, EUR: 0.0192, HeldEUR: 0.0096}}
+	e.cs.overruns = []cloudres.Overrun{{TaskID: "42", ResourceID: 38, EUR: 0.0192, HeldEUR: 0.0096, Reason: "COST OVER HOLD: resource 38"}}
 	if err := e.cloud.accrue(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	a := e.lastAudit(t)
 	if a.Decision != "allowed_over_hold" || a.TaskID != "42" || a.Tool != ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
-		!strings.Contains(a.Reason, "COST OVER HOLD: resource 38 billed 0.019200 EUR with 0.009600 EUR left") {
+		a.Reason != "COST OVER HOLD: resource 38" {
 		t.Fatalf("audit = %+v", a)
 	}
 }

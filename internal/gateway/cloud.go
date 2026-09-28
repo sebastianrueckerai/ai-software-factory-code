@@ -152,11 +152,9 @@ func (c *Cloud) Run(ctx context.Context) {
 func (c *Cloud) accrue(ctx context.Context) error {
 	acc, err := c.Store.Accrue(ctx)
 	for _, o := range acc.Overruns {
-		reason := fmt.Sprintf("COST OVER HOLD: resource %d billed %.6f EUR with %.6f EUR left of its reservation; booked in full", o.ResourceID, o.EUR, o.HeldEUR)
-		log.Printf("task %s: %s", o.TaskID, reason) // #nosec G706 -- the task id is a registry row's owner, written from a verified JWT
 		spend := o.EUR
 		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "allowed_over_hold",
-			Reason: reason, Tool: ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
+			Reason: o.Reason, Tool: ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
 			err = errors.Join(err, aerr)
 		}
 	}

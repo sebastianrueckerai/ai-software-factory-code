@@ -203,13 +203,13 @@ func TestHolds(t *testing.T) {
 	}
 	// released at its real cost, the rest is free again
 	cost := 0.004
-	spent, err := ReleaseHold(ctx, db, h, &cost)
-	if err != nil || !near(spent, 0.014) {
-		t.Fatalf("release = (%v, %v), want spent 0.014", spent, err)
+	b, err := ReleaseHold(ctx, db, h, &cost)
+	if err != nil || !near(b.Spent, 0.014) || b.OverHold != "" {
+		t.Fatalf("release = (%+v, %v), want spent 0.014, no flag", b, err)
 	}
 	// released once only
-	if spent, err := ReleaseHold(ctx, db, h, &cost); err != nil || !near(spent, 0.014) {
-		t.Fatalf("second release = (%v, %v), want spent unchanged at 0.014", spent, err)
+	if b, err := ReleaseHold(ctx, db, h, &cost); err != nil || !near(b.Spent, 0.014) {
+		t.Fatalf("second release = (%v, %v), want spent unchanged at 0.014", b.Spent, err)
 	}
 	// 0.006 free: 0.005 after the input buys 1250 tokens
 	h2, err := TakeHold(ctx, db, req)
@@ -217,8 +217,8 @@ func TestHolds(t *testing.T) {
 		t.Fatalf("hold after release = (%+v, %v), want 1250 tokens", h2, err)
 	}
 	// unknown cost: the hold is booked in full
-	if spent, err := ReleaseHold(ctx, db, h2, nil); err != nil || !near(spent, 0.02) {
-		t.Fatalf("release without a cost = (%v, %v), want spent 0.02", spent, err)
+	if b, err := ReleaseHold(ctx, db, h2, nil); err != nil || !near(b.Spent, 0.02) || b.OverHold != "" {
+		t.Fatalf("release without a cost = (%+v, %v), want spent 0.02, no flag", b, err)
 	}
 
 	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b nothing
@@ -254,15 +254,16 @@ func TestHolds(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hb.ID); err != nil {
 		t.Fatal(err)
 	}
-	if spent, err := ReleaseHold(ctx, db, hb, &cost); err != nil || !near(spent, 0.003) {
-		t.Fatalf("release of a swept hold = (%v, %v), want b's spent 0.003 (the sweep's)", spent, err)
+	if b, err := ReleaseHold(ctx, db, hb, &cost); err != nil || !near(b.Spent, 0.003) {
+		t.Fatalf("release of a swept hold = (%v, %v), want b's spent 0.003 (the sweep's)", b.Spent, err)
 	}
 	// a swept hold of 0.001 whose call cost 0.004: the sweep booked 0.001,
 	// the release books the 0.003 above it
 	swept := Hold{ID: -1, TaskID: "b", Kind: KindModel, Ref: "y", EUR: 0.001}
 	over := 0.004
-	if spent, err := ReleaseHold(ctx, db, swept, &over); err != nil || !near(spent, 0.006) {
-		t.Fatalf("late release above the swept hold = (%v, %v), want b's spent 0.006", spent, err)
+	b, err = ReleaseHold(ctx, db, swept, &over)
+	if err != nil || !near(b.Spent, 0.006) || b.OverHold != "COST OVER HOLD: model y cost 0.004000 EUR against a hold of 0.001000 EUR; booked in full" {
+		t.Fatalf("late release above the swept hold = (%+v, %v), want b's spent 0.006, flagged", b, err)
 	}
 	// a cost that is not a finite non-negative number books the hold
 	for _, bad := range []float64{math.NaN(), math.Inf(1), -0.5} {
@@ -272,8 +273,8 @@ func TestHolds(t *testing.T) {
 		}
 		before := 0.0
 		db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 'b'`).Scan(&before)
-		if spent, err := ReleaseHold(ctx, db, h, &bad); err != nil || !near(spent, before+0.004) {
-			t.Fatalf("release at cost %v = (%v, %v), want the hold 0.004 booked on top of %v", bad, spent, err, before)
+		if b, err := ReleaseHold(ctx, db, h, &bad); err != nil || !near(b.Spent, before+0.004) {
+			t.Fatalf("release at cost %v = (%v, %v), want the hold 0.004 booked on top of %v", bad, b.Spent, err, before)
 		}
 	}
 	var ledger []string
@@ -317,8 +318,8 @@ func TestToolHolds(t *testing.T) {
 		t.Fatalf("third hold = %v, want refused_tool_requests", err)
 	}
 	// a free call still books a row: it was a request
-	if spent, err := ReleaseHold(ctx, db, h1, &zeroEUR); err != nil || spent != 0 {
-		t.Fatalf("free release = (%v, %v)", spent, err)
+	if b, err := ReleaseHold(ctx, db, h1, &zeroEUR); err != nil || b.Spent != 0 {
+		t.Fatalf("free release = (%v, %v)", b.Spent, err)
 	}
 	cost := 0.005
 	if _, err := ReleaseHold(ctx, db, h2, &cost); err != nil {
@@ -340,8 +341,8 @@ func TestToolHolds(t *testing.T) {
 		t.Fatalf("hold past 0.05 EUR = %v, want refused_tool_eur", err)
 	}
 	// an unknown cost books the hold; the caps count it
-	if spent, err := ReleaseHold(ctx, db, h3, nil); err != nil || !near(spent, 0.025) {
-		t.Fatalf("release without a cost = (%v, %v), want spent 0.025", spent, err)
+	if b, err := ReleaseHold(ctx, db, h3, nil); err != nil || !near(b.Spent, 0.025) {
+		t.Fatalf("release without a cost = (%v, %v), want spent 0.025", b.Spent, err)
 	}
 	// another tool has its own caps
 	other := req

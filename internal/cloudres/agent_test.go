@@ -615,7 +615,8 @@ func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 	if err != nil || !near(acc.EUR, 0.0192) || len(acc.Overruns) != 1 {
 		t.Fatalf("accrual = %+v, %v", acc, err)
 	}
-	if o := acc.Overruns[0]; o.TaskID != "t1" || o.ResourceID != srv.ID || !near(o.EUR, 0.0192) || !near(o.HeldEUR, 0.0096) {
+	if o := acc.Overruns[0]; o.TaskID != "t1" || o.ResourceID != srv.ID || !near(o.EUR, 0.0192) || !near(o.HeldEUR, 0.0096) ||
+		o.Reason != "COST OVER HOLD: resource "+itoa(srv.ID)+" cost 0.019200 EUR against a hold of 0.009600 EUR; booked in full" {
 		t.Fatalf("overrun = %+v", o)
 	}
 	if spent := scalar[float64](t, db, `SELECT spent_eur::float8 FROM tasks WHERE id = 't1'`); !near(spent, 0.0192) {

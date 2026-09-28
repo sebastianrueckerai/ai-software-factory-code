@@ -433,6 +433,7 @@ type Overrun struct {
 	ResourceID int64
 	EUR        float64 // booked
 	HeldEUR    float64 // what the reservation still held
+	Reason     string  // policy.OverHold's flag
 }
 
 // Accrue books every agent resource's started hours not yet booked: a
@@ -513,10 +514,6 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	}
 	// the row's own share, as far as the reservation still holds it
 	held = min(held, share)
-	var over *Overrun
-	if !promoted && eur > held+1e-12 {
-		over = &Overrun{TaskID: owner, ResourceID: id, EUR: eur, HeldEUR: held}
-	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'resource', $2, $3)`,
 		owner, "resource/"+strconv.FormatInt(id, 10), eur); err != nil {
 		return 0, nil, err
@@ -531,7 +528,16 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 		id, due, eur); err != nil {
 		return 0, nil, err
 	}
-	return eur, over, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, nil, err
+	}
+	if promoted {
+		return eur, nil, nil
+	}
+	if reason := policy.OverHold(owner, "resource "+strconv.FormatInt(id, 10), eur, held); reason != "" {
+		return eur, &Overrun{TaskID: owner, ResourceID: id, EUR: eur, HeldEUR: held, Reason: reason}, nil
+	}
+	return eur, nil, nil
 }
 
 // Owned lists every agent row of a task, oldest first.

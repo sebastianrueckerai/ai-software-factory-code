@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"time"
@@ -219,6 +220,13 @@ func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int
 	return id, err
 }
 
+// Booking is what ReleaseHold booked: the task's spend after it, and the
+// COST OVER HOLD flag when the known cost exceeded the hold ("" within it).
+type Booking struct {
+	Spent    float64
+	OverHold string
+}
+
 // ReleaseHold turns a hold into spend: the call's cost when known, else the
 // hold's full amount (a worst case, and settlement only ever raises). A
 // cost that is not a finite non-negative number counts as unknown. It books
@@ -226,12 +234,12 @@ func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int
 // the hold, and returns the task's spend. A tool call's row is written even
 // at 0 EUR: the rows count the task's requests of the tool. A hold the
 // sweep already booked in full books only what the known cost exceeds it
-// by.
-func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float64, error) {
+// by. A known cost above the hold is booked in full and flagged (OverHold).
+func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (Booking, error) {
 	cost = KnownCost(cost)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return Booking{}, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var held float64
@@ -247,21 +255,39 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float6
 			amount = max(0, *cost-h.EUR)
 		}
 	} else if err != nil {
-		return 0, err
+		return Booking{}, err
 	}
-	var spent float64
+	var b Booking
 	if err := tx.QueryRowContext(ctx,
 		`UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1 RETURNING spent_eur::float8`, h.TaskID, amount,
-	).Scan(&spent); err != nil {
-		return 0, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
+	).Scan(&b.Spent); err != nil {
+		return Booking{}, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
 	}
 	if amount > 0 || found && h.Kind == KindTool {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, $3, $4)`,
 			h.TaskID, h.Kind, h.Ref, amount); err != nil {
-			return 0, err
+			return Booking{}, err
 		}
 	}
-	return spent, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return Booking{}, err
+	}
+	if cost != nil {
+		b.OverHold = OverHold(h.TaskID, h.Kind+" "+h.Ref, *cost, h.EUR)
+	}
+	return b, nil
+}
+
+// OverHold flags a booking of eur beyond the held amount, every path's one
+// flag (ruling 117): it logs the COST OVER HOLD line and returns it, "" when
+// eur is within held.
+func OverHold(taskID, what string, eur, held float64) string {
+	if eur <= held+1e-12 {
+		return ""
+	}
+	reason := fmt.Sprintf("COST OVER HOLD: %s cost %.6f EUR against a hold of %.6f EUR; booked in full", what, eur, held)
+	log.Printf("task %s: %s", taskID, reason) // #nosec G706 -- the task id is a stored row's; what is a kind and a policy alias, tool or resource id
+	return reason
 }
 
 // KnownCost is cost if it is a finite non-negative number, else nil

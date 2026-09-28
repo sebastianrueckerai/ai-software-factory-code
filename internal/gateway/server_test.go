@@ -133,7 +133,7 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	return h, nil
 }
 
-func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (float64, error) {
+func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cost = policy.KnownCost(cost)
@@ -156,7 +156,11 @@ func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) 
 		m.spends[h.TaskID] = t.SpentEUR
 		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount, h.Kind})
 	}
-	return t.SpentEUR, nil
+	b := policy.Booking{Spent: t.SpentEUR}
+	if cost != nil {
+		b.OverHold = policy.OverHold(h.TaskID, h.Kind+" "+h.Ref, *cost, h.EUR)
+	}
+	return b, nil
 }
 
 func (m *memStore) openHolds() int {
@@ -409,11 +413,11 @@ func TestChatCompletions(t *testing.T) {
 			dayTotal:        17,
 			task:            &runningTask,
 			reqBody:         chatBody("coding-cheap"),
-			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.1"}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantMintBudget:  ptr(3.0),
-			wantSpent:       ptr(2.5),
+			wantSpent:       ptr(2.1),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -573,14 +577,27 @@ func TestChatCompletions(t *testing.T) {
 			task:    &runningTask,
 			reqBody: chatBody("coding-cheap"),
 			resp: stubResp{status: http.StatusOK, body: `{"choices":[{"message":{"role":"assistant"}}]}`, headers: map[string]string{
-				"x-litellm-response-cost": "0.5",
+				"x-litellm-response-cost": "0.1",
 				"x-litellm-key-spend":     "7", // stale cache read: never booked
 			}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantBody:        `{"choices":[{"message":{"role":"assistant"}}]}`,
-			wantSpent:       ptr(2.5),
+			wantSpent:       ptr(2.1),
 			wantMintBudget:  ptr(8.0),
+			wantUpstreamHit: 1,
+		},
+		{
+			// 132 input bytes and 32768 output tokens at 1e-6 and 4e-6 EUR
+			// hold 0.131204 EUR
+			name:            "a cost above the hold is booked in full and flagged",
+			task:            &runningTask,
+			reqBody:         chatBody("coding-cheap"),
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed_over_hold",
+			wantReason:      "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.131204 EUR; booked in full",
+			wantSpent:       ptr(2.5),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -596,7 +613,7 @@ func TestChatCompletions(t *testing.T) {
 			wantDecision:    "allowed",
 			wantBody:        sseBody,
 			wantUpstreamReq: `{"messages":[{"role":"user","content":"hi"}],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
-			wantSpent:       ptr(2.25),
+			wantSpent:       ptr(2.125),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -607,7 +624,7 @@ func TestChatCompletions(t *testing.T) {
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true,"x":1}}`,
-			wantSpent:       ptr(2.25),
+			wantSpent:       ptr(2.125),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -638,7 +655,7 @@ func TestChatCompletions(t *testing.T) {
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantUpstreamReq: `{"messages":[],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
-			wantSpent:       ptr(2.25),
+			wantSpent:       ptr(2.125),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -727,10 +744,10 @@ func TestChatCompletions(t *testing.T) {
 			name:            "text parts, function tools, tool calls and tool results pass",
 			task:            &runningTask,
 			reqBody:         `{"max_tokens":100,"messages":[{"content":"sys","role":"system"},{"content":[{"text":"hi","type":"text"}],"role":"user"},{"content":null,"role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"bash"},"id":"c1","type":"function"}]},{"content":"ok","role":"tool","tool_call_id":"c1"}],"model":"coding-cheap","tool_choice":"auto","tools":[{"function":{"name":"bash"},"type":"function"}]}`,
-			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}},
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0005"}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
-			wantSpent:       ptr(2.01),
+			wantSpent:       ptr(2.0005),
 			wantUpstreamHit: 1,
 		},
 		{
@@ -778,11 +795,11 @@ func TestChatCompletions(t *testing.T) {
 			name:            "a repeated model key counts by its last value and is forwarded once",
 			task:            &runningTask,
 			reqBody:         `{"model":"review-frontier","messages":[],"model":"coding-cheap"}`,
-			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
+			resp:            stubResp{status: http.StatusOK, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.1"}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
 			wantUpstreamReq: `{"messages":[],"model":"coding-cheap"}`,
-			wantSpent:       ptr(2.5),
+			wantSpent:       ptr(2.1),
 			wantUpstreamHit: 1,
 			wantAlias:       "coding-cheap",
 		},
@@ -1197,7 +1214,7 @@ func TestRoutes(t *testing.T) {
 func ptr(f float64) *float64 { return &f }
 
 const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
-	"data: {\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":0.25}}\n\n" +
+	"data: {\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":0.125}}\n\n" +
 	"data: [DONE]\n\n"
 
 // Two tasks, each within its own budget, together exhaust the day: the day
@@ -1236,8 +1253,9 @@ func TestDayCapAcrossTasks(t *testing.T) {
 			t.Fatalf("%s after the day's 1.125 = %d %s, want 402 naming the day's headroom", task, rr.Code, rr.Body.String())
 		}
 	}
+	// both calls report more than their 0.131204 EUR holds
 	audits := store.auditRows()
-	for i, want := range []string{"allowed", "allowed", "refused_day_cap", "refused_day_cap"} {
+	for i, want := range []string{"allowed_over_hold", "allowed_over_hold", "refused_day_cap", "refused_day_cap"} {
 		if audits[i].Decision != want || audits[i].PolicyVersion == nil || *audits[i].PolicyVersion != 3 {
 			t.Fatalf("audit %d = %+v, want %s under policy version 3", i, audits[i], want)
 		}

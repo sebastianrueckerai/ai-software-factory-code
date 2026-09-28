@@ -234,7 +234,7 @@ Answer with one JSON object and nothing else: {"action": "continue|redirect|retr
 // and books its cost (see policy.TakeHold and policy.ReleaseHold).
 type Metering interface {
 	TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error)
-	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error)
+	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error)
 }
 
 // Pricer is an alias's worst-case price. Implemented by policy.PriceBook.

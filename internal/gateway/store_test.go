@@ -60,8 +60,10 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("TakeHold = (%+v, %v), want 1024 tokens under headroom 8", h, err)
 	}
 	cost := 0.5
-	if total, err := s.ReleaseHold(ctx, h, &cost); err != nil || total != 2.5 {
-		t.Fatalf("ReleaseHold = (%v, %v), want (2.5, nil)", total, err)
+	// the hold is 1000 × 1e-6 + 1024 × 4e-6 = 0.005096 EUR: 0.5 is over it
+	if b, err := s.ReleaseHold(ctx, h, &cost); err != nil || b.Spent != 2.5 ||
+		b.OverHold != "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.005096 EUR; booked in full" {
+		t.Fatalf("ReleaseHold = (%+v, %v), want spent 2.5, flagged", b, err)
 	}
 	var ledger string
 	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(task_id || ' ' || kind || ' ' || ref || ' ' || eur::text, ';') FROM ledger`).Scan(&ledger); err != nil || ledger != "t1 model coding-cheap 0.5" {

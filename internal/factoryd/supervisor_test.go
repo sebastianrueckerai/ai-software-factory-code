@@ -1,12 +1,15 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -306,5 +309,43 @@ func TestSessionSupervisionCapsCallsPerSession(t *testing.T) {
 	d, called := s.onTrip(context.Background(), trip)
 	if called || calls != 3 || d.Action != ActionEscalate || !strings.Contains(d.Reason, "same_call") {
 		t.Fatalf("4th trip: %+v called=%v calls=%d, want escalate without a call", d, called, calls)
+	}
+}
+
+// A supervisor call that reports more than its hold is booked in full and
+// flagged by the booking, as every other path's.
+func TestSupervisorCostOverTheHoldIsFlagged(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, ledger, holds CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "tover", Status: "running", Repository: "sf/r", BudgetEUR: 10}); err != nil {
+		t.Fatal(err)
+	}
+	ll := &fakeLiteLLM{content: "{}", cost: "5"}
+	m := testSupervisorModel(ll.srv(t).URL)
+	m.Meter = s
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	if _, err := m.Chat(ctx, "tover", "supervisor", "supervise", "sys", testInput()); err != nil {
+		t.Fatal(err)
+	}
+	log.SetOutput(os.Stderr)
+	if !strings.Contains(buf.String(), "task tover: COST OVER HOLD: model supervisor cost 5.000000 EUR against a hold of ") {
+		t.Fatalf("log = %q, want the COST OVER HOLD line", buf.String())
+	}
+	var spent float64
+	if err := s.db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 'tover'`).Scan(&spent); err != nil || spent != 5 {
+		t.Fatalf("spent = (%v, %v), want 5 booked in full", spent, err)
 	}
 }

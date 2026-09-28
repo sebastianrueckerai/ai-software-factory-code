@@ -259,7 +259,7 @@ func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Ho
 	return policy.TakeHold(ctx, s.db, r)
 }
 
-func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error) {
+func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
 	return policy.ReleaseHold(ctx, s.db, h, cost)
 }
 

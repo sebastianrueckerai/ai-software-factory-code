@@ -529,16 +529,19 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	if cost == nil {
 		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
 	}
-	spend, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost)
+	b, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost)
 	if err != nil {
 		reason = fmt.Sprintf("hold %d not released: %v", c.hold.ID, err)
 		log.Printf("task %s: %s", c.task.ID, reason)
-		spend = c.task.SpentEUR
+		b.Spent = c.task.SpentEUR
 	}
 	if decision == "" {
 		return
 	}
-	s.auditCall(c, decision, reason, &spend)
+	if b.OverHold != "" {
+		decision, reason = decision+"_over_hold", b.OverHold
+	}
+	s.auditCall(c, decision, reason, &b.Spent)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key string, body []byte, stream bool) {
