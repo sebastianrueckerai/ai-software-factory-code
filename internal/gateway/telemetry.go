@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -31,7 +32,7 @@ type Telemetry struct {
 	tp       trace.TracerProvider
 	tracer   trace.Tracer
 	logger   otellog.Logger
-	scrubber *scrubber
+	redact   *redact.Scrubber
 	calls    metric.Int64Counter
 	duration metric.Float64Histogram
 	spend    metric.Float64Counter
@@ -42,7 +43,7 @@ type Telemetry struct {
 // own keys, removed from every audit log record wherever they appear.
 func NewTelemetry(tp trace.TracerProvider, mp metric.MeterProvider, lp otellog.LoggerProvider, secrets ...string) (*Telemetry, error) {
 	meter := mp.Meter("factory-gateway")
-	t := &Telemetry{tp: tp, tracer: tp.Tracer("factory-gateway"), logger: lp.Logger("factory-gateway"), scrubber: newScrubber(secrets...)}
+	t := &Telemetry{tp: tp, tracer: tp.Tracer("factory-gateway"), logger: lp.Logger("factory-gateway"), redact: redact.New(secrets...)}
 	var err error
 	if t.calls, err = meter.Int64Counter("gateway.calls", metric.WithDescription("upstream model and tool calls by kind, name and upstream status")); err != nil {
 		return nil, err
@@ -168,7 +169,7 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	r.SetBody(otellog.StringValue("audit " + row.Decision))
 	str := func(key, v string) {
 		if v != "" {
-			r.AddAttributes(otellog.String(key, t.scrubber.scrub(v)))
+			r.AddAttributes(otellog.String(key, t.scrub(v)))
 		}
 	}
 	num := func(key string, v *float64) {
@@ -195,44 +196,13 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	return r
 }
 
-// scrubber keeps keys and response bodies out of the audit log records:
-// PEM blocks, the gateway's own secrets, the body an upstream error
-// carries (a provider's answer, LiteLLM's key API answer, an unreadable
-// Replicate prediction; the gateway's booking note after it stays), URL
-// userinfo, bearer and basic credentials, JWTs, sk- keys and any run of 32
-// or more key characters.
-type scrubber struct {
-	secrets []string
-}
+// upstreamBody is the body an upstream error carries (a provider's
+// answer, LiteLLM's key API answer, an unreadable Replicate prediction):
+// dropped from the audit log records before the shared rules, the
+// gateway's booking note after it kept.
+var upstreamBody = regexp.MustCompile(`(?s)(provider answered \d{3}|key (?:generate|block): status \d{3}|unreadable prediction): .*?(; cost not reported, booked the hold [\d.]+ EUR)?$`)
 
-var (
-	pemBlock     = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----`)
-	upstreamBody = regexp.MustCompile(`(?s)(provider answered \d{3}|key (?:generate|block): status \d{3}|unreadable prediction): .*?(; cost not reported, booked the hold [\d.]+ EUR)?$`)
-	userinfo     = regexp.MustCompile(`(\w+://)[^/\s@]+@`)
-	credential   = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^\s"',;]+`)
-	keyLike      = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|[\w+/=-]{32,}`)
-)
-
-// minSecret keeps a short configured value from redacting common words.
-const minSecret = 8
-
-func newScrubber(secrets ...string) *scrubber {
-	s := &scrubber{}
-	for _, v := range secrets {
-		if len(v) >= minSecret {
-			s.secrets = append(s.secrets, v)
-		}
-	}
-	return s
-}
-
-func (s *scrubber) scrub(v string) string {
-	v = pemBlock.ReplaceAllString(v, "[pem redacted]")
-	for _, secret := range s.secrets {
-		v = strings.ReplaceAll(v, secret, "[redacted]")
-	}
-	v = upstreamBody.ReplaceAllString(v, "$1: [body dropped]$2")
-	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
-	v = credential.ReplaceAllString(v, "$1 [redacted]")
-	return keyLike.ReplaceAllString(v, "[redacted]")
+// scrub keeps keys and response bodies out of the audit log records.
+func (t *Telemetry) scrub(v string) string {
+	return t.redact.String(upstreamBody.ReplaceAllString(v, "$1: [body dropped]$2"))
 }

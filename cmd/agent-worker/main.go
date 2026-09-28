@@ -27,6 +27,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -404,16 +405,8 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()
 	if err != nil {
-		redact := func(s string) string {
-			for _, token := range []string{e.repoToken, e.pushToken} {
-				if token != "" {
-					s = strings.ReplaceAll(s, authHeader(token), "Authorization: ***")
-					s = strings.ReplaceAll(s, token, "***")
-				}
-			}
-			return s
-		}
-		return "", fmt.Errorf("git %s: %v: %s", redact(strings.Join(args, " ")), err, redact(out.String()))
+		scrub := redact.New(e.repoToken, e.pushToken).String
+		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(out.String()))
 	}
 	return strings.TrimSpace(out.String()), nil
 }

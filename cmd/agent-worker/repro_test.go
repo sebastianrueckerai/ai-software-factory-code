@@ -150,7 +150,7 @@ func TestReproFetchFailureHidesTheToken(t *testing.T) {
 		t.Fatalf("fetch exit %d", code)
 	}
 	got := repro(ws)
-	if got.Exit != -1 || !strings.Contains(got.Output, "fetch refs/pull/9/head") || strings.Contains(got.Output, "s3cret-tok") || !strings.Contains(got.Output, "***") {
+	if got.Exit != -1 || !strings.Contains(got.Output, "fetch refs/pull/9/head") || strings.Contains(got.Output, "s3cret-tok") || !strings.Contains(got.Output, "[redacted]") {
 		t.Fatalf("repro = %+v", got)
 	}
 }

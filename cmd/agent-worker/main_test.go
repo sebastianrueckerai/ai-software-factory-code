@@ -103,7 +103,7 @@ func TestGitRunRedactsToken(t *testing.T) {
 	if strings.Contains(err.Error(), "s3cret-tok") {
 		t.Fatalf("git error leaks the token: %s", err)
 	}
-	if !strings.Contains(err.Error(), "***") {
+	if !strings.Contains(err.Error(), "[redacted]") {
 		t.Fatalf("git error not redacted: %s", err)
 	}
 }
