@@ -1425,10 +1425,41 @@ func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	if strings.Contains(page, "/verdict") || strings.Contains(board, "/verdict") || !strings.Contains(page, "Only the policy's approvers may judge an alert.") {
 		t.Fatal("a non-approver is offered the verdict buttons")
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck); rec.Code != http.StatusForbidden {
-		t.Fatalf("verdict by a non-approver = %d, want 403", rec.Code)
+	for _, v := range []string{"real", "maybe"} {
+		if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {v}}), ck); rec.Code != http.StatusForbidden {
+			t.Fatalf("verdict %q by a non-approver = %d, want 403", v, rec.Code)
+		}
 	}
 	if len(r.alerts.verdicts) != 0 {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
+	}
+}
+
+// A session_end from before attempts were recorded leaves the attempt
+// empty, for its row and the rows after it.
+func TestTimelineWithoutAttemptsShowsNone(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "work"})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_end","time":"2026-09-28T10:21:00Z","outcome":"pushed"}
+{"step":"checks","time":"2026-09-28T10:37:00Z","started":"2026-09-28T10:30:05Z","state":"success"}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	if strings.Contains(body, "nil") || !strings.Contains(body, "<td>checks</td><td></td>") {
+		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
+	}
+}
+
+// Commissioning ends when the server went live, not when the lease loop
+// put the step on the timeline.
+func TestTimelineCommissioningEndsAtLive(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"commissioned","time":"2026-09-28T10:01:44Z","started":"2026-09-28T10:00:00Z","live":"2026-09-28T10:01:35Z","server_type":"cx23"}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	if !strings.Contains(body, "<td>commissioning</td><td></td><td>2026-09-28 10:00:00</td><td>1 min 35 s</td><td>cx23</td>") {
+		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }

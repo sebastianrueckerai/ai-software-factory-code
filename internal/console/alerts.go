@@ -32,15 +32,15 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	v := r.PostFormValue("verdict")
-	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
-		http.Error(w, "the verdict is real or noise", http.StatusBadRequest)
-		return
-	}
 	user := current(r).user
 	if !c.approver(r) {
 		log.Printf("console: %s is no approver: verdict on alert %d refused", user, id)
 		http.Error(w, "Only the policy's approvers may judge an alert.", http.StatusForbidden)
+		return
+	}
+	v := r.PostFormValue("verdict")
+	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
+		http.Error(w, "the verdict is real or noise", http.StatusBadRequest)
 		return
 	}
 	switch err := c.cfg.Alerts.SetAlertVerdict(r.Context(), id, v, user); {

@@ -230,7 +230,10 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 	for _, m := range steps {
 		step, _ := m["step"].(string)
 		if step == "session_end" {
-			attempt = fmt.Sprint(m["attempt"])
+			attempt = ""
+			if a, ok := m["attempt"].(float64); ok {
+				attempt = strconv.Itoa(int(a))
+			}
 		}
 		gate, ok := factoryd.StepGates[step]
 		startS, _ := m["started"].(string)
@@ -239,6 +242,9 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 			continue
 		}
 		end, _ := time.Parse(time.RFC3339, fmt.Sprint(m["time"]))
+		if live, err := time.Parse(time.RFC3339, fmt.Sprint(m["live"])); err == nil {
+			end = live // a commissioning ends at the server's live moment
+		}
 		if open && gate == t.Gate && !end.Before(*t.GateSince) {
 			open = false
 		}
