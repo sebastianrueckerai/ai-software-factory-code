@@ -440,9 +440,9 @@ type Overrun struct {
 // resource ledger row (ref resource/<id>) on its task, the task's spend,
 // and the same amount off its commission's reservation, under the
 // headroom lock. A booking beyond what the reservation still holds is
-// booked in full and returned as an overrun (a promoted resource has no
-// reservation and never overruns). A resource never created (no provider
-// id) costs nothing. Then it drops the reservations of commissions whose
+// booked in full and returned as an overrun (a promoted resource, released
+// or not, has no reservation and never overruns). A resource never created
+// (no provider id) costs nothing. Then it drops the reservations of commissions whose
 // rows are all closed and fully booked: the unused rest returns to the
 // task, the day and the project.
 func (a AgentStore) Accrue(ctx context.Context) (Accrual, error) {
@@ -509,6 +509,9 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	eur := float64(due-accrued) * price
 	var held float64
 	err = tx.QueryRowContext(ctx, `SELECT eur::float8 FROM holds WHERE id = $1`, hold).Scan(&held)
+	// promotion drops the reservation, and a release after it (EndLease)
+	// clears promoted: no reservation, nothing to overrun
+	reserved := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, err
 	}
@@ -531,7 +534,7 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	if err := tx.Commit(); err != nil {
 		return 0, nil, err
 	}
-	if promoted {
+	if promoted || !reserved {
 		return eur, nil, nil
 	}
 	if reason := policy.OverHold(owner, "resource "+strconv.FormatInt(id, 10), eur, held); reason != "" {

@@ -632,6 +632,33 @@ func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 	}
 }
 
+// A promoted commission the human later releases has no reservation left:
+// its next hour, booked after the release, is no overrun.
+func TestReleaseAfterPromoteIsNoOverrun(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	c, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := c.Rows[1]
+	(PG{DB: db}).SetLive(ctx, srv.ID, "900")
+	if err := a.Promote(ctx, srv.ID, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EndLease(ctx, srv.ID, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	// the collector's delete lands after the hour: two hours at 0.0096
+	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '61 minutes' WHERE id = $1`, srv.ID)
+	acc, err := a.Accrue(ctx)
+	if err != nil || !near(acc.EUR, 0.0192) || len(acc.Overruns) != 0 {
+		t.Fatalf("accrual = %+v, %v; want 0.0192 booked, no overrun", acc, err)
+	}
+}
+
 // ruling 124: the egress drops a lease's address at the collector's cutoff.
 func TestLiveAddressesEndAtTheCutoff(t *testing.T) {
 	db := agentDB(t)
