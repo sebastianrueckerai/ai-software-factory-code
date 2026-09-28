@@ -621,13 +621,16 @@ beyond (`beyond_kinds`: type, lease, volume, count, month). A request
 covers a commission of the same type, at most its lease and volume, whose
 ways beyond are all among its own: asking again finds the same pending
 request, an approval admits one such commission for the task (the server
-row records `approval_id`) and nothing that is beyond in another way, and
+row records `approval_id`, the request is marked `consumed`) and nothing
+that is beyond in another way, and
 a denial is answered with the human's note. A task holds at most 3
 pending resource requests; a fourth is refused (`refused_approvals`). The console approves a request for the task (that one
 commission) or for the project: the envelope widens just enough for it
 (its type, lease, volume, one more server, and the month to the cent
-above use plus its reservation) and the request is approved, both as the
-human, in one transaction under the headroom lock.
+above use plus its reservation) and the request is approved and consumed
+by the widening, both as the human, in one transaction under the headroom
+lock: it admits nothing beyond the envelope later, even after a human
+narrows the envelope again.
 
 **Registry first.** The rows (table `cloud_resources`, project `agent`,
 owner the task, the session, the repository, the type or size, the

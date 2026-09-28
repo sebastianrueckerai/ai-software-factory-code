@@ -257,7 +257,7 @@ func TestReserveBeyondEnvelopeAsksAHuman(t *testing.T) {
 		t.Fatalf("again = %+v, %v", again, err)
 	}
 	ap, ok, err := a.Approval(ctx, c.ApprovalID, "t1")
-	if err != nil || !ok || ap.Status != "pending" || ap.Spec["server_type"] != "cx33" {
+	if err != nil || !ok || ap.Status != "pending" || ap.Spec.ServerType != "cx33" {
 		t.Fatalf("approval = %+v, %v, %v", ap, ok, err)
 	}
 	if _, ok, _ := a.Approval(ctx, c.ApprovalID, "other"); ok {
@@ -529,7 +529,7 @@ func TestApproveForProjectAndEnvelopes(t *testing.T) {
 	if err != nil || wide.MaxLeaseHours != 5 || wide.MonthlyEUR != 10 || wide.MaxCount != 2 {
 		t.Fatalf("widened = %+v, %v", wide, err)
 	}
-	if st := scalar[string](t, db, `SELECT status || ' ' || decided_by FROM approval_requests WHERE id = $1`, c.ApprovalID); st != "approved sebastian" {
+	if st := scalar[string](t, db, `SELECT status || ' ' || decided_by || ' ' || consumed FROM approval_requests WHERE id = $1`, c.ApprovalID); st != "approved sebastian true" {
 		t.Fatalf("request = %s", st)
 	}
 	envs, err := a.Envelopes(ctx)
@@ -547,6 +547,17 @@ func TestApproveForProjectAndEnvelopes(t *testing.T) {
 	envs, _ = a.Envelopes(ctx)
 	if envs[0].Use.OpenServers != 1 || !near(envs[0].Use.MonthEUR, req.Quote.ReservationEUR) {
 		t.Fatalf("use = %+v", envs[0].Use)
+	}
+	// the project approval was spent on the widening: with the lease
+	// narrowed again, the same request is beyond it and asks anew
+	narrow := wide
+	narrow.MaxLeaseHours, narrow.MonthlyEUR = 4, 100
+	if err := a.SetEnvelope(ctx, "sf/app", narrow, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := a.Reserve(ctx, req)
+	if err != nil || again.Status != Pending || again.ApprovalID == c.ApprovalID {
+		t.Fatalf("after narrowing = %+v, %v; want a new pending request", again, err)
 	}
 
 	// the edit form: an existing project and a new one

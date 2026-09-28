@@ -10,20 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
-
-// resourceSpec is what a resource request asks for (cloudres.Reserve).
-type resourceSpec struct {
-	ServerType     string   `json:"server_type"`
-	Purpose        string   `json:"purpose"`
-	LeaseMinutes   int      `json:"lease_minutes"`
-	VolumeGB       int      `json:"volume_gb"`
-	Location       string   `json:"location"`
-	HourlyEUR      float64  `json:"hourly_eur"`
-	ReservationEUR float64  `json:"reservation_eur"`
-	BeyondEnvelope []string `json:"beyond_envelope"`
-}
 
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
@@ -32,7 +21,7 @@ type approvalCard struct {
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
-	Resource resourceSpec
+	Resource cloudres.ResourceSpec
 	CSRF     string
 	Approver bool
 }
