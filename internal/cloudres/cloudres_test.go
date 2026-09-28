@@ -732,6 +732,31 @@ func TestReleaseServersFirstAndClosesNeverCreatedRows(t *testing.T) {
 	}
 }
 
+// Two actors releasing the same commission (the collector's pass and the
+// agent's release_resource) delete it once: the one whose claim of the
+// row (live to deleting) fails leaves the delete to the other.
+func TestConcurrentReleasesDeleteOnce(t *testing.T) {
+	h := newHarness()
+	h.create(t, KindServer, "5", 100, time.Hour)
+	rows, _ := h.reg.OpenByOwner(context.Background(), "ci", "5")
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = h.col.Release(context.Background(), rows)
+		}()
+	}
+	wg.Wait()
+	if errs[0] != nil || errs[1] != nil {
+		t.Fatalf("releases = %v", errs)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100" || h.state(t, rows[0].ID) != StateDeleted {
+		t.Fatalf("deleted = %v, state %s; want one delete", h.prov.deleted, h.state(t, rows[0].ID))
+	}
+}
+
 // ruling 124: a 60-minute lease is deleted on the last pass before the hour
 // ends (lease end within one interval plus the margin), never after it.
 func TestCollectEndsALeaseOnTheLastPassBeforeItsHour(t *testing.T) {

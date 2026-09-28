@@ -394,15 +394,20 @@ func (c *Collector) gone(ctx context.Context, kind string, id int64) (bool, erro
 // Delete deletes row's provider resource and closes the row: deleting is
 // recorded before the call, deleted after it succeeds (a 404 counts). A
 // failed call leaves the row deleting for the next pass. Shared with the
-// owners' own teardown.
+// owners' own teardown. A row read open that another actor moved on
+// meanwhile is that actor's to delete: no provider call.
 func (c *Collector) Delete(ctx context.Context, row Resource, providerID int64) error {
-	if _, err := c.Registry.Transition(ctx, row.ID, StateDeleting); err != nil {
+	claimed, err := c.Registry.Transition(ctx, row.ID, StateDeleting)
+	if err != nil {
 		return err
+	}
+	if !claimed && row.State != StateDeleting {
+		return nil
 	}
 	if err := c.deleteProvider(ctx, row.Kind, providerID); err != nil {
 		return err
 	}
-	_, err := c.Registry.Transition(ctx, row.ID, StateDeleted)
+	_, err = c.Registry.Transition(ctx, row.ID, StateDeleted)
 	return err
 }
 
@@ -480,6 +485,7 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 	}
 	for attempt := 1; ; attempt++ {
 		err := c.Delete(ctx, row, id)
+		row.State = StateDeleting
 		if err == nil || !retryable(err) || attempt >= attempts {
 			return err
 		}
