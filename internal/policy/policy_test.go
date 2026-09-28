@@ -371,3 +371,48 @@ func TestClampBudget(t *testing.T) {
 		}
 	}
 }
+
+// Absent bounds are the defaults; a bounds section overrides per key and
+// its default covers the activities without a key of their own.
+func TestBounds(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Duration{
+		"RunSession": 20 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
+		"ModelReview": 3 * time.Minute, "Merge": 5 * time.Minute, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
+	} {
+		if got := d.Bound(name); got != want {
+			t.Errorf("default Bound(%s) = %s, want %s", name, got, want)
+		}
+	}
+	d, err = Parse([]byte(valid + "bounds: {WaitChecks: 900, default: 60}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Duration{
+		"WaitChecks": 15 * time.Minute, "RunSession": 20 * time.Minute, "GatePolicy": time.Minute, "Finish": time.Minute,
+	} {
+		if got := d.Bound(name); got != want {
+			t.Errorf("Bound(%s) = %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestBoundsRejects(t *testing.T) {
+	for name, tc := range map[string]struct{ bounds, want string }{
+		"unknown activity": {"{RunSesion: 60}", `bounds: unknown activity "RunSesion"`},
+		"zero seconds":     {"{Merge: 0}", "bounds.Merge must be a positive number of seconds"},
+		"negative default": {"{default: -5}", "bounds.default must be a positive number of seconds"},
+		"not seconds":      {"{Merge: 5m}", "policy:"},
+		"not a map":        {"[RunSession]", "policy:"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(valid + "bounds: " + tc.bounds + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}

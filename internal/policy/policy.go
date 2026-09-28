@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"slices"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -29,6 +30,42 @@ type Document struct {
 	// console (ruling 128): approve a resource request or a merge, edit an
 	// envelope, promote a resource. Empty: nobody.
 	Approvers []string `yaml:"approvers" json:"approvers"`
+	// Bounds are how many seconds one run of an activity may take before
+	// it raises a gate_bound alert, per activity name and a default for the
+	// rest; absent keys take DefaultBounds.
+	Bounds map[string]int `yaml:"bounds" json:"bounds"`
+}
+
+// BoundDefault is the bounds key for every activity without its own.
+const BoundDefault = "default"
+
+// DefaultBounds are the bounds a policy without them gets (ruling 140).
+var DefaultBounds = map[string]int{
+	"RunSession": 1200, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, BoundDefault: 120,
+}
+
+// BoundActivities are factoryd's activity names, the keys bounds takes
+// besides default.
+var BoundActivities = []string{
+	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
+	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
+	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted",
+}
+
+// Bound is how long one run of activity may take before it alerts: its own
+// bound, else the policy's default, else DefaultBounds'.
+func (d Document) Bound(activity string) time.Duration {
+	s, ok := d.Bounds[activity]
+	if !ok {
+		s, ok = DefaultBounds[activity]
+	}
+	if !ok {
+		s, ok = d.Bounds[BoundDefault]
+	}
+	if !ok {
+		s = DefaultBounds[BoundDefault]
+	}
+	return time.Duration(s) * time.Second
 }
 
 // Envelope bounds what a project's tasks may commission in the agent
@@ -201,6 +238,14 @@ func (d Document) Validate() error {
 	for i, a := range d.Approvers {
 		if a == "" || slices.Contains(d.Approvers[:i], a) {
 			return fmt.Errorf("policy: approvers must be distinct, non-empty user names (%q)", a)
+		}
+	}
+	for name, s := range d.Bounds {
+		if name != BoundDefault && !slices.Contains(BoundActivities, name) {
+			return fmt.Errorf("policy: bounds: unknown activity %q (known: %v and %s)", name, BoundActivities, BoundDefault)
+		}
+		if s <= 0 {
+			return fmt.Errorf("policy: bounds.%s must be a positive number of seconds, is %d", name, s)
 		}
 	}
 	for name, c := range d.Classes {
