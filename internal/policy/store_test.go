@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -247,6 +248,25 @@ func TestHolds(t *testing.T) {
 	if spent, err := ReleaseHold(ctx, db, hb, &cost); err != nil || !near(spent, 0.003) {
 		t.Fatalf("release of a swept hold = (%v, %v), want b's spent 0.003 (the sweep's)", spent, err)
 	}
+	// a swept hold of 0.001 whose call cost 0.004: the sweep booked 0.001,
+	// the release books the 0.003 above it
+	swept := Hold{ID: -1, TaskID: "b", Kind: KindModel, Ref: "y", EUR: 0.001}
+	over := 0.004
+	if spent, err := ReleaseHold(ctx, db, swept, &over); err != nil || !near(spent, 0.006) {
+		t.Fatalf("late release above the swept hold = (%v, %v), want b's spent 0.006", spent, err)
+	}
+	// a cost that is not a finite non-negative number books the hold
+	for _, bad := range []float64{math.NaN(), math.Inf(1), -0.5} {
+		h, err := TakeHold(ctx, db, HoldRequest{TaskID: "b", Kind: KindModel, Ref: "z", Price: testPrice, WantOut: 1000, DayEUR: 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := 0.0
+		db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 'b'`).Scan(&before)
+		if spent, err := ReleaseHold(ctx, db, h, &bad); err != nil || !near(spent, before+0.004) {
+			t.Fatalf("release at cost %v = (%v, %v), want the hold 0.004 booked on top of %v", bad, spent, err, before)
+		}
+	}
 	var ledger []string
 	rows, err := db.QueryContext(ctx, `SELECT task_id || ' ' || kind || ' ' || ref || ' ' || eur::text FROM ledger ORDER BY id`)
 	if err != nil {
@@ -257,7 +277,8 @@ func TestHolds(t *testing.T) {
 		rows.Scan(&l)
 		ledger = append(ledger, l)
 	}
-	want := []string{"a model coding-cheap 0.004", "a model coding-cheap 0.006", "b model x 0.003"}
+	want := []string{"a model coding-cheap 0.004", "a model coding-cheap 0.006", "b model x 0.003", "b model y 0.003",
+		"b model z 0.004", "b model z 0.004", "b model z 0.004"}
 	if !reflect.DeepEqual(ledger, want) {
 		t.Fatalf("ledger = %q, want %q", ledger, want)
 	}

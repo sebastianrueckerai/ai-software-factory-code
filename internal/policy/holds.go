@@ -37,7 +37,9 @@ type HoldRequest struct {
 
 // Hold is headroom taken for one call: EUR at the worst case of InTokens
 // and MaxOut output tokens. Headroom is the smaller of the task's and the
-// day's headroom before any hold, the figure a key's max_budget takes.
+// day's headroom before any hold, the figure a key's max_budget takes;
+// Bound names which one it is, as the refusal it would cause
+// (refused_budget or refused_day_cap).
 type Hold struct {
 	ID       int64
 	TaskID   string
@@ -46,6 +48,16 @@ type Hold struct {
 	EUR      float64
 	MaxOut   int
 	Headroom float64
+	Bound    string
+}
+
+// HeadroomBound is the smaller of the task's and the day's headroom and the
+// refusal it causes when spent.
+func HeadroomBound(task, day float64) (float64, string) {
+	if day < task {
+		return day, "refused_day_cap"
+	}
+	return task, "refused_budget"
 }
 
 // Refusal is a call the headroom or a tool cap cannot fit.
@@ -59,10 +71,7 @@ func (r *Refusal) Error() string { return r.Reason }
 // Fit clamps a call's output limit to what the free task and day headroom
 // can pay for, or refuses it.
 func Fit(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
-	free, decision := taskFree, "refused_budget"
-	if dayFree < taskFree {
-		free, decision = dayFree, "refused_day_cap"
-	}
+	free, decision := HeadroomBound(taskFree, dayFree)
 	inEUR := float64(r.InTokens) * r.Price.In
 	outFit := 0
 	if left := free - inEUR; left > 0 {
@@ -153,7 +162,7 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	if err != nil {
 		return Hold{}, err
 	}
-	h.Headroom = min(taskHeadroom, dayHeadroom)
+	h.Headroom, h.Bound = HeadroomBound(taskHeadroom, dayHeadroom)
 	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
 		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.EUR, HoldTTL.Seconds()).Scan(&h.ID); err != nil {
@@ -163,12 +172,15 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 }
 
 // ReleaseHold turns a hold into spend: the call's cost when known, else the
-// hold's full amount (a worst case, and settlement only ever raises). It
-// books the task's spent_eur and the ledger row in the transaction that
-// deletes the hold, and returns the task's spend. A tool call's row is
-// written even at 0 EUR: the rows count the task's requests of the tool. A
-// hold the sweep already booked is not booked twice.
+// hold's full amount (a worst case, and settlement only ever raises). A
+// cost that is not a finite non-negative number counts as unknown. It books
+// the task's spent_eur and the ledger row in the transaction that deletes
+// the hold, and returns the task's spend. A tool call's row is written even
+// at 0 EUR: the rows count the task's requests of the tool. A hold the
+// sweep already booked in full books only what the known cost exceeds it
+// by.
 func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float64, error) {
+	cost = KnownCost(cost)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -183,6 +195,9 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float6
 	found := err == nil
 	if errors.Is(err, sql.ErrNoRows) {
 		amount = 0
+		if cost != nil {
+			amount = max(0, *cost-h.EUR)
+		}
 	} else if err != nil {
 		return 0, err
 	}
@@ -199,6 +214,15 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (float6
 		}
 	}
 	return spent, tx.Commit()
+}
+
+// KnownCost is cost if it is a finite non-negative number, else nil
+// (unknown).
+func KnownCost(cost *float64) *float64 {
+	if cost == nil || math.IsNaN(*cost) || math.IsInf(*cost, 0) || *cost < 0 {
+		return nil
+	}
+	return cost
 }
 
 // SweepHolds books every expired hold at its full amount and returns how

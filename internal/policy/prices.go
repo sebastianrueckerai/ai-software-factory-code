@@ -3,10 +3,13 @@ package policy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +22,8 @@ type Price struct {
 	In        float64
 	Out       float64
 	MaxOutput int
+
+	inSet bool // parsing: an input rate was seen
 }
 
 // PriceBook reads prices from LiteLLM's GET /model/info, the figures
@@ -35,8 +40,13 @@ type PriceBook struct {
 	at       time.Time
 }
 
-// PriceTTL is how long a fetched price table is used.
-const PriceTTL = 5 * time.Minute
+// PriceTTL is how long a fetched price table is used. While refreshes
+// fail, the old table is used for up to PriceStaleAfter TTLs, then every
+// call is refused.
+const (
+	PriceTTL        = 5 * time.Minute
+	PriceStaleAfter = 3
+)
 
 // Price is alias's worst-case price. An alias LiteLLM cannot price (a
 // deployment without an input or output rate) is an error: callers refuse
@@ -55,6 +65,8 @@ func (b *PriceBook) Price(ctx context.Context, alias string) (Price, error) {
 			b.prices, b.unpriced, b.at = prices, unpriced, time.Now()
 		case b.prices == nil:
 			return Price{}, fmt.Errorf("LiteLLM prices: %w", err)
+		case time.Since(b.at) >= PriceStaleAfter*ttl:
+			return Price{}, fmt.Errorf("LiteLLM prices: %w; the table from %s is too old to use", err, b.at.Format(time.RFC3339))
 		default:
 			log.Printf("LiteLLM prices: %v; keeping the table from %s", err, b.at.Format(time.RFC3339))
 		}
@@ -62,7 +74,7 @@ func (b *PriceBook) Price(ctx context.Context, alias string) (Price, error) {
 	p, ok := b.prices[alias]
 	if !ok {
 		if b.unpriced[alias] {
-			return Price{}, fmt.Errorf("LiteLLM has no input or output price for a deployment of %q", alias)
+			return Price{}, fmt.Errorf("LiteLLM cannot price every deployment of %q", alias)
 		}
 		return Price{}, fmt.Errorf("LiteLLM has no model %q", alias)
 	}
@@ -97,13 +109,8 @@ func (b *PriceBook) fetch(ctx context.Context) (map[string]Price, map[string]boo
 func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 	var info struct {
 		Data []struct {
-			ModelName string `json:"model_name"`
-			ModelInfo struct {
-				In        *float64 `json:"input_cost_per_token"`
-				Out       *float64 `json:"output_cost_per_token"`
-				Reasoning *float64 `json:"output_cost_per_reasoning_token"`
-				MaxOutput *int     `json:"max_output_tokens"`
-			} `json:"model_info"`
+			ModelName string                     `json:"model_name"`
+			ModelInfo map[string]json.RawMessage `json:"model_info"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
@@ -111,24 +118,95 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 	}
 	prices, unpriced := map[string]Price{}, map[string]bool{}
 	for _, d := range info.Data {
-		mi := d.ModelInfo
-		if mi.In == nil || mi.Out == nil || *mi.Out <= 0 || *mi.In < 0 {
+		dp, err := deploymentPrice(d.ModelInfo)
+		if err != nil {
+			log.Printf("LiteLLM prices: a deployment of %q is unpriced: %v", d.ModelName, err)
 			unpriced[d.ModelName] = true
 			continue
 		}
 		p := prices[d.ModelName]
-		p.In = max(p.In, *mi.In)
-		p.Out = max(p.Out, *mi.Out)
-		if mi.Reasoning != nil {
-			p.Out = max(p.Out, *mi.Reasoning)
-		}
-		if mi.MaxOutput != nil {
-			p.MaxOutput = max(p.MaxOutput, *mi.MaxOutput)
-		}
+		p.In = max(p.In, dp.In)
+		p.Out = max(p.Out, dp.Out)
+		p.MaxOutput = max(p.MaxOutput, dp.MaxOutput)
 		prices[d.ModelName] = p
 	}
 	for alias := range unpriced {
 		delete(prices, alias)
 	}
 	return prices, unpriced, nil
+}
+
+// deploymentPrice is one deployment's worst case over every per-token rate
+// LiteLLM can bill a text call with: the base, long-context
+// (*_above_*_tokens), service-tier, cache-write and tiered_pricing rates.
+// Cache reads are cheaper than input and left out. Any other cost field
+// carrying a value (per query, second, image, character, ...) is a charge
+// the hold cannot bound, so the deployment counts as unpriced.
+func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
+	var p Price
+	for k, raw := range mi {
+		if string(raw) == "null" {
+			continue
+		}
+		switch {
+		case k == "max_output_tokens":
+			var n int
+			if err := json.Unmarshal(raw, &n); err != nil {
+				return Price{}, fmt.Errorf("%s: %w", k, err)
+			}
+			p.MaxOutput = n
+		case k == "tiered_pricing":
+			var tiers []map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &tiers); err != nil {
+				return Price{}, fmt.Errorf("%s: %w", k, err)
+			}
+			for _, tier := range tiers {
+				for tk, traw := range tier {
+					if tk == "range" || string(traw) == "null" {
+						continue
+					}
+					if err := p.addRate(tk, traw); err != nil {
+						return Price{}, fmt.Errorf("tiered_pricing: %w", err)
+					}
+				}
+			}
+		case strings.Contains(k, "cost") || strings.Contains(k, "pric"):
+			if err := p.addRate(k, raw); err != nil {
+				return Price{}, err
+			}
+		}
+	}
+	if p.Out <= 0 || !p.inSet {
+		return Price{}, errors.New("no input or output price")
+	}
+	p.inSet = false
+	return p, nil
+}
+
+func (p *Price) addRate(k string, raw json.RawMessage) error {
+	var input, output bool
+	switch {
+	case strings.HasPrefix(k, "cache_read_input_token_cost"):
+		return nil
+	case strings.HasPrefix(k, "input_cost_per_token"), strings.HasPrefix(k, "cache_creation_input_token_cost"):
+		input = true
+	case strings.HasPrefix(k, "output_cost_per_token"), strings.HasPrefix(k, "output_cost_per_reasoning_token"):
+		output = true
+	default:
+		return fmt.Errorf("unrecognised cost field %s", k)
+	}
+	var v float64
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return fmt.Errorf("%s: %w", k, err)
+	}
+	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+		return fmt.Errorf("%s: %v", k, v)
+	}
+	if input {
+		p.In, p.inSet = max(p.In, v), true
+	}
+	if output {
+		p.Out = max(p.Out, v)
+	}
+	return nil
 }

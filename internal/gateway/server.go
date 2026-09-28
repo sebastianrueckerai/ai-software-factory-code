@@ -63,21 +63,27 @@ type ServerOptions struct {
 	Escalator Escalator
 }
 
-// cachedKey is a task's virtual key and what it was minted for: a new run,
+// liveKey is a task's virtual key and what it was minted for: a new run,
 // policy version or UTC day mints a new key (its models and max_budget
-// follow from them) and blocks this one.
-type cachedKey struct {
+// follow from them) and retires this one. A retired key is blocked once
+// the calls still using it are done, so none of them fails on the block.
+type liveKey struct {
 	key     string
 	saUID   string
 	version int64
 	day     string
+	// bound is the refusal the key's max_budget stands for: the smaller of
+	// the task's and the day's headroom at the mint.
+	bound    string
+	inFlight int
+	retired  bool
 }
 
 type Server struct {
 	opts       ServerOptions
 	http       *http.Client
 	mu         sync.Mutex
-	keysByTask map[string]cachedKey
+	keysByTask map[string]*liveKey
 	mints      singleflight.Group
 
 	now   func() time.Time
@@ -94,7 +100,7 @@ func NewServer(opts ServerOptions) *Server {
 	if opts.HTTP == nil {
 		opts.HTTP = &http.Client{}
 	}
-	return &Server{opts: opts, http: opts.HTTP, keysByTask: map[string]cachedKey{}, now: time.Now}
+	return &Server{opts: opts, http: opts.HTTP, keysByTask: map[string]*liveKey{}, now: time.Now}
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -226,14 +232,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
-	key, err := s.keyFor(ctx, task, id.SAUID, pv, hold.Headroom)
+	key, err := s.keyFor(ctx, task, id.SAUID, pv, hold)
 	if err != nil {
 		s.finish(call, zeroCost, "")
 		s.refuse(w, pid, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
+	defer s.doneWith(task.ID, key)
+	call.key = key
 
-	s.proxy(w, r, call, key, body, chatReq.Stream)
+	s.proxy(w, r, call, key.key, body, chatReq.Stream)
 }
 
 // forwardedFields are the request fields LiteLLM receives: the OpenAI chat
@@ -248,7 +256,7 @@ var forwardedFields = map[string]bool{
 	"presence_penalty": true, "frequency_penalty": true, "logit_bias": true,
 	"logprobs": true, "top_logprobs": true, "user": true,
 	"tools": true, "tool_choice": true, "parallel_tool_calls": true,
-	"response_format": true, "reasoning_effort": true, "thinking": true,
+	"response_format": true, "reasoning_effort": true,
 }
 
 type chatRequest struct {
@@ -289,6 +297,12 @@ func parseChat(body []byte) (chatRequest, error) {
 			return req, errors.New("stream is not a boolean")
 		}
 	}
+	if err := checkTools(req.fields); err != nil {
+		return req, err
+	}
+	if err := checkMessages(req.fields["messages"]); err != nil {
+		return req, err
+	}
 	if raw, ok := req.fields["n"]; ok && string(raw) != "null" {
 		var n int
 		if err := json.Unmarshal(raw, &n); err != nil || n != 1 {
@@ -309,6 +323,70 @@ func parseChat(body []byte) (chatRequest, error) {
 		}
 	}
 	return req, nil
+}
+
+// checkTools admits function tools only: a provider's built-in tools (web
+// search, retrieval, code interpreter) are billed per use outside token
+// prices and reach the internet past the sandbox's egress policy. Keys are
+// read exactly, as the provider reads them.
+func checkTools(fields map[string]json.RawMessage) error {
+	if raw, ok := fields["tools"]; ok && string(raw) != "null" {
+		var tools []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &tools); err != nil {
+			return errors.New("tools is not an array of objects")
+		}
+		for i, t := range tools {
+			if string(t["type"]) != `"function"` {
+				return fmt.Errorf("tools[%d] has type %s; only function tools are accepted", i, t["type"])
+			}
+		}
+	}
+	raw, ok := fields["tool_choice"]
+	if !ok || string(raw) == "null" {
+		return nil
+	}
+	var mode string
+	if json.Unmarshal(raw, &mode) == nil {
+		if mode == "auto" || mode == "none" || mode == "required" {
+			return nil
+		}
+		return fmt.Errorf("tool_choice %q is not accepted", mode)
+	}
+	var choice map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &choice); err != nil || string(choice["type"]) != `"function"` {
+		return errors.New("tool_choice must be auto, none, required or a function")
+	}
+	return nil
+}
+
+// checkMessages admits text content only: a string, null, or text parts.
+// An image, audio or file part is billed far above its bytes, so the hold
+// could not bound it, and LiteLLM would fetch an image URL to size it.
+func checkMessages(raw json.RawMessage) error {
+	var msgs []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		return errors.New("messages is not an array of objects")
+	}
+	for i, m := range msgs {
+		c, ok := m["content"]
+		if !ok || string(c) == "null" {
+			continue
+		}
+		var text string
+		if json.Unmarshal(c, &text) == nil {
+			continue
+		}
+		var parts []map[string]json.RawMessage
+		if err := json.Unmarshal(c, &parts); err != nil {
+			return fmt.Errorf("messages[%d].content is neither text nor an array of parts", i)
+		}
+		for j, p := range parts {
+			if string(p["type"]) != `"text"` {
+				return fmt.Errorf("messages[%d].content[%d] has type %s; only text parts are accepted", i, j, p["type"])
+			}
+		}
+	}
+	return nil
 }
 
 // withOutputLimit writes the clamped output limit into the field(s) the
@@ -344,47 +422,84 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 
 // keyFor returns the virtual key of the task's current run, policy version
 // and UTC day, or mints one: limited to the aliases the task's classes
-// allow (so LiteLLM refuses any other target) and capped at maxBudget, the
-// smaller of the task's and the day's headroom. The key it supersedes is
-// blocked.
-func (s *Server) keyFor(ctx context.Context, task Task, saUID string, pv *policy.Version, maxBudget float64) (string, error) {
-	want := cachedKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout)}
-	if key, ok := s.cachedKey(task.ID, want); ok {
-		return key, nil
-	}
-	// one mint per run at a time, and no task waits on another's mint
-	v, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", task.ID, saUID, pv.ID, want.day), func() (any, error) {
-		if key, ok := s.cachedKey(task.ID, want); ok {
-			return key, nil
+// allow (so LiteLLM refuses any other target) and capped at the hold's
+// headroom, the smaller of the task's and the day's. The key counts the
+// call as in flight until doneWith.
+func (s *Server) keyFor(ctx context.Context, task Task, saUID string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
+	want := liveKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout), bound: hold.Bound}
+	// a key minted here and superseded before this call takes it is rare
+	// (a version or day change within the mint); three rounds cover it
+	for range 3 {
+		if k := s.acquire(task.ID, want); k != nil {
+			return k, nil
 		}
-		ctx := context.WithoutCancel(ctx)
-		key, err := s.opts.Minter.Mint(ctx, task.ID, maxBudget, pv.Document.Models(task.Classes))
-		if err != nil {
-			return "", fmt.Errorf("mint virtual key: %w", err)
-		}
-		s.mu.Lock()
-		old, had := s.keysByTask[task.ID]
-		want.key = key
-		s.keysByTask[task.ID] = want
-		s.mu.Unlock()
-		if had {
-			if err := s.opts.Minter.Block(ctx, old.key); err != nil {
-				log.Printf("task %s: block superseded key (version %d, day %s): %v", task.ID, old.version, old.day, err)
+		// one mint per run at a time, and no task waits on another's mint
+		_, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", task.ID, saUID, pv.ID, want.day), func() (any, error) {
+			s.mu.Lock()
+			fresh := s.matches(s.keysByTask[task.ID], want)
+			s.mu.Unlock()
+			if fresh {
+				return nil, nil
 			}
+			ctx := context.WithoutCancel(ctx)
+			key, err := s.opts.Minter.Mint(ctx, task.ID, hold.Headroom, pv.Document.Models(task.Classes))
+			if err != nil {
+				return nil, fmt.Errorf("mint virtual key: %w", err)
+			}
+			k := want
+			k.key = key
+			s.mu.Lock()
+			old := s.keysByTask[task.ID]
+			s.keysByTask[task.ID] = &k
+			idle := old != nil && old.inFlight == 0
+			if old != nil {
+				old.retired = true
+			}
+			s.mu.Unlock()
+			if idle {
+				s.block(task.ID, old)
+			}
+			return nil, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return key, nil
-	})
-	if err != nil {
-		return "", err
 	}
-	return v.(string), nil
+	return nil, errors.New("mint virtual key: superseded while minting")
 }
 
-func (s *Server) cachedKey(taskID string, want cachedKey) (string, bool) {
+func (s *Server) matches(k *liveKey, want liveKey) bool {
+	return k != nil && k.saUID == want.saUID && k.version == want.version && k.day == want.day
+}
+
+// acquire returns the task's current key if it matches want, counting one
+// more call in flight on it.
+func (s *Server) acquire(taskID string, want liveKey) *liveKey {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	c, ok := s.keysByTask[taskID]
-	return c.key, ok && c.saUID == want.saUID && c.version == want.version && c.day == want.day
+	k := s.keysByTask[taskID]
+	if !s.matches(k, want) {
+		return nil
+	}
+	k.inFlight++
+	return k
+}
+
+// doneWith ends a call on k; the last call on a retired key blocks it.
+func (s *Server) doneWith(taskID string, k *liveKey) {
+	s.mu.Lock()
+	k.inFlight--
+	last := k.retired && k.inFlight == 0
+	s.mu.Unlock()
+	if last {
+		s.block(taskID, k)
+	}
+}
+
+func (s *Server) block(taskID string, k *liveKey) {
+	if err := s.opts.Minter.Block(context.Background(), k.key); err != nil {
+		log.Printf("task %s: block superseded key (version %d, day %s): %v", taskID, k.version, k.day, err)
+	}
 }
 
 // modelCall is one admitted call: its hold is released exactly once.
@@ -393,6 +508,7 @@ type modelCall struct {
 	task  Task
 	hold  policy.Hold
 	alias string
+	key   *liveKey
 }
 
 var zero = 0.0
@@ -444,7 +560,13 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 
 	if res.StatusCode/100 != 2 {
 		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		s.finish(c, zeroCost, "")
+		// a failure LiteLLM still priced (partial provider work) is booked;
+		// an unpriced one is not, or every transient 503 would burn budget
+		cost := zeroCost
+		if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
+			cost = &v
+		}
+		s.finish(c, cost, "")
 		if res.StatusCode == http.StatusTooManyRequests && isBudgetExceeded(respBody) {
 			var liteErr struct {
 				Error struct {
@@ -452,7 +574,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 				} `json:"error"`
 			}
 			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-			s.refuseSpend(w, c.pid, c.task, "refused_budget", c.alias, "litellm budget_exceeded: "+liteErr.Error.Message)
+			// the key's max_budget was the task's or the day's headroom
+			s.refuseSpend(w, c.pid, c.task, c.key.bound, c.alias, "litellm budget_exceeded: "+liteErr.Error.Message)
 			return
 		}
 		s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)

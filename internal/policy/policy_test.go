@@ -189,12 +189,21 @@ func TestFit(t *testing.T) {
 
 func TestParseModelInfo(t *testing.T) {
 	body := `{"data":[
-	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":2.8e-7,"output_cost_per_token":4.2e-7,"max_output_tokens":8192}},
-	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":1.5e-7,"output_cost_per_token":4.7e-7,"max_output_tokens":131072}},
+	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":2.8e-7,"output_cost_per_token":4.2e-7,"cache_read_input_token_cost":2.8e-8,"cache_creation_input_token_cost":0.0,"max_output_tokens":8192,"search_context_cost_per_query":null}},
+	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":1.5e-7,"output_cost_per_token":4.7e-7,"cache_creation_input_token_cost":2e-7,"max_output_tokens":131072}},
 	 {"model_name":"coding-frontier","model_info":{"input_cost_per_token":1.4e-6,"output_cost_per_token":4.4e-6,"output_cost_per_reasoning_token":5e-6,"max_output_tokens":null}},
+	 {"model_name":"long-context","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,
+	   "input_cost_per_token_above_200k_tokens":3e-6,"output_cost_per_token_above_200k_tokens":6e-6,"output_cost_per_token_priority":7e-6}},
+	 {"model_name":"tiered","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":1e-7,
+	   "tiered_pricing":[{"range":[0,32000],"input_cost_per_token":1e-7,"output_cost_per_token":1e-7},
+	                     {"range":[32000,256000],"input_cost_per_token":8e-7,"output_cost_per_token":9e-6,"cache_read_input_token_cost":1e-8}]}},
+	 {"model_name":"cache-write","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"cache_creation_input_token_cost":1.25e-6}},
+	 {"model_name":"per-query","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"search_context_cost_per_query":0.01}},
+	 {"model_name":"odd-tier","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"tiered_pricing":[{"output_cost_per_second":1}]}},
 	 {"model_name":"half-priced","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":1e-7}},
 	 {"model_name":"half-priced","model_info":{"input_cost_per_token":null,"output_cost_per_token":1e-7}},
-	 {"model_name":"free","model_info":{"input_cost_per_token":0,"output_cost_per_token":0}}]}`
+	 {"model_name":"free","model_info":{"input_cost_per_token":0,"output_cost_per_token":0}},
+	 {"model_name":"negative","model_info":{"input_cost_per_token":-1e-6,"output_cost_per_token":2e-6}}]}`
 	prices, unpriced, err := parseModelInfo([]byte(body))
 	if err != nil {
 		t.Fatal(err)
@@ -202,9 +211,17 @@ func TestParseModelInfo(t *testing.T) {
 	want := map[string]Price{
 		"coding-cheap":    {In: 2.8e-7, Out: 4.7e-7, MaxOutput: 131072},
 		"coding-frontier": {In: 1.4e-6, Out: 5e-6},
+		"long-context":    {In: 3e-6, Out: 7e-6},
+		"tiered":          {In: 8e-7, Out: 9e-6},
+		"cache-write":     {In: 1.25e-6, Out: 2e-6},
 	}
-	if !reflect.DeepEqual(prices, want) || !unpriced["half-priced"] || !unpriced["free"] {
-		t.Fatalf("prices = %+v, unpriced = %v; want %+v with half-priced and free unpriced", prices, unpriced, want)
+	if !reflect.DeepEqual(prices, want) {
+		t.Fatalf("prices = %+v, want %+v", prices, want)
+	}
+	for _, alias := range []string{"per-query", "odd-tier", "half-priced", "free", "negative"} {
+		if !unpriced[alias] {
+			t.Errorf("%s priced, want unpriced", alias)
+		}
 	}
 }
 
@@ -228,7 +245,7 @@ func TestPriceBook(t *testing.T) {
 	if p, err := b.Price(ctx, "a"); err != nil || p != (Price{In: 1e-6, Out: 4e-6}) {
 		t.Fatalf("Price(a) = (%+v, %v)", p, err)
 	}
-	if _, err := b.Price(ctx, "b"); err == nil || !strings.Contains(err.Error(), "no input or output price") {
+	if _, err := b.Price(ctx, "b"); err == nil || !strings.Contains(err.Error(), "cannot price") {
 		t.Fatalf("Price(b) = %v, want unpriced", err)
 	}
 	if _, err := b.Price(ctx, "c"); err == nil || !strings.Contains(err.Error(), "no model") {
@@ -237,12 +254,23 @@ func TestPriceBook(t *testing.T) {
 	if fetches != 1 {
 		t.Fatalf("fetches = %d within the TTL, want 1", fetches)
 	}
-	// past the TTL a failed fetch keeps the old table
-	b.TTL, fail = time.Nanosecond, true
+	// past the TTL a failed fetch keeps the old table, up to 3 TTLs old
+	fail = true
+	b.at = time.Now().Add(-2 * time.Hour)
 	if p, err := b.Price(ctx, "a"); err != nil || p.Out != 4e-6 || fetches != 2 {
 		t.Fatalf("Price(a) after a failed refresh = (%+v, %v) after %d fetches", p, err, fetches)
 	}
+	b.at = time.Now().Add(-3 * time.Hour)
+	if _, err := b.Price(ctx, "a"); err == nil || !strings.Contains(err.Error(), "too old") {
+		t.Fatalf("Price(a) with a 3-TTL-old table and a failed refresh = %v, want a refusal", err)
+	}
+	// a later successful fetch serves again
+	fail = false
+	if p, err := b.Price(ctx, "a"); err != nil || p.Out != 4e-6 {
+		t.Fatalf("Price(a) after a good refresh = (%+v, %v)", p, err)
+	}
 	// without any table a failed fetch is an error
+	fail = true
 	if _, err := (&PriceBook{BaseURL: srv.URL, MasterKey: "mk"}).Price(ctx, "a"); err == nil {
 		t.Fatal("a price without any table succeeded")
 	}

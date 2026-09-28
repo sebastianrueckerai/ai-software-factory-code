@@ -116,7 +116,9 @@ type Store interface {
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
-	// within the last `within`, on the store's clock.
+	// within the last `within`, on the store's clock, and have no open hold:
+	// a call still streaming books its own cost, and settling it too would
+	// book it twice.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
 	// SettleSpend raises spent_eur to at least reported and books the
 	// raise as a settlement row in the ledger, together.
@@ -419,6 +421,7 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE status IN ('done', 'failed') AND finished_at > now() - make_interval(secs => $1)
+		 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task_id = tasks.id)
 		 ORDER BY finished_at`, within.Seconds())
 	if err != nil {
 		return nil, err

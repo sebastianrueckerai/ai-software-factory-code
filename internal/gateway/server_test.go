@@ -127,7 +127,8 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 		return h, err
 	}
 	m.nextID++
-	h.ID, h.Headroom = m.nextID, min(taskHeadroom, dayHeadroom)
+	h.ID = m.nextID
+	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom)
 	m.holds[h.ID] = h
 	return h, nil
 }
@@ -135,6 +136,7 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (float64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	cost = policy.KnownCost(cost)
 	held, ok := m.holds[h.ID]
 	delete(m.holds, h.ID)
 	amount := held.EUR
@@ -143,6 +145,9 @@ func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) 
 	}
 	if !ok {
 		amount = 0
+		if cost != nil {
+			amount = max(0, *cost-h.EUR)
+		}
 	}
 	t := m.tasks[h.TaskID]
 	if amount > 0 || ok && h.Kind == policy.KindTool {
@@ -490,6 +495,42 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			name:     "litellm 429 budget_exceeded on a key the day capped is a day-cap refusal",
+			task:     &runningTask,
+			dayTotal: 15, // day headroom 5 < task headroom 8
+			reqBody:  chatBody("coding-cheap"),
+			resp: stubResp{
+				status: http.StatusTooManyRequests,
+				body:   `{"error":{"message":"Budget has been exceeded!","type":"budget_exceeded","param":null,"code":"429"}}`,
+			},
+			wantStatus:      http.StatusPaymentRequired,
+			wantDecision:    "refused_day_cap",
+			wantErrType:     "budget_exceeded",
+			wantUpstreamHit: 1,
+		},
+		{
+			name:    "a failure LiteLLM priced is booked",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp: stubResp{status: http.StatusInternalServerError, body: `{"error":{"message":"provider broke mid-way"}}`,
+				headers: map[string]string{"x-litellm-response-cost": "0.25"}},
+			wantStatus:      http.StatusInternalServerError,
+			wantDecision:    "error_upstream",
+			wantSpent:       ptr(2.25),
+			wantUpstreamHit: 1,
+		},
+		{
+			name:    "a non-finite cost books the hold",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp:    stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "NaN"}},
+			// 132 input tokens at 1e-6 and 32768 output tokens at 4e-6
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantSpent:       ptr(2.131204),
+			wantUpstreamHit: 1,
+		},
+		{
 			name:    "litellm 429 rate limit passes through",
 			task:    &runningTask,
 			reqBody: chatBody("coding-cheap"),
@@ -625,6 +666,70 @@ func TestChatCompletions(t *testing.T) {
 			wantStatus:   http.StatusBadRequest,
 			wantDecision: "refused_body",
 			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "a provider built-in tool is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","tools":[{"type":"function","function":{"name":"bash"}},{"type":"web_search","web_search":{"enable":true}}],"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "a tool whose exact type key is not function is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","tools":[{"Type":"function","type":"retrieval"}],"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "a tool_choice naming a built-in tool is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","tool_choice":{"type":"web_search"},"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "an image part is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","messages":[{"role":"user","content":[{"type":"text","text":"see"},{"type":"image_url","image_url":{"url":"http://10.0.0.1/x.png","detail":"high"}}]}]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "an audio part is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","messages":[{"role":"user","content":[{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:         "thinking is refused",
+			wantNoMint:   true,
+			task:         &runningTask,
+			reqBody:      `{"model":"coding-cheap","thinking":{"type":"enabled","budget_tokens":100000},"messages":[]}`,
+			wantStatus:   http.StatusBadRequest,
+			wantDecision: "refused_body",
+			wantErrType:  "invalid_request_error",
+		},
+		{
+			name:            "text parts, function tools, tool calls and tool results pass",
+			task:            &runningTask,
+			reqBody:         `{"max_tokens":100,"messages":[{"content":"sys","role":"system"},{"content":[{"text":"hi","type":"text"}],"role":"user"},{"content":null,"role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"bash"},"id":"c1","type":"function"}]},{"content":"ok","role":"tool","tool_call_id":"c1"}],"model":"coding-cheap","tool_choice":"auto","tools":[{"function":{"name":"bash"},"type":"function"}]}`,
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantSpent:       ptr(2.01),
+			wantUpstreamHit: 1,
 		},
 		{
 			name:         "n above 1 is refused",
@@ -1254,5 +1359,53 @@ func TestConcurrentCallsCannotShareTheLastHeadroom(t *testing.T) {
 	last := audits[len(audits)-1]
 	if last.Decision != "allowed" || *last.OutputLimit != 32768 || math.Abs(*last.HoldEUR-0.131204) > 1e-12 {
 		t.Fatalf("allowed audit = %+v, want output limit 32768 and hold 0.131204", last)
+	}
+}
+
+// A call still using a superseded key finishes on it: the key is blocked
+// only when its last call is done.
+func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var mu sync.Mutex
+	first := true
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		wait := first
+		first = false
+		mu.Unlock()
+		if wait {
+			started <- struct{}{}
+			<-release
+		}
+		w.Header().Set("x-litellm-response-cost", "0.01")
+		w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: minter, LiteLLMURL: up.URL, Prices: testPrices})
+	now := time.Date(2026, 9, 27, 23, 59, 0, 0, time.UTC)
+	var clock sync.Mutex
+	s.now = func() time.Time { clock.Lock(); defer clock.Unlock(); return now }
+
+	done := make(chan int, 1)
+	go func() { done <- doChat(t, s.Routes("test"), chatBody("coding-cheap")).Code }()
+	<-started // the first call runs on key 1
+	clock.Lock()
+	now = now.Add(2 * time.Minute) // UTC midnight: key 2
+	clock.Unlock()
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("call on the new day = %d", rr.Code)
+	}
+	if b := minter.blockedKeys(); len(b) != 0 {
+		t.Fatalf("blocked %v while a call still runs on key 1, want none", b)
+	}
+	close(release)
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("the call on the superseded key = %d, want 200", code)
+	}
+	if b := minter.blockedKeys(); !reflect.DeepEqual(b, []string{"sk-task-key-1"}) {
+		t.Fatalf("blocked = %v, want key 1 once its call is done", b)
 	}
 }

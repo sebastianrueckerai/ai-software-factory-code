@@ -35,7 +35,11 @@ the agents work on.
   version in force (read from Postgres, at most 30 s old; 503 while none
   is loaded). It forwards only the OpenAI chat fields (400 `refused_body`
   for anything else, above all LiteLLM's `fallbacks`,
-  `router_settings_override` and `mock_testing_*`, and for `n` above 1).
+  `router_settings_override` and `mock_testing_*`, and for `n` above 1),
+  and of their values only function tools and text content: a provider's
+  built-in tools (web search, retrieval) bill per use and reach the
+  internet past the sandbox, and image, audio or file parts cost far more
+  than their bytes.
   The task must be running and its capability classes must allow the
   model (403 `refused_capability`). The call is then metered, see "Policy
   and costs": its output limit is clamped so its worst case fits the free
@@ -43,7 +47,9 @@ the agents work on.
   call (402 `refused_budget` or `refused_day_cap` when it cannot fit). The
   per-task LiteLLM virtual key is limited to the classes' aliases and
   capped at the smaller headroom; a new run, policy version or UTC day
-  mints a new key and blocks the old one. Every decision has an audit row
+  mints a new key and blocks the old one once the calls still using it
+  are done. A LiteLLM budget refusal is labelled by the headroom the key
+  was capped at (`refused_budget` or `refused_day_cap`). Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
   output limit and hold. It also serves the agent's tools over MCP at
   `/mcp`, see "Tools".
@@ -304,11 +310,15 @@ agent tasks) and the budget `task_default_eur`, or the requested budget
 capped at `task_max_eur`.
 
 The caps hold on the call itself. Prices per alias come from LiteLLM's
-`GET /model/info` (the figures it bills with; per alias the maximum over
-its deployments of the input rate, the output or reasoning rate and the
-output limit), read every 5 minutes; an alias the policy allows but
-LiteLLM cannot price is refused (503 `error_price`, logged as
-`PRICE MISSING`). A call's input is bounded by its body's byte length (a
+`GET /model/info` (the figures it bills with), read every 5 minutes: per
+alias the maximum over its deployments of every per-token input rate
+(base, long-context `*_above_*_tokens`, service tiers, cache writes,
+`tiered_pricing`), every output and reasoning rate, and the output limit.
+A deployment with any other cost field set (per query, second, image,
+character) or without an input and output rate makes its alias unpriced,
+and an alias the policy allows but LiteLLM cannot price is refused (503
+`error_price`, logged as `PRICE MISSING`). While refreshes fail the last
+table is used for up to three TTLs, then every call is refused. A call's input is bounded by its body's byte length (a
 token covers at least one byte). Under one Postgres advisory lock, in one
 transaction, the headroom left after spend and every outstanding hold is
 computed (task: budget minus spent; day: `day_eur` minus today's ledger
@@ -317,11 +327,17 @@ clamped to what that pays for, and a `holds` row takes the worst case.
 Fewer than 1024 output tokens (GLM reasons before it answers) is refused
 unless the caller asked for fewer. After the call one transaction
 deletes the hold and books the real cost onto `tasks.spent_eur` and the
-ledger; an unknown cost (no cost header, a broken stream) books the
-hold. A hold whose caller died expires after an hour and factoryd's
-sweep books it in full. `holds` has kinds `model`, `tool` (see "Tools")
-and `resource`. LiteLLM's `fail_closed_budget_enforcement` is the
-backstop.
+ledger; an unknown cost (no cost header, a broken stream, a value that
+is not a finite non-negative number) books the hold, and a failed call
+books the cost LiteLLM reports for it, else nothing. A hold whose caller
+died expires after an hour and factoryd's sweep books it in full; a late
+release books only what the real cost exceeds it by. Settlement leaves a
+task alone while it has an open hold. Output limits bound reasoning:
+verified on GLM (reasoning counts inside `max_tokens`); Qwen's thinking
+does not, so the dashscope deployment runs with thinking off, and the
+gateway refuses a client's `thinking` field. `holds` has kinds `model`,
+`tool` (see "Tools") and `resource`. LiteLLM's
+`fail_closed_budget_enforcement` is the backstop.
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,
 kind (`model` per call with the alias as ref, `settlement` for the raise
