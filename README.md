@@ -280,7 +280,11 @@ commented and recorded (`merge_failed`); the approval stands and the
 merge is tried again after 10 minutes. From change id
 `merge-failure-reported` on, a Merge that ends in an error (a 404, its
 last attempt timing out) is reported the same way (`ReportMergeFailure`)
-and retried too; a newer approval replaces a pending retry. A human merging in Forgejo stays
+and retried too; a newer approval replaces a pending retry. From change
+id `merge-retry-cap` on (ruling 129), one approval's merge is retried at
+most six times (an hour); then a single comment and a
+`merge_retries_exhausted` step say so, no timer runs, and the task waits
+for a signal: a new approval restarts the merge with a fresh count. A human merging in Forgejo stays
 valid (`pr_merged`, or found by Merge and credited to that human, with
 the head they merged). An approval signalled before the request opened,
 or for another pull request, does nothing. From change id

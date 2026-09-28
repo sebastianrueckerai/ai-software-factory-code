@@ -48,24 +48,25 @@ type TaskSignal struct {
 
 // Activity names, registered by Runner.RegisterActivities.
 const (
-	ActivityEnsureIssue        = "EnsureIssue"
-	ActivitySetState           = "SetState"
-	ActivityRunSession         = "RunSession"
-	ActivityOpenPullRequest    = "OpenPullRequest"
-	ActivityWaitChecks         = "WaitChecks"
-	ActivityPullRequestMerged  = "PullRequestMerged"
-	ActivityRecordStep         = "RecordStep"
-	ActivityFinish             = "Finish"
-	ActivityReconcile          = "Reconcile"
-	ActivityEscalate           = "Escalate"
-	ActivityRecordUsage        = "RecordUsage"
-	ActivityGatePolicy         = "GatePolicy"
-	ActivityGateMigration      = "GateMigration"
-	ActivityGateReproduction   = "GateReproduction"
-	ActivityModelReview        = "ModelReview"
-	ActivityRequestApproval    = "RequestApproval"
-	ActivityMerge              = "Merge"
-	ActivityReportMergeFailure = "ReportMergeFailure"
+	ActivityEnsureIssue                 = "EnsureIssue"
+	ActivitySetState                    = "SetState"
+	ActivityRunSession                  = "RunSession"
+	ActivityOpenPullRequest             = "OpenPullRequest"
+	ActivityWaitChecks                  = "WaitChecks"
+	ActivityPullRequestMerged           = "PullRequestMerged"
+	ActivityRecordStep                  = "RecordStep"
+	ActivityFinish                      = "Finish"
+	ActivityReconcile                   = "Reconcile"
+	ActivityEscalate                    = "Escalate"
+	ActivityRecordUsage                 = "RecordUsage"
+	ActivityGatePolicy                  = "GatePolicy"
+	ActivityGateMigration               = "GateMigration"
+	ActivityGateReproduction            = "GateReproduction"
+	ActivityModelReview                 = "ModelReview"
+	ActivityRequestApproval             = "RequestApproval"
+	ActivityMerge                       = "Merge"
+	ActivityReportMergeFailure          = "ReportMergeFailure"
+	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -199,15 +200,16 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	// them is retried with capped backoff for up to a day, like finish
 	short := workflow.WithActivityOptions(ctx, finishOptions())
 	run := taskRun{ctx: ctx, short: short, cfg: cfg, taskID: taskID,
-		v:  workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
-		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
-		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
-		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
-		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
-		v6: workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates),
-		v7: workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers),
-		v8: workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
-		v9: workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported)}
+		v:   workflow.GetVersion(ctx, "signals-drained", workflow.DefaultVersion, versionSignalsDrained),
+		v2:  workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
+		v3:  workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
+		v4:  workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
+		v5:  workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
+		v6:  workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates),
+		v7:  workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers),
+		v8:  workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
+		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
+		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap)}
 	return run.lifecycle()
 }
 
@@ -270,6 +272,10 @@ const (
 	// timeline) and tried again after mergeRetryAfter with the same
 	// approval; a newer approval cancels a pending retry timer.
 	versionMergeFailureReported workflow.Version = 1
+	// versionMergeRetryCap (change id "merge-retry-cap", ruling 129): the
+	// retries of one approval's merge stop after maxMergeRetries (an hour):
+	// one exhausted report, no timer; a new approval restarts the count.
+	versionMergeRetryCap workflow.Version = 1
 )
 
 type taskRun struct {
@@ -278,6 +284,7 @@ type taskRun struct {
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
 	v6, v7, v8, v9    workflow.Version
+	v10               workflow.Version
 	pr                PullRequest
 	answers           []string // the human's answers, newest first (versionAnswers)
 	escalation        int64    // the escalation comment human answers must be newer than
@@ -577,6 +584,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 	approver := ""
 	var retry workflow.Future
 	var cancelRetry workflow.CancelFunc
+	failures := 0 // failed retries of the current approval's merge (versionMergeRetryCap)
 	for {
 		retried := false
 		sel := workflow.NewSelector(t.ctx)
@@ -606,9 +614,13 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		if approver == "" || !signalled && !retried {
 			continue
 		}
-		// a newer approval replaces a pending retry: its timer goes
+		// a newer approval replaces a pending retry: its timer goes, and
+		// its merge gets a fresh retry count
 		if cancelRetry != nil && !retried {
 			cancelRetry()
+		}
+		if signalled {
+			failures = 0
 		}
 		cancelRetry = nil
 		retry = nil
@@ -632,7 +644,13 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 			return verdict{final: "done", reason: "pull request merged by " + res.By}
 		case res.Merged:
 			return verdict{final: "done", reason: "pull request merged by factory-merge after " + approver + "'s approval"}
+		case res.Failed != "" && t.v10 >= versionMergeRetryCap && failures >= maxMergeRetries:
+			if err := workflow.ExecuteActivity(t.short, ActivityReportMergeRetriesExhausted, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("report merge retries exhausted", "task", t.taskID, "error", err)
+			}
+			approver = ""
 		case res.Failed != "" && t.v9 >= versionMergeFailureReported:
+			failures++
 			timerCtx, cancel := workflow.WithCancel(t.ctx)
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
 		case res.Failed != "":
@@ -642,6 +660,10 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		}
 	}
 }
+
+// maxMergeRetries bounds the retries of one approval's merge: with
+// mergeRetryAfter, an hour (ruling 129).
+const maxMergeRetries = 6
 
 // mergeRetryAfter is how long a merge that failed (Forgejo unreachable,
 // not refusing) waits before the kept approval is tried again.

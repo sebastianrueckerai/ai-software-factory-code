@@ -373,6 +373,23 @@ func parseReview(content string) Review {
 // headroom, a failed call, an invalid answer) is a note, and nothing it
 // says skips a gate or merges.
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (Review, error) {
+	// the heartbeats, from the start to the answer, carry the workflow's
+	// cancel (a terminal signal during the review) into the Forgejo reads
+	// and the model call: the call is cut, and its hold booked
+	beatCtx, stopBeats := context.WithCancel(ctx)
+	defer stopBeats()
+	go func() {
+		tick := time.NewTicker(reviewHeartbeatEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-beatCtx.Done():
+				return
+			case <-tick.C:
+				recordReviewHeartbeat(ctx, "review")
+			}
+		}
+	}()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return Review{}, err
@@ -390,21 +407,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	// the heartbeats carry the workflow's cancel (a terminal signal during
-	// the review) into the call: it is cut, and its hold booked
-	beatCtx, stopBeats := context.WithCancel(ctx)
-	go func() {
-		tick := time.NewTicker(reviewHeartbeatEvery)
-		defer tick.Stop()
-		for {
-			select {
-			case <-beatCtx.Done():
-				return
-			case <-tick.C:
-				recordReviewHeartbeat(ctx, "review")
-			}
-		}
-	}()
 	content, err := r.supervisor.Chat(ctx, t.ID, r.cfg.ReviewModel, "review", reviewPrompt, reviewInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA},
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates,
@@ -509,6 +511,20 @@ func (r *Runner) ReportMergeFailure(ctx context.Context, taskID string, pr int64
 		return err
 	}
 	r.reportMergeFailure(ctx, t, repo, pr, commit, approver, truncate(reason, 500))
+	return nil
+}
+
+// ReportMergeRetriesExhausted tells, once, that the merge of an approval
+// failed maxMergeRetries times more: no more retries; a new approval
+// restarts the merge.
+func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: merge retries exhausted for %s after %s's approval (%d retries). A new approval restarts the merge.",
+		commit, approver, maxMergeRetries))
+	r.record(ctx, t.ID, "merge_retries_exhausted", map[string]any{"pr": pr, "commit": commit, "approver": approver, "retries": maxMergeRetries})
 	return nil
 }
 

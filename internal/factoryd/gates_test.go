@@ -39,6 +39,7 @@ type gateForgejo struct {
 	head        string // GET /pulls/9's head sha; "" = c1
 	base        string // and its base; "" = main
 	stateFail   int    // GET /pulls/9 answers 502 this many times first
+	diffDelay   time.Duration
 	comments    []string
 }
 
@@ -51,6 +52,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && p == "/pulls/9/files":
 			servePage(w, r, 2, f.files...)
 		case r.Method == "GET" && p == "/pulls/9.diff":
+			time.Sleep(f.diffDelay)
 			io.WriteString(w, f.diff)
 		case r.Method == "POST" && p == "/pulls/9/merge":
 			var body map[string]any
@@ -605,6 +607,40 @@ func TestReportMergeFailure(t *testing.T) {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"merge_failed"`) || !strings.Contains(tl, `"error":"forgejo: not found"`) {
+		t.Fatalf("timeline = %s", tl)
+	}
+}
+
+// The heartbeats start with the activity: a slow diff fetch before the
+// model call heartbeats too, so it never runs into the heartbeat timeout.
+func TestModelReviewHeartbeatsThroughASlowDiffFetch(t *testing.T) {
+	defer func(d time.Duration) { reviewHeartbeatEvery = d }(reviewHeartbeatEvery)
+	reviewHeartbeatEvery = 20 * time.Millisecond
+	defer func(f func(context.Context, ...any)) { recordReviewHeartbeat = f }(recordReviewHeartbeat)
+	var beats atomic.Int32
+	recordReviewHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
+	fj := &gateForgejo{diff: "d", diffDelay: 300 * time.Millisecond}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+		t.Fatal(err)
+	}
+	if beats.Load() < 5 {
+		t.Fatalf("%d heartbeats during a 300 ms diff fetch at 20 ms, want several", beats.Load())
+	}
+}
+
+func TestReportMergeRetriesExhausted(t *testing.T) {
+	fj := &gateForgejo{}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	if _, err := execActivity(t, r, ActivityReportMergeRetriesExhausted, "t1", int64(9), "c1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "merge retries exhausted") || !strings.Contains(fj.comments[0], "A new approval restarts the merge") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"merge_retries_exhausted"`) || !strings.Contains(tl, `"retries":6`) {
 		t.Fatalf("timeline = %s", tl)
 	}
 }

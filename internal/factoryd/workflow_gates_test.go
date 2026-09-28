@@ -27,6 +27,7 @@ type gateHarness struct {
 	merge     []MergeResult // in order, the last repeating
 	mergeErrs []error       // Merge's error per call, in order; nil or short = none
 	reported  []string      // ReportMergeFailure reasons
+	exhausted int           // ReportMergeRetriesExhausted calls
 	// policyDelay is how long GatePolicy takes; reviewErr fails ModelReview
 	policyDelay   time.Duration
 	reviewErr     error
@@ -89,6 +90,11 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			g.steps = append(g.steps, "merge")
 			g.merges = append(g.merges, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return g.merge[min(m, len(g.merge))-1], nil
+		})
+	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+			g.exhausted++
+			return nil
 		})
 	g.env.OnActivity(ActivityReportMergeFailure, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error {
@@ -370,5 +376,36 @@ func TestWorkflowNewApprovalReplacesThePendingRetry(t *testing.T) {
 	}
 	if d := g.finishAt.Sub(g.started); d > time.Hour+5*time.Minute {
 		t.Fatalf("finished %s after the start, want right after the second approval", d)
+	}
+}
+
+// Merge retries are bounded (ruling 129): the first failure and six
+// retries, one hour, then one exhausted report and no timer; the task
+// waits for a signal. A new approval restarts the merge with a fresh count.
+func TestWorkflowMergeRetriesAreCapped(t *testing.T) {
+	g := newGateHarness(t)
+	g.merge = []MergeResult{{Failed: "1"}, {Failed: "2"}, {Failed: "3"}, {Failed: "4"}, {Failed: "5"}, {Failed: "6"}, {Failed: "7"}, {Merged: true}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.merges) != 8 || g.exhausted != 1 {
+		t.Fatalf("final = %q, merges %d, exhausted reports %d; want 7 failed attempts, one report, then the approval's merge", final, len(g.merges), g.exhausted)
+	}
+	if d := g.finishAt.Sub(g.started); d < 10*time.Hour {
+		t.Fatalf("finished %s after the start: a timer merged before the new approval", d)
+	}
+}
+
+// A run from before the cap keeps retrying (versionMergeRetryCap).
+func TestWorkflowMergeRetriesBeforeTheCap(t *testing.T) {
+	g := newGateHarness(t)
+	g.env.OnGetVersion("merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap).Return(workflow.DefaultVersion)
+	g.merge = []MergeResult{{Failed: "1"}, {Failed: "2"}, {Failed: "3"}, {Failed: "4"}, {Failed: "5"}, {Failed: "6"}, {Failed: "7"}, {Merged: true}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.merges) != 8 || g.exhausted != 0 {
+		t.Fatalf("final = %q, merges %d, exhausted %d", final, len(g.merges), g.exhausted)
 	}
 }
