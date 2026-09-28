@@ -346,6 +346,7 @@ func TestChatCompletions(t *testing.T) {
 
 		wantStatus      int
 		wantDecision    string
+		wantReason      string // "" = don't check
 		wantErrType     string // "" = no error body expected
 		wantBody        string // "" = don't check
 		wantUpstreamReq string // "" = the client body forwarded verbatim
@@ -520,13 +521,14 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
-			name:    "a non-finite cost books the hold",
+			name:    "a non-finite cost books the hold and audits the missing-cost reason",
 			task:    &runningTask,
 			reqBody: chatBody("coding-cheap"),
 			resp:    stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "NaN"}},
 			// 132 input tokens at 1e-6 and 32768 output tokens at 4e-6
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
+			wantReason:      "cost not reported, booked the hold 0.131204 EUR",
 			wantSpent:       ptr(2.131204),
 			wantUpstreamHit: 1,
 		},
@@ -872,6 +874,9 @@ func TestChatCompletions(t *testing.T) {
 			last := audits[len(audits)-1]
 			if last.Decision != tt.wantDecision {
 				t.Fatalf("decision = %q, want %q (all rows %+v)", last.Decision, tt.wantDecision, audits)
+			}
+			if tt.wantReason != "" && last.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", last.Reason, tt.wantReason)
 			}
 
 			if tt.wantErrType != "" {

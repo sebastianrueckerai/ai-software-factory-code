@@ -522,6 +522,7 @@ var zeroCost = &zero
 // background context: the billing happened, so it must be recorded even if
 // the caller disconnected.
 func (s *Server) finish(c *modelCall, cost *float64, decision string) {
+	cost = policy.KnownCost(cost)
 	reason := ""
 	if cost == nil {
 		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)

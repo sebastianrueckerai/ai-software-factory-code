@@ -117,9 +117,10 @@ type Store interface {
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
-	// within the last `within`, on the store's clock, and have no open hold:
-	// a call still streaming books its own cost, and settling it too would
-	// book it twice.
+	// within the last `within`, on the store's clock, and have no open model
+	// hold: a call still streaming books its own cost, and settling it too
+	// would book it twice. Tool and resource holds never touch LiteLLM key
+	// spend, so they never hold up settlement.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
 	// SettleSpend raises the task's booked model spend (its model and
 	// settlement rows) to at least reported, LiteLLM's model spend, and
@@ -426,8 +427,8 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE status IN ('done', 'failed') AND finished_at > now() - make_interval(secs => $1)
-		 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task_id = tasks.id)
-		 ORDER BY finished_at`, within.Seconds())
+		 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task_id = tasks.id AND holds.kind = $2)
+		 ORDER BY finished_at`, within.Seconds(), policy.KindModel)
 	if err != nil {
 		return nil, err
 	}

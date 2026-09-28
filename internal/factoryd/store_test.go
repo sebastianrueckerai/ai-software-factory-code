@@ -480,6 +480,17 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(ids, []string{"s-done", "s-failed"}) {
 		t.Fatalf("recently finished = (%v, %v), want [s-done s-failed]", ids, err)
 	}
+	// an open tool hold never touches LiteLLM key spend, so it does not
+	// starve the task of settlement
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('s-failed', 'tool', 'web_scrape', 0.02, now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.RecentlyFinishedTasks(ctx, time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-done", "s-failed"}) {
+		t.Fatalf("recently finished with an open tool hold = (%v, %v), want [s-done s-failed]", ids, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM holds`); err != nil {
+		t.Fatal(err)
+	}
 	// a finished task with a call still holding headroom is left to that call
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('s-failed', 'model', 'coding-cheap', 0.1, now() + interval '1 hour')`); err != nil {
 		t.Fatal(err)

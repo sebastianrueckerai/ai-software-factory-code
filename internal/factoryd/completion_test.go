@@ -8,7 +8,18 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+// SpendSettleWindow must outlast HoldTTL: a hold taken just before a task
+// finishes is swept and booked up to HoldTTL after finishing, and the
+// settlement pass needs one more tick past that to see it (n1, fix round 3).
+func TestSpendSettleWindowOutlastsHoldTTL(t *testing.T) {
+	if want := policy.HoldTTL + time.Hour; SpendSettleWindow != want {
+		t.Fatalf("SpendSettleWindow = %s, want %s (policy.HoldTTL + 1h)", SpendSettleWindow, want)
+	}
+}
 
 type recordingBackend struct {
 	mu            sync.Mutex
@@ -173,7 +184,7 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 	}
 	store.finished["t1"] = now.Add(-10 * time.Second)
 	store.finished["t2"] = now.Add(-30 * time.Minute)
-	store.finished["old"] = now.Add(-61 * time.Minute) // past the 1h window
+	store.finished["old"] = now.Add(-121 * time.Minute) // past the 2h window
 	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
 
 	check := func(pass int, want map[string]float64) {

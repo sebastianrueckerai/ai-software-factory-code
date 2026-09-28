@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Completion is the task completion path: flip the task to closing (the
@@ -61,7 +63,10 @@ func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
 // settled against LiteLLM. LiteLLM writes key spend to its database in
 // batches, observed 60 to 80 s after a call, so an early pass can see part
 // of it; every pass inside the window raises spend again, never lowers it.
-const SpendSettleWindow = time.Hour
+// It outlasts HoldTTL by an hour: a hold taken just before the task
+// finished is swept and booked up to HoldTTL later, and the window must
+// still be open on the next pass after that, or the task is never settled.
+const SpendSettleWindow = policy.HoldTTL + time.Hour
 
 // SettleSpend raises each task finished within SpendSettleWindow to at
 // least the spend LiteLLM reports for its keys, so a call whose cost the

@@ -337,7 +337,11 @@ task alone while it has an open hold. Output limits bound reasoning:
 verified on GLM (reasoning counts inside `max_tokens`); Qwen's thinking
 does not, so the dashscope deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
-`tool` (see "Tools") and `resource`. LiteLLM's
+`tool` (see "Tools") and `resource`. During a superseded key's grace (the
+calls still in flight on it when a new run, policy version or day mints
+its replacement), a task briefly has two live keys, each capped at the
+headroom of its own mint, so LiteLLM does not count one key's spend
+against the other; the holds remain the primary cap. LiteLLM's
 `fail_closed_budget_enforcement` is the backstop.
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,
