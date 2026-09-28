@@ -992,7 +992,8 @@ func TestResourceApproveForTaskOrProjectAndDeny(t *testing.T) {
 func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	lease := time.Date(2026, 9, 28, 14, 30, 0, 0, time.UTC)
+	lease := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Minute)
+	at := lease.Format("2006-01-02 15:04 UTC")
 	r.resources.rows = []cloudres.Resource{
 		{ID: 10, Kind: "firewall", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", LeaseExpires: lease},
 		{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "cx33", Address: "203.0.113.9",
@@ -1012,14 +1013,14 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
-		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>2026-09-28 14:30 UTC</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
+		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
 		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
 		`<span id="promote-11" class="meta">promoted, about 10.1340 EUR a month against the envelope&#39;s 10.0000 EUR (0.0000 used or reserved this month)</span>`,
 		// the code repository has no envelope yet: the policy default
 		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
 		`name="server_types" type="text" value="cx23"`,
-		"Set by alice at 2026-09-28 14:30 UTC. This month: 1.5000 EUR used or reserved, 1 servers open.",
+		"Set by alice at " + at + ". This month: 1.5000 EUR used or reserved, 1 servers open.",
 		`name="server_types" type="text" value="cx23, cx33"`, `<label for="count-sf/other">`,
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
 	} {
