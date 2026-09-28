@@ -823,7 +823,9 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 			{Day: "2026-09-20", ByKind: map[string]float64{"model": 0.5}, Total: 0.5},
 			{Day: today, ByKind: map[string]float64{"model": 1.25, "settlement": 0.5, "resource": 2}, Total: 3.75},
 		},
-		Tasks: []policy.TaskCost{{TaskID: "t-big", EUR: 3.25}, {TaskID: "t-small", EUR: 1}, {TaskID: "t-tiny", EUR: 0.000543}}}
+		Tasks: []policy.TaskCost{
+			{TaskID: "t-big", EUR: 3.25, Lines: []policy.CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 3.125}, {Kind: "model", Ref: "review/review-frontier", EUR: 0.125}}},
+			{TaskID: "t-small", EUR: 1}, {TaskID: "t-tiny", EUR: 0.000543}}}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/costs = %d: %s", rec.Code, rec.Body)
@@ -840,6 +842,8 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 		"<th scope=\"row\">" + today + "</th><td>1.2500</td><td>0.0000</td><td>2.0000</td><td>0.5000</td><td>3.7500</td>",
 		"<th scope=\"row\">2026-09-20</th><td>0.5000</td>",
 		`<a href="/tasks/t-big/timeline">t-big</a></th><td>3.2500</td>`,
+		`<tr class="line"><td>model coding-cheap</td><td>3.1250</td></tr>`,
+		`<tr class="line"><td>model review/review-frontier</td><td>0.1250</td></tr>`,
 		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td>0.0005</td>`,
 	} {
 		if !strings.Contains(body, want) {

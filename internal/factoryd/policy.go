@@ -199,7 +199,7 @@ const maxCostDays = 366
 
 // CostsHandler serves GET /costs?from=YYYY-MM-DD&to=YYYY-MM-DD (UTC days,
 // both included, each defaulting to today): per-day totals by kind and
-// per-task totals from the ledger.
+// per-task totals with their lines (kind and ref) from the ledger.
 func CostsHandler(store PolicyStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		today := time.Now().UTC().Format(policy.DateLayout)

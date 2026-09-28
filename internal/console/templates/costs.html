@@ -10,11 +10,12 @@
 </tbody>
 </table>
 <table>
-<caption>Per task, {{.From}} to {{.To}}, EUR</caption>
-<thead><tr><th scope="col">Task</th><th scope="col">Total</th></tr></thead>
+<caption>Per task and line (kind and ref: a model, a factoryd purpose such as review with its model, a tool), {{.From}} to {{.To}}, EUR</caption>
+<thead><tr><th scope="col">Task, line</th><th scope="col">EUR</th></tr></thead>
 <tbody>
 {{range .Tasks}}<tr><th scope="row"><a href="/tasks/{{.TaskID}}/timeline">{{.TaskID}}</a></th><td>{{eur4 .EUR}}</td></tr>
-{{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
+{{range .Lines}}<tr class="line"><td>{{.Kind}} {{.Ref}}</td><td>{{eur4 .EUR}}</td></tr>
+{{end}}{{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table>
 {{template "foot"}}

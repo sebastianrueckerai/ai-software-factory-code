@@ -141,7 +141,9 @@ func TestLedgerCosts(t *testing.T) {
 		('t1', (now() AT TIME ZONE 'UTC')::date, 'model', 'coding-cheap', 0.5),
 		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'coding-cheap', 0.25),
 		('t1', (now() AT TIME ZONE 'UTC')::date, 'settlement', 'litellm', 0.125),
-		('t1', '2026-01-01', 'model', 'coding-cheap', 3)`); err != nil {
+		('t1', '2026-01-01', 'model', 'coding-cheap', 3),
+		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/review-frontier', 0.0625),
+		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/review-frontier', 0.0625)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
@@ -164,9 +166,12 @@ func TestLedgerCosts(t *testing.T) {
 		From: "2026-01-01", To: today.Format(DateLayout),
 		Days: []DayCost{
 			{Day: "2026-01-01", ByKind: map[string]float64{"model": 3}, Total: 3},
-			{Day: today.Format(DateLayout), ByKind: map[string]float64{"model": 0.75, "settlement": 0.125}, Total: 0.875},
+			{Day: today.Format(DateLayout), ByKind: map[string]float64{"model": 0.875, "settlement": 0.125}, Total: 1},
 		},
-		Tasks: []TaskCost{{TaskID: "t1", EUR: 3.625}, {TaskID: "t2", EUR: 0.25}},
+		Tasks: []TaskCost{
+			{TaskID: "t1", EUR: 3.625, Lines: []CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 3.5}, {Kind: "settlement", Ref: "litellm", EUR: 0.125}}},
+			{TaskID: "t2", EUR: 0.375, Lines: []CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 0.25}, {Kind: "model", Ref: "review/review-frontier", EUR: 0.125}}},
+		},
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("costs =\n%+v\nwant\n%+v", c, want)

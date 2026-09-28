@@ -124,8 +124,18 @@ type DayCost struct {
 }
 
 type TaskCost struct {
-	TaskID string  `json:"task_id"`
-	EUR    float64 `json:"eur"`
+	TaskID string     `json:"task_id"`
+	EUR    float64    `json:"eur"`
+	Lines  []CostLine `json:"lines"`
+}
+
+// CostLine is a task's spend on one ledger kind and ref: a model alias, a
+// factoryd purpose and its alias (review/review-frontier), a tool, a
+// resource.
+type CostLine struct {
+	Kind string  `json:"kind"`
+	Ref  string  `json:"ref"`
+	EUR  float64 `json:"eur"`
 }
 
 // DateLayout is the ledger's day format.
@@ -163,12 +173,34 @@ func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, er
 		return Costs{}, err
 	}
 	defer rows.Close()
+	byTask := map[string]int{}
 	for rows.Next() {
 		var t TaskCost
 		if err := rows.Scan(&t.TaskID, &t.EUR); err != nil {
 			return Costs{}, err
 		}
+		byTask[t.TaskID] = len(c.Tasks)
 		c.Tasks = append(c.Tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return Costs{}, err
+	}
+	rows, err = db.QueryContext(ctx,
+		`SELECT task_id, kind, ref, sum(eur)::float8 FROM ledger WHERE day BETWEEN $1::date AND $2::date
+		 GROUP BY task_id, kind, ref ORDER BY task_id, kind, ref`, c.From, c.To)
+	if err != nil {
+		return Costs{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var l CostLine
+		if err := rows.Scan(&id, &l.Kind, &l.Ref, &l.EUR); err != nil {
+			return Costs{}, err
+		}
+		if i, ok := byTask[id]; ok {
+			c.Tasks[i].Lines = append(c.Tasks[i].Lines, l)
+		}
 	}
 	return c, rows.Err()
 }

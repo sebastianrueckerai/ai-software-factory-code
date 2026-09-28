@@ -27,6 +27,7 @@ button { font: inherit; padding: .35rem .8rem; margin-top: .5rem; border: 1px so
 .logout button { margin: 0; background: var(--bg); color: var(--accent); }
 table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: .85rem; }
 th, td { text-align: left; border-bottom: 1px solid var(--line); padding: .3rem .5rem; vertical-align: top; }
+tr.line td:first-child { padding-left: 1.5rem; color: var(--muted); }
 code { white-space: pre-wrap; word-break: break-word; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 caption { text-align: left; font-weight: 600; padding: .3rem 0; }
