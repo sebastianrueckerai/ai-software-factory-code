@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
@@ -39,7 +38,7 @@ type Collector struct {
 	Project  string // ci | agent
 	Registry Registry
 	Provider Provider
-	// NodeIPs are the cluster nodes' public IPv4s (addresses or CIDRs,
+	// NodeIPs are the cluster nodes' public IPv4s as CIDRs (IPv4Sources of
 	// cluster-facts): a listed server on one of them means the token opens
 	// the cluster's own project, and the pass refuses (ruling 123).
 	NodeIPs []string
@@ -104,10 +103,6 @@ func (c *Collector) Collect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list servers: %w", err)
 	}
-	if err := c.interlock(servers); err != nil {
-		log.Printf("cloud collector (%s): refusing the pass: %v", c.Project, err)
-		return fmt.Errorf("refusing the pass: %w", err)
-	}
 	firewalls, err := c.Provider.Firewalls(ctx, "")
 	if err != nil {
 		return fmt.Errorf("list firewalls: %w", err)
@@ -129,6 +124,10 @@ func (c *Collector) Collect(ctx context.Context) error {
 	}
 	for _, v := range volumes {
 		listed = append(listed, providerResource{KindVolume, v.ID, v.Labels})
+	}
+	if err := c.interlock(servers, listed); err != nil {
+		log.Printf("cloud collector (%s): refusing the pass: %v", c.Project, err)
+		return fmt.Errorf("refusing the pass: %w", err)
 	}
 	rows, err := c.Registry.Open(ctx, c.Project)
 	if err != nil {
@@ -178,16 +177,17 @@ func (c *Collector) Collect(ctx context.Context) error {
 // interlock is ruling 123: the collector deletes whatever its project
 // holds, so a token that opens another project (the cluster's, another
 // factory project's) must stop it before anything is deleted.
-func (c *Collector) interlock(servers []hcloud.Server) error {
+func (c *Collector) interlock(servers []hcloud.Server, listed []providerResource) error {
 	if len(c.NodeIPs) == 0 {
 		return errors.New("no cluster node IPs to check the project against")
 	}
-	var nodes []*net.IPNet
-	for _, n := range c.NodeIPs {
-		n = strings.TrimSpace(n)
-		if !strings.Contains(n, "/") {
-			n += "/32"
+	for _, r := range listed {
+		if p, ok := r.labels["factory"]; ok && p != c.Project {
+			return fmt.Errorf("%s %d carries factory=%s: the token opens another project", r.kind, r.id, p)
 		}
+	}
+	nodes := make([]*net.IPNet, 0, len(c.NodeIPs))
+	for _, n := range c.NodeIPs {
 		_, cidr, err := net.ParseCIDR(n)
 		if err != nil {
 			return fmt.Errorf("node ip %q: %w", n, err)
@@ -195,9 +195,6 @@ func (c *Collector) interlock(servers []hcloud.Server) error {
 		nodes = append(nodes, cidr)
 	}
 	for _, s := range servers {
-		if p, ok := s.Labels["factory"]; ok && p != c.Project {
-			return fmt.Errorf("server %d carries factory=%s: the token opens another project", s.ID, p)
-		}
 		ip := net.ParseIP(s.IPv4())
 		for _, n := range nodes {
 			if ip != nil && n.Contains(ip) {

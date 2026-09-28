@@ -812,8 +812,8 @@ Image builds run outside the cluster instead (ruling 110,
   after a delete, so nothing trusts one snapshot.
 - **The interlock (ruling 123).** The collector deletes whatever its
   project holds, so a wrong token would wipe another project. A pass
-  that lists a server on one of the cluster nodes' IPv4s, or a server
-  labelled `factory=` another project, deletes nothing and logs
+  that lists a server on one of the cluster nodes' IPv4s, or a server,
+  firewall or volume labelled `factory=` another project, deletes nothing and logs
   `refusing the pass: ...`; so does a pass without node IPs to compare.
   A hand-made unlabelled server off the node addresses is still deleted.
   The gateway's agent-project collector runs the same check.

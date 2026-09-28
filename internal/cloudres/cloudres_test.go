@@ -358,7 +358,7 @@ func TestCollectDeletesFinishedOwner(t *testing.T) {
 	}
 }
 
-var testNodeIPs = []string{"198.51.100.10/32", "198.51.100.11"}
+var testNodeIPs = []string{"198.51.100.10/32", "198.51.100.11/32"}
 
 func serverAt(id int64, ip string, labels map[string]string) hcloud.Server {
 	s := hcloud.Server{ID: id, Labels: labels}
@@ -392,6 +392,31 @@ func TestCollectRefusesAPassOverTheWrongProject(t *testing.T) {
 			}
 			if h.state(t, expired.ID) != StateLive {
 				t.Fatalf("expired row = %s, want untouched", h.state(t, expired.ID))
+			}
+		})
+	}
+}
+
+// Any listed kind with another project's label is the wrong token, even
+// with no server in sight (ruling 123).
+func TestCollectRefusesAForeignLabelOnAnyKind(t *testing.T) {
+	for _, kind := range []string{KindFirewall, KindVolume} {
+		t.Run(kind, func(t *testing.T) {
+			h := newHarness()
+			foreign := map[string]string{"factory": "agent", "resource": "7"}
+			if kind == KindFirewall {
+				h.prov.firewalls[900] = hcloud.Firewall{ID: 900, Labels: foreign}
+				h.prov.firewalls[901] = hcloud.Firewall{ID: 901} // would be deleted as unknown
+			} else {
+				h.prov.volumes[900] = hcloud.Volume{ID: 900, Labels: foreign}
+				h.prov.firewalls[901] = hcloud.Firewall{ID: 901}
+			}
+			err := h.col.Collect(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "refusing the pass") {
+				t.Fatalf("err = %v, want a refused pass", err)
+			}
+			if len(h.prov.deleted) != 0 {
+				t.Fatalf("deleted = %v, want nothing", h.prov.deleted)
 			}
 		})
 	}
