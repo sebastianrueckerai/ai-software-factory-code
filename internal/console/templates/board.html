@@ -41,7 +41,9 @@
 <dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
 <dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
 <dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</dd>
-</dl>
+{{if .Merge.Recommendation}}<dt>Agent's recommendation</dt><dd class="reason">{{.Merge.Recommendation}}</dd>
+{{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
+{{end}}</dl>
 {{else}}<h4 id="approval-{{.ID}}">Resource request</h4>
 <dl class="facts">
 <dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>

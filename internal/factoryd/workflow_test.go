@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -42,6 +43,9 @@ type workflowHarness struct {
 	usage     []TaskUsage
 	logs      *lockedBuffer // the workflow's log
 	recorded  []recordedStep
+	infoAsked []string    // RequestInfo reasons, in order
+	closedAt  []time.Time // CloseNotReproduced calls
+	autoNotes []string    // AutoMergeNote calls: "pr commit"
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -105,6 +109,11 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivitySuperviseGate: func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
 			return GateDecision{}, nil
 		},
+		ActivityAutoMergeNote: func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
+			return nil
+		},
+		ActivityRequestInfo:        func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
+		ActivityCloseNotReproduced: func(ctx context.Context, taskID string) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -124,6 +133,21 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
 			return int64(600 + len(h.escalated)), nil
+		})
+	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, reason string) (int64, error) {
+			h.infoAsked = append(h.infoAsked, reason)
+			return int64(650 + len(h.infoAsked)), nil
+		})
+	h.env.OnActivity(ActivityCloseNotReproduced, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) error {
+			h.closedAt = append(h.closedAt, h.env.Now())
+			return nil
+		})
+	h.env.OnActivity(ActivityAutoMergeNote, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
+			h.autoNotes = append(h.autoNotes, fmt.Sprintf("%d %s", pr, commit))
+			return nil
 		})
 	h.env.OnActivity(ActivityFinish, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, final, reason string) error {

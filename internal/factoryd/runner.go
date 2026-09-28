@@ -277,13 +277,14 @@ func (r *Runner) BootSweep(ctx context.Context) {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id       string
-	parent   string
-	findings []string
-	answers  []string
-	model    string
-	startRef string
-	repo     Repo
+	id         string
+	parent     string
+	findings   []string
+	answers    []string
+	posterInfo []string
+	model      string
+	startRef   string
+	repo       Repo
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -613,7 +614,8 @@ func (r *Runner) supervisorConfig() SupervisorConfig {
 // metered against the task's and the day's headroom.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
 	return r.supervisor.Decide(ctx, t.ID, SupervisorInput{
-		Brief:   harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers},
+		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
+			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
 		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},
 		Digest:  digest.digest(),
 		Record:  recorder.Tail(maxRecordTail),
@@ -872,6 +874,7 @@ func (r *Runner) supervisionTick() time.Duration {
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	findingsJSON, _ := json.Marshal(s.findings)
 	answersJSON, _ := json.Marshal(s.answers)
+	posterJSON, _ := json.Marshal(s.posterInfo)
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
@@ -892,6 +895,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "FINDINGS", "value": string(findingsJSON)},
 		{"name": "ANSWERS", "value": string(answersJSON)},
+		{"name": "POSTER_INFO", "value": string(posterJSON)},
+		{"name": "AUTHOR", "value": t.Author},
+		{"name": "AUTHOR_STANDING", "value": t.Standing()},
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})

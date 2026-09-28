@@ -401,6 +401,21 @@ func IssueLane(names []string) string {
 	return LaneAgent
 }
 
+// outsiderLabels are the labels intake reads off an outside account's new
+// issue: Forgejo 15 applies whatever labels its new-issue form posts, from
+// anyone, so the writers' lane and priority labels (agent, human,
+// priority/*, severity/*) count only from a writer; bug and improvement
+// are the templates' own.
+func outsiderLabels(names []string) []string {
+	var out []string
+	for _, n := range names {
+		if _, weighted := priorityLabelWeight[n]; n != "agent" && n != "human" && !weighted {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // intakeIssue turns an issue of repo into a task row of its lane,
 // idempotent per (repository, issue number): a redelivery, a later label
 // event or a heal pass finds the task already linked and no-ops, except
@@ -426,27 +441,31 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		return nil
 	}
 
-	id := NewTaskID()
 	poster := issue.Poster.UserName
-	task := Task{
-		ID:          id,
-		Priority:    priorityFromLabels(names),
-		RiskClass:   "standard",
-		BudgetEUR:   in.Budget().ClampBudget(0),
-		Status:      "queued",
-		Objective:   objectiveFromIssue(issue),
-		Repository:  repo,
-		Kind:        "agent",
-		IssueNumber: issue.Index,
-		Source:      "webhook",
-		CreatedAt:   issue.CreatedAt,
-		Author:      poster,
-	}
 	writer, err := in.trusted(ctx, repo, poster)
 	if err != nil {
 		return err
 	}
-	task.AuthorWriter = writer
+	if !writer {
+		names = outsiderLabels(names)
+		lane = IssueLane(names)
+	}
+	id := NewTaskID()
+	task := Task{
+		ID:           id,
+		Priority:     priorityFromLabels(names),
+		RiskClass:    "standard",
+		BudgetEUR:    in.Budget().ClampBudget(0),
+		Status:       "queued",
+		Objective:    objectiveFromIssue(issue),
+		Repository:   repo,
+		Kind:         "agent",
+		IssueNumber:  issue.Index,
+		Source:       "webhook",
+		CreatedAt:    issue.CreatedAt,
+		Author:       poster,
+		AuthorWriter: writer,
+	}
 	switch lane {
 	case LaneAgent:
 		task.RequiredCapabilities = AgentCapabilities
@@ -667,6 +686,9 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 	if err != nil {
 		return err
 	}
+	if !onPR && !trusted && t.Author != "" && c.Author == t.Author {
+		kind = IntakePosterComment // information for a request, whatever the author's access; never authority
+	}
 	e, err := in.record(ctx, IntakeEvent{
 		TaskID: t.ID, Kind: kind, Author: c.Author, Body: c.Body, DeliveryID: delivery, CommentID: c.ID, Trusted: trusted,
 	})
@@ -711,7 +733,7 @@ func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, error
 // the same one send it once between them; a failed signal releases the
 // claim.
 func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent, pr int64) error {
-	if !e.Trusted || e.Signalled {
+	if !e.Trusted && e.Kind != IntakePosterComment || e.Signalled {
 		return nil
 	}
 	name, sig, _ := signalOf(e, pr)
@@ -738,6 +760,8 @@ func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bo
 	switch e.Kind {
 	case "issue_comment":
 		name, sig.Comment = SignalHumanComment, e.CommentID
+	case IntakePosterComment:
+		name, sig.Comment = SignalPosterComment, e.CommentID
 	case "pull_request_comment", "pull_request_review_rejected":
 		name, sig.PR = SignalChangesRequested, pr
 	case "issue_closed":
@@ -763,7 +787,7 @@ func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) e
 	// a decision on another pull request of the task branch was ignored
 	// by the workflow and stays ignored
 	if !decision || !e.Trusted || !e.Signalled || time.Since(e.CreatedAt) < decisionResignalAfter ||
-		(t.Status != "in-review" && t.Status != "waiting-human") || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
+		!slices.Contains([]string{"in-review", "waiting-human", "waiting-poster"}, t.Status) || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
 		return nil
 	}
 	log.Printf("intake: task %s still %s after decision %d (%s): signalling it again", t.ID, t.Status, e.ID, e.Kind)
@@ -910,7 +934,9 @@ func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number 
 		}
 	}
 	for _, c := range comments {
-		if c.Author == in.BotUser || !c.CreatedAt.After(idless) || slices.ContainsFunc(known, func(e IntakeEvent) bool { return e.Kind == kind && e.CommentID == c.ID }) {
+		if c.Author == in.BotUser || !c.CreatedAt.After(idless) || slices.ContainsFunc(known, func(e IntakeEvent) bool {
+			return (e.Kind == kind || !onPR && e.Kind == IntakePosterComment) && e.CommentID == c.ID
+		}) {
 			continue
 		}
 		if err := in.recordComment(ctx, t, onPR, number, c, ""); err != nil {

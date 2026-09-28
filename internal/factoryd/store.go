@@ -12,6 +12,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 )
@@ -64,6 +65,14 @@ type Task struct {
 	// session: its recommendation, and a not_reproduced line when it
 	// fixed a fault it did not reproduce exactly (ruling 149).
 	AgentSummary string
+}
+
+// Standing is the issue author's standing (ruling 152).
+func (t Task) Standing() string {
+	if t.AuthorWriter {
+		return harness.StandingWriter
+	}
+	return harness.StandingOutside
 }
 
 // maxAgentSummary bounds the agent's last word kept on the task row.

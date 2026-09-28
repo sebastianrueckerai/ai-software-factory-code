@@ -164,7 +164,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
-		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, PolicyVersion: 7}
+		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, PolicyVersion: 7, MergeRule: "human"}
 	if fmt.Sprint(g) != fmt.Sprint(want) {
 		t.Fatalf("gate = %+v, want %+v", g, want)
 	}
@@ -212,29 +212,38 @@ func TestGateMigrationComments(t *testing.T) {
 }
 
 func TestParseReview(t *testing.T) {
+	yes, no := true, false
 	for name, tc := range map[string]struct {
-		in   string
-		want Review
-		note string
+		in     string
+		want   Review
+		note   string
+		strict bool
 	}{
-		"approve":          {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, ""},
-		"concerns, fenced": {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, ""},
-		"not json":         {"looks good to me", Review{}, "model review answer invalid"},
-		"unknown verdict":  {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`},
-		"extra field":      {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`},
-		"no summary":       {`{"verdict":"approve","summary":" "}`, Review{}, "no summary"},
-		"trailing text":    {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object"},
-		"a note smuggled":  {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field"},
+		"strict asked, true":      {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &yes}, "", true},
+		"strict asked, false":     {`{"verdict":"approve","summary":"s","strict_improvement":false}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &no}, "", true},
+		"strict asked, missing":   {`{"verdict":"approve","summary":"s"}`, Review{}, "no strict_improvement", true},
+		"strict not asked, given": {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s"}, "", false},
+		"approve":                 {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, "", false},
+		"concerns, fenced":        {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, "", false},
+		"not json":                {"looks good to me", Review{}, "model review answer invalid", false},
+		"unknown verdict":         {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`, false},
+		"extra field":             {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`, false},
+		"no summary":              {`{"verdict":"approve","summary":" "}`, Review{}, "no summary", false},
+		"trailing text":           {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
+		"a note smuggled":         {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := parseReview(tc.in)
+			got := parseReview(tc.in, tc.strict)
 			if tc.note != "" {
 				if got.Verdict != "" || !strings.Contains(got.Note, tc.note) {
 					t.Fatalf("parseReview = %+v, want a note containing %q", got, tc.note)
 				}
 				return
 			}
-			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+			gotStrict, wantStrict := got.StrictImprovement, tc.want.StrictImprovement
+			got.StrictImprovement, tc.want.StrictImprovement = nil, nil
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) || (gotStrict == nil) != (wantStrict == nil) ||
+				gotStrict != nil && *gotStrict != *wantStrict {
 				t.Fatalf("parseReview = %+v, want %+v", got, tc.want)
 			}
 		})
@@ -274,7 +283,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	if len(meter.released) != 1 || *meter.released[0].cost != 0.03 || meter.released[0].hold.Ref != "review-frontier" {
 		t.Fatalf("released = %+v, want the review booked at 0.03", meter.released)
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "not a decision") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"model_review"`) {

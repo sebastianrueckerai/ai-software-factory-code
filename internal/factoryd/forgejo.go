@@ -1006,6 +1006,16 @@ func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, numb
 	return err
 }
 
+// CloseIssue closes issue number as the bot.
+func (f *Forgejo) CloseIssue(ctx context.Context, owner, repo string, number int64) error {
+	payload, err := json.Marshal(map[string]any{"state": "closed"})
+	if err != nil {
+		return err
+	}
+	_, err = f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, number), payload, http.StatusCreated)
+	return err
+}
+
 // CreateIssueComment posts a comment on an issue: the workflow uses it to
 // record why a task's attempts were exhausted or it otherwise failed, on
 // the same issue task 42 filed at intake.

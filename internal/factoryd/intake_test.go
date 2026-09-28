@@ -413,10 +413,18 @@ func TestIntakeIssueLanes(t *testing.T) {
 		{"sebastian", []string{"question"}, "queued", "agent", true, true, "state/queued"},
 		{"sebastian", []string{"improvement"}, "suggested", "agent", true, false, "state/suggested"},
 		{"sebastian", []string{"human"}, "waiting-human", "human", true, false, "state/waiting-human"},
+		// Forgejo applies any label an outsider's new-issue form posts:
+		// the writers' lane labels do not count from them
+		{"outsider", []string{"human"}, "queued", "agent", false, true, "state/queued"},
+		{"outsider", []string{"improvement", "agent"}, "suggested", "agent", false, false, "state/suggested"},
 	} {
 		t.Run(fmt.Sprintf("%s %v", tc.poster, tc.labels), func(t *testing.T) {
 			in, store, _ := newTestIntake(t)
-			body := issueOpenedBody(5, tc.poster, tc.labels, "It breaks", "body")
+			labels := tc.labels
+			if tc.poster == "outsider" {
+				labels = append(slices.Clone(labels), "priority/p0")
+			}
+			body := issueOpenedBody(5, tc.poster, labels, "It breaks", "body")
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 			}
@@ -427,7 +435,7 @@ func TestIntakeIssueLanes(t *testing.T) {
 			for _, tk := range store.tasks {
 				task = tk
 			}
-			if task.Status != tc.status || task.Kind != tc.kind || task.Author != tc.poster || task.AuthorWriter != tc.writer {
+			if task.Status != tc.status || task.Kind != tc.kind || task.Author != tc.poster || task.AuthorWriter != tc.writer || task.Priority != 0 {
 				t.Fatalf("task = %+v, want status %s kind %s author %s writer %v", task, tc.status, tc.kind, tc.poster, tc.writer)
 			}
 			if started := slices.Contains(workflowsOf(in).started, task.ID); started != tc.started {
@@ -1357,5 +1365,44 @@ func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 	store.projects[0].MergeToken = ""
 	if _, err := in.trusted(context.Background(), "demo-app/demo-app", "someone"); err == nil || !strings.Contains(err.Error(), "no factory-merge token") {
 		t.Fatalf("unminted project: err = %v, want it to fail closed", err)
+	}
+}
+
+// Ruling 150's resume rule: the issue author's comment is signalled as
+// information whatever their access (poster_comment), a stranger's is
+// only recorded, a writer's stays a human comment; the heal pass does not
+// record the author's comment a second time.
+func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	task := Task{ID: "t-p", Repository: "sf/ai-software-factory-code", Status: "waiting-poster", IssueNumber: 30, Kind: "agent", Author: "visitor"}
+	store.tasks["t-p"] = task
+	comment := func(user string, id int) {
+		b, _ := json.Marshal(map[string]any{
+			"action":     "created",
+			"issue":      map[string]any{"number": 30, "user": map[string]string{"login": "visitor"}},
+			"comment":    map[string]any{"id": id, "user": map[string]string{"login": user}, "body": "Firefox 131"},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		})
+		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", user, rr.Code)
+		}
+	}
+	comment("stranger", 1)
+	comment("visitor", 2)
+	comment("sebastian", 3)
+	want := []string{"t-p poster_comment visitor #0 c2: Firefox 131", "t-p human_comment sebastian #0 c3: Firefox 131"}
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want %q", got, want)
+	}
+	var kinds []string
+	for _, e := range store.intakeEvents {
+		kinds = append(kinds, fmt.Sprintf("%s %s trusted=%v", e.Kind, e.Author, e.Trusted))
+	}
+	if wantKinds := []string{"issue_comment stranger trusted=false", "poster_comment visitor trusted=false", "issue_comment sebastian trusted=true"}; !slices.Equal(kinds, wantKinds) {
+		t.Fatalf("events = %q, want %q", kinds, wantKinds)
+	}
+	// the author's comment never counts as an escalation's answer
+	if answers, _ := answersFrom(append([]IntakeEvent{{Kind: IntakeEscalation, CommentID: 1}}, store.intakeEvents...)); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
+		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }

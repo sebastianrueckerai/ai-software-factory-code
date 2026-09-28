@@ -352,7 +352,8 @@ func newRig(t *testing.T) *rig {
 					`"reservation_eur":0.072,"hourly_eur":0.0144,"beyond_envelope":["a lease of 300 minutes exceeds the envelope's 4 h"]}`)},
 			{ID: 4, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 9, Status: "pending",
 				Spec: json.RawMessage(`{"risk_class":"high","migration":true,"migrations":["internal/factoryd/migrations/0018_x.sql"],` +
-					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123"}`)},
+					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123",` +
+					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"]}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
 		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}, projects: &fakeProjects{}}
@@ -878,6 +879,9 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// the merge request: the PR, the risk class, the migration, the review
 		`Merge <a href="https://git.example/sf/code/pulls/9">PR #9</a>`, "<dd>high</dd>",
 		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>", "<dd>approve: adds the column safely</dd>",
+		// ruling 149: the agent's recommendation and why no auto merge
+		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
+		"<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>",
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
 	} {

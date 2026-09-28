@@ -113,11 +113,14 @@ func run(log func(string, ...any)) int {
 	}
 
 	brief := harness.TaskBrief{
-		Objective:  env.objective,
-		Repository: env.repository,
-		SHA:        env.repoSHA,
-		Findings:   env.findings,
-		Answers:    env.answers,
+		Objective:      env.objective,
+		Repository:     env.repository,
+		SHA:            env.repoSHA,
+		Findings:       env.findings,
+		Answers:        env.answers,
+		PosterInfo:     env.posterInfo,
+		Author:         env.author,
+		AuthorStanding: env.authorStanding,
 	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
@@ -283,7 +286,8 @@ type workerEnv struct {
 	repoURL, repoToken, pushURL, pushToken                    string
 	gatewayURL, tokenFile, model                              string
 	answerTokens, headroomTokens                              int
-	findings, answers                                         []string
+	findings, answers, posterInfo                             []string
+	author, authorStanding                                    string
 	home                                                      string
 }
 
@@ -305,6 +309,7 @@ func loadEnv() (workerEnv, error) {
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
 	e.home = str("HOME")
+	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	for name, val := range map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
 		"BRANCH": e.branch, "PUSH_URL": e.pushURL, "PUSH_TOKEN": e.pushToken, "GATEWAY_URL": e.gatewayURL,
@@ -324,8 +329,8 @@ func loadEnv() (workerEnv, error) {
 	if e.headroomTokens, err = strconv.Atoi(str("HEADROOM_TOKENS")); err != nil {
 		return e, fmt.Errorf("HEADROOM_TOKENS: %w", err)
 	}
-	// FINDINGS and ANSWERS arrive as JSON arrays; absent means none.
-	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers} {
+	// FINDINGS, ANSWERS and POSTER_INFO arrive as JSON arrays; absent means none.
+	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo} {
 		if raw := str(name); raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)

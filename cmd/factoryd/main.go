@@ -478,6 +478,8 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			SHA:  sha,
 			Kind: "agent", IssueNumber: ref.Number, Source: "api",
 			ReproCommand: in.ReproCommand,
+			// the intake token's holder files as the bot, with a writer's standing
+			Author: forgejo.BotUser, AuthorWriter: true,
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

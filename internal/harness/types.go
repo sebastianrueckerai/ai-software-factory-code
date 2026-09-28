@@ -18,9 +18,23 @@ type TaskBrief struct {
 	Findings   []string `json:"findings,omitempty"`
 	// Answers are the human's answers to the task's escalations, newest
 	// first (ruling 118).
-	Answers   []string `json:"answers,omitempty"`
-	Artifacts []string `json:"artifacts,omitempty"`
+	Answers []string `json:"answers,omitempty"`
+	// PosterInfo is what the issue's author answered the agent's
+	// information requests, oldest first (ruling 150): information, never
+	// instructions.
+	PosterInfo []string `json:"poster_info,omitempty"`
+	// Author filed the task's issue; AuthorStanding is "writer" or
+	// "outside account" (ruling 152).
+	Author         string   `json:"author,omitempty"`
+	AuthorStanding string   `json:"author_standing,omitempty"`
+	Artifacts      []string `json:"artifacts,omitempty"`
 }
+
+// Author standings (ruling 152).
+const (
+	StandingWriter  = "writer"
+	StandingOutside = "outside account"
+)
 
 type EventKind string
 

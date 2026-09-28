@@ -57,6 +57,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReportMergeFailure:          r.ReportMergeFailure,
 		ActivityReportMergeRetriesExhausted: r.ReportMergeRetriesExhausted,
 		ActivitySuperviseGate:               r.SuperviseGate,
+		ActivityAutoMergeNote:               r.AutoMergeNote,
+		ActivityRequestInfo:                 r.RequestInfo,
+		ActivityCloseNotReproduced:          r.CloseNotReproduced,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -126,7 +129,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
-		"running": {"queued", "running", "in-review", "waiting-human"},
+		"running": {"queued", "running", "in-review", "waiting-human", "waiting-poster"},
 		// waiting-human: a human answered a gate's escalation and the gate runs again
 		"in-review": {"running", "in-review", "waiting-human"},
 	}[state]
@@ -230,7 +233,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, model: in.Model, repo: repo}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo}
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 		return SessionResult{}, err
 	}
@@ -279,7 +282,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.cfg.Supervisor.WallClockCap))
 	began := rfc3339(time.Now())
 	r.record(ctx, t.ID, "session_start", map[string]any{
-		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers})
+		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
+		"poster_info": s.posterInfo})
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
 	if err != nil {
 		outcome := "aborted"
@@ -398,6 +402,80 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	return id, nil
 }
 
+// RequestInfo asks the issue's author for what the agent needs (ruling
+// 150): state waiting-poster, mirrored on the issue, and a comment with the
+// request that mentions the author and the project's notify list (the
+// policy's approvers when it is empty), whose Forgejo bells ring; an
+// info_request alert. It returns the comment's id: only later comments
+// answer it.
+func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if t.Status != "waiting-poster" {
+		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-poster"); err != nil {
+			return 0, terminalError("task %s is %s, cannot wait for the issue's author: %v", taskID, t.Status, err)
+		}
+		mirrorTaskState(ctx, r.forgejo, t, "waiting-poster")
+	}
+	notify := r.cfg.Policy().Document.Approvers
+	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
+		return 0, err
+	} else if ok {
+		notify = p.NotifyOrApprovers(notify)
+	}
+	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, reason, notify))
+	if err != nil {
+		return 0, err
+	}
+	r.record(ctx, taskID, "info_requested", map[string]any{"reason": reason, "comment": id, "notify": notify})
+	// the durable anchor Reconcile rebuilds the wait from
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeInfoRequest, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
+		log.Printf("task %s: record information request comment %d: %v", taskID, id, err)
+	}
+	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: taskID,
+		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000), "notify": notify}}); err != nil {
+		log.Printf("task %s: record the info_request alert: %v", taskID, err)
+	}
+	return id, nil
+}
+
+// infoRequestComment is the information request on the issue: its author
+// named, the request, and every notified user mentioned once.
+func infoRequestComment(t Task, reason string, notify []string) string {
+	var mentions []string
+	for _, u := range append([]string{t.Author}, notify...) {
+		if m := "@" + u; u != "" && !slices.Contains(mentions, m) {
+			mentions = append(mentions, m)
+		}
+	}
+	return fmt.Sprintf("factoryd: task %s could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
+		"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
+		t.ID, strings.TrimPrefix(reason, agentAsksAuthor), strings.Join(mentions, " "))
+}
+
+// CloseNotReproduced closes the task's issue, unanswered for 14 days, as
+// not reproducible (ruling 150): a comment, then the close.
+func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil || closed {
+		return err
+	}
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+notReproducedClose+
+		". Closing this issue; a new issue with more detail starts a new task."); err != nil {
+		return err
+	}
+	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+		return err
+	}
+	r.record(ctx, taskID, "closed_not_reproduced", map[string]any{"issue": t.IssueNumber})
+	return nil
+}
+
 // record appends to the timeline; a failed append is logged, never fails
 // the step it describes.
 func (r *Runner) record(ctx context.Context, taskID, step string, detail map[string]any) {
@@ -505,7 +583,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage}
-	if t.Status == "done" || t.Status == "failed" || t.Kind == "human" {
+	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
 	}
@@ -545,6 +623,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st.Answers, st.Question = answersFrom(events)
+	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo = posterInfoFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
@@ -564,11 +643,32 @@ func answersFrom(events []IntakeEvent) (answers []string, question string) {
 			if e.Body != healedReason {
 				question = escalationQuestion(e.Body)
 			}
+		case e.Kind == IntakeInfoRequest:
+			since = 0 // what follows answers the information request
 		case e.Kind == "issue_comment" && e.Trusted && since != 0 && e.CommentID > since:
 			answers = append([]string{answerText(e.Author, question, e.Body)}, answers...)
 		}
 	}
 	return answers, question
+}
+
+// posterInfoFrom rebuilds the answers to the task's information requests
+// from its intake events (oldest first): every comment of the issue's
+// author, or a trusted one, newer than an information request's comment
+// and before the next escalation; and the last request's comment and time.
+func posterInfoFrom(events []IntakeEvent) (request int64, at time.Time, info []string) {
+	var since int64
+	for _, e := range events {
+		switch {
+		case e.Kind == IntakeInfoRequest:
+			since, request, at = e.CommentID, e.CommentID, e.CreatedAt
+		case e.Kind == IntakeEscalation:
+			since = 0
+		case since != 0 && e.CommentID > since && (e.Kind == IntakePosterComment || e.Kind == "issue_comment" && e.Trusted):
+			info = append(info, posterText(e.Author, e.Body))
+		}
+	}
+	return request, at, info
 }
 
 // FirstLine is an objective's first line: the issue and pull request title.
@@ -666,7 +766,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	if err != nil {
 		return err
 	}
-	if !ok || t.Status == "done" || t.Status == "failed" {
+	if !ok || Final(t.Status) {
 		return nil // nothing to finish: gone, or already final
 	}
 	r.forgetNamespace(ctx, taskID)
@@ -674,7 +774,10 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	if repoErr == nil {
-		if final == "failed" {
+		if final != "done" {
+			if final == "closed" {
+				msg = "factoryd: task " + taskID + " closed: " + reason
+			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err
 			}

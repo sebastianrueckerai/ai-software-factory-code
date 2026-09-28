@@ -1,0 +1,482 @@
+package factoryd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+)
+
+// Ruling 149's decision table: every condition of the merge outcome auto,
+// each one alone failing it.
+func TestAutoMerge(t *testing.T) {
+	yes, no := true, false
+	auto := GateResults{
+		Policy:       PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto},
+		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0},
+	}
+	approve := Review{Verdict: "approve", Summary: "fixes the slug check"}
+	with := func(f func(*GateResults, *Review)) (GateResults, Review) {
+		g, rv := auto, approve
+		f(&g, &rv)
+		return g, rv
+	}
+	for name, tc := range map[string]struct {
+		f     func(*GateResults, *Review)
+		ok    bool
+		unmet string
+	}{
+		"all hold":                 {func(*GateResults, *Review) {}, true, ""},
+		"merge rule human":         {func(g *GateResults, _ *Review) { g.Policy.MergeRule = policy.MergeHuman }, false, "the project's merge rule is human"},
+		"no project row":           {func(g *GateResults, _ *Review) { g.Policy.MergeRule = "" }, false, "the project's merge rule is human"},
+		"normal requires approval": {func(g *GateResults, _ *Review) { g.Policy.Outcome = policy.OutcomeRequiresApproval }, false, "risk class normal is requires_approval"},
+		"class high": {func(g *GateResults, _ *Review) {
+			g.Policy.Class, g.Policy.Outcome = "high", policy.OutcomeRequiresApproval
+		}, false, "risk class high is requires_approval"},
+		"class migration": {func(g *GateResults, _ *Review) {
+			g.Policy.Class, g.Policy.Outcome = "migration", policy.OutcomeRequiresApproval
+		}, false, "risk class migration is requires_approval"},
+		"reproduction skipped":             {func(g *GateResults, _ *Review) { g.Reproduction = ReproResult{} }, false, "the reproduction gate did not run: the task has no reproduction command"},
+		"reproduction exit 1":              {func(g *GateResults, _ *Review) { g.Reproduction.Exit = 1 }, false, "the reproduction exited 1"},
+		"review concerns":                  {func(_ *GateResults, rv *Review) { rv.Verdict = "concerns" }, false, "the model review's verdict is concerns"},
+		"no review":                        {func(_ *GateResults, rv *Review) { *rv = Review{Note: "model review failed: 502"} }, false, "no model review verdict: model review failed: 502"},
+		"not reproduced, strict true":      {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &yes }, true, ""},
+		"not reproduced, strict false":     {func(g *GateResults, rv *Review) { g.Reproduction.NotReproduced, rv.StrictImprovement = "x", &no }, false, "not reproduced exactly"},
+		"not reproduced, strict missing":   {func(g *GateResults, _ *Review) { g.Reproduction.NotReproduced = "x" }, false, "not reproduced exactly"},
+		"reproduced, strict false ignored": {func(_ *GateResults, rv *Review) { rv.StrictImprovement = &no }, true, ""},
+		"skipped and not reproduced": {func(g *GateResults, rv *Review) {
+			g.Reproduction, rv.StrictImprovement = ReproResult{NotReproduced: "x"}, &yes
+		}, false, "did not run"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, unmet := AutoMerge(with(tc.f))
+			if ok != tc.ok || (tc.ok && len(unmet) != 0) || (!tc.ok && (len(unmet) != 1 || !strings.Contains(unmet[0], tc.unmet))) {
+				t.Fatalf("AutoMerge = %v %q, want %v with one unmet condition containing %q", ok, unmet, tc.ok, tc.unmet)
+			}
+		})
+	}
+	g, rv := with(func(g *GateResults, rv *Review) {
+		g.Policy.MergeRule, g.Reproduction, rv.Verdict = policy.MergeHuman, ReproResult{}, "concerns"
+	})
+	if ok, unmet := AutoMerge(g, rv); ok || len(unmet) != 3 {
+		t.Fatalf("three unmet = %v %q, want all three named", ok, unmet)
+	}
+}
+
+// autoGates is a gate harness where every auto condition holds.
+func autoGates(g *gateHarness) {
+	g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7, Changed: 2}
+	g.repro = []ReproResult{{Ran: true, Command: "make repro", Exit: 0}}
+}
+
+// On auto, factory-merge merges after the review with the note on the
+// pull request and no approval card.
+func TestWorkflowAutoMergesWithoutACard(t *testing.T) {
+	g := newGateHarness(t, autoGates)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover}) || !slices.Equal(g.autoNotes, []string{"9 c1"}) || len(g.approvals) != 0 {
+		t.Fatalf("merges %q, notes %q, approvals %d: want one auto merge with its note, no card", g.merges, g.autoNotes, len(g.approvals))
+	}
+	if g.finals[0][1] != "pull request merged by factory-merge on the merge rule auto" {
+		t.Fatalf("reason = %q", g.finals[0][1])
+	}
+}
+
+// Anything short of auto is the card as today, which says why.
+func TestWorkflowAutoUnmetGoesToTheCard(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) { g.repro = []ReproResult{{}} })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"the reproduction gate did not run: the task has no reproduction command"}) ||
+		len(g.autoNotes) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
+		t.Fatalf("approvals %+v, notes %q, merges %q", g.approvals, g.autoNotes, g.merges)
+	}
+}
+
+// An auto merge Forgejo refuses goes to the card, which names the refusal.
+func TestWorkflowRefusedAutoMergeGoesToTheCard(t *testing.T) {
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.merge = []MergeResult{{Refusal: "not allowed to merge"}, {Merged: true}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"Forgejo refused the auto merge: not allowed to merge"}) ||
+		!slices.Equal(g.merges, []string{"9 c1 " + AutoApprover, "9 c1 sebastian"}) {
+		t.Fatalf("approvals %+v, merges %q", g.approvals, g.merges)
+	}
+}
+
+func needsInfo(session string) SessionResult {
+	return SessionResult{Outcome: OutcomeNeedsInfo, SessionID: session, Summary: "supervisor: escalate after agent_info_request",
+		Reason: "The agent asks the issue's author: Which browser?\nTried: the steps\nNeeds: the version"}
+}
+
+// needs_info asks the author; a comment older than the request and a
+// stranger's never reach the workflow's count, the author's answer resumes
+// the task with it as poster information in the next session's brief.
+func TestWorkflowNeedsInfoResumesWithThePostersAnswer(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(needsInfo("s1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: "old", Comment: 10})
+	h.signalAfter(2*time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: "Firefox 131", Comment: 700})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if !slices.Equal(h.infoAsked, []string{needsInfo("s1").Reason}) || len(h.escalated) != 0 {
+		t.Fatalf("info requests %q, escalations %q", h.infoAsked, h.escalated)
+	}
+	if len(h.sessions) != 2 || h.sessions[0].PosterInfo != nil || !slices.Equal(h.sessions[1].PosterInfo, []string{"visitor: Firefox 131"}) ||
+		len(h.sessions[1].Answers) != 0 {
+		t.Fatalf("sessions = %+v, want the second with the author's answer as poster information only", h.sessions)
+	}
+	// the answer buys one more attempt, as a human's does
+	if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 1 {
+		t.Fatalf("usage = %+v, want one extra attempt", u)
+	}
+}
+
+// 14 days without an answer: the issue closes as not reproducible and the
+// task ends closed.
+func TestWorkflowNeedsInfoClosesAfter14Days(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(needsInfo("s1"))
+	start := h.env.Now()
+	h.signalAfter(24*time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: "old", Comment: 5})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if h.finals[0][1] != "not reproducible, no answer in 14 days" || len(h.closedAt) != 1 {
+		t.Fatalf("finals %v, closes %d", h.finals, len(h.closedAt))
+	}
+	if waited := h.closedAt[0].Sub(start); waited < 14*24*time.Hour || waited > 14*24*time.Hour+time.Hour {
+		t.Fatalf("closed after %s, want 14 days", waited)
+	}
+	if len(h.sessions) != 1 {
+		t.Fatalf("sessions = %d, want no second one", len(h.sessions))
+	}
+}
+
+// A healed run waiting on the author asks no second time and waits only
+// for what is left of the 14 days, keeping the answers so far.
+func TestWorkflowHealedWaitingPosterWaitsTheRest(t *testing.T) {
+	h := newWorkflowHarness(t)
+	start := h.env.Now()
+	h.state = RunState{Status: "waiting-poster", InfoRequest: 651, InfoRequestedAt: start.Add(-10 * 24 * time.Hour), PosterInfo: []string{"visitor: Linux"}}
+	h.onSessions(needsInfo("s1"))
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.infoAsked) != 0 || len(h.closedAt) != 1 {
+		t.Fatalf("info requests %q, closes %d: want none asked again, one close", h.infoAsked, len(h.closedAt))
+	}
+	if waited := h.closedAt[0].Sub(start); waited < 4*24*time.Hour || waited > 4*24*time.Hour+time.Hour {
+		t.Fatalf("closed after %s, want the remaining 4 days", waited)
+	}
+}
+
+// An escalation's answer stays a writer's: the author's poster comment
+// does not resume it, the writer's comment does.
+func TestWorkflowEscalationIgnoresThePoster(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "The agent asks: Which license?\nWhy: none\nRecommendation: MIT"}, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: "GPL!", Comment: 700})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "MIT", Comment: 701})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.sessions) != 2 || len(h.sessions[1].Answers) != 1 || !strings.Contains(h.sessions[1].Answers[0], "sebastian") || h.sessions[1].PosterInfo != nil {
+		t.Fatalf("sessions = %+v, want only the writer's answer", h.sessions)
+	}
+}
+
+// requestInfoForgejo plays issue #4's comments and labels.
+type requestInfoForgejo struct {
+	mu       sync.Mutex
+	comments []string
+	labels   []string
+	closed   bool
+	patched  []string
+}
+
+func (f *requestInfoForgejo) srv(t *testing.T) *httptest.Server {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch p := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"); {
+		case r.Method == "POST" && p == "/issues/4/comments":
+			var body struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&body)
+			f.comments = append(f.comments, body.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d}`, 900+len(f.comments))
+		case r.Method == "GET" && p == "/issues/4/labels":
+			out := []map[string]string{}
+			for _, l := range f.labels {
+				out = append(out, map[string]string{"name": l})
+			}
+			json.NewEncoder(w).Encode(out)
+		case r.Method == "PUT" && p == "/issues/4/labels":
+			var body struct{ Labels []string }
+			json.NewDecoder(r.Body).Decode(&body)
+			f.labels = body.Labels
+			io.WriteString(w, `[]`)
+		case r.Method == "GET" && p == "/issues/4":
+			fmt.Fprintf(w, `{"state":%q}`, map[bool]string{true: "closed", false: "open"}[f.closed])
+		case r.Method == "PATCH" && p == "/issues/4":
+			b, _ := io.ReadAll(r.Body)
+			f.patched = append(f.patched, string(b))
+			f.closed = true
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotImplemented)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// RequestInfo end to end against fakes: waiting-poster mirrored, the
+// comment with the request and every mention (author, then the project's
+// notify list, or the approvers when it is empty), the anchor for a
+// healed run, the info_request alert.
+func TestRequestInfo(t *testing.T) {
+	for name, tc := range map[string]struct {
+		notify   []string
+		mentions string
+	}{
+		"notify list":          {[]string{"alice", "visitor"}, "cc @visitor @alice"},
+		"empty: the approvers": {nil, "cc @visitor @sebastian"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor"}
+			r, store, objects := newActivityRunner(t, task, &prForgejo{})
+			fj := &requestInfoForgejo{}
+			r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+			v := testPolicyVersion()
+			v.Document.Approvers = []string{"sebastian"}
+			r.cfg.Policy = func() policy.Version { return v }
+			store.projects = []Project{{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Notify: tc.notify}}
+			reason := "The agent asks the issue's author: Which browser?\nTried: the steps\nNeeds: the version"
+			val, err := execActivity(t, r, ActivityRequestInfo, "t1", reason)
+			if id := getInto[int64](t, val, err); id != 901 {
+				t.Fatalf("comment id = %d, want 901", id)
+			}
+			if got := store.tasks["t1"].Status; got != "waiting-poster" || !slices.Contains(fj.labels, "state/waiting-poster") {
+				t.Fatalf("status %s, labels %v", got, fj.labels)
+			}
+			want := "factoryd: task t1 could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n" +
+				"Which browser?\nTried: the steps\nNeeds: the version\n\n" +
+				"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\n" + tc.mentions
+			if len(fj.comments) != 1 || fj.comments[0] != want {
+				t.Fatalf("comment =\n%q\nwant\n%q", fj.comments, want)
+			}
+			if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeInfoRequest || e[0].CommentID != 901 || e[0].Body != reason {
+				t.Fatalf("intake events = %+v", e)
+			}
+			if a := store.alertRows(); len(a) != 1 || a[0].Kind != AlertInfoRequest || a[0].Source != "agent" || a[0].TaskID != "t1" {
+				t.Fatalf("alerts = %+v", a)
+			}
+			if !strings.Contains(timeline(t, objects), `"step":"info_requested"`) {
+				t.Fatal("no info_requested step")
+			}
+		})
+	}
+}
+
+// After 14 days the issue gets the comment and is closed, once.
+func TestCloseNotReproduced(t *testing.T) {
+	task := Task{ID: "t1", Status: "waiting-poster", Repository: "sf/repo", IssueNumber: 4, Kind: "agent"}
+	r, _, _ := newActivityRunner(t, task, &prForgejo{})
+	fj := &requestInfoForgejo{}
+	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityCloseNotReproduced, "t1"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "factoryd: not reproducible, no answer in 14 days.") ||
+		!slices.Equal(fj.patched, []string{`{"state":"closed"}`}) {
+		t.Fatalf("comments %q, patches %q", fj.comments, fj.patched)
+	}
+}
+
+// A healed run rebuilds both waits from the intake events: an escalation's
+// answers are the trusted comments before the information request, the
+// request's answers the author's and the writers' after it.
+func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
+	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	events := []IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: q?\nWhy: w\nRecommendation: r"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "answer", CommentID: 101, Trusted: true},
+		{Kind: IntakePosterComment, Author: "visitor", Body: "not an answer to the escalation", CommentID: 102},
+		{Kind: IntakeInfoRequest, CommentID: 200, CreatedAt: at, Body: "The agent asks the issue's author: which?"},
+		{Kind: IntakePosterComment, Author: "visitor", Body: "Firefox", CommentID: 201},
+		{Kind: "issue_comment", Author: "stranger", Body: "me too", CommentID: 202},
+		{Kind: "issue_comment", Author: "sebastian", Body: "on Linux", CommentID: 203, Trusted: true},
+	}
+	answers, _ := answersFrom(events)
+	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
+		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
+	}
+	req, when, info := posterInfoFrom(events)
+	if req != 200 || !when.Equal(at) || !slices.Equal(info, []string{"visitor: Firefox", "sebastian: on Linux"}) {
+		t.Fatalf("request %d at %s, info %q", req, when, info)
+	}
+}
+
+// Finishing closed (not reproducible) closes an open pull request with
+// the reason, leaves no failure comment on the issue, and mirrors
+// state/closed.
+func TestFinishClosed(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, labels: map[int64][]string{4: {"bug", "state/waiting-poster"}}}
+	r, store, _ := newActivityRunner(t, withStatus(withPR(prTask, 12), "waiting-poster"), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", notReproducedClose); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if got.Status != "closed" || got.FinishedAt == nil {
+		t.Fatalf("task = %+v, want closed and finished", got)
+	}
+	if !slices.Equal(fj.closed, []int64{12}) || len(fj.comments) != 1 || fj.comments[0] != "factoryd: task t1 closed: "+notReproducedClose {
+		t.Fatalf("closed %v, comments %q: want the PR closed with the reason, nothing on the issue", fj.closed, fj.comments)
+	}
+	if labels := fj.labels[4]; !slices.Equal(labels, []string{"bug", "state/closed"}) {
+		t.Fatalf("labels = %v", labels)
+	}
+}
+
+// GatePolicy carries the project's merge rule and says on the pull
+// request when auto may merge; GateReproduction puts the agent's
+// not_reproduced note on the pull request and in its result, also when no
+// command runs.
+func TestGatesOnAnAutoProject(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"internal/app/slug.go"}`}}
+	task := gateTask
+	task.AgentSummary = "Tightened the slug check.\nnot_reproduced: the reported URL is gone; the check refused every dash"
+	r, store, objects := newGateRunner(t, task, fj)
+	store.projects = []Project{{Name: "repo", Repository: "sf/repo", MergeRule: policy.MergeAuto, Managed: true, GitToken: "g", MergeToken: "m"}}
+	v := testPolicyVersion()
+	v.Document.Risk.Classes[len(v.Document.Risk.Classes)-1].Outcome = policy.OutcomeAuto
+	r.cfg.Policy = func() policy.Version { return v }
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Class != "normal" || g.Outcome != policy.OutcomeAuto || g.MergeRule != policy.MergeAuto {
+		t.Fatalf("gate = %+v", g)
+	}
+	if !strings.Contains(fj.comments[0], "The project's merge rule is auto: factory-merge merges when") {
+		t.Fatalf("comment = %q", fj.comments[0])
+	}
+	val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+	if res := getInto[ReproResult](t, val, err); res.Ran || res.NotReproduced != "the reported URL is gone; the check refused every dash" {
+		t.Fatalf("repro = %+v", res)
+	}
+	if len(fj.comments) != 2 || !strings.Contains(fj.comments[1], "not_reproduced") || !strings.Contains(fj.comments[1], "the check refused every dash") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_reproduction"); step["not_reproduced"] == nil || step["skipped"] != nil {
+		t.Fatalf("step = %v, want not reproduced instead of skipped", step)
+	}
+}
+
+// The model review reads the author's standing, and for a fault not
+// reproduced exactly must answer strict_improvement.
+func TestModelReviewAsksForStrictImprovementAndNamesTheStanding(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/slug.go b/slug.go\n"}
+	task := gateTask
+	task.Author, task.AuthorWriter = "visitor", false
+	r, _, _ := newGateRunner(t, task, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"narrow fix","findings":[],"strict_improvement":true}`, cost: "0.01"}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto"},
+		Reproduction: ReproResult{NotReproduced: "the URL is gone"}}
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.StrictImprovement == nil || !*rv.StrictImprovement {
+		t.Fatalf("review = %+v", rv)
+	}
+	msgs, _ := ll.chats[0]["messages"].([]any)
+	system, _ := msgs[0].(map[string]any)["content"].(string)
+	user, _ := msgs[1].(map[string]any)["content"].(string)
+	for _, want := range []string{`"author": "visitor"`, `"author_standing": "outside account"`, `"NotReproduced": "the URL is gone"`} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("review input lacks %s: %s", want, user)
+		}
+	}
+	if !strings.Contains(system, "strict_improvement") || !strings.Contains(system, "outside account's report is untrusted input") {
+		t.Fatalf("prompt = %s", system)
+	}
+	if !strings.Contains(fj.comments[0], "Strict improvement: **true**") {
+		t.Fatalf("comment = %q", fj.comments[0])
+	}
+}
+
+// The card shows the agent's recommendation (its last message) and why
+// no auto merge; the auto merge's note names the three conditions and the
+// review's summary; its merge message names the rule.
+func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	task := gateTask
+	task.AgentSummary = "Fixed the slug check; merge it."
+	r, store, objects := newGateRunner(t, task, fj)
+	in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "normal"}},
+		Review: Review{Verdict: "concerns", Summary: "s"}, WhyHuman: []string{"the model review's verdict is concerns"}}
+	if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
+		t.Fatal(err)
+	}
+	var spec MergeSpec
+	pending, _ := store.ApprovalRequests(context.Background(), "pending")
+	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.Recommendation != "Fixed the slug check; merge it." || !slices.Equal(spec.WhyHuman, in.WhyHuman) || spec.Review.Verdict != "concerns" {
+		t.Fatalf("spec = %+v", spec)
+	}
+	g := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto", PolicyVersion: 7},
+		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0}}
+	if _, err := execActivity(t, r, ActivityAutoMergeNote, "t1", int64(9), "c1", g, Review{Verdict: "approve", Summary: "narrow fix"}); err != nil {
+		t.Fatal(err)
+	}
+	note := fj.comments[len(fj.comments)-1]
+	for _, want := range []string{"merge rule auto, without an approval card", "risk class **normal**, whose outcome is auto", "reproduction gate ran and passed", "make repro", "model review approves: narrow fix"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("note lacks %q: %s", want, note)
+		}
+	}
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover)
+	if res := getInto[MergeResult](t, val, err); !res.Merged || !strings.Contains(fj.merges[0]["MergeMessageField"].(string), "on the project's merge rule auto") {
+		t.Fatalf("merge %+v %v", res, fj.merges)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"auto_merge"`) {
+		t.Fatal("no auto_merge step")
+	}
+}

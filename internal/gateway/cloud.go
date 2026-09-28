@@ -151,14 +151,14 @@ func (c *Cloud) accrue(ctx context.Context) error {
 }
 
 // TaskOwnerDone is the agent collector's owner check: a task that reached
-// done or failed (or has no row) ends its leases.
+// done, failed or closed (or has no row) ends its leases.
 func TaskOwnerDone(store Store) func(ctx context.Context, taskID string) (bool, error) {
 	return func(ctx context.Context, taskID string) (bool, error) {
 		t, ok, err := store.Task(ctx, taskID)
 		if err != nil {
 			return false, err
 		}
-		return !ok || t.Status == "done" || t.Status == "failed", nil
+		return !ok || t.Status == "done" || t.Status == "failed" || t.Status == "closed", nil
 	}
 }
 

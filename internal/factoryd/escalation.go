@@ -93,6 +93,11 @@ const (
 	IntakeInfoRequest = "info_request"
 )
 
+// IntakePosterComment is a comment on the issue by its author when they
+// cannot write the repository: signalled as information for an
+// information request, never an escalation's answer (ruling 150).
+const IntakePosterComment = "poster_comment"
+
 // maxEscalationText bounds the question, the reason and an information
 // request's fields, maxRecommendation the recommendation, as the gateway
 // does.

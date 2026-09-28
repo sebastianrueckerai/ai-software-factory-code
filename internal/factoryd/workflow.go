@@ -35,6 +35,10 @@ const (
 	// the human's APPROVED review is on the pull request: the workflow
 	// merges as factory-merge.
 	SignalApproved = "approved"
+	// SignalPosterComment is the issue author's comment when they cannot
+	// write the repository: it answers an information request newer than
+	// it (ruling 150), never an escalation.
+	SignalPosterComment = "poster_comment"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -69,6 +73,9 @@ const (
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
 	ActivitySuperviseGate               = "SuperviseGate"
+	ActivityAutoMergeNote               = "AutoMergeNote"
+	ActivityRequestInfo                 = "RequestInfo"
+	ActivityCloseNotReproduced          = "CloseNotReproduced"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -128,7 +135,10 @@ type SessionInput struct {
 	Findings []string
 	// Answers are every human answer to the task's escalations, newest
 	// first (versionAnswers).
-	Answers         []string
+	Answers []string
+	// PosterInfo is what the issue's author answered the agent's
+	// information requests, oldest first (versionNeedsInfo).
+	PosterInfo      []string
 	StartRef        string
 	ParentSessionID string
 }
@@ -168,6 +178,13 @@ type RunState struct {
 	// question of its last escalation, which a healed run asks again.
 	Answers  []string
 	Question string
+	// InfoRequest is the comment of the task's last information request
+	// and InfoRequestedAt its time, PosterInfo the answers to them, oldest
+	// first (ruling 150): a healed run waiting on the issue's author
+	// waits on, for what is left of the 14 days.
+	InfoRequest     int64
+	InfoRequestedAt time.Time
+	PosterInfo      []string
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -215,7 +232,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
 		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap),
 		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted),
-		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor)}
+		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor),
+		v13: workflow.GetVersion(ctx, "auto-merge", workflow.DefaultVersion, versionAutoMerge),
+		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -225,7 +244,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -311,7 +330,28 @@ const (
 	// escalation, whose answer buys a session after a session and runs a
 	// gate again (a merge with its approval).
 	versionGateSupervisor workflow.Version = 1
+	// versionAutoMerge (change id "auto-merge", ruling 149): after the
+	// model review, a pull request AutoMerge admits (the project's rule
+	// auto, class outcome auto, the reproduction ran and passed, the
+	// review approves, a strict improvement where not reproduced) is
+	// merged as factory-merge with AutoMergeNote's comment and no card;
+	// every other one, and an auto merge Forgejo refuses or that fails,
+	// gets the card with why no auto merge.
+	versionAutoMerge workflow.Version = 1
+	// versionNeedsInfo (change id "needs-info", ruling 150): a session
+	// ending needs_info asks the issue's author (RequestInfo: the comment
+	// with the mentions, waiting-poster, the info_request alert) and
+	// waits for the author's or a writer's comment, which the next
+	// session gets as poster information, or a change request; after
+	// infoWait without one, CloseNotReproduced closes the issue and the
+	// task ends closed. A healed run waiting on the author waits on for
+	// the rest of infoWait.
+	versionNeedsInfo workflow.Version = 1
 )
+
+// infoWait is how long an information request waits for the issue
+// author's answer before the issue closes as not reproducible.
+const infoWait = 14 * 24 * time.Hour
 
 type taskRun struct {
 	ctx, short        workflow.Context
@@ -320,10 +360,13 @@ type taskRun struct {
 	v, v2, v3, v4, v5 workflow.Version
 	v6, v7, v8, v9    workflow.Version
 	v10, v11, v12     workflow.Version
+	v13, v14          workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
 	escalation        int64     // the escalation comment human answers must be newer than
+	infoRequest       int64     // the information request comment the author's answers must be newer than
+	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -363,6 +406,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v7 >= versionAnswers {
 			t.answers = st.Answers
 		}
+		if t.v14 >= versionNeedsInfo {
+			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
+		}
 		switch {
 		case st.Skip:
 			return st.Status, nil
@@ -388,6 +434,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v5 >= versionPersistUsage {
 				t.grant(&u)
 			}
+		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
+			t.pr, startRef = st.PR, st.Head
+			final, why, answer := t.waitPoster(st.InfoRequestedAt)
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = answer
+			t.grant(&u)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
@@ -424,7 +478,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
-			Findings: findings, Answers: t.answers, StartRef: startRef, ParentSessionID: parent,
+			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 		})
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
@@ -464,7 +518,17 @@ func (t *taskRun) lifecycle() (string, error) {
 		case OutcomeNoPush, OutcomeRedirect:
 			findings = res.Findings
 			continue
-		case OutcomeEscalate:
+		case OutcomeNeedsInfo, OutcomeEscalate:
+			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
+				final, why, answer := t.awaitPoster(res.Reason)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings = append(res.Findings, answer...)
+				t.grant(&u)
+				continue
+			}
+			// a run from before request_info takes it as an escalation
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
@@ -610,6 +674,19 @@ func (t *taskRun) gate(commit string) verdict {
 	if final, why, ok := t.decided(); ok {
 		return verdict{final: final, reason: why}
 	}
+	var whyHuman []string
+	if t.v13 >= versionAutoMerge {
+		auto, unmet := AutoMerge(g, review)
+		if !auto {
+			whyHuman = unmet
+		} else {
+			v, done, failed := t.autoMerge(commit, g, review)
+			if done {
+				return v
+			}
+			whyHuman = []string{failed}
+		}
+	}
 	// an approval signalled before this request (for an earlier head) is
 	// not an approval of this one
 	var sig TaskSignal
@@ -617,13 +694,37 @@ func (t *taskRun) gate(commit string) verdict {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
-		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}).Get(t.ctx, nil); err != nil {
+		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review, WhyHuman: whyHuman}).Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	if t.v11 >= versionGateStarted {
 		t.approvalRequested = workflow.Now(t.ctx)
 	}
 	return t.awaitApproval(commit)
+}
+
+// autoMerge merges on the project's merge rule auto (versionAutoMerge):
+// the note on the pull request, then the merge as factory-merge. done
+// with the task's verdict, or why it did not go through: the card then.
+func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict, done bool, failed string) {
+	if err := workflow.ExecuteActivity(t.short, ActivityAutoMergeNote, t.taskID, t.pr.Number, commit, g, rv).Get(t.ctx, nil); err != nil {
+		return verdict{}, false, "the auto merge's note failed: " + errMessage(err)
+	}
+	var res MergeResult
+	v, decided, err := t.gateActivity(false, mergeOptions(), &res, ActivityMerge, t.taskID, t.pr.Number, commit, AutoApprover)
+	switch {
+	case decided:
+		return v, true, ""
+	case err != nil:
+		return verdict{}, false, "the auto merge failed: " + errMessage(err)
+	case res.Merged && res.By != "":
+		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
+	case res.Merged:
+		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
+	case res.Refusal != "":
+		return verdict{}, false, "Forgejo refused the auto merge: " + res.Refusal
+	}
+	return verdict{}, false, "the auto merge failed: " + res.Failed
 }
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
@@ -1058,6 +1159,88 @@ func (t *taskRun) awaitHuman(reason, question string) (final, why string, answer
 			return "", "", answer
 		}
 	}
+}
+
+// awaitPoster asks the issue's author for what the agent needs (reason:
+// the agent's information request) and waits for the answer
+// (versionNeedsInfo).
+func (t *taskRun) awaitPoster(reason string) (final, why string, changes []string) {
+	if err := workflow.ExecuteActivity(t.short, ActivityRequestInfo, t.taskID, reason).Get(t.ctx, &t.infoRequest); err != nil {
+		return "failed", "request information: " + errMessage(err), nil
+	}
+	return t.waitPoster(workflow.Now(t.ctx))
+}
+
+// waitPoster blocks, at no cost, until the issue's author (or a writer)
+// comments after the information request of since, a reviewer asks for
+// changes, a terminal signal decides the task, or infoWait after since
+// passes: then the issue closes as not reproducible and the task ends
+// closed. An answer goes to t.posterInfo; changes are the change requests.
+func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []string) {
+	timerCtx, cancel := workflow.WithCancel(t.ctx)
+	defer cancel()
+	var expiry workflow.Future
+	if left := infoWait - workflow.Now(t.ctx).Sub(since); left > 0 {
+		expiry = workflow.NewTimer(timerCtx, left)
+	}
+	for {
+		expired := expiry == nil
+		if !expired {
+			sel := workflow.NewSelector(t.ctx)
+			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment, SignalPosterComment} {
+				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+			}
+			sel.AddFuture(expiry, func(workflow.Future) { expired = true })
+			sel.Select(t.ctx)
+		}
+		if final, why, ok := t.decided(); ok {
+			return final, why, nil
+		}
+		answered := false
+		for _, n := range []string{SignalHumanComment, SignalPosterComment} {
+			var sig TaskSignal
+			for workflow.GetSignalChannel(t.ctx, n).ReceiveAsync(&sig) {
+				if t.answersInfoRequest(n, sig) {
+					answered = true
+					t.posterInfo = append(t.posterInfo, posterText(sig.Author, sig.Body))
+				}
+			}
+		}
+		changes = t.drainChanges()
+		if answered || len(changes) > 0 {
+			return "", "", changes
+		}
+		if expired {
+			if err := workflow.ExecuteActivity(t.short, ActivityCloseNotReproduced, t.taskID).Get(t.ctx, nil); err != nil {
+				return "failed", "close as not reproducible: " + errMessage(err), nil
+			}
+			return "closed", notReproducedClose, nil
+		}
+	}
+}
+
+// notReproducedClose is the comment, and the task's final reason, of an
+// information request no one answered within infoWait.
+const notReproducedClose = "not reproducible, no answer in 14 days"
+
+// answersInfoRequest records a comment signal received while waiting on
+// the issue's author and reports whether it answers the request: newer
+// than its comment.
+func (t *taskRun) answersInfoRequest(name string, sig TaskSignal) bool {
+	counts := t.infoRequest != 0 && sig.Comment > t.infoRequest
+	detail := map[string]any{"signal": name, "author": sig.Author, "comment": sig.Comment}
+	if !counts {
+		detail["ignored"] = "older than the information request"
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+	}
+	return counts
+}
+
+// posterText is one answer of the issue's author as the sessions get it.
+func posterText(author, body string) string {
+	return author + ": " + textutil.Truncate(body, maxAnswer)
 }
 
 // counted records a received signal on the timeline and reports whether it

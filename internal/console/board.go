@@ -64,8 +64,9 @@ type verdictForm struct {
 
 // columns are the agent lane, in board order; closing counts as running.
 var columns = []struct{ Title, Status string }{
-	{"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"},
-	{"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"},
+	{"Suggested", "suggested"}, {"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"},
+	{"Waiting on the author", "waiting-poster"}, {"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"},
+	{"Closed", "closed"},
 }
 
 type card struct {
@@ -169,7 +170,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		byID[t.ID] = t
 		k := c.card(t)
 		if t.Kind == "human" {
-			if t.Status != "done" && t.Status != "failed" {
+			if !factoryd.Final(t.Status) {
 				d.HumanTasks = append(d.HumanTasks, k)
 			}
 			continue
@@ -257,7 +258,7 @@ type gateRow struct {
 // task's row is in when no step ended it yet; longest scales the bars.
 func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []gateRow, longest int) {
 	attempt := ""
-	open := t.Gate != "" && t.GateSince != nil && t.Status != "done" && t.Status != "failed"
+	open := t.Gate != "" && t.GateSince != nil && !factoryd.Final(t.Status)
 	for _, m := range steps {
 		step, _ := m["step"].(string)
 		if step == "session_start" || step == "session_end" {
