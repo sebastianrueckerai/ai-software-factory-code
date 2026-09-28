@@ -59,6 +59,15 @@ type Forgejo struct {
 	// merges only after an approval by a whitelisted human. The workflow's
 	// Merge activity is its one user.
 	MergeToken string
+	// ProjectsToken is the dedicated user factory-projects' token,
+	// [write:repository, write:organization] on no fixed repository list
+	// (Task 65): a member of org sf's team projects, which may create org
+	// repositories and holds none, so it reaches exactly the repositories
+	// it created or a human made it an admin collaborator on. It creates
+	// a project's repository and keeps its webhook, collaborators and
+	// branch protection; Forgejo keeps Actions secrets and runners to the
+	// org owners, which it is not.
+	ProjectsToken string
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -177,6 +186,9 @@ func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byt
 	})
 }
 
+// anySuccess as do's wantStatus admits every 2xx answer.
+const anySuccess = 0
+
 func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request)) ([]byte, error) {
 	var reader io.Reader
 	if payload != nil {
@@ -204,7 +216,7 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
-	if res.StatusCode != wantStatus {
+	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
 		case http.StatusNotFound:
 			return nil, fmt.Errorf("%s %s: %w", method, path, errForgejoNotFound)

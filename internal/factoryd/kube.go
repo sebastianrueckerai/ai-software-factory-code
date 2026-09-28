@@ -439,3 +439,101 @@ func (k *InClusterKube) request(ctx context.Context, method, path string, body a
 	}
 	return res, nil
 }
+
+// Change is what an apply did to an object.
+type Change string
+
+const (
+	Created   Change = "created"
+	Updated   Change = "updated"
+	Unchanged Change = "no change"
+)
+
+// Apply creates or brings the object at item path (e.g.
+// /api/v1/namespaces/x/resourcequotas/project) to obj by server-side
+// apply, factoryd as the field manager. An apply that changes nothing
+// keeps the resourceVersion, which tells the three outcomes apart.
+func (k *InClusterKube) Apply(ctx context.Context, path string, obj map[string]any) (Change, error) {
+	var before, after struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	err := k.getJSON(ctx, path, &before)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
+	if _, err := k.call(ctx, http.MethodPatch, path+"?fieldManager=factoryd&force=true", obj, &after); err != nil {
+		return "", err
+	}
+	switch before.Metadata.ResourceVersion {
+	case "":
+		return Created, nil
+	case after.Metadata.ResourceVersion:
+		return Unchanged, nil
+	}
+	return Updated, nil
+}
+
+// DeploymentState is how far one Deployment's rollout got.
+type DeploymentState struct {
+	Name               string
+	Generation         int64
+	ObservedGeneration int64
+	Replicas           int32 // spec
+	StatusReplicas     int32 // every pod of every ReplicaSet
+	UpdatedReplicas    int32
+	AvailableReplicas  int32
+}
+
+// RolledOut is kubectl rollout status's test: the controller saw the
+// newest spec, every replica runs it, no old one is left, and every
+// updated one is available. Otherwise it says what lags.
+func (d DeploymentState) RolledOut() (bool, string) {
+	switch {
+	case d.ObservedGeneration < d.Generation:
+		return false, fmt.Sprintf("observed generation %d of %d", d.ObservedGeneration, d.Generation)
+	case d.UpdatedReplicas < d.Replicas:
+		return false, fmt.Sprintf("%d of %d replicas updated", d.UpdatedReplicas, d.Replicas)
+	case d.StatusReplicas > d.UpdatedReplicas:
+		return false, fmt.Sprintf("%d old replicas pending termination", d.StatusReplicas-d.UpdatedReplicas)
+	case d.AvailableReplicas < d.UpdatedReplicas:
+		return false, fmt.Sprintf("%d of %d updated replicas available", d.AvailableReplicas, d.UpdatedReplicas)
+	}
+	return true, ""
+}
+
+// Deployments lists namespace's Deployments with their rollout state.
+func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]DeploymentState, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name       string `json:"name"`
+				Generation int64  `json:"generation"`
+			} `json:"metadata"`
+			Spec struct {
+				Replicas *int32 `json:"replicas"`
+			} `json:"spec"`
+			Status struct {
+				ObservedGeneration int64 `json:"observedGeneration"`
+				Replicas           int32 `json:"replicas"`
+				UpdatedReplicas    int32 `json:"updatedReplicas"`
+				AvailableReplicas  int32 `json:"availableReplicas"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/apps/v1/namespaces/"+namespace+"/deployments", &list); err != nil {
+		return nil, err
+	}
+	out := make([]DeploymentState, 0, len(list.Items))
+	for _, d := range list.Items {
+		replicas := int32(1)
+		if d.Spec.Replicas != nil {
+			replicas = *d.Spec.Replicas
+		}
+		out = append(out, DeploymentState{Name: d.Metadata.Name, Generation: d.Metadata.Generation,
+			ObservedGeneration: d.Status.ObservedGeneration, Replicas: replicas, StatusReplicas: d.Status.Replicas,
+			UpdatedReplicas: d.Status.UpdatedReplicas, AvailableReplicas: d.Status.AvailableReplicas})
+	}
+	return out, nil
+}

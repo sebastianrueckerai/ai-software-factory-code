@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS projects (
     -- factory-ci's token limited to this repository: its Actions secrets
     -- and runners, which Forgejo keeps to the owner (minted at registration)
     ci_token text NOT NULL DEFAULT '',
+    -- factory-ci's read:package token, the namespaces' image pull secret
+    pull_token text NOT NULL DEFAULT '',
+    -- "secret/key" entries: a random value in each namespace when missing
+    secrets text[] NOT NULL DEFAULT '{}',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );

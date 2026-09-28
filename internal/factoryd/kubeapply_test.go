@@ -1,0 +1,98 @@
+package factoryd
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func stubKube(t *testing.T, h http.HandlerFunc) *InClusterKube {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	return &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+}
+
+// Apply tells created, updated and unchanged apart by the resourceVersion
+// before and after a server-side apply.
+func TestKubeApply(t *testing.T) {
+	const path = "/api/v1/namespaces/demo/resourcequotas/project"
+	rv := map[string]string{"new": "", "same": "7", "changed": "7"}
+	after := map[string]string{"new": "1", "same": "7", "changed": "8"}
+	var ct, query string
+	var name string
+	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			if rv[name] == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			io.WriteString(w, `{"metadata":{"resourceVersion":"`+rv[name]+`"}}`)
+		case http.MethodPatch:
+			ct, query = r.Header.Get("Content-Type"), r.URL.RawQuery
+			io.WriteString(w, `{"metadata":{"resourceVersion":"`+after[name]+`"}}`)
+		}
+	})
+	for n, want := range map[string]Change{"new": Created, "same": Unchanged, "changed": Updated} {
+		name = n
+		got, err := k.Apply(context.Background(), path, map[string]any{"apiVersion": "v1", "kind": "ResourceQuota"})
+		if err != nil || got != want {
+			t.Errorf("%s: %q, %v; want %q", n, got, err, want)
+		}
+	}
+	if ct != "application/apply-patch+yaml" || query != "fieldManager=factoryd&force=true" {
+		t.Fatalf("apply sent %q ?%s", ct, query)
+	}
+}
+
+func TestDeploymentRolledOut(t *testing.T) {
+	for name, tc := range map[string]struct {
+		d   DeploymentState
+		ok  bool
+		why string
+	}{
+		"done":         {DeploymentState{Generation: 3, ObservedGeneration: 3, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1}, true, ""},
+		"not observed": {DeploymentState{Generation: 4, ObservedGeneration: 3, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1}, false, "observed generation 3 of 4"},
+		// review-task64 I3: the new pod crashloops, the old one serves
+		"new pod not ready": {DeploymentState{Generation: 4, ObservedGeneration: 4, Replicas: 1, StatusReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 1}, false, "1 old replicas pending termination"},
+		"not updated":       {DeploymentState{Generation: 4, ObservedGeneration: 4, Replicas: 2, StatusReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 2}, false, "1 of 2 replicas updated"},
+		"unavailable":       {DeploymentState{Generation: 4, ObservedGeneration: 4, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 0}, false, "0 of 1 updated replicas available"},
+		"scaled to zero":    {DeploymentState{Generation: 2, ObservedGeneration: 2}, true, ""},
+	} {
+		if ok, why := tc.d.RolledOut(); ok != tc.ok || why != tc.why {
+			t.Errorf("%s: %v %q, want %v %q", name, ok, why, tc.ok, tc.why)
+		}
+	}
+}
+
+func TestKubeDeployments(t *testing.T) {
+	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/apps/v1/namespaces/demo-staging/deployments" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[{"metadata":{"name":"demo-app","generation":5},"spec":{"replicas":2},
+			"status":{"observedGeneration":5,"replicas":3,"updatedReplicas":2,"availableReplicas":2}},
+			{"metadata":{"name":"one","generation":1},"spec":{},"status":{}}]}`)
+	})
+	got, err := k.Deployments(context.Background(), "demo-staging")
+	want := []DeploymentState{{Name: "demo-app", Generation: 5, ObservedGeneration: 5, Replicas: 2, StatusReplicas: 3, UpdatedReplicas: 2, AvailableReplicas: 2},
+		{Name: "one", Generation: 1, Replicas: 1}}
+	if err != nil || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Deployments = %+v, %v", got, err)
+	}
+}
