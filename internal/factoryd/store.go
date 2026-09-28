@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -665,6 +666,56 @@ func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]Approv
 		}
 		a.Spec = spec
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) RollRecorded(ctx context.Context, sha string) (bool, error) {
+	var found bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM rolls WHERE sha = $1)`, sha).Scan(&found)
+	return found, err
+}
+
+func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
+	var pushed sql.NullTime
+	if !r.PushedAt.IsZero() {
+		pushed = sql.NullTime{Time: r.PushedAt, Valid: true}
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO rolls (sha, pushed_at, applied_at, live_at) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (sha) DO NOTHING`, r.SHA, pushed, r.AppliedAt, r.LiveAt)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// AlertCount is the number of alerts of one kind and verdict ("open" for
+// none yet).
+type AlertCount struct {
+	Kind, Verdict string
+	N             int64
+}
+
+// ErrNoAlertsTable: the alerts table does not exist yet.
+var ErrNoAlertsTable = errors.New("no alerts table")
+
+func (s *PGStore) AlertCounts(ctx context.Context) ([]AlertCount, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, coalesce(verdict, 'open'), count(*) FROM alerts GROUP BY 1, 2`)
+	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "42P01" {
+		return nil, ErrNoAlertsTable
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AlertCount
+	for rows.Next() {
+		var c AlertCount
+		if err := rows.Scan(&c.Kind, &c.Verdict, &c.N); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }

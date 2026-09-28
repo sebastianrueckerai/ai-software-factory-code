@@ -76,6 +76,32 @@ rules:
   verbs: [get]
   resourceNames: [forgejo-registry]
 ---
+# factoryd records its own roll at boot: both Deployments' images, Flux's
+# apply time (managedFields) and their availability.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factoryd-rolls
+  namespace: factory
+rules:
+- apiGroups: [apps]
+  resources: [deployments]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd-rolls
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factoryd-rolls
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
+---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -242,6 +268,9 @@ spec:
           valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         - name: FORGEJO_CI_ORG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-ci-org-read, key: token}}
+        # reads actions/tasks for the CI metrics and the checks step's jobs
+        - name: FORGEJO_CI_TASKS_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         # the Hetzner CI project's token (build VMs, ruling 110) and the
         # nodes' public IPv4s, the only sources a build VM admits (ruling 112)
         - name: HETZNER_CI_KEY
@@ -283,6 +312,11 @@ spec:
           valueFrom: {secretKeyRef: {name: console-oauth, key: session_key}}
         - name: CONSOLE_PUBLIC_URL
           value: https://console.aisoftwarefactory.world
+        # metrics to SigNoz's collector, OTLP over HTTP
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: http://signoz-otel-collector.platform.svc.cluster.local:4318
+        - name: OTEL_SERVICE_NAME
+          value: factoryd
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
@@ -399,6 +433,7 @@ spec:
         - matchName: temporal-frontend.platform.svc.cluster.local
         - matchName: fsn1.your-objectstorage.com
         - matchName: api.hetzner.cloud
+        - matchName: signoz-otel-collector.platform.svc.cluster.local
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -430,3 +465,18 @@ spec:
     - matchName: api.hetzner.cloud
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/instance: signoz
+        app.kubernetes.io/component: otel-collector
+    toPorts:
+    - ports: [{port: "4318", protocol: TCP}]
+  # a build VM's buildkitd, whose first answer factoryd times: the VMs'
+  # addresses are Hetzner's to pick, so the port bounds it; each VM's own
+  # firewall admits only the cluster's nodes
+  - toCIDRSet:
+    - cidr: 0.0.0.0/0
+      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 127.0.0.0/8]
+    toPorts:
+    - ports: [{port: "1234", protocol: TCP}]

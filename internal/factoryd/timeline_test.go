@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -136,5 +137,36 @@ func TestTimelineFinalLineKeepsItsLockForWaiters(t *testing.T) {
 	body, _ := store.fakeObjectStore.Get(ctx, "sessions/t1/timeline.jsonl")
 	if lines := strings.Split(strings.TrimSpace(string(body)), "\n"); len(lines) != 3 || store.most.Load() != 1 {
 		t.Fatalf("lines = %d, most at once = %d, want 3 lines, one append at a time", len(lines), store.most.Load())
+	}
+}
+
+// A step carrying started emits its gate's duration once; one without
+// emits nothing.
+func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
+	m, reader := testMetrics(t)
+	now := time.Date(2026, 9, 28, 10, 33, 9, 0, time.UTC)
+	tl := &Timeline{Objects: &fakeObjectStore{}, Metrics: m, now: func() time.Time { return now }}
+	ctx := context.Background()
+	if err := tl.Append(ctx, "t1", "pushed", map[string]any{"commit": "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := histograms(t, reader, "factory.task.gate.duration"); len(got) != 0 {
+		t.Fatalf("emitted %v without started", got)
+	}
+	if err := tl.Append(ctx, "t1", "checks", map[string]any{"state": "success", "started": "2026-09-28T10:28:38Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": "pushed", "model": "factory/coding-cheap",
+		"started": now.Add(-10 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	got := histograms(t, reader, "factory.task.gate.duration")
+	want := map[string]histPoint{
+		// 10:28:38 to 10:33:09
+		"gate=checks,model_alias=,outcome=success":                         {1, 271},
+		"gate=session_end,model_alias=factory/coding-cheap,outcome=pushed": {1, 600},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gates %v, want %v", got, want)
 	}
 }

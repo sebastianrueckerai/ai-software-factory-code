@@ -29,6 +29,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 var version = "dev"
@@ -66,6 +67,28 @@ func main() {
 	}
 	log.Printf("policy: version %d current", policyLoader.Current().ID)
 
+	meters, shutdownMeters, err := telemetry.Setup(context.Background())
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownMeters(ctx) // #nosec G104 -- fire and forget: the last samples may be lost
+	}()
+	metrics, err := telemetry.New(meters.Meter("factoryd"))
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	openActivities, err := factoryd.NewOpenActivities(metrics.Meter)
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	if err := factoryd.RegisterAlertCount(metrics.Meter, store.AlertCounts); err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	ciQueue := factoryd.NewCIQueue(metrics)
+
 	forgejo := &factoryd.Forgejo{
 		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
 		PublicURL:        env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
@@ -74,6 +97,7 @@ func main() {
 		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
 		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
 		MergeToken:       mustEnv("FORGEJO_MERGE_TOKEN"),
+		CITasksToken:     mustEnv("FORGEJO_CI_TASKS_TOKEN"),
 	}
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
@@ -121,7 +145,9 @@ func main() {
 		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
 		// the gateway commissions servers into the registry; factoryd only
 		// admits their addresses into the task's egress
-		Leases: cloudres.AgentStore(store.CloudResources()),
+		Leases:  cloudres.AgentStore(store.CloudResources()),
+		CIQueue: ciQueue,
+		Metrics: metrics,
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		BaseURL: litellm.BaseURL,
 		Admin:   litellm,
@@ -153,10 +179,12 @@ func main() {
 		ServerType:     env("CI_BUILD_VM_TYPE", "cx23"),
 		AllowedSources: nodeIPs,
 		Lease:          ciJobTimeout + 15*time.Minute,
+		Metrics:        metrics,
 	}, hetznerCI, cloudRegistry, ciCollector)
 	if err != nil {
 		log.Fatalf("build vms: %v", err)
 	}
+	ciCollector.Deleted = buildVMs.Deleted
 	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
 		FactoryNamespace: kube.Namespace(),
 		Owner:            env("CI_REPO_OWNER", "sf"),
@@ -166,6 +194,7 @@ func main() {
 		GitBaseURL:       gitBase,
 		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
 		JobTimeout:       ciJobTimeout,
+		Queue:            ciQueue,
 	}, forgejo, kube, buildVMs)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)
@@ -185,7 +214,7 @@ func main() {
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(&factoryd.GateWatch{Store: store,
-		Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}))
+		Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}, openActivities))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
@@ -229,6 +258,13 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	go ciSpawner.Run(ctx)
+	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Metrics: metrics}
+	go ciRuns.Run(ctx)
+	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Branch: "main",
+		Namespace: kube.Namespace(), Kube: kube, Store: store, Pushes: ciRuns, Metrics: metrics,
+		Deployments: map[string]string{"factoryd": "k8s/factoryd.yaml", "factory-gateway": "k8s/deployment.yaml"},
+		Poll:        10 * time.Second, Timeout: 30 * time.Minute}
+	go rolls.Run(ctx)
 	go ciCollector.Run(ctx)
 	go runner.LeaseLoop(ctx, 10*time.Second)
 
@@ -518,11 +554,11 @@ func envInt(name string, def int) int {
 // workerOptions: a stop closes the activities' worker stop channel and
 // cancels them after WorkerStopTimeout; heartbeats go out at most
 // HeartbeatEvery apart, so a workflow's cancel reaches a running activity
-// within that. gates watches every activity's gate and bound.
-func workerOptions(gates *factoryd.GateWatch) worker.Options {
+// within that. extra: GateWatch and the open-activity gauge.
+func workerOptions(extra ...interceptor.WorkerInterceptor) worker.Options {
 	return worker.Options{
 		WorkerStopTimeout:            120 * time.Second,
 		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
-		Interceptors:                 []interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}, gates},
+		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}}, extra...),
 	}
 }

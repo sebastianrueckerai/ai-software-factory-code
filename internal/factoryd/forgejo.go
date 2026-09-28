@@ -59,6 +59,9 @@ type Forgejo struct {
 	// merges only after an approval by a whitelisted human. The workflow's
 	// Merge activity is its one user.
 	MergeToken string
+	// CITasksToken reads the code repository's actions/tasks for the CI
+	// metrics (factory.ci.*) and the checks step's per-job detail.
+	CITasksToken string
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -307,23 +310,25 @@ func codeWrite(mode string) bool {
 	return mode == "write" || mode == "admin" || mode == "owner"
 }
 
-// CIJob is one Forgejo Actions job waiting for a runner matching its labels
-// (task 41: the `pr-untrusted` label routes pull-request jobs to the
-// ephemeral gVisor runner instead of the privileged dind runner).
+// CIJob is one Forgejo Actions job for a runner label (task 41: the
+// `pr-untrusted` label routes pull-request jobs to the ephemeral gVisor
+// runner instead of the privileged dind runner). TaskID is set once a
+// runner picked the job up: the id of its actions/tasks entry.
 type CIJob struct {
 	ID     int64    `json:"id"`
+	Name   string   `json:"name"`
 	RunsOn []string `json:"runs_on"`
 	Status string   `json:"status"`
+	TaskID int64    `json:"task_id"`
 }
 
-// WaitingRunJobs lists owner/repo's queued Actions jobs carrying label. The
-// search endpoint has no status filter, so this filters client-side to jobs
-// Forgejo itself marked "waiting" — running or already-done jobs matching
-// the label must not spawn a runner. The spawner names one namespace per
-// job id (its idempotency key), but the runner it starts registers by
-// label only and the server, not the caller, assigns it whichever waiting
-// job it serves.
-func (f *Forgejo) WaitingRunJobs(ctx context.Context, owner, repo, label string) ([]CIJob, error) {
+// RunJobs lists owner/repo's Actions jobs carrying label, in every state
+// the endpoint returns: it has no status filter. Only a job Forgejo marked
+// "waiting" may get a runner; running or already-done jobs matching the
+// label must not. The spawner names one namespace per job id (its
+// idempotency key), but the runner it starts registers by label only and
+// the server, not the caller, assigns it whichever waiting job it serves.
+func (f *Forgejo) RunJobs(ctx context.Context, owner, repo, label string) ([]CIJob, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners/jobs?labels=%s", owner, repo, url.QueryEscape(label))
 	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
@@ -331,15 +336,80 @@ func (f *Forgejo) WaitingRunJobs(ctx context.Context, owner, repo, label string)
 	}
 	var all []CIJob
 	if err := json.Unmarshal(body, &all); err != nil {
-		return nil, fmt.Errorf("forgejo waiting jobs: %w", err)
+		return nil, fmt.Errorf("forgejo run jobs: %w", err)
 	}
-	jobs := make([]CIJob, 0, len(all))
-	for _, j := range all {
-		if j.Status == "waiting" {
-			jobs = append(jobs, j)
-		}
+	return all, nil
+}
+
+// ActionTask is one entry of actions/tasks: a job a runner picked up.
+// Forgejo sets RunStartedAt equal to CreatedAt, so the entry cannot tell
+// queue time from run time; UpdatedAt of a finished task is its finish.
+type ActionTask struct {
+	ID           int64     `json:"id"`
+	Name         string    `json:"name"`
+	HeadSHA      string    `json:"head_sha"`
+	RunNumber    int64     `json:"run_number"`
+	Event        string    `json:"event"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	RunStartedAt time.Time `json:"run_started_at"`
+}
+
+func (t ActionTask) Finished() bool {
+	switch t.Status {
+	case "success", "failure", "cancelled", "skipped":
+		return true
 	}
-	return jobs, nil
+	return false
+}
+
+// RunSeconds is a finished task's run time.
+func (t ActionTask) RunSeconds() float64 { return t.UpdatedAt.Sub(t.RunStartedAt).Seconds() }
+
+// ActionTasks reads one page (from 1) of owner/repo's actions/tasks,
+// newest first, with the CI tasks token.
+func (f *Forgejo) ActionTasks(ctx context.Context, owner, repo string, page int) ([]ActionTask, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/tasks?page=%d&limit=%d", owner, repo, page, actionTasksPage)
+	body, err := f.do(ctx, http.MethodGet, path, nil, http.StatusOK, func(r *http.Request) {
+		r.Header.Set("Authorization", "token "+f.CITasksToken)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Entries []ActionTask `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo actions tasks: %w", err)
+	}
+	return res.Entries, nil
+}
+
+const actionTasksPage = 50
+
+// LatestCommit is the sha of the newest commit on branch that touched path.
+func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path string) (string, error) {
+	q := url.Values{"sha": {branch}, "path": {path}, "limit": {"1"}, "stat": {"false"}, "verification": {"false"}, "files": {"false"}}
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/commits?%s", owner, repo, q.Encode()), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &commits); err != nil {
+		return "", fmt.Errorf("forgejo commits of %s: %w", path, err)
+	}
+	if len(commits) == 0 || commits[0].SHA == "" {
+		return "", fmt.Errorf("forgejo: no commit on %s touched %s", branch, path)
+	}
+	return commits[0].SHA, nil
+}
+
+// FileAt reads path at ref.
+func (f *Forgejo) FileAt(ctx context.Context, owner, repo, ref, path string) ([]byte, error) {
+	return f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s", owner, repo, path, url.QueryEscape(ref)), nil, http.StatusOK)
 }
 
 // CIRunnerRegistration is a freshly registered ephemeral runner. Secret is

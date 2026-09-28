@@ -21,6 +21,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // RunnerConfig carries the per-cluster sandbox facts and the task policy the
@@ -50,6 +51,11 @@ type RunnerConfig struct {
 	// Leases reads the commissioned servers each task holds; their IPv4s
 	// join the task's sandbox egress on port 22 while the lease lives.
 	Leases LeaseReader
+	// CIQueue holds the spawner's queue times for the checks step's jobs;
+	// nil = none measured.
+	CIQueue *CIQueue
+	// Metrics receives the timeline's gate durations; nil = the no-op meter.
+	Metrics *telemetry.Metrics
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the
@@ -172,13 +178,19 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.ChecksTimeout <= 0 {
 		cfg.ChecksTimeout = 45 * time.Minute
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = telemetry.Noop()
+	}
+	if cfg.CIQueue == nil {
+		cfg.CIQueue = NewCIQueue(cfg.Metrics)
+	}
 	if cfg.ChecksPoll <= 0 {
 		// each poll heartbeats: a terminal signal's cancel reaches the wait
 		// within one
 		cfg.ChecksPoll = HeartbeatEvery
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		objects: objects, timeline: &Timeline{Objects: objects}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
+		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
 }
 
 // WorkflowConfig is the task policy TaskWorkflow captures at start.

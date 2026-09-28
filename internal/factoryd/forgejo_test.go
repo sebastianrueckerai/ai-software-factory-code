@@ -656,7 +656,7 @@ func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 // after it, for stubs that answer a list whatever the page asked.
 func firstPage(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p := r.URL.Query().Get("page"); p != "" && p != "1" && !strings.Contains(r.URL.Path, "/git/trees/") {
+		if p := r.URL.Query().Get("page"); p != "" && p != "1" && !strings.Contains(r.URL.Path, "/git/trees/") && !strings.HasSuffix(r.URL.Path, "/actions/tasks") {
 			io.WriteString(w, `[]`)
 			return
 		}

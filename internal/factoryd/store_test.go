@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -849,5 +850,56 @@ func TestPGStoreApprovals(t *testing.T) {
 	}
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("pending after the end = %+v (third %d)", pending, third)
+	}
+}
+
+func TestPGStoreRollsAndAlertCounts(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls; DROP TABLE IF EXISTS alerts`); err != nil {
+		t.Fatal(err)
+	}
+	r := Roll{SHA: "abc", AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
+	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || ok {
+		t.Fatalf("recorded before insert: %v %v", ok, err)
+	}
+	if ok, err := s.RecordRoll(ctx, r); err != nil || !ok {
+		t.Fatalf("first record: %v %v", ok, err)
+	}
+	r.PushedAt = at("2026-09-28T10:05:40Z")
+	if ok, err := s.RecordRoll(ctx, r); err != nil || ok {
+		t.Fatalf("second record of the same sha: %v %v", ok, err)
+	}
+	var pushedNull bool
+	if err := s.db.QueryRowContext(ctx, `SELECT pushed_at IS NULL FROM rolls WHERE sha = 'abc'`).Scan(&pushedNull); err != nil || !pushedNull {
+		t.Fatalf("the first row stands with no push time: %v %v", pushedNull, err)
+	}
+	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || !ok {
+		t.Fatalf("recorded: %v %v", ok, err)
+	}
+
+	if _, err := s.AlertCounts(ctx); !errors.Is(err, ErrNoAlertsTable) {
+		t.Fatalf("without the table: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE alerts (id bigserial PRIMARY KEY, kind text NOT NULL, verdict text);
+		INSERT INTO alerts (kind, verdict) VALUES ('gate_bound', NULL), ('gate_bound', NULL), ('escalation', 'real')`); err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.ExecContext(ctx, `DROP TABLE alerts`)
+	counts, err := s.AlertCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
+	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}}; !reflect.DeepEqual(counts, want) {
+		t.Fatalf("counts %v, want %v", counts, want)
 	}
 }

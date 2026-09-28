@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -21,6 +23,8 @@ import (
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // prForgejo plays the pull request, status and issue endpoints the
@@ -40,6 +44,7 @@ type prForgejo struct {
 	byHead     map[string]string // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
 	statuses   []string          // combined-status bodies, served in order, the last repeating
 	polls      int
+	tasks      string             // actions/tasks page 1 body (testdata file); later pages empty
 	created    []map[string]any   // POST /pulls bodies
 	comments   []string           // issue comment bodies
 	labels     map[int64][]string // issue → labels
@@ -141,6 +146,19 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			f.open = append(f.open, pr)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(pr)
+		case r.Method == "GET" && p == "/actions/tasks":
+			if r.Header.Get("Authorization") != "token tasks-tok" {
+				t.Errorf("actions/tasks auth %q", r.Header.Get("Authorization"))
+			}
+			body := `{"workflow_runs":[],"total_count":0}`
+			if r.URL.Query().Get("page") == "1" && f.tasks != "" {
+				b, err := os.ReadFile("testdata/" + f.tasks)
+				if err != nil {
+					t.Error(err)
+				}
+				body = string(b)
+			}
+			io.WriteString(w, body)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/"):
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
@@ -368,6 +386,36 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
 	if len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
+// When the checks finish, the checks step lists the head's jobs: name,
+// status, queue and run seconds.
+func TestWaitChecksRecordsTheHeadsJobs(t *testing.T) {
+	head := "c62cd2d1ad2dd06b8e73354a0ff07fde47321184"
+	fj := &prForgejo{statuses: []string{statusBody("success", [4]string{"success", "pr / test", "", ""})}, tasks: "actions-tasks-3.json"}
+	r, _, objects := newActivityRunner(t, prTask, fj)
+	r.forgejo.CITasksToken = "tasks-tok"
+	r.cfg.CIQueue = NewCIQueue(telemetry.Noop())
+	r.cfg.CIQueue.byTask[103] = queued{seconds: 40}
+	if _, err := execActivity(t, r, ActivityWaitChecks, "t1", head); err != nil {
+		t.Fatal(err)
+	}
+	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	var step struct {
+		Step string           `json:"step"`
+		Jobs []map[string]any `json:"jobs"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(timeline), &step); err != nil || step.Step != "checks" {
+		t.Fatalf("timeline %s: %v", timeline, err)
+	}
+	want := []map[string]any{
+		{"name": "test", "status": "success", "run_s": 258.0},
+		{"name": "vet-and-format", "status": "success", "run_s": 146.0},
+		{"name": "image-build", "status": "success", "queue_s": 40.0, "run_s": 53.0},
+	}
+	if !reflect.DeepEqual(step.Jobs, want) {
+		t.Fatalf("jobs %v, want %v", step.Jobs, want)
 	}
 }
 

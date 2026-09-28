@@ -930,3 +930,30 @@ func TestCISpawnerDoesNotReclaimATornDownBuildJob(t *testing.T) {
 		t.Fatalf("registered = %v, servers created = %d: want the job claimed again after the window", hub.registered, len(hz.serverReqs))
 	}
 }
+
+// Main CI's jobs on the trusted runner are timed, never served.
+func TestCISpawnerTimesTrustedJobsWithoutServingThem(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 60, Name: "test", RunsOn: []string{"ubuntu-latest"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	m, reader := testMetrics(t)
+	spawner.cfg.Queue = NewCIQueue(m)
+	now := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	spawner.cfg.Queue.now = func() time.Time { return now }
+	spawner.poll(context.Background())
+	hub.mu.Lock()
+	hub.jobs[0].Status, hub.jobs[0].TaskID = "running", 300
+	hub.mu.Unlock()
+	now = now.Add(30 * time.Second)
+	spawner.poll(context.Background())
+	if len(hub.registered) != 0 {
+		t.Fatalf("registered %v for a trusted job", hub.registered)
+	}
+	got := histograms(t, reader, "factory.ci.job.queue")
+	if !reflect.DeepEqual(got, map[string]histPoint{"job=test,label=ubuntu-latest": {1, 30}}) {
+		t.Fatalf("queue %v", got)
+	}
+	if s, ok := spawner.cfg.Queue.Seconds(300); !ok || s != 30 {
+		t.Fatalf("task 300 queue %v %v", s, ok)
+	}
+}

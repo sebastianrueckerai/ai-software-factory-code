@@ -6,21 +6,28 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // Build VMs (ruling 110): one throwaway Hetzner server per
@@ -231,10 +238,11 @@ type BuildVMConfig struct {
 	// from (the nodes' public IPv4s): the only sources the VM's firewall
 	// admits to buildkitd.
 	AllowedSources []string
-	ServerType     string        // "" = cx23
-	Location       string        // "" = fsn1
-	Image          string        // "" = debian-12
-	Lease          time.Duration // job deadline + margin; the collector's backstop
+	ServerType     string             // "" = cx23
+	Location       string             // "" = fsn1
+	Image          string             // "" = debian-12
+	Lease          time.Duration      // job deadline + margin; the collector's backstop
+	Metrics        *telemetry.Metrics // nil = the no-op meter
 }
 
 // BuildVMs creates and deletes build VMs; each resource is registered
@@ -250,7 +258,19 @@ type BuildVMs struct {
 	pricing      hcloud.Pricing
 	pricedAt     time.Time
 	backoffUntil time.Time
+
+	metrics *telemetry.Metrics
+	probe   func(ctx context.Context, addr string, pki buildPKI) error
+	// ready: server row id → buildkitd's first answer, in memory; a
+	// restart loses the ready time of the VMs it finds
+	readyMu sync.Mutex
+	ready   map[int64]time.Time
 }
+
+const (
+	buildVMReadyWait  = 10 * time.Minute
+	buildVMReadyEvery = 2 * time.Second
+)
 
 const (
 	buildVMPricesTTL = time.Hour
@@ -281,7 +301,11 @@ func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.
 		return nil, fmt.Errorf("build vms: %w", err)
 	}
 	cfg.AllowedSources = sources
-	return &BuildVMs{cfg: cfg, provider: provider, registry: registry, collector: collector, now: time.Now}, nil
+	if cfg.Metrics == nil {
+		cfg.Metrics = telemetry.Noop()
+	}
+	return &BuildVMs{cfg: cfg, provider: provider, registry: registry, collector: collector, now: time.Now,
+		metrics: cfg.Metrics, probe: buildkitdAnswers, ready: map[int64]time.Time{}}, nil
 }
 
 // BuildVM is a provisioned VM and the material its job's runner needs.
@@ -350,9 +374,9 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 		return BuildVM{}, err
 	}
 	owner := strconv.FormatInt(jobID, 10)
-	row := func(kind string, price float64) (cloudres.Resource, error) {
+	row := func(kind string, price float64, size string) (cloudres.Resource, error) {
 		return b.registry.Insert(ctx, cloudres.Resource{
-			Project: "ci", Kind: kind, OwnerRef: owner, PricePerHourEUR: price,
+			Project: "ci", Kind: kind, OwnerRef: owner, PricePerHourEUR: price, Size: size,
 			// unique while an earlier VM of the same job is still deleting
 			Name:         fmt.Sprintf("ci-build-%d-%s-%d", jobID, kind, now.Unix()),
 			Labels:       map[string]string{"job": owner},
@@ -360,7 +384,7 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 		})
 	}
 
-	fwRow, err := row(cloudres.KindFirewall, 0)
+	fwRow, err := row(cloudres.KindFirewall, 0, "")
 	if err != nil {
 		return BuildVM{}, fmt.Errorf("register firewall: %w", err)
 	}
@@ -374,7 +398,7 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 		return BuildVM{}, err
 	}
 
-	srvRow, err := row(cloudres.KindServer, serverPrice+ipPrice)
+	srvRow, err := row(cloudres.KindServer, serverPrice+ipPrice, b.cfg.ServerType)
 	if err != nil {
 		return BuildVM{}, fmt.Errorf("register server: %w", err)
 	}
@@ -398,7 +422,64 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 	if srv.IPv4() == "" {
 		return BuildVM{}, fmt.Errorf("server %d has no public IPv4", srv.ID)
 	}
+	go b.awaitReady(ctx, srvRow.ID, net.JoinHostPort(srv.IPv4(), strconv.Itoa(buildVMPort)), pki)
 	return BuildVM{IPv4: srv.IPv4(), PKI: pki}, nil
+}
+
+// awaitReady records when the VM's buildkitd first answers.
+func (b *BuildVMs) awaitReady(ctx context.Context, rowID int64, addr string, pki buildPKI) {
+	ctx, cancel := context.WithTimeout(ctx, buildVMReadyWait)
+	defer cancel()
+	for {
+		if b.probe(ctx, addr, pki) == nil {
+			b.readyMu.Lock()
+			b.ready[rowID] = b.now()
+			b.readyMu.Unlock()
+			return
+		}
+		select {
+		case <-ctx.Done():
+			log.Printf("build vm: buildkitd at %s did not answer within %s", addr, buildVMReadyWait)
+			return
+		case <-time.After(buildVMReadyEvery):
+		}
+	}
+}
+
+// buildkitdAnswers completes one mTLS handshake with the VM's buildkitd.
+func buildkitdAnswers(ctx context.Context, addr string, pki buildPKI) error {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pki.CACert) {
+		return errors.New("build vm: CA does not parse")
+	}
+	pair, err := tls.X509KeyPair(pki.ClientCert, pki.ClientKey)
+	if err != nil {
+		return err
+	}
+	d := tls.Dialer{NetDialer: &net.Dialer{Timeout: 5 * time.Second}, Config: &tls.Config{
+		RootCAs: pool, ServerName: buildVMServerName, Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
+	c, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	return c.Close()
+}
+
+// Deleted is the CI collector's hook for a closed build VM row:
+// factory.ci.buildvm.lifetime, .ready and .cost (started hours times the
+// row's hourly price, as the ledger counts them).
+func (b *BuildVMs) Deleted(ctx context.Context, row cloudres.Resource, at time.Time, by string) {
+	b.readyMu.Lock()
+	ready, ok := b.ready[row.ID]
+	delete(b.ready, row.ID)
+	b.readyMu.Unlock()
+	attrs := metric.WithAttributes(attribute.String("server_type", row.Size), attribute.String("deleted_by", by))
+	lifetime := at.Sub(row.CreatedAt)
+	b.metrics.BuildVMLifetime.Record(ctx, lifetime.Seconds(), attrs)
+	b.metrics.BuildVMCost.Add(ctx, max(1, math.Ceil(lifetime.Hours()))*row.PricePerHourEUR, attrs)
+	if ok {
+		b.metrics.BuildVMReady.Record(ctx, ready.Sub(row.CreatedAt).Seconds(), attrs)
+	}
 }
 
 // prices is GET /v1/pricing, refreshed hourly; a failed refresh keeps the

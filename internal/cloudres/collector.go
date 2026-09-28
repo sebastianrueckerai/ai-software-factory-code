@@ -59,6 +59,25 @@ type Collector struct {
 	// held stays deleting for the next pass.
 	ReleaseAttempts int
 	Now             func() time.Time
+	// Deleted hears of every server row closed after its server existed:
+	// when, and by whom (DeletedByTeardown through Release,
+	// DeletedByCollector through a pass). nil = nobody listens.
+	Deleted func(ctx context.Context, row Resource, at time.Time, by string)
+}
+
+const (
+	DeletedByTeardown  = "teardown"
+	DeletedByCollector = "collector"
+)
+
+// closed moves row to state to and tells Deleted about a server that existed.
+func (c *Collector) closed(ctx context.Context, row Resource, to, by string, existed bool) error {
+	moved, err := c.Registry.Transition(ctx, row.ID, to)
+	if err != nil || !moved || !existed || row.Kind != KindServer || c.Deleted == nil {
+		return err
+	}
+	c.Deleted(ctx, row, c.now(), by)
+	return nil
 }
 
 func (c *Collector) now() time.Time {
@@ -343,7 +362,7 @@ func (c *Collector) collectRow(ctx context.Context, rows []Resource, handled map
 		}
 	}
 	log.Printf("cloud collector (%s): deleting %s %d (resource %d) and %d more of its commission: %s", c.Project, row.Kind, found.id, row.ID, len(group)-1, reason)
-	return c.Release(ctx, group)
+	return c.releaseAll(ctx, group, DeletedByCollector)
 }
 
 func (c *Collector) ownerDone(ctx context.Context, owner string, cache map[string]bool) (bool, error) {
@@ -388,8 +407,7 @@ func (c *Collector) closeAbsent(ctx context.Context, row Resource, now time.Time
 	if row.State == StateDeleting {
 		to = StateDeleted
 	}
-	_, err = c.Registry.Transition(ctx, row.ID, to)
-	return err
+	return c.closed(ctx, row, to, DeletedByCollector, true)
 }
 
 func (c *Collector) gone(ctx context.Context, kind string, id int64) (bool, error) {
@@ -410,12 +428,12 @@ func (c *Collector) gone(ctx context.Context, kind string, id int64) (bool, erro
 	return false, err
 }
 
-// Delete deletes row's provider resource and closes the row: deleting is
+// delete deletes row's provider resource and closes the row: deleting is
 // recorded before the call, deleted after it succeeds (a 404 counts). A
-// failed call leaves the row deleting for the next pass. Shared with the
-// owners' own teardown. A row read open that another actor moved on
-// meanwhile is that actor's to delete: no provider call.
-func (c *Collector) Delete(ctx context.Context, row Resource, providerID int64) error {
+// failed call leaves the row deleting for the next pass. A row read open
+// that another actor moved on meanwhile is that actor's to delete: no
+// provider call.
+func (c *Collector) delete(ctx context.Context, row Resource, providerID int64, by string) error {
 	claimed, err := c.Registry.Transition(ctx, row.ID, StateDeleting)
 	if err != nil {
 		return err
@@ -426,8 +444,7 @@ func (c *Collector) Delete(ctx context.Context, row Resource, providerID int64) 
 	if err := c.deleteProvider(ctx, row.Kind, providerID); err != nil {
 		return err
 	}
-	_, err = c.Registry.Transition(ctx, row.ID, StateDeleted)
-	return err
+	return c.closed(ctx, row, StateDeleted, by, true)
 }
 
 // ErrDetaching is a volume delete waiting for its detach.
@@ -463,13 +480,17 @@ func (c *Collector) deleteProvider(ctx context.Context, kind string, id int64) e
 // still holds is retried a few times; past that its row stays deleting for
 // the collector.
 func (c *Collector) Release(ctx context.Context, rows []Resource) error {
+	return c.releaseAll(ctx, rows, DeletedByTeardown)
+}
+
+func (c *Collector) releaseAll(ctx context.Context, rows []Resource, by string) error {
 	var errs []error
 	for _, kind := range Kinds {
 		for _, row := range rows {
 			if row.Kind != kind {
 				continue
 			}
-			if err := c.release(ctx, row); err != nil {
+			if err := c.release(ctx, row, by); err != nil {
 				errs = append(errs, fmt.Errorf("%s %s: %w", row.Kind, row.Name, err))
 			}
 		}
@@ -477,7 +498,7 @@ func (c *Collector) Release(ctx context.Context, rows []Resource) error {
 	return errors.Join(errs...)
 }
 
-func (c *Collector) release(ctx context.Context, row Resource) error {
+func (c *Collector) release(ctx context.Context, row Resource, by string) error {
 	id, found, err := c.providerID(ctx, row)
 	if err != nil {
 		return err
@@ -485,8 +506,7 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 	if !found {
 		// Never created: a create that is still in flight or lands later
 		// finds its row closed, and the collector deletes it as unknown.
-		_, err := c.Registry.Transition(ctx, row.ID, StateDeleted)
-		return err
+		return c.closed(ctx, row, StateDeleted, by, false)
 	}
 	if row.ProviderID == "" {
 		// found by its label: record it, so its hours are booked
@@ -503,7 +523,7 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 		attempts = 10
 	}
 	for attempt := 1; ; attempt++ {
-		err := c.Delete(ctx, row, id)
+		err := c.delete(ctx, row, id, by)
 		row.State = StateDeleting
 		if err == nil || !retryable(err) || attempt >= attempts {
 			return err

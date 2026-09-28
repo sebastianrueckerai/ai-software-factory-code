@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // CIConfig carries the untrusted PR-runner spawner's facts (task 41, ruling
@@ -22,7 +24,12 @@ type CIConfig struct {
 	Label            string // "pr-untrusted"; the runner also declares ":host"
 	// BuildLabel jobs get the same runner pod plus a throwaway build VM in
 	// the Hetzner CI project (ruling 110, buildvm.go).
-	BuildLabel   string // "pr-untrusted-build"
+	BuildLabel string // "pr-untrusted-build"
+	// TrustedLabel is main CI's runner label: its jobs are only timed in
+	// Queue, never served. "" = ubuntu-latest.
+	TrustedLabel string
+	// Queue times every label's jobs; nil = a queue on the no-op meter.
+	Queue        *CIQueue
 	RunnerImage  string // pinned digest, host-mode (Dockerfile.runner)
 	PullSecret   string // registry pull secret copied into the CI namespace
 	GitBaseURL   string // in-cluster Forgejo — same host RunnerConfig.GitBaseURL uses, not the public API host
@@ -42,6 +49,12 @@ func (c *CIConfig) setDefaults() {
 	}
 	if c.BuildLabel == "" {
 		c.BuildLabel = "pr-untrusted-build"
+	}
+	if c.TrustedLabel == "" {
+		c.TrustedLabel = "ubuntu-latest"
+	}
+	if c.Queue == nil {
+		c.Queue = NewCIQueue(telemetry.Noop())
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = 10 * time.Second
@@ -134,13 +147,22 @@ func (s *CISpawner) jobKinds() []ciJobKind {
 func (s *CISpawner) poll(ctx context.Context) {
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx)
 
+	if jobs, err := s.forgejo.RunJobs(ctx, s.cfg.Owner, s.cfg.Repo, s.cfg.TrustedLabel); err != nil {
+		log.Printf("ci spawner: jobs (%s): %v", s.cfg.TrustedLabel, err)
+	} else {
+		s.cfg.Queue.Observe(ctx, s.cfg.TrustedLabel, jobs)
+	}
 	for _, kind := range s.jobKinds() {
-		jobs, err := s.forgejo.WaitingRunJobs(ctx, s.cfg.Owner, s.cfg.Repo, kind.label)
+		jobs, err := s.forgejo.RunJobs(ctx, s.cfg.Owner, s.cfg.Repo, kind.label)
 		if err != nil {
-			log.Printf("ci spawner: waiting jobs (%s): %v", kind.label, err)
+			log.Printf("ci spawner: jobs (%s): %v", kind.label, err)
 			continue
 		}
+		s.cfg.Queue.Observe(ctx, kind.label, jobs)
 		for _, job := range jobs {
+			if job.Status != "waiting" {
+				continue
+			}
 			served, err := s.served(ctx, job.ID)
 			if err != nil {
 				log.Printf("ci spawner: check job %d served: %v", job.ID, err)

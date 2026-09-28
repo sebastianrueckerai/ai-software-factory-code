@@ -3,10 +3,16 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"maps"
 	"slices"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // Timeline is the task-level record sessions/<task-id>/timeline.jsonl: one
@@ -18,6 +24,10 @@ import (
 // it.
 type Timeline struct {
 	Objects ObjectStore
+	// Metrics receives factory.task.gate.duration for every step that
+	// carries started; nil = none.
+	Metrics *telemetry.Metrics
+	now     func() time.Time
 	mu      sync.Mutex
 	locks   map[string]*taskLock
 }
@@ -58,13 +68,52 @@ func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[
 	if err != nil {
 		return err
 	}
+	now := time.Now().UTC()
+	if tl.now != nil {
+		now = tl.now()
+	}
 	entry := map[string]any{}
 	maps.Copy(entry, detail)
-	entry["time"] = time.Now().UTC()
+	entry["time"] = now
 	entry["step"] = step
 	line, err := json.Marshal(entry)
 	if err != nil {
 		return err
 	}
-	return tl.Objects.Put(ctx, key, slices.Concat(prev, line, []byte("\n")))
+	if err := tl.Objects.Put(ctx, key, slices.Concat(prev, line, []byte("\n"))); err != nil {
+		return err
+	}
+	tl.gate(ctx, step, detail, now)
+	return nil
+}
+
+// gate emits the step's gate duration when the step carries started.
+func (tl *Timeline) gate(ctx context.Context, step string, detail map[string]any, end time.Time) {
+	var started time.Time
+	switch v := detail["started"].(type) {
+	case time.Time:
+		started = v
+	case string:
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			log.Printf("timeline %s: started %q: %v", step, v, err)
+			return
+		}
+		started = t
+	default:
+		return
+	}
+	if tl.Metrics == nil {
+		return
+	}
+	outcome := ""
+	for _, k := range []string{"outcome", "state", "verdict"} {
+		if s, ok := detail[k].(string); ok && s != "" {
+			outcome = s
+			break
+		}
+	}
+	model, _ := detail["model"].(string)
+	tl.Metrics.GateDuration.Record(ctx, end.Sub(started).Seconds(), metric.WithAttributes(
+		attribute.String("gate", step), attribute.String("outcome", outcome), attribute.String("model_alias", model)))
 }

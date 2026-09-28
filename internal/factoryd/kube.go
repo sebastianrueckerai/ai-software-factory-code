@@ -258,6 +258,13 @@ func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.
 	return res.Body, nil
 }
 
+// Deployment reads one Deployment (the factory namespace's roll record).
+func (k *InClusterKube) Deployment(ctx context.Context, namespace, name string) (Deployment, error) {
+	var d Deployment
+	err := k.getJSON(ctx, "/apis/apps/v1/namespaces/"+namespace+"/deployments/"+name, &d)
+	return d, err
+}
+
 func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error {
 	_, err := k.call(ctx, http.MethodGet, path, nil, out)
 	return err

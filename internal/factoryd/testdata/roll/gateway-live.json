@@ -1,0 +1,9 @@
+{"apiVersion":"apps/v1","kind":"Deployment",
+ "metadata":{"name":"factory-gateway","namespace":"factory","generation":7,
+  "managedFields":[
+   {"manager":"kustomize-controller","operation":"Apply","apiVersion":"apps/v1","time":"2026-09-28T10:07:11Z","fieldsType":"FieldsV1","fieldsV1":{}},
+   {"manager":"kube-controller-manager","operation":"Update","apiVersion":"apps/v1","time":"2026-09-28T10:08:02Z","fieldsType":"FieldsV1","fieldsV1":{},"subresource":"status"}]},
+ "spec":{"replicas":1,"template":{"spec":{"containers":[{"name":"c","image":"git.aisoftwarefactory.world/sf/factory-gateway@sha256:new"}]}}},
+ "status":{"observedGeneration":7,"conditions":[
+  {"type":"Available","status":"True","lastUpdateTime":"2026-09-27T08:00:00Z","lastTransitionTime":"2026-09-27T08:00:00Z","reason":"MinimumReplicasAvailable"},
+  {"type":"Progressing","status":"True","lastUpdateTime":"2026-09-28T10:08:02Z","lastTransitionTime":"2026-09-27T08:00:00Z","reason":"NewReplicaSetAvailable"}]}}

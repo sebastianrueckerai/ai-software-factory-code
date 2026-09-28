@@ -936,6 +936,45 @@ Image builds run outside the cluster instead (ruling 110,
   Forgejo while other jobs run. A build costs one billed hour of `cx23`
   plus its IPv4: 0.0096 EUR net.
 
+## Metrics
+
+factoryd exports OpenTelemetry metrics over OTLP HTTP every 30 s to
+`OTEL_EXPORTER_OTLP_ENDPOINT` as `OTEL_SERVICE_NAME` (SigNoz's collector);
+unset, the meter is a no-op. A failed export drops its samples and logs
+at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
+60, 120, 300, 600, 900, 1200, 1800, 2700 and 3600, money in `EUR`.
+
+- `factory.ci.job.duration{job,event,status}` and
+  `factory.ci.run.duration{event,status}`: a 60 s poll of the code
+  repository's `actions/tasks` (token `FORGEJO_CI_TASKS_TOKEN`), once per
+  finished job (updated minus started) and run (first job created to last
+  job finished, emitted once its known jobs finished 5 minutes ago: a job
+  appears there only once a runner took it). What finishes while factoryd
+  is down is lost.
+- `factory.ci.job.queue{label,job}`: the CI spawner's 10 s poll of
+  `actions/runners/jobs` for `pr-untrusted`, `pr-untrusted-build` and main
+  CI's `ubuntu-latest`, from the first poll that sees a job waiting to the
+  first that sees it taken. The `checks` timeline step lists the head's
+  jobs under `jobs`: `name`, `status`, `run_s` and, where measured,
+  `queue_s`.
+- `factory.ci.buildvm.lifetime`, `.ready` (create to buildkitd's first
+  mTLS answer, probed every 2 s by factoryd and kept in memory) and
+  `.cost` (started hours times the row's hourly price), each
+  `{server_type,deleted_by}` with `deleted_by` `teardown` or `collector`,
+  at the moment a build VM's row closes.
+- `factory.roll.duration`, `.apply` and `.ready`: at boot factoryd reads
+  the newest `main` commit that touched `k8s/`, waits until both
+  Deployments run its images and are available (`NewReplicaSetAvailable`
+  after the `kustomize-controller` apply), records the roll once in
+  `rolls` and logs `roll <sha> live: push to apply <n> s, apply to ready
+  <n> s`; the push is the push run's first job.
+- `factory.task.gate.duration{gate,outcome,model_alias}` from every
+  timeline step carrying `started`.
+- `factory.activity.open_age{activity}`: the age of the oldest running
+  activity per name.
+- `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
+  `open` for no verdict yet.
+
 ## factoryd's own network
 
 factoryd holds the LiteLLM master key, the bot password, the S3 keys and
@@ -947,7 +986,9 @@ on 5432, the in-cluster Forgejo on 3000 (`FORGEJO_URL`; the public host
 resolves to the edge gateway; links for people use
 `FORGEJO_PUBLIC_URL`), LiteLLM on 4000, the Temporal frontend on 7233,
 the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`), and
-`api.hetzner.cloud` on 443 (build VMs). Every
+`api.hetzner.cloud` on 443 (build VMs), SigNoz's collector
+(`signoz-otel-collector.platform`) on 4318, and any public IPv4 on 1234,
+the build VMs' buildkitd, whose first answer factoryd times. Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
