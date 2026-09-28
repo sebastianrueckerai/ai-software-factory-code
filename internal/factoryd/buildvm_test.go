@@ -273,17 +273,31 @@ func (f *fakeHetzner) DeleteFirewall(ctx context.Context, id int64) error {
 	return nil
 }
 
+// The CI project holds no volumes or loose addresses in these tests.
+func (f *fakeHetzner) Volumes(ctx context.Context, sel string) ([]hcloud.Volume, error) {
+	return nil, nil
+}
+func (f *fakeHetzner) Volume(ctx context.Context, id int64) (hcloud.Volume, error) {
+	return hcloud.Volume{}, &hcloud.APIError{Status: 404}
+}
+func (f *fakeHetzner) DetachVolume(ctx context.Context, id int64) error { return nil }
+func (f *fakeHetzner) DeleteVolume(ctx context.Context, id int64) error { return nil }
+func (f *fakeHetzner) PrimaryIPs(ctx context.Context, sel string) ([]hcloud.PrimaryIP, error) {
+	return nil, nil
+}
+func (f *fakeHetzner) DeletePrimaryIP(ctx context.Context, id int64) error { return nil }
+
 var buildVMNow = time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
 
 func newTestBuildVMs(t *testing.T, max int) (*BuildVMs, *fakeHetzner, *cloudres.Memory) {
 	t.Helper()
 	hz, reg := newFakeHetzner(), cloudres.NewMemory()
-	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz}
+	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz, RetryWait: time.Nanosecond}
 	b, err := NewBuildVMs(BuildVMConfig{Max: max, AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"}, Lease: time.Hour}, hz, reg, col)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.now, b.retryWait = func() time.Time { return buildVMNow }, 0
+	b.now = func() time.Time { return buildVMNow }
 	return b, hz, reg
 }
 

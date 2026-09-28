@@ -140,6 +140,9 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
 		})
+	if s.opts.Cloud != nil {
+		s.addCloudTools(srv, c)
+	}
 	return srv
 }
 

@@ -36,6 +36,7 @@ risk:
     - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
     - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
   default: normal
+envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
 // memPolicy is the in-memory PolicyStore: versions keyed by sha, in order.

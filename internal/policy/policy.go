@@ -22,6 +22,43 @@ type Document struct {
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	Prices  ToolPrices       `yaml:"prices" json:"prices"`
 	Risk    Risk             `yaml:"risk" json:"risk"`
+	// EnvelopeDefault is the resource envelope a project's first
+	// commissioning request copies into its envelopes row.
+	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
+}
+
+// Envelope bounds what a project's tasks may commission in the agent
+// cloud project without a human: EUR per calendar month (reservations and
+// accrued cost together), the server types, how many servers at once, the
+// longest lease and the largest volume.
+type Envelope struct {
+	MonthlyEUR    float64  `yaml:"monthly_eur" json:"monthly_eur"`
+	ServerTypes   []string `yaml:"server_types" json:"server_types"`
+	MaxCount      int      `yaml:"max_count" json:"max_count"`
+	MaxLeaseHours int      `yaml:"max_lease_hours" json:"max_lease_hours"`
+	VolumeMaxGB   int      `yaml:"volume_max_gb" json:"volume_max_gb"`
+}
+
+// MinVolumeGB is the smallest volume Hetzner creates.
+const MinVolumeGB = 10
+
+func (e Envelope) validate() error {
+	if len(e.ServerTypes) == 0 || slices.Contains(e.ServerTypes, "") {
+		return errors.New("envelope_default.server_types must list at least one server type, none empty")
+	}
+	if e.MonthlyEUR <= 0 {
+		return errors.New("envelope_default.monthly_eur must be positive")
+	}
+	if e.MaxCount < 1 {
+		return errors.New("envelope_default.max_count must be at least 1")
+	}
+	if e.MaxLeaseHours < 1 {
+		return errors.New("envelope_default.max_lease_hours must be at least 1")
+	}
+	if e.VolumeMaxGB != 0 && e.VolumeMaxGB < MinVolumeGB {
+		return fmt.Errorf("envelope_default.volume_max_gb must be 0 (no volumes) or at least %d", MinVolumeGB)
+	}
+	return nil
 }
 
 // Budget caps spend in EUR: per task (default and maximum at intake) and
@@ -138,6 +175,9 @@ func (d Document) Validate() error {
 	}
 	if err := d.Risk.validate(); err != nil {
 		return err
+	}
+	if err := d.EnvelopeDefault.validate(); err != nil {
+		return fmt.Errorf("policy: %w", err)
 	}
 	for name, c := range d.Classes {
 		if name == "" {

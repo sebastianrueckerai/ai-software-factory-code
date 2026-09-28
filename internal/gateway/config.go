@@ -17,6 +17,12 @@ type Config struct {
 	FalKey        string
 	FactorydURL   string
 	FactorydToken string
+	// the commissioning connector: the agent Hetzner project's token
+	// (secret factory/hetzner-agent), the cluster nodes' IPv4s (the SSH
+	// sources, ConfigMap cluster-facts) and OpenBao, the SSH CA
+	HetznerAgentKey string
+	AgentSSHSources string
+	OpenBaoURL      string
 }
 
 func ConfigFromEnv() Config {
@@ -31,6 +37,9 @@ func ConfigFromEnv() Config {
 		FalKey:           os.Getenv("FAL_AI_KEY"),
 		FactorydURL:      getEnv("FACTORYD_URL", "http://factoryd.factory.svc.cluster.local:8080"),
 		FactorydToken:    os.Getenv("FACTORYD_TOKEN"),
+		HetznerAgentKey:  os.Getenv("HETZNER_AGENT_KEY"),
+		AgentSSHSources:  os.Getenv("AGENT_SSH_SOURCES"),
+		OpenBaoURL:       getEnv("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"),
 	}
 }
 

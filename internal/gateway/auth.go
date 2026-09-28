@@ -42,7 +42,9 @@ const (
 	// GATEWAY_AUDIENCE.
 	defaultAudience = "factory-gateway"
 
-	defaultOwnTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- projected token file path, not a credential value
+	// InClusterTokenPath is the pod's own ServiceAccount token: the JWKS
+	// fetch and the OpenBao login present it.
+	InClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- projected token file path, not a credential value
 
 	// InClusterCACertPath is the pod's mounted CA bundle; the JWKS fetch to
 	// InClusterFetchBase() presents a certificate signed by it, so production
@@ -112,7 +114,7 @@ func NewAuth(opts AuthOptions) (*Auth, error) {
 		opts.Audience = defaultAudience
 	}
 	if opts.OwnTokenPath == "" {
-		opts.OwnTokenPath = defaultOwnTokenPath
+		opts.OwnTokenPath = InClusterTokenPath
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if opts.CACertPath != "" {

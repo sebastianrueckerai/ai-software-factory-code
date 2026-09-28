@@ -20,11 +20,18 @@ type Provider interface {
 	Firewalls(ctx context.Context, labelSelector string) ([]hcloud.Firewall, error)
 	Firewall(ctx context.Context, id int64) (hcloud.Firewall, error)
 	DeleteFirewall(ctx context.Context, id int64) error
+	Volumes(ctx context.Context, labelSelector string) ([]hcloud.Volume, error)
+	Volume(ctx context.Context, id int64) (hcloud.Volume, error)
+	DetachVolume(ctx context.Context, id int64) error
+	DeleteVolume(ctx context.Context, id int64) error
+	PrimaryIPs(ctx context.Context, labelSelector string) ([]hcloud.PrimaryIP, error)
+	DeletePrimaryIP(ctx context.Context, id int64) error
 }
 
 // Collector deletes the project's resources whose lease expired or whose
-// owner finished, deletes every server and firewall in the provider project
-// the registry does not know as open, and closes rows whose resource is
+// owner finished (promoted ones excepted), deletes every server, firewall
+// and volume in the provider project the registry does not know as open
+// and every primary IP no server holds, and closes rows whose resource is
 // gone. It owns the whole provider project: nothing else may live there.
 type Collector struct {
 	Project  string // ci | agent
@@ -37,7 +44,10 @@ type Collector struct {
 	// resource before it counts as never created. 0 = 10 minutes.
 	RequestedGrace time.Duration
 	Interval       time.Duration // 0 = 1 minute
-	Now            func() time.Time
+	// RetryWait spaces Release's retries of a firewall or volume its
+	// deleting server still holds. 0 = 3 seconds.
+	RetryWait time.Duration
+	Now       func() time.Time
 }
 
 func (c *Collector) now() time.Time {
@@ -76,7 +86,9 @@ type providerResource struct {
 // Collect runs one pass. The provider is listed BEFORE the registry is
 // read: a resource in the listing was created after its row was written,
 // so the row read afterwards always knows it, and a create racing this
-// pass is never mistaken for an unknown resource.
+// pass is never mistaken for an unknown resource. Primary IPs have no
+// rows: a server's own address goes with the server, so only an address
+// no server holds is collected.
 func (c *Collector) Collect(ctx context.Context) error {
 	servers, err := c.Provider.Servers(ctx, "")
 	if err != nil {
@@ -86,12 +98,23 @@ func (c *Collector) Collect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list firewalls: %w", err)
 	}
-	listed := make([]providerResource, 0, len(servers)+len(firewalls))
+	volumes, err := c.Provider.Volumes(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list volumes: %w", err)
+	}
+	ips, err := c.Provider.PrimaryIPs(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list primary ips: %w", err)
+	}
+	listed := make([]providerResource, 0, len(servers)+len(firewalls)+len(volumes))
 	for _, s := range servers {
 		listed = append(listed, providerResource{KindServer, s.ID, s.Labels})
 	}
 	for _, f := range firewalls {
 		listed = append(listed, providerResource{KindFirewall, f.ID, f.Labels})
+	}
+	for _, v := range volumes {
+		listed = append(listed, providerResource{KindVolume, v.ID, v.Labels})
 	}
 	rows, err := c.Registry.Open(ctx, c.Project)
 	if err != nil {
@@ -101,7 +124,7 @@ func (c *Collector) Collect(ctx context.Context) error {
 	var errs []error
 	matched := map[providerKey]bool{}
 	ownerDone := map[string]bool{}
-	for _, kind := range []string{KindServer, KindFirewall} { // servers first: a firewall is in use until its server is gone
+	for _, kind := range Kinds {
 		for _, row := range rows {
 			if row.Kind != kind {
 				continue
@@ -115,7 +138,7 @@ func (c *Collector) Collect(ctx context.Context) error {
 			}
 		}
 	}
-	for _, kind := range []string{KindServer, KindFirewall} {
+	for _, kind := range Kinds {
 		for _, p := range listed {
 			if p.kind != kind || matched[key(p)] {
 				continue
@@ -124,6 +147,15 @@ func (c *Collector) Collect(ctx context.Context) error {
 			if err := c.deleteProvider(ctx, p.kind, p.id); err != nil {
 				errs = append(errs, fmt.Errorf("unknown %s %d: %w", p.kind, p.id, err))
 			}
+		}
+	}
+	for _, ip := range ips {
+		if ip.AssigneeID != nil {
+			continue
+		}
+		log.Printf("cloud collector (%s): deleting unassigned primary ip %d (%s)", c.Project, ip.ID, ip.IP)
+		if err := c.Provider.DeletePrimaryIP(ctx, ip.ID); err != nil {
+			errs = append(errs, fmt.Errorf("primary ip %d: %w", ip.ID, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -171,6 +203,7 @@ func (c *Collector) collectRow(ctx context.Context, row Resource, found provider
 	switch {
 	case row.State == StateDeleting:
 		reason = "deletion pending"
+	case row.Promoted:
 	case !now.Before(row.LeaseExpires):
 		reason = "lease expired"
 	default:
@@ -242,6 +275,8 @@ func (c *Collector) gone(ctx context.Context, kind string, id int64) (bool, erro
 		_, err = c.Provider.Server(ctx, id)
 	case KindFirewall:
 		_, err = c.Provider.Firewall(ctx, id)
+	case KindVolume:
+		_, err = c.Provider.Volume(ctx, id)
 	default:
 		return false, fmt.Errorf("unsupported kind %s", kind)
 	}
@@ -266,12 +301,120 @@ func (c *Collector) Delete(ctx context.Context, row Resource, providerID int64) 
 	return err
 }
 
+// ErrDetaching is a volume delete waiting for its detach.
+var ErrDetaching = errors.New("volume still attached: detach started, delete on the next attempt")
+
 func (c *Collector) deleteProvider(ctx context.Context, kind string, id int64) error {
 	switch kind {
 	case KindServer:
 		return c.Provider.DeleteServer(ctx, id)
 	case KindFirewall:
 		return c.Provider.DeleteFirewall(ctx, id)
+	case KindVolume:
+		v, err := c.Provider.Volume(ctx, id)
+		if errors.Is(err, hcloud.ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if v.Server != nil {
+			if err := c.Provider.DetachVolume(ctx, id); err != nil {
+				return err
+			}
+			return ErrDetaching
+		}
+		return c.Provider.DeleteVolume(ctx, id)
 	}
 	return fmt.Errorf("unsupported kind %s", kind)
+}
+
+// Release deletes the rows' resources now, servers first, and closes the
+// rows: the owner's own teardown. A firewall or volume its deleting server
+// still holds is retried a few times; past that its row stays deleting for
+// the collector.
+func (c *Collector) Release(ctx context.Context, rows []Resource) error {
+	var errs []error
+	for _, kind := range Kinds {
+		for _, row := range rows {
+			if row.Kind != kind {
+				continue
+			}
+			if err := c.release(ctx, row); err != nil {
+				errs = append(errs, fmt.Errorf("%s %s: %w", row.Kind, row.Name, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (c *Collector) release(ctx context.Context, row Resource) error {
+	id, found, err := c.providerID(ctx, row)
+	if err != nil {
+		return err
+	}
+	if !found {
+		// Never created: a create that is still in flight or lands later
+		// finds its row closed, and the collector deletes it as unknown.
+		_, err := c.Registry.Transition(ctx, row.ID, StateDeleted)
+		return err
+	}
+	wait := c.RetryWait
+	if wait <= 0 {
+		wait = 3 * time.Second
+	}
+	for attempt := 1; ; attempt++ {
+		err := c.Delete(ctx, row, id)
+		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || errors.Is(err, ErrDetaching)) || attempt == 10 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// providerID is the row's recorded provider id, or the id of the resource
+// carrying its label when the create answered but the id was not recorded.
+func (c *Collector) providerID(ctx context.Context, row Resource) (int64, bool, error) {
+	if row.ProviderID != "" {
+		id, err := strconv.ParseInt(row.ProviderID, 10, 64)
+		return id, err == nil, err
+	}
+	selector := "resource=" + strconv.FormatInt(row.ID, 10)
+	var ids []int64
+	switch row.Kind {
+	case KindServer:
+		found, err := c.Provider.Servers(ctx, selector)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, s := range found {
+			ids = append(ids, s.ID)
+		}
+	case KindFirewall:
+		found, err := c.Provider.Firewalls(ctx, selector)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, f := range found {
+			ids = append(ids, f.ID)
+		}
+	case KindVolume:
+		found, err := c.Provider.Volumes(ctx, selector)
+		if err != nil {
+			return 0, false, err
+		}
+		for _, v := range found {
+			ids = append(ids, v.ID)
+		}
+	default:
+		return 0, false, fmt.Errorf("unsupported kind %s", row.Kind)
+	}
+	if len(ids) == 0 {
+		return 0, false, nil
+	}
+	return ids[0], true, nil
 }

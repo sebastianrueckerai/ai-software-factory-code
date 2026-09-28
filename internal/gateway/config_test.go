@@ -10,7 +10,7 @@ func TestConfigFromEnv(t *testing.T) {
 	}{
 		{
 			name: "defaults",
-			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080"},
+			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080", OpenBaoURL: "http://openbao.platform.svc.cluster.local:8200"},
 		},
 		{
 			name: "all set",
@@ -25,6 +25,9 @@ func TestConfigFromEnv(t *testing.T) {
 				"FAL_AI_KEY":         "fal",
 				"FACTORYD_URL":       "http://fd:8080",
 				"FACTORYD_TOKEN":     "tok",
+				"HETZNER_AGENT_KEY":  "hz",
+				"AGENT_SSH_SOURCES":  "198.51.100.1,198.51.100.2",
+				"OPENBAO_URL":        "http://bao:8200",
 			},
 			want: Config{
 				Audience:         "other-aud",
@@ -37,12 +40,15 @@ func TestConfigFromEnv(t *testing.T) {
 				FalKey:           "fal",
 				FactorydURL:      "http://fd:8080",
 				FactorydToken:    "tok",
+				HetznerAgentKey:  "hz",
+				AgentSSHSources:  "198.51.100.1,198.51.100.2",
+				OpenBaoURL:       "http://bao:8200",
 			},
 		},
 		{
 			name: "empty database url falls through to pgx pg vars",
 			env:  map[string]string{"PGHOST": "db-host"},
-			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080"},
+			want: Config{Audience: "factory-gateway", Port: "8081", FactorydURL: "http://factoryd.factory.svc.cluster.local:8080", OpenBaoURL: "http://openbao.platform.svc.cluster.local:8200"},
 		},
 	}
 	for _, tt := range tests {

@@ -245,9 +245,6 @@ type BuildVMs struct {
 	registry  cloudres.Registry
 	collector *cloudres.Collector
 	now       func() time.Time
-	// retryWait spaces firewall-delete retries while the server's deletion
-	// still holds the firewall.
-	retryWait time.Duration
 }
 
 func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.Registry, collector *cloudres.Collector) (*BuildVMs, error) {
@@ -266,21 +263,12 @@ func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.
 	if cfg.Lease <= 0 {
 		return nil, errors.New("build vms: Lease is required")
 	}
-	if len(cfg.AllowedSources) == 0 {
-		return nil, errors.New("build vms: AllowedSources is required")
+	sources, err := cloudres.IPv4Sources(cfg.AllowedSources)
+	if err != nil {
+		return nil, fmt.Errorf("build vms: %w", err)
 	}
-	for i, src := range cfg.AllowedSources {
-		src = strings.TrimSpace(src)
-		if !strings.Contains(src, "/") {
-			src += "/32"
-		}
-		ip, _, err := net.ParseCIDR(src)
-		if err != nil || ip.To4() == nil {
-			return nil, fmt.Errorf("build vms: allowed source %q is not an IPv4 address or CIDR", cfg.AllowedSources[i])
-		}
-		cfg.AllowedSources[i] = src
-	}
-	return &BuildVMs{cfg: cfg, provider: provider, registry: registry, collector: collector, now: time.Now, retryWait: 3 * time.Second}, nil
+	cfg.AllowedSources = sources
+	return &BuildVMs{cfg: cfg, provider: provider, registry: registry, collector: collector, now: time.Now}, nil
 }
 
 // BuildVM is a provisioned VM and the material its job's runner needs.
@@ -396,74 +384,13 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 }
 
 // Release deletes every open resource of jobID, servers first, and closes
-// the rows. A firewall still held by its deleting server is retried a few
-// times; past that the row stays deleting for the collector.
+// the rows (cloudres.Collector.Release).
 func (b *BuildVMs) Release(ctx context.Context, jobID int64) error {
 	rows, err := b.registry.OpenByOwner(ctx, "ci", strconv.FormatInt(jobID, 10))
 	if err != nil {
 		return err
 	}
-	var errs []error
-	for _, kind := range []string{cloudres.KindServer, cloudres.KindFirewall} {
-		for _, row := range rows {
-			if row.Kind != kind {
-				continue
-			}
-			if err := b.release(ctx, row); err != nil {
-				errs = append(errs, fmt.Errorf("%s %s: %w", row.Kind, row.Name, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
-}
-
-func (b *BuildVMs) release(ctx context.Context, row cloudres.Resource) error {
-	id, found, err := b.providerID(ctx, row)
-	if err != nil {
-		return err
-	}
-	if !found {
-		// Never created: a create that is still in flight or lands later
-		// finds its row closed, and the collector deletes it as unknown.
-		_, err := b.registry.Transition(ctx, row.ID, cloudres.StateDeleted)
-		return err
-	}
-	for attempt := 1; ; attempt++ {
-		err := b.collector.Delete(ctx, row, id)
-		if err == nil || !hcloud.IsCode(err, "resource_in_use") || attempt == 10 {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(b.retryWait):
-		}
-	}
-}
-
-// providerID is the row's recorded provider id, or the id of the resource
-// carrying its label when the create answered but the id was not recorded.
-func (b *BuildVMs) providerID(ctx context.Context, row cloudres.Resource) (int64, bool, error) {
-	if row.ProviderID != "" {
-		id, err := strconv.ParseInt(row.ProviderID, 10, 64)
-		return id, err == nil, err
-	}
-	selector := "resource=" + strconv.FormatInt(row.ID, 10)
-	switch row.Kind {
-	case cloudres.KindServer:
-		found, err := b.provider.Servers(ctx, selector)
-		if err != nil || len(found) == 0 {
-			return 0, false, err
-		}
-		return found[0].ID, true, nil
-	case cloudres.KindFirewall:
-		found, err := b.provider.Firewalls(ctx, selector)
-		if err != nil || len(found) == 0 {
-			return 0, false, err
-		}
-		return found[0].ID, true, nil
-	}
-	return 0, false, fmt.Errorf("unsupported kind %s", row.Kind)
+	return b.collector.Release(ctx, rows)
 }
 
 // CIOwnerDone is the CI collector's owner check: a build VM's job is

@@ -40,7 +40,7 @@ func TestPGStore(t *testing.T) {
 
 	// factoryd owns task rows; seed one the way it would.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities) VALUES ('t1', 10, 2, 'running', '["coder"]')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app')`,
 	); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
 	}
-	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}}
+	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/app"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}

@@ -25,6 +25,9 @@ type Task struct {
 	Status    string
 	// Classes are the task's capability classes (tasks.required_capabilities).
 	Classes []string
+	// Repository is the task's owner/name: the project of its resource
+	// envelope.
+	Repository string
 }
 
 type AuditRow struct {
@@ -112,8 +115,8 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	var t Task
 	var classes []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes)
+		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities, repository FROM tasks WHERE id = $1`, id,
+	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes, &t.Repository)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
@@ -145,3 +148,7 @@ func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Ho
 func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (float64, error) {
 	return policy.ReleaseHold(ctx, s.db, h, cost)
 }
+
+// DB is the store's pool, shared with the cloud registry on the same
+// database.
+func (s *PGStore) DB() *sql.DB { return s.db }

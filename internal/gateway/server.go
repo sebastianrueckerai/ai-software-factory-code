@@ -61,6 +61,8 @@ type ServerOptions struct {
 	Replicate *Replicate
 	Fal       *Fal
 	Escalator Escalator
+	// Cloud is the commissioning connector (the agent Hetzner project).
+	Cloud *Cloud
 }
 
 // liveKey is a task's virtual key and what it was minted for: a new run,

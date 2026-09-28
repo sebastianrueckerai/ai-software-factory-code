@@ -111,10 +111,13 @@ func FitTool(taskFree, dayFree float64, requests int, usedEUR float64, r HoldReq
 		return Hold{}, &Refusal{Decision: "refused_tool_eur", Reason: fmt.Sprintf(
 			"%s: %.6f EUR used and a worst case of %.6f EUR exceed the task's cap of %.6f EUR on it", r.Ref, usedEUR, r.EUR, r.Cap.MaxEUR)}
 	}
-	free, decision := taskFree, "refused_budget"
-	if dayFree < taskFree {
-		free, decision = dayFree, "refused_day_cap"
-	}
+	return FitResource(taskFree, dayFree, r)
+}
+
+// FitResource admits r.EUR as is if the free task and day headroom pay for
+// it: a tool call's worst case, or a commissioned resource's reservation.
+func FitResource(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
+	free, decision := HeadroomBound(taskFree, dayFree)
 	if r.EUR > free {
 		return Hold{}, &Refusal{Decision: decision, Reason: fmt.Sprintf(
 			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (task %.6f, day %.6f)", r.Ref, r.EUR, free, taskFree, dayFree)}
@@ -131,30 +134,16 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 		return Hold{}, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('factory-headroom'))`); err != nil {
+	if err := LockHeadroom(ctx, tx); err != nil {
 		return Hold{}, err
 	}
-	var status string
-	var taskHeadroom, taskHeld, dayHeadroom, dayHeld float64
-	err = tx.QueryRowContext(ctx,
-		`SELECT status, (budget_eur - spent_eur)::float8,
-		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
-		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date), 0))::float8,
-		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
-		 FROM tasks WHERE id = $1`, r.TaskID, r.DayEUR,
-	).Scan(&status, &taskHeadroom, &taskHeld, &dayHeadroom, &dayHeld)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Hold{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
-	}
+	free, err := FreeHeadroom(ctx, tx, r.TaskID, r.DayEUR)
 	if err != nil {
 		return Hold{}, err
 	}
-	// settlement relies on a finished task taking no new hold
-	if !slices.Contains(holdStatuses, status) {
-		return Hold{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", r.TaskID, status)}
-	}
 	var h Hold
-	if r.Kind == KindTool {
+	switch r.Kind {
+	case KindTool:
 		var requests int
 		var usedEUR float64
 		if err := tx.QueryRowContext(ctx,
@@ -165,20 +154,69 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 			r.TaskID, r.Ref).Scan(&requests, &usedEUR); err != nil {
 			return Hold{}, err
 		}
-		h, err = FitTool(taskHeadroom-taskHeld, dayHeadroom-dayHeld, requests, usedEUR, r)
-	} else {
-		h, err = Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+		h, err = FitTool(free.Task, free.Day, requests, usedEUR, r)
+	case KindResource:
+		h, err = FitResource(free.Task, free.Day, r)
+	default:
+		h, err = Fit(free.Task, free.Day, r)
 	}
 	if err != nil {
 		return Hold{}, err
 	}
-	h.Headroom, h.Bound = HeadroomBound(taskHeadroom, dayHeadroom)
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
-		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.EUR, HoldTTL.Seconds()).Scan(&h.ID); err != nil {
+	h.Headroom, h.Bound = HeadroomBound(free.TaskHeadroom, free.DayHeadroom)
+	if h.ID, err = InsertHold(ctx, tx, h, HoldTTL); err != nil {
 		return Hold{}, err
 	}
 	return h, tx.Commit()
+}
+
+// LockHeadroom serializes everything that takes headroom, until tx ends.
+func LockHeadroom(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('factory-headroom'))`)
+	return err
+}
+
+// Free is a task's and the day's headroom: before any hold, and free
+// (after every outstanding hold).
+type Free struct {
+	TaskHeadroom, DayHeadroom float64
+	Task, Day                 float64
+}
+
+// FreeHeadroom reads the task's and the UTC day's headroom inside tx
+// (under LockHeadroom). A task that is neither running nor in review is
+// refused: settlement relies on a finished task taking no new hold.
+func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR float64) (Free, error) {
+	var f Free
+	var status string
+	var taskHeld, dayHeld float64
+	err := tx.QueryRowContext(ctx,
+		`SELECT status, (budget_eur - spent_eur)::float8,
+		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
+		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date), 0))::float8,
+		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
+		 FROM tasks WHERE id = $1`, taskID, dayEUR,
+	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &dayHeld)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Free{}, fmt.Errorf("hold: no task row for %s", taskID)
+	}
+	if err != nil {
+		return Free{}, err
+	}
+	if !slices.Contains(holdStatuses, status) {
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, status)}
+	}
+	f.Task, f.Day = f.TaskHeadroom-taskHeld, f.DayHeadroom-dayHeld
+	return f, nil
+}
+
+// InsertHold records h inside tx, expiring after ttl, and returns its id.
+func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int64, error) {
+	var id int64
+	err := tx.QueryRowContext(ctx,
+		`INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
+		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.EUR, ttl.Seconds()).Scan(&id)
+	return id, err
 }
 
 // ReleaseHold turns a hold into spend: the call's cost when known, else the

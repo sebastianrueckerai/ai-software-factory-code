@@ -4,9 +4,12 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -17,8 +20,12 @@ func main() {
 	if cfg.LiteLLMURL == "" || cfg.LiteLLMMasterKey == "" {
 		log.Fatal("LITELLM_URL and LITELLM_MASTER_KEY are required")
 	}
-	if cfg.FirecrawlKey == "" || cfg.ReplicateKey == "" || cfg.FalKey == "" || cfg.FactorydToken == "" {
-		log.Fatal("FIRECRAWL_KEY, REPLICATE_KEY, FAL_AI_KEY and FACTORYD_TOKEN are required")
+	if cfg.FirecrawlKey == "" || cfg.ReplicateKey == "" || cfg.FalKey == "" || cfg.FactorydToken == "" || cfg.HetznerAgentKey == "" {
+		log.Fatal("FIRECRAWL_KEY, REPLICATE_KEY, FAL_AI_KEY, FACTORYD_TOKEN and HETZNER_AGENT_KEY are required")
+	}
+	sshSources, err := cloudres.IPv4Sources(strings.Split(cfg.AgentSSHSources, ","))
+	if err != nil {
+		log.Fatalf("AGENT_SSH_SOURCES: %v", err)
 	}
 
 	ctx := context.Background()
@@ -33,6 +40,20 @@ func main() {
 	})
 	if err != nil {
 		log.Fatalf("init auth: %v", err)
+	}
+	// the agent Hetzner project holds only commissioned resources: its
+	// collector deletes whatever the registry does not know
+	hetzner := hcloud.New(cfg.HetznerAgentKey)
+	registry := cloudres.PG{DB: store.DB()}
+	cloud := &gateway.Cloud{
+		Provider: hetzner,
+		Store:    cloudres.AgentStore{DB: store.DB()},
+		Registry: registry,
+		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: registry, Provider: hetzner,
+			OwnerDone: gateway.TaskOwnerDone(store)},
+		Signer: &gateway.OpenBao{BaseURL: cfg.OpenBaoURL, AuthRole: "factory-gateway", SSHRole: "factory-agent",
+			TokenFile: gateway.InClusterTokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
+		Sources: sshSources,
 	}
 	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
 	srv := gateway.NewServer(gateway.ServerOptions{
@@ -50,7 +71,9 @@ func main() {
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: &http.Client{Timeout: 120 * time.Second}},
 		Escalator: &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
+		Cloud:     cloud,
 	})
+	go cloud.Run(ctx, 2*time.Minute)
 
 	addr := ":" + cfg.Port
 	log.Printf("factory-gateway %s listening on %s", version, addr)

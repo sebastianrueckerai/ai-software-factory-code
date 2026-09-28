@@ -153,3 +153,100 @@ func TestPricing(t *testing.T) {
 		t.Fatal("want an error for an unknown server type")
 	}
 }
+
+func TestCreateVolumeAttachesAndDecodes(t *testing.T) {
+	var got map[string]any
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/volumes" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		json.Unmarshal(b, &got)
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"volume":{"id":77,"name":"v","size":20,"server":42,"labels":{"factory":"agent"}},"action":{"id":1}}`)
+	})
+	v, err := c.CreateVolume(context.Background(), CreateVolumeRequest{
+		Name: "v", Size: 20, Server: 42, Automount: true, Format: "ext4", Labels: map[string]string{"factory": "agent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.ID != 77 || v.Server == nil || *v.Server != 42 || v.Size != 20 {
+		t.Fatalf("volume = %+v", v)
+	}
+	gb, _ := json.Marshal(got)
+	want := `{"automount":true,"format":"ext4","labels":{"factory":"agent"},"name":"v","server":42,"size":20}`
+	if string(gb) != want {
+		t.Fatalf("body = %s, want %s", gb, want)
+	}
+}
+
+func TestVolumesAndPrimaryIPsListGetDeleteDetach(t *testing.T) {
+	var calls []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		switch r.Method + " " + r.URL.Path {
+		case "GET /volumes":
+			io.WriteString(w, `{"volumes":[{"id":1,"server":null},{"id":2,"server":9}],"meta":{"pagination":{"next_page":null}}}`)
+		case "GET /primary_ips":
+			io.WriteString(w, `{"primary_ips":[{"id":5,"ip":"203.0.113.5","assignee_id":null},{"id":6,"ip":"203.0.113.6","assignee_id":9}],"meta":{"pagination":{"next_page":null}}}`)
+		case "GET /volumes/1":
+			io.WriteString(w, `{"volume":{"id":1}}`)
+		case "GET /primary_ips/5":
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":{"code":"not_found"}}`)
+		case "POST /volumes/2/actions/detach":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"action":{"id":3}}`)
+		case "DELETE /volumes/1", "DELETE /primary_ips/5":
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"error":{"code":"not_found"}}`)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	ctx := context.Background()
+	vols, err := c.Volumes(ctx, "")
+	if err != nil || len(vols) != 2 || vols[0].Server != nil || *vols[1].Server != 9 {
+		t.Fatalf("volumes = %+v, %v", vols, err)
+	}
+	ips, err := c.PrimaryIPs(ctx, "")
+	if err != nil || len(ips) != 2 || ips[0].AssigneeID != nil || *ips[1].AssigneeID != 9 || ips[0].IP != "203.0.113.5" {
+		t.Fatalf("primary ips = %+v, %v", ips, err)
+	}
+	if _, err := c.Volume(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PrimaryIP(ctx, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("primary ip 5 err = %v, want not found", err)
+	}
+	if err := c.DetachVolume(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteVolume(ctx, 1); err != nil {
+		t.Fatalf("delete volume on 404: %v", err)
+	}
+	if err := c.DeletePrimaryIP(ctx, 5); err != nil {
+		t.Fatalf("delete primary ip on 404: %v", err)
+	}
+}
+
+func TestPricingMonthlyAndVolume(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"pricing":{"currency":"EUR","volume":{"price_per_gb_month":{"net":"0.0572000000","gross":"0.068068"}},
+			"primary_ips":[{"type":"ipv4","prices":[{"location":"fsn1","price_hourly":{"net":"0.0008000000"},"price_monthly":{"net":"0.5000000000"}}]}],
+			"server_types":[{"name":"cx23","prices":[{"location":"fsn1","price_hourly":{"net":"0.0088000000"},"price_monthly":{"net":"5.4900000000"}}]}]}}`)
+	})
+	p, err := c.Pricing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, err := p.ServerMonthlyNet("cx23", "fsn1"); err != nil || v != 5.49 {
+		t.Fatalf("cx23 monthly = %v, %v", v, err)
+	}
+	if v, err := p.PrimaryIPMonthlyNet("ipv4", "fsn1"); err != nil || v != 0.5 {
+		t.Fatalf("ipv4 monthly = %v, %v", v, err)
+	}
+	if v, err := p.VolumeGBMonthNet(); err != nil || v != 0.0572 {
+		t.Fatalf("volume = %v, %v", v, err)
+	}
+}

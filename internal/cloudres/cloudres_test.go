@@ -3,11 +3,8 @@ package cloudres
 import (
 	"cmp"
 	"context"
-	"database/sql"
 	"errors"
 	"maps"
-	"os"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +22,8 @@ type fakeProvider struct {
 	mu        sync.Mutex
 	servers   map[int64]hcloud.Server
 	firewalls map[int64]hcloud.Firewall
+	volumes   map[int64]hcloud.Volume
+	ips       map[int64]hcloud.PrimaryIP
 	deleted   []string
 	inUse     map[int64]bool // firewall ids answering resource_in_use
 	listLag   map[int64]bool // server ids missing from listings but present on GET
@@ -32,6 +31,7 @@ type fakeProvider struct {
 
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{servers: map[int64]hcloud.Server{}, firewalls: map[int64]hcloud.Firewall{},
+		volumes: map[int64]hcloud.Volume{}, ips: map[int64]hcloud.PrimaryIP{},
 		inUse: map[int64]bool{}, listLag: map[int64]bool{}}
 }
 
@@ -40,7 +40,7 @@ func (f *fakeProvider) Servers(ctx context.Context, sel string) ([]hcloud.Server
 	defer f.mu.Unlock()
 	var out []hcloud.Server
 	for id, s := range f.servers {
-		if !f.listLag[id] {
+		if !f.listLag[id] && selects(sel, s.Labels) {
 			out = append(out, s)
 		}
 	}
@@ -58,11 +58,84 @@ func (f *fakeProvider) Server(ctx context.Context, id int64) (hcloud.Server, err
 	return s, nil
 }
 
+// DeleteServer detaches the server's volumes and deletes the primary IPs
+// assigned to it, as Hetzner does (auto_delete).
 func (f *fakeProvider) DeleteServer(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.servers, id)
+	for vid, v := range f.volumes {
+		if v.Server != nil && *v.Server == id {
+			v.Server = nil
+			f.volumes[vid] = v
+		}
+	}
+	for ipID, ip := range f.ips {
+		if ip.AssigneeID != nil && *ip.AssigneeID == id {
+			delete(f.ips, ipID)
+		}
+	}
 	f.deleted = append(f.deleted, "server/"+itoa(id))
+	return nil
+}
+
+func (f *fakeProvider) Volumes(ctx context.Context, sel string) ([]hcloud.Volume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []hcloud.Volume
+	for _, v := range f.volumes {
+		if selects(sel, v.Labels) {
+			out = append(out, v)
+		}
+	}
+	slices.SortFunc(out, func(a, b hcloud.Volume) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+func (f *fakeProvider) Volume(ctx context.Context, id int64) (hcloud.Volume, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v, ok := f.volumes[id]
+	if !ok {
+		return v, &hcloud.APIError{Status: 404, Code: "not_found"}
+	}
+	return v, nil
+}
+
+func (f *fakeProvider) DetachVolume(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	v := f.volumes[id]
+	v.Server = nil
+	f.volumes[id] = v
+	f.deleted = append(f.deleted, "detach/"+itoa(id))
+	return nil
+}
+
+func (f *fakeProvider) DeleteVolume(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.volumes[id]; ok && v.Server != nil {
+		return &hcloud.APIError{Status: 423, Code: "locked"}
+	}
+	delete(f.volumes, id)
+	f.deleted = append(f.deleted, "volume/"+itoa(id))
+	return nil
+}
+
+func (f *fakeProvider) PrimaryIPs(ctx context.Context, sel string) ([]hcloud.PrimaryIP, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := slices.Collect(maps.Values(f.ips))
+	slices.SortFunc(out, func(a, b hcloud.PrimaryIP) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+func (f *fakeProvider) DeletePrimaryIP(ctx context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.ips, id)
+	f.deleted = append(f.deleted, "primary_ip/"+itoa(id))
 	return nil
 }
 
@@ -71,7 +144,9 @@ func (f *fakeProvider) Firewalls(ctx context.Context, sel string) ([]hcloud.Fire
 	defer f.mu.Unlock()
 	var out []hcloud.Firewall
 	for _, fw := range f.firewalls {
-		out = append(out, fw)
+		if selects(sel, fw.Labels) {
+			out = append(out, fw)
+		}
 	}
 	slices.SortFunc(out, func(a, b hcloud.Firewall) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
@@ -96,6 +171,15 @@ func (f *fakeProvider) DeleteFirewall(ctx context.Context, id int64) error {
 	delete(f.firewalls, id)
 	f.deleted = append(f.deleted, "firewall/"+itoa(id))
 	return nil
+}
+
+// selects is a label selector of the one form the code sends: k=v.
+func selects(sel string, labels map[string]string) bool {
+	if sel == "" {
+		return true
+	}
+	k, v, _ := strings.Cut(sel, "=")
+	return labels[k] == v
 }
 
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
@@ -131,10 +215,13 @@ func (h *harness) create(t *testing.T, kind, owner string, providerID int64, lea
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kind == KindServer {
+	switch kind {
+	case KindServer:
 		h.prov.servers[providerID] = hcloud.Server{ID: providerID, Labels: r.Labels}
-	} else {
+	case KindFirewall:
 		h.prov.firewalls[providerID] = hcloud.Firewall{ID: providerID, Labels: r.Labels}
+	case KindVolume:
+		h.prov.volumes[providerID] = hcloud.Volume{ID: providerID, Labels: r.Labels}
 	}
 	if _, err := h.reg.SetLive(context.Background(), r.ID, itoa(providerID)); err != nil {
 		t.Fatal(err)
@@ -382,34 +469,8 @@ func TestOwnerErrorSkipsRow(t *testing.T) {
 
 // Requires a disposable Postgres: FACTORYD_TEST_DATABASE_URL.
 func TestPGStateMachine(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
-	db, err := sql.Open("pgx", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	db := agentDB(t)
 	ctx := context.Background()
-	files, _ := filepath.Glob("../factoryd/migrations/*_cloud_resources.sql")
-	if len(files) != 1 {
-		t.Fatalf("migration files = %v", files)
-	}
-	schema, err := os.ReadFile(files[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS cloud_resources`); err != nil {
-		t.Fatal(err)
-	}
-	for _, stmt := range strings.Split(string(schema), ";") {
-		if strings.TrimSpace(stmt) != "" {
-			if _, err := db.ExecContext(ctx, stmt); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 	reg := PG{DB: db}
 	testStateMachine(t, reg)
 
@@ -434,5 +495,84 @@ func TestPGStateMachine(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO cloud_resources (project, kind, name, owner_ref, lease_expires) VALUES ('other', 'server', 'x', '1', now())`); err == nil {
 		t.Fatal("want the project check to refuse 'other'")
+	}
+}
+
+func ptr(v int64) *int64 { return &v }
+
+func TestCollectKeepsPromotedPastLeaseAndOwner(t *testing.T) {
+	h := newHarness()
+	r, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindServer, OwnerRef: "5",
+		LeaseExpires: t0.Add(time.Minute), Promoted: true})
+	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: r.Labels}
+	h.reg.SetLive(context.Background(), r.ID, "100")
+	h.done["5"] = true
+	h.clk.t = t0.Add(time.Hour)
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.prov.deleted) != 0 || h.state(t, r.ID) != StateLive {
+		t.Fatalf("promoted resource collected: deleted %v, state %s", h.prov.deleted, h.state(t, r.ID))
+	}
+}
+
+func TestCollectDeletesVolumeAfterItsServer(t *testing.T) {
+	h := newHarness()
+	v := h.create(t, KindVolume, "5", 400, time.Hour)
+	s := h.create(t, KindServer, "5", 100, time.Hour)
+	h.prov.volumes[400] = hcloud.Volume{ID: 400, Labels: v.Labels, Server: ptr(100)}
+	h.clk.t = t0.Add(time.Hour)
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100,volume/400" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+	if h.state(t, s.ID) != StateDeleted || h.state(t, v.ID) != StateDeleted {
+		t.Fatalf("states = %s %s", h.state(t, s.ID), h.state(t, v.ID))
+	}
+}
+
+func TestCollectDeletesUnknownVolumesAndLooseAddresses(t *testing.T) {
+	h := newHarness()
+	keep := h.create(t, KindServer, "5", 100, time.Hour)
+	h.prov.ips[500] = hcloud.PrimaryIP{ID: 500, AssigneeID: ptr(100)} // the live server's own address
+	h.prov.ips[501] = hcloud.PrimaryIP{ID: 501}                       // made by hand, unassigned
+	h.prov.volumes[401] = hcloud.Volume{ID: 401, Server: ptr(100)}    // made by hand, attached to a known server
+	if err := h.col.Collect(context.Background()); err == nil {
+		t.Fatal("want the attached unknown volume to wait for its detach")
+	}
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "detach/401,primary_ip/501,volume/401" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+	if h.state(t, keep.ID) != StateLive || len(h.prov.ips) != 1 {
+		t.Fatalf("kept server %s, addresses %v", h.state(t, keep.ID), h.prov.ips)
+	}
+}
+
+func TestReleaseServersFirstAndClosesNeverCreatedRows(t *testing.T) {
+	h := newHarness()
+	h.col.RetryWait = time.Millisecond
+	f := h.create(t, KindFirewall, "5", 200, time.Hour)
+	s := h.create(t, KindServer, "5", 100, time.Hour)
+	v := h.create(t, KindVolume, "5", 400, time.Hour)
+	h.prov.volumes[400] = hcloud.Volume{ID: 400, Labels: v.Labels, Server: ptr(100)}
+	never, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindServer, OwnerRef: "5", LeaseExpires: t0.Add(time.Hour)})
+	byLabel, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindFirewall, OwnerRef: "5", LeaseExpires: t0.Add(time.Hour)})
+	h.prov.firewalls[201] = hcloud.Firewall{ID: 201, Labels: byLabel.Labels} // created, id never recorded
+	rows, _ := h.reg.OpenByOwner(context.Background(), "ci", "5")
+	if err := h.col.Release(context.Background(), rows); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100,firewall/200,firewall/201,volume/400" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+	for _, id := range []int64{f.ID, s.ID, v.ID, never.ID, byLabel.ID} {
+		if h.state(t, id) != StateDeleted {
+			t.Fatalf("row %d = %s", id, h.state(t, id))
+		}
 	}
 }

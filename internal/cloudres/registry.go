@@ -27,7 +27,12 @@ const (
 
 	KindServer   = "server"
 	KindFirewall = "firewall"
+	KindVolume   = "volume"
 )
+
+// Kinds are the registered kinds in deletion order: a firewall and a
+// volume are in use until their server is gone.
+var Kinds = []string{KindServer, KindFirewall, KindVolume}
 
 // OpenStates are the states whose resource may exist at the provider.
 var OpenStates = []string{StateRequested, StateLive, StateDeleting}
@@ -48,12 +53,28 @@ type Resource struct {
 	ProviderID      string
 	Name            string
 	Labels          map[string]string
-	OwnerRef        string // ci: the Forgejo job id
+	OwnerRef        string // ci: the Forgejo job id; agent: the task id
 	PricePerHourEUR float64
 	CreatedAt       time.Time
 	LeaseExpires    time.Time
 	State           string
 	DeletedAt       *time.Time
+
+	// agent commissioning: the task's repository (owner/name) and session,
+	// the server type or volume size, the agent's stated purpose, the
+	// server's IPv4, and the commission's reservation (holds.id, 0 = none),
+	// which groups its rows. A promoted resource is project-owned: no
+	// lease, no owner end.
+	Repo         string
+	SessionRef   string
+	Size         string
+	Purpose      string
+	Address      string
+	Promoted     bool
+	HoldID       int64
+	ApprovalID   int64
+	AccruedHours int
+	AccruedEUR   float64
 }
 
 // Registry is the durable record. Postgres in production; Memory in tests.
@@ -91,8 +112,16 @@ func providerLabels(r Resource, id int64) map[string]string {
 type PG struct{ DB *sql.DB }
 
 func (p PG) Insert(ctx context.Context, r Resource) (Resource, error) {
+	return insert(ctx, p.DB, r)
+}
+
+type querier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func insert(ctx context.Context, q querier, r Resource) (Resource, error) {
 	var id int64
-	if err := p.DB.QueryRowContext(ctx, `SELECT nextval('cloud_resources_id_seq')`).Scan(&id); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT nextval('cloud_resources_id_seq')`).Scan(&id); err != nil {
 		return Resource{}, err
 	}
 	r.ID = id
@@ -102,10 +131,13 @@ func (p PG) Insert(ctx context.Context, r Resource) (Resource, error) {
 	if err != nil {
 		return Resource{}, err
 	}
-	err = p.DB.QueryRowContext(ctx,
-		`INSERT INTO cloud_resources (id, project, kind, name, labels, owner_ref, price_per_hour_eur, lease_expires, state)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9) RETURNING created_at`,
-		id, r.Project, r.Kind, r.Name, labels, r.OwnerRef, r.PricePerHourEUR, r.LeaseExpires, r.State).Scan(&r.CreatedAt)
+	err = q.QueryRowContext(ctx,
+		`INSERT INTO cloud_resources (id, project, kind, name, labels, owner_ref, price_per_hour_eur, lease_expires, state,
+		        repo, session_ref, size, purpose, promoted, hold_id, approval_id)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0))
+		 RETURNING created_at`,
+		id, r.Project, r.Kind, r.Name, labels, r.OwnerRef, r.PricePerHourEUR, r.LeaseExpires, r.State,
+		r.Repo, r.SessionRef, r.Size, r.Purpose, r.Promoted, r.HoldID, r.ApprovalID).Scan(&r.CreatedAt)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -139,7 +171,8 @@ func affected(res sql.Result, err error) (bool, error) {
 }
 
 const resourceColumns = `id, project, kind, provider_id, name, labels, owner_ref, price_per_hour_eur::float8,
-	created_at, lease_expires, state, deleted_at`
+	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, promoted,
+	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8`
 
 func (p PG) Open(ctx context.Context, project string) ([]Resource, error) {
 	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
@@ -171,7 +204,8 @@ func (p PG) query(ctx context.Context, q string, args ...any) ([]Resource, error
 		var r Resource
 		var labels []byte
 		if err := rows.Scan(&r.ID, &r.Project, &r.Kind, &r.ProviderID, &r.Name, &labels, &r.OwnerRef,
-			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt); err != nil {
+			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt, &r.Repo, &r.SessionRef, &r.Size,
+			&r.Purpose, &r.Address, &r.Promoted, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(labels, &r.Labels); err != nil {

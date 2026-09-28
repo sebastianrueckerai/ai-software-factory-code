@@ -34,6 +34,12 @@ risk:
     - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
     - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
   default: normal
+envelope_default:
+  monthly_eur: 10
+  server_types: [cx23, cx33]
+  max_count: 2
+  max_lease_hours: 4
+  volume_max_gb: 20
 `
 
 func TestParseValid(t *testing.T) {
@@ -43,6 +49,10 @@ func TestParseValid(t *testing.T) {
 	}
 	if d.Budget != (Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20}) {
 		t.Fatalf("budget = %+v", d.Budget)
+	}
+	want := Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}
+	if !reflect.DeepEqual(d.EnvelopeDefault, want) {
+		t.Fatalf("envelope_default = %+v, want %+v", d.EnvelopeDefault, want)
 	}
 	if got := d.Classes["coder"].Models; len(got) != 2 || got[0] != "coding-cheap" || got[1] != "coding-frontier" {
 		t.Fatalf("coder models = %v", got)
@@ -55,17 +65,23 @@ func TestParseRejects(t *testing.T) {
 		"unknown top key": {valid + "surprise: {}\n", "field surprise not found"},
 		"unknown budget key": {strings.Replace(valid, "day_eur: 20", "day_eur: 20\n  month_eur: 1", 1),
 			"field month_eur not found"},
-		"version":           {strings.Replace(valid, "version: 1", "version: 2", 1), "version 2"},
-		"negative day cap":  {strings.Replace(valid, "day_eur: 20", "day_eur: -1", 1), "must not be negative"},
-		"zero task max":     {strings.Replace(valid, "task_max_eur: 5", "task_max_eur: 0", 1), "must be positive"},
-		"default above max": {strings.Replace(valid, "task_default_eur: 2", "task_default_eur: 6", 1), "exceeds task_max_eur"},
-		"no classes":        {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\n", "no capability classes"},
-		"class no models":   {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
-		"empty model":       {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
-		"tool without caps": {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
-		"unknown tool":      {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
-		"escalate listed":   {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "always allowed for coder"},
-		"scrape unpriced":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
+		"no envelope":         {valid[:strings.Index(valid, "envelope_default")], "envelope_default.server_types"},
+		"envelope zero cap":   {strings.Replace(valid, "monthly_eur: 10", "monthly_eur: 0", 1), "envelope_default.monthly_eur"},
+		"envelope no count":   {strings.Replace(valid, "max_count: 2", "max_count: 0", 1), "envelope_default.max_count"},
+		"envelope no lease":   {strings.Replace(valid, "max_lease_hours: 4", "max_lease_hours: 0", 1), "envelope_default.max_lease_hours"},
+		"envelope empty type": {strings.Replace(valid, "[cx23, cx33]", `[cx23, ""]`, 1), "envelope_default.server_types"},
+		"envelope volume":     {strings.Replace(valid, "volume_max_gb: 20", "volume_max_gb: 5", 1), "envelope_default.volume_max_gb"},
+		"version":             {strings.Replace(valid, "version: 1", "version: 2", 1), "version 2"},
+		"negative day cap":    {strings.Replace(valid, "day_eur: 20", "day_eur: -1", 1), "must not be negative"},
+		"zero task max":       {strings.Replace(valid, "task_max_eur: 5", "task_max_eur: 0", 1), "must be positive"},
+		"default above max":   {strings.Replace(valid, "task_default_eur: 2", "task_default_eur: 6", 1), "exceeds task_max_eur"},
+		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\n", "no capability classes"},
+		"class no models":     {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
+		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
+		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
+		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
+		"escalate listed":     {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "always allowed for coder"},
+		"scrape unpriced":     {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
 		"replicate sku without rate": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 90, models: {a/b: gpu-t4}, eur_per_second: {cpu: 0.0001}}}\n", `runs on "gpu-t4", which has no positive eur_per_second`},
 		"replicate max_seconds below the cancel floor": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
@@ -115,6 +131,7 @@ risk:
     - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
     - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
   default: normal
+envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
 func TestToolCap(t *testing.T) {
@@ -160,6 +177,21 @@ func TestFitTool(t *testing.T) {
 		case tc.want != "" && (!errors.As(err, &ref) || ref.Decision != tc.want):
 			t.Errorf("%s: %v, want %s", name, err, tc.want)
 		}
+	}
+}
+
+func TestFitResource(t *testing.T) {
+	r := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384}
+	h, err := FitResource(0.05, 1, r)
+	if err != nil || h.EUR != 0.0384 || h.Kind != KindResource {
+		t.Fatalf("fit = %+v, %v", h, err)
+	}
+	var ref *Refusal
+	if _, err := FitResource(0.03, 1, r); !errors.As(err, &ref) || ref.Decision != "refused_budget" {
+		t.Fatalf("task headroom 0.03 err = %v, want refused_budget", err)
+	}
+	if _, err := FitResource(1, 0.01, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
+		t.Fatalf("day headroom 0.01 err = %v, want refused_day_cap", err)
 	}
 }
 
