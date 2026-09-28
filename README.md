@@ -342,7 +342,8 @@ gateway refuses a client's `thinking` field. `holds` has kinds `model`,
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,
 kind (`model` per call with the alias as ref, `settlement` for the raise
-the settlement pass makes when LiteLLM shows more spend than was booked,
+the settlement pass makes when LiteLLM shows more model spend than the
+task's `model` and `settlement` rows hold (tool rows never offset it),
 dated the day the pass runs, `tool` per tool call with the tool as ref,
 `resource` for the later leases), ref, EUR (never negative). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
@@ -369,25 +370,49 @@ tool call at this timeout), and the model sees the tools as
 `factory-tools_<tool>`. The provider keys live only in the gateway
 (secret `gateway-tool-keys`).
 
-- `web_scrape` (`url`): Firecrawl `/v2/scrape`, markdown only, basic
-  proxy, no PDF parser, the text capped at 64 KiB.
-- `web_search` (`query`, `limit` 1 to 10): Firecrawl `/v2/search`.
+- `web_scrape` (`url`, at most 2048 bytes): Firecrawl `/v2/scrape`,
+  markdown only, basic proxy, no PDF parser, the text capped at 64 KiB
+  (cut on a rune boundary). Hosts that are not public DNS names (IP
+  literals in any spelling, single labels, `localhost`, `.local`,
+  `.internal` and the like, so every cluster name) are refused before
+  any hold.
+- `web_search` (`query`, 1 to 1000 bytes, `limit` 1 to 10): Firecrawl
+  `/v2/search`.
 - `replicate_predict` (`model` owner/name, optional `version`, `input`):
-  a Replicate prediction with `Prefer: wait=60`; one still running then
-  is cancelled. Only models the policy maps to a hardware SKU run.
+  a Replicate prediction. The version lookup runs under the hold, so it
+  counts as a request. The create call sends `Cancel-After:
+  <max_seconds - 5>s`, so Replicate itself stops the prediction inside
+  the hold, and `Prefer: wait` for that long (at most 60 s); one still
+  running then is cancelled (4 attempts, backoff from 1 s). A cancel that
+  never lands books the hold and is logged and audited as `REPLICATE
+  CANCEL FAILED` with the prediction id. `max_seconds` must be whole
+  seconds, at least 10. Only models the policy maps to a hardware SKU
+  run.
 - `fal_run` (`endpoint`, `input`): `https://fal.run/<endpoint>`, priced
   from fal's pricing API (cached an hour per endpoint); only endpoints
-  priced per request or per megapixel run.
+  priced per request or per megapixel run. A megapixel endpoint's input
+  is bounded before the hold: `num_images` (default 1) times the
+  megapixels of `image_size` (a fal preset or `{width, height}`, default
+  `landscape_4_3`), rounded up per image, must fit `max_megapixels`, and
+  both are sent explicitly. An input that sets the size another way
+  (`width`, `aspect_ratio`, `resolution`, `scale` and the like) is
+  refused.
 - `escalate_to_human` (`question`, `reason`): free, for the `coder`
   class. The gateway posts it to factoryd's `POST /internal/escalations`
-  (bearer from secret `gateway-factoryd`, key `token`); factoryd records
-  an `agent_escalation` intake event and trips the running session's
-  supervision with an escalation, no supervisor call (one arriving during
-  a supervisor call cuts the call and wins over its answer; a stopping
-  session takes none, and the agent is told so): the worker pushes
-  its work in progress, the task goes `waiting-human`, the question is
-  commented on the issue, and a trusted answer resumes the task. The
-  agent reads "escalated; this session will end".
+  (bearer from secret `gateway-factoryd`, key `token`); factoryd hands
+  it to the running session, answers 202 only once the session took it
+  (a session that stops or ends first answers 409, and the agent is told
+  it did not arrive), then records an `agent_escalation` intake event.
+  The session trips its supervision with an escalation, no supervisor
+  call (one arriving during a supervisor call cuts the call and wins
+  over its answer): the worker pushes its work in progress, the task
+  goes `waiting-human`, the question is commented on the issue, and a
+  trusted answer resumes the task. The agent reads "escalated; this
+  session will end".
+
+The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
+`replicate.delivery`), which the sandbox's egress cannot fetch: the
+agent gets the URLs and metadata, not the files.
 
 Every paid call, in order: the task is running; one of its classes lists
 the tool (`classes.<c>.tools`, the most generous cap when several do);
@@ -404,7 +429,10 @@ Real costs: Firecrawl's `creditsUsed` (a call that returns no result is
 not charged), Replicate's `metrics.predict_time` at the hardware rate,
 fal's unit price times the units (1 per request, megapixels rounded up
 per returned image). An unknown cost (a 5xx, a transport error, a
-missing field) books the hold; a 4xx books 0. Prices not in any API
+missing field) books the hold; a 4xx books 0. A reported cost above the
+hold (a provider billing past the bounded arguments) books the hold, as
+decision `allowed_over_hold` with `COST OVER HOLD` and both figures in
+the audit reason and the log. Prices not in any API
 response live in the policy's `prices`. A refusal (`refused_capability`,
 `refused_task_status`, `refused_arguments`, `refused_price`,
 `refused_tool_requests`, `refused_tool_eur`, `refused_budget`,
@@ -415,7 +443,8 @@ the tool failed. Every call has an audit row with the decision, the tool
 
 The gateway's egress (`factory-gateway-egress` in `k8s/deployment.yaml`)
 is default-deny plus LiteLLM, the `sf-cluster` Postgres instances,
-factoryd on 8080, the API server (by entity, dialled at the injected
+factoryd on 8080, the API server (by entity on 6443, the backend port
+behind the Service's 443, dialled at the injected
 `KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
 `api.replicate.com`, `fal.run` and `api.fal.ai` by name on 443, with
 kube-dns for exactly those names (`ndots: 1`, every callee named in

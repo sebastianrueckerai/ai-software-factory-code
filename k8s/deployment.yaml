@@ -88,7 +88,11 @@ spec:
         - matchName: api.replicate.com
         - matchName: fal.run
         - matchName: api.fal.ai
+  # the Service's 443 reaches the API servers on 6443 (policy sees the
+  # translated backend)
   - toEntities: [kube-apiserver]
+    toPorts:
+    - ports: [{port: "6443", protocol: TCP}]
   - toEndpoints:
     - matchLabels:
         "k8s:io.kubernetes.pod.namespace": platform
