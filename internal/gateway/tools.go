@@ -191,11 +191,11 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
 	case *cost > hold.EUR+1e-12:
 		// the arguments were bounded to the hold, so this is a provider
-		// billing past its documented units: the caps hold, the gap is loud
+		// billing past its documented units: the real cost is booked, so
+		// the caps refuse the next call from the true headroom (ruling 117)
 		decision = "allowed_over_hold"
-		note = fmt.Sprintf("; COST OVER HOLD: the provider reported %.6f EUR, booked the hold %.6f EUR", *cost, hold.EUR)
-		log.Printf("COST OVER HOLD: task %s: tool %s reported %.6f EUR against a hold of %.6f EUR", c.task.ID, tool, *cost, hold.EUR) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
-		cost = &hold.EUR
+		note = fmt.Sprintf("; COST OVER HOLD: the provider reported %.6f EUR against a hold of %.6f EUR, booked in full", *cost, hold.EUR)
+		log.Printf("COST OVER HOLD: task %s: tool %s reported %.6f EUR against a hold of %.6f EUR, booked in full", c.task.ID, tool, *cost, hold.EUR) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
 	}
 	// the provider billed whether or not the agent is still listening
 	spend, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost)

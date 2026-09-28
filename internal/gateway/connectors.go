@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -183,7 +185,8 @@ type Replicate struct {
 const replicateMaxWait = 60
 
 // cancelAttempts and cancelAttemptTimeout bound the cancel of a prediction
-// still running after the wait.
+// still running after the wait and the read after it: at most 60 s of wait,
+// 4 x 10 s + 7 s of cancel and 10 s of read, inside opencode's 150 s.
 const (
 	cancelAttempts       = 4
 	cancelAttemptTimeout = 10 * time.Second
@@ -262,9 +265,11 @@ func (r *Replicate) Predict(ctx context.Context, version string, input map[strin
 			log.Printf("REPLICATE CANCEL FAILED: prediction %s still %s; Replicate cancels it at %d s: %v", p.ID, p.Status, cancelAfter, err) // #nosec G706 -- the id matched Replicate's response, the error is the provider's
 			return "", nil, fmt.Errorf("REPLICATE CANCEL FAILED: prediction %s still %s after %d attempts; Replicate cancels it at %d s: %w", p.ID, p.Status, cancelAttempts, cancelAfter, err)
 		}
-		if b, err = call(ctx, r.HTTP, http.MethodGet, r.BaseURL+"/v1/predictions/"+url.PathEscape(p.ID), r.header(), nil); err == nil {
+		gctx, done := context.WithTimeout(ctx, cancelAttemptTimeout)
+		if b, err = call(gctx, r.HTTP, http.MethodGet, r.BaseURL+"/v1/predictions/"+url.PathEscape(p.ID), r.header(), nil); err == nil {
 			err = json.Unmarshal(b, &p)
 		}
+		done()
 		if err != nil || !p.done() {
 			return "", nil, fmt.Errorf("replicate: prediction %s cancelled, its compute time unknown", p.ID)
 		}
@@ -378,19 +383,26 @@ var falImageSizes = map[string][2]float64{
 	"landscape_4_3": {1024, 768}, "landscape_16_9": {1024, 576},
 }
 
-// falUnboundedSizes are inputs that set an output size the gateway cannot
-// weigh before the call.
-var falUnboundedSizes = []string{"width", "height", "aspect_ratio", "resolution", "megapixels",
-	"scale", "upscale_factor", "upscaling_factor", "output_size", "size"}
+// falMegapixelKeys are the only input keys a megapixel endpoint takes
+// (ruling 117): every other key may set the output's size or count (a
+// source image, a count alias, another size name), which the hold could
+// not bound.
+var falMegapixelKeys = []string{"prompt", "negative_prompt", "seed", "image_size", "num_images",
+	"num_inference_steps", "guidance_scale", "enable_safety_checker", "output_format"}
 
-// falBoundImages bounds a megapixel endpoint's input: num_images x
-// ceil(megapixels of image_size) must fit maxMP. Unset, both are sent
+// falSizeStep: image models round each side up to a multiple of up to 64,
+// so a requested side is bounded at that.
+const falSizeStep = 64
+
+// falBoundImages bounds a megapixel endpoint's input: its keys must be in
+// falMegapixelKeys, and num_images x ceil(megapixels of image_size, each
+// side rounded up to a multiple of 64) must fit maxMP. Unset, both are sent
 // explicitly (1 image at landscape_4_3), so the endpoint's own default
-// never decides; an input setting the size any other way is refused.
+// never decides.
 func falBoundImages(input map[string]any, maxMP float64) (map[string]any, error) {
-	for _, k := range falUnboundedSizes {
-		if _, ok := input[k]; ok {
-			return nil, fmt.Errorf("input %q sets a size the factory cannot bound; use image_size (a preset or {width, height}) and num_images", k)
+	for k := range input {
+		if !slices.Contains(falMegapixelKeys, k) {
+			return nil, fmt.Errorf("input %q is not one the factory can bound on a megapixel endpoint; allowed: %s", k, strings.Join(falMegapixelKeys, ", "))
 		}
 	}
 	out := maps.Clone(input)
@@ -423,6 +435,7 @@ func falBoundImages(input map[string]any, maxMP float64) (map[string]any, error)
 	default:
 		return nil, errors.New("image_size must be a preset or {width, height}")
 	}
+	w, h = math.Ceil(w/falSizeStep)*falSizeStep, math.Ceil(h/falSizeStep)*falSizeStep
 	if mp := n * math.Ceil(w*h/1e6); mp > maxMP {
 		return nil, fmt.Errorf("%d images of %gx%g are %g megapixels (rounded up per image), above the factory's %g", int(n), w, h, mp, maxMP)
 	}

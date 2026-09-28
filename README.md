@@ -403,7 +403,8 @@ against the other; the holds remain the primary cap. LiteLLM's
 The `ledger` table holds every booked cost, append-only: task, UTC day,
 kind (`model` per call with the alias as ref, `settlement` for the raise
 the settlement pass makes when LiteLLM shows more model spend than the
-task's `model` and `settlement` rows hold (tool rows never offset it),
+task's `model` and `settlement` rows hold (tool rows never offset it; a
+difference below 1e-9 EUR is float noise and books nothing),
 dated the day the pass runs, `tool` per tool call with the tool as ref,
 `resource` for the later leases), ref, EUR (never negative). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
@@ -450,13 +451,15 @@ tool call at this timeout), and the model sees the tools as
   run.
 - `fal_run` (`endpoint`, `input`): `https://fal.run/<endpoint>`, priced
   from fal's pricing API (cached an hour per endpoint); only endpoints
-  priced per request or per megapixel run. A megapixel endpoint's input
-  is bounded before the hold: `num_images` (default 1) times the
-  megapixels of `image_size` (a fal preset or `{width, height}`, default
-  `landscape_4_3`), rounded up per image, must fit `max_megapixels`, and
-  both are sent explicitly. An input that sets the size another way
-  (`width`, `aspect_ratio`, `resolution`, `scale` and the like) is
-  refused.
+  priced per request or per megapixel run. A megapixel endpoint takes
+  only the input keys `prompt`, `negative_prompt`, `seed`, `image_size`,
+  `num_images`, `num_inference_steps`, `guidance_scale`,
+  `enable_safety_checker` and `output_format` (ruling 117); any other key
+  (a source image, a count alias, another size name) is refused before
+  the hold. `num_images` (default 1) times the megapixels of `image_size`
+  (a fal preset or `{width, height}`, default `landscape_4_3`, each side
+  rounded up to a multiple of 64), rounded up per image, must fit
+  `max_megapixels`, and both are sent explicitly.
 - `escalate_to_human` (`question`, `reason`): free, for the `coder`
   class. The gateway posts it to factoryd's `POST /internal/escalations`
   (bearer from secret `gateway-factoryd`, key `token`); factoryd hands
@@ -490,9 +493,12 @@ not charged), Replicate's `metrics.predict_time` at the hardware rate,
 fal's unit price times the units (1 per request, megapixels rounded up
 per returned image). An unknown cost (a 5xx, a transport error, a
 missing field) books the hold; a 4xx books 0. A reported cost above the
-hold (a provider billing past the bounded arguments) books the hold, as
-decision `allowed_over_hold` with `COST OVER HOLD` and both figures in
-the audit reason and the log. Prices not in any API
+hold (a provider billing past the bounded arguments) is booked in full,
+as decision `allowed_over_hold` with `COST OVER HOLD` and both figures
+in the audit reason and the log; the caps then refuse the next call from
+the true headroom (ruling 117). A hold is only taken for a task that is
+`running` or `in-review` (the gates' model review): `TakeHold` refuses
+any other status with `refused_task_status` in its own transaction. Prices not in any API
 response live in the policy's `prices`. A refusal (`refused_capability`,
 `refused_task_status`, `refused_arguments`, `refused_price`,
 `refused_tool_requests`, `refused_tool_eur`, `refused_budget`,

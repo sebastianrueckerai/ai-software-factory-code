@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 )
 
@@ -13,6 +14,10 @@ import (
 // 200+ tokens before any answer. A call that cannot fit this many output
 // tokens in the headroom is refused, unless the caller asked for fewer.
 const MinCallTokens = 1024
+
+// holdStatuses are the task statuses that spend: running (the agent, its
+// supervisor) and in-review (the gates' model review).
+var holdStatuses = []string{"running", "in-review"}
 
 // HoldTTL bounds a hold a crashed caller never released; SweepHolds books
 // an expired hold at its full amount.
@@ -62,7 +67,7 @@ func HeadroomBound(task, day float64) (float64, string) {
 
 // Refusal is a call the headroom or a tool cap cannot fit.
 type Refusal struct {
-	Decision string // refused_budget, refused_day_cap, refused_tool_requests or refused_tool_eur
+	Decision string // refused_budget, refused_day_cap, refused_tool_requests, refused_tool_eur or refused_task_status
 	Reason   string
 }
 
@@ -129,19 +134,24 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('factory-headroom'))`); err != nil {
 		return Hold{}, err
 	}
+	var status string
 	var taskHeadroom, taskHeld, dayHeadroom, dayHeld float64
 	err = tx.QueryRowContext(ctx,
-		`SELECT (budget_eur - spent_eur)::float8,
+		`SELECT status, (budget_eur - spent_eur)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
 		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date), 0))::float8,
 		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
 		 FROM tasks WHERE id = $1`, r.TaskID, r.DayEUR,
-	).Scan(&taskHeadroom, &taskHeld, &dayHeadroom, &dayHeld)
+	).Scan(&status, &taskHeadroom, &taskHeld, &dayHeadroom, &dayHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Hold{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
 	}
 	if err != nil {
 		return Hold{}, err
+	}
+	// settlement relies on a finished task taking no new hold
+	if !slices.Contains(holdStatuses, status) {
+		return Hold{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", r.TaskID, status)}
 	}
 	var h Hold
 	if r.Kind == KindTool {

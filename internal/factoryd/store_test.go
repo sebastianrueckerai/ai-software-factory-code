@@ -592,6 +592,20 @@ func TestPGStore(t *testing.T) {
 			t.Fatalf("LiteLLM %v: spent = %v, want %v", step.reported, got.SpentEUR, step.want)
 		}
 	}
+	// float noise between LiteLLM's sum and the booked numeric sum (below a
+	// nano-euro) books nothing
+	if err := s.SettleSpend(ctx, "s-tool", 1.125+1e-17); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != 1.375 {
+		t.Fatalf("after noise: spent = %v, want 1.375", got.SpentEUR)
+	}
+	if err := s.SettleSpend(ctx, "s-tool", 1.125+5e-10); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != 1.375 {
+		t.Fatalf("after 5e-10: spent = %v, want 1.375", got.SpentEUR)
+	}
 	var toolSettled string
 	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(eur::text, ' ' ORDER BY id) FROM ledger WHERE task_id = 's-tool' AND kind = 'settlement'`).Scan(&toolSettled); err != nil || toolSettled != "0.25 0.125" {
 		t.Fatalf("s-tool settlement rows = %q (%v), want 0.25 0.125", toolSettled, err)

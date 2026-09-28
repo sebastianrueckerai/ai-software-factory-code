@@ -485,6 +485,9 @@ func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duratio
 	return ids, rows.Err()
 }
 
+// settleEpsilon is the smallest raise settlement books.
+const settleEpsilon = 1e-9
+
 // SettleSpend locks the task row, so the delta is taken from the model
 // spend the raise replaces even while the gateway books calls. LiteLLM
 // reports model spend only, so it is weighed against the task's model and
@@ -508,7 +511,8 @@ func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) 
 		id, policy.KindModel, policy.KindSettlement).Scan(&booked); err != nil {
 		return err
 	}
-	if reported <= booked {
+	// below a nano-euro the two sums differ by float noise only
+	if reported-booked < settleEpsilon {
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, id, reported-booked); err != nil {

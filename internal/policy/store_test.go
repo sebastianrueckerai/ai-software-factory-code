@@ -407,3 +407,33 @@ func TestHoldsConcurrent(t *testing.T) {
 }
 
 func near(a, b float64) bool { return a-b < 1e-12 && b-a < 1e-12 }
+
+// A task that is not working (queued, waiting-human, closing, done, failed)
+// takes no hold, even if a caller forgot to check: settlement relies on
+// finished tasks taking none. running and in-review (the gates' model
+// review) do.
+func TestHoldsOnlyForWorkingTasks(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES
+		('run', 1, 0, 'running'), ('rev', 1, 0, 'in-review'), ('done', 1, 0, 'done'), ('failed', 1, 0, 'failed'),
+		('closing', 1, 0, 'closing'), ('wait', 1, 0, 'waiting-human'), ('queued', 1, 0, 'queued')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"run", "rev", "done", "failed", "closing", "wait", "queued"} {
+		for _, kind := range []string{KindTool, KindModel} {
+			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20,
+				EUR: 0.001, Cap: ToolCap{MaxRequests: 5, MaxEUR: 1}}
+			_, err := TakeHold(ctx, db, req)
+			var r *Refusal
+			working := id == "run" || id == "rev"
+			if working && err != nil || !working && (!errors.As(err, &r) || r.Decision != "refused_task_status") {
+				t.Errorf("%s %s: err = %v", id, kind, err)
+			}
+		}
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE task_id NOT IN ('run', 'rev')`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("holds of non-working tasks = %d (%v)", n, err)
+	}
+}

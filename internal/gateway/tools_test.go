@@ -504,9 +504,11 @@ func TestFactorydEscalateClient(t *testing.T) {
 }
 
 // A megapixel endpoint's input is bounded before the call: num_images x
-// ceil(megapixels per image) must fit max_megapixels (4). 4 x 2048x2048 =
-// 4 x ceil(4.19) = 20 MP; 3 x square_hd = 3 x ceil(1.05) = 6 MP; a size the
-// gateway cannot bound is refused.
+// ceil(megapixels per image, each side rounded up to a multiple of 64) must
+// fit max_megapixels (4). 4 x 2048x2048 = 4 x ceil(4.19) = 20 MP; 3 x
+// square_hd = 3 x ceil(1.05) = 6 MP; 4 x 1000x1000 is bounded as 4 x
+// ceil(1024x1024/1e6) = 8 MP; a key outside the allowlist (a source image,
+// a count alias, another size name) is refused.
 func TestFalMegapixelInputBounded(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 20, MaxEUR: 0.5}))
 	for name, input := range map[string]map[string]any{
@@ -518,6 +520,10 @@ func TestFalMegapixelInputBounded(t *testing.T) {
 		"fractional":     {"prompt": "x", "num_images": 1.5},
 		"zero images":    {"prompt": "x", "num_images": 0},
 		"bad size":       {"prompt": "x", "image_size": map[string]any{"width": 1024}},
+		"8 MP rounded":   {"prompt": "x", "num_images": 4, "image_size": map[string]any{"width": 1000, "height": 1000}},
+		"image_url":      {"prompt": "x", "image_url": "https://example.com/a.png"},
+		"num_outputs":    {"prompt": "x", "num_outputs": 4},
+		"target_res":     {"prompt": "x", "target_resolution": "4k"},
 	} {
 		if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": input}); !isErr || !strings.Contains(text, "refused_arguments") {
 			t.Errorf("%s = %q, want refused_arguments", name, text)
@@ -526,9 +532,11 @@ func TestFalMegapixelInputBounded(t *testing.T) {
 	if n := e.providers.called("POST /fal-ai/flux/schnell"); n != 0 || len(e.toolLedger()) != 0 {
 		t.Fatalf("endpoint called %d times, ledger %+v", n, e.toolLedger())
 	}
-	// 2 x square_hd = 4 MP fits
-	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": map[string]any{"prompt": "x", "num_images": 2, "image_size": "square_hd"}}); isErr {
-		t.Fatal("4 MP refused")
+	// 2 x square_hd = 4 MP fits, with every allowlisted key set
+	if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": map[string]any{
+		"prompt": "x", "negative_prompt": "y", "seed": 7, "num_images": 2, "image_size": "square_hd",
+		"num_inference_steps": 4, "guidance_scale": 3.5, "enable_safety_checker": true, "output_format": "png"}}); isErr {
+		t.Fatalf("allowlisted input refused: %s", text)
 	}
 	// unset sizes are sent explicitly: one image at landscape_4_3 (1 MP)
 	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": map[string]any{"prompt": "a cat"}}); isErr {
@@ -540,19 +548,43 @@ func TestFalMegapixelInputBounded(t *testing.T) {
 }
 
 // An endpoint that returns more than the bound anyway (2 x 2048x2048 = 10 MP
-// x 0.025 = 0.25) books the hold (4 MP x 0.025 = 0.10), loudly audited.
-func TestFalOverBoundResponseBooksTheHold(t *testing.T) {
-	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+// x 0.025 = 0.25) books that real cost against a hold of 4 MP x 0.025 =
+// 0.10, loudly audited; a fal cap of 0.3 then refuses the next call
+// (0.25 used + 0.10 held > 0.3), where booking the hold would have left
+// 0.10 + 0.10 inside it.
+func TestFalOverBoundResponseBooksTheRealCost(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Document.Classes["coder"].Tools[policy.ToolFal] = policy.ToolCap{MaxRequests: 5, MaxEUR: 0.3}
+	e := newToolEnv(t, running("coder"), pv)
 	e.providers.bodies["GET /v1/models/pricing?endpoint_id=fal-ai/flux/dev"] = `{"prices":[{"endpoint_id":"fal-ai/flux/dev","unit_price":0.025,"unit":"megapixels","currency":"USD"}]}`
 	e.providers.bodies["POST /fal-ai/flux/dev"] = `{"images":[{"url":"https://v3.fal.media/a.jpg","width":2048,"height":2048},{"url":"https://v3.fal.media/b.jpg","width":2048,"height":2048}]}`
 	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/dev", "input": map[string]any{"prompt": "x", "image_size": "square"}}); isErr {
 		t.Fatal("call failed")
 	}
-	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.1) {
-		t.Fatalf("ledger = %+v, want the hold 0.10", l)
+	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.25) {
+		t.Fatalf("ledger = %+v, want the real 0.25", l)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed_over_hold" || !strings.Contains(a.Reason, "0.250000") || !near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.1) {
+	if a.Decision != "allowed_over_hold" || !strings.Contains(a.Reason, "0.250000") || !near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.25) {
+		t.Fatalf("audit = %+v", a)
+	}
+	if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/dev", "input": map[string]any{"prompt": "x", "image_size": "square"}}); !isErr || !strings.Contains(text, "refused_tool_eur") {
+		t.Fatalf("next call = %q, want refused_tool_eur (0.25 used + 0.10 > 0.3)", text)
+	}
+}
+
+// Firecrawl reporting more credits than held (5 against 1) books the 5:
+// 5 x 0.005 = 0.025 against a hold of 0.005.
+func TestFirecrawlCreditsOverHoldBookTheRealCost(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.providers.bodies["POST /v2/scrape"] = `{"success":true,"data":{"markdown":"x","metadata":{"title":"T","statusCode":200,"creditsUsed":5}}}`
+	if _, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"}); isErr {
+		t.Fatal("scrape failed")
+	}
+	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.025) {
+		t.Fatalf("ledger = %+v, want 0.025", l)
+	}
+	if a := e.lastAudit(t); a.Decision != "allowed_over_hold" || !near6(*a.HoldEUR, 0.005) || !near6(*a.SpendEUR, 0.025) {
 		t.Fatalf("audit = %+v", a)
 	}
 }
