@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"slices"
 	"strconv"
@@ -507,8 +508,9 @@ func (a AgentStore) Approval(ctx context.Context, id int64, taskID string) (Appr
 
 // Promote makes the open commission of row id project-owned: no lease, no
 // end with its task, its reservation dropped; its accruing cost counts
-// against the project's month from then on. For the console.
-func (a AgentStore) Promote(ctx context.Context, id int64) error {
+// against the project's month from then on. For the console; by is the
+// human.
+func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -523,7 +525,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true WHERE hold_id = $1 AND state IN `+openStates, hold); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, promoted_by = $2 WHERE hold_id = $1 AND state IN `+openStates, hold, by); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hold); err != nil {
@@ -534,12 +536,161 @@ func (a AgentStore) Promote(ctx context.Context, id int64) error {
 
 // EndLease ends the lease of row id's open commission now (a promoted one
 // is no longer promoted): the collector deletes it on its next pass. The
-// console's release, since only the gateway holds the provider token.
-func (a AgentStore) EndLease(ctx context.Context, id int64) error {
-	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), promoted = false
-		WHERE state IN `+openStates+` AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id)
+// console's release, since only the gateway holds the provider token; by
+// is the human.
+func (a AgentStore) EndLease(ctx context.Context, id int64, by string) error {
+	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), promoted = false, released_by = $2
+		WHERE state IN `+openStates+` AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id, by)
 	if n, _ := affected(res, err); !n && err == nil {
 		return fmt.Errorf("resource %d is not an open agent resource", id)
 	}
 	return err
+}
+
+// Commissions lists the agent rows open now or closed after since, by
+// project, task and commission: the console's resources page.
+func (a AgentStore) Commissions(ctx context.Context, since time.Time) ([]Resource, error) {
+	return PG(a).query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
+		WHERE project = 'agent' AND (state IN `+openStates+` OR deleted_at > $1)
+		ORDER BY repo, owner_ref, COALESCE(hold_id, 0), id`, since)
+}
+
+// EnvelopeRecord is a project's envelope row, who set it last, and what
+// the project holds against it now.
+type EnvelopeRecord struct {
+	Project string
+	policy.Envelope
+	SetBy string
+	SetAt time.Time
+	Use   EnvelopeUse
+}
+
+// Envelopes lists every project's envelope with its use.
+func (a AgentStore) Envelopes(ctx context.Context) ([]EnvelopeRecord, error) {
+	rows, err := a.DB.QueryContext(ctx, `SELECT project, monthly_eur::float8, server_types, max_count, max_lease_hours,
+		volume_max_gb, set_by, set_at FROM envelopes ORDER BY project`)
+	if err != nil {
+		return nil, err
+	}
+	var out []EnvelopeRecord
+	for rows.Next() {
+		var e EnvelopeRecord
+		var types []byte
+		if err := rows.Scan(&e.Project, &e.MonthlyEUR, &types, &e.MaxCount, &e.MaxLeaseHours, &e.VolumeMaxGB, &e.SetBy, &e.SetAt); err != nil {
+			rows.Close() // #nosec G104 -- already returning the scan error
+			return nil, err
+		}
+		if err := json.Unmarshal(types, &e.ServerTypes); err != nil {
+			rows.Close() // #nosec G104 -- already returning the decode error
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if out[i].Use, err = envelopeUse(ctx, a.DB, out[i].Project); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// SetEnvelope writes project's envelope as by (the console's edit),
+// creating the row when the project has none yet.
+func (a AgentStore) SetEnvelope(ctx context.Context, project string, env policy.Envelope, by string) error {
+	types, err := json.Marshal(env.ServerTypes)
+	if err != nil {
+		return err
+	}
+	_, err = a.DB.ExecContext(ctx,
+		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb, set_by)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+		 ON CONFLICT (project) DO UPDATE SET monthly_eur = $2, server_types = $3::jsonb, max_count = $4,
+		   max_lease_hours = $5, volume_max_gb = $6, set_by = $7, set_at = now()`,
+		project, env.MonthlyEUR, types, env.MaxCount, env.MaxLeaseHours, env.VolumeMaxGB, by)
+	return err
+}
+
+// requestSpec is what a resource approval request asks for (Reserve's
+// spec).
+type requestSpec struct {
+	ServerType     string  `json:"server_type"`
+	LeaseMinutes   int     `json:"lease_minutes"`
+	VolumeGB       int     `json:"volume_gb"`
+	ReservationEUR float64 `json:"reservation_eur"`
+}
+
+// Widen is env grown just enough that the request fits beside use: its
+// server type, its lease, its volume, one more server, and its
+// reservation on top of the month (rounded up to the cent).
+func Widen(env policy.Envelope, use EnvelopeUse, serverType string, leaseMinutes, volumeGB int, reservation float64) policy.Envelope {
+	out := env
+	out.ServerTypes = slices.Clone(env.ServerTypes)
+	if !slices.Contains(out.ServerTypes, serverType) {
+		out.ServerTypes = append(out.ServerTypes, serverType)
+	}
+	out.MaxLeaseHours = max(env.MaxLeaseHours, (leaseMinutes+59)/60)
+	out.VolumeMaxGB = max(env.VolumeMaxGB, volumeGB)
+	out.MaxCount = max(env.MaxCount, use.OpenServers+1)
+	out.MonthlyEUR = max(env.MonthlyEUR, math.Ceil((use.MonthEUR+reservation)*100-1e-9)/100)
+	return out
+}
+
+// ApproveForProject is a human's project-wide approve of resource request
+// id: under the headroom lock, the project's envelope widens to fit the
+// request (Widen) and the request is approved, both as by. It returns the
+// widened envelope.
+func (a AgentStore) ApproveForProject(ctx context.Context, id int64, by string) (policy.Envelope, error) {
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return policy.Envelope{}, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	if err := policy.LockHeadroom(ctx, tx); err != nil {
+		return policy.Envelope{}, err
+	}
+	var project string
+	var raw []byte
+	err = tx.QueryRowContext(ctx, `SELECT project, spec FROM approval_requests
+		WHERE id = $1 AND kind = 'resource' AND status = 'pending' FOR UPDATE`, id).Scan(&project, &raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return policy.Envelope{}, fmt.Errorf("no pending resource request %d", id)
+	}
+	if err != nil {
+		return policy.Envelope{}, err
+	}
+	var spec requestSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return policy.Envelope{}, fmt.Errorf("resource request %d: %w", id, err)
+	}
+	var env policy.Envelope
+	var types []byte
+	err = tx.QueryRowContext(ctx, `SELECT monthly_eur::float8, server_types, max_count, max_lease_hours, volume_max_gb
+		FROM envelopes WHERE project = $1`, project).Scan(&env.MonthlyEUR, &types, &env.MaxCount, &env.MaxLeaseHours, &env.VolumeMaxGB)
+	if err != nil {
+		return policy.Envelope{}, fmt.Errorf("envelope of %s: %w", project, err)
+	}
+	if err := json.Unmarshal(types, &env.ServerTypes); err != nil {
+		return policy.Envelope{}, err
+	}
+	use, err := envelopeUse(ctx, tx, project)
+	if err != nil {
+		return policy.Envelope{}, err
+	}
+	wide := Widen(env, use, spec.ServerType, spec.LeaseMinutes, spec.VolumeGB, spec.ReservationEUR)
+	if types, err = json.Marshal(wide.ServerTypes); err != nil {
+		return policy.Envelope{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE envelopes SET monthly_eur = $2, server_types = $3::jsonb, max_count = $4,
+		max_lease_hours = $5, volume_max_gb = $6, set_by = $7, set_at = now() WHERE project = $1`,
+		project, wide.MonthlyEUR, types, wide.MaxCount, wide.MaxLeaseHours, wide.VolumeMaxGB, by); err != nil {
+		return policy.Envelope{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = $2, decided_at = now(),
+		decision_note = 'approved for the project: its envelope was widened to fit' WHERE id = $1`, id, by); err != nil {
+		return policy.Envelope{}, err
+	}
+	return wide, tx.Commit()
 }

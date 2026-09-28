@@ -451,7 +451,7 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Promote(ctx, c.Rows[1].ID); err != nil {
+	if err := a.Promote(ctx, c.Rows[1].ID, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND promoted`, c.Hold.ID); n != 2 {
@@ -460,16 +460,112 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if n := scalar[int](t, db, `SELECT count(*) FROM holds`); n != 0 {
 		t.Fatalf("reservation kept after promotion: %d", n)
 	}
-	if err := a.EndLease(ctx, c.Rows[0].ID); err != nil {
+	if err := a.EndLease(ctx, c.Rows[0].ID, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND NOT promoted AND lease_expires <= now()`, c.Hold.ID); n != 2 {
 		t.Fatalf("ended rows = %d", n)
 	}
-	if err := a.Promote(ctx, 999999); err == nil {
+	if err := a.Promote(ctx, 999999, "sebastian"); err == nil {
 		t.Fatal("want an error for an unknown resource")
 	}
-	if err := a.EndLease(ctx, 999999); err == nil {
+	if err := a.EndLease(ctx, 999999, "sebastian"); err == nil {
 		t.Fatal("want an error for an unknown resource")
+	}
+}
+
+func TestWiden(t *testing.T) {
+	// testEnvelope: 10 EUR, cx23 and cx33, 2 servers, 4 h, 20 GB
+	for _, tc := range []struct {
+		name        string
+		use         EnvelopeUse
+		typ         string
+		minutes, gb int
+		reservation float64
+		want        policy.Envelope
+	}{
+		{"already fits: unchanged", EnvelopeUse{OpenServers: 1, MonthEUR: 1}, "cx23", 60, 0, 0.0096, testEnvelope},
+		// 301 minutes are 6 started hours; 4 open servers need a 5th; 9.99 + 0.2345 = 10.2245 -> 10.23
+		{"every bound", EnvelopeUse{OpenServers: 4, MonthEUR: 9.99}, "cx43", 301, 40, 0.2345,
+			policy.Envelope{MonthlyEUR: 10.23, ServerTypes: []string{"cx23", "cx33", "cx43"}, MaxCount: 5, MaxLeaseHours: 6, VolumeMaxGB: 40}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Widen(testEnvelope, tc.use, tc.typ, tc.minutes, tc.gb, tc.reservation)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Widen = %+v, want %+v", got, tc.want)
+			}
+			if v := EnvelopeViolations(got, tc.use, tc.typ, tc.minutes, tc.gb, tc.reservation); len(v) != 0 {
+				t.Fatalf("still beyond the widened envelope: %v", v)
+			}
+		})
+	}
+	if len(testEnvelope.ServerTypes) != 2 {
+		t.Fatal("Widen changed its argument's types")
+	}
+}
+
+// The console's project approve widens the envelope as the human and
+// approves the request in one go; the retry then fits the envelope.
+func TestApproveForProjectAndEnvelopes(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	req := commissionReq(t, "t1", "cx33", 300, 0) // 5 h > 4 h
+	c, err := a.Reserve(ctx, req)
+	if err != nil || c.Status != Pending {
+		t.Fatalf("reserve = %+v, %v", c, err)
+	}
+	wide, err := a.ApproveForProject(ctx, c.ApprovalID, "sebastian")
+	if err != nil || wide.MaxLeaseHours != 5 || wide.MonthlyEUR != 10 || wide.MaxCount != 2 {
+		t.Fatalf("widened = %+v, %v", wide, err)
+	}
+	if st := scalar[string](t, db, `SELECT status || ' ' || decided_by FROM approval_requests WHERE id = $1`, c.ApprovalID); st != "approved sebastian" {
+		t.Fatalf("request = %s", st)
+	}
+	envs, err := a.Envelopes(ctx)
+	if err != nil || len(envs) != 1 || envs[0].Project != "sf/app" || envs[0].SetBy != "sebastian" || envs[0].MaxLeaseHours != 5 ||
+		envs[0].Use.OpenServers != 0 {
+		t.Fatalf("envelopes = %+v, %v", envs, err)
+	}
+	if _, err := a.ApproveForProject(ctx, c.ApprovalID, "sebastian"); err == nil {
+		t.Fatal("a decided request was approved again")
+	}
+	ok, err := a.Reserve(ctx, req)
+	if err != nil || ok.Status != Reserved {
+		t.Fatalf("retry = %+v, %v", ok, err)
+	}
+	envs, _ = a.Envelopes(ctx)
+	if envs[0].Use.OpenServers != 1 || !near(envs[0].Use.MonthEUR, req.Quote.ReservationEUR) {
+		t.Fatalf("use = %+v", envs[0].Use)
+	}
+
+	// the edit form: an existing project and a new one
+	edit := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, VolumeMaxGB: 0}
+	if err := a.SetEnvelope(ctx, "sf/app", edit, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.SetEnvelope(ctx, "sf/new", edit, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	envs, _ = a.Envelopes(ctx)
+	if len(envs) != 2 || !reflect.DeepEqual(envs[0].Envelope, edit) || envs[1].Project != "sf/new" || envs[1].SetBy != "alice" {
+		t.Fatalf("after edits = %+v", envs)
+	}
+
+	// the resources page lists open rows and those closed since, and who
+	// promoted and released them
+	if err := a.Promote(ctx, ok.Rows[1].ID, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.EndLease(ctx, ok.Rows[1].ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	db.ExecContext(ctx, `UPDATE cloud_resources SET state = 'deleted', deleted_at = now() - interval '8 days' WHERE hold_id = $1`, old.Hold.ID)
+	rows, err := a.Commissions(ctx, time.Now().Add(-7*24*time.Hour))
+	if err != nil || len(rows) != 2 || rows[1].Kind != KindServer || rows[1].PromotedBy != "sebastian" || rows[1].ReleasedBy != "alice" ||
+		rows[1].Promoted {
+		t.Fatalf("commissions = %+v, %v", rows, err)
 	}
 }

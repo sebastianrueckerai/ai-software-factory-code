@@ -75,6 +75,9 @@ type Resource struct {
 	ApprovalID   int64
 	AccruedHours int
 	AccruedEUR   float64
+	// who promoted or released the commission in the console
+	PromotedBy string
+	ReleasedBy string
 }
 
 // Registry is the durable record. Postgres in production; Memory in tests.
@@ -172,7 +175,7 @@ func affected(res sql.Result, err error) (bool, error) {
 
 const resourceColumns = `id, project, kind, provider_id, name, labels, owner_ref, price_per_hour_eur::float8,
 	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, promoted,
-	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8`
+	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8, promoted_by, released_by`
 
 func (p PG) Open(ctx context.Context, project string) ([]Resource, error) {
 	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
@@ -205,7 +208,8 @@ func (p PG) query(ctx context.Context, q string, args ...any) ([]Resource, error
 		var labels []byte
 		if err := rows.Scan(&r.ID, &r.Project, &r.Kind, &r.ProviderID, &r.Name, &labels, &r.OwnerRef,
 			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt, &r.Repo, &r.SessionRef, &r.Size,
-			&r.Purpose, &r.Address, &r.Promoted, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR); err != nil {
+			&r.Purpose, &r.Address, &r.Promoted, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR,
+			&r.PromotedBy, &r.ReleasedBy); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(labels, &r.Labels); err != nil {
