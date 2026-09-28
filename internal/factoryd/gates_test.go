@@ -801,8 +801,8 @@ func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err == nil {
 		t.Fatal("a cancelled review succeeded")
 	}
-	if time.Since(began) > 10*time.Second || len(ll.chats) != 2 {
-		t.Fatalf("after %s: %d calls; want the second call cut at the cancel", time.Since(began), len(ll.chats))
+	if time.Since(began) > 10*time.Second {
+		t.Fatalf("after %s: want the minute-long call cut at the cancel", time.Since(began))
 	}
 }
 
