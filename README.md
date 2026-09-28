@@ -294,8 +294,9 @@ activities, each with a timeline step and a comment on the pull request:
    required".
 3. `GateReproduction`, when the task carries a reproduction
    (`repro_command`: the issue body's first fenced block labelled `repro`,
-   or `repro_command` on `POST /tasks`; when the issue carries none, a SigNoz
-   alert's for one, the repro block that opens the agent's last message,
+   or `repro_command` on `POST /tasks`; for an issue filed from a SigNoz
+   alert, which carries none, the repro block that opens the agent's last
+   message (ruling 170; no other issue takes the agent's),
    marked `ByAgent` for the review, which judges whether it tests the
    reported fault): a fresh sandbox namespace, a read
    token on the task's repository only, and one pod of the worker image
@@ -1149,8 +1150,10 @@ the alert's fingerprint: its first firing files an issue on the project's
 repository as the bot, title `alert: <name> in <namespace>`, the body the
 firing time, the SigNoz link, the value and annotations and the labels
 (fenced, one line each), labels `bug` and `state/queued`, and starts its
-agent task at the default branch's head (source `alert`, no reproduction:
-the agent brings its own); a later firing comments `fired again at <time>`
+agent task at the default branch's head (source `alert`, standing
+`telemetry`: the brief marks the text as untrusted; no reproduction: the
+agent brings its own); a firing still resent 30 minutes after its task
+ended is filed once more; a later firing comments `fired again at <time>`
 while that task runs and files a new issue once it ended; a resend of the
 same firing does nothing; a resolve comments `resolved at <time>` once.
 Each issue is an alerts row of kind `alert` with the fingerprint, judged
