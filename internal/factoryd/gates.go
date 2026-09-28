@@ -630,7 +630,7 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 // gateHeartbeatEvery is how often a gate activity heartbeats; variables
 // for the tests.
 var (
-	gateHeartbeatEvery  = heartbeatEvery
+	gateHeartbeatEvery  = HeartbeatEvery
 	recordGateHeartbeat = activity.RecordHeartbeat
 )
 

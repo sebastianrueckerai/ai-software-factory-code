@@ -23,9 +23,11 @@ const prBase = "main"
 // (ruling 100). The worker refuses the push, OpenPullRequest re-checks.
 var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
 
-// heartbeatEvery is how often a long activity reports progress; the
-// workflow's heartbeat timeout is four times this.
-const heartbeatEvery = 30 * time.Second
+// HeartbeatEvery is how often a long activity reports progress and the
+// longest the worker holds a heartbeat back (MaxHeartbeatThrottleInterval):
+// a workflow's cancel reaches a running activity in the answer to its next
+// heartbeat, so within this. The heartbeat timeout is 2 minutes.
+const HeartbeatEvery = 10 * time.Second
 
 // RegisterActivities registers the runner's activities under the names the
 // workflow calls, on a worker or a test environment.
@@ -167,7 +169,7 @@ type sessionProgress struct {
 }
 
 // heartbeat records the latest session progress now and every
-// heartbeatEvery until stopped, including through namespace setup and a
+// HeartbeatEvery until stopped, including through namespace setup and a
 // slow image pull, when no events flow.
 type heartbeat struct {
 	mu   sync.Mutex
@@ -180,7 +182,7 @@ func startHeartbeat(ctx context.Context, sessionID string) *heartbeat {
 	h := &heartbeat{p: sessionProgress{SessionID: sessionID}, stop: stop}
 	activity.RecordHeartbeat(ctx, h.snapshot())
 	go func() {
-		tick := time.NewTicker(heartbeatEvery)
+		tick := time.NewTicker(HeartbeatEvery)
 		defer tick.Stop()
 		for {
 			select {

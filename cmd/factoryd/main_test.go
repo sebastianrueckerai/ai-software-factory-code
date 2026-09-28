@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -390,5 +391,19 @@ func TestCreateTaskHandlerReproCommand(t *testing.T) {
 		"{\"objective\":\"Fix X\",\"repository\":\"sf/ai-software-factory-code\",\"repro_command\":\"a\\n```\\nb\"}")
 	if rec.Code != http.StatusBadRequest || len(events) != 0 {
 		t.Fatalf("a fence in the command = %d with calls %v, want 400 and none", rec.Code, events)
+	}
+}
+
+// A terminal signal cancels the running session; the cancel reaches the
+// activity in the answer to its next heartbeat. The SDK holds heartbeats
+// back up to 80% of the 2-minute heartbeat timeout, capped at its 60 s
+// default, unless the worker caps it lower: the cap and the activities'
+// heartbeat interval bound the cancel at 10 s.
+func TestACancelReachesARunningActivityWithinTenSeconds(t *testing.T) {
+	if got := workerOptions().MaxHeartbeatThrottleInterval; got != 10*time.Second {
+		t.Fatalf("heartbeat throttle cap = %s, want 10s", got)
+	}
+	if factoryd.HeartbeatEvery > 10*time.Second {
+		t.Fatalf("activities heartbeat every %s, want at most 10s", factoryd.HeartbeatEvery)
 	}
 }

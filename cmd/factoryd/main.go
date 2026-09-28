@@ -184,10 +184,7 @@ func main() {
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
-	taskWorker := worker.New(temporal, factoryd.TaskQueue, worker.Options{
-		WorkerStopTimeout: 120 * time.Second,
-		Interceptors:      []interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}},
-	})
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions())
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
@@ -514,4 +511,16 @@ func envInt(name string, def int) int {
 		log.Fatalf("%s: not an int", name)
 	}
 	return def
+}
+
+// workerOptions: a stop closes the activities' worker stop channel and
+// cancels them after WorkerStopTimeout; heartbeats go out at most
+// HeartbeatEvery apart, so a workflow's cancel reaches a running activity
+// within that.
+func workerOptions() worker.Options {
+	return worker.Options{
+		WorkerStopTimeout:            120 * time.Second,
+		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
+		Interceptors:                 []interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}},
+	}
 }

@@ -174,8 +174,13 @@ are delivered with signal-with-start, so a signal to a task whose run
 died starts a new one (which reconciles first). `pr_merged` (done),
 `pr_closed` (closed without merge: failed) and `issue_closed` (done if
 the PR merged, else failed) decide the task wherever they land: a
-running session or check wait is cancelled at once (the session deletes
-its pod and namespace and revokes its credentials first), and they are
+running session or check wait is cancelled within about 10 s (the
+session deletes its pod and namespace and revokes its credentials
+first). The cancel reaches an activity in the answer to its next
+heartbeat: activities heartbeat every 10 s and the worker holds none
+back longer (`MaxHeartbeatThrottleInterval`); with the SDK's default
+throttle (60 s under the 2-minute heartbeat timeout) a closed issue's
+session ran on for 56 s in the Stage 7 exit test. They are
 drained before every attempt, before a PR is opened and after the
 checks; green checks wait for them at no cost. `human_comment` (a new
 comment on the task's issue) answers an escalation. Comments and reviews
