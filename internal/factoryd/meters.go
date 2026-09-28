@@ -2,8 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"errors"
-	"log"
 	"sync"
 	"time"
 
@@ -87,18 +85,12 @@ func (i *openActivityInbound) ExecuteActivity(ctx context.Context, in *intercept
 }
 
 // RegisterAlertCount exports factory.alert.count{kind,verdict}, read from
-// the alerts table at each export. Until the table exists it logs once and
-// reports nothing.
+// the alerts table at each export.
 func RegisterAlertCount(meter metric.Meter, counts func(context.Context) ([]AlertCount, error)) error {
-	var missing sync.Once
 	_, err := meter.Int64ObservableUpDownCounter("factory.alert.count",
 		metric.WithDescription("alerts per kind and verdict (open until one is set)"),
 		metric.WithInt64Callback(func(ctx context.Context, obs metric.Int64Observer) error {
 			rows, err := counts(ctx)
-			if errors.Is(err, ErrNoAlertsTable) {
-				missing.Do(func() { log.Printf("alert count: no alerts table yet; skipped until it exists") })
-				return nil
-			}
 			if err != nil {
 				return err
 			}

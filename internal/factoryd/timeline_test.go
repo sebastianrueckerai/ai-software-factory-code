@@ -158,14 +158,24 @@ func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": OutcomePushed, "model": "factory/coding-cheap",
-		"started": now.Add(-10 * time.Minute)}); err != nil {
+		"started": "2026-09-28T10:23:09.5Z"}); err != nil {
+		t.Fatal(err)
+	}
+	// commissioning ends at the server's live, 95 s after the request
+	if err := tl.Append(ctx, "t1", "commissioned", map[string]any{"server_type": "cx23",
+		"started": "2026-09-28T10:20:00Z", "live": "2026-09-28T10:21:35Z"}); err != nil {
+		t.Fatal(err)
+	}
+	// a step that ends no gate emits nothing, started or not
+	if err := tl.Append(ctx, "t1", "pr_opened", map[string]any{"started": "2026-09-28T10:20:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	got := histograms(t, reader, "factory.task.gate.duration")
 	want := map[string]histPoint{
 		// 10:28:38 to 10:33:09
-		"gate=checks,model_alias=,outcome=success":                         {1, 271},
-		"gate=session_end,model_alias=factory/coding-cheap,outcome=pushed": {1, 600},
+		"gate=checks,model_alias=,outcome=success":                     {1, 271},
+		"gate=session,model_alias=factory/coding-cheap,outcome=pushed": {1, 599.5},
+		"gate=commissioning,model_alias=,outcome=":                     {1, 95},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("gates %v, want %v", got, want)

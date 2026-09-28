@@ -864,7 +864,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls; DROP TABLE IF EXISTS alerts`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls, alerts`); err != nil {
 		t.Fatal(err)
 	}
 	r := Roll{SHA: "abc", PushedAt: at("2026-09-28T10:05:40Z"), AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
@@ -887,14 +887,21 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 		t.Fatalf("recorded: %v %v", ok, err)
 	}
 
-	if _, err := s.AlertCounts(ctx); !errors.Is(err, ErrNoAlertsTable) {
-		t.Fatalf("without the table: %v", err)
+	for _, a := range []Alert{
+		{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 600},
+		{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 600},
+	} {
+		if _, err := s.InsertAlert(ctx, a); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := s.db.ExecContext(ctx, `CREATE TABLE alerts (id bigserial PRIMARY KEY, kind text NOT NULL, verdict text);
-		INSERT INTO alerts (kind, verdict) VALUES ('gate_bound', NULL), ('gate_bound', NULL), ('escalation', 'real')`); err != nil {
+	esc, err := s.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.db.ExecContext(ctx, `DROP TABLE alerts`)
+	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
 	counts, err := s.AlertCounts(ctx)
 	if err != nil {
 		t.Fatal(err)

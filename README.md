@@ -986,7 +986,10 @@ at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
   the `created` time of the commit's push run in `actions/runs`; without
   one nothing is recorded.
 - `factory.task.gate.duration{gate,outcome,model_alias}` from every
-  timeline step carrying `started`.
+  timeline step that ends a gate (`factoryd.StepGates`) and carries
+  `started`, labelled with the gate's name (session, checks, policy,
+  migration, reproduction, review, approval, merge, commissioning,
+  intake); commissioning ends at the step's `live`.
 - `factory.activity.open_age{activity}`: the age of the oldest running
   activity per name.
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,

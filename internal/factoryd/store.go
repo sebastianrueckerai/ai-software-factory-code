@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -684,34 +683,4 @@ func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
-}
-
-// AlertCount is the number of alerts of one kind and verdict ("open" for
-// none yet).
-type AlertCount struct {
-	Kind, Verdict string
-	N             int64
-}
-
-// ErrNoAlertsTable: the alerts table does not exist yet.
-var ErrNoAlertsTable = errors.New("no alerts table")
-
-func (s *PGStore) AlertCounts(ctx context.Context) ([]AlertCount, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT kind, coalesce(verdict, 'open'), count(*) FROM alerts GROUP BY 1, 2`)
-	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "42P01" {
-		return nil, ErrNoAlertsTable
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []AlertCount
-	for rows.Next() {
-		var c AlertCount
-		if err := rows.Scan(&c.Kind, &c.Verdict, &c.N); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
 }

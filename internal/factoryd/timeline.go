@@ -88,24 +88,25 @@ func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[
 	return nil
 }
 
-// gate emits the step's gate duration when the step carries started.
+// gate emits the duration of the gate a step ends (StepGates) when the
+// step carries started; commissioning ends at the server's live, not at
+// the step's own time.
 func (tl *Timeline) gate(ctx context.Context, step string, detail map[string]any, end time.Time) {
-	var started time.Time
-	switch v := detail["started"].(type) {
-	case time.Time:
-		started = v
-	case string:
-		t, err := time.Parse(time.RFC3339, v)
-		if err != nil {
-			log.Printf("timeline %s: started %q: %v", step, v, err)
-			return
-		}
-		started = t
-	default:
+	gate, ok := StepGates[step]
+	raw, carries := detail["started"].(string)
+	if !ok || !carries || tl.Metrics == nil {
 		return
 	}
-	if tl.Metrics == nil {
+	started, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		log.Printf("timeline %s: started %q: %v", step, raw, err)
 		return
+	}
+	if live, ok := detail["live"].(string); ok {
+		if end, err = time.Parse(time.RFC3339, live); err != nil {
+			log.Printf("timeline %s: live %q: %v", step, live, err)
+			return
+		}
 	}
 	outcome := ""
 	for _, k := range []string{"outcome", "state", "verdict"} {
@@ -117,5 +118,5 @@ func (tl *Timeline) gate(ctx context.Context, step string, detail map[string]any
 	}
 	model, _ := detail["model"].(string)
 	tl.Metrics.GateDuration.Record(ctx, end.Sub(started).Seconds(), metric.WithAttributes(
-		attribute.String("gate", step), attribute.String("outcome", outcome), attribute.String("model_alias", model)))
+		attribute.String("gate", gate), attribute.String("outcome", outcome), attribute.String("model_alias", model)))
 }

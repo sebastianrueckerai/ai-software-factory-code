@@ -103,3 +103,27 @@ func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by str
 		 WHERE id = $1 AND kind = $4 AND verdict IS NULL`, id, verdict, by, AlertEscalation)
 	return oneRow(res, err, "open escalation alert")
 }
+
+// AlertCount is the number of alerts of one kind and verdict ("open" for
+// none yet).
+type AlertCount struct {
+	Kind, Verdict string
+	N             int64
+}
+
+func (s *PGStore) AlertCounts(ctx context.Context) ([]AlertCount, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT kind, coalesce(verdict, 'open'), count(*) FROM alerts GROUP BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AlertCount
+	for rows.Next() {
+		var c AlertCount
+		if err := rows.Scan(&c.Kind, &c.Verdict, &c.N); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -80,21 +79,5 @@ func TestAlertCountReadsTheTableAtExport(t *testing.T) {
 	want := map[string]float64{"kind=gate_bound,verdict=open": 2, "kind=supervisor_trip,verdict=noise": 1}
 	if got := sums(t, reader, "factory.alert.count"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("alert counts %v, want %v", got, want)
-	}
-}
-
-func TestAlertCountWithoutTheTableLogsOnceAndSkips(t *testing.T) {
-	logs := captureLog(t)
-	m, reader := testMetrics(t)
-	if err := RegisterAlertCount(m.Meter, func(context.Context) ([]AlertCount, error) { return nil, ErrNoAlertsTable }); err != nil {
-		t.Fatal(err)
-	}
-	for range 3 {
-		if got := sums(t, reader, "factory.alert.count"); len(got) != 0 {
-			t.Fatalf("alert counts %v without a table", got)
-		}
-	}
-	if n := strings.Count(logs.String(), "no alerts table"); n != 1 {
-		t.Fatalf("logged %d times: %q", n, logs.String())
 	}
 }
