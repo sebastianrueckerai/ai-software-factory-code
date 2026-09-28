@@ -874,3 +874,41 @@ func TestReportMergeRetriesExhausted(t *testing.T) {
 		t.Fatalf("timeline = %s", tl)
 	}
 }
+
+// An issue without a reproduction (an alert's) takes the agent's own: the
+// repro block of its last message, run at the base and the head the same
+// way and marked as the agent's; the issue's command wins over it.
+func TestGateReproductionTakesTheAgentsReproBlock(t *testing.T) {
+	for _, c := range []struct{ issue, want string }{
+		{"", "printf 'package links\\n' > r_test.go\ngo test ./internal/links -run TestRepro"},
+		{"make repro", "make repro"},
+	} {
+		task := gateTask
+		task.ReproCommand = c.issue
+		task.AgentSummary = "Fixed the bound.\n\n```repro\nprintf 'package links\\n' > r_test.go\ngo test ./internal/links -run TestRepro\n```\nMerge it."
+		kube := newFakeKube()
+		r, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		var res ReproResult
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var val converter.EncodedValue
+			if val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1"); err == nil {
+				err = val.Get(&res)
+			}
+		}()
+		scriptReproPods(kube, reproLine(2, "panic: index out of range"), reproLine(0, "ok"))
+		<-done
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res != (ReproResult{Ran: true, Command: c.want, Exit: 0, Output: "ok", BaseExit: 2, ByAgent: c.issue == ""}) || !res.Reproduced() {
+			t.Fatalf("issue command %q: result %+v", c.issue, res)
+		}
+		want, _ := json.Marshal(map[string]string{"name": "REPRO_COMMAND", "value": c.want})
+		if spec, _ := json.Marshal(kube.podAt(0).spec); !strings.Contains(string(spec), string(want)) {
+			t.Fatalf("base pod spec lacks %s: %s", want, spec)
+		}
+	}
+}

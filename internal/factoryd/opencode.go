@@ -308,7 +308,9 @@ func briefText(brief harness.TaskBrief, tag string) string {
 
 // workGuide ends every brief: reproduce first, and how to end a session
 // (rulings 149, 150).
-const workGuide = "How to work: reproduce the reported fault before you change code. If you fix a fault you could not reproduce exactly, " +
+const workGuide = "How to work: reproduce the reported fault before you change code. When the issue carries no ```repro block, open your last message with one " +
+	"holding the shell command that reproduced it: the factory runs it at the base, where it must fail, and on your change, where it must pass, so it must " +
+	"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
 	"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. If you cannot reproduce it and find no fault, " +
 	"call request_info with what you tried and what you need instead of guessing. If only a human can decide, call escalate_to_human with your recommendation. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
