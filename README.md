@@ -977,7 +977,9 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.ci.run.duration{event,status}`: the same poll of
   `actions/runs`, once per finished run, `stopped` minus `created`: from
   the push (or pull request event) to the last job's finish, queue time
-  included. What finishes while factoryd is down is lost.
+  included; Forgejo stops a failed run at its first failing job, so a
+  failed run's duration is the time to the first red job, not the wall
+  time of all its jobs. What finishes while factoryd is down is lost.
 - `factory.ci.job.queue{label,job}`: the CI spawner's 10 s poll of
   `actions/runners/jobs` for `pr-untrusted`, `pr-untrusted-build` and main
   CI's `ubuntu-latest`, from the first poll that sees a job waiting to the
