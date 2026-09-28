@@ -161,8 +161,8 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		return PolicyGate{}, err
 	}
-	r.record(ctx, t.ID, "gate_policy", map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
-		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "policy_version": v.ID})
+	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
+		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "policy_version": v.ID}))
 	return g, nil
 }
 
@@ -177,7 +177,7 @@ func (r *Runner) GateMigration(ctx context.Context, taskID string, pr int64, mig
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		return err
 	}
-	r.record(ctx, t.ID, "gate_migration", map[string]any{"pr": pr, "migrations": migrations})
+	r.record(ctx, t.ID, "gate_migration", gateEnd(t, GateMigration, map[string]any{"pr": pr, "migrations": migrations}))
 	return nil
 }
 
@@ -197,7 +197,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		return ReproResult{}, err
 	}
 	if t.ReproCommand == "" {
-		r.record(ctx, t.ID, "gate_reproduction", map[string]any{"pr": pr, "commit": commit, "skipped": "no reproduction command"})
+		r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, map[string]any{"pr": pr, "commit": commit, "skipped": "no reproduction command"}))
 		return ReproResult{}, nil
 	}
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -237,7 +237,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		log.Printf("task %s: comment the reproduction: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "gate_reproduction", map[string]any{"pr": pr, "commit": commit, "command": res.Command, "exit": res.Exit, "output": res.Output})
+	r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, map[string]any{"pr": pr, "commit": commit, "command": res.Command, "exit": res.Exit, "output": res.Output}))
 	return res, nil
 }
 
@@ -390,7 +390,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		rv := Review{Note: "model review not run: " + errMessage(err)}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(r.cfg.ReviewModel, commit, rv))
-		r.record(ctx, t.ID, "model_review", map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note})
+		r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
 		return rv, nil
 	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, reviewDiffMax)
@@ -418,8 +418,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, reviewComment(r.cfg.ReviewModel, commit, rv)); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "model_review", map[string]any{"pr": pr.Number, "commit": commit, "model": r.cfg.ReviewModel,
-		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note})
+	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": r.cfg.ReviewModel,
+		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note}))
 	return rv, nil
 }
 
@@ -523,7 +523,7 @@ func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr i
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
 		commit, approver, reason, mergeRetryAfter))
 	r.note(ctx, t, "waiting: the merge after "+approver+"'s approval failed and is retried: "+reason)
-	r.record(ctx, t.ID, "merge_failed", map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason})
+	r.record(ctx, t.ID, "merge_failed", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason}))
 }
 
 // note tells the console's merge card why the approval has not merged.
@@ -565,7 +565,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser})
+	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
 	return MergeResult{Merged: true}, nil
 }
 
@@ -577,7 +577,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 		if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
-		r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser})
+		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
 		return MergeResult{Merged: true}
 	}
 	by := cmp.Or(st.MergedBy, "an unknown user")
@@ -588,7 +588,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", by, note); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": st.HeadSHA, "gated": commit, "merged_by": by})
+	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": st.HeadSHA, "gated": commit, "merged_by": by}))
 	return MergeResult{Merged: true, By: by}
 }
 
@@ -598,7 +598,7 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
 		commit, approver, res.Refusal))
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
-	r.record(ctx, t.ID, "merge_refused", map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal})
+	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	return res
 }
 

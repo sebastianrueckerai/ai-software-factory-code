@@ -46,6 +46,14 @@ type Task struct {
 	// labelled repro, or the API's repro_command): GateReproduction runs it
 	// against the pull request head and it must pass. Empty = none.
 	ReproCommand string
+	// CreatedAt is when the work was asked for: the issue's created_at, or
+	// the API call (zero at CreateTask: now).
+	CreatedAt  time.Time
+	FinishedAt *time.Time
+	// Gate is the gate the task is in (Gate* constants) since GateSince;
+	// none once it finished, and never for the human lane.
+	Gate      string
+	GateSince *time.Time
 }
 
 // TaskUsage is what a task has used of its caps and what a human granted
@@ -109,7 +117,7 @@ type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	// TransitionTask moves a task to status `to` only from one of the
 	// statuses in from; any other current status is an error. Entering done
-	// or failed stamps the finish time.
+	// or failed stamps the finish time and leaves the gate.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	// MarkStarted moves a queued, running, in-review or waiting-human task to running.
 	MarkStarted(ctx context.Context, id string) error
@@ -174,6 +182,11 @@ type Store interface {
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
+	// SetGate records that the task entered gate at since; a finished
+	// task enters none.
+	SetGate(ctx context.Context, id, gate string, since time.Time) error
+	// InsertAlert records an alert and returns its id.
+	InsertAlert(ctx context.Context, a Alert) (int64, error)
 }
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -242,12 +255,18 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
+	var created *time.Time
+	if !t.CreatedAt.IsZero() {
+		created = &t.CreatedAt
+	}
+	// an agent task starts in intake, since the work was asked for
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, kind, issue_number, source, repro_command)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
+		         CASE WHEN $11 = 'agent' THEN $16 ELSE '' END, CASE WHEN $11 = 'agent' THEN COALESCE($15, now()) END)`,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand)
+		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake)
 	return err
 }
 
@@ -260,14 +279,15 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
-	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command`
+	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand); err != nil {
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand,
+		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -400,12 +420,20 @@ func (s *PGStore) Ping(ctx context.Context) error {
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = $2,
-		        finished_at = CASE WHEN $2 IN ('done', 'failed') THEN now() ELSE finished_at END
+		        finished_at = CASE WHEN $2 IN ('done', 'failed') THEN now() ELSE finished_at END,
+		        gate = CASE WHEN $2 IN ('done', 'failed') THEN '' ELSE gate END,
+		        gate_since = CASE WHEN $2 IN ('done', 'failed') THEN NULL ELSE gate_since END
 		 WHERE id = $1 AND status = ANY($3)`, id, to, from)
 	if err := oneRow(res, err, "task "+id); err != nil {
 		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
 	}
 	return nil
+}
+
+func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET gate = $2, gate_since = $3
+		WHERE id = $1 AND status NOT IN ('done', 'failed')`, id, gate, since)
+	return err
 }
 
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {

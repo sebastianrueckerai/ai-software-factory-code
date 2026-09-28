@@ -164,11 +164,12 @@ type webhookRepository struct {
 }
 
 type webhookIssue struct {
-	Index  int64          `json:"number"`
-	Title  string         `json:"title"`
-	Body   string         `json:"body"`
-	Poster webhookUser    `json:"user"`
-	Labels []webhookLabel `json:"labels"`
+	Index     int64          `json:"number"`
+	Title     string         `json:"title"`
+	Body      string         `json:"body"`
+	Poster    webhookUser    `json:"user"`
+	Labels    []webhookLabel `json:"labels"`
+	CreatedAt time.Time      `json:"created_at"`
 }
 
 type issuesPayload struct {
@@ -378,6 +379,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Kind:        kind,
 		IssueNumber: issue.Index,
 		Source:      "webhook",
+		CreatedAt:   issue.CreatedAt,
 	}
 	if kind == "agent" {
 		task.RequiredCapabilities = AgentCapabilities

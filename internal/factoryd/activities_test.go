@@ -191,7 +191,8 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 	var suite testsuite.WorkflowTestSuite
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
-	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{}}})
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{},
+		&GateWatch{Store: r.store, Bound: func(string) time.Duration { return time.Hour }}}})
 	r.RegisterActivities(env)
 	return env.ExecuteActivity(name, args...)
 }
@@ -372,10 +373,11 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 
 func TestWaitChecksTimesOutWhilePending(t *testing.T) {
 	fj := &prForgejo{statuses: []string{statusBody("pending", [4]string{"pending", "pr / image-build", "", ""})}}
-	r, _, _ := newActivityRunner(t, prTask, fj)
+	r, _, objects := newActivityRunner(t, prTask, fj)
 	r.cfg.ChecksTimeout = 50 * time.Millisecond
 
 	var res ChecksResult
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
 	if err != nil || val.Get(&res) != nil || res.State != ChecksTimeout {
 		t.Fatalf("result = (%+v, %v), want timeout", res, err)
@@ -383,6 +385,7 @@ func TestWaitChecksTimesOutWhilePending(t *testing.T) {
 	if fj.polls < 2 {
 		t.Fatalf("polls = %d, want it to keep polling until the timeout", fj.polls)
 	}
+	startedWithin(t, objects, "checks", from)
 }
 
 func TestSetStateMovesTaskAndMirrorsLabel(t *testing.T) {
@@ -405,7 +408,9 @@ func TestSetStateMovesTaskAndMirrorsLabel(t *testing.T) {
 }
 
 func TestEnsureIssueRequiresLinkedIssueAndOpensTimeline(t *testing.T) {
-	r, _, objects := newActivityRunner(t, prTask, &prForgejo{})
+	task := prTask
+	task.CreatedAt = time.Date(2026, 9, 28, 7, 0, 0, 0, time.UTC)
+	r, _, objects := newActivityRunner(t, task, &prForgejo{})
 	if _, err := execActivity(t, r, ActivityEnsureIssue, "t1"); err != nil {
 		t.Fatal(err)
 	}
@@ -413,6 +418,10 @@ func TestEnsureIssueRequiresLinkedIssueAndOpensTimeline(t *testing.T) {
 	if !strings.Contains(string(timeline), `"step":"intake"`) || !strings.Contains(string(timeline), `"source":"api"`) ||
 		!strings.Contains(string(timeline), `"issue":4`) {
 		t.Fatalf("timeline = %s", timeline)
+	}
+	// intake runs from the issue's creation
+	if got := timelineStep(t, objects, "t1", "intake")["started"]; got != "2026-09-28T07:00:00Z" {
+		t.Fatalf("intake started = %v, want the issue's created_at", got)
 	}
 
 	orphan := prTask

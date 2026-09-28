@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,9 @@ type fakeStore struct {
 	deliveries   map[string]bool
 	pruned       []time.Duration
 	approvals    []ApprovalRequest
+	gates        []string // "task gate since", in order
+	alertsMu     sync.Mutex
+	alerts       []Alert
 }
 
 func newFakeStore() *fakeStore {
@@ -53,6 +57,12 @@ func newFakeStore() *fakeStore {
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.Kind == "" {
 		t.Kind = "agent"
+	}
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now()
+	}
+	if t.Kind == "agent" && t.Gate == "" {
+		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
 	s.tasks[t.ID] = t
 	return nil
@@ -130,10 +140,12 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
 	}
 	t.Status = to
-	s.tasks[id] = t
 	if to == "done" || to == "failed" {
-		s.finished[id] = time.Now()
+		now := time.Now()
+		s.finished[id] = now
+		t.FinishedAt, t.Gate, t.GateSince = &now, "", nil
 	}
+	s.tasks[id] = t
 	return nil
 }
 
@@ -306,6 +318,31 @@ func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]Appr
 	return out, nil
 }
 
+func (s *fakeStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
+	t, ok := s.tasks[id]
+	if !ok || t.Status == "done" || t.Status == "failed" {
+		return nil
+	}
+	t.Gate, t.GateSince = gate, &since
+	s.tasks[id] = t
+	s.gates = append(s.gates, id+" "+gate+" "+since.UTC().Format(time.RFC3339Nano))
+	return nil
+}
+
+func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	a.ID = int64(len(s.alerts) + 1)
+	s.alerts = append(s.alerts, a)
+	return a.ID, nil
+}
+
+func (s *fakeStore) alertRows() []Alert {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	return slices.Clone(s.alerts)
+}
+
 func TestPGStore(t *testing.T) {
 	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -343,6 +380,7 @@ func TestPGStore(t *testing.T) {
 		IssueNumber:          42,
 		Source:               "api",
 		ReproCommand:         "go test ./internal/x",
+		CreatedAt:            time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC),
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -351,6 +389,10 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
 	}
+	if !got.CreatedAt.Equal(in.CreatedAt) || got.Gate != GateIntake || got.GateSince == nil || !got.GateSince.Equal(in.CreatedAt) {
+		t.Fatalf("task created %s, gate %q since %v; want intake since %s", got.CreatedAt, got.Gate, got.GateSince, in.CreatedAt)
+	}
+	got.CreatedAt, got.Gate, got.GateSince = in.CreatedAt, "", nil
 	if !reflect.DeepEqual(got, in) {
 		t.Fatalf("task = %+v, want %+v", got, in)
 	}

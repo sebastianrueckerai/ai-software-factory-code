@@ -166,7 +166,7 @@ func issueOpenedBody(number int64, poster string, labels []string, title, body s
 	b, _ := json.Marshal(map[string]any{
 		"action": "opened",
 		"issue": map[string]any{
-			"number": number, "title": title, "body": body,
+			"number": number, "title": title, "body": body, "created_at": "2026-09-28T09:00:00+02:00",
 			"user":   map[string]string{"login": poster},
 			"labels": lbls,
 		},
@@ -252,6 +252,9 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	}
 	if task.Priority != 2 {
 		t.Fatalf("priority = %d, want 2 (priority/p1)", task.Priority)
+	}
+	if want := time.Date(2026, 9, 28, 7, 0, 0, 0, time.UTC); !task.CreatedAt.Equal(want) {
+		t.Fatalf("created = %s, want the issue's %s", task.CreatedAt, want)
 	}
 	if task.ReproCommand != "make runner-check" {
 		t.Fatalf("repro command = %q, want the issue's repro block", task.ReproCommand)

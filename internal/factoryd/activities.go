@@ -116,7 +116,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 	if t.IssueNumber == 0 {
 		return terminalError("task %s has no linked issue", taskID)
 	}
-	return r.timeline.Append(ctx, taskID, "intake", map[string]any{"source": t.Source, "issue": t.IssueNumber})
+	return r.timeline.Append(ctx, taskID, "intake", map[string]any{"source": t.Source, "issue": t.IssueNumber, "started": rfc3339(t.CreatedAt)})
 }
 
 // SetState moves the task to running (a session starts) or in-review (its
@@ -273,6 +273,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.cfg.Supervisor.WallClockCap))
+	began := rfc3339(time.Now())
 	r.record(ctx, t.ID, "session_start", map[string]any{
 		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers})
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
@@ -283,13 +284,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			outcome = "stopped"
 			activity.RecordHeartbeat(ctx, hb.snapshot())
 		}
-		r.record(cleanup, t.ID, "session_end", map[string]any{
-			"session": s.id, "parent": s.parent, "model": s.model, "outcome": outcome, "summary": err.Error(), "commit": out.commit})
+		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
+			"outcome": outcome, "summary": err.Error(), "commit": out.commit, "started": began})
 		return SessionResult{}, err
 	}
 	res := sessionResult(s, out)
-	r.record(ctx, t.ID, "session_end", map[string]any{
-		"session": s.id, "parent": s.parent, "model": s.model, "outcome": res.Outcome, "summary": res.Summary})
+	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
+		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
 		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": r.branch(t), "commit": res.Commit})
 	}
@@ -581,7 +582,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			res.State = ChecksTimeout
 		}
 		if res.State != "" {
-			r.record(ctx, t.ID, "checks", map[string]any{"commit": sha, "state": res.State, "findings": res.Findings})
+			r.record(ctx, t.ID, "checks", gateEnd(t, GateChecks, map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}))
 			return res, nil
 		}
 		select {

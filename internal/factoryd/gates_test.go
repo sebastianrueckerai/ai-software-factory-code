@@ -107,6 +107,38 @@ func timeline(t *testing.T, objects *fakeObjectStore) string {
 	return string(b)
 }
 
+// timelineStep is the last step named step on the task's timeline.
+func timelineStep(t *testing.T, objects *fakeObjectStore, taskID, step string) map[string]any {
+	t.Helper()
+	b, _ := objects.Get(context.Background(), "sessions/"+taskID+"/timeline.jsonl")
+	var last map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil && m["step"] == step {
+			last = m
+		}
+	}
+	if last == nil {
+		t.Fatalf("no %s step on the timeline: %s", step, b)
+	}
+	return last
+}
+
+// startedWithin checks the last step named step carries started (RFC3339)
+// no earlier than from and no later than the step's own time.
+func startedWithin(t *testing.T, objects *fakeObjectStore, step string, from time.Time) {
+	t.Helper()
+	m := timelineStep(t, objects, "t1", step)
+	started, err := time.Parse(time.RFC3339, fmt.Sprint(m["started"]))
+	if err != nil {
+		t.Fatalf("%s started = %v: %v", step, m["started"], err)
+	}
+	at, _ := time.Parse(time.RFC3339, fmt.Sprint(m["time"]))
+	if started.Before(from) || started.After(at) {
+		t.Fatalf("%s started %s, want within [%s, %s]", step, started, from, at)
+	}
+}
+
 func getInto[T any](t *testing.T, val converter.EncodedValue, err error) T {
 	t.Helper()
 	var out T
@@ -126,6 +158,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 		`{"filename":"k8s/factoryd.yaml"}`,
 	}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
@@ -142,6 +175,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"gate_policy"`) || !strings.Contains(tl, `"class":"migration"`) {
 		t.Fatalf("timeline = %s", tl)
 	}
+	startedWithin(t, objects, "gate_policy", from)
 }
 
 // A rename out of .forgejo counts under its old name: forbidden, and the
@@ -162,6 +196,7 @@ func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
 func TestGateMigrationComments(t *testing.T) {
 	fj := &gateForgejo{}
 	r, _, objects := newGateRunner(t, gateTask, fj)
+	from := time.Now()
 	if _, err := execActivity(t, r, ActivityGateMigration, "t1", int64(9), []string{"internal/factoryd/migrations/0016_x.sql"}); err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +206,7 @@ func TestGateMigrationComments(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"gate_migration"`) {
 		t.Fatal("no gate_migration step")
 	}
+	startedWithin(t, objects, "gate_migration", from)
 }
 
 func TestParseReview(t *testing.T) {
@@ -212,6 +248,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the target skips vet","findings":["Makefile: check does not run go vet"]}`, cost: "0.03"}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval}}
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates)
 	rv := getInto[Review](t, val, err)
 	if rv.Verdict != "concerns" || rv.Findings[0] != "Makefile: check does not run go vet" {
@@ -241,6 +278,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"model_review"`) {
 		t.Fatal("no model_review step")
 	}
+	startedWithin(t, objects, "model_review", from)
 }
 
 // No headroom: no call, a note; an invalid answer: a note. Neither fails.
@@ -299,6 +337,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
 	if res := getInto[MergeResult](t, val, err); !res.Merged {
 		t.Fatalf("result = %+v", res)
@@ -312,6 +351,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"merged"`) {
 		t.Fatal("no merged step")
 	}
+	startedWithin(t, objects, "merged", from)
 }
 
 // Forgejo's refusal (no whitelisted approval) is a result with a comment,
@@ -321,6 +361,7 @@ func TestMergeRefusal(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusMethodNotAllowed}}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
 	res := getInto[MergeResult](t, val, err)
 	if res.Merged || !strings.Contains(res.Refusal, "405") {
@@ -342,6 +383,7 @@ func TestMergeRefusal(t *testing.T) {
 	if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.comments) != 1 {
 		t.Fatalf("result on a merged PR = %+v, comments %d", res, len(fj.comments))
 	}
+	startedWithin(t, objects, "merge_refused", from)
 }
 
 // A new session denies the task's pending merge approval as superseded but
@@ -408,6 +450,7 @@ func TestGateReproductionWithoutACommand(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, _ := newTestRunner(t, gateTask, kube, objects)
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
 	if res := getInto[ReproResult](t, val, err); res.Ran || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
 		t.Fatalf("result = %+v, pods %d, mints %v", res, len(kube.podOrder), hub.minted())
@@ -415,6 +458,7 @@ func TestGateReproductionWithoutACommand(t *testing.T) {
 	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"gate_reproduction"`) || !strings.Contains(tl, `"skipped":"no reproduction command"`) {
 		t.Fatalf("timeline = %s", tl)
 	}
+	startedWithin(t, objects, "gate_reproduction", from)
 }
 
 // The reproduction heartbeats from its start: a slow namespace setup (a
@@ -470,6 +514,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, _ := newTestRunner(t, task, kube, objects)
+	from := time.Now()
 	var res ReproResult
 	var err error
 	done := make(chan struct{})
@@ -558,6 +603,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	if tl, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl"); !strings.Contains(string(tl), `"step":"gate_reproduction"`) {
 		t.Fatalf("timeline = %s", tl)
 	}
+	startedWithin(t, objects, "gate_reproduction", from)
 }
 
 // A head that moved after the checks is not gated: GatePolicy refuses it
@@ -594,8 +640,9 @@ func TestMergeOnlyIntoMain(t *testing.T) {
 // the approval row and the result name them and the head they merged.
 func TestMergeCreditsAHumanMerge(t *testing.T) {
 	fj := &gateForgejo{merged: true, mergedBy: "sebastian", head: "c2"}
-	r, store, _ := newGateRunner(t, gateTask, fj)
+	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	from := time.Now()
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "alice")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || res.By != "sebastian" || len(fj.merges) != 0 {
 		t.Fatalf("result = %+v", res)
@@ -603,6 +650,7 @@ func TestMergeCreditsAHumanMerge(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "merged in Forgejo by sebastian at c2, not the gated c1" {
 		t.Fatalf("approval = %+v", a)
 	}
+	startedWithin(t, objects, "merged", from)
 }
 
 // A merge that fails other than by refusal is an error for the retry; the
@@ -611,15 +659,21 @@ func TestMergeFailureOnTheLastAttempt(t *testing.T) {
 	fj := &gateForgejo{stateFail: 2}
 	r, _, objects := newGateRunner(t, gateTask, fj)
 	ctx := context.Background()
-	if _, err := r.mergeAttempt(ctx, gateTask, Repo{"sf", "repo"}, 9, "c1", "sebastian", false); err == nil {
+	task := gateTask
+	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	task.Gate, task.GateSince = GateMerge, &since
+	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", false); err == nil {
 		t.Fatal("a transient failure before the last attempt was not an error")
 	}
-	res, err := r.mergeAttempt(ctx, gateTask, Repo{"sf", "repo"}, 9, "c1", "sebastian", true)
+	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", true)
 	if err != nil || res.Merged || !strings.Contains(res.Failed, "502") {
 		t.Fatalf("last attempt = %+v, %v", res, err)
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "The approval stands") || !strings.Contains(timeline(t, objects), `"step":"merge_failed"`) {
 		t.Fatalf("comments = %q", fj.comments)
+	}
+	if got := timelineStep(t, objects, "t1", "merge_failed")["started"]; got != "2026-09-28T10:00:00Z" {
+		t.Fatalf("merge_failed started = %v, want the merge gate's start", got)
 	}
 }
 
@@ -675,6 +729,9 @@ func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 func TestReportMergeFailure(t *testing.T) {
 	fj := &gateForgejo{}
 	r, store, objects := newGateRunner(t, gateTask, fj)
+	// the Merge before it put the task in the merge gate
+	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	store.SetGate(context.Background(), "t1", GateMerge, since)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	if _, err := execActivity(t, r, ActivityReportMergeFailure, "t1", int64(9), "c1", "sebastian", "forgejo: not found"); err != nil {
 		t.Fatal(err)
@@ -687,6 +744,9 @@ func TestReportMergeFailure(t *testing.T) {
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"merge_failed"`) || !strings.Contains(tl, `"error":"forgejo: not found"`) {
 		t.Fatalf("timeline = %s", tl)
+	}
+	if got := timelineStep(t, objects, "t1", "merge_failed")["started"]; got != "2026-09-28T10:00:00Z" {
+		t.Fatalf("merge_failed started = %v, want the merge gate's start", got)
 	}
 }
 

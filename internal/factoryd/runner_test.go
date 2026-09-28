@@ -732,6 +732,13 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("timeline lacks %s:\n%s", step, timeline)
 		}
 	}
+	// the attempt runs from its session_start to its session_end
+	start, end := timelineStep(t, objects, "t1", "session_start"), timelineStep(t, objects, "t1", "session_end")
+	began, _ := time.Parse(time.RFC3339, fmt.Sprint(start["time"]))
+	started, err := time.Parse(time.RFC3339, fmt.Sprint(end["started"]))
+	if err != nil || started.After(began) || began.Sub(started) > time.Second || end["attempt"] != float64(1) {
+		t.Fatalf("session_end started %v, attempt %v; want the session_start's %s, attempt 1", end["started"], end["attempt"], start["time"])
+	}
 	if _, err := objects.Get(context.Background(), "sessions/t1/"+res.SessionID+".jsonl"); err != nil {
 		t.Fatal(err)
 	}

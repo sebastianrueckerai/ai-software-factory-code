@@ -6,10 +6,12 @@ import (
 )
 
 // BoardTask is a task on the console's board with the reason of its
-// latest escalation ("" when it never escalated).
+// latest escalation ("" when it never escalated) and its open escalation
+// alert (0 when none awaits a verdict).
 type BoardTask struct {
 	Task
-	Escalation string
+	Escalation      string
+	EscalationAlert int64
 }
 
 // BoardTasks lists at most limit tasks for the console's board: those not
@@ -19,10 +21,12 @@ type BoardTask struct {
 func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+taskColumns+`, COALESCE((SELECT e.body FROM intake_events e
-		        WHERE e.task_id = tasks.id AND e.kind = $2 ORDER BY e.id DESC LIMIT 1), '')
+		        WHERE e.task_id = tasks.id AND e.kind = $2 ORDER BY e.id DESC LIMIT 1), ''),
+		        COALESCE((SELECT a.id FROM alerts a
+		        WHERE a.task_id = tasks.id AND a.kind = $4 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0)
 		 FROM tasks WHERE status NOT IN ('done', 'failed') OR finished_at > $1
 		 ORDER BY status IN ('done', 'failed'), priority DESC, finished_at DESC NULLS FIRST, id
-		 LIMIT $3`, since, IntakeEscalation, limit)
+		 LIMIT $3`, since, IntakeEscalation, limit, AlertEscalation)
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +34,7 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 	var tasks []BoardTask
 	for rows.Next() {
 		var b BoardTask
-		t, err := scanTask(func(dest ...any) error { return rows.Scan(append(dest, &b.Escalation)...) })
+		t, err := scanTask(func(dest ...any) error { return rows.Scan(append(dest, &b.Escalation, &b.EscalationAlert)...) })
 		if err != nil {
 			return nil, err
 		}
