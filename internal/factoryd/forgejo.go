@@ -459,18 +459,24 @@ type RepoLabel struct {
 	Name string `json:"name"`
 }
 
-// ListLabels lists owner/repo's currently defined labels.
+// ListLabels lists owner/repo's currently defined labels, all pages.
 func (f *Forgejo) ListLabels(ctx context.Context, owner, repo string) ([]RepoLabel, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/labels", owner, repo)
-	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
-	if err != nil {
-		return nil, err
+	var out []RepoLabel
+	for page := 1; ; page++ {
+		path := fmt.Sprintf("/api/v1/repos/%s/%s/labels?limit=50&page=%d", owner, repo, page)
+		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+		if err != nil {
+			return nil, err
+		}
+		var labels []RepoLabel
+		if err := json.Unmarshal(body, &labels); err != nil {
+			return nil, fmt.Errorf("forgejo list labels %s/%s: %w", owner, repo, err)
+		}
+		out = append(out, labels...)
+		if len(labels) < 50 {
+			return out, nil
+		}
 	}
-	var labels []RepoLabel
-	if err := json.Unmarshal(body, &labels); err != nil {
-		return nil, fmt.Errorf("forgejo list labels %s/%s: %w", owner, repo, err)
-	}
-	return labels, nil
 }
 
 // CreateLabel defines a new repository label. color is a hex RGB string

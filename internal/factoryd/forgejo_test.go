@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -173,6 +174,47 @@ func TestForgejoEnsureLabelsCreatesOnlyMissing(t *testing.T) {
 	}
 	if len(created) != 1 || created[0] != "human" {
 		t.Fatalf("created = %v, want exactly [human] (agent, state/queued already existed)", created)
+	}
+}
+
+// Boot creates the priority and severity labels intake weighs, and reads
+// every page of the existing ones so none is created twice.
+func TestBootLabelsCoverPriorityAndSeverityAcrossPages(t *testing.T) {
+	for name := range priorityLabelWeight {
+		if _, ok := BootLabels[name]; !ok {
+			t.Errorf("BootLabels lacks %s", name)
+		}
+	}
+	var created []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Query().Get("page") == "1":
+			var page []RepoLabel
+			for i := range 49 {
+				page = append(page, RepoLabel{ID: int64(i + 10), Name: fmt.Sprintf("other/%d", i)})
+			}
+			json.NewEncoder(w).Encode(append(page, RepoLabel{ID: 1, Name: "agent"}))
+		case r.Method == http.MethodGet && r.URL.Query().Get("page") == "2":
+			io.WriteString(w, `[{"id":2,"name":"priority/p0"}]`)
+		case r.Method == http.MethodGet:
+			t.Errorf("unexpected page %q", r.URL.RawQuery)
+		case r.Method == http.MethodPost:
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			created = append(created, body["name"].(string))
+			w.WriteHeader(201)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if err := f.EnsureLabels(context.Background(), "sf", "r", BootLabels); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(created)
+	want := []string{"human", "priority/p1", "priority/p2", "priority/p3", "severity/critical", "severity/high", "severity/low", "severity/medium",
+		"state/done", "state/failed", "state/in-review", "state/queued", "state/running", "state/waiting-human"}
+	if !slices.Equal(created, want) {
+		t.Fatalf("created %v, want %v", created, want)
 	}
 }
 

@@ -33,20 +33,6 @@ import (
 
 var version = "dev"
 
-// stateLabels are the labels task 42's webhook intake and state mirroring
-// need to exist on the issue-tracked repo before anything files an issue or
-// mirrors state onto one (colors are GitHub-style #RRGGBB).
-var stateLabels = map[string]string{
-	"agent":               "#ededed",
-	"human":               "#c2e0c6",
-	"state/queued":        "#ededed",
-	"state/running":       "#1f6feb",
-	"state/waiting-human": "#d4a72c",
-	"state/in-review":     "#8250df",
-	"state/done":          "#2da44e",
-	"state/failed":        "#cf222e",
-}
-
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	consoleAddr := flag.String("console-addr", ":8090", "console listen address (its own Service and route)")
@@ -218,7 +204,7 @@ func main() {
 	} else {
 		log.Printf("fork %s ready: private, Actions off", forgejo.Fork(upstream))
 	}
-	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, stateLabels); err != nil {
+	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, factoryd.BootLabels); err != nil {
 		log.Printf("ensure labels: %v", err)
 	}
 	runner.BootSweep(ctx)

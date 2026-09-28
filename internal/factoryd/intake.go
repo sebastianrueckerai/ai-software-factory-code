@@ -235,6 +235,30 @@ var priorityLabelWeight = map[string]int{
 	"severity/critical": 3, "severity/high": 2, "severity/medium": 1, "severity/low": 0,
 }
 
+// BootLabels are the labels factoryd creates on the issue-tracked
+// repository at boot, before anything files an issue or mirrors state onto
+// one (Forgejo drops an unknown label name silently): the lanes, the task
+// states, and the priority and severity labels intake reads (colours are
+// #RRGGBB).
+var BootLabels = map[string]string{
+	"agent":               "#ededed",
+	"human":               "#c2e0c6",
+	"state/queued":        "#ededed",
+	"state/running":       "#1f6feb",
+	"state/waiting-human": "#d4a72c",
+	"state/in-review":     "#8250df",
+	"state/done":          "#2da44e",
+	"state/failed":        "#cf222e",
+	"priority/p0":         "#b60205",
+	"priority/p1":         "#d93f0b",
+	"priority/p2":         "#fbca04",
+	"priority/p3":         "#c5def5",
+	"severity/critical":   "#b60205",
+	"severity/high":       "#d93f0b",
+	"severity/medium":     "#fbca04",
+	"severity/low":        "#c5def5",
+}
+
 func priorityFromLabels(names []string) int {
 	best := 0
 	for _, n := range names {
