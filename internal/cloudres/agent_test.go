@@ -145,24 +145,6 @@ func agentDB(t *testing.T) *sql.DB {
 	if err := policy.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	// TEMPORARY until Task 55's migration (approval_requests, ruling 116)
-	// is on main: its DDL, verbatim.
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS approval_requests (
-	    id bigserial PRIMARY KEY,
-	    kind text NOT NULL CHECK (kind IN ('merge', 'resource')),
-	    task_id text NOT NULL,
-	    project text NOT NULL,
-	    pr_number bigint,
-	    spec jsonb NOT NULL DEFAULT '{}',
-	    reason text NOT NULL DEFAULT '',
-	    monthly_eur numeric,
-	    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
-	    decided_by text NOT NULL DEFAULT '',
-	    decided_at timestamptz,
-	    decision_note text NOT NULL DEFAULT '',
-	    created_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		t.Fatal(err)
-	}
 	// the ledger is append-only by trigger; a test database is wiped whole
 	if _, err := db.ExecContext(ctx, `TRUNCATE tasks, ledger, holds, cloud_resources, envelopes, approval_requests CASCADE`); err != nil {
 		t.Fatal(err)
