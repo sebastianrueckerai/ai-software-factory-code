@@ -746,3 +746,19 @@ func TestDeliverPushesFinishedOrStoppedSessionsOnly(t *testing.T) {
 		t.Fatalf("events = %+v, want one push_failed event with branch and error", emitted)
 	}
 }
+
+func TestLoadEnvParsesAnswers(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("ANSWERS", `["sebastian: b", "sebastian: a"]`)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if len(e.answers) != 2 || e.answers[0] != "sebastian: b" || e.answers[1] != "sebastian: a" {
+		t.Fatalf("answers = %v", e.answers)
+	}
+	t.Setenv("ANSWERS", "not json")
+	if _, err := loadEnv(); err == nil {
+		t.Fatal("malformed ANSWERS accepted")
+	}
+}

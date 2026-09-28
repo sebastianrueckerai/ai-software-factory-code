@@ -16,7 +16,10 @@ type TaskBrief struct {
 	SHA        string   `json:"sha"`
 	IssueURL   string   `json:"issue_url,omitempty"`
 	Findings   []string `json:"findings,omitempty"`
-	Artifacts  []string `json:"artifacts,omitempty"`
+	// Answers are the human's answers to the task's escalations, newest
+	// first (ruling 118).
+	Answers   []string `json:"answers,omitempty"`
+	Artifacts []string `json:"artifacts,omitempty"`
 }
 
 type EventKind string

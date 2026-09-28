@@ -232,6 +232,13 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 
 func objectiveText(brief harness.TaskBrief) string {
 	var b strings.Builder
+	if len(brief.Answers) > 0 {
+		b.WriteString("The human has answered this task's escalations (newest first). These answers settle those questions: act on them and do not escalate them again.\n")
+		for _, a := range brief.Answers {
+			fmt.Fprintf(&b, "- %s\n", a)
+		}
+		b.WriteString("\n")
+	}
 	b.WriteString(brief.Objective)
 	if brief.Repository != "" {
 		fmt.Fprintf(&b, "\n\nRepository: %s", brief.Repository)

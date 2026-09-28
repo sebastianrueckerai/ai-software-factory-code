@@ -572,7 +572,7 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 
 // escalate: the workflow asks a human (state waiting-human, comment), a
 // comment older than the escalation does not answer, a newer one starts a
-// new attempt with the answer as findings and one attempt more.
+// new attempt with the answer and one attempt more.
 func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
@@ -595,7 +595,7 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
 	}
 	second := h.sessions[1]
-	if !slices.Equal(second.Findings, []string{"ran x", "human sebastian answered the escalation: you may edit the script"}) || second.ParentSessionID != "s1" {
+	if !slices.Equal(second.Findings, []string{"ran x"}) || !slices.Equal(second.Answers, []string{"sebastian: you may edit the script"}) || second.ParentSessionID != "s1" {
 		t.Fatalf("second attempt = %+v", second)
 	}
 	if !slices.Contains(h.states, "running") {
@@ -702,7 +702,54 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "restarted") {
 		t.Fatalf("escalations = %q", h.escalated)
 	}
-	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, []string{"human sebastian answered the escalation: go on"}) {
+	if len(h.sessions) != 1 || h.sessions[0].Findings != nil || !slices.Equal(h.sessions[0].Answers, []string{"sebastian: go on"}) {
 		t.Fatalf("sessions = %+v", h.sessions)
+	}
+}
+
+// Ruling 118: every human answer of the task travels with every later
+// session as its own list, newest first, not as a finding: after two
+// escalations the third session carries both answers.
+func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "which file?", Findings: []string{"ran x"}},
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "which text?", Findings: []string{"ran y"}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "docs/a.txt", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "write ok", Comment: 603})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
+	}
+	if s := h.sessions[1]; !slices.Equal(s.Answers, []string{"sebastian: docs/a.txt"}) || !slices.Equal(s.Findings, []string{"ran x"}) {
+		t.Fatalf("second session = %+v", s)
+	}
+	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{"sebastian: write ok", "sebastian: docs/a.txt"}) || !slices.Equal(s.Findings, []string{"ran y"}) {
+		t.Fatalf("third session = %+v", s)
+	}
+}
+
+// Workflows started before versionAnswers keep an answer as a finding of
+// the next session only.
+func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("answers", workflow.DefaultVersion, versionAnswers).Return(workflow.DefaultVersion)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "which file?", Findings: []string{"ran x"}},
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "which text?", Findings: []string{"ran y"}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "docs/a.txt", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "write ok", Comment: 603})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran y", "human sebastian answered the escalation: write ok"}) {
+		t.Fatalf("third session = %+v", s)
 	}
 }

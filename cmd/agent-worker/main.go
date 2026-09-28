@@ -85,6 +85,7 @@ func run(log func(string, ...any)) int {
 		Repository: env.repository,
 		SHA:        env.repoSHA,
 		Findings:   env.findings,
+		Answers:    env.answers,
 	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
@@ -211,7 +212,7 @@ type workerEnv struct {
 	repoURL, repoToken, pushURL, pushToken                    string
 	gatewayURL, tokenFile, model                              string
 	answerTokens, headroomTokens                              int
-	findings                                                  []string
+	findings, answers                                         []string
 	home                                                      string
 }
 
@@ -252,10 +253,12 @@ func loadEnv() (workerEnv, error) {
 	if e.headroomTokens, err = strconv.Atoi(str("HEADROOM_TOKENS")); err != nil {
 		return e, fmt.Errorf("HEADROOM_TOKENS: %w", err)
 	}
-	// FINDINGS arrives as a JSON array; absent means a first attempt.
-	if raw := str("FINDINGS"); raw != "" {
-		if err := json.Unmarshal([]byte(raw), &e.findings); err != nil {
-			return e, fmt.Errorf("FINDINGS: %w", err)
+	// FINDINGS and ANSWERS arrive as JSON arrays; absent means none.
+	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers} {
+		if raw := str(name); raw != "" {
+			if err := json.Unmarshal([]byte(raw), dst); err != nil {
+				return e, fmt.Errorf("%s: %w", name, err)
+			}
 		}
 	}
 	return e, nil

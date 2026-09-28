@@ -116,10 +116,13 @@ const (
 // SessionInput is one attempt: StartRef is the commit the worker starts
 // from (empty = the task's base SHA).
 type SessionInput struct {
-	TaskID          string
-	Attempt         int
-	Model           string
-	Findings        []string
+	TaskID   string
+	Attempt  int
+	Model    string
+	Findings []string
+	// Answers are every human answer to the task's escalations, newest
+	// first (versionAnswers).
+	Answers         []string
 	StartRef        string
 	ParentSessionID string
 }
@@ -195,7 +198,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
 		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
 		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
-		v6: workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates)}
+		v6: workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates),
+		v7: workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers)}
 	return run.lifecycle()
 }
 
@@ -241,6 +245,11 @@ const (
 	// class fails the task, a failed reproduction goes back to the agent
 	// like red checks.
 	versionGates workflow.Version = 1
+	// versionAnswers (change id "answers", ruling 118): a human's answer to
+	// an escalation is kept on the run, newest first, and every later
+	// session gets all of them as SessionInput.Answers instead of the
+	// newest as a finding.
+	versionAnswers workflow.Version = 1
 )
 
 type taskRun struct {
@@ -248,9 +257,10 @@ type taskRun struct {
 	cfg               WorkflowConfig
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
-	v6                workflow.Version
+	v6, v7            workflow.Version
 	pr                PullRequest
-	escalation        int64 // the escalation comment human answers must be newer than
+	answers           []string // the human's answers, newest first (versionAnswers)
+	escalation        int64    // the escalation comment human answers must be newer than
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -342,7 +352,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		final, why, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
-			Findings: findings, StartRef: startRef, ParentSessionID: parent,
+			Findings: findings, Answers: t.answers, StartRef: startRef, ParentSessionID: parent,
 		})
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
@@ -720,7 +730,9 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 
 // awaitHuman escalates the task and blocks, at no cost, until a human
 // answers on the issue (a comment newer than the escalation, or a change
-// request on the task's PR) or a terminal signal decides the task.
+// request on the task's PR) or a terminal signal decides the task. answer
+// is the change requests; the human's answers go to t.answers
+// (versionAnswers), or into answer before it.
 func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", "escalate: " + errMessage(err), nil
@@ -735,13 +747,20 @@ func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string)
 			return final, why, nil
 		}
 		var sig TaskSignal
+		answered := false
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
-			if t.counted(SignalHumanComment, sig) {
+			if !t.counted(SignalHumanComment, sig) {
+				continue
+			}
+			answered = true
+			if t.v7 >= versionAnswers {
+				t.answers = append([]string{sig.Author + ": " + sig.Body}, t.answers...)
+			} else {
 				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
 			}
 		}
 		answer = append(answer, t.drainChanges()...)
-		if len(answer) > 0 {
+		if answered || len(answer) > 0 {
 			return "", "", answer
 		}
 	}

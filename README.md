@@ -315,8 +315,13 @@ and the lines already read are skipped): the worker ends the agent,
 commits and pushes its work in progress through the same clean push
 path, and the next session starts from it. Escalation moves the task to
 `waiting-human`, comments the reason and the digest summary on the
-issue, and waits: a newer non-bot issue comment starts one more attempt
-with the comment as findings, closing the issue fails the task. The
+issue, and waits: a newer non-bot issue comment starts one more attempt,
+closing the issue fails the task. The workflow keeps every answer of the
+task (change id `answers`, ruling 118), and every later session gets all
+of them, newest first, as `SessionInput.Answers` (worker env `ANSWERS`),
+which the opencode prompt puts ahead of the objective as settled
+answers the agent must not escalate again; the `session_start` timeline
+step records them. The
 human is the one party allowed to raise a limit: the answer buys the
 extra attempt, and if less than `ESCALATION_ANSWER_SLICE` (10 min, never
 more than `WALL_CLOCK_CAP`) of agent time is left under the cap, the

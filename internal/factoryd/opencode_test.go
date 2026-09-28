@@ -562,3 +562,22 @@ func TestOpencodeToolCallCarriesArguments(t *testing.T) {
 		}
 	}
 }
+
+// Ruling 118: the human's answers are their own section, ahead of the
+// objective, newest first, and say the questions are settled.
+func TestObjectiveTextPutsTheHumansAnswersFirst(t *testing.T) {
+	got := objectiveText(harness.TaskBrief{
+		Objective: "Write the note; ask the human for its name first.",
+		Answers:   []string{"sebastian: write ok", "sebastian: docs/a.txt"},
+		Findings:  []string{"ran x"},
+	})
+	want := "The human has answered this task's escalations (newest first). These answers settle those questions: act on them and do not escalate them again.\n" +
+		"- sebastian: write ok\n- sebastian: docs/a.txt\n\n" +
+		"Write the note; ask the human for its name first.\nFindings from earlier attempts:\n- ran x"
+	if got != want {
+		t.Fatalf("objective =\n%s\nwant\n%s", got, want)
+	}
+	if got := objectiveText(harness.TaskBrief{Objective: "x"}); got != "x" {
+		t.Fatalf("no answers: %q", got)
+	}
+}

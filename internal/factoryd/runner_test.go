@@ -714,13 +714,14 @@ func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 
 	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/coding-frontier",
-		StartRef: "c1", ParentSessionID: "s-prev", Findings: []string{"check \"pr / test\": failure"}}, nil, resultLine(false, "gave up"))
+		StartRef: "c1", ParentSessionID: "s-prev", Findings: []string{"check \"pr / test\": failure"},
+		Answers: []string{"sebastian: b", "sebastian: a"}}, nil, resultLine(false, "gave up"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := podEnv(kube.podAt(0))
 	if env["REPO_SHA"] != "c1" || env["MODEL"] != "factory/coding-frontier" || env["PARENT_SESSION_ID"] != "s-prev" ||
-		!strings.Contains(env["FINDINGS"], "pr / test") {
+		!strings.Contains(env["FINDINGS"], "pr / test") || env["ANSWERS"] != `["sebastian: b","sebastian: a"]` {
 		t.Fatalf("pod env = %v, want the branch head, the stronger model, the parent and the findings", env)
 	}
 	for _, s := range store.sessions {
