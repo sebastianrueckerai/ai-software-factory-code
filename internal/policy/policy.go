@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 
 	"gopkg.in/yaml.v3"
@@ -76,12 +77,21 @@ type FirecrawlPrices struct {
 // ReplicatePrices: a prediction costs its predict_time at its hardware's
 // rate. Replicate's API names no model's hardware, so Models maps each
 // usable model (owner/name) to its hardware SKU; any other model is
-// refused. A prediction is held at MaxSeconds of its hardware.
+// refused. A prediction is held at MaxSeconds of its hardware, and
+// Replicate cancels it ReplicateCancelMargin seconds before that
+// (Cancel-After), so it can never bill more than its hold.
 type ReplicatePrices struct {
 	EURPerSecond map[string]float64 `yaml:"eur_per_second" json:"eur_per_second"`
 	Models       map[string]string  `yaml:"models" json:"models"`
 	MaxSeconds   float64            `yaml:"max_seconds" json:"max_seconds"`
 }
+
+// ReplicateCancelMargin (seconds) covers a cancelled prediction's wind-down;
+// ReplicateMinSeconds leaves Replicate's Cancel-After minimum of 5 s.
+const (
+	ReplicateCancelMargin = 5
+	ReplicateMinSeconds   = 10
+)
 
 // FalPrices: fal's pricing API prices each endpoint per unit; a call
 // priced per megapixel is held at MaxMegapixels.
@@ -162,8 +172,11 @@ func (p ToolPrices) validate(tool string) error {
 		}
 	case ToolReplicate:
 		r := p.Replicate
-		if r.MaxSeconds <= 0 || len(r.Models) == 0 {
-			return errors.New("prices.replicate needs a positive max_seconds and at least one model")
+		if len(r.Models) == 0 {
+			return errors.New("prices.replicate needs at least one model")
+		}
+		if r.MaxSeconds < ReplicateMinSeconds || r.MaxSeconds != math.Trunc(r.MaxSeconds) {
+			return fmt.Errorf("prices.replicate.max_seconds must be whole seconds, at least %d", ReplicateMinSeconds)
 		}
 		for model, sku := range r.Models {
 			if rate := r.EURPerSecond[sku]; rate <= 0 {

@@ -43,9 +43,9 @@ func main() {
 		LiteLLMURL: cfg.LiteLLMURL,
 		Firecrawl: &gateway.Firecrawl{BaseURL: "https://api.firecrawl.dev", Key: cfg.FirecrawlKey,
 			HTTP: &http.Client{Timeout: 90 * time.Second}},
-		// Prefer: wait 60 s, then a cancel and a read: the client timeout and
-		// the policy's max_seconds cover both
-		Replicate: &gateway.Replicate{BaseURL: "https://api.replicate.com", Key: cfg.ReplicateKey, Wait: 60 * time.Second,
+		// Prefer: wait (at most 60 s) bounds the create call inside the client
+		// timeout; the cancel and the read after it are timed per request
+		Replicate: &gateway.Replicate{BaseURL: "https://api.replicate.com", Key: cfg.ReplicateKey,
 			HTTP: &http.Client{Timeout: 75 * time.Second}},
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: &http.Client{Timeout: 120 * time.Second}},

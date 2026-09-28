@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -75,9 +79,13 @@ func call(ctx context.Context, client *http.Client, method, target string, heade
 	return b, nil
 }
 
+// truncate cuts s to at most n bytes on a rune boundary.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "\n[truncated]"
 }
@@ -166,10 +174,20 @@ type Replicate struct {
 	BaseURL string // https://api.replicate.com
 	Key     string
 	HTTP    *http.Client
-	// Wait is how long a prediction may run (Prefer: wait, at most 60 s);
-	// one still running then is cancelled.
-	Wait time.Duration
+	// CancelBackoff is the first pause between cancel attempts (1 s when
+	// zero), doubled after each.
+	CancelBackoff time.Duration
 }
+
+// replicateMaxWait is Replicate's longest Prefer: wait.
+const replicateMaxWait = 60
+
+// cancelAttempts and cancelAttemptTimeout bound the cancel of a prediction
+// still running after the wait.
+const (
+	cancelAttempts       = 4
+	cancelAttemptTimeout = 10 * time.Second
+)
 
 var (
 	replicateModel   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$`)
@@ -219,10 +237,15 @@ func (p prediction) done() bool {
 }
 
 // Predict runs version on input and returns the prediction's text and its
-// predict_time, nil when unknown.
-func (r *Replicate) Predict(ctx context.Context, version string, input map[string]any) (string, *float64, error) {
+// predict_time, nil when unknown. Replicate cancels the prediction itself
+// ReplicateCancelMargin seconds before maxSeconds (Cancel-After, counted
+// from its creation), so its predict_time stays within maxSeconds even when
+// the gateway's own cancel fails; the gateway waits at most that long.
+func (r *Replicate) Predict(ctx context.Context, version string, input map[string]any, maxSeconds float64) (string, *float64, error) {
+	cancelAfter := int(maxSeconds) - policy.ReplicateCancelMargin
 	h := r.header()
-	h.Set("Prefer", fmt.Sprintf("wait=%d", int(r.Wait.Seconds())))
+	h.Set("Prefer", "wait="+strconv.Itoa(min(cancelAfter, replicateMaxWait)))
+	h.Set("Cancel-After", strconv.Itoa(cancelAfter)+"s")
 	b, err := call(ctx, r.HTTP, http.MethodPost, r.BaseURL+"/v1/predictions", h,
 		map[string]any{"version": version, "input": input})
 	if err != nil {
@@ -235,20 +258,43 @@ func (r *Replicate) Predict(ctx context.Context, version string, input map[strin
 	if !p.done() {
 		// still running after the wait: cancel it, then read what it used
 		ctx := context.WithoutCancel(ctx)
-		if _, err := call(ctx, r.HTTP, http.MethodPost, r.BaseURL+"/v1/predictions/"+url.PathEscape(p.ID)+"/cancel", r.header(), nil); err != nil {
-			return "", nil, fmt.Errorf("replicate: prediction %s still %s after %s, cancel failed: %w", p.ID, p.Status, r.Wait, err)
+		if err := r.cancel(ctx, p.ID); err != nil {
+			log.Printf("REPLICATE CANCEL FAILED: prediction %s still %s; Replicate cancels it at %d s: %v", p.ID, p.Status, cancelAfter, err) // #nosec G706 -- the id matched Replicate's response, the error is the provider's
+			return "", nil, fmt.Errorf("REPLICATE CANCEL FAILED: prediction %s still %s after %d attempts; Replicate cancels it at %d s: %w", p.ID, p.Status, cancelAttempts, cancelAfter, err)
 		}
 		if b, err = call(ctx, r.HTTP, http.MethodGet, r.BaseURL+"/v1/predictions/"+url.PathEscape(p.ID), r.header(), nil); err == nil {
 			err = json.Unmarshal(b, &p)
 		}
 		if err != nil || !p.done() {
-			return "", nil, fmt.Errorf("replicate: prediction %s cancelled after %s, its compute time unknown", p.ID, r.Wait)
+			return "", nil, fmt.Errorf("replicate: prediction %s cancelled, its compute time unknown", p.ID)
 		}
 	}
 	if p.Status != "succeeded" {
 		return "", p.Metrics.PredictTime, fmt.Errorf("replicate: prediction %s %s: %s", p.ID, p.Status, truncate(string(p.Error), 500))
 	}
 	return truncate(string(p.Output), maxToolText), p.Metrics.PredictTime, nil
+}
+
+// cancel cancels a prediction, retried with backoff.
+func (r *Replicate) cancel(ctx context.Context, id string) error {
+	pause := r.CancelBackoff
+	if pause <= 0 {
+		pause = time.Second
+	}
+	var err error
+	for attempt := range cancelAttempts {
+		if attempt > 0 {
+			time.Sleep(pause)
+			pause *= 2
+		}
+		actx, done := context.WithTimeout(ctx, cancelAttemptTimeout)
+		_, err = call(actx, r.HTTP, http.MethodPost, r.BaseURL+"/v1/predictions/"+url.PathEscape(id)+"/cancel", r.header(), nil)
+		done()
+		if err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // Fal runs a fal.ai endpoint synchronously (fal.run) and prices it from
@@ -323,6 +369,65 @@ const (
 	falUnitRequests   = "requests"
 	falUnitMegapixels = "megapixels"
 )
+
+// falImageSizes are fal's image_size presets
+// (https://fal.ai/models/fal-ai/flux/schnell/api, ImageSize).
+var falImageSizes = map[string][2]float64{
+	"square_hd": {1024, 1024}, "square": {512, 512},
+	"portrait_4_3": {768, 1024}, "portrait_16_9": {576, 1024},
+	"landscape_4_3": {1024, 768}, "landscape_16_9": {1024, 576},
+}
+
+// falUnboundedSizes are inputs that set an output size the gateway cannot
+// weigh before the call.
+var falUnboundedSizes = []string{"width", "height", "aspect_ratio", "resolution", "megapixels",
+	"scale", "upscale_factor", "upscaling_factor", "output_size", "size"}
+
+// falBoundImages bounds a megapixel endpoint's input: num_images x
+// ceil(megapixels of image_size) must fit maxMP. Unset, both are sent
+// explicitly (1 image at landscape_4_3), so the endpoint's own default
+// never decides; an input setting the size any other way is refused.
+func falBoundImages(input map[string]any, maxMP float64) (map[string]any, error) {
+	for _, k := range falUnboundedSizes {
+		if _, ok := input[k]; ok {
+			return nil, fmt.Errorf("input %q sets a size the factory cannot bound; use image_size (a preset or {width, height}) and num_images", k)
+		}
+	}
+	out := maps.Clone(input)
+	n := 1.0
+	if v, ok := out["num_images"]; ok {
+		f, ok := v.(float64)
+		if !ok || f < 1 || f != math.Trunc(f) {
+			return nil, errors.New("num_images must be a whole number, at least 1")
+		}
+		n = f
+	}
+	out["num_images"] = int(n)
+	if _, ok := out["image_size"]; !ok {
+		out["image_size"] = "landscape_4_3"
+	}
+	var w, h float64
+	switch v := out["image_size"].(type) {
+	case string:
+		wh, ok := falImageSizes[v]
+		if !ok {
+			return nil, fmt.Errorf("image_size %q is not a fal preset", v)
+		}
+		w, h = wh[0], wh[1]
+	case map[string]any:
+		w, _ = v["width"].(float64)
+		h, _ = v["height"].(float64)
+		if len(v) != 2 || w < 1 || h < 1 || w != math.Trunc(w) || h != math.Trunc(h) {
+			return nil, errors.New("image_size must be a preset or {width, height} in whole pixels")
+		}
+	default:
+		return nil, errors.New("image_size must be a preset or {width, height}")
+	}
+	if mp := n * math.Ceil(w*h/1e6); mp > maxMP {
+		return nil, fmt.Errorf("%d images of %gx%g are %g megapixels (rounded up per image), above the factory's %g", int(n), w, h, mp, maxMP)
+	}
+	return out, nil
+}
 
 // falWorst is a call's worst case: fal's price for the endpoint, bounded
 // before the call. fal's prices are USD, booked 1:1 as EUR like LiteLLM's.

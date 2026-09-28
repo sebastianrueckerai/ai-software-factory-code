@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -53,34 +54,50 @@ var providerResponses = map[string]string{
 	"POST /fal-ai/flux/schnell":                              `{"images":[{"url":"https://v3.fal.media/a.jpg","width":1024,"height":768},{"url":"https://v3.fal.media/b.jpg","width":1024,"height":768}],"seed":1}`,
 }
 
-// fakeProviders answers every provider API from providerResponses, or with
-// a status set per request line.
+// fakeProviders answers every provider API from providerResponses (or a
+// per-test override in bodies), or with a status set per request line, or
+// with a 500 for the first fails[key] requests.
 type fakeProviders struct {
 	*httptest.Server
-	mu     sync.Mutex
-	status map[string]int
-	calls  []string
-	auths  map[string]string
+	mu      sync.Mutex
+	status  map[string]int
+	fails   map[string]int
+	bodies  map[string]string
+	calls   []string
+	auths   map[string]string
+	sent    map[string]string
+	headers map[string]http.Header
 }
 
 func newFakeProviders(t *testing.T) *fakeProviders {
-	f := &fakeProviders{status: map[string]int{}, auths: map[string]string{}}
+	f := &fakeProviders{status: map[string]int{}, fails: map[string]int{}, bodies: map[string]string{},
+		auths: map[string]string{}, sent: map[string]string{}, headers: map[string]http.Header{}}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Method + " " + r.URL.Path
 		if q, _ := url.QueryUnescape(r.URL.RawQuery); q != "" {
 			key += "?" + q
 		}
+		b, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.calls = append(f.calls, key)
 		f.auths[key] = r.Header.Get("Authorization")
+		f.sent[key] = string(b)
+		f.headers[key] = r.Header.Clone()
 		status := f.status[key]
+		if f.fails[key] > 0 {
+			f.fails[key]--
+			status = http.StatusInternalServerError
+		}
+		body, ok := f.bodies[key]
 		f.mu.Unlock()
 		if status != 0 {
 			w.WriteHeader(status)
 			io.WriteString(w, `{"error":"stub failure"}`)
 			return
 		}
-		body, ok := providerResponses[key]
+		if !ok {
+			body, ok = providerResponses[key]
+		}
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -133,7 +150,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
-		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client()},
+		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
 		Escalator: esc,
 	})
@@ -483,5 +500,168 @@ func TestFactorydEscalateClient(t *testing.T) {
 	}
 	if auth != "Bearer shared" || body != `{"question":"q?","reason":"why","task_id":"t-1"}` {
 		t.Fatalf("auth %q body %s", auth, body)
+	}
+}
+
+// A megapixel endpoint's input is bounded before the call: num_images x
+// ceil(megapixels per image) must fit max_megapixels (4). 4 x 2048x2048 =
+// 4 x ceil(4.19) = 20 MP; 3 x square_hd = 3 x ceil(1.05) = 6 MP; a size the
+// gateway cannot bound is refused.
+func TestFalMegapixelInputBounded(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 20, MaxEUR: 0.5}))
+	for name, input := range map[string]map[string]any{
+		"20 MP":          {"prompt": "x", "num_images": 4, "image_size": map[string]any{"width": 2048, "height": 2048}},
+		"6 MP":           {"prompt": "x", "num_images": 3, "image_size": "square_hd"},
+		"aspect ratio":   {"prompt": "x", "aspect_ratio": "16:9"},
+		"width":          {"prompt": "x", "width": 1024},
+		"unknown preset": {"prompt": "x", "image_size": "huge"},
+		"fractional":     {"prompt": "x", "num_images": 1.5},
+		"zero images":    {"prompt": "x", "num_images": 0},
+		"bad size":       {"prompt": "x", "image_size": map[string]any{"width": 1024}},
+	} {
+		if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": input}); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Errorf("%s = %q, want refused_arguments", name, text)
+		}
+	}
+	if n := e.providers.called("POST /fal-ai/flux/schnell"); n != 0 || len(e.toolLedger()) != 0 {
+		t.Fatalf("endpoint called %d times, ledger %+v", n, e.toolLedger())
+	}
+	// 2 x square_hd = 4 MP fits
+	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": map[string]any{"prompt": "x", "num_images": 2, "image_size": "square_hd"}}); isErr {
+		t.Fatal("4 MP refused")
+	}
+	// unset sizes are sent explicitly: one image at landscape_4_3 (1 MP)
+	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": map[string]any{"prompt": "a cat"}}); isErr {
+		t.Fatal("defaults refused")
+	}
+	if got := e.providers.sent["POST /fal-ai/flux/schnell"]; got != `{"image_size":"landscape_4_3","num_images":1,"prompt":"a cat"}` {
+		t.Fatalf("sent %s", got)
+	}
+}
+
+// An endpoint that returns more than the bound anyway (2 x 2048x2048 = 10 MP
+// x 0.025 = 0.25) books the hold (4 MP x 0.025 = 0.10), loudly audited.
+func TestFalOverBoundResponseBooksTheHold(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.providers.bodies["GET /v1/models/pricing?endpoint_id=fal-ai/flux/dev"] = `{"prices":[{"endpoint_id":"fal-ai/flux/dev","unit_price":0.025,"unit":"megapixels","currency":"USD"}]}`
+	e.providers.bodies["POST /fal-ai/flux/dev"] = `{"images":[{"url":"https://v3.fal.media/a.jpg","width":2048,"height":2048},{"url":"https://v3.fal.media/b.jpg","width":2048,"height":2048}]}`
+	if _, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/dev", "input": map[string]any{"prompt": "x", "image_size": "square"}}); isErr {
+		t.Fatal("call failed")
+	}
+	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.1) {
+		t.Fatalf("ledger = %+v, want the hold 0.10", l)
+	}
+	a := e.lastAudit(t)
+	if a.Decision != "allowed_over_hold" || !strings.Contains(a.Reason, "0.250000") || !near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.1) {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
+// A prediction still running after the wait is cancelled, the cancel
+// retried: two 500s, then it lands; predict_time 61.5 s x 0.0001 = 0.00615.
+// Replicate itself cancels 5 s before max_seconds (Cancel-After 85 s), and
+// the wait never outlasts that.
+func TestReplicateCancelRetriedAndBounded(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.providers.bodies["POST /v1/predictions"] = `{"id":"p1","status":"processing","output":null,"error":null,"metrics":{}}`
+	e.providers.bodies["GET /v1/predictions/p1"] = `{"id":"p1","status":"canceled","output":null,"error":null,"metrics":{"predict_time":61.5}}`
+	e.providers.bodies["POST /v1/predictions/p1/cancel"] = `{"id":"p1","status":"canceled"}`
+	e.providers.fails["POST /v1/predictions/p1/cancel"] = 2
+	if text, isErr := e.call(t, policy.ToolReplicate, map[string]any{"model": "replicate/hello-world", "input": map[string]any{"text": "x"}}); !isErr || !strings.Contains(text, "p1 canceled") {
+		t.Fatalf("result = %q", text)
+	}
+	if n := e.providers.called("POST /v1/predictions/p1/cancel"); n != 3 {
+		t.Fatalf("cancel sent %d times, want 3", n)
+	}
+	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.00615) {
+		t.Fatalf("ledger = %+v, want 0.00615", l)
+	}
+	h := e.providers.headers["POST /v1/predictions"]
+	if h.Get("Prefer") != "wait=60" || h.Get("Cancel-After") != "85s" {
+		t.Fatalf("Prefer %q, Cancel-After %q", h.Get("Prefer"), h.Get("Cancel-After"))
+	}
+
+	// max_seconds 30: waited 25 s, cancelled by Replicate at 25 s, held 0.003
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Document.Prices.Replicate.MaxSeconds = 30
+	e2 := newToolEnv(t, running("coder"), pv)
+	e2.call(t, policy.ToolReplicate, map[string]any{"model": "replicate/hello-world", "input": map[string]any{"text": "x"}})
+	h = e2.providers.headers["POST /v1/predictions"]
+	if h.Get("Prefer") != "wait=25" || h.Get("Cancel-After") != "25s" || !near6(*e2.lastAudit(t).HoldEUR, 0.003) {
+		t.Fatalf("Prefer %q, Cancel-After %q, audit %+v", h.Get("Prefer"), h.Get("Cancel-After"), e2.lastAudit(t))
+	}
+}
+
+// A cancel that never lands books the hold (90 s x 0.0001 = 0.009) and says
+// so loudly, with the prediction id.
+func TestReplicateCancelFailureIsLoud(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.providers.bodies["POST /v1/predictions"] = `{"id":"p1","status":"processing","output":null,"error":null,"metrics":{}}`
+	e.providers.fails["POST /v1/predictions/p1/cancel"] = 100
+	if text, isErr := e.call(t, policy.ToolReplicate, map[string]any{"model": "replicate/hello-world", "input": map[string]any{"text": "x"}}); !isErr || !strings.Contains(text, "REPLICATE CANCEL FAILED") {
+		t.Fatalf("result = %q", text)
+	}
+	if n := e.providers.called("POST /v1/predictions/p1/cancel"); n != 4 {
+		t.Fatalf("cancel sent %d times, want 4", n)
+	}
+	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.009) {
+		t.Fatalf("ledger = %+v, want the hold 0.009", l)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_tool" || !strings.Contains(a.Reason, "REPLICATE CANCEL FAILED: prediction p1") {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
+// The version lookup runs under the hold: it counts as a request.
+func TestReplicateVersionLookupIsARequest(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Document.Classes["coder"].Tools[policy.ToolReplicate] = policy.ToolCap{MaxRequests: 1, MaxEUR: 0.5}
+	e := newToolEnv(t, running("coder"), pv)
+	args := map[string]any{"model": "replicate/hello-world", "version": strings.Repeat("a", 64), "input": map[string]any{}}
+	if text, isErr := e.call(t, policy.ToolReplicate, args); !isErr || !strings.Contains(text, "replicate_predict failed") {
+		t.Fatalf("unknown version = %q", text)
+	}
+	if l := e.toolLedger(); len(l) != 1 || l[0].eur != 0 {
+		t.Fatalf("ledger = %+v, want one 0 EUR row", l)
+	}
+	if text, isErr := e.call(t, policy.ToolReplicate, args); !isErr || !strings.Contains(text, "refused_tool_requests") {
+		t.Fatalf("second lookup = %q", text)
+	}
+	if n := e.providers.called("GET /v1/models/replicate/hello-world/versions/" + strings.Repeat("a", 64)); n != 1 {
+		t.Fatalf("version looked up %d times, want 1", n)
+	}
+}
+
+// Targets Firecrawl could only fail on, or should never fetch, are refused
+// before any hold.
+func TestWebToolsRefuseLocalTargets(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 50, MaxEUR: 0.2}))
+	for _, u := range []string{
+		"http://localhost/", "http://app.localhost/", "http://127.0.0.1/", "http://10.0.0.5/x", "http://192.168.1.1/",
+		"http://169.254.169.254/latest/meta-data", "http://[::1]/", "http://[fe80::1]/",
+		"http://factoryd.factory.svc.cluster.local:8080/", "http://metadata.google.internal/", "http://factoryd/",
+		"http://2130706433/", "http://0x7f.1/", "http://127.1/", "https://example.com/" + strings.Repeat("a", 2048),
+	} {
+		if text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": u}); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Errorf("%s = %q", u, text)
+		}
+	}
+	if text, isErr := e.call(t, policy.ToolWebSearch, map[string]any{"query": strings.Repeat("q", 1001)}); !isErr || !strings.Contains(text, "refused_arguments") {
+		t.Errorf("long query = %q", text)
+	}
+	if len(e.providers.calls) != 0 || len(e.toolLedger()) != 0 {
+		t.Fatalf("provider called: %v", e.providers.calls)
+	}
+}
+
+func TestTruncateCutsOnARuneBoundary(t *testing.T) {
+	for in, want := range map[[2]any]string{
+		{"aé", 2}:  "a\n[truncated]",
+		{"aé", 3}:  "aé",
+		{"abc", 2}: "ab\n[truncated]",
+	} {
+		if got := truncate(in[0].(string), in[1].(int)); got != want {
+			t.Errorf("truncate(%q, %d) = %q, want %q", in[0], in[1], got, want)
+		}
 	}
 }

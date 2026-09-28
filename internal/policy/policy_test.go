@@ -57,6 +57,10 @@ func TestParseRejects(t *testing.T) {
 		"scrape unpriced":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
 		"replicate sku without rate": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 90, models: {a/b: gpu-t4}, eur_per_second: {cpu: 0.0001}}}\n", `runs on "gpu-t4", which has no positive eur_per_second`},
+		"replicate max_seconds below the cancel floor": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
+			"prices: {replicate: {max_seconds: 9, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
+		"replicate fractional max_seconds": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
+			"prices: {replicate: {max_seconds: 30.5, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
 		"fal unbounded": {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
 		"two documents": {valid + "---\nversion: 1\n", "more than one YAML document"},
 		"not yaml":      {"version: [1", "policy:"},

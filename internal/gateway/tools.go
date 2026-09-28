@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -184,12 +185,20 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	// a disconnecting agent must not cut a call the provider bills; the
 	// connectors' client timeouts bound it
 	text, cost, callErr := p.run(context.WithoutCancel(ctx))
+	decision, note := "allowed", ""
+	switch {
+	case cost == nil:
+		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
+	case *cost > hold.EUR+1e-12:
+		// the arguments were bounded to the hold, so this is a provider
+		// billing past its documented units: the caps hold, the gap is loud
+		decision = "allowed_over_hold"
+		note = fmt.Sprintf("; COST OVER HOLD: the provider reported %.6f EUR, booked the hold %.6f EUR", *cost, hold.EUR)
+		log.Printf("COST OVER HOLD: task %s: tool %s reported %.6f EUR against a hold of %.6f EUR", c.task.ID, tool, *cost, hold.EUR) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
+		cost = &hold.EUR
+	}
 	// the provider billed whether or not the agent is still listening
 	spend, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost)
-	note := ""
-	if cost == nil {
-		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
-	}
 	if err != nil {
 		note += fmt.Sprintf("; hold %d not released: %v", hold.ID, err)
 		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
@@ -199,7 +208,7 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		s.auditTool(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR)
 		return toolError(tool + " failed: " + callErr.Error())
 	}
-	s.auditTool(c, tool, "allowed", strings.TrimPrefix(note, "; "), &spend, &hold.EUR)
+	s.auditTool(c, tool, decision, strings.TrimPrefix(note, "; "), &spend, &hold.EUR)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
@@ -240,13 +249,44 @@ func perCredit(eur float64, credits *int, err error) *float64 {
 	return nil
 }
 
+// maxURL and maxQuery bound web_scrape's url and web_search's query.
+const (
+	maxURL   = 2048
+	maxQuery = 1000
+)
+
+// publicTLD is a top-level label of the public DNS: letters, or an IDN.
+var publicTLD = regexp.MustCompile(`^([a-z]{2,63}|xn--[a-z0-9-]{1,59})$`)
+
+// localTLDs never resolve on the public internet.
+var localTLDs = []string{"localhost", "local", "internal", "lan", "home", "corp", "arpa", "test", "invalid", "example"}
+
+// publicURL refuses what Firecrawl can only fail on or must never be
+// pointed at: IP literals (loopback, RFC 1918, link-local, metadata and
+// their numeric spellings), single-label and cluster or private names.
+func publicURL(raw string) error {
+	if len(raw) > maxURL {
+		return fmt.Errorf("url is longer than %d bytes", maxURL)
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errors.New("url must be an absolute http(s) URL")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	labels := strings.Split(host, ".")
+	tld := labels[len(labels)-1]
+	if len(labels) < 2 || !publicTLD.MatchString(tld) || slices.Contains(localTLDs, tld) {
+		return fmt.Errorf("url host %q is not a public DNS name (IP addresses, local and cluster names are refused)", u.Hostname())
+	}
+	return nil
+}
+
 func (s *Server) scrape(c *toolCaller, in ScrapeIn) paidCall {
 	fc := c.pv.Document.Prices.Firecrawl
 	return paidCall{
 		prepare: func(context.Context) (float64, string, string) {
-			u, err := url.Parse(in.URL)
-			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return refusedArgs("url must be an absolute http(s) URL")
+			if err := publicURL(in.URL); err != nil {
+				return refusedArgs(err.Error())
 			}
 			return float64(fc.ScrapeCredits) * fc.EURPerCredit, "", ""
 		},
@@ -268,8 +308,8 @@ func (s *Server) search(c *toolCaller, in SearchIn) paidCall {
 	}
 	return paidCall{
 		prepare: func(context.Context) (float64, string, string) {
-			if strings.TrimSpace(in.Query) == "" {
-				return refusedArgs("query is empty")
+			if strings.TrimSpace(in.Query) == "" || len(in.Query) > maxQuery {
+				return refusedArgs(fmt.Sprintf("query must be 1 to %d bytes", maxQuery))
 			}
 			if limit < 1 || limit > maxSearchResults {
 				return refusedArgs(fmt.Sprintf("limit must be 1 to %d", maxSearchResults))
@@ -285,10 +325,9 @@ func (s *Server) search(c *toolCaller, in SearchIn) paidCall {
 
 func (s *Server) replicate(c *toolCaller, in ReplicateIn) paidCall {
 	rp := c.pv.Document.Prices.Replicate
-	var version string
 	var rate float64
 	return paidCall{
-		prepare: func(ctx context.Context) (float64, string, string) {
+		prepare: func(context.Context) (float64, string, string) {
 			if !replicateModel.MatchString(in.Model) || (in.Version != "" && !replicateVersion.MatchString(in.Version)) {
 				return refusedArgs("model must be owner/name and version, when given, a 64-hex version id")
 			}
@@ -302,14 +341,16 @@ func (s *Server) replicate(c *toolCaller, in ReplicateIn) paidCall {
 			if rate = rp.EURPerSecond[sku]; rate <= 0 {
 				return 0, "refused_price", fmt.Sprintf("replicate hardware %s has no rate in the policy", sku)
 			}
-			var err error
-			if version, err = s.opts.Replicate.Version(ctx, in.Model, in.Version); err != nil {
-				return refusedArgs(err.Error())
-			}
 			return rate * rp.MaxSeconds, "", ""
 		},
+		// the version lookup runs under the hold: the shared key does no
+		// work the task's request cap does not count
 		run: func(ctx context.Context) (string, *float64, error) {
-			text, seconds, err := s.opts.Replicate.Predict(ctx, version, in.Input)
+			version, err := s.opts.Replicate.Version(ctx, in.Model, in.Version)
+			if err != nil {
+				return "", &zero, err
+			}
+			text, seconds, err := s.opts.Replicate.Predict(ctx, version, in.Input, rp.MaxSeconds)
 			var cost *float64
 			switch {
 			case seconds != nil:
@@ -325,6 +366,7 @@ func (s *Server) replicate(c *toolCaller, in ReplicateIn) paidCall {
 
 func (s *Server) fal(c *toolCaller, in FalIn) paidCall {
 	var price falPrice
+	var input map[string]any
 	return paidCall{
 		prepare: func(ctx context.Context) (float64, string, string) {
 			if !falEndpoint.MatchString(in.Endpoint) || strings.Contains(in.Endpoint, "..") {
@@ -341,10 +383,16 @@ func (s *Server) fal(c *toolCaller, in FalIn) paidCall {
 			if err != nil {
 				return refusedPrice(err)
 			}
+			input = in.Input
+			if price.unit == falUnitMegapixels {
+				if input, err = falBoundImages(in.Input, c.pv.Document.Prices.Fal.MaxMegapixels); err != nil {
+					return refusedArgs(err.Error())
+				}
+			}
 			return worst, "", ""
 		},
 		run: func(ctx context.Context) (string, *float64, error) {
-			text, units, err := s.opts.Fal.Run(ctx, in.Endpoint, in.Input, price.unit)
+			text, units, err := s.opts.Fal.Run(ctx, in.Endpoint, input, price.unit)
 			var cost *float64
 			switch {
 			case err == nil && units != nil:
