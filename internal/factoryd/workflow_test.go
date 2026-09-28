@@ -450,7 +450,7 @@ func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
 	}
 }
 
-// R1: a run started by the heal pass or by a signal reconciles first.
+// A run started by the heal pass or by a signal reconciles first.
 
 // Case 1+2: a healed in-review task adopts its open PR: no new session,
 // checks on the PR head, and the earlier run's PR counts, so its merge (or

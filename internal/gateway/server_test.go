@@ -351,6 +351,7 @@ func TestChatCompletions(t *testing.T) {
 		wantStatus      int
 		wantDecision    string
 		wantReason      string // "" = don't check
+		wantOverHold    string // the last audit row's over-hold flag
 		wantErrType     string // "" = no error body expected
 		wantBody        string // "" = don't check
 		wantUpstreamReq string // "" = the client body forwarded verbatim
@@ -521,6 +522,7 @@ func TestChatCompletions(t *testing.T) {
 				headers: map[string]string{"x-litellm-response-cost": "0.25"}},
 			wantStatus:      http.StatusInternalServerError,
 			wantDecision:    "error_upstream",
+			wantOverHold:    "COST OVER HOLD: model coding-cheap cost 0.250000 EUR against a hold of 0.131204 EUR; booked in full",
 			wantSpent:       ptr(2.25),
 			wantUpstreamHit: 1,
 		},
@@ -595,8 +597,8 @@ func TestChatCompletions(t *testing.T) {
 			reqBody:         chatBody("coding-cheap"),
 			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}},
 			wantStatus:      http.StatusOK,
-			wantDecision:    "allowed_over_hold",
-			wantReason:      "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.131204 EUR; booked in full",
+			wantDecision:    "allowed",
+			wantOverHold:    "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.131204 EUR; booked in full",
 			wantSpent:       ptr(2.5),
 			wantUpstreamHit: 1,
 		},
@@ -894,6 +896,9 @@ func TestChatCompletions(t *testing.T) {
 			}
 			if tt.wantReason != "" && last.Reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", last.Reason, tt.wantReason)
+			}
+			if last.OverHold != tt.wantOverHold {
+				t.Fatalf("over hold = %q, want %q", last.OverHold, tt.wantOverHold)
 			}
 
 			if tt.wantErrType != "" {
@@ -1255,8 +1260,8 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	}
 	// both calls report more than their 0.131204 EUR holds
 	audits := store.auditRows()
-	for i, want := range []string{"allowed_over_hold", "allowed_over_hold", "refused_day_cap", "refused_day_cap"} {
-		if audits[i].Decision != want || audits[i].PolicyVersion == nil || *audits[i].PolicyVersion != 3 {
+	for i, want := range []string{"allowed", "allowed", "refused_day_cap", "refused_day_cap"} {
+		if audits[i].Decision != want || (i < 2) != (audits[i].OverHold != "") || audits[i].PolicyVersion == nil || *audits[i].PolicyVersion != 3 {
 			t.Fatalf("audit %d = %+v, want %s under policy version 3", i, audits[i], want)
 		}
 	}

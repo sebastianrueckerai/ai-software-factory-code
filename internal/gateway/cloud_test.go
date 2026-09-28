@@ -668,8 +668,8 @@ func TestAccrualOverrunIsAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed_over_hold" || a.TaskID != "42" || a.Tool != policy.ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
-		a.Reason != "COST OVER HOLD: resource 38" {
+	if a.Decision != "accrued" || a.TaskID != "42" || a.Tool != policy.ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
+		a.OverHold != "COST OVER HOLD: resource 38" {
 		t.Fatalf("audit = %+v", a)
 	}
 }

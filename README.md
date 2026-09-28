@@ -177,10 +177,13 @@ the PR merged, else failed) decide the task wherever they land: a
 running session or check wait is cancelled within about 10 s (the
 session deletes its pod and namespace and revokes its credentials
 first). The cancel reaches an activity in the answer to its next
-heartbeat: activities heartbeat every 10 s and the worker holds none
-back longer (`MaxHeartbeatThrottleInterval`); with the SDK's default
-throttle (60 s under the 2-minute heartbeat timeout) a closed issue's
-session ran on for 56 s in the Stage 7 exit test. They are
+heartbeat: activities heartbeat every 10 s (the check wait polls and
+heartbeats at that interval too) and the worker holds none back longer
+(`MaxHeartbeatThrottleInterval`); with the SDK's default throttle (60 s
+under the 2-minute heartbeat timeout) a closed issue's session ran on
+for 56 s in the Stage 7 exit test. Measured after the fix: the signal
+delivered 11:14:11, the session's activity cancelled 9.4 s later, its
+pod gone 12.7 s after the close. They are
 drained before every attempt, before a PR is opened and after the
 checks; green checks wait for them at no cost. `human_comment` (a new
 comment on the task's issue) answers an escalation. Comments and reviews
@@ -432,8 +435,10 @@ books the cost LiteLLM reports for it, else nothing. A known cost above
 the hold (a stale price table, a wrong input bound) is booked in full and
 flagged by the booking itself (`policy.OverHold`), the one flag of every
 path: model, supervisor and review, tool and resource accrual log
-`COST OVER HOLD` with both figures, and the gateway's audited calls take
-decision `allowed_over_hold` with that reason. A hold whose caller
+`COST OVER HOLD` with both figures, and every gateway audit row written
+after the booking carries it in `audit.over_hold` whatever its decision
+(`allowed`, `error_upstream`, a 402 refusal, `error_tool`, `accrued`;
+empty within the hold). A hold whose caller
 died expires after an hour and factoryd's sweep books it in full; a late
 release books only what the real cost exceeds it by. Settlement leaves a
 task alone while it has an open hold. Output limits bound reasoning:
@@ -547,9 +552,9 @@ not charged), Replicate's `metrics.predict_time` at the hardware rate,
 fal's unit price times the units (1 per request, megapixels rounded up
 per returned image). An unknown cost (a 5xx, a transport error, a
 missing field) books the hold; a 4xx books 0. A reported cost above the
-hold (a provider billing past the bounded arguments) is booked in full,
-as decision `allowed_over_hold` with `COST OVER HOLD` and both figures
-in the audit reason and the log; the caps then refuse the next call from
+hold (a provider billing past the bounded arguments) is booked in full
+and flagged `COST OVER HOLD` with both figures in the log and the audit
+row's `over_hold`; the caps then refuse the next call from
 the true headroom (ruling 117). A hold is only taken for a task that is
 `running` or `in-review` (the gates' model review): `TakeHold` refuses
 any other status with `refused_task_status` in its own transaction. Prices not in any API
@@ -668,7 +673,7 @@ come off the reservation, under the headroom lock. A booking beyond the
 resource's own share of the reservation (its reserved hours at its price,
 as far as the reservation still holds it: a resource that outlived its
 lease) is booked in full and flagged: `COST OVER HOLD` in the log and an
-`allowed_over_hold` audit row (rulings 117, 124). Once a commission's
+`accrued` audit row carrying it in `over_hold` (rulings 117, 124). Once a commission's
 rows are closed and fully booked, the rest of the reservation returns.
 factoryd's hold sweep skips resource reservations: accrual books and
 drops them. A create whose answer was lost is booked too: a release that

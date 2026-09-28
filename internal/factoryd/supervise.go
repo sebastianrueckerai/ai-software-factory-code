@@ -525,5 +525,3 @@ func toInt(v any) (int, bool) {
 	}
 	return 0, false
 }
-
-// truncate cuts s to at most n bytes on a rune boundary.

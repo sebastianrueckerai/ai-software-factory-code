@@ -570,7 +570,8 @@ func TestFalOverBoundResponseBooksTheRealCost(t *testing.T) {
 		t.Fatalf("ledger = %+v, want the real 0.25", l)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed_over_hold" || !strings.Contains(a.Reason, "0.250000") || !near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.25) {
+	if a.Decision != "allowed" || a.OverHold != "COST OVER HOLD: tool fal_run cost 0.250000 EUR against a hold of 0.100000 EUR; booked in full" ||
+		!near6(*a.HoldEUR, 0.1) || !near6(*a.SpendEUR, 0.25) {
 		t.Fatalf("audit = %+v", a)
 	}
 	if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/dev", "input": map[string]any{"prompt": "x", "image_size": "square"}}); !isErr || !strings.Contains(text, "refused_tool_eur") {
@@ -589,7 +590,7 @@ func TestFirecrawlCreditsOverHoldBookTheRealCost(t *testing.T) {
 	if l := e.toolLedger(); len(l) != 1 || !near6(l[0].eur, 0.025) {
 		t.Fatalf("ledger = %+v, want 0.025", l)
 	}
-	if a := e.lastAudit(t); a.Decision != "allowed_over_hold" || !near6(*a.HoldEUR, 0.005) || !near6(*a.SpendEUR, 0.025) {
+	if a := e.lastAudit(t); a.Decision != "allowed" || a.OverHold == "" || !near6(*a.HoldEUR, 0.005) || !near6(*a.SpendEUR, 0.025) {
 		t.Fatalf("audit = %+v", a)
 	}
 }

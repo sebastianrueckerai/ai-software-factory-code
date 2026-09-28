@@ -170,7 +170,9 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.ChecksTimeout = 45 * time.Minute
 	}
 	if cfg.ChecksPoll <= 0 {
-		cfg.ChecksPoll = 30 * time.Second
+		// each poll heartbeats: a terminal signal's cancel reaches the wait
+		// within one
+		cfg.ChecksPoll = HeartbeatEvery
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		objects: objects, timeline: &Timeline{Objects: objects}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil

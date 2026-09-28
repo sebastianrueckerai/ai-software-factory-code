@@ -9,9 +9,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The console's seams to the stage 7 data: approval requests (tasks 53 and
-// 55), the agent resource registry and envelopes (53), the cost ledger and
-// the policy versions (51).
+// The console's seams to the factory's data: approval requests, the agent
+// resource registry and envelopes, the cost ledger and the policy versions.
 
 // Approvals are the approval_requests rows (factoryd.PGStore).
 type Approvals interface {

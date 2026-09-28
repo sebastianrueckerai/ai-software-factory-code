@@ -1372,7 +1372,7 @@ func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
 	}
 }
 
-// C1: the log stream breaks while the worker still runs (here during the
+// The log stream breaks while the worker still runs (here during the
 // stop's grace period); the log is reopened and the worker's report and
 // pushed work in progress are not lost, nor recorded twice.
 func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
@@ -1582,5 +1582,19 @@ func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	// the loop sees it applied already
 	if err := r.AdmitLeases(context.Background()); err != nil || len(kube.applies) != 1 {
 		t.Fatalf("applies = %v, %v", kube.applies, err)
+	}
+}
+
+// The check wait polls, and so heartbeats, every HeartbeatEvery: a
+// terminal signal's cancel reaches it as fast as a running session.
+func TestChecksPollDefaultsToTheHeartbeatInterval(t *testing.T) {
+	cfg := testRunnerConfig()
+	cfg.ChecksPoll = 0
+	r, err := NewRunner(cfg, newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.cfg.ChecksPoll != HeartbeatEvery {
+		t.Fatalf("checks poll = %s, want %s", r.cfg.ChecksPoll, HeartbeatEvery)
 	}
 }

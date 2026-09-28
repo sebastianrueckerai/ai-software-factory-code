@@ -139,3 +139,18 @@ func TestLoadReproEnv(t *testing.T) {
 		t.Fatal("a zero timeout loaded")
 	}
 }
+
+// A fetch that fails reports git's error without the read token: the
+// failure file reaches the repro report, the PR comment and the timeline.
+func TestReproFetchFailureHidesTheToken(t *testing.T) {
+	reproEnvs(t, "https://x-access-token:s3cret-tok@127.0.0.1:1/repo.git", "0000", "true")
+	t.Setenv("REPO_TOKEN", "s3cret-tok")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	got := repro(ws)
+	if got.Exit != -1 || !strings.Contains(got.Output, "fetch refs/pull/9/head") || strings.Contains(got.Output, "s3cret-tok") || !strings.Contains(got.Output, "***") {
+		t.Fatalf("repro = %+v", got)
+	}
+}

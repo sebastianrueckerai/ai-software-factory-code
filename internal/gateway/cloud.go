@@ -136,13 +136,14 @@ func (c *Cloud) Run(ctx context.Context) {
 
 // accrue books the resources' started hours; a booking past its
 // reservation is booked in full and flagged, loud in the log and as an
-// allowed_over_hold audit row (rulings 117, 124).
+// accrued audit row carrying the flag (rulings 117, 124).
 func (c *Cloud) accrue(ctx context.Context) error {
 	acc, err := c.Store.Accrue(ctx)
 	for _, o := range acc.Overruns {
 		spend := o.EUR
-		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "allowed_over_hold",
-			Reason: o.Reason, Tool: policy.ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
+		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "accrued",
+			Reason: fmt.Sprintf("resource %d: %.6f EUR booked", o.ResourceID, o.EUR), Tool: policy.ToolCommission,
+			HoldEUR: &o.HeldEUR, SpendEUR: &spend, OverHold: o.Reason}); aerr != nil {
 			err = errors.Join(err, aerr)
 		}
 	}

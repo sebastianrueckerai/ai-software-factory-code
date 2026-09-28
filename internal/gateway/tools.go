@@ -200,15 +200,13 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		note += fmt.Sprintf("; hold %d not released: %v", hold.ID, err)
 		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
 		b.Spent = c.task.SpentEUR
-	} else if b.OverHold != "" {
-		decision, note = "allowed_over_hold", "; "+b.OverHold
 	}
 	spend := b.Spent
 	if callErr != nil {
-		s.auditTool(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR)
+		s.auditBooked(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR, b.OverHold)
 		return toolError(tool + " failed: " + callErr.Error())
 	}
-	s.auditTool(c, tool, decision, strings.TrimPrefix(note, "; "), &spend, &hold.EUR)
+	s.auditBooked(c, tool, decision, strings.TrimPrefix(note, "; "), &spend, &hold.EUR, b.OverHold)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
@@ -225,9 +223,15 @@ func (s *Server) refuseTool(c *toolCaller, tool, decision, reason string) *mcp.C
 }
 
 func (s *Server) auditTool(c *toolCaller, tool, decision, reason string, spend, hold *float64) {
+	s.auditBooked(c, tool, decision, reason, spend, hold, "")
+}
+
+// auditBooked audits a tool call after its booking, with the booking's
+// over-hold flag.
+func (s *Server) auditBooked(c *toolCaller, tool, decision, reason string, spend, hold *float64, overHold string) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
 		TaskID: c.task.ID, Decision: decision, Reason: reason, Tool: tool, SpendEUR: spend,
-		PolicyVersion: &c.pv.ID, HoldEUR: hold,
+		PolicyVersion: &c.pv.ID, HoldEUR: hold, OverHold: overHold,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, tool %s, decision %s): %v", c.task.ID, tool, decision, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool and decision are constants
 	}

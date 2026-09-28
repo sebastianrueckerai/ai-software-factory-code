@@ -506,11 +506,12 @@ func (s *Server) block(taskID string, k *liveKey) {
 
 // modelCall is one admitted call: its hold is released exactly once.
 type modelCall struct {
-	pid   *int64
-	task  Task
-	hold  policy.Hold
-	alias string
-	key   *liveKey
+	pid      *int64
+	task     Task
+	hold     policy.Hold
+	alias    string
+	key      *liveKey
+	overHold string // the booking's flag, on every audit row after it
 }
 
 var zero = 0.0
@@ -535,11 +536,9 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 		log.Printf("task %s: %s", c.task.ID, reason)
 		b.Spent = c.task.SpentEUR
 	}
+	c.overHold = b.OverHold
 	if decision == "" {
 		return
-	}
-	if b.OverHold != "" {
-		decision, reason = decision+"_over_hold", b.OverHold
 	}
 	s.auditCall(c, decision, reason, &b.Spent)
 }
@@ -581,7 +580,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 			}
 			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
 			// the key's max_budget was the task's or the day's headroom
-			s.refuseSpend(w, c.pid, c.task, c.key.bound, c.alias, "litellm budget_exceeded: "+liteErr.Error.Message)
+			reason := "litellm budget_exceeded: " + liteErr.Error.Message
+			s.auditCall(c, c.key.bound, reason, &c.task.SpentEUR)
+			writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
 			return
 		}
 		s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
@@ -716,7 +717,7 @@ func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, decision, rea
 func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
 		TaskID: c.task.ID, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
-		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR,
+		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, decision %s): %v", c.task.ID, decision, err)
 	}

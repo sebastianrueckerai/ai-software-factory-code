@@ -93,7 +93,7 @@ func runRepro(log func(string, ...any)) int {
 
 // fetchHead fetches e.ref into dir and checks out e.sha there, or fails.
 func fetchHead(e fetchEnv, dir string) error {
-	var w workerEnv
+	w := workerEnv{repoToken: e.repoToken} // git's failures are scrubbed of it
 	if _, err := w.git("", "init", "-q", dir); err != nil {
 		return fmt.Errorf("init: %w", err)
 	}

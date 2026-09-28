@@ -40,6 +40,9 @@ type AuditRow struct {
 	// and the worst case held for it.
 	OutputLimit *int
 	HoldEUR     *float64
+	// OverHold is the booking's COST OVER HOLD flag (policy.OverHold), ""
+	// within the hold or without a booking.
+	OverHold string
 }
 
 // Store is the task and audit state every gateway decision reads and writes.
@@ -96,9 +99,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold)
 	return err
 }
 

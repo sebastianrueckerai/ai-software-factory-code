@@ -81,8 +81,6 @@ func call(ctx context.Context, client *http.Client, method, target string, heade
 	return b, nil
 }
 
-// truncate cuts s to at most n bytes on a rune boundary.
-
 // Firecrawl scrapes and searches the web (api.firecrawl.dev/v2). A call
 // costs the creditsUsed its response reports.
 type Firecrawl struct {

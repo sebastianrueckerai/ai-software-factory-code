@@ -86,7 +86,7 @@ func TestPGStore(t *testing.T) {
 	spend := 2.75
 	if err := s.InsertAudit(ctx, AuditRow{
 		TaskID: "t1", Decision: "allowed", Reason: "", ModelAlias: "coding-cheap", SpendEUR: &spend, PolicyVersion: &v.ID,
-		OutputLimit: &h.MaxOut, HoldEUR: &h.EUR,
+		OutputLimit: &h.MaxOut, HoldEUR: &h.EUR, OverHold: "COST OVER HOLD: x",
 	}); err != nil {
 		t.Fatalf("InsertAudit: %v", err)
 	}
@@ -102,6 +102,11 @@ func TestPGStore(t *testing.T) {
 	}
 	if n != 2 {
 		t.Fatalf("audit rows = %d, want 2", n)
+	}
+	var flags string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(decision || '=' || over_hold, ';' ORDER BY id) FROM audit WHERE task_id = 't1'`).Scan(&flags); err != nil ||
+		flags != "allowed=COST OVER HOLD: x;refused_budget=" {
+		t.Fatalf("over_hold = (%q, %v)", flags, err)
 	}
 	var nullSpend any
 	if err := s.db.QueryRowContext(ctx,
