@@ -595,7 +595,7 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
 	}
 	second := h.sessions[1]
-	if !slices.Equal(second.Findings, []string{"ran x"}) || !slices.Equal(second.Answers, []string{"sebastian: you may edit the script"}) || second.ParentSessionID != "s1" {
+	if !slices.Equal(second.Findings, []string{"ran x"}) || !slices.Equal(second.Answers, []string{`sebastian, to "the check cannot pass": you may edit the script`}) || second.ParentSessionID != "s1" {
 		t.Fatalf("second attempt = %+v", second)
 	}
 	if !slices.Contains(h.states, "running") {
@@ -702,13 +702,14 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "restarted") {
 		t.Fatalf("escalations = %q", h.escalated)
 	}
-	if len(h.sessions) != 1 || h.sessions[0].Findings != nil || !slices.Equal(h.sessions[0].Answers, []string{"sebastian: go on"}) {
+	if len(h.sessions) != 1 || h.sessions[0].Findings != nil || !slices.Equal(h.sessions[0].Answers, []string{`sebastian, to "factoryd restarted while the task waited for a human; the question above still stands.": go on`}) {
 		t.Fatalf("sessions = %+v", h.sessions)
 	}
 }
 
 // Ruling 118: every human answer of the task travels with every later
-// session as its own list, newest first, not as a finding: after two
+// session as its own list, newest first, not as a finding, each with the
+// question it answers (the escalation's first line): after two
 // escalations the third session carries both answers.
 func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
@@ -724,10 +725,10 @@ func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
 		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
 	}
-	if s := h.sessions[1]; !slices.Equal(s.Answers, []string{"sebastian: docs/a.txt"}) || !slices.Equal(s.Findings, []string{"ran x"}) {
+	if s := h.sessions[1]; !slices.Equal(s.Answers, []string{`sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran x"}) {
 		t.Fatalf("second session = %+v", s)
 	}
-	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{"sebastian: write ok", "sebastian: docs/a.txt"}) || !slices.Equal(s.Findings, []string{"ran y"}) {
+	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{`sebastian, to "which text?": write ok`, `sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran y"}) {
 		t.Fatalf("third session = %+v", s)
 	}
 }
@@ -751,5 +752,11 @@ func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	}
 	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran y", "human sebastian answered the escalation: write ok"}) {
 		t.Fatalf("third session = %+v", s)
+	}
+}
+
+func TestTruncateKeepsWholeRunes(t *testing.T) {
+	if got := truncate("aé", 2); got != "a…" {
+		t.Fatalf("truncate = %q, want a…", got)
 	}
 }

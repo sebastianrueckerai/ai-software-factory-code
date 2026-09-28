@@ -321,6 +321,7 @@ issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the
 task (change id `answers`, ruling 118), and every later session gets all
 of them, newest first, as `SessionInput.Answers` (worker env `ANSWERS`),
+each as `<author>, to "<the escalation's first line>": <answer>`,
 which the opencode prompt puts ahead of the objective as settled
 answers the agent must not escalate again; the `session_start` timeline
 step records them. The

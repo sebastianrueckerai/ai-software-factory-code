@@ -754,7 +754,9 @@ func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string)
 			}
 			answered = true
 			if t.v7 >= versionAnswers {
-				t.answers = append([]string{sig.Author + ": " + sig.Body}, t.answers...)
+				// the escalation's first line is the question it answers
+				question, _, _ := strings.Cut(strings.TrimPrefix(reason, agentAsks), "\n")
+				t.answers = append([]string{fmt.Sprintf("%s, to %q: %s", sig.Author, truncate(question, 300), sig.Body)}, t.answers...)
 			} else {
 				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
 			}

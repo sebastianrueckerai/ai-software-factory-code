@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -141,6 +142,9 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	return nil
 }
 
+// agentAsks opens an agent escalation's reason, before its question.
+const agentAsks = "The agent asks: "
+
 // AgentEscalation trips on the agent's own escalate_to_human: an
 // escalation with its question, the supervisor model not asked.
 func (s *Supervisor) AgentEscalation(question, reason string) *Trip {
@@ -148,7 +152,7 @@ func (s *Supervisor) AgentEscalation(question, reason string) *Trip {
 		return s.tripped
 	}
 	return s.trip(&Trip{Kind: TripAgentEscalation, Detail: "the agent called escalate_to_human",
-		decided: &Decision{Action: ActionEscalate, Reason: "The agent asks: " + question + "\nWhy: " + reason}})
+		decided: &Decision{Action: ActionEscalate, Reason: agentAsks + question + "\nWhy: " + reason}})
 }
 
 // SetSpend tells the supervisor the task's spend so far.
@@ -522,9 +526,13 @@ func toInt(v any) (int, bool) {
 	return 0, false
 }
 
+// truncate cuts s to at most n bytes on a rune boundary.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
 	}
 	return s[:n] + "…"
 }
