@@ -1463,3 +1463,18 @@ func TestTimelineCommissioningEndsAtLive(t *testing.T) {
 		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }
+
+// A running session's open row names its attempt from session_start.
+func TestTimelineOpenSessionShowsItsAttempt(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	since := time.Now().Add(-3 * time.Minute)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work",
+		Gate: factoryd.GateSession, GateSince: &since})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_start","time":"` + since.UTC().Format(time.RFC3339) + `","attempt":3}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	if !strings.Contains(body, "<td>session</td><td>3</td>") {
+		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
+	}
+}

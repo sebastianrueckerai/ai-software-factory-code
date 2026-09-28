@@ -229,7 +229,7 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 	open := t.Gate != "" && t.GateSince != nil && t.Status != "done" && t.Status != "failed"
 	for _, m := range steps {
 		step, _ := m["step"].(string)
-		if step == "session_end" {
+		if step == "session_start" || step == "session_end" {
 			attempt = ""
 			if a, ok := m["attempt"].(float64); ok {
 				attempt = strconv.Itoa(int(a))
