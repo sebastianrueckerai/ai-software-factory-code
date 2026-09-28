@@ -25,6 +25,17 @@ classes:
   coder:
     models: [coding-cheap, coding-frontier]
     tools: {}
+risk:
+  classes:
+    - {name: forbidden, outcome: forbidden}
+    - {name: migration, outcome: requires_approval, migration: true}
+    - {name: high, outcome: requires_approval}
+    - {name: normal, outcome: requires_approval}
+  rules:
+    - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
+    - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
+    - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
+  default: normal
 `
 
 // memPolicy is the in-memory PolicyStore: versions keyed by sha, in order.
@@ -203,6 +214,30 @@ func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
 	restarted := &PolicyLoader{Path: path, Store: store, LadderModels: ladder.Aliases()}
 	if err := restarted.Boot(ctx); err == nil {
 		t.Fatal("boot with only a stored narrow version and a narrow file succeeded")
+	}
+}
+
+// A stored version from before the risk section is no valid version: the
+// file's version replaces it at boot, and without a valid file the boot
+// is refused.
+func TestPolicyLoaderBootRevalidatesTheStoredVersion(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	store := &memPolicy{}
+	old, _ := policy.Parse([]byte(testPolicyYAML))
+	old.Risk = policy.Risk{}
+	store.RecordPolicy(ctx, "before-risk", old) // #nosec G104 -- the fake never fails
+	writePolicy(t, path, "version: 2\n")
+	if err := (&PolicyLoader{Path: path, Store: store}).Boot(ctx); err == nil {
+		t.Fatal("boot with only a stored version without risk rules succeeded")
+	}
+	writePolicy(t, path, testPolicyYAML)
+	l := &PolicyLoader{Path: path, Store: store}
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if cur := l.Current(); cur.ID != 2 || cur.Document.Risk.Default != "normal" {
+		t.Fatalf("current = %d with risk %+v, want version 2 with the file's risk rules", cur.ID, cur.Document.Risk)
 	}
 }
 

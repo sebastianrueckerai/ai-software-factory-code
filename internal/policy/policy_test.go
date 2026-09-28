@@ -23,6 +23,17 @@ classes:
   coder:
     models: [coding-cheap, coding-frontier]
     tools: {}
+risk:
+  classes:
+    - {name: forbidden, outcome: forbidden}
+    - {name: migration, outcome: requires_approval, migration: true}
+    - {name: high, outcome: requires_approval}
+    - {name: normal, outcome: requires_approval}
+  rules:
+    - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
+    - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
+    - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
+  default: normal
 `
 
 func TestParseValid(t *testing.T) {
@@ -41,7 +52,7 @@ func TestParseValid(t *testing.T) {
 func TestParseRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ doc, want string }{
 		"empty":           {"", "empty document"},
-		"unknown top key": {valid + "risk: {}\n", "field risk not found"},
+		"unknown top key": {valid + "surprise: {}\n", "field surprise not found"},
 		"unknown budget key": {strings.Replace(valid, "day_eur: 20", "day_eur: 20\n  month_eur: 1", 1),
 			"field month_eur not found"},
 		"version":           {strings.Replace(valid, "version: 1", "version: 2", 1), "version 2"},
@@ -93,6 +104,17 @@ prices:
     max_seconds: 90
     models: {replicate/hello-world: cpu}
     eur_per_second: {cpu: 0.0001}
+risk:
+  classes:
+    - {name: forbidden, outcome: forbidden}
+    - {name: migration, outcome: requires_approval, migration: true}
+    - {name: high, outcome: requires_approval}
+    - {name: normal, outcome: requires_approval}
+  rules:
+    - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
+    - {class: migration, paths: ["internal/*/migrations/**", "internal/policy/schema.sql"]}
+    - {class: high, paths: ["k8s/**", "Dockerfile*", "go.mod", "go.sum"]}
+  default: normal
 `
 
 func TestToolCap(t *testing.T) {

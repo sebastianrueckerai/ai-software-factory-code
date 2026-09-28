@@ -45,14 +45,20 @@ type PolicyLoader struct {
 }
 
 // Boot makes the stored current version current, then loads the file. It
-// fails only when no valid version exists at all.
+// fails only when no valid version exists at all. The stored version is
+// validated again: one written under an older schema (no risk rules) is
+// not a valid version for this binary.
 func (l *PolicyLoader) Boot(ctx context.Context) error {
 	v, ok, err := l.Store.CurrentPolicy(ctx)
 	if err != nil {
 		return fmt.Errorf("read current policy: %w", err)
 	}
 	if ok {
-		if err := l.fitsLadder(v.Document); err != nil {
+		err := v.Document.Validate()
+		if err == nil {
+			err = l.fitsLadder(v.Document)
+		}
+		if err != nil {
 			log.Printf("POLICY REJECTED: stored version %d: %v", v.ID, err)
 			ok = false
 		} else {

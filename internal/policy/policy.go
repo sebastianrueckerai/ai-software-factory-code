@@ -21,6 +21,7 @@ type Document struct {
 	Budget  Budget           `yaml:"budget" json:"budget"`
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	Prices  ToolPrices       `yaml:"prices" json:"prices"`
+	Risk    Risk             `yaml:"risk" json:"risk"`
 }
 
 // Budget caps spend in EUR: per task (default and maximum at intake) and
@@ -134,6 +135,9 @@ func (d Document) Validate() error {
 	}
 	if len(d.Classes) == 0 {
 		return errors.New("policy: no capability classes")
+	}
+	if err := d.Risk.validate(); err != nil {
+		return err
 	}
 	for name, c := range d.Classes {
 		if name == "" {
