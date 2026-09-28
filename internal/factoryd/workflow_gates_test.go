@@ -500,3 +500,27 @@ func TestWorkflowMergeRetriesBeforeTheCap(t *testing.T) {
 		t.Fatalf("final = %q, merges %d, exhausted %d", final, len(g.merges), g.exhausted)
 	}
 }
+
+// An approval's start is used once: a second approval while the failed
+// merge's retry is pending ends no new approval wait, so it carries none.
+func TestWorkflowApprovalDuringAMergeRetryCarriesNoStart(t *testing.T) {
+	g := newGateHarness(t)
+	g.merge = []MergeResult{{Failed: "forgejo 502"}, {Merged: true}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(time.Hour+5*time.Minute, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	var started []string
+	for _, r := range g.recorded {
+		if r.step == "signal" && r.detail["signal"] == SignalApproved {
+			s, _ := r.detail["started"].(string)
+			started = append(started, s)
+		}
+	}
+	if want := []string{g.requested[0].UTC().Format(time.RFC3339Nano), ""}; !slices.Equal(started, want) {
+		t.Fatalf("approvals started %q, want %q", started, want)
+	}
+}

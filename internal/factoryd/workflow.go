@@ -933,6 +933,7 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 	}
 	if name == SignalApproved && counts && !t.approvalRequested.IsZero() {
 		detail["started"] = rfc3339(t.approvalRequested)
+		t.approvalRequested = time.Time{} // one approval ends one wait
 	}
 	if name == SignalHumanComment {
 		counts = t.escalation != 0 && sig.Comment > t.escalation
