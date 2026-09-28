@@ -185,6 +185,9 @@ type RunState struct {
 	InfoRequest     int64
 	InfoRequestedAt time.Time
 	PosterInfo      []string
+	// InfoAnswered: an answer to the last information request is among
+	// PosterInfo already; the healed run resumes without waiting.
+	InfoAnswered bool
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -436,11 +439,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.waitPoster(st.InfoRequestedAt)
-			if final != "" {
-				return t.finish(final, why)
+			// an answer signalled before this run is in st.PosterInfo, and
+			// its buffered signal is not counted twice: the run goes on
+			if !st.InfoAnswered {
+				final, why, answer := t.waitPoster(st.InfoRequestedAt)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings = answer
 			}
-			findings = answer
 			t.grant(&u)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no

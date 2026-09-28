@@ -310,7 +310,7 @@ func TestRequestInfo(t *testing.T) {
 				t.Fatalf("status %s, labels %v", got, fj.labels)
 			}
 			want := "factoryd: task t1 could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n" +
-				"Which browser?\nTried: the steps\nNeeds: the version\n\n" +
+				"```\nWhich browser?\nTried: the steps\nNeeds: the version\n```\n\n" +
 				"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\n" + tc.mentions
 			if len(fj.comments) != 1 || fj.comments[0] != want {
 				t.Fatalf("comment =\n%q\nwant\n%q", fj.comments, want)
@@ -363,9 +363,12 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
 		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
 	}
-	req, when, info := posterInfoFrom(events)
-	if req != 200 || !when.Equal(at) || !slices.Equal(info, []string{"visitor: Firefox", "sebastian: on Linux"}) {
-		t.Fatalf("request %d at %s, info %q", req, when, info)
+	req, when, info, answered := posterInfoFrom(events)
+	if req != 200 || !when.Equal(at) || !slices.Equal(info, []string{"visitor: Firefox", "sebastian: on Linux"}) || !answered {
+		t.Fatalf("request %d at %s, info %q, answered %v", req, when, info, answered)
+	}
+	if _, _, _, answered := posterInfoFrom(append(events, IntakeEvent{Kind: IntakeInfoRequest, CommentID: 300})); answered {
+		t.Fatal("a newer request is not answered by the older answers")
 	}
 }
 
@@ -547,5 +550,24 @@ func TestStandingOfAnAuthorlessTask(t *testing.T) {
 		if got := tc.task.Standing(); got != tc.want {
 			t.Errorf("%+v: standing %q, want %q", tc.task, got, tc.want)
 		}
+	}
+}
+
+// A healed run whose answer was recorded before it started resumes at
+// once with that answer, and its buffered signal does not count twice
+// (review M7).
+func TestWorkflowHealedWaitingPosterWithAnAnswerResumes(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-poster", InfoRequest: 651, InfoRequestedAt: h.env.Now().Add(-time.Hour),
+		PosterInfo: []string{"visitor: Firefox 131"}, InfoAnswered: true}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(0, SignalPosterComment, TaskSignal{Author: "visitor", Body: "Firefox 131", Comment: 700})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].PosterInfo, []string{"visitor: Firefox 131"}) || len(h.infoAsked) != 0 {
+		t.Fatalf("sessions = %+v, info requests %q: want one session with the answer once", h.sessions, h.infoAsked)
 	}
 }

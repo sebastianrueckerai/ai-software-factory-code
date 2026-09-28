@@ -301,4 +301,14 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 	if got := store.tasks["t1"].AgentSummary; got != last {
 		t.Fatalf("agent summary = %q, want %q", got, last)
 	}
+	// a pushed session without a last message keeps it (review M5)
+	task.AgentSummary = last
+	runner, _, store = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	logs = pushedLine("c0ffee2") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee2")
+	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/coding-cheap"}, nil, logs); err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("RunSession = %+v, %v", res, err)
+	}
+	if got := store.tasks["t1"].AgentSummary; got != last {
+		t.Fatalf("agent summary after a silent session = %q, want %q", got, last)
+	}
 }

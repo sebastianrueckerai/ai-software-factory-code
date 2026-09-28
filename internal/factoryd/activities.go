@@ -301,8 +301,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
 		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": r.branch(t), "commit": res.Commit})
-		if err := r.store.SetAgentSummary(ctx, t.ID, textutil.Truncate(out.agentText, maxAgentSummary)); err != nil {
-			return SessionResult{}, err
+		// a session that ended without its last word keeps the one before
+		if out.agentText != "" {
+			if err := r.store.SetAgentSummary(ctx, t.ID, textutil.Truncate(out.agentText, maxAgentSummary)); err != nil {
+				return SessionResult{}, err
+			}
 		}
 	}
 	return res, nil
@@ -381,8 +384,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
+	// the reason in a code block: a mention the agent wrote rings no bell
 	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+
-		" needs a human.\n\n"+reason+"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task.")
+		" needs a human.\n\n"+fenced(reason)+"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task.")
 	if err != nil {
 		return 0, err
 	}
@@ -442,7 +446,8 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 }
 
 // infoRequestComment is the information request on the issue: its author
-// named, the request, and every notified user mentioned once.
+// named, the request in a code block (a mention the agent wrote rings no
+// bell), and every notified user mentioned once.
 func infoRequestComment(t Task, reason string, notify []string) string {
 	var mentions []string
 	for _, u := range append([]string{t.Author}, notify...) {
@@ -452,7 +457,7 @@ func infoRequestComment(t Task, reason string, notify []string) string {
 	}
 	return fmt.Sprintf("factoryd: task %s could not reproduce this issue and found no fault. It needs more information from the issue's author.\n\n%s\n\n"+
 		"Reply on this issue with what is asked; the task resumes with your comment. Without an answer in 14 days the issue closes as not reproducible.\n\ncc %s",
-		t.ID, strings.TrimPrefix(reason, agentAsksAuthor), strings.Join(mentions, " "))
+		t.ID, fenced(strings.TrimPrefix(reason, agentAsksAuthor)), strings.Join(mentions, " "))
 }
 
 // CloseNotReproduced closes the task's issue, unanswered for 14 days, as
@@ -623,7 +628,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st.Answers, st.Question = answersFrom(events)
-	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo = posterInfoFrom(events)
+	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
@@ -656,19 +661,20 @@ func answersFrom(events []IntakeEvent) (answers []string, question string) {
 // from its intake events (oldest first): every comment of the issue's
 // author, or a trusted one, newer than an information request's comment
 // and before the next escalation; and the last request's comment and time.
-func posterInfoFrom(events []IntakeEvent) (request int64, at time.Time, info []string) {
+func posterInfoFrom(events []IntakeEvent) (request int64, at time.Time, info []string, answered bool) {
 	var since int64
 	for _, e := range events {
 		switch {
 		case e.Kind == IntakeInfoRequest:
-			since, request, at = e.CommentID, e.CommentID, e.CreatedAt
+			since, request, at, answered = e.CommentID, e.CommentID, e.CreatedAt, false
 		case e.Kind == IntakeEscalation:
 			since = 0
 		case since != 0 && e.CommentID > since && (e.Kind == IntakePosterComment || e.Kind == "issue_comment" && e.Trusted):
 			info = append(info, posterText(e.Author, e.Body))
+			answered = since == request
 		}
 	}
-	return request, at, info
+	return request, at, info, answered
 }
 
 // FirstLine is an objective's first line: the issue and pull request title.
