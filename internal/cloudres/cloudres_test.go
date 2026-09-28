@@ -674,10 +674,10 @@ func TestPGStateMachine(t *testing.T) {
 
 func ptr(v int64) *int64 { return &v }
 
-func TestCollectKeepsPromotedPastLeaseAndOwner(t *testing.T) {
+func TestCollectKeepsStandingPastLeaseAndOwner(t *testing.T) {
 	h := newHarness()
 	r, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindServer, OwnerRef: "5",
-		LeaseExpires: t0.Add(time.Minute), Promoted: true})
+		LeaseExpires: t0.Add(time.Minute), Lifetime: LifetimeStanding})
 	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: r.Labels}
 	h.reg.SetLive(context.Background(), r.ID, "100")
 	h.done["5"] = true
@@ -686,7 +686,22 @@ func TestCollectKeepsPromotedPastLeaseAndOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(h.prov.deleted) != 0 || h.state(t, r.ID) != StateLive {
-		t.Fatalf("promoted resource collected: deleted %v, state %s", h.prov.deleted, h.state(t, r.ID))
+		t.Fatalf("standing resource collected: deleted %v, state %s", h.prov.deleted, h.state(t, r.ID))
+	}
+}
+
+func TestCollectDeletesReleasedStanding(t *testing.T) {
+	h := newHarness()
+	r, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindServer, OwnerRef: "5",
+		LeaseExpires: t0.Add(time.Minute), Lifetime: LifetimeStanding, ReleasedBy: "sebastian"})
+	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: r.Labels}
+	h.reg.SetLive(context.Background(), r.ID, "100")
+	h.clk.t = t0.Add(time.Hour)
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.prov.deleted) != 1 || h.state(t, r.ID) != StateDeleted {
+		t.Fatalf("released standing resource kept: deleted %v, state %s", h.prov.deleted, h.state(t, r.ID))
 	}
 }
 

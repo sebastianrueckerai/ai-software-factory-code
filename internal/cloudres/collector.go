@@ -30,7 +30,7 @@ type Provider interface {
 }
 
 // Collector deletes the project's resources whose lease expired or whose
-// owner finished (promoted ones excepted), deletes every server, firewall
+// owner finished (standing ones excepted until released), deletes every server, firewall
 // and volume in the provider project the registry does not know as open
 // and every primary IP no server holds, and closes rows whose resource is
 // gone. It owns the whole provider project: nothing else may live there.
@@ -339,7 +339,7 @@ func (c *Collector) collectRow(ctx context.Context, rows []Resource, handled map
 	switch {
 	case row.State == StateDeleting:
 		reason = "deletion pending"
-	case row.Promoted:
+	case row.Standing():
 	case !row.LeaseExpires.After(now.Add(c.interval() + LeaseMargin)):
 		reason = "lease ends before the next pass"
 	default:

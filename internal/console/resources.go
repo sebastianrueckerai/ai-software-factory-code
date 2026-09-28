@@ -31,7 +31,7 @@ type resourceRow struct {
 	// PromoteNote is what promotion would cost a month against the
 	// project's envelope (on the Actions row).
 	PromoteNote string
-	// Promotable: not promoted, not released, lease still running.
+	// Promotable: leased, not released, lease still running.
 	Promotable bool
 }
 
@@ -75,7 +75,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		if err != nil || !ok {
 			log.Printf("console: current policy: loaded %v, %v", ok, err)
 		}
-		v.Envelope = cloudres.EnvelopeRecord{Project: v.Project, Envelope: p.Document.EnvelopeDefault}
+		v.Envelope = cloudres.EnvelopeRecord{Project: v.Project, Envelope: p.Document.DefaultEnvelope()}
 	}
 	actions := map[int64]int{} // commission (hold) -> index of its row with the buttons
 	monthly := map[int64]float64{}
@@ -85,7 +85,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		}
 		v := view(res.Repo)
 		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State),
-			Promotable: !res.Promoted && res.ReleasedBy == "" && time.Now().Before(res.LeaseExpires)}
+			Promotable: res.Lifetime != cloudres.LifetimeStanding && res.ReleasedBy == "" && time.Now().Before(res.LeaseExpires)}
 		v.Rows = append(v.Rows, row)
 		i := len(v.Rows) - 1
 		if !row.Open || res.HoldID == 0 {
@@ -100,8 +100,8 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		for i := range v.Rows {
 			if j, ok := actions[v.Rows[i].HoldID]; ok && j == i && v.Rows[i].Open {
 				v.Rows[i].Actions = true
-				v.Rows[i].PromoteNote = fmt.Sprintf("promoted, about %.4f EUR a month against the envelope's %.4f EUR (%.4f used or reserved this month)",
-					monthly[v.Rows[i].HoldID], v.Envelope.MonthlyEUR, v.Envelope.Use.MonthEUR)
+				v.Rows[i].PromoteNote = fmt.Sprintf("standing, about %.4f EUR a month against the standing block's %.2f EUR (%.4f standing now)",
+					monthly[v.Rows[i].HoldID], v.Envelope.Standing.MonthlyEUR, v.Envelope.StandingUse.MonthlyEUR)
 			}
 		}
 		projects = append(projects, v)
@@ -121,8 +121,8 @@ func (c *Console) resourceID(w http.ResponseWriter, r *http.Request) (int64, boo
 	return id, true
 }
 
-// promote makes the commission project-owned: no lease, no end with its
-// task (the collector keeps it).
+// promote makes the commission standing: project-owned, no lease, no end
+// with its task (the collector keeps it until released).
 func (c *Console) promote(w http.ResponseWriter, r *http.Request) {
 	c.resourceChange(w, r, "promote", c.cfg.Resources.Promote)
 }
@@ -144,6 +144,9 @@ func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what st
 		switch {
 		case errors.Is(err, cloudres.ErrLeaseEnded):
 			http.Error(w, "cannot "+what+": its lease has ended or it was released; the collector deletes it", http.StatusConflict)
+		case errors.Is(err, cloudres.ErrBeyondStanding):
+			_, why, _ := strings.Cut(err.Error(), cloudres.ErrBeyondStanding.Error()+": ")
+			http.Error(w, "cannot "+what+": "+why+"; raise the standing block of the envelope first", http.StatusConflict)
 		case errors.Is(err, cloudres.ErrNotOpen):
 			http.Error(w, "cannot "+what+": the resource is no longer open", http.StatusConflict)
 		default:
@@ -200,19 +203,17 @@ func parseEnvelope(r *http.Request) (policy.Envelope, string) {
 		return env, "monthly EUR must be a number from 0 to 100000"
 	}
 	env.MonthlyEUR = math.Round(monthly*100) / 100
-	for _, t := range strings.FieldsFunc(r.PostFormValue("server_types"), func(r rune) bool { return r == ',' || r == ' ' }) {
-		if !serverType.MatchString(t) {
-			return env, "server type " + strconv.Quote(t) + " is not a type name like cx23"
-		}
-		if !slices.Contains(env.ServerTypes, t) {
-			env.ServerTypes = append(env.ServerTypes, t)
-		}
+	var problem string
+	if env.ServerTypes, problem = parseTypes(r.PostFormValue("server_types")); problem != "" {
+		return env, problem
 	}
-	if len(env.ServerTypes) > 20 {
-		return env, "at most 20 server types"
+	standing, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("standing_monthly_eur")), 64)
+	if err != nil || math.IsNaN(standing) || standing < 0 || standing > 100000 {
+		return env, "standing monthly EUR must be a number from 0 to 100000"
 	}
-	if env.ServerTypes == nil {
-		env.ServerTypes = []string{}
+	env.Standing.MonthlyEUR = math.Round(standing*100) / 100
+	if env.Standing.ServerTypes, problem = parseTypes(r.PostFormValue("standing_server_types")); problem != "" {
+		return env, "standing: " + problem
 	}
 	for _, f := range []struct {
 		name, label string
@@ -222,6 +223,7 @@ func parseEnvelope(r *http.Request) (policy.Envelope, string) {
 		{"max_count", "max servers", 1000, &env.MaxCount},
 		{"max_lease_hours", "max lease hours", 8760, &env.MaxLeaseHours},
 		{"volume_max_gb", "max volume GB", 10240, &env.VolumeMaxGB},
+		{"standing_max_count", "max standing servers", 1000, &env.Standing.MaxCount},
 	} {
 		n, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue(f.name)))
 		if err != nil || n < 0 || n > f.max {
@@ -233,4 +235,21 @@ func parseEnvelope(r *http.Request) (policy.Envelope, string) {
 		return env, "max volume GB must be 0 (no volumes) or at least " + strconv.Itoa(policy.MinVolumeGB)
 	}
 	return env, ""
+}
+
+// parseTypes reads a comma or space separated server type list, each once.
+func parseTypes(field string) ([]string, string) {
+	types := []string{}
+	for _, t := range strings.FieldsFunc(field, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if !serverType.MatchString(t) {
+			return nil, "server type " + strconv.Quote(t) + " is not a type name like cx23"
+		}
+		if !slices.Contains(types, t) {
+			types = append(types, t)
+		}
+	}
+	if len(types) > 20 {
+		return nil, "at most 20 server types"
+	}
+	return types, ""
 }

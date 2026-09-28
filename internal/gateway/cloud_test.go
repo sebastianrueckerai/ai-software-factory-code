@@ -514,6 +514,9 @@ func TestCommissionRefusals(t *testing.T) {
 		"volume":  {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "volume_gb": 5},
 		"key":     {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "ssh_public_key": "ssh-ed25519 AAAA\nrm -rf /"},
 		"price":   {"server_type": "cx99", "purpose": "p", "lease_minutes": 60},
+		// ruling 147: standing resources come from registration or a human
+		"standing": {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "lifetime": "standing"},
+		"lifetime": {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "lifetime": "forever"},
 	} {
 		text, isErr := e.call(t, policy.ToolCommission, args)
 		if !isErr || !strings.Contains(text, "refused by the factory policy") {
@@ -690,5 +693,18 @@ func TestFreeToolsFollowThePolicysClassLists(t *testing.T) {
 	text, isErr := e.call(t, "commission_server", map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 90, "ssh_public_key": agentKey})
 	if !isErr || !strings.Contains(text, "refused_capability") || e.hz.callList() != "" {
 		t.Fatalf("commission for a class that does not list it = %s, calls %q", text, e.hz.callList())
+	}
+}
+
+// ruling 147: agents get no SSH to a standing server, even their task's own.
+func TestCertificateForStandingServerIsRefused(t *testing.T) {
+	e := newCloudEnv(t, coderTask())
+	own, _ := e.reg.Insert(context.Background(), cloudres.Resource{Project: cloudres.AgentProject, Kind: cloudres.KindServer,
+		OwnerRef: "42", HoldID: 9, LeaseExpires: cloudNow.Add(time.Hour), Lifetime: cloudres.LifetimeStanding})
+	e.reg.SetLive(context.Background(), own.ID, "556")
+	e.cs.ids = append(e.cs.ids, own.ID)
+	text, isErr := e.call(t, policy.ToolSSHCertificate, map[string]any{"resource_id": own.ID, "public_key": agentKey})
+	if !isErr || !strings.Contains(text, "standing") || len(e.signer.signs) != 0 {
+		t.Fatalf("certificate for a standing server = %s, signs %v", text, e.signer.signs)
 	}
 }

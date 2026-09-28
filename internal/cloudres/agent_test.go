@@ -76,7 +76,8 @@ func TestPriceCommission(t *testing.T) {
 	}
 }
 
-var testEnvelope = policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}
+var testEnvelope = policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20,
+	Standing: policy.Standing{MonthlyEUR: 20, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2}}
 
 func TestEnvelopeViolations(t *testing.T) {
 	if v := EnvelopeViolations(testEnvelope, EnvelopeUse{OpenServers: 1, MonthEUR: 9.99}, "cx23", 240, 20, 0.01); len(v) != 0 {
@@ -446,7 +447,7 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if err := a.Promote(ctx, c.Rows[1].ID, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
-	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND promoted`, c.Hold.ID); n != 2 {
+	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND lifetime = 'standing'`, c.Hold.ID); n != 2 {
 		t.Fatalf("promoted rows = %d", n)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM holds`); n != 0 {
@@ -455,7 +456,7 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if err := a.EndLease(ctx, c.Rows[0].ID, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
-	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND NOT promoted AND lease_expires <= now()`, c.Hold.ID); n != 2 {
+	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND released_by <> '' AND lease_expires <= now()`, c.Hold.ID); n != 2 {
 		t.Fatalf("ended rows = %d", n)
 	}
 	// a released commission is not promoted back to life before the
@@ -463,7 +464,7 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if err := a.Promote(ctx, c.Rows[1].ID, "sebastian"); !errors.Is(err, ErrLeaseEnded) {
 		t.Fatalf("promote after release: %v", err)
 	}
-	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND promoted`, c.Hold.ID); n != 0 {
+	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND lifetime = 'standing' AND released_by = ''`, c.Hold.ID); n != 0 {
 		t.Fatalf("promoted after release: %d rows", n)
 	}
 	seedTask(t, db, "t9", 1)
@@ -496,7 +497,8 @@ func TestWiden(t *testing.T) {
 		{"already fits: unchanged", EnvelopeUse{OpenServers: 1, MonthEUR: 1}, "cx23", 60, 0, 0.0096, testEnvelope},
 		// 301 minutes are 6 started hours; 4 open servers need a 5th; 9.99 + 0.2345 = 10.2245 -> 10.23
 		{"every bound", EnvelopeUse{OpenServers: 4, MonthEUR: 9.99}, "cx43", 301, 40, 0.2345,
-			policy.Envelope{MonthlyEUR: 10.23, ServerTypes: []string{"cx23", "cx33", "cx43"}, MaxCount: 5, MaxLeaseHours: 6, VolumeMaxGB: 40}},
+			policy.Envelope{MonthlyEUR: 10.23, ServerTypes: []string{"cx23", "cx33", "cx43"}, MaxCount: 5, MaxLeaseHours: 6, VolumeMaxGB: 40,
+				Standing: testEnvelope.Standing}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := Widen(testEnvelope, tc.use, tc.typ, tc.minutes, tc.gb, tc.reservation)
@@ -561,7 +563,8 @@ func TestApproveForProjectAndEnvelopes(t *testing.T) {
 	}
 
 	// the edit form: an existing project and a new one
-	edit := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, VolumeMaxGB: 0}
+	edit := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, VolumeMaxGB: 0,
+		Standing: policy.Standing{MonthlyEUR: 20, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 1}}
 	if err := a.SetEnvelope(ctx, "sf/app", edit, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +588,7 @@ func TestApproveForProjectAndEnvelopes(t *testing.T) {
 	db.ExecContext(ctx, `UPDATE cloud_resources SET state = 'deleted', deleted_at = now() - interval '8 days' WHERE hold_id = $1`, old.Hold.ID)
 	rows, err := a.Commissions(ctx, time.Now().Add(-7*24*time.Hour))
 	if err != nil || len(rows) != 2 || rows[1].Kind != KindServer || rows[1].PromotedBy != "sebastian" || rows[1].ReleasedBy != "alice" ||
-		rows[1].Promoted {
+		rows[1].Lifetime != LifetimeStanding {
 		t.Fatalf("commissions = %+v, %v", rows, err)
 	}
 }
@@ -621,7 +624,7 @@ func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 		t.Fatalf("held = %v", held)
 	}
 	// promoted: no reservation, never an overrun
-	db.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, created_at = now() - interval '130 minutes' WHERE id = $1`, srv.ID)
+	db.ExecContext(ctx, `UPDATE cloud_resources SET lifetime = 'standing', created_at = now() - interval '130 minutes' WHERE id = $1`, srv.ID)
 	if acc, err := a.Accrue(ctx); err != nil || !near(acc.EUR, 0.0096) || len(acc.Overruns) != 0 {
 		t.Fatalf("promoted accrual = %+v, %v", acc, err)
 	}
@@ -783,5 +786,55 @@ func TestClaimCommissionedOncePerServer(t *testing.T) {
 	}
 	if again, _ := a.ClaimCommissioned(ctx); len(again) != 0 {
 		t.Fatalf("claimed twice: %+v", again)
+	}
+}
+
+// ruling 147: a commission becomes standing only within the project's
+// standing block: its server type, one more standing server, its monthly
+// price on top of the standing ones.
+func TestPromoteWithinStandingBlock(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 5)
+	a := AgentStore{DB: db}
+	first, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	monthly := first.Rows[1].MonthlyEUR + first.Rows[0].MonthlyEUR
+	env, _, err := a.Envelope(ctx, "sf/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Standing = policy.Standing{ServerTypes: []string{}}
+	a.SetEnvelope(ctx, "sf/app", env, "sebastian")
+	if err := a.Promote(ctx, first.Rows[1].ID, "sebastian"); !errors.Is(err, ErrBeyondStanding) {
+		t.Fatalf("promote with a closed standing block = %v, want ErrBeyondStanding", err)
+	}
+	env.Standing = policy.Standing{MonthlyEUR: monthly, ServerTypes: []string{"cx33"}, MaxCount: 2}
+	a.SetEnvelope(ctx, "sf/app", env, "sebastian")
+	if err := a.Promote(ctx, first.Rows[1].ID, "sebastian"); !errors.Is(err, ErrBeyondStanding) || !strings.Contains(err.Error(), "cx23") {
+		t.Fatalf("promote of a type outside the block = %v", err)
+	}
+	env.Standing.ServerTypes = []string{"cx23"}
+	a.SetEnvelope(ctx, "sf/app", env, "sebastian")
+	if err := a.Promote(ctx, first.Rows[1].ID, "sebastian"); err != nil {
+		t.Fatalf("promote within the block: %v", err)
+	}
+	if err := a.Promote(ctx, second.Rows[1].ID, "sebastian"); !errors.Is(err, ErrBeyondStanding) || !strings.Contains(err.Error(), "EUR") {
+		t.Fatalf("promote past the monthly line = %v", err)
+	}
+	envs, err := a.Envelopes(ctx)
+	if err != nil || len(envs) != 1 || envs[0].StandingUse.Count != 1 || math.Abs(envs[0].StandingUse.MonthlyEUR-monthly) > 1e-9 {
+		t.Fatalf("envelopes = %+v, %v; want one standing server at %.4f EUR a month", envs, err, monthly)
+	}
+	// a standing server leaves the task's egress: no agent SSH (ruling 147)
+	db.ExecContext(ctx, `UPDATE cloud_resources SET state = 'live', address = '192.0.2.1' WHERE hold_id = $1 AND kind = 'server'`, first.Hold.ID)
+	if addrs, err := a.LiveAddresses(ctx); err != nil || len(addrs["t1"]) != 0 {
+		t.Fatalf("live addresses = %v, %v; want none for a standing server", addrs, err)
 	}
 }

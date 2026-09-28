@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -224,12 +226,15 @@ type ResourceSpec struct {
 func readEnvelope(ctx context.Context, q rowQuerier, project string) (policy.Envelope, error) {
 	var env policy.Envelope
 	var types []byte
+	var standingTypes []byte
 	if err := q.QueryRowContext(ctx,
-		`SELECT monthly_eur::float8, server_types, max_count, max_lease_hours, volume_max_gb FROM envelopes WHERE project = $1`, project,
-	).Scan(&env.MonthlyEUR, &types, &env.MaxCount, &env.MaxLeaseHours, &env.VolumeMaxGB); err != nil {
+		`SELECT monthly_eur::float8, server_types, max_count, max_lease_hours, volume_max_gb,
+		        standing_monthly_eur::float8, standing_server_types, standing_max_count FROM envelopes WHERE project = $1`, project,
+	).Scan(&env.MonthlyEUR, &types, &env.MaxCount, &env.MaxLeaseHours, &env.VolumeMaxGB,
+		&env.Standing.MonthlyEUR, &standingTypes, &env.Standing.MaxCount); err != nil {
 		return policy.Envelope{}, err
 	}
-	return env, json.Unmarshal(types, &env.ServerTypes)
+	return env, errors.Join(json.Unmarshal(types, &env.ServerTypes), json.Unmarshal(standingTypes, &env.Standing.ServerTypes))
 }
 
 // Envelope is repo's envelope row; false when the project has none yet.
@@ -254,10 +259,10 @@ func envelopeUse(ctx context.Context, q rowQuerier, repo string) (EnvelopeUse, e
 	var u EnvelopeUse
 	err := q.QueryRowContext(ctx,
 		`SELECT (SELECT count(*) FROM cloud_resources
-		          WHERE project = 'agent' AND repo = $1 AND kind = 'server' AND state = ANY($2)),
+		          WHERE project = 'agent' AND repo = $1 AND kind = 'server' AND lifetime = 'lease' AND state = ANY($2)),
 		        (COALESCE((SELECT sum(l.eur) FROM ledger l
 		          WHERE l.kind = 'resource' AND l.day >= date_trunc('month', now() AT TIME ZONE 'UTC')::date
-		            AND l.ref IN (SELECT 'resource/' || id FROM cloud_resources WHERE project = 'agent' AND repo = $1)), 0)
+		            AND l.ref IN (SELECT 'resource/' || id FROM cloud_resources WHERE project = 'agent' AND repo = $1 AND lifetime = 'lease')), 0)
 		       + COALESCE((SELECT sum(eur) FROM holds WHERE kind = 'resource'
 		            AND id IN (SELECT hold_id FROM cloud_resources WHERE project = 'agent' AND repo = $1)), 0))::float8`,
 		repo, OpenStates).Scan(&u.OpenServers, &u.MonthEUR)
@@ -286,9 +291,11 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 	}
 	d := r.Default
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb, set_by)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, 'default') ON CONFLICT (project) DO NOTHING`,
-		r.Repo, d.MonthlyEUR, types, d.MaxCount, d.MaxLeaseHours, d.VolumeMaxGB); err != nil {
+		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb,
+		   standing_monthly_eur, standing_server_types, standing_max_count, set_by)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, 'default') ON CONFLICT (project) DO NOTHING`,
+		r.Repo, d.MonthlyEUR, types, d.MaxCount, d.MaxLeaseHours, d.VolumeMaxGB,
+		d.Standing.MonthlyEUR, jsonList(d.Standing.ServerTypes), d.Standing.MaxCount); err != nil {
 		return Commission{}, err
 	}
 	env, err := readEnvelope(ctx, tx, r.Repo)
@@ -455,7 +462,7 @@ type Overrun struct {
 // resource ledger row (ref resource/<id>) on its task, the task's spend,
 // and the same amount off its commission's reservation, under the
 // headroom lock. A booking beyond what the reservation still holds is
-// booked in full and returned as an overrun (a promoted resource, released
+// booked in full and returned as an overrun (a standing resource, released
 // or not, has no reservation and never overruns). A resource never created
 // (no provider id) costs nothing. Then it drops the reservations of commissions whose
 // rows are all closed and fully booked: the unused rest returns to the
@@ -512,10 +519,10 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	var price, share float64
 	var accrued, due int
 	var hold int64
-	var promoted bool
-	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), promoted,
+	var standing bool
+	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), lifetime = 'standing',
 		GREATEST(reserved_eur - accrued_eur, 0)::float8
-		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &promoted, &share); err != nil {
+		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &standing, &share); err != nil {
 		return 0, nil, err
 	}
 	if due <= accrued {
@@ -524,8 +531,7 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	eur := float64(due-accrued) * price
 	var held float64
 	err = tx.QueryRowContext(ctx, `SELECT eur::float8 FROM holds WHERE id = $1`, hold).Scan(&held)
-	// promotion drops the reservation, and a release after it (EndLease)
-	// clears promoted: no reservation, nothing to overrun
+	// promotion to standing drops the reservation: nothing to overrun
 	reserved := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, err
@@ -549,7 +555,7 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	if err := tx.Commit(); err != nil {
 		return 0, nil, err
 	}
-	if promoted || !reserved {
+	if standing || !reserved {
 		return eur, nil, nil
 	}
 	if reason := policy.OverHold(owner, "resource "+strconv.FormatInt(id, 10), eur, held); reason != "" {
@@ -570,14 +576,15 @@ func (a AgentStore) Group(ctx context.Context, holdID int64) ([]Resource, error)
 		WHERE project = 'agent' AND hold_id = $1 AND state = ANY($2) ORDER BY id`, holdID, OpenStates)
 }
 
-// LiveAddresses are the IPv4s of every live agent server by owning task
-// whose lease runs past the cutoff (or that is promoted): what the task's
-// sandbox egress admits. The cutoff is the collector's, so the address
+// LiveAddresses are the IPv4s of every live leased agent server by owning
+// task whose lease runs past the cutoff: what the task's sandbox egress
+// admits. A standing server is the project's: no agent reaches it
+// (ruling 147). The cutoff is the collector's, so the address
 // leaves when the collector deletes the server.
 func (a AgentStore) LiveAddresses(ctx context.Context) (map[string][]string, error) {
 	rows, err := a.DB.QueryContext(ctx, `SELECT owner_ref, address FROM cloud_resources
 		WHERE project = 'agent' AND kind = 'server' AND state = 'live' AND address <> ''
-		  AND (promoted OR lease_expires > now() + make_interval(secs => $1)) ORDER BY owner_ref, address`, LeaseCutoff.Seconds())
+		  AND lifetime = 'lease' AND lease_expires > now() + make_interval(secs => $1) ORDER BY owner_ref, address`, LeaseCutoff.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -648,11 +655,15 @@ func (a AgentStore) Approval(ctx context.Context, id int64, taskID string) (Appr
 	return ap, true, json.Unmarshal(spec, &ap.Spec)
 }
 
-// Promote makes the open commission of row id project-owned: no lease, no
-// end with its task, its reservation dropped; its accruing cost counts
-// against the project's month from then on. A released commission, or one
-// whose lease has ended, is refused (ErrLeaseEnded): the collector is
-// about to delete it. For the console; by is the human.
+// Promote makes the open commission of row id standing (ruling 147):
+// project-owned, no lease, no end with its task, its reservation dropped,
+// out of the task's egress; its cost counts against the project's month
+// from then on. It must fit the envelope's standing block (its server
+// type, one more standing server, its monthly price on top of the other
+// standing ones), else ErrBeyondStanding: a human raises the block first.
+// A released commission, or one whose lease has ended, is refused
+// (ErrLeaseEnded): the collector is about to delete it. For the console;
+// by is the human.
 func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -660,9 +671,10 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var hold int64
+	var repo string
 	var ended bool
-	err = tx.QueryRowContext(ctx, `SELECT hold_id, (released_by <> '' OR (NOT promoted AND lease_expires <= now())) FROM cloud_resources
-		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state = ANY($2) FOR UPDATE`, id, OpenStates).Scan(&hold, &ended)
+	err = tx.QueryRowContext(ctx, `SELECT hold_id, repo, (released_by <> '' OR (lifetime = 'lease' AND lease_expires <= now())) FROM cloud_resources
+		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state = ANY($2) FOR UPDATE`, id, OpenStates).Scan(&hold, &repo, &ended)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
 	}
@@ -672,7 +684,38 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	if ended {
 		return fmt.Errorf("resource %d: %w", id, ErrLeaseEnded)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, promoted_by = $2 WHERE hold_id = $1 AND state = ANY($3)`, hold, by, OpenStates); err != nil {
+	env, err := readEnvelope(ctx, tx, repo)
+	if err != nil {
+		return fmt.Errorf("envelope of %s: %w", repo, err)
+	}
+	use, err := standingUse(ctx, tx, repo)
+	if err != nil {
+		return err
+	}
+	var servers int
+	var types []string
+	var monthly float64
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE kind = 'server'),
+		COALESCE(array_agg(size) FILTER (WHERE kind = 'server'), '{}'), COALESCE(sum(monthly_eur), 0)::float8
+		FROM cloud_resources WHERE hold_id = $1 AND state = ANY($2)`, hold, OpenStates).Scan(&servers, pgtype.NewMap().SQLScanner(&types), &monthly); err != nil {
+		return err
+	}
+	var beyond []string
+	for _, t := range types {
+		if !slices.Contains(env.Standing.ServerTypes, t) {
+			beyond = append(beyond, fmt.Sprintf("server type %s is not in the standing types %v", t, env.Standing.ServerTypes))
+		}
+	}
+	if use.Count+servers > env.Standing.MaxCount {
+		beyond = append(beyond, fmt.Sprintf("%d standing servers on top of %d exceed the standing count %d", servers, use.Count, env.Standing.MaxCount))
+	}
+	if use.MonthlyEUR+monthly > env.Standing.MonthlyEUR+1e-9 {
+		beyond = append(beyond, fmt.Sprintf("%.4f EUR a month on top of %.4f EUR exceeds the standing %.2f EUR", monthly, use.MonthlyEUR, env.Standing.MonthlyEUR))
+	}
+	if len(beyond) > 0 {
+		return fmt.Errorf("resource %d: %w: %s", id, ErrBeyondStanding, strings.Join(beyond, "; "))
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET lifetime = 'standing', promoted_by = $2 WHERE hold_id = $1 AND state = ANY($3)`, hold, by, OpenStates); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hold); err != nil {
@@ -681,12 +724,27 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	return tx.Commit()
 }
 
-// EndLease ends the lease of row id's open commission now (a promoted one
-// is no longer promoted): the collector deletes it on its next pass. The
-// console's release, since only the gateway holds the provider token; by
-// is the human.
+// StandingUse is what a project holds against its standing block: open,
+// unreleased standing servers and the monthly price of every open
+// unreleased standing row.
+type StandingUse struct {
+	Count      int
+	MonthlyEUR float64
+}
+
+func standingUse(ctx context.Context, q rowQuerier, repo string) (StandingUse, error) {
+	var u StandingUse
+	err := q.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE kind = 'server'), COALESCE(sum(monthly_eur), 0)::float8
+		FROM cloud_resources WHERE project = 'agent' AND repo = $1 AND lifetime = 'standing' AND released_by = '' AND state = ANY($2)`,
+		repo, OpenStates).Scan(&u.Count, &u.MonthlyEUR)
+	return u, err
+}
+
+// EndLease ends row id's open commission now, standing or leased: the
+// collector deletes it on its next pass. The console's release, since
+// only the gateway holds the provider token; by is the human.
 func (a AgentStore) EndLease(ctx context.Context, id int64, by string) error {
-	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), promoted = false, released_by = $2
+	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), released_by = $2
 		WHERE state = ANY($3) AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id, by, OpenStates)
 	if n, _ := affected(res, err); !n && err == nil {
 		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
@@ -696,8 +754,9 @@ func (a AgentStore) EndLease(ctx context.Context, id int64, by string) error {
 
 // Promote's and EndLease's refusals, for the console's messages.
 var (
-	ErrNotOpen    = errors.New("not an open agent resource")
-	ErrLeaseEnded = errors.New("its lease has ended or it was released; the collector deletes it")
+	ErrNotOpen        = errors.New("not an open agent resource")
+	ErrLeaseEnded     = errors.New("its lease has ended or it was released; the collector deletes it")
+	ErrBeyondStanding = errors.New("beyond the project's standing block")
 )
 
 // Commissions lists the agent rows open now or closed after since, by
@@ -709,32 +768,27 @@ func (a AgentStore) Commissions(ctx context.Context, since time.Time) ([]Resourc
 }
 
 // EnvelopeRecord is a project's envelope row, who set it last, and what
-// the project holds against it now.
+// the project holds against its task and standing blocks now.
 type EnvelopeRecord struct {
 	Project string
 	policy.Envelope
-	SetBy string
-	SetAt time.Time
-	Use   EnvelopeUse
+	SetBy       string
+	SetAt       time.Time
+	Use         EnvelopeUse
+	StandingUse StandingUse
 }
 
 // Envelopes lists every project's envelope with its use.
 func (a AgentStore) Envelopes(ctx context.Context) ([]EnvelopeRecord, error) {
-	rows, err := a.DB.QueryContext(ctx, `SELECT project, monthly_eur::float8, server_types, max_count, max_lease_hours,
-		volume_max_gb, set_by, set_at FROM envelopes ORDER BY project`)
+	rows, err := a.DB.QueryContext(ctx, `SELECT project, set_by, set_at FROM envelopes ORDER BY project`)
 	if err != nil {
 		return nil, err
 	}
 	var out []EnvelopeRecord
 	for rows.Next() {
 		var e EnvelopeRecord
-		var types []byte
-		if err := rows.Scan(&e.Project, &e.MonthlyEUR, &types, &e.MaxCount, &e.MaxLeaseHours, &e.VolumeMaxGB, &e.SetBy, &e.SetAt); err != nil {
+		if err := rows.Scan(&e.Project, &e.SetBy, &e.SetAt); err != nil {
 			rows.Close() // #nosec G104 -- already returning the scan error
-			return nil, err
-		}
-		if err := json.Unmarshal(types, &e.ServerTypes); err != nil {
-			rows.Close() // #nosec G104 -- already returning the decode error
 			return nil, err
 		}
 		out = append(out, e)
@@ -743,7 +797,14 @@ func (a AgentStore) Envelopes(ctx context.Context) ([]EnvelopeRecord, error) {
 		return nil, err
 	}
 	for i := range out {
-		if out[i].Use, err = envelopeUse(ctx, a.DB, out[i].Project); err != nil {
+		p := out[i].Project
+		if out[i].Envelope, err = readEnvelope(ctx, a.DB, p); err != nil {
+			return nil, err
+		}
+		if out[i].Use, err = envelopeUse(ctx, a.DB, p); err != nil {
+			return nil, err
+		}
+		if out[i].StandingUse, err = standingUse(ctx, a.DB, p); err != nil {
 			return nil, err
 		}
 	}
@@ -758,11 +819,14 @@ func (a AgentStore) SetEnvelope(ctx context.Context, project string, env policy.
 		return err
 	}
 	_, err = a.DB.ExecContext(ctx,
-		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb, set_by)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
+		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb,
+		   standing_monthly_eur, standing_server_types, standing_max_count, set_by)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, $10)
 		 ON CONFLICT (project) DO UPDATE SET monthly_eur = $2, server_types = $3::jsonb, max_count = $4,
-		   max_lease_hours = $5, volume_max_gb = $6, set_by = $7, set_at = now()`,
-		project, env.MonthlyEUR, types, env.MaxCount, env.MaxLeaseHours, env.VolumeMaxGB, by)
+		   max_lease_hours = $5, volume_max_gb = $6, standing_monthly_eur = $7, standing_server_types = $8::jsonb,
+		   standing_max_count = $9, set_by = $10, set_at = now()`,
+		project, env.MonthlyEUR, types, env.MaxCount, env.MaxLeaseHours, env.VolumeMaxGB,
+		env.Standing.MonthlyEUR, jsonList(env.Standing.ServerTypes), env.Standing.MaxCount, by)
 	return err
 }
 
@@ -833,4 +897,13 @@ func (a AgentStore) ApproveForProject(ctx context.Context, id int64, by string) 
 		return policy.Envelope{}, err
 	}
 	return wide, tx.Commit()
+}
+
+// jsonList is a JSON array, [] for nil.
+func jsonList(v []string) []byte {
+	if v == nil {
+		v = []string{}
+	}
+	b, _ := json.Marshal(v) // #nosec G104 -- a []string always marshals
+	return b
 }

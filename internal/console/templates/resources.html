@@ -1,7 +1,7 @@
 {{template "head" .}}
 <h2>Resources</h2>
 {{if .Saved}}<p class="note" role="status">Saved the envelope of {{.Saved}}.</p>{{end}}
-<p>Servers agents commissioned in the agent cloud project, open now or closed in the last 7 days. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
+<p>Servers agents commissioned in the agent cloud project, open now or closed in the last 7 days. Promote makes a commission standing: the project's, with no lease and no agent access, until a human releases it. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
 <h3 id="project-{{.Project}}">{{.Project}}</h3>
 <table>
@@ -13,7 +13,7 @@
 <td>{{.ID}} {{.Kind}}{{if .Purpose}}<br><span class="meta">{{.Purpose}}</span>{{end}}</td>
 <td>{{.Size}}</td>
 <td>{{.Address}}</td>
-<td>{{if .Promoted}}none (promoted by {{.PromotedBy}}){{else}}{{utc .LeaseExpires}}{{end}}{{if .ReleasedBy}}<br><span class="meta">released by {{.ReleasedBy}}</span>{{end}}</td>
+<td>{{if eq .Lifetime "standing"}}none: standing (made standing by {{.PromotedBy}}){{else}}{{utc .LeaseExpires}}{{end}}{{if .ReleasedBy}}<br><span class="meta">released by {{.ReleasedBy}}</span>{{end}}</td>
 <td>{{eur4 .PricePerHourEUR}}</td>
 <td>{{eur4 .AccruedEUR}}</td>
 <td>{{.State}}</td>
@@ -41,6 +41,16 @@
 <input id="lease-{{.Project}}" name="max_lease_hours" type="number" min="0" step="1" value="{{.Envelope.MaxLeaseHours}}" required>
 <label for="volume-{{.Project}}">Max volume, GB (0 = none)</label>
 <input id="volume-{{.Project}}" name="volume_max_gb" type="number" min="0" step="1" value="{{.Envelope.VolumeMaxGB}}" required>
+</fieldset>
+<fieldset{{if not $.Approver}} disabled{{end}}>
+<legend>Standing block: what a human may make standing</legend>
+<p class="meta">Standing now: {{.Envelope.StandingUse.Count}} of {{.Envelope.Standing.MaxCount}} servers, {{eur4 .Envelope.StandingUse.MonthlyEUR}} of {{printf "%.2f" .Envelope.Standing.MonthlyEUR}} EUR a month.</p>
+<label for="standing-monthly-{{.Project}}">Standing monthly EUR</label>
+<input id="standing-monthly-{{.Project}}" name="standing_monthly_eur" type="number" min="0" step="0.01" value="{{.Envelope.Standing.MonthlyEUR}}" required>
+<label for="standing-types-{{.Project}}">Standing server types, comma separated</label>
+<input id="standing-types-{{.Project}}" name="standing_server_types" type="text" value="{{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}">
+<label for="standing-count-{{.Project}}">Max standing servers</label>
+<input id="standing-count-{{.Project}}" name="standing_max_count" type="number" min="0" step="1" value="{{.Envelope.Standing.MaxCount}}" required>
 </fieldset>
 {{if $.Approver}}<button type="submit">Save the envelope</button>
 </form>{{else}}</div>{{end}}

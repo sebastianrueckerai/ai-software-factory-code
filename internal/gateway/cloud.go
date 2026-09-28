@@ -170,6 +170,7 @@ type CommissionIn struct {
 	LeaseMinutes int    `json:"lease_minutes" jsonschema:"how long the server may live, at least 5; billed per started hour; access ends and it is deleted shortly before the lease ends, or when the task finishes"`
 	VolumeGB     int    `json:"volume_gb,omitempty" jsonschema:"an optional block volume in GB (at least 10), mounted on the server"`
 	SSHPublicKey string `json:"ssh_public_key,omitempty" jsonschema:"optional: your SSH public key (one line); the answer then carries a certificate for it"`
+	Lifetime     string `json:"lifetime,omitempty" jsonschema:"lease (the default and the only one a task may ask for): the server ends with its lease or the task"`
 }
 
 type ResourceIn struct {
@@ -241,7 +242,7 @@ func (s *Server) envelope(ctx context.Context, c *toolCaller) (policy.Envelope, 
 	if err != nil || ok {
 		return env, "the project's envelope", err
 	}
-	return c.pv.Document.EnvelopeDefault, fmt.Sprintf("the standard envelope (policy version %d), copied to the project on its first request", c.pv.ID), nil
+	return c.pv.Document.DefaultEnvelope(), fmt.Sprintf("the standard envelope (policy version %d), copied to the project on its first request", c.pv.ID), nil
 }
 
 func (s *Server) cloudPrices(ctx context.Context, c *toolCaller) *mcp.CallToolResult {
@@ -306,6 +307,10 @@ func (in CommissionIn) validate() error {
 		return fmt.Errorf("lease_minutes must be %d to %d", minLeaseMinutes, maxLeaseMinutes)
 	case in.VolumeGB != 0 && (in.VolumeGB < policy.MinVolumeGB || in.VolumeGB > maxVolumeGB):
 		return fmt.Errorf("volume_gb must be 0 (none) or %d to %d", policy.MinVolumeGB, maxVolumeGB)
+	case in.Lifetime == cloudres.LifetimeStanding:
+		return errors.New("a task commissions leased servers only: standing ones come from project registration or a human in the console")
+	case in.Lifetime != "" && in.Lifetime != cloudres.LifetimeLease:
+		return errors.New("lifetime must be lease")
 	case in.SSHPublicKey != "" && !sshPublicKey.MatchString(strings.TrimSpace(in.SSHPublicKey)):
 		return errors.New("ssh_public_key must be one OpenSSH public key line (ssh-ed25519, ecdsa-sha2-nistp* or ssh-rsa)")
 	}
@@ -320,7 +325,7 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	if err := in.validate(); err != nil {
 		return s.refuseTool(c, tool, "refused_arguments", err.Error())
 	}
-	def := c.pv.Document.EnvelopeDefault
+	def := c.pv.Document.DefaultEnvelope()
 	if len(def.ServerTypes) == 0 {
 		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("policy version %d has no envelope_default", c.pv.ID))
 	}
@@ -619,6 +624,9 @@ func (s *Server) sshCertificate(ctx context.Context, c *toolCaller, in Certifica
 	if row.State != cloudres.StateLive {
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("server %d is %s", row.ID, row.State))
 	}
+	if row.Lifetime == cloudres.LifetimeStanding {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("server %d is the project's standing server: agents get no SSH to it", row.ID))
+	}
 	cert, ttl, err := s.sign(ctx, c, row, key)
 	if err != nil {
 		return s.cloudError(c, tool, "error_tool", err)
@@ -630,10 +638,7 @@ func (s *Server) sshCertificate(ctx context.Context, c *toolCaller, in Certifica
 // sign certifies key for row's login user until the egress drops the
 // server (the lease's cutoff), at most maxCertTTL.
 func (s *Server) sign(ctx context.Context, c *toolCaller, row cloudres.Resource, key string) (string, time.Duration, error) {
-	ttl := maxCertTTL
-	if !row.Promoted {
-		ttl = min(ttl, row.LeaseExpires.Add(-cloudres.LeaseCutoff).Sub(s.opts.Cloud.now()).Truncate(time.Second))
-	}
+	ttl := min(maxCertTTL, row.LeaseExpires.Add(-cloudres.LeaseCutoff).Sub(s.opts.Cloud.now()).Truncate(time.Second))
 	if ttl < time.Minute {
 		return "", 0, fmt.Errorf("server %d stays reachable for under a minute: its lease ends in under %s", row.ID, cloudres.LeaseCutoff+time.Minute)
 	}

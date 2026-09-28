@@ -25,6 +25,9 @@ const (
 	StateDeleted   = "deleted"
 	StateVanished  = "vanished"
 
+	LifetimeLease    = "lease"
+	LifetimeStanding = "standing"
+
 	KindServer   = "server"
 	KindFirewall = "firewall"
 	KindVolume   = "volume"
@@ -64,14 +67,15 @@ type Resource struct {
 	// agent commissioning: the task's repository (owner/name) and session,
 	// the server type or volume size, the agent's stated purpose, the
 	// server's IPv4, and the commission's reservation (holds.id, 0 = none),
-	// which groups its rows. A promoted resource is project-owned: no
-	// lease, no owner end.
-	Repo         string
-	SessionRef   string
-	Size         string
-	Purpose      string
-	Address      string
-	Promoted     bool
+	// which groups its rows.
+	Repo       string
+	SessionRef string
+	Size       string
+	Purpose    string
+	Address    string
+	// Lifetime is lease (ends with its lease or its owner) or standing
+	// (project-owned, lives until a human releases it; ruling 147).
+	Lifetime     string
 	HoldID       int64
 	ApprovalID   int64
 	AccruedHours int
@@ -80,7 +84,7 @@ type Resource struct {
 	// at its hourly price) and its catalogue monthly price
 	ReservedEUR float64
 	MonthlyEUR  float64
-	// who promoted or released the commission in the console
+	// who made the commission standing or released it in the console
 	PromotedBy string
 	ReleasedBy string
 }
@@ -108,6 +112,9 @@ type Registry interface {
 }
 
 var errUnknownState = errors.New("cloudres: unknown target state")
+
+// Standing reports a standing resource a human has not released.
+func (r Resource) Standing() bool { return r.Lifetime == LifetimeStanding && r.ReleasedBy == "" }
 
 // ProviderLabels are the labels Insert adds to every resource.
 func providerLabels(r Resource, id int64) map[string]string {
@@ -139,17 +146,20 @@ func insert(ctx context.Context, q querier, r Resource) (Resource, error) {
 	r.ID = id
 	r.Labels = providerLabels(r, id)
 	r.State = StateRequested
+	if r.Lifetime == "" {
+		r.Lifetime = LifetimeLease
+	}
 	labels, err := json.Marshal(r.Labels)
 	if err != nil {
 		return Resource{}, err
 	}
 	err = q.QueryRowContext(ctx,
 		`INSERT INTO cloud_resources (id, project, kind, name, labels, owner_ref, price_per_hour_eur, lease_expires, state,
-		        repo, session_ref, size, purpose, promoted, hold_id, approval_id, reserved_eur, monthly_eur)
+		        repo, session_ref, size, purpose, lifetime, hold_id, approval_id, reserved_eur, monthly_eur)
 		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0), $17, $18)
 		 RETURNING created_at`,
 		id, r.Project, r.Kind, r.Name, labels, r.OwnerRef, r.PricePerHourEUR, r.LeaseExpires, r.State,
-		r.Repo, r.SessionRef, r.Size, r.Purpose, r.Promoted, r.HoldID, r.ApprovalID, r.ReservedEUR, r.MonthlyEUR).Scan(&r.CreatedAt)
+		r.Repo, r.SessionRef, r.Size, r.Purpose, r.Lifetime, r.HoldID, r.ApprovalID, r.ReservedEUR, r.MonthlyEUR).Scan(&r.CreatedAt)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -189,7 +199,7 @@ func affected(res sql.Result, err error) (bool, error) {
 }
 
 const resourceColumns = `id, project, kind, provider_id, name, labels, owner_ref, price_per_hour_eur::float8,
-	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, promoted,
+	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, lifetime,
 	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8, promoted_by, released_by,
 	reserved_eur::float8, monthly_eur::float8`
 
@@ -224,7 +234,7 @@ func (p PG) query(ctx context.Context, q string, args ...any) ([]Resource, error
 		var labels []byte
 		if err := rows.Scan(&r.ID, &r.Project, &r.Kind, &r.ProviderID, &r.Name, &labels, &r.OwnerRef,
 			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt, &r.Repo, &r.SessionRef, &r.Size,
-			&r.Purpose, &r.Address, &r.Promoted, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR,
+			&r.Purpose, &r.Address, &r.Lifetime, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR,
 			&r.PromotedBy, &r.ReleasedBy, &r.ReservedEUR, &r.MonthlyEUR); err != nil {
 			return nil, err
 		}
@@ -258,6 +268,9 @@ func (m *Memory) Insert(ctx context.Context, r Resource) (Resource, error) {
 	r.ID = int64(len(m.rows) + 1)
 	r.Labels = providerLabels(r, r.ID)
 	r.State = StateRequested
+	if r.Lifetime == "" {
+		r.Lifetime = LifetimeLease
+	}
 	r.CreatedAt = m.now()
 	m.rows[r.ID] = r
 	return r, nil

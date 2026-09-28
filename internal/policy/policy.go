@@ -38,6 +38,9 @@ type Document struct {
 	// many seconds without the progress each names before it trips;
 	// absent keys take DefaultDetectors (ruling 161: no_write only).
 	Supervisor map[string]int `yaml:"supervisor" json:"supervisor"`
+	// ProjectDefault is what a registered project starts with; absent:
+	// DefaultProject.
+	ProjectDefault *ProjectDefault `yaml:"project_default" json:"project_default,omitempty"`
 }
 
 // DetectorNoWrite is the progress detector (rulings 141, 161): agent
@@ -104,6 +107,9 @@ type Envelope struct {
 	MaxCount      int      `yaml:"max_count" json:"max_count"`
 	MaxLeaseHours int      `yaml:"max_lease_hours" json:"max_lease_hours"`
 	VolumeMaxGB   int      `yaml:"volume_max_gb" json:"volume_max_gb"`
+	// Standing is the second block, for standing resources; the policy
+	// sets its default in project_default, not in envelope_default.
+	Standing Standing `yaml:"-" json:"-"`
 }
 
 // MinVolumeGB is the smallest volume Hetzner creates.
@@ -260,6 +266,11 @@ func (d Document) Validate() error {
 	}
 	if err := d.EnvelopeDefault.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	if d.ProjectDefault != nil {
+		if err := d.ProjectDefault.validate(); err != nil {
+			return fmt.Errorf("policy: %w", err)
+		}
 	}
 	for i, a := range d.Approvers {
 		if a == "" || slices.Contains(d.Approvers[:i], a) {

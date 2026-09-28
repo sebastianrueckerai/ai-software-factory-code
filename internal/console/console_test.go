@@ -272,6 +272,9 @@ func (f *fakeResources) Promote(_ context.Context, id int64, by string) error {
 	if id == 500 {
 		return errors.New(`pq: deadlock detected in "cloud_resources"`)
 	}
+	if id == 420 {
+		return fmt.Errorf("resource %d: %w: server type cx53 is not in the standing types [cx23]", id, cloudres.ErrBeyondStanding)
+	}
 	return nil
 }
 
@@ -1024,12 +1027,14 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 			LeaseExpires: lease, PricePerHourEUR: 0.0144, AccruedEUR: 0.0288, Purpose: "load test", MonthlyEUR: 8.99},
 		{ID: 14, Kind: "volume", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "20GB",
 			LeaseExpires: lease, PricePerHourEUR: 1.144 / 730, MonthlyEUR: 1.144},
-		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Promoted: true, PromotedBy: "alice"},
+		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Lifetime: cloudres.LifetimeStanding, PromotedBy: "alice"},
 		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", ReleasedBy: "sebastian"},
 	}
 	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/other", SetBy: "alice", SetAt: lease,
-		Envelope: policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
-		Use:      cloudres.EnvelopeUse{OpenServers: 1, MonthEUR: 1.5}}}
+		Envelope: policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8,
+			Standing: policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
+		Use:         cloudres.EnvelopeUse{OpenServers: 1, MonthEUR: 1.5},
+		StandingUse: cloudres.StandingUse{Count: 1, MonthlyEUR: 5.99}}}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /resources = %d: %s", rec.Code, rec.Body)
@@ -1038,13 +1043,17 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
-		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
+		"none: standing (made standing by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
-		`<span id="promote-11" class="meta">promoted, about 10.1340 EUR a month against the envelope&#39;s 10.0000 EUR (0.0000 used or reserved this month)</span>`,
+		`<span id="promote-11" class="meta">standing, about 10.1340 EUR a month against the standing block&#39;s 0.00 EUR (0.0000 standing now)</span>`,
 		// the code repository has no envelope yet: the policy default
 		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
 		`name="server_types" type="text" value="cx23"`,
 		"Set by alice at " + at + ". This month: 1.5000 EUR used or reserved, 1 servers open.",
+		// the standing monthly line (ruling 147)
+		"Standing now: 1 of 2 servers, 5.9900 of 12.00 EUR a month.",
+		`id="standing-monthly-sf/other" name="standing_monthly_eur" type="number" min="0" step="0.01" value="12"`,
+		`name="standing_server_types" type="text" value="cx23"`,
 		`name="server_types" type="text" value="cx23, cx33"`, `<label for="count-sf/other">`,
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
 	} {
@@ -1080,12 +1089,14 @@ func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
 		t.Fatalf("calls = %q", r.resources.calls)
 	}
 	form := url.Values{"csrf": {s.csrf}, "project": {"sf/code"}, "monthly_eur": {"25.5"}, "server_types": {"cx23, cx33 cx23"},
-		"max_count": {"3"}, "max_lease_hours": {"12"}, "volume_max_gb": {"0"}}
+		"max_count": {"3"}, "max_lease_hours": {"12"}, "volume_max_gb": {"0"},
+		"standing_monthly_eur": {"7.5"}, "standing_server_types": {"cx23"}, "standing_max_count": {"1"}}
 	rec := r.do(post("/envelopes", form), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/resources?saved=sf%2Fcode" {
 		t.Fatalf("save = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
-	want := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 12, VolumeMaxGB: 0}
+	want := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 12, VolumeMaxGB: 0,
+		Standing: policy.Standing{MonthlyEUR: 7.5, ServerTypes: []string{"cx23"}, MaxCount: 1}}
 	if got := r.resources.set["sf/code"]; fmt.Sprint(got) != fmt.Sprint(want) || r.resources.calls[3] != "set sf/code by sebastian" {
 		t.Fatalf("saved %+v, calls %q", got, r.resources.calls)
 	}
@@ -1095,13 +1106,16 @@ func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
 		t.Fatalf("an envelope with no types (closed to agents) = %d, %+v", rec.Code, r.resources.set["sf/other"])
 	}
 	for name, change := range map[string][2]string{
-		"unknown project":  {"project", "evil/repo"},
-		"negative monthly": {"monthly_eur", "-1"},
-		"not a number":     {"monthly_eur", "NaN"},
-		"bad type":         {"server_types", "cx23; rm"},
-		"fraction count":   {"max_count", "1.5"},
-		"small volume":     {"volume_max_gb", "5"},
-		"huge lease":       {"max_lease_hours", "100000"},
+		"unknown project":   {"project", "evil/repo"},
+		"negative monthly":  {"monthly_eur", "-1"},
+		"not a number":      {"monthly_eur", "NaN"},
+		"bad type":          {"server_types", "cx23; rm"},
+		"fraction count":    {"max_count", "1.5"},
+		"small volume":      {"volume_max_gb", "5"},
+		"huge lease":        {"max_lease_hours", "100000"},
+		"negative standing": {"standing_monthly_eur", "-1"},
+		"standing count":    {"standing_max_count", "x"},
+		"standing type":     {"standing_server_types", "cx23; rm"},
 	} {
 		f := url.Values{}
 		for k, v := range form {
@@ -1191,6 +1205,11 @@ func TestErrorsShowNoInternals(t *testing.T) {
 	rec := r.do(post("/resources/410/promote", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "lease has ended or it was released") {
 		t.Fatalf("promote after release = %d: %s", rec.Code, rec.Body)
+	}
+	// beyond the standing block: the human sees which bound and raises it first
+	rec = r.do(post("/resources/420/promote", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]; raise the standing block of the envelope first") {
+		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
