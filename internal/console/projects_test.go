@@ -111,7 +111,7 @@ func TestRegisterProjectFromTheConsole(t *testing.T) {
 	form := url.Values{"csrf": {s.csrf}, "name": {"demo-app"}, "repository": {"sf/demo-app"}, "merge_rule": {"auto"},
 		"namespaces": {"demo-staging, demo-prod"}, "environments": {"demo-staging=deploy/staging\r\ndemo-prod=deploy/prod"},
 		"hostnames": {"demo-staging=demo-staging.aisoftwarefactory.world\ndemo-prod=demo.aisoftwarefactory.world"},
-		"secrets": {"demo-write-token/token"}}
+		"secrets":   {"demo-write-token/token"}}
 	rec := r.do(post("/projects", form), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/projects?registered=demo-app" {
 		t.Fatalf("register = %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)

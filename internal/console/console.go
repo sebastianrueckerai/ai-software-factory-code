@@ -90,7 +90,7 @@ type Config struct {
 	Projects     Projects
 	// Reconcile brings a project's objects to its row (factoryd.Registrar).
 	Reconcile func(ctx context.Context, p factoryd.Project) error
-	HTTP         *http.Client // nil = 15 s timeout
+	HTTP      *http.Client // nil = 15 s timeout
 }
 
 // Console is the console's http.Handler.
