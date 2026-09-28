@@ -522,7 +522,7 @@ queue for a later tick) holding one
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
 module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
-redirects zip downloads there), `data.forgejo.org`, Docker Hub; nothing
+redirects zip downloads there), `data.forgejo.org`; nothing
 else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
@@ -530,37 +530,60 @@ ephemeral runner registration are torn down when the pod finishes or its
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go 1.25 toolchain, gosec and BuildKit (`buildctl`/`buildkitd`)
-plus a pinned `runc` pre-installed. A live spike (task-41-report.md,
-research-stage6-buildkit-gvisor.md) found no *rootless* BuildKit path
-comes up under gVisor's systrap platform — RootlessKit's own re-exec is
-blocked by the default seccomp profile, and its `newuidmap` fallback
-needs privilege escalation, which Kubernetes' `restricted` Pod Security
-Standard forbids either way. Ruling 91 resolves it instead: jobs whose
-`runs_on` includes `pr-untrusted-build` (`.forgejo/workflows/pr.yml`'s
-`image-build` job) get, alongside the usual restricted runner pod, a
-second pod in the same namespace running `buildkitd` as sandbox root
-(`runAsUser: 0`, no added capabilities, still under gVisor) inside a
-nested `unshare --user --mount` with a wide uid/gid map — that
-namespace's Pod Security label is `baseline` rather than `restricted`,
-which a ValidatingAdmissionPolicy admits only for
-`factory-agents-ci-*` namespaces and only for a pod carrying the
-`factory.ai/build-pod` label. The runner pod holds no extra
-credentials for this; it drives the build pod over `BUILDKIT_HOST`
-(`buildctl`), which factoryd's CI spawner injects, and the build never
-pushes.
+node, the Go 1.25 toolchain, gosec and `buildctl`, and nothing that builds
+images: no rootless BuildKit comes up under gVisor, and a root build pod
+in the cluster was the one exception the admission policy had to make.
+Image builds run outside the cluster instead (ruling 110,
+`internal/factoryd/buildvm.go`):
+
+- **The VM.** A job whose `runs_on` includes `pr-untrusted-build`
+  (`pr.yml`'s `image-build`) gets a throwaway `cx23` server (debian-12,
+  fsn1) in the Hetzner CI project, which holds nothing else. Its
+  cloud-init installs the checksum-pinned buildkitd v0.33.0 release (with
+  the release's own runc) and serves it on tcp 1234 behind mTLS. No SSH
+  key, no credential: the VM holds only its own server key.
+- **The certificates.** factoryd mints a CA per VM, signs a server
+  certificate (fixed DNS name `buildkitd`, since the IP is unknown until
+  the server exists) and a client certificate, and drops the CA key. The
+  CA and the client pair go into secret `buildkit-client` in the job's
+  namespace, mounted into the runner pod; the pod gets `BUILDKIT_HOST`,
+  `BUILDKIT_TLS_DIR` and `BUILDKIT_TLS_SERVERNAME`. `image-build` waits up
+  to three minutes for `buildctl debug workers`, then builds the changed
+  Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
+- **The network.** A Hetzner firewall per VM admits tcp 1234 only from the
+  cluster nodes' public IPv4s (`CI_BUILD_VM_SOURCES`, from ConfigMap
+  `cluster-facts`, ruling 112) and lets the VM out on tcp 80/443 and
+  tcp/udp 53 only. The runner pod's egress policy gains exactly
+  `<vm ip>/32` on tcp 1234. The VM's egress is not name-restricted (Hetzner
+  firewalls match IPs): the build context is code the agent already had,
+  and the lease bounds the window.
+- **The lifecycle.** Every server and firewall is a row in
+  `cloud_resources`, written before the create call and labelled
+  `factory=ci`, `job=<id>`, `resource=<row>`. When the job's pod finishes
+  (success, failure, deadline) the spawner deletes the server, then the
+  firewall, then the namespace. The collector (every minute) is the
+  backstop: it deletes resources whose lease (job deadline plus 15
+  minutes) expired or whose job namespace is gone, deletes any server or
+  firewall in the project the registry does not know, and marks rows
+  whose resource vanished. Deletes are idempotent; primary-IP counts lag
+  a few seconds after a delete, so nothing trusts one snapshot.
+- **The cap and the cost.** At most `CI_BUILD_VMS_MAX` (2, the project's
+  primary-IP quota) VMs live at once; further build jobs stay queued in
+  Forgejo while other jobs run. A build costs one billed hour of `cx23`
+  plus its IPv4: 0.0096 EUR net.
 
 ## factoryd's own network
 
-factoryd holds the LiteLLM master key, the bot password and the S3 keys,
-so its egress is default-deny (`factoryd-egress` in
+factoryd holds the LiteLLM master key, the bot password, the S3 keys and
+the Hetzner CI token, so its egress is default-deny (`factoryd-egress` in
 `k8s/factoryd.yaml`): kube-dns for exactly the names below, the API
 server (by entity; factoryd dials the injected
 `KUBERNETES_SERVICE_HOST`, no DNS), the `sf-cluster` Postgres instances
 on 5432, the in-cluster Forgejo on 3000 (`FORGEJO_URL`; the public host
 resolves to the edge gateway; links for people use
 `FORGEJO_PUBLIC_URL`), LiteLLM on 4000, the Temporal frontend on 7233,
-and the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`). Every
+the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`), and
+`api.hetzner.cloud` on 443 (build VMs). Every
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
