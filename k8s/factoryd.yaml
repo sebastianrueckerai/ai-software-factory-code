@@ -246,6 +246,9 @@ spec:
           valueFrom: {secretKeyRef: {name: hetzner-ci, key: token}}
         - name: CI_BUILD_VM_SOURCES
           valueFrom: {configMapKeyRef: {name: cluster-facts, key: node_public_ips}}
+        # factory-merge: merge whitelist of main only; the workflow's Merge
+        - name: FORGEJO_MERGE_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
         - name: CI_RUNNER_IMAGE
           value: git.aisoftwarefactory.world/sf/ci-runner@sha256:1d4a5eb5b716bb2409f7f525d95c93012cb98916fd2ff83deded4af1c9e6ef08
         - name: LITELLM_MASTER_KEY

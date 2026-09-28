@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // fakeKube scripts the Kubernetes seam: pods are created with a phase and a
@@ -425,8 +426,19 @@ func testRunnerConfig() RunnerConfig {
 		ChecksPoll:           time.Millisecond,
 		// the test activity environment's deadline is 10 minutes out, so a
 		// 10 minute cap puts the half-way point 3 minutes into each session
-		Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
+		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
+		Policy:      testPolicyVersion,
+		ReviewModel: "review-frontier",
 	}
+}
+
+// testPolicyVersion is version 7 of testPolicyYAML.
+func testPolicyVersion() policy.Version {
+	d, err := policy.Parse([]byte(testPolicyYAML))
+	if err != nil {
+		panic(err)
+	}
+	return policy.Version{ID: 7, Document: d}
 }
 
 // newTestRunner wires a runner against scripted backends and a queued task.

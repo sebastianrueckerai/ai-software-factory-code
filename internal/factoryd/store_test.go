@@ -39,6 +39,7 @@ type fakeStore struct {
 	intakeEvents []IntakeEvent
 	deliveries   map[string]bool
 	pruned       []time.Duration
+	approvals    []ApprovalRequest
 }
 
 func newFakeStore() *fakeStore {
@@ -253,6 +254,46 @@ var _ Store = (*fakeStore)(nil)
 
 // Requires a disposable Postgres: FACTORYD_TEST_DATABASE_URL must point at a
 // database this test may wipe. Skipped otherwise; CI stays hermetic.
+func (s *fakeStore) SetTaskRisk(ctx context.Context, id, class string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.RiskClass = class
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
+	for i := range s.approvals {
+		if a.Kind == "merge" && s.approvals[i].TaskID == a.TaskID && s.approvals[i].Kind == "merge" && s.approvals[i].Status == "pending" {
+			s.approvals[i].Status, s.approvals[i].DecidedBy, s.approvals[i].DecisionNote = "denied", FactoryDecider, "superseded by a newer request"
+		}
+	}
+	a.ID, a.Status = int64(len(s.approvals)+1), "pending"
+	s.approvals = append(s.approvals, a)
+	return a.ID, nil
+}
+
+func (s *fakeStore) ResolveApprovals(ctx context.Context, taskID, status, by, note string) error {
+	for i := range s.approvals {
+		if s.approvals[i].TaskID == taskID && s.approvals[i].Status == "pending" {
+			s.approvals[i].Status, s.approvals[i].DecidedBy, s.approvals[i].DecisionNote = status, by, note
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
+	var out []ApprovalRequest
+	for _, a := range s.approvals {
+		if a.Status == status {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 func TestPGStore(t *testing.T) {
 	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
 	if dsn == "" {
@@ -265,7 +306,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -289,6 +330,7 @@ func TestPGStore(t *testing.T) {
 		Kind:                 "agent",
 		IssueNumber:          42,
 		Source:               "api",
+		ReproCommand:         "go test ./internal/x",
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -631,5 +673,69 @@ func TestPGStore(t *testing.T) {
 	}
 	if got, _, _ := s2.Task(ctx, "t-gw"); len(got.RequiredCapabilities) != 0 {
 		t.Fatalf("the backfill ran twice: t-gw capabilities = %v", got.RequiredCapabilities)
+	}
+}
+
+func TestPGStoreApprovals(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskRisk(ctx, "a1", "high"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "a1"); got.RiskClass != "high" {
+		t.Fatalf("risk class = %q", got.RiskClass)
+	}
+	first, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "a1", Project: "sf/r", PRNumber: 9, Spec: json.RawMessage(`{"risk_class":"high"}`), Reason: "r1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "a1", Project: "sf/r", PRNumber: 9, Spec: json.RawMessage(`{"risk_class":"normal"}`), Reason: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	eur := 3.5
+	res, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "resource", TaskID: "a1", Project: "sf/r", Reason: "a VM", MonthlyEUR: &eur})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 || pending[0].ID != second || pending[0].PRNumber != 9 || string(pending[0].Spec) != `{"risk_class": "normal"}` ||
+		pending[1].ID != res || pending[1].PRNumber != 0 || *pending[1].MonthlyEUR != 3.5 {
+		t.Fatalf("pending = %+v", pending)
+	}
+	denied, _ := s.ApprovalRequests(ctx, "denied")
+	if len(denied) != 1 || denied[0].ID != first || denied[0].DecidedBy != "factoryd" || denied[0].DecidedAt == nil {
+		t.Fatalf("denied = %+v", denied)
+	}
+	// the database refuses a second pending merge request of a task
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests (kind, task_id, project) VALUES ('merge', 'a1', 'sf/r')`); err == nil {
+		t.Fatal("a second pending merge request was accepted")
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests (kind, task_id, project, status) VALUES ('merge', 'a2', 'sf/r', 'closed')`); err == nil {
+		t.Fatal("an unknown status was accepted")
+	}
+	if err := s.ResolveApprovals(ctx, "a1", "approved", "sebastian", "merged"); err != nil {
+		t.Fatal(err)
+	}
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(approved) != 2 || approved[0].DecidedBy != "sebastian" || approved[0].DecisionNote != "merged" {
+		t.Fatalf("approved = %+v", approved)
 	}
 }

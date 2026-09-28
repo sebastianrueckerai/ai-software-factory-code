@@ -53,6 +53,12 @@ type Forgejo struct {
 	// repository-limited token): the trust gate reads the org's teams,
 	// their repositories and members with it.
 	CIOrgToken string
+	// MergeToken is the dedicated user factory-merge's token,
+	// write:repository on the code repository only (ruling 109): main's
+	// merge whitelist holds it, its push whitelist does not, and Forgejo
+	// merges only after an approval by a whitelisted human. The workflow's
+	// Merge activity is its one user.
+	MergeToken string
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -155,6 +161,12 @@ func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte,
 func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
 	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
 		r.Header.Set("Authorization", "token "+f.CIOrgToken)
+	})
+}
+
+func (f *Forgejo) mergeCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
+	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
+		r.Header.Set("Authorization", "token "+f.MergeToken)
 	})
 }
 
@@ -988,4 +1000,57 @@ func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (st
 		return "", fmt.Errorf("forgejo repo default branch %s/%s: %w", owner, repo, err)
 	}
 	return res.DefaultBranch, nil
+}
+
+// PullRequestFiles lists the paths pull request number changes, every
+// page; a rename or copy lists its old name too, so a file moved out of a
+// guarded directory still counts against it. (The compare API's file list
+// carries no previous name.)
+func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, number int64) ([]string, error) {
+	files, err := getPages[struct {
+		Filename         string `json:"filename"`
+		PreviousFilename string `json:"previous_filename"`
+	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", owner, repo, number))
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, c := range files {
+		paths = append(paths, c.Filename)
+		if c.PreviousFilename != "" && c.PreviousFilename != c.Filename {
+			paths = append(paths, c.PreviousFilename)
+		}
+	}
+	return paths, nil
+}
+
+// PullRequestDiff is pull request number's unified diff, at most max bytes
+// (the rest cut, and said so).
+func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, number int64, max int) (string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	if len(body) > max {
+		return string(body[:max]) + fmt.Sprintf("\n… (diff cut at %d of %d bytes)", max, len(body)), nil
+	}
+	return string(body), nil
+}
+
+// MergePullRequest merges pull request number as factory-merge, only while
+// its head is still head: a head that moved after the gates is refused.
+// Forgejo refuses the merge (ErrRefused, 405) without the approval of a
+// human on main's approvals whitelist.
+func (f *Forgejo) MergePullRequest(ctx context.Context, owner, repo string, number int64, head, message string) error {
+	payload, err := json.Marshal(map[string]any{"Do": "merge", "head_commit_id": head, "MergeMessageField": message})
+	if err != nil {
+		return err
+	}
+	_, err = f.mergeCall(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", owner, repo, number), payload, http.StatusOK)
+	// do retries a 409 as transient; on merge it is a conflict or a head
+	// that moved, which no retry fixes
+	if err != nil && !errors.Is(err, ErrRefused) && strings.Contains(err.Error(), ": status 409: ") {
+		return fmt.Errorf("%w: %v", ErrRefused, err)
+	}
+	return err
 }

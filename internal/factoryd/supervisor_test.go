@@ -205,7 +205,8 @@ func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
 	if d != (Decision{Action: ActionRedirect, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
-	payload, _ := m.payload(testInput(), 9000)
+	input, _ := json.MarshalIndent(testInput(), "", " ")
+	payload, _ := chatPayload("supervisor", supervisorPrompt, input, 9000)
 	if len(meter.holds) != 1 || meter.holds[0] != (policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "supervisor",
 		InTokens: len(payload), Price: supervisorPrice, WantOut: 9000, DayEUR: 20}) {
 		t.Fatalf("holds = %+v, want one for the payload's bytes and 9000 output tokens", meter.holds)
@@ -248,7 +249,8 @@ func TestSupervisorModelMintsATaskKeyAndCallsTheAlias(t *testing.T) {
 func TestSupervisorOutputClampedToTheHeadroom(t *testing.T) {
 	f := &fakeLiteLLM{content: `{"action":"continue"}`, cost: "0.001"}
 	m := testSupervisorModel(f.srv(t).URL)
-	payload, _ := m.payload(testInput(), 9000)
+	input, _ := json.MarshalIndent(testInput(), "", " ")
+	payload, _ := chatPayload("supervisor", supervisorPrompt, input, 9000)
 	meter := &memPolicy{taskFree: float64(len(payload))*1e-6 + 2000*4e-6, dayFree: 20}
 	m.Meter = meter
 	if d := m.Decide(context.Background(), "t1", testInput()); d.Action != ActionContinue {

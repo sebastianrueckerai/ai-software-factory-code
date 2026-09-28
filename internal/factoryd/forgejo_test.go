@@ -832,3 +832,74 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 		t.Fatalf("owner that is no org: %v, want ErrNotFound", err)
 	}
 }
+
+// A renamed file lists both of its names; the list is read page by page.
+func TestForgejoPullRequestFilesCountsRenamesTwice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/repo/pulls/7/files" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		servePage(w, r, 2,
+			`{"filename":"README.md","status":"modified"}`,
+			`{"filename":"ci.yml","previous_filename":".forgejo/workflows/ci.yml","status":"renamed"}`,
+			`{"filename":"k8s/x.yaml","previous_filename":"","status":"added"}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	got, err := f.PullRequestFiles(context.Background(), "sf", "repo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"README.md", "ci.yml", ".forgejo/workflows/ci.yml", "k8s/x.yaml"}; !slices.Equal(got, want) {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+}
+
+func TestForgejoPullRequestDiffIsCapped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/repos/sf/repo/pulls/7.diff" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, "0123456789")
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	if got, _ := f.PullRequestDiff(context.Background(), "sf", "repo", 7, 20); got != "0123456789" {
+		t.Fatalf("uncut diff = %q", got)
+	}
+	if got, _ := f.PullRequestDiff(context.Background(), "sf", "repo", 7, 4); got != "0123\n… (diff cut at 4 of 10 bytes)" {
+		t.Fatalf("cut diff = %q", got)
+	}
+}
+
+// The merge goes out as factory-merge's token with the gated head; a 405
+// (no whitelisted approval) and a 409 (conflict, head moved) are refusals.
+func TestForgejoMergePullRequest(t *testing.T) {
+	status := http.StatusOK
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/v1/repos/sf/repo/pulls/7/merge" || r.Header.Get("Authorization") != "token merge-tok" {
+			t.Errorf("unexpected %s %s auth %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(status)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw", MergeToken: "merge-tok"}
+	if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); err != nil {
+		t.Fatal(err)
+	}
+	if body["Do"] != "merge" || body["head_commit_id"] != "c1" || body["MergeMessageField"] != "msg" {
+		t.Fatalf("merge body = %v", body)
+	}
+	for _, s := range []int{http.StatusMethodNotAllowed, http.StatusConflict} {
+		status = s
+		if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); !errors.Is(err, ErrRefused) {
+			t.Fatalf("merge answered %d = %v, want a refusal", s, err)
+		}
+	}
+	status = http.StatusBadGateway
+	if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); err == nil || errors.Is(err, ErrRefused) {
+		t.Fatalf("merge answered 502 = %v, want a transient error", err)
+	}
+}

@@ -4,11 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // TaskQueue is the Temporal task queue factoryd's worker polls.
@@ -27,6 +30,10 @@ const (
 	// SignalHumanComment is a non-bot comment on the task's issue; it
 	// answers an escalation when it is newer than the escalation comment.
 	SignalHumanComment = "human_comment"
+	// SignalApproved is the console's approve (ApproveMerge), sent after
+	// the human's APPROVED review is on the pull request: the workflow
+	// merges as factory-merge.
+	SignalApproved = "approved"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -52,6 +59,12 @@ const (
 	ActivityReconcile         = "Reconcile"
 	ActivityEscalate          = "Escalate"
 	ActivityRecordUsage       = "RecordUsage"
+	ActivityGatePolicy        = "GatePolicy"
+	ActivityGateMigration     = "GateMigration"
+	ActivityGateReproduction  = "GateReproduction"
+	ActivityModelReview       = "ModelReview"
+	ActivityRequestApproval   = "RequestApproval"
+	ActivityMerge             = "Merge"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -181,7 +194,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v2: workflow.GetVersion(ctx, "reconcile-race", workflow.DefaultVersion, versionReconcileRace),
 		v3: workflow.GetVersion(ctx, "supervisor", workflow.DefaultVersion, versionSupervisor),
 		v4: workflow.GetVersion(ctx, "reconcile-findings", workflow.DefaultVersion, versionReconcileFindings),
-		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage)}
+		v5: workflow.GetVersion(ctx, "persist-usage", workflow.DefaultVersion, versionPersistUsage),
+		v6: workflow.GetVersion(ctx, "gates", workflow.DefaultVersion, versionGates)}
 	return run.lifecycle()
 }
 
@@ -219,6 +233,14 @@ const (
 	// across runs; a human answer near the cap grants a fresh slice of
 	// agent time, and one after a healed wait buys an attempt like any.
 	versionPersistUsage workflow.Version = 1
+	// versionGates (change id "gates"): after green checks the gates run
+	// (GatePolicy, GateMigration when migrations changed, GateReproduction,
+	// then ModelReview), a merge approval request is opened, and the wait
+	// takes the console's approved signal, on which the workflow merges as
+	// factory-merge; a refused merge keeps it waiting. A forbidden risk
+	// class fails the task, a failed reproduction goes back to the agent
+	// like red checks.
+	versionGates workflow.Version = 1
 )
 
 type taskRun struct {
@@ -226,6 +248,7 @@ type taskRun struct {
 	cfg               WorkflowConfig
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
+	v6                workflow.Version
 	pr                PullRequest
 	escalation        int64 // the escalation comment human answers must be newer than
 }
@@ -431,6 +454,9 @@ func (t *taskRun) verify(commit string) verdict {
 	case ChecksTimeout:
 		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}
 	}
+	if t.v6 >= versionGates {
+		return t.gate(commit)
+	}
 	await := t.awaitDecision
 	if t.v < versionSignalsDrained {
 		await = t.reviewV0
@@ -440,6 +466,135 @@ func (t *taskRun) verify(commit string) verdict {
 		return verdict{final: final, reason: why}
 	}
 	return verdict{findings: requested, reason: "changes requested"}
+}
+
+// gate takes a commit with green checks through the gates, the model
+// review and the human's approval to its merge.
+func (t *taskRun) gate(commit string) verdict {
+	var g GateResults
+	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number).Get(t.ctx, &g.Policy); err != nil {
+		return verdict{final: "failed", reason: "policy gate: " + errMessage(err)}
+	}
+	if g.Policy.Outcome == policy.OutcomeForbidden {
+		return verdict{final: "failed", reason: fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
+			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
+	}
+	if len(g.Policy.Migrations) > 0 {
+		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
+			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
+		}
+	}
+	final, why, decided, err := t.race(reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+	if decided {
+		return verdict{final: final, reason: why}
+	}
+	if err != nil {
+		return verdict{final: "failed", reason: "reproduction gate: " + errMessage(err)}
+	}
+	if !g.Reproduction.Passed() {
+		return verdict{stronger: true, reason: "reproduction failed", findings: []string{fmt.Sprintf(
+			"the task's reproduction command failed (exit %d) against %s: %s\noutput tail:\n%s",
+			g.Reproduction.Exit, commit, g.Reproduction.Command, g.Reproduction.Output)}}
+	}
+	var review Review
+	reviewCtx := workflow.WithActivityOptions(t.ctx, reviewOptions())
+	if err := workflow.ExecuteActivity(reviewCtx, ActivityModelReview, t.taskID, t.pr, commit, g).Get(t.ctx, &review); err != nil {
+		review = Review{Note: "model review failed: " + errMessage(err)}
+	}
+	if final, why, ok := t.decided(); ok {
+		return verdict{final: final, reason: why}
+	}
+	// an approval signalled before this request (for an earlier head) is
+	// not an approval of this one
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
+		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
+		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}).Get(t.ctx, nil); err != nil {
+		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
+	}
+	return t.awaitApproval(commit)
+}
+
+// awaitApproval blocks, at no cost, until a terminal signal decides the
+// task, a reviewer requests changes, or an approval merges the pull
+// request as factory-merge. A merge Forgejo refuses keeps the wait.
+func (t *taskRun) awaitApproval(commit string) verdict {
+	for {
+		sel := workflow.NewSelector(t.ctx)
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.Select(t.ctx)
+		if final, why, ok := t.decided(); ok {
+			return verdict{final: final, reason: why}
+		}
+		if findings := t.drainChanges(); len(findings) > 0 {
+			return verdict{findings: findings, reason: "changes requested"}
+		}
+		approver := ""
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
+			if t.counted(SignalApproved, sig) {
+				approver = sig.Author
+			}
+		}
+		if approver == "" {
+			continue
+		}
+		var res MergeResult
+		if err := workflow.ExecuteActivity(t.short, ActivityMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, &res); err != nil {
+			workflow.GetLogger(t.ctx).Warn("merge", "task", t.taskID, "error", err)
+			continue
+		}
+		if res.Merged {
+			return verdict{final: "done", reason: "pull request merged by factory-merge after " + approver + "'s approval"}
+		}
+	}
+}
+
+// recordIgnored records a received signal that does not count.
+func (t *taskRun) recordIgnored(name string, sig TaskSignal, why string) {
+	detail := map[string]any{"signal": name, "author": sig.Author, "pr": sig.PR, "ignored": why}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+	}
+}
+
+// reproOptions: the reproduction activity heartbeats while its pod runs;
+// a dead factoryd's attempt is retried once on the next.
+func reproOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    reproActivityTimeout,
+		ScheduleToCloseTimeout: 2*reproActivityTimeout + time.Minute,
+		HeartbeatTimeout:       2 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumAttempts:        2,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
+// reproActivityTimeout bounds one reproduction attempt: a pod start (an
+// image pull) and the command, at most MaxReproTimeout.
+const reproActivityTimeout = 30 * time.Minute
+
+// MaxReproTimeout is the longest reproduction command run.
+const MaxReproTimeout = 15 * time.Minute
+
+// reviewOptions: one review call is bounded by supervisorTimeout.
+func reviewOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout:    supervisorTimeout + 2*time.Minute,
+		ScheduleToCloseTimeout: 3*supervisorTimeout + 10*time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
 }
 
 // race runs a long activity. From versionReconcileRace on it races the

@@ -370,3 +370,25 @@ func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
 		}
 	}
 }
+
+// The API's repro_command lands on the task and, as a repro block, in the
+// issue body, where the webhook path would read it too.
+func TestCreateTaskHandlerReproCommand(t *testing.T) {
+	var events []string
+	forgejo, issueBody, _ := createTaskForgejoStub(t, &events, false)
+	store := &fakeTaskCreator{events: &events}
+	rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget),
+		`{"objective":"Fix X","repository":"sf/ai-software-factory-code","repro_command":" go test ./x -run TestX "}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+	}
+	if store.created[0].ReproCommand != "go test ./x -run TestX" || factoryd.ReproCommand(*issueBody) != "go test ./x -run TestX" {
+		t.Fatalf("task repro = %q, issue body = %q", store.created[0].ReproCommand, *issueBody)
+	}
+	events = nil
+	rec = postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget),
+		"{\"objective\":\"Fix X\",\"repository\":\"sf/ai-software-factory-code\",\"repro_command\":\"a\\n```\\nb\"}")
+	if rec.Code != http.StatusBadRequest || len(events) != 0 {
+		t.Fatalf("a fence in the command = %d with calls %v, want 400 and none", rec.Code, events)
+	}
+}

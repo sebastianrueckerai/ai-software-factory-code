@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // RunnerConfig carries the per-cluster sandbox facts and the task policy the
@@ -38,6 +39,12 @@ type RunnerConfig struct {
 	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
 	Supervisor           SupervisorConfig
+	// Policy is the policy version in force (GatePolicy's risk rules).
+	Policy func() policy.Version
+	// ReviewModel is the model review's alias (review-frontier).
+	ReviewModel string
+	// ReproTimeout bounds one reproduction command run.
+	ReproTimeout time.Duration
 }
 
 // Runner owns the sandbox side of a task: per-session namespace,
@@ -135,6 +142,15 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	if err := cfg.Supervisor.validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
+	}
+	if cfg.Policy == nil || cfg.ReviewModel == "" {
+		return nil, fmt.Errorf("runner: the policy in force and the review model are required")
+	}
+	if cfg.ReproTimeout <= 0 {
+		cfg.ReproTimeout = 10 * time.Minute
+	}
+	if cfg.ReproTimeout > MaxReproTimeout {
+		return nil, fmt.Errorf("runner: a reproduction timeout of %s exceeds %s", cfg.ReproTimeout, MaxReproTimeout)
 	}
 	if cfg.MaxSessions <= 0 {
 		cfg.MaxSessions = 3
@@ -782,9 +798,39 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
 	}
+	return r.sandboxPodSpec(t, env, true)
+}
+
+// sandboxPodSpec is a gVisor worker pod in the task namespace; only an
+// agent session gets the gateway token. Every sandbox pod carries the
+// worker label the egress policy selects: without it no policy would
+// confine its egress.
+func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool) map[string]any {
 	pullSecrets := []any{}
 	if r.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": r.cfg.PullSecret})
+	}
+	mounts := []any{
+		map[string]any{"name": "workspace", "mountPath": "/workspace"},
+		map[string]any{"name": "home", "mountPath": "/home/worker"},
+		map[string]any{"name": "tmp", "mountPath": "/tmp"},
+	}
+	volumes := []any{
+		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
+		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+	}
+	if gatewayToken {
+		mounts = append(mounts, map[string]any{"name": "gateway-token", "mountPath": "/var/run/secrets/tokens", "readOnly": true})
+		volumes = append(volumes, map[string]any{"name": "gateway-token", "projected": map[string]any{
+			"sources": []any{map[string]any{
+				"serviceAccountToken": map[string]any{
+					"path":              "gateway",
+					"audience":          "factory-gateway",
+					"expirationSeconds": 3600,
+				},
+			}},
+		}})
 	}
 	return map[string]any{
 		"metadata": map[string]any{
@@ -815,12 +861,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 					"requests": sandboxRequests,
 					"limits":   sandboxLimits,
 				},
-				"volumeMounts": []any{
-					map[string]any{"name": "workspace", "mountPath": "/workspace"},
-					map[string]any{"name": "home", "mountPath": "/home/worker"},
-					map[string]any{"name": "tmp", "mountPath": "/tmp"},
-					map[string]any{"name": "gateway-token", "mountPath": "/var/run/secrets/tokens", "readOnly": true},
-				},
+				"volumeMounts": mounts,
 				"securityContext": map[string]any{
 					"runAsNonRoot":             true,
 					"runAsUser":                1000,
@@ -830,20 +871,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 					"readOnlyRootFilesystem":   true,
 				},
 			}},
-			"volumes": []any{
-				map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
-				map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
-				map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
-				map[string]any{"name": "gateway-token", "projected": map[string]any{
-					"sources": []any{map[string]any{
-						"serviceAccountToken": map[string]any{
-							"path":              "gateway",
-							"audience":          "factory-gateway",
-							"expirationSeconds": 3600,
-						},
-					}},
-				}},
-			},
+			"volumes": volumes,
 		},
 	}
 }

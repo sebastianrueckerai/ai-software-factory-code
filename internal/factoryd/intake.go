@@ -252,6 +252,26 @@ func objectiveFromIssue(issue webhookIssue) string {
 	return issue.Title + "\n\n" + issue.Body
 }
 
+// ReproCommand is the issue body's first fenced code block labelled repro
+// (a line "```repro", the command lines, a line "```"): the task's
+// reproduction, which GateReproduction runs against the pull request head.
+// "" when there is none, or it is empty or never closed.
+func ReproCommand(body string) string {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "```repro" {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			if strings.TrimSpace(lines[j]) == "```" {
+				return strings.TrimSpace(strings.Join(lines[i+1:j], "\n"))
+			}
+		}
+		return ""
+	}
+	return ""
+}
+
 // AgentCapabilities are the capability classes every agent task gets at
 // intake, through POST /tasks or an issue alike.
 var AgentCapabilities = []string{policy.ClassCoder}
@@ -337,6 +357,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	if kind == "agent" {
 		task.RequiredCapabilities = AgentCapabilities
+		task.ReproCommand = ReproCommand(issue.Body)
 		repoParts, err := SplitRepo(repo)
 		if err != nil {
 			return err

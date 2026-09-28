@@ -87,6 +87,7 @@ func main() {
 		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
 		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
 		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
+		MergeToken:       mustEnv("FORGEJO_MERGE_TOKEN"),
 	}
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
@@ -129,6 +130,9 @@ func main() {
 			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),
 			MaxCalls:         envInt("SUPERVISOR_MAX_CALLS", factoryd.DefaultMaxCalls),
 		},
+		Policy:       policyLoader.Current,
+		ReviewModel:  env("REVIEW_MODEL", "review-frontier"),
+		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		BaseURL: litellm.BaseURL,
 		Admin:   litellm,
@@ -342,6 +346,9 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			Repository string  `json:"repository"`
 			Priority   int     `json:"priority"`
 			BudgetEUR  float64 `json:"budget_eur"`
+			// ReproCommand must pass against the pull request head
+			// before it can be approved (GateReproduction)
+			ReproCommand string `json:"repro_command"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad body: "+err.Error(), http.StatusBadRequest)
@@ -356,6 +363,11 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		in.ReproCommand = strings.TrimSpace(in.ReproCommand)
+		if strings.Contains(in.ReproCommand, "```") {
+			http.Error(w, "repro_command must not contain ```", http.StatusBadRequest)
+			return
+		}
 		in.BudgetEUR = budget().ClampBudget(in.BudgetEUR)
 		sha, err := forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, "")
 		if err != nil {
@@ -364,6 +376,9 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		}
 		id := factoryd.NewTaskID()
 		issueBody := in.Objective + "\n\nfiled by factoryd intake"
+		if in.ReproCommand != "" {
+			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
+		}
 		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, factoryd.FirstLine(in.Objective), issueBody)
 		if err != nil {
 			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
@@ -379,6 +394,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			Objective: in.Objective, Repository: in.Repository,
 			SHA:  sha,
 			Kind: "agent", IssueNumber: ref.Number, Source: "api",
+			ReproCommand: in.ReproCommand,
 		}
 		if err := store.CreateTask(r.Context(), task); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

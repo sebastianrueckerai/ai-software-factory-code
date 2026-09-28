@@ -47,6 +47,10 @@ type Task struct {
 	// HalfWayDone: the task's half-way check-in fired (once per task).
 	HalfWayDone bool
 	Usage       TaskUsage
+	// ReproCommand is the task's reproduction (the issue's fenced block
+	// labelled repro, or the API's repro_command): GateReproduction runs it
+	// against the pull request head and it must pass. Empty = none.
+	ReproCommand string
 }
 
 // TaskUsage is what a task has used of its caps and what a human granted
@@ -158,7 +162,44 @@ type Store interface {
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
+	// SetTaskRisk records the risk class GatePolicy gave the task's pull
+	// request.
+	SetTaskRisk(ctx context.Context, id, class string) error
+	// OpenApproval records a pending approval request and returns its id;
+	// a merge request denies the task's earlier pending one (a retry, or
+	// a new head) as superseded.
+	OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error)
+	// ResolveApprovals decides the task's pending approval requests:
+	// status approved or denied, by whom ("factoryd" for the factory's own
+	// decisions) and why.
+	ResolveApprovals(ctx context.Context, taskID, status, by, note string) error
+	// ApprovalRequests lists the requests in status, oldest first: the
+	// console's approval cards.
+	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
 }
+
+// ApprovalRequest is a decision the factory waits on a human for (ruling
+// 116): kind merge is a task's pull request that passed its gates (Spec a
+// MergeSpec), kind resource a commissioning request (Task 53). Status:
+// pending, approved or denied.
+type ApprovalRequest struct {
+	ID           int64
+	Kind         string
+	TaskID       string
+	Project      string // owner/name
+	PRNumber     int64  // 0 (null) for a resource
+	Spec         json.RawMessage
+	Reason       string
+	MonthlyEUR   *float64
+	Status       string
+	DecidedBy    string
+	DecidedAt    *time.Time
+	DecisionNote string
+	CreatedAt    time.Time
+}
+
+// FactoryDecider is decided_by for the factory's own decisions.
+const FactoryDecider = "factoryd"
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
 type PGStore struct {
@@ -235,10 +276,10 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, kind, issue_number, source)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		                    objective, repository, sha, kind, issue_number, source, repro_command)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source)
+		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand)
 	return err
 }
 
@@ -251,14 +292,14 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
-	agent_time_ns, attempts, extra_time_ns, extra_attempts`
+	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts); err != nil {
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -548,4 +589,66 @@ func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []strin
 		`UPDATE sessions SET findings = $2::jsonb, restart_state = $3::jsonb WHERE id = $1`,
 		id, fb, restartState)
 	return oneRow(res, err, "session "+id)
+}
+
+func (s *PGStore) SetTaskRisk(ctx context.Context, id, class string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET risk_class = $2 WHERE id = $1`, id, class)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	if a.Kind == "merge" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = 'superseded by a newer request'
+			 WHERE task_id = $1 AND kind = 'merge' AND status = 'pending'`, a.TaskID, FactoryDecider); err != nil {
+			return 0, err
+		}
+	}
+	spec := a.Spec
+	if spec == nil {
+		spec = json.RawMessage(`{}`)
+	}
+	var id int64
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO approval_requests (kind, task_id, project, pr_number, spec, reason, monthly_eur)
+		 VALUES ($1, $2, $3, NULLIF($4, 0), $5::jsonb, $6, $7) RETURNING id`,
+		a.Kind, a.TaskID, a.Project, a.PRNumber, []byte(spec), a.Reason, a.MonthlyEUR).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, status, by, note string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE approval_requests SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4
+		 WHERE task_id = $1 AND status = 'pending'`, taskID, status, by, note)
+	return err
+}
+
+func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
+		        status, decided_by, decided_at, decision_note, created_at
+		 FROM approval_requests WHERE status = $1 ORDER BY id`, status)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ApprovalRequest
+	for rows.Next() {
+		var a ApprovalRequest
+		var spec []byte
+		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
+			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		a.Spec = spec
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }

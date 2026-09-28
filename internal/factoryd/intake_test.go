@@ -235,7 +235,7 @@ func TestIntakeSignatureNeverReadsBodyBeforeVerifying(t *testing.T) {
 func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	logs := captureLog(t)
 	in, store, requests := newTestIntake(t)
-	body := issueOpenedBody(7, "sebastian", []string{"agent", "priority/p1"}, "Add the runner", "objective body")
+	body := issueOpenedBody(7, "sebastian", []string{"agent", "priority/p1"}, "Add the runner", "objective body\n\n```repro\nmake runner-check\n```")
 	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
@@ -253,7 +253,10 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	if task.Priority != 2 {
 		t.Fatalf("priority = %d, want 2 (priority/p1)", task.Priority)
 	}
-	if task.Objective != "Add the runner\n\nobjective body" {
+	if task.ReproCommand != "make runner-check" {
+		t.Fatalf("repro command = %q, want the issue's repro block", task.ReproCommand)
+	}
+	if task.Objective != "Add the runner\n\nobjective body\n\n```repro\nmake runner-check\n```" {
 		t.Fatalf("objective = %q", task.Objective)
 	}
 	if task.SHA != "sha-main-head" {
@@ -1194,6 +1197,23 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 		}
 		if got := len(workflowsOf(in).signals); got != want {
 			t.Fatalf("%s closed the issue: %d signals, want %d", closer, got, want)
+		}
+	}
+}
+
+func TestReproCommand(t *testing.T) {
+	for body, want := range map[string]string{
+		"":         "",
+		"no block": "",
+		"Fix it.\n\n```repro\ngo test ./x\n```\n":             "go test ./x",
+		"```sh\nls\n```\n```repro\r\nmake a\r\nmake b\r\n```": "make a\nmake b",
+		"```repro\nnever closed":                              "",
+		"```repro\n```":                                       "",
+		"```reproduce\nx\n```":                                "",
+		"  ```repro  \n  cmd\n  ```  ":                        "cmd",
+	} {
+		if got := ReproCommand(body); got != want {
+			t.Errorf("ReproCommand(%q) = %q, want %q", body, got, want)
 		}
 	}
 }

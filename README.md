@@ -219,6 +219,62 @@ A crashed factoryd loses nothing either: the retry removes the dead
 session's namespace, pod and credentials and starts a new session with
 the dead one as parent and its findings.
 
+## Gates, review, approval and merge (task 55, ruling 109)
+
+Green checks are not a merge. A workflow started after this change
+(change id `gates`) takes a head with green checks through these
+activities, each with a timeline step and a comment on the pull request:
+
+1. `GatePolicy` lists the pull request's changed paths (`pulls/{n}/files`,
+   every page; a rename counts its old and new name, which the compare
+   API's file list cannot tell) and classifies them under the policy
+   version in force (`risk` in the policy file: ordered path globs to a
+   class, a default, the classes most severe first, each `forbidden` or
+   `requires_approval`, `migration: true` for schema migrations). The
+   class goes on the task row (`risk_class`). A forbidden class fails the
+   task with the paths, which closes the pull request.
+2. `GateMigration`, when a migration-class path changed: the comment and
+   the approval card list them under "schema migration: human review
+   required".
+3. `GateReproduction`, when the task carries a reproduction
+   (`repro_command`: the issue body's first fenced block labelled `repro`,
+   or `repro_command` on `POST /tasks`): a fresh sandbox namespace, a read
+   token on the task's repository only, and the worker image in its repro
+   mode (`MODE=repro`, no agent, no gateway token, no push token, the
+   agents' egress policy) fetches `refs/pull/<n>/head`, checks it is the
+   gated head and runs the command with `sh -c` for at most
+   `REPRO_TIMEOUT` (default 10m, at most 15m). Exit 0 passes. Anything
+   else sends the next attempt back to the agent on the stronger rung with
+   the exit code and the output tail as findings, like red checks. The
+   namespace and the token go when it ends.
+4. `ModelReview` asks `REVIEW_MODEL` (default `review-frontier`) for
+   `{"verdict": "approve|concerns", "summary", "findings"}` over the brief,
+   the diff (cut at 48 KiB) and the gate results, through the supervisor's
+   metered path: a per-call LiteLLM key of the task, the output clamped to
+   the task's and the day's headroom, the cost booked as a `model` ledger
+   row. It is evidence only: no headroom, a failed call or an invalid answer
+   is a note, and nothing it says skips a gate or merges.
+5. `RequestApproval` opens an `approval_requests` row (kind `merge`,
+   status `pending`, the task, project, pull request, and in `spec` the
+   risk class, the migration flag and paths, the review's verdict and
+   summary, the reproduction, the head). A task has one pending merge
+   request; a new attempt or the task's end denies it as `factoryd`.
+
+The workflow then waits, without a timer, for `approved`, a change
+request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
+by submitting the human's APPROVED review through the human's own OAuth
+token, then calling `factoryd.ApproveMerge` (a pending merge request of
+that task and pull request is required), which signals `approved` with
+signal-with-start like the webhook path. `Merge` then merges as the
+dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
+`factory/forgejo-merge`) with `head_commit_id` the gated head, and the
+task finishes done. main's protection lets factory-merge merge but not
+push, and only after an approval by a user on the approvals whitelist, so
+Forgejo itself refuses the merge without the human (405; a moved head or
+a conflict is 409). A refusal is commented and the wait goes on. A human
+merging in Forgejo stays valid (`pr_merged`). An approval signalled before
+the request opened, or for another pull request, does nothing.
+
 ## Supervision
 
 `internal/factoryd/supervise.go` watches every session's event stream.

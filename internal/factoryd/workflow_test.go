@@ -57,6 +57,18 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
 		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
+		ActivityGatePolicy:        func(ctx context.Context, taskID string, pr int64) (PolicyGate, error) { return PolicyGate{}, nil },
+		ActivityGateMigration:     func(ctx context.Context, taskID string, pr int64, migrations []string) error { return nil },
+		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
+			return ReproResult{}, nil
+		},
+		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (Review, error) {
+			return Review{}, nil
+		},
+		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
+		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
+			return MergeResult{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -374,6 +386,7 @@ func TestWorkflowTerminalSessionErrorFinishes(t *testing.T) {
 func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnGetVersion("signals-drained", workflow.DefaultVersion, versionSignalsDrained).Return(workflow.DefaultVersion)
+	h.env.OnGetVersion("gates", workflow.DefaultVersion, versionGates).Return(workflow.DefaultVersion)
 	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "a"})

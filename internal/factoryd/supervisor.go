@@ -273,63 +273,78 @@ func (m *SupervisorModel) Decide(ctx context.Context, taskID string, in Supervis
 	return d
 }
 
-func (m *SupervisorModel) payload(in SupervisorInput, limit int) ([]byte, error) {
-	user, err := json.MarshalIndent(in, "", " ")
+func (m *SupervisorModel) decide(ctx context.Context, taskID string, in SupervisorInput) (Decision, error) {
+	content, err := m.Chat(ctx, taskID, m.Alias, "supervisor", supervisorPrompt, in)
 	if err != nil {
-		return nil, err
+		return Decision{}, err
 	}
+	return parseDecision(content), nil
+}
+
+func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"model":           m.Alias,
+		"model":           alias,
 		"max_tokens":      limit,
 		"response_format": map[string]string{"type": "json_object"},
 		"messages": []map[string]string{
-			{"role": "system", "content": supervisorPrompt},
+			{"role": "system", "content": system},
 			{"role": "user", "content": string(user)},
 		},
 	})
 }
 
-func (m *SupervisorModel) decide(ctx context.Context, taskID string, in SupervisorInput) (Decision, error) {
+// Chat is one metered JSON-mode call of alias on the task's account, with
+// system as the system prompt and input, indented JSON, as the user
+// message: the answer limit is clamped to what the free task and day
+// headroom pays for, that worst case is held, and the call's cost booked
+// as a model ledger row right after it. The virtual key, minted for this
+// call with purpose, carries the task, the hold as max_budget and alias as
+// its only model. No headroom is a *policy.Refusal in the chain.
+func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, system string, input any) (string, error) {
 	limit, err := m.Budget.OutputLimit()
 	if err != nil {
-		return Decision{}, err
+		return "", err
 	}
-	price, err := m.Prices.Price(ctx, m.Alias)
+	price, err := m.Prices.Price(ctx, alias)
 	if err != nil {
-		return Decision{}, err
+		return "", err
 	}
-	payload, err := m.payload(in, limit)
+	user, err := json.MarshalIndent(input, "", " ")
 	if err != nil {
-		return Decision{}, err
+		return "", err
+	}
+	payload, err := chatPayload(alias, system, user, limit)
+	if err != nil {
+		return "", err
 	}
 	hold, err := m.Meter.TakeHold(ctx, policy.HoldRequest{
-		TaskID: taskID, Kind: policy.KindModel, Ref: m.Alias,
+		TaskID: taskID, Kind: policy.KindModel, Ref: alias,
 		InTokens: len(payload), Price: price, WantOut: limit, DayEUR: m.DayEUR(),
 	})
 	if err != nil {
-		return Decision{}, fmt.Errorf("no headroom for the supervisor: %w", err)
+		return "", fmt.Errorf("no headroom for the %s call: %w", purpose, err)
 	}
 	// unknown until the call answers with its cost: the hold is booked
 	var cost *float64
 	defer func() {
 		if _, err := m.Meter.ReleaseHold(context.WithoutCancel(ctx), hold, cost); err != nil {
-			log.Printf("task %s: book the supervisor call: %v", taskID, err)
+			log.Printf("task %s: book the %s call: %v", taskID, purpose, err)
 		}
 	}()
 	zero := 0.0
-	if payload, err = m.payload(in, hold.MaxOut); err != nil {
+	if payload, err = chatPayload(alias, system, user, hold.MaxOut); err != nil {
 		cost = &zero
-		return Decision{}, err
+		return "", err
 	}
-	key, err := m.Admin.MintKey(ctx, taskID, hold.EUR, []string{m.Alias}, "supervisor")
+	key, err := m.Admin.MintKey(ctx, taskID, hold.EUR, []string{alias}, purpose)
 	if err != nil {
 		cost = &zero
-		return Decision{}, err
+		return "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.BaseURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		cost = &zero
-		return Decision{}, err
+		return "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
@@ -339,7 +354,7 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, in Supervis
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return Decision{}, err
+		return "", err
 	}
 	defer res.Body.Close()
 	if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
@@ -349,10 +364,10 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, in Supervis
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
-		return Decision{}, err
+		return "", err
 	}
 	if res.StatusCode != http.StatusOK {
-		return Decision{}, fmt.Errorf("status %d: %s", res.StatusCode, truncate(string(body), 300))
+		return "", fmt.Errorf("status %d: %s", res.StatusCode, truncate(string(body), 300))
 	}
 	var out struct {
 		Choices []struct {
@@ -362,9 +377,9 @@ func (m *SupervisorModel) decide(ctx context.Context, taskID string, in Supervis
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil || len(out.Choices) == 0 {
-		return Decision{}, fmt.Errorf("unreadable completion: %s", truncate(string(body), 300))
+		return "", fmt.Errorf("unreadable completion: %s", truncate(string(body), 300))
 	}
-	return parseDecision(out.Choices[0].Message.Content), nil
+	return out.Choices[0].Message.Content, nil
 }
 
 // sessionSupervision caps the supervisor calls of one session: the trip
