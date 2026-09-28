@@ -1,7 +1,7 @@
 // Package console is the human's view of the factory at
 // console.aisoftwarefactory.world (task 54): Forgejo OAuth2 login for the
-// repository's writers, the board, new tasks filed as the human, and the
-// human's answers to escalations. It is served by factoryd on its own port;
+// repository's writers, the board, new tasks filed as the human, the
+// human's answers to escalations, approvals, and the agent resources. It is served by factoryd on its own port;
 // every Forgejo write goes out with the logged-in human's token.
 package console
 
@@ -75,10 +75,11 @@ type Config struct {
 	Costs     Costs
 	// PolicyURL is the policy file in the infra repository, where every
 	// change is made (ruling 107).
-	PolicyURL string
-	// Approvals feeds the human lane's approval cards; nil shows none.
-	Approvals Approvals
-	HTTP      *http.Client // nil = 15 s timeout
+	PolicyURL    string
+	Approvals    Approvals
+	ApproveMerge MergeApprover
+	Resources    Resources
+	HTTP         *http.Client // nil = 15 s timeout
 }
 
 // Console is the console's http.Handler.
@@ -137,6 +138,12 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.costs))
 	c.mux.Handle("GET /policy", c.auth(c.policy))
+	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
+	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
+	c.mux.Handle("GET /resources", c.auth(c.resources))
+	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.promote))
+	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
+	c.mux.Handle("POST /envelopes", c.auth(c.setEnvelope))
 	return c, nil
 }
 

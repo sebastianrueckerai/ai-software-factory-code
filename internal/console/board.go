@@ -19,7 +19,16 @@ import (
 )
 
 var funcs = template.FuncMap{
-	"eur": func(v float64) string { return fmt.Sprintf("%.2f", v) },
+	"eur":  func(v float64) string { return fmt.Sprintf("%.2f", v) },
+	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	// lease renders minutes as whole hours when they are
+	"lease": func(minutes int) string {
+		if minutes%60 == 0 {
+			return fmt.Sprintf("%d h", minutes/60)
+		}
+		return fmt.Sprintf("%d min", minutes)
+	},
+	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
 }
 
 // columns are the agent lane, in board order; closing counts as running.
@@ -47,7 +56,7 @@ type boardData struct {
 	Columns     []column
 	HumanTasks  []card
 	Escalations []card
-	Approvals   []Approval
+	Approvals   []approvalCard
 	Problems    []string
 }
 
@@ -79,7 +88,9 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		byStatus[col.Status] = i
 	}
 	byStatus["closing"] = byStatus["running"]
+	byID := map[string]factoryd.Task{}
 	for _, t := range tasks {
+		byID[t.ID] = t
 		k := c.card(t)
 		if t.Kind == "human" {
 			if t.Status != "done" && t.Status != "failed" {
@@ -95,11 +106,13 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 			d.Escalations = append(d.Escalations, k)
 		}
 	}
-	if c.cfg.Approvals != nil {
-		if d.Approvals, err = c.cfg.Approvals.PendingApprovals(r.Context()); err != nil {
-			log.Printf("console: approvals: %v", err)
-			d.Problems = append(d.Problems, "approval requests could not be read")
-		}
+	pending, err := c.cfg.Approvals.ApprovalRequests(r.Context(), "pending")
+	if err != nil {
+		log.Printf("console: approvals: %v", err)
+		d.Problems = append(d.Problems, "approval requests could not be read")
+	}
+	for _, a := range pending {
+		d.Approvals = append(d.Approvals, c.approvalCard(a, byID, s.csrf))
 	}
 	name := "page.html"
 	if r.URL.Path == "/board" {

@@ -4,11 +4,7 @@
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">
 <section class="column" aria-labelledby="col-approvals"><h3 id="col-approvals">Approvals <span class="count">{{len .Approvals}}</span></h3>
-{{range .Approvals}}<article class="card approval">
-<h4>{{if eq .Kind "merge"}}Merge PR #{{.PRNumber}}{{else}}Resource request{{end}} · {{.TaskID}}</h4>
-<p>{{.Summary}}</p>{{if .MonthlyEUR}}<p class="meta">{{eur .MonthlyEUR}} EUR per month</p>{{end}}
-<p class="links"><a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-</article>{{end}}
+{{range .Approvals}}{{template "approval" .}}{{end}}
 </section>
 <section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
 {{range .Escalations}}<article class="card escalation">
@@ -36,3 +32,40 @@
 {{end}}</div>
 </section>
 </div>{{end}}
+
+{{define "approval"}}<article class="card approval" aria-labelledby="approval-{{.ID}}">
+{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
+<dl class="facts">
+<dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
+<dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
+<dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</dd>
+</dl>
+{{else}}<h4 id="approval-{{.ID}}">Resource request</h4>
+<dl class="facts">
+<dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>
+<dt>Purpose</dt><dd>{{.Resource.Purpose}}</dd>
+<dt>Lease</dt><dd>{{lease .Resource.LeaseMinutes}}</dd>
+<dt>Cost</dt><dd>{{eur .Monthly}} EUR per month; this lease {{eur4 .Resource.ReservationEUR}} EUR</dd>
+<dt>Project</dt><dd>{{.Project}}</dd>
+<dt>Beyond the envelope</dt><dd>{{range $i, $v := .Resource.BeyondEnvelope}}{{if $i}}; {{end}}{{$v}}{{end}}</dd>
+</dl>
+{{end}}<p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
+<form method="post" action="/approvals/{{.ID}}/approve">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+{{if eq .Kind "resource"}}<fieldset><legend>Approve for</legend>
+<label><input type="radio" name="scope" value="task" checked> this task, once</label>
+<label><input type="radio" name="scope" value="project"> the project (widens its envelope)</label>
+</fieldset>{{end}}
+<button type="submit">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
+</form>
+<form method="post" action="/approvals/{{.ID}}/deny">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
+<textarea id="note-{{.ID}}" name="note" rows="2" required></textarea>
+{{if eq .Kind "merge"}}<fieldset><legend>Deny by</legend>
+<label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
+<label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
+</fieldset>{{end}}
+<button type="submit" class="deny">Deny</button>
+</form>
+</article>{{end}}

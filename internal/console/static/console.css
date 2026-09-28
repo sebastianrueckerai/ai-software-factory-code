@@ -33,3 +33,13 @@ caption { text-align: left; font-weight: 600; padding: .3rem 0; }
 dt { font-weight: 600; }
 dd { margin: 0 0 .4rem; }
 pre { background: var(--card); border: 1px solid var(--line); padding: .6rem; overflow-x: auto; }
+input[type=number] { width: 10rem; padding: .4rem; font: inherit; border: 1px solid var(--muted); border-radius: 4px; }
+button.deny { background: var(--bg); color: var(--warn); border-color: var(--warn); }
+form.inline { display: inline; }
+form.inline button { margin: 0 .25rem .25rem 0; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: .1rem .5rem; margin: .25rem 0; font-size: .85rem; }
+.facts dt { color: var(--muted); font-weight: 500; }
+.facts dd { margin: 0; }
+.approval form { margin-top: .4rem; }
+.approval fieldset, .envelope fieldset { border: 1px solid var(--line); border-radius: 4px; margin: .4rem 0; }
+.project { margin-bottom: 2rem; }

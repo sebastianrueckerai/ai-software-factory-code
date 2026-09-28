@@ -1,0 +1,47 @@
+{{template "head" .}}
+<h2>Resources</h2>
+{{if .Saved}}<p class="note" role="status">Saved the envelope of {{.Saved}}.</p>{{end}}
+<p>Servers agents commissioned in the agent cloud project, open now or closed in the last 7 days. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
+{{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
+<h3 id="project-{{.Project}}">{{.Project}}</h3>
+<table>
+<caption>Commissioned resources by task</caption>
+<thead><tr><th scope="col">Task</th><th scope="col">Resource</th><th scope="col">Type</th><th scope="col">IPv4</th><th scope="col">Lease ends</th><th scope="col">EUR/h</th><th scope="col">Cost so far, EUR</th><th scope="col">State</th><th scope="col">Actions</th></tr></thead>
+<tbody>
+{{range .Rows}}<tr>
+<td><a href="/tasks/{{.OwnerRef}}/timeline">{{.OwnerRef}}</a></td>
+<td>{{.ID}} {{.Kind}}{{if .Purpose}}<br><span class="meta">{{.Purpose}}</span>{{end}}</td>
+<td>{{.Size}}</td>
+<td>{{.Address}}</td>
+<td>{{if .Promoted}}none (promoted by {{.PromotedBy}}){{else}}{{utc .LeaseExpires}}{{end}}{{if .ReleasedBy}}<br><span class="meta">released by {{.ReleasedBy}}</span>{{end}}</td>
+<td>{{eur4 .PricePerHourEUR}}</td>
+<td>{{eur4 .AccruedEUR}}</td>
+<td>{{.State}}</td>
+<td>{{if .Actions}}{{if not .Promoted}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Promote</button></form>{{end}}
+<form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny">Release</button></form>{{end}}</td>
+</tr>
+{{else}}<tr><td colspan="9">No resources.</td></tr>{{end}}
+</tbody>
+</table>
+<form method="post" action="/envelopes" class="envelope">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">
+<input type="hidden" name="project" value="{{.Project}}">
+<fieldset>
+<legend>Envelope: what tasks may commission without a human</legend>
+<p class="meta">{{if .HasEnvelope}}Set by {{.Envelope.SetBy}} at {{utc .Envelope.SetAt}}. This month: {{eur4 .Envelope.Use.MonthEUR}} EUR used or reserved, {{.Envelope.Use.OpenServers}} servers open.{{else}}Not set yet: the policy's default below applies on the first request unless you save one.{{end}}</p>
+<label for="monthly-{{.Project}}">Monthly EUR</label>
+<input id="monthly-{{.Project}}" name="monthly_eur" type="number" min="0" step="0.01" value="{{.Envelope.MonthlyEUR}}" required>
+<label for="types-{{.Project}}">Server types, comma separated</label>
+<input id="types-{{.Project}}" name="server_types" type="text" value="{{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}">
+<label for="count-{{.Project}}">Max servers at once</label>
+<input id="count-{{.Project}}" name="max_count" type="number" min="0" step="1" value="{{.Envelope.MaxCount}}" required>
+<label for="lease-{{.Project}}">Max lease, hours</label>
+<input id="lease-{{.Project}}" name="max_lease_hours" type="number" min="0" step="1" value="{{.Envelope.MaxLeaseHours}}" required>
+<label for="volume-{{.Project}}">Max volume, GB (0 = none)</label>
+<input id="volume-{{.Project}}" name="volume_max_gb" type="number" min="0" step="1" value="{{.Envelope.VolumeMaxGB}}" required>
+</fieldset>
+<button type="submit">Save the envelope</button>
+</form>
+</section>
+{{end}}
+{{template "foot"}}

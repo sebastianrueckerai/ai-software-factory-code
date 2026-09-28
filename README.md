@@ -258,7 +258,9 @@ activities, each with a timeline step and a comment on the pull request:
    status `pending`, the task, project, pull request, and in `spec` the
    risk class, the migration flag and paths, the review's verdict and
    summary, the reproduction, the head). A task has one pending merge
-   request; a new attempt or the task's end denies it as `factoryd`.
+   request; a new attempt denies it as `factoryd`, and the task's end
+   denies its pending requests of both kinds (a resource request survives
+   a new attempt).
 
 The workflow then waits, without a timer, for `approved`, a change
 request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
@@ -581,7 +583,11 @@ same transaction. Beyond it, the tool files an `approval_requests` row
 `pending human approval <id>`; asking again finds the same request. An
 approval covers one commission of that spec or a smaller one for the
 task (the server row records `approval_id`); a denial is answered with
-the human's note. Widening a project is an envelope edit.
+the human's note. The console approves a request for the task (that one
+commission) or for the project: the envelope widens just enough for it
+(its type, lease, volume, one more server, and the month to the cent
+above use plus its reservation) and the request is approved, both as the
+human, in one transaction under the headroom lock.
 
 **Registry first.** The rows (table `cloud_resources`, project `agent`,
 owner the task, the session, the repository, the type or size, the
@@ -602,8 +608,9 @@ it accrues: each resource's started hours not yet booked go to a
 come off the reservation; once a commission's rows are closed and fully
 booked, the rest of the reservation returns. A reservation expires 24 h
 after its lease, so factoryd's hold sweep books it whole only if the
-collector stopped for a day. Promotion (`promoted`, set in the console)
-drops the reservation and the lease; the resource then counts against
+collector stopped for a day. Promotion (`promoted`, set in the console,
+`promoted_by`) drops the reservation and the lease; a console release
+(`released_by`) ends the lease now and the collector deletes it; the resource then counts against
 the project's month as it accrues.
 
 **Reachability.** factoryd reads the live leases from the registry
@@ -657,6 +664,25 @@ the webhook and intake API on `:8080` stay in-cluster. Server-rendered
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the
   human, which resumes the task through the human-comment path.
+- Approval cards in the human lane, from `approval_requests`. A resource
+  request shows its type, purpose, lease, monthly cost, project and task;
+  approve for the task or the project, or deny with a reason (`decided_by`,
+  `decided_at`, `decision_note`). A merge request shows the pull request,
+  the risk class, the migration flag and the model review. Approve submits
+  an APPROVED review at the gated head as the human, and only once Forgejo
+  took it calls `factoryd.ApproveMerge`; deny with a reason submits a
+  REQUEST_CHANGES review (the changes-requested path sends the task back)
+  or rejects: the reason is commented and the pull request closed as the
+  human, which fails the task.
+- `/resources`: the agent project's commissions by project and task (open,
+  or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
+  booked so far and state; promote and release per commission; each
+  project's envelope (the code repository's shows the policy default until
+  saved) with an edit form, saved with `set_by`.
+- Boot creates the labels intake reads on the code repository
+  (`factoryd.BootLabels`): `agent`, `human`, `state/*`, `priority/p0..p3`
+  and `severity/critical|high|medium|low`; the new-task form offers the
+  priorities.
 - `/costs`: the ledger per day and kind and per task for 14 days, today
   against the day cap. `/policy`: the version in force, linked to its file
   in the infra repository for edits.

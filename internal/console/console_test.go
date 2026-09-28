@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -49,6 +51,10 @@ type fakeForgejo struct {
 	refuse    bool // token endpoint answers 400
 	tokenN    int
 	failAPI   bool
+
+	reviews    []map[string]string
+	failReview bool
+	closed     []string // "path state"
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -102,6 +108,21 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		f.issues = append(f.issues, body)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"number": 41})
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		f.reviews = append(f.reviews, body)
+		if f.failReview {
+			http.Error(w, `{"message":"review refused"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		w.Write([]byte(`{"id":12}`))
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		f.closed = append(f.closed, r.URL.Path+" "+body["state"])
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`))
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
@@ -149,9 +170,87 @@ type fakeObjects map[string][]byte
 func (o fakeObjects) Put(_ context.Context, k string, b []byte) error { o[k] = b; return nil }
 func (o fakeObjects) Get(_ context.Context, k string) ([]byte, error) { return o[k], nil }
 
-type fakeApprovals []Approval
+// fakeApprovals is the approval_requests table.
+type fakeApprovals struct {
+	mu   sync.Mutex
+	rows []factoryd.ApprovalRequest
+}
 
-func (a fakeApprovals) PendingApprovals(context.Context) ([]Approval, error) { return a, nil }
+func (a *fakeApprovals) ApprovalRequests(_ context.Context, status string) ([]factoryd.ApprovalRequest, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []factoryd.ApprovalRequest
+	for _, r := range a.rows {
+		if r.Status == status {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+func (a *fakeApprovals) DecideApproval(_ context.Context, id int64, kind, status, by, note string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, r := range a.rows {
+		if r.ID == id && r.Kind == kind && r.Status == "pending" {
+			a.rows[i].Status, a.rows[i].DecidedBy, a.rows[i].DecisionNote = status, by, note
+			return nil
+		}
+	}
+	return factoryd.ErrNotFound
+}
+
+func (a *fakeApprovals) get(id int64) factoryd.ApprovalRequest {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, r := range a.rows {
+		if r.ID == id {
+			return r
+		}
+	}
+	return factoryd.ApprovalRequest{}
+}
+
+// fakeResources is cloudres.AgentStore: it records the calls.
+type fakeResources struct {
+	rows  []cloudres.Resource
+	envs  []cloudres.EnvelopeRecord
+	calls []string
+	set   map[string]policy.Envelope
+}
+
+func (f *fakeResources) Commissions(_ context.Context, since time.Time) ([]cloudres.Resource, error) {
+	f.calls = append(f.calls, "commissions")
+	return f.rows, nil
+}
+
+func (f *fakeResources) Envelopes(context.Context) ([]cloudres.EnvelopeRecord, error) {
+	return f.envs, nil
+}
+
+func (f *fakeResources) SetEnvelope(_ context.Context, project string, env policy.Envelope, by string) error {
+	f.calls = append(f.calls, "set "+project+" by "+by)
+	f.set[project] = env
+	return nil
+}
+
+func (f *fakeResources) ApproveForProject(_ context.Context, id int64, by string) (policy.Envelope, error) {
+	f.calls = append(f.calls, fmt.Sprintf("project-approve %d by %s", id, by))
+	return policy.Envelope{}, nil
+}
+
+func (f *fakeResources) Promote(_ context.Context, id int64, by string) error {
+	f.calls = append(f.calls, fmt.Sprintf("promote %d by %s", id, by))
+	return nil
+}
+
+func (f *fakeResources) EndLease(_ context.Context, id int64, by string) error {
+	f.calls = append(f.calls, fmt.Sprintf("release %d by %s", id, by))
+	if id == 404 {
+		return fmt.Errorf("resource %d is not an open agent resource", id)
+	}
+	return nil
+}
 
 type fakeLedger struct {
 	from, to time.Time
@@ -167,27 +266,50 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 	return policy.Version{ID: 4, SHA256: "c9d98bb0aa", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
-			Classes: map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}}}}, true, nil
+			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}}}, true, nil
 }
 
 type rig struct {
-	c       *Console
-	fg      *fakeForgejo
-	tasks   *fakeTasks
-	writers *fakeWriters
-	objects fakeObjects
-	ledger  *fakeLedger
+	c         *Console
+	fg        *fakeForgejo
+	tasks     *fakeTasks
+	writers   *fakeWriters
+	objects   fakeObjects
+	ledger    *fakeLedger
+	approvals *fakeApprovals
+	resources *fakeResources
+	signalErr error
 }
+
+var monthly = 8.99
 
 func newRig(t *testing.T) *rig {
 	fg := newFakeForgejo(t)
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{}}
+	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{},
+		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
+			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
+				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
+				Spec: json.RawMessage(`{"server_type":"cx33","purpose":"load test","lease_minutes":300,"volume_gb":0,"location":"fsn1",` +
+					`"reservation_eur":0.072,"hourly_eur":0.0144,"beyond_envelope":["a lease of 300 minutes exceeds the envelope's 4 h"]}`)},
+			{ID: 4, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 9, Status: "pending",
+				Spec: json.RawMessage(`{"risk_class":"high","migration":true,"migrations":["internal/factoryd/migrations/0018_x.sql"],` +
+					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123"}`)},
+			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
+		}},
+		resources: &fakeResources{set: map[string]policy.Envelope{}}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", Repo: factoryd.Repo{Owner: "sf", Name: "code"},
 		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
-		Approvals: fakeApprovals{{ID: 3, Kind: "resource", TaskID: "t-res", Summary: "cx33 for load test", MonthlyEUR: 12.5}},
+		Approvals: r.approvals, Resources: r.resources,
+		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))
+			return r.signalErr
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -428,7 +550,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		`href="https://git.example/sf/code/issues/11"`, `href="https://git.example/sf/code/pulls/12"`,
 		`href="/tasks/t-q/timeline"`, "spent 1.23 / 5.00 EUR",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
-		"human work", "cx33 for load test", "12.50 EUR per month",
+		"human work", "load test", "8.99 EUR per month",
 		`hx-get="/board"`, `hx-trigger="every 10s"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -623,6 +745,260 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 		`href="https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/policy lacks %q", want)
+		}
+	}
+}
+
+func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.Task{{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, `id="col-approvals"`)
+	end := strings.Index(body[start:], "</section>")
+	lane := body[start : start+end]
+	for _, want := range []string{
+		// the resource request: type, purpose, lease, monthly cost, project, the task
+		"Resource request", "<dd>cx33</dd>", "<dd>load test</dd>", "<dd>5 h</dd>", "8.99 EUR per month; this lease 0.0720 EUR",
+		"<dd>sf/code</dd>", "a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
+		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `name="scope" value="task" checked`, `name="scope" value="project"`,
+		// the merge request: the PR, the risk class, the migration, the review
+		`Merge <a href="https://git.example/sf/code/pulls/9">PR #9</a>`, "<dd>high</dd>",
+		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>", "<dd>approve: adds the column safely</dd>",
+		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
+		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
+	} {
+		if !strings.Contains(lane, want) {
+			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">2</span>`) {
+		t.Error("the lane shows a decided request")
+	}
+}
+
+// Approve submits the human's APPROVED review at the gated head through
+// their token, and only then signals the workflow.
+func TestMergeApproveReviewsThenSignals(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
+	}
+	want := []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}
+	if fmt.Sprint(r.fg.calls) != fmt.Sprint(want) {
+		t.Fatalf("calls = %q, want %q", r.fg.calls, want)
+	}
+	if rv := r.fg.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "abc123" {
+		t.Fatalf("review = %v", rv)
+	}
+	if r.approvals.get(4).Status != "pending" {
+		t.Fatal("the console decided the merge request; factoryd's Merge records the approval once merged")
+	}
+}
+
+func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.fg.calls, r.fg.failReview = nil, true
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("approve with a refused review = %d", rec.Code)
+	}
+	for _, c := range r.fg.calls {
+		if strings.HasPrefix(c, "SIGNAL") {
+			t.Fatalf("signalled after a failed review: %q", r.fg.calls)
+		}
+	}
+	// the review went through but the signal did not: say so
+	r.fg.failReview, r.signalErr = false, errors.New("temporal unavailable")
+	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "review is on the pull request") {
+		t.Fatalf("approve with a failed signal = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.fg.calls = nil
+	for name, f := range map[string]url.Values{
+		"no reason":  {"action": {"request_changes"}, "note": {"  "}},
+		"bad action": {"action": {"merge-anyway"}, "note": {"x"}},
+	} {
+		f.Set("csrf", s.csrf)
+		if rec := r.do(post("/approvals/4/deny", f), ck); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", name, rec.Code)
+		}
+	}
+	if len(r.fg.calls) != 0 || r.approvals.get(4).Status != "pending" {
+		t.Fatalf("a refused deny acted: %q", r.fg.calls)
+	}
+	rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split the migration"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("request changes = %d: %s", rec.Code, rec.Body)
+	}
+	if rv := r.fg.reviews[0]; rv["event"] != "REQUEST_CHANGES" || rv["body"] != "split the migration" || rv["commit_id"] != "abc123" ||
+		r.fg.calls[0] != "POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1" {
+		t.Fatalf("review = %v, calls %q", rv, r.fg.calls)
+	}
+	if a := r.approvals.get(4); a.Status != "denied" || a.DecidedBy != "sebastian" || a.DecisionNote != "changes requested: split the migration" {
+		t.Fatalf("request = %+v", a)
+	}
+	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"x"}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("deny of a decided request = %d, want 409", rec.Code)
+	}
+
+	r.approvals.rows[1].Status = "pending"
+	r.fg.calls = nil
+	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject = %d: %s", rec.Code, rec.Body)
+	}
+	want := []string{"POST /api/v1/repos/sf/code/issues/9/comments Bearer access-1", "PATCH /api/v1/repos/sf/code/pulls/9 Bearer access-1"}
+	if fmt.Sprint(r.fg.calls) != fmt.Sprint(want) || r.fg.closed[0] != "/api/v1/repos/sf/code/pulls/9 closed" ||
+		r.fg.comments["/api/v1/repos/sf/code/issues/9/comments"] != "Rejected in the factory console: not wanted" {
+		t.Fatalf("calls = %q, closed %q, comments %v", r.fg.calls, r.fg.closed, r.fg.comments)
+	}
+	if a := r.approvals.get(4); a.Status != "denied" || a.DecisionNote != "rejected: not wanted" {
+		t.Fatalf("request = %+v", a)
+	}
+}
+
+func TestResourceApproveForTaskOrProjectAndDeny(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusBadRequest {
+		t.Fatalf("approve without a scope = %d", rec.Code)
+	}
+	rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve for the task = %d: %s", rec.Code, rec.Body)
+	}
+	if a := r.approvals.get(3); a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved for the task" {
+		t.Fatalf("request = %+v", a)
+	}
+	if len(r.resources.calls) != 0 || len(r.fg.calls) != 1 { // the login's GET /user only
+		t.Fatalf("a task approve touched %q / %q", r.resources.calls, r.fg.calls)
+	}
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("second approve = %d, want 409", rec.Code)
+	}
+
+	r.approvals.rows[0].Status = "pending"
+	rec = r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}), ck)
+	if rec.Code != http.StatusSeeOther || fmt.Sprint(r.resources.calls) != "[project-approve 3 by sebastian]" {
+		t.Fatalf("approve for the project = %d, calls %q", rec.Code, r.resources.calls)
+	}
+
+	rec = r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"use a cx23"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("deny = %d: %s", rec.Code, rec.Body)
+	}
+	if a := r.approvals.get(3); a.Status != "denied" || a.DecidedBy != "sebastian" || a.DecisionNote != "use a cx23" {
+		t.Fatalf("request = %+v", a)
+	}
+	if rec := r.do(post("/approvals/5/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("approve of a denied request = %d", rec.Code)
+	}
+}
+
+func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	lease := time.Date(2026, 9, 28, 14, 30, 0, 0, time.UTC)
+	r.resources.rows = []cloudres.Resource{
+		{ID: 10, Kind: "firewall", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", LeaseExpires: lease},
+		{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "cx33", Address: "203.0.113.9",
+			LeaseExpires: lease, PricePerHourEUR: 0.0144, AccruedEUR: 0.0288, Purpose: "load test"},
+		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Promoted: true, PromotedBy: "alice"},
+		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", ReleasedBy: "sebastian"},
+	}
+	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/other", SetBy: "alice", SetAt: lease,
+		Envelope: policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
+		Use:      cloudres.EnvelopeUse{OpenServers: 1, MonthEUR: 1.5}}}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /resources = %d: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
+		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>2026-09-28 14:30 UTC</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
+		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
+		// the code repository has no envelope yet: the policy default
+		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
+		`name="server_types" type="text" value="cx23"`,
+		"Set by alice at 2026-09-28 14:30 UTC. This month: 1.5000 EUR used or reserved, 1 servers open.",
+		`name="server_types" type="text" value="cx23, cx33"`, `<label for="count-sf/other">`,
+		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/resources lacks %q", want)
+		}
+	}
+	// one promote (the unpromoted open commission's server) and a release
+	// per open commission; none for the closed one
+	if strings.Count(body, `/promote"`) != 1 || !strings.Contains(body, `action="/resources/11/promote"`) ||
+		strings.Count(body, `/release"`) != 2 || !strings.Contains(body, `action="/resources/12/release"`) || strings.Contains(body, "/resources/13/") {
+		t.Errorf("buttons: %d promote, %d release", strings.Count(body, `/promote"`), strings.Count(body, `/release"`))
+	}
+}
+
+func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/other"}}
+	if rec := r.do(post("/resources/11/promote", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/resources" {
+		t.Fatalf("promote = %d", rec.Code)
+	}
+	if rec := r.do(post("/resources/12/release", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("release = %d", rec.Code)
+	}
+	if rec := r.do(post("/resources/404/release", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("release of a closed resource = %d", rec.Code)
+	}
+	if rec := r.do(post("/resources/11/promote", url.Values{}), ck); rec.Code != http.StatusForbidden {
+		t.Fatalf("promote without the form token = %d", rec.Code)
+	}
+	if want := "[promote 11 by sebastian release 12 by sebastian release 404 by sebastian]"; fmt.Sprint(r.resources.calls) != want {
+		t.Fatalf("calls = %q", r.resources.calls)
+	}
+	form := url.Values{"csrf": {s.csrf}, "project": {"sf/code"}, "monthly_eur": {"25.5"}, "server_types": {"cx23, cx33 cx23"},
+		"max_count": {"3"}, "max_lease_hours": {"12"}, "volume_max_gb": {"0"}}
+	rec := r.do(post("/envelopes", form), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/resources?saved=sf%2Fcode" {
+		t.Fatalf("save = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	want := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 12, VolumeMaxGB: 0}
+	if got := r.resources.set["sf/code"]; fmt.Sprint(got) != fmt.Sprint(want) || r.resources.calls[3] != "set sf/code by sebastian" {
+		t.Fatalf("saved %+v, calls %q", got, r.resources.calls)
+	}
+	form.Set("project", "sf/other")
+	form.Set("server_types", "")
+	if rec := r.do(post("/envelopes", form), ck); rec.Code != http.StatusSeeOther || r.resources.set["sf/other"].ServerTypes == nil {
+		t.Fatalf("an envelope with no types (closed to agents) = %d, %+v", rec.Code, r.resources.set["sf/other"])
+	}
+	for name, change := range map[string][2]string{
+		"unknown project":  {"project", "evil/repo"},
+		"negative monthly": {"monthly_eur", "-1"},
+		"not a number":     {"monthly_eur", "NaN"},
+		"bad type":         {"server_types", "cx23; rm"},
+		"fraction count":   {"max_count", "1.5"},
+		"small volume":     {"volume_max_gb", "5"},
+		"huge lease":       {"max_lease_hours", "100000"},
+	} {
+		f := url.Values{}
+		for k, v := range form {
+			f[k] = v
+		}
+		f.Set("project", "sf/code")
+		f.Set(change[0], change[1])
+		n := len(r.resources.calls)
+		if rec := r.do(post("/envelopes", f), ck); rec.Code != http.StatusBadRequest || len(r.resources.calls) != n {
+			t.Errorf("%s: %d, want 400 and nothing saved", name, rec.Code)
 		}
 	}
 }
