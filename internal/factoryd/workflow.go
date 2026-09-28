@@ -211,7 +211,19 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v8:  workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
 		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
 		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap)}
-	return run.lifecycle()
+	final, err := run.lifecycle()
+	drainSignals(ctx)
+	return final, err
+}
+
+// drainSignals drops the signals still pending when the run has decided
+// (the bot merge's own pr_merged, the issue's close): they change nothing
+// now. ReceiveAsync adds no command, so replay is unaffected.
+func drainSignals(ctx workflow.Context) {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved} {
+		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
+		}
+	}
 }
 
 // Workflow versions. A running workflow can wait days for its reviewer, so

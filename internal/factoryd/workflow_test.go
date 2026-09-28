@@ -1,12 +1,14 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,12 +40,31 @@ type workflowHarness struct {
 	finishAt  time.Time
 	escalated []string // Escalate reasons, in order
 	usage     []TaskUsage
+	logs      *lockedBuffer // the workflow's log
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 func newWorkflowHarness(t *testing.T) *workflowHarness {
 	var suite testsuite.WorkflowTestSuite
-	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
-	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment()}
+	logs := &lockedBuffer{}
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
+	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
 	h.env.RegisterWorkflowWithOptions(TaskWorkflow{Config: testWorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:       func(ctx context.Context, taskID string) error { return nil },

@@ -32,6 +32,7 @@ type gateHarness struct {
 	policyDelay   time.Duration
 	reviewErr     error
 	reviewDelay   time.Duration
+	mergeDelay    time.Duration
 	policyCommits []string
 	started       time.Time
 }
@@ -80,7 +81,7 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			return nil
 		})
 	m := 0
-	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
@@ -107,6 +108,24 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 // Green checks go through the policy gate, the reproduction and the model
 // review to an approval request; the console's approved signal merges as
 // factory-merge at the gated head and finishes the task done.
+// The bot's merge makes Forgejo send pr_merged, and closes the issue:
+// those signals land after the decision and are drained, so the run ends
+// without unhandled signals.
+func TestWorkflowEndsWithoutUnhandledSignalsAfterItsMerge(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.mergeDelay = time.Minute })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(time.Hour+10*time.Second, SignalPRMerged, TaskSignal{Author: "factory-merge", PR: 9})
+	g.signalAfter(time.Hour+20*time.Second, SignalIssueClosed, TaskSignal{Author: "factory-merge"})
+	if final := g.run(t); final != "done" || !slices.Contains(g.steps, "merge") {
+		t.Fatalf("final = %q, steps %v", final, g.steps)
+	}
+	if strings.Contains(g.logs.String(), "unhandled signals") {
+		t.Fatalf("log:\n%s", g.logs.String())
+	}
+}
+
 func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	g := newGateHarness(t)
 	g.onSessions(pushed("s1", "c1"))
