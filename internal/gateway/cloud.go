@@ -481,11 +481,16 @@ write_files:
     PasswordAuthentication no
     KbdInteractiveAuthentication no
 runcmd:
+- [usermod, -p, '*', root]
+- [chage, -d, '-1', root]
 - [systemctl, restart, ssh]
 `))
 
 // commissionUserData makes sshd trust only certificates the factory CA
-// signed: no authorized keys, no passwords.
+// signed: no authorized keys, no passwords. Hetzner sets an expired root
+// password on a server created without SSH keys, which blocks even a
+// certificate login ("Password change required"): it is removed, with
+// its expiry.
 func commissionUserData(caPublicKey string) (string, error) {
 	if strings.ContainsAny(caPublicKey, "\r\n") {
 		return "", errors.New("the CA public key is not one line")

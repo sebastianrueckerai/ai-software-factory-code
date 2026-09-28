@@ -429,7 +429,8 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 			t.Fatalf("server label %s = %q, want %q (labels %v)", k, sr.Labels[k], v, sr.Labels)
 		}
 	}
-	for _, want := range []string{"ssh-ed25519 AAAACAKEY factory-ca", "TrustedUserCAKeys /etc/ssh/factory-user-ca.pub", "AuthorizedKeysFile none", "PasswordAuthentication no"} {
+	for _, want := range []string{"ssh-ed25519 AAAACAKEY factory-ca", "TrustedUserCAKeys /etc/ssh/factory-user-ca.pub", "AuthorizedKeysFile none", "PasswordAuthentication no",
+		"- [usermod, -p, '*', root]", "- [chage, -d, '-1', root]"} {
 		if !strings.Contains(sr.UserData, want) {
 			t.Fatalf("user data lacks %q:\n%s", want, sr.UserData)
 		}
