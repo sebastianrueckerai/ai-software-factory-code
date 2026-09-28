@@ -381,7 +381,7 @@ func TestBounds(t *testing.T) {
 	}
 	for name, want := range map[string]time.Duration{
 		"RunSession": 21 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
-		"ModelReview": 3 * time.Minute, "Merge": 5 * time.Minute, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
+		"ModelReview": 3 * time.Minute, "Merge": 90 * time.Second, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
 		"SuperviseGate": 6 * time.Minute,
 	} {
 		if got := d.Bound(name); got != want {

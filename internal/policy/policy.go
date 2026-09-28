@@ -61,10 +61,12 @@ const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
 // 154): a session at the 20 min wall-clock cap is stopped by the cap
-// already, so its bound is for one that outlives the cap by a minute; the
-// gate supervisor gets its model call's whole start-to-close.
+// already, so its bound is for one that outlives the cap by a minute; a
+// merge attempt is one API call under a 2-minute timeout, its retries on
+// workflow timers (ruling 163); the gate supervisor gets its model call's
+// whole start-to-close.
 var DefaultBounds = map[string]int{
-	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, "SuperviseGate": 360, BoundDefault: 120,
+	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 90, "SuperviseGate": 360, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes

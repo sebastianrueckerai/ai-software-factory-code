@@ -820,7 +820,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
 - `/alerts`: the newest 200 alerts (ruling 140): `gate_bound` (an activity
   still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor; the policy's `bounds` section, seconds
-  per activity and `default`), `supervisor_trip` (every detector trip the
+  per activity and `default`; without it RunSession 1260, WaitChecks 600,
+  GateReproduction 900, ModelReview 180, Merge 90, SuperviseGate 360,
+  every other activity 120), `supervisor_trip` (every detector trip the
   supervisor decided; `continue` is `noise`, any other action `real`) and
   `escalation` (every escalation, not a healed run's repeat of it; open until an approver clicks `real
   problem` or `noise`, here or on the escalation's board card). A
