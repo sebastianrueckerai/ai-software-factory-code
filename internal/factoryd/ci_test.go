@@ -157,7 +157,8 @@ func TestCISpawnerSpawnsRunnerForWaitingJob(t *testing.T) {
 	if !ok {
 		t.Fatalf("namespace %s not created", ns)
 	}
-	if labels["factory.ai/task"] != "ci-42" || labels["pod-security.kubernetes.io/enforce"] != "restricted" {
+	// factory.ai/ci is what the build cache's network policy admits for reads
+	if labels["factory.ai/task"] != "ci-42" || labels["pod-security.kubernetes.io/enforce"] != "restricted" || labels["factory.ai/ci"] != "true" {
 		t.Fatalf("namespace labels = %v", labels)
 	}
 	if len(hub.registered) != 1 {
@@ -468,6 +469,30 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(cnpStr, "k8s:app.kubernetes.io/name:forgejo") || !strings.Contains(cnpStr, "port:3000") {
 		t.Fatal("egress missing the in-cluster forgejo allow")
+	}
+	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "build-cache.forgejo.svc.cluster.local") {
+		t.Fatalf("DNS rule missing the build cache: %v", dnsRule)
+	}
+	var cacheRule map[string]any
+	for _, rule := range cnp["egress"].([]any) {
+		r := rule.(map[string]any)
+		if strings.Contains(fmt.Sprint(r["toEndpoints"]), "build-cache") {
+			cacheRule = r
+		}
+	}
+	wantCache := map[string]any{
+		"toEndpoints": []any{map[string]any{
+			"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "forgejo",
+				"k8s:app.kubernetes.io/name":      "build-cache",
+			},
+		}},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
+		}},
+	}
+	if !reflect.DeepEqual(cacheRule, wantCache) {
+		t.Fatalf("build cache egress rule = %v, want %v", cacheRule, wantCache)
 	}
 	if strings.Contains(cnpStr, "kubernetes.default") || strings.Contains(cnpStr, "443 protocol:TCP] map[port:6443") {
 		t.Fatal("egress must not reach the Kubernetes API")

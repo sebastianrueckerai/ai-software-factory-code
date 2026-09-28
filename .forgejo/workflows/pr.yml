@@ -4,9 +4,9 @@
 # egress. Every tool a step needs (Go, gosec) ships pre-installed in
 # Dockerfile.runner so no step reaches past the egress allowlist for
 # tooling; only actions/checkout itself, the Go module proxy, Docker Hub's
-# token service (buildctl answers the build VM's token requests) and, for
-# image-build, the job's own build VM are reachable (see ciEgressSpec in
-# internal/factoryd/ci.go).
+# token service (buildctl answers the build VM's token requests), the
+# read-only build cache and, for image-build, the job's own build VM are
+# reachable (see ciEgressSpec in internal/factoryd/ci.go).
 #
 # No secrets.* anywhere in this file — the runner pod holds no repository
 # or registry credential.
@@ -142,28 +142,43 @@ jobs:
             sleep 3
           done
       - name: build changed images in parallel
+        # Each build first copies its image's layer cache, written by main CI
+        # to the in-cluster build cache (read-only from here, ruling 111),
+        # into a local OCI layout that buildctl streams to the VM. A missing
+        # cache only means a cold build.
         run: |
           set -uo pipefail
           images="${{ needs.changes.outputs.images }}"
           echo "building:$images"
           logdir=$(mktemp -d)
+          # the pod's 8Gi emptyDir, outside the checkout (the build context)
+          cachedir=$(mktemp -d -p /workspace)
+          cache=build-cache.forgejo.svc.cluster.local:5000/cache
+          declare -A image_for=([Dockerfile]=factory-gateway [Dockerfile.sandbox]=opencode-worker [Dockerfile.runner]=ci-runner)
+          build() {
+            local df=$1 image=${image_for[$1]} digest import=() start=$SECONDS
+            if digest=$(crane digest --insecure "$cache/$image:main" 2>"$logdir/$df.crane") \
+              && crane pull --insecure --format=oci "$cache/$image@$digest" "$cachedir/$image" 2>"$logdir/$df.crane"; then
+              echo "cache: $cache/$image@$digest, fetched in $((SECONDS - start)) s"
+              # crane's layout carries no tag, so name the manifest by digest
+              import=(--import-cache "type=local,src=$cachedir/$image,digest=$digest")
+            else
+              echo "no cache for $image, building without it: $(tail -n 1 "$logdir/$df.crane")"
+            fi
+            buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
+              build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+              --opt filename="$df" --output type=oci,dest=/dev/null "${import[@]}"
+          }
           declare -A pid_for
           for df in $images; do
-            buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
-              build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
-              --opt filename="$df" --output type=oci,dest=/dev/null \
-              >"$logdir/$df.log" 2>&1 &
+            build "$df" >"$logdir/$df.log" 2>&1 &
             pid_for[$df]=$!
           done
           status=0
           for df in $images; do
-            if wait "${pid_for[$df]}"; then
-              echo "ok: $df"
-            else
-              status=1
-              echo "FAILED: $df"
-              echo "---- $df build log ----"
-              cat "$logdir/$df.log"
-            fi
+            if wait "${pid_for[$df]}"; then result="ok: $df"; else status=1; result="FAILED: $df"; fi
+            echo "---- $df build log ----"
+            cat "$logdir/$df.log"
+            echo "$result"
           done
           exit $status

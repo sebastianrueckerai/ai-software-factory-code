@@ -205,6 +205,7 @@ type ciSetupStep struct {
 func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, reg CIRunnerRegistration, kind ciJobKind) error {
 	if err := s.kube.CreateNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    jobLabel(jobID),
+		"factory.ai/ci":                      "true", // the build cache admits reads from these namespaces
 		"pod-security.kubernetes.io/enforce": "restricted",
 	}); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
@@ -490,11 +491,16 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 	}
 }
 
+// buildCacheHost is the in-cluster registry pr.yml's image-build reads
+// layer caches from (infra k8s/platform/build-cache, ruling 111).
+const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
+
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
 // #5): the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
-// proxy and checksum database, and the host actions/checkout resolves
-// against. No Kubernetes API, no other namespace, no LiteLLM, no gateway.
+// proxy and checksum database, the host actions/checkout resolves against,
+// and the read-only build cache (its own policy refuses writes). No
+// Kubernetes API, no other namespace, no LiteLLM, no gateway.
 // A build job additionally reaches its own VM's buildkitd. BuildKit fetches
 // registry tokens through the client session, so Docker Hub's token service
 // is the runner's to reach; layers and release downloads are the VM's.
@@ -510,7 +516,7 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	for _, host := range fqdns {
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
-	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()}, map[string]any{"matchName": buildCacheHost})
 
 	toFQDNs := make([]any, 0, len(fqdns))
 	for _, host := range fqdns {
@@ -527,6 +533,17 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 			}},
 			"toPorts": []any{map[string]any{
 				"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+			}},
+		},
+		map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "forgejo",
+					"k8s:app.kubernetes.io/name":      "build-cache",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
 			}},
 		},
 		map[string]any{

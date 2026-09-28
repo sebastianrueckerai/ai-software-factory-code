@@ -573,7 +573,11 @@ revocation test runs only with the `FACTORYD_LIVE_*` variables set
 against the live cluster. CI (`.forgejo/workflows/ci.yml`) runs on push
 to protected `main` only, on the privileged dind runner, tests, then
 builds the factory image, the sandbox image and the CI runner image
-into the Forgejo registry.
+into the Forgejo registry. Each build imports and exports (`mode=max`)
+its image's layer cache in the in-cluster build cache,
+`build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra
+`k8s/platform/build-cache`, ruling 111), which the pull-request builds
+read; a cache outage only warns.
 
 ## The untrusted pull-request runner (ruling 78)
 
@@ -603,14 +607,14 @@ default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
 module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
 redirects zip downloads there), `data.forgejo.org`, `auth.docker.io`
 (BuildKit fetches the build VM's registry tokens through the `buildctl`
-session); nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
+session), the build cache on tcp 5000; nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 45-minute deadline passes. Idempotency is the Forgejo job id on the
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go 1.25 toolchain, gosec and `buildctl`, and nothing that builds
+node, the Go 1.25 toolchain, gosec, `buildctl` and `crane`, and nothing that builds
 images: no rootless BuildKit comes up under gVisor, and a root build pod
 in the cluster was the one exception the admission policy had to make.
 Image builds run outside the cluster instead (ruling 110,
@@ -632,6 +636,16 @@ Image builds run outside the cluster instead (ruling 110,
   `BUILDKIT_TLS_DIR` and `BUILDKIT_TLS_SERVERNAME`. `image-build` waits up
   to three minutes for `buildctl debug workers`, then builds the changed
   Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
+- **The cache.** Before each build the runner pod copies the image's
+  cache, which main CI wrote, from the in-cluster build cache into a local
+  OCI layout (`crane pull --format=oci`, by digest) and passes it with
+  `--import-cache type=local,...,digest=<digest>`; buildctl streams what
+  the build needs to the VM over the session it already holds. The VM
+  never reaches the cache and holds no credential for it; nothing does:
+  the cache's network policy is the access control, and a CI namespace
+  (label `factory.ai/ci=true`) may only GET and HEAD. A missing cache
+  (a new image, the first build after a rebuild) logs `no cache for
+  <image>` and builds cold.
 - **The network.** A Hetzner firewall per VM admits tcp 1234 only from the
   cluster nodes' public IPv4s (`CI_BUILD_VM_SOURCES`, from ConfigMap
   `cluster-facts`, ruling 112) and lets the VM out on tcp 80/443 and

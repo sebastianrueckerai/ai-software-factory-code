@@ -4,13 +4,15 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 # an unprivileged, gVisor-isolated pod — no docker CLI, no socket, no
 # registry or repository credential baked in or mounted. Everything a
 # pull_request job needs (a Go + C toolchain — go test -race needs cgo, git,
-# node for JS actions, buildctl to drive the job's build VM) ships
+# node for JS actions, buildctl to drive the job's build VM, crane to read
+# the build cache) ships
 # pre-installed so the job itself never has to reach past the egress
 # allowlist for tooling.
 ARG FORGEJO_RUNNER_VERSION=13.2.0
 ARG BUILDKIT_VERSION=0.33.0
 ARG GO_VERSION=1.25.9
 ARG GOSEC_VERSION=2.29.0
+ARG CRANE_VERSION=0.22.1
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends \
@@ -29,6 +31,14 @@ ADD https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buil
 RUN echo "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead  /tmp/buildkit.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/buildkit.tar.gz -C /usr/local bin/buildctl \
       && rm /tmp/buildkit.tar.gz
+
+# crane: image-build copies each image's layer cache from the in-cluster
+# build cache into a local OCI layout that buildctl streams to the VM
+# (ruling 111).
+ADD https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /tmp/crane.tar.gz
+RUN echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  /tmp/crane.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane \
+      && rm /tmp/crane.tar.gz
 
 # Go 1.25 toolchain, pre-installed so a job never downloads it mid-run.
 ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz

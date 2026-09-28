@@ -2,6 +2,13 @@ name: ci
 on:
   push:
     branches: [main]
+env:
+  # Each image's layer cache for the pull-request builds (infra
+  # k8s/platform/build-cache, ruling 111): main writes it, PR jobs only read
+  # it. The dind's containerd image store lets its default builder export
+  # it; plain HTTP inside the cluster. A cache outage never fails main: the
+  # import only warns, the export ignores errors.
+  CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -22,7 +29,9 @@ jobs:
       - name: build and push gateway image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA .
+          docker build -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA \
+            --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
+            --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
   image-sandbox:
     needs: test
@@ -34,7 +43,9 @@ jobs:
       - name: build and push sandbox image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA .
+          docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
+            --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
+            --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
   image-runner:
     needs: test
@@ -46,5 +57,7 @@ jobs:
       - name: build and push CI runner image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -f Dockerfile.runner -t git.aisoftwarefactory.world/sf/ci-runner:$SHA .
+          docker build -f Dockerfile.runner -t git.aisoftwarefactory.world/sf/ci-runner:$SHA \
+            --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true \
+            --cache-to type=registry,ref=$CACHE/ci-runner:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/ci-runner:$SHA
