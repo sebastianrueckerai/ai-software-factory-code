@@ -56,7 +56,7 @@ type Registrar struct {
 	// MergeUser is factory-merge; ProjectsUser is factory-projects.
 	MergeUser, ProjectsUser string
 	// HostKey scans Forgejo's SSH host key from inside the cluster (ruling
-	// 165); nil: no FORGEJO_SSH_HOST_KEY.
+	// 165); nil: no FACTORY_SSH_HOST_KEY.
 	HostKey func(ctx context.Context) (string, error)
 
 	mu sync.Mutex
@@ -87,9 +87,10 @@ const (
 	SecretRegistryPassword = "REGISTRY_PASSWORD"
 	SecretFactoryRead      = "FACTORY_READ_TOKEN"
 	SecretDeployKey        = "DEPLOY_KEY"
-	// SecretSSHHostKey is Forgejo's ed25519 host key as a scan finds it,
-	// type and key, so no workflow pins a key a rebuild changes (ruling 165)
-	SecretSSHHostKey = "FORGEJO_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
+	// SecretSSHHostKey is Forgejo's SSH host key as a scan finds it, type
+	// and key, so no workflow pins a key a rebuild changes (ruling 165);
+	// Forgejo refuses secret names starting FORGEJO_, GITEA_ or GITHUB_
+	SecretSSHHostKey = "FACTORY_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
 )
 
 // Waiting is an object that needs register-project first.
@@ -357,7 +358,7 @@ func NewDeployKey(comment string) (public, private string, err error) {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))), string(pem.EncodeToMemory(block)), nil
 }
 
-// hostKey keeps FORGEJO_SSH_HOST_KEY at the key a scan finds now; the row
+// hostKey keeps FACTORY_SSH_HOST_KEY at the key a scan finds now; the row
 // keeps its hash, since a secret cannot be read back.
 func (run *reconcileRun) hostKey(ctx context.Context, secrets []string) (Change, error) {
 	key, err := run.r.HostKey(ctx)

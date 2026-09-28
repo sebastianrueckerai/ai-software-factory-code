@@ -265,6 +265,11 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				out = append(out, map[string]string{"name": n})
 			}
 			list(out)
+		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut &&
+			strings.HasPrefix(strings.TrimPrefix(p, repo+"/actions/secrets/"), "FORGEJO_"):
+			// Forgejo reserves the prefixes FORGEJO_, GITEA_ and GITHUB_
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"message":"invalid secret name"}`)
 		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut:
 			s.secrets[strings.TrimPrefix(p, repo+"/actions/secrets/")] = body["data"].(string)
 			w.WriteHeader(http.StatusCreated)

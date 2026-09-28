@@ -28,7 +28,8 @@ func TestRegisterOnForgejo(t *testing.T) {
 		Policy:     func() policy.Document { return policy.Document{Approvers: []string{adminUser}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: base, RegistryHost: "git.example",
-		MergeUser: "factory-merge", ProjectsUser: "factory-projects"}
+		MergeUser: "factory-merge", ProjectsUser: "factory-projects",
+		HostKey: func(context.Context) (string, error) { return "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ", nil }}
 	logs := captureLog(t)
 	a := AdminAuth{User: adminUser, Password: os.Getenv("FORGEJO_TEST_ADMIN_PASSWORD")}
 	ctx := context.Background()

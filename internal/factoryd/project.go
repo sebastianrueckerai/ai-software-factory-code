@@ -48,7 +48,7 @@ type Project struct {
 	// write:repository limited to it (MergeToken, the merge).
 	ReadTokenHash  string
 	HookSecretHash string
-	// HostKeyHash is sha256 hex of the FORGEJO_SSH_HOST_KEY secret set.
+	// HostKeyHash is sha256 hex of the FACTORY_SSH_HOST_KEY secret set.
 	HostKeyHash string
 	PullToken   string
 	GitToken    string

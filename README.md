@@ -937,7 +937,7 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   commits with it; Forgejo admits no Actions job token to a whitelist; a key
   or secret gone missing makes both anew); `FACTORY_READ_TOKEN` (random, its
   sha256 in `read_token_hash`; of two reconciles racing only the one that
-  stores its hash sets the secret); `FORGEJO_SSH_HOST_KEY`, Forgejo's
+  stores its hash sets the secret); `FACTORY_SSH_HOST_KEY`, Forgejo's
   SSH host key, ed25519 when offered (the built-in server offers RSA only
   unless configured otherwise), type and key as factoryd's own handshake with
   `forgejo-ssh.forgejo:22` finds it at every reconcile, its sha256 in

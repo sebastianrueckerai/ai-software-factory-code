@@ -77,7 +77,7 @@ func TestScanHostKey(t *testing.T) {
 	}
 }
 
-// Ruling 165: the Actions secret FORGEJO_SSH_HOST_KEY follows Forgejo's
+// Ruling 165: the Actions secret FACTORY_SSH_HOST_KEY follows Forgejo's
 // host key; a new key (a rebuild) rewrites it, the same key changes nothing.
 func TestHostKeySecretFollowsForgejo(t *testing.T) {
 	rig := newRegisterRig(t)
@@ -88,18 +88,18 @@ func TestHostKeySecretFollowsForgejo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rig.fj.secrets["FORGEJO_SSH_HOST_KEY"] != key || !strings.Contains(rig.logs.String(), "actions secret FORGEJO_SSH_HOST_KEY: created") {
-		t.Fatalf("secret %q, log:\n%s", rig.fj.secrets["FORGEJO_SSH_HOST_KEY"], rig.logs)
+	if rig.fj.secrets["FACTORY_SSH_HOST_KEY"] != key || !strings.Contains(rig.logs.String(), "actions secret FACTORY_SSH_HOST_KEY: created") {
+		t.Fatalf("secret %q, log:\n%s", rig.fj.secrets["FACTORY_SSH_HOST_KEY"], rig.logs)
 	}
 	rig.logs.Reset()
 	rig.reg.Reconcile(ctx, rig.store.m[p.Name])
-	if !strings.Contains(rig.logs.String(), "actions secret FORGEJO_SSH_HOST_KEY: no change") {
+	if !strings.Contains(rig.logs.String(), "actions secret FACTORY_SSH_HOST_KEY: no change") {
 		t.Fatalf("same key:\n%s", rig.logs)
 	}
 	key = "ssh-ed25519 AAAAtwo"
 	rig.logs.Reset()
 	rig.reg.Reconcile(ctx, rig.store.m[p.Name])
-	if rig.fj.secrets["FORGEJO_SSH_HOST_KEY"] != key || !strings.Contains(rig.logs.String(), "actions secret FORGEJO_SSH_HOST_KEY: updated") {
-		t.Fatalf("new key: secret %q, log:\n%s", rig.fj.secrets["FORGEJO_SSH_HOST_KEY"], rig.logs)
+	if rig.fj.secrets["FACTORY_SSH_HOST_KEY"] != key || !strings.Contains(rig.logs.String(), "actions secret FACTORY_SSH_HOST_KEY: updated") {
+		t.Fatalf("new key: secret %q, log:\n%s", rig.fj.secrets["FACTORY_SSH_HOST_KEY"], rig.logs)
 	}
 }
