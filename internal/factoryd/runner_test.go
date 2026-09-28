@@ -595,15 +595,19 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("DNS allowlist lacks %s: %s", name, cnpStr)
 		}
 	}
-	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:storage.googleapis.com"} {
-		if !strings.Contains(cnpStr, name) {
-			t.Fatalf("DNS allowlist lacks %s (ruling 99: the sandbox carries the Go toolchain): %s", name, cnpStr)
+	var fqdn, dnsRule map[string]any
+	for _, rule := range cnp["egress"].([]any) {
+		r := rule.(map[string]any)
+		switch {
+		case r["toFQDNs"] != nil:
+			fqdn = r
+		case strings.Contains(fmt.Sprint(r["toEndpoints"]), "kube-dns"):
+			dnsRule = r
 		}
 	}
-	var fqdn map[string]any
-	for _, rule := range cnp["egress"].([]any) {
-		if r := rule.(map[string]any); r["toFQDNs"] != nil {
-			fqdn = r
+	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:storage.googleapis.com"} {
+		if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), name) {
+			t.Fatalf("DNS rule lacks %s (ruling 99: the sandbox carries the Go toolchain): %v", name, dnsRule)
 		}
 	}
 	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org] map[matchName:storage.googleapis.com]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
