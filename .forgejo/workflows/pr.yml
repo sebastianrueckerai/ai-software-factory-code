@@ -132,13 +132,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: wait for the build VM's buildkitd
-        # the VM boots while the runner starts; buildkitd answers ~40 s after create
+        # the pod's init container buildkitd-ready already waited up to
+        # 3 minutes; this fails the job loudly when buildkitd never answered
         run: |
           set -u
           echo "buildkitd at $BUILDKIT_HOST, mTLS, server name $BUILDKIT_TLS_SERVERNAME"
-          deadline=$(( $(date +%s) + 180 ))
+          deadline=$(( $(date +%s) + 60 ))
           until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers; do
-            if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 3 minutes"; exit 1; fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 4 minutes of the runner's start"; exit 1; fi
             sleep 3
           done
       - name: build changed images in parallel

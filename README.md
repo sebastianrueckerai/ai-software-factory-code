@@ -885,7 +885,7 @@ Image builds run outside the cluster instead (ruling 110,
   mount and egress) waits up to three minutes for `buildctl debug
   workers` and, once it answers, writes `ready` as its termination
   message; it exits 0 either way, so a VM that never answers fails the
-  job loudly in `image-build`'s own wait (up to three more minutes), not
+  job loudly in `image-build`'s own wait (one more minute), not
   in a loop of fresh VMs. `image-build` then builds the changed
   Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
 - **The cache.** Before each build the runner pod copies the image's
