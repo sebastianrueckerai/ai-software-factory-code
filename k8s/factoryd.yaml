@@ -279,6 +279,8 @@ spec:
           valueFrom: {secretKeyRef: {name: console-oauth, key: client_id}}
         - name: CONSOLE_CLIENT_SECRET
           valueFrom: {secretKeyRef: {name: console-oauth, key: client_secret}}
+        - name: CONSOLE_SESSION_KEY
+          valueFrom: {secretKeyRef: {name: console-oauth, key: session_key}}
         - name: CONSOLE_PUBLIC_URL
           value: https://console.aisoftwarefactory.world
         readinessProbe: {httpGet: {path: /readyz, port: http}}

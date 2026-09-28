@@ -279,6 +279,7 @@ func main() {
 		ForgejoPublicURL: forgejo.PublicURL,
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
 		ClientSecret:     mustEnv("CONSOLE_CLIENT_SECRET"),
+		SessionKey:       []byte(mustEnv("CONSOLE_SESSION_KEY")),
 		Repo:             upstream,
 		Tasks:            store,
 		Writers:          forgejo,

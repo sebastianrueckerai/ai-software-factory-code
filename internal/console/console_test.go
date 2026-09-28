@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -300,7 +301,7 @@ func newRig(t *testing.T) *rig {
 		resources: &fakeResources{set: map[string]policy.Envelope{}}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
-		ClientID: "cid", ClientSecret: "csecret", Repo: factoryd.Repo{Owner: "sf", Name: "code"},
+		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), Repo: factoryd.Repo{Owner: "sf", Name: "code"},
 		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
 		Approvals: r.approvals, Resources: r.resources,
@@ -392,7 +393,7 @@ func TestLoginRedirectCarriesPKCEAndExplicitScope(t *testing.T) {
 		t.Errorf("code_challenge %q / state %q: want a S256 challenge and a state", q.Get("code_challenge"), q.Get("state"))
 	}
 	ck := cookie(t, rec, loginCookie)
-	if ck == nil || ck.Value != q.Get("state") || !ck.HttpOnly || !ck.Secure || ck.SameSite != http.SameSiteLaxMode {
+	if ck == nil || !strings.HasPrefix(ck.Value, q.Get("state")+".") || !ck.HttpOnly || !ck.Secure || ck.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("login cookie %+v: want the state, HttpOnly, Secure, Lax", ck)
 	}
 }
@@ -432,9 +433,59 @@ func TestCallbackRefusesAForeignState(t *testing.T) {
 	if cb.Code != http.StatusBadRequest || cookie(t, cb, sessionCookie) != nil || len(r.fg.grants) != 0 {
 		t.Fatalf("foreign state: %d, grants %d: want 400, no exchange, no session", cb.Code, len(r.fg.grants))
 	}
-	cb = r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state="+state.Value, nil))
+	st := strings.SplitN(state.Value, ".", 2)[0]
+	cb = r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state="+st, nil))
 	if cb.Code != http.StatusBadRequest {
 		t.Fatalf("no state cookie: %d, want 400", cb.Code)
+	}
+}
+
+// An anonymous /login keeps nothing on the server: the state and the PKCE
+// verifier travel in the signed login cookie, and a cookie whose parts or
+// signature were changed, or that expired, is refused before any exchange.
+func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
+	r := newRig(t)
+	for range 1000 {
+		r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	}
+	if n := serverState(r.c); n != 0 {
+		t.Fatalf("1000 anonymous logins left %d entries of server state", n)
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	ck := cookie(t, rec, loginCookie)
+	parts := strings.Split(ck.Value, ".")
+	if len(parts) != 4 {
+		t.Fatalf("login cookie %q: want state.verifier.expiry.mac", ck.Value)
+	}
+	loc, _ := url.Parse(rec.Header().Get("Location"))
+	sum := sha256.Sum256([]byte(parts[1]))
+	if loc.Query().Get("code_challenge") != base64.RawURLEncoding.EncodeToString(sum[:]) || loc.Query().Get("state") != parts[0] {
+		t.Fatal("the cookie's verifier and state are not the ones the authorize URL carries")
+	}
+	flip := func(s string) string {
+		if s[len(s)-1] == 'A' {
+			return s[:len(s)-1] + "B"
+		}
+		return s[:len(s)-1] + "A"
+	}
+	for name, v := range map[string]string{
+		"verifier swapped": strings.Join([]string{parts[0], randomToken(), parts[2], parts[3]}, "."),
+		"expiry extended":  strings.Join([]string{parts[0], parts[1], "99999999999", parts[3]}, "."),
+		"mac changed":      strings.Join([]string{parts[0], parts[1], parts[2], flip(parts[3])}, "."),
+		"expired":          r.c.loginCookieValue(parts[0], parts[1], time.Now().Add(-time.Second)),
+		"no mac":           strings.Join(parts[:3], "."),
+	} {
+		cb := r.do(httptest.NewRequest(http.MethodGet, "/auth/callback?code=c&state="+parts[0], nil),
+			&http.Cookie{Name: loginCookie, Value: v})
+		if cb.Code != http.StatusBadRequest || cookie(t, cb, sessionCookie) != nil {
+			t.Errorf("%s: %d, want 400 and no session", name, cb.Code)
+		}
+	}
+	if len(r.fg.grants) != 0 {
+		t.Fatalf("a refused cookie reached the code exchange %d times", len(r.fg.grants))
+	}
+	if _, err := New(Config{SessionKey: []byte("short")}); err == nil {
+		t.Fatal("a session key under 32 bytes was accepted")
 	}
 }
 
@@ -1003,4 +1054,18 @@ func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
 			t.Errorf("%s: %d, want 400 and nothing saved", name, rec.Code)
 		}
 	}
+}
+
+// serverState counts the entries of every map the console holds.
+func serverState(c *Console) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	v := reflect.ValueOf(c).Elem()
+	for i := range v.NumField() {
+		if f := v.Field(i); f.Kind() == reflect.Map {
+			n += f.Len()
+		}
+	}
+	return n
 }

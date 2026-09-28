@@ -11,6 +11,7 @@ import (
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"errors"
 	"html/template"
 	"io/fs"
 	"log"
@@ -66,6 +67,8 @@ type Config struct {
 	ForgejoPublicURL string
 	ClientID         string
 	ClientSecret     string
+	// SessionKey signs the login cookie (HMAC-SHA256), at least 32 bytes.
+	SessionKey []byte
 	// Repo is where new tasks are filed and whose writers may log in.
 	Repo      factoryd.Repo
 	Tasks     Tasks
@@ -90,7 +93,6 @@ type Console struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
-	logins   map[string]pendingLogin // state -> PKCE verifier
 	writers  []string
 	writersT time.Time
 }
@@ -106,22 +108,20 @@ type session struct {
 	expiry  time.Time
 }
 
-type pendingLogin struct {
-	verifier string
-	expires  time.Time
-}
-
 // New builds the console handler.
 func New(cfg Config) (*Console, error) {
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
 	}
+	if len(cfg.SessionKey) < 32 {
+		return nil, errors.New("console: the session key must be at least 32 bytes")
+	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(),
-		sessions: map[string]*session{}, logins: map[string]pendingLogin{}}
+		sessions: map[string]*session{}}
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err

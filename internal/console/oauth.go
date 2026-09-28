@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,23 +27,47 @@ func (c *Console) redirectURI() string {
 	return strings.TrimSuffix(c.cfg.PublicURL, "/") + "/auth/callback"
 }
 
-// login starts the authorization-code flow with PKCE (S256). The state
-// travels in a host-only cookie and the query; the verifier stays here.
+// loginCookieValue is state.verifier.expiry.mac, the mac an HMAC-SHA256
+// over the first three parts under the session key.
+func (c *Console) loginCookieValue(state, verifier string, expires time.Time) string {
+	v := state + "." + verifier + "." + strconv.FormatInt(expires.Unix(), 10)
+	return v + "." + c.mac(v)
+}
+
+func (c *Console) mac(v string) string {
+	m := hmac.New(sha256.New, c.cfg.SessionKey)
+	m.Write([]byte(v)) // #nosec G104 -- a hash write never fails
+	return base64.RawURLEncoding.EncodeToString(m.Sum(nil))
+}
+
+// pendingLogin reads the login cookie: its state and verifier when the
+// signature holds and it has not expired.
+func (c *Console) pendingLogin(r *http.Request) (state, verifier string, ok bool) {
+	ck, err := r.Cookie(loginCookie)
+	if err != nil {
+		return "", "", false
+	}
+	parts := strings.Split(ck.Value, ".")
+	if len(parts) != 4 || !hmac.Equal([]byte(parts[3]), []byte(c.mac(strings.Join(parts[:3], ".")))) {
+		return "", "", false
+	}
+	exp, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || time.Now().Unix() >= exp {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// login starts the authorization-code flow with PKCE (S256). The state and
+// the verifier travel in a signed host-only cookie, so an anonymous visit
+// keeps nothing on the server; the state also goes in the query.
 func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 	if c.session(r) != nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	state, verifier := randomToken(), randomToken()
-	c.mu.Lock()
-	for k, p := range c.logins {
-		if time.Now().After(p.expires) {
-			delete(c.logins, k)
-		}
-	}
-	c.logins[state] = pendingLogin{verifier: verifier, expires: time.Now().Add(loginTTL)}
-	c.mu.Unlock()
-	setCookie(w, loginCookie, state, int(loginTTL.Seconds()))
+	setCookie(w, loginCookie, c.loginCookieValue(state, verifier, time.Now().Add(loginTTL)), int(loginTTL.Seconds()))
 	challenge := sha256.Sum256([]byte(verifier))
 	q := url.Values{
 		"client_id":             {c.cfg.ClientID},
@@ -55,24 +81,15 @@ func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/")+"/login/oauth/authorize?"+q.Encode(), http.StatusSeeOther)
 }
 
-// callback completes the flow: the state must match the cookie and a
-// pending login, the code is exchanged in-cluster with the client secret
-// and the verifier, and only a writer gets a session.
+// callback completes the flow: the signed login cookie must hold the
+// query's state, the code is exchanged in-cluster with the client secret
+// and the cookie's verifier, and only a writer gets a session.
 func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	state := q.Get("state")
-	ck, err := r.Cookie(loginCookie)
-	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(ck.Value), []byte(state)) != 1 {
-		http.Error(w, "login state mismatch; start again at /login", http.StatusBadRequest)
-		return
-	}
-	c.mu.Lock()
-	p, ok := c.logins[state]
-	delete(c.logins, state)
-	c.mu.Unlock()
+	state, verifier, ok := c.pendingLogin(r)
 	setCookie(w, loginCookie, "", -1)
-	if !ok || time.Now().After(p.expires) {
-		http.Error(w, "login expired; start again at /login", http.StatusBadRequest)
+	if !ok || q.Get("state") == "" || subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
+		http.Error(w, "login state mismatch or expired; start again at /login", http.StatusBadRequest)
 		return
 	}
 	if e := q.Get("error"); e != "" {
@@ -84,7 +101,7 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		"grant_type":    {"authorization_code"},
 		"code":          {q.Get("code")},
 		"redirect_uri":  {c.redirectURI()},
-		"code_verifier": {p.verifier},
+		"code_verifier": {verifier},
 	}); err != nil {
 		log.Printf("console: code exchange: %v", err)
 		http.Error(w, "login failed at the code exchange", http.StatusBadGateway)
@@ -99,7 +116,7 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.user = user.Login
-	ok, err = c.writer(r.Context(), s.user)
+	ok, err := c.writer(r.Context(), s.user)
 	if err != nil {
 		log.Printf("console: writers of %s: %v", c.cfg.Repo, err)
 		http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
