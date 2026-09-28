@@ -49,6 +49,9 @@ func run(log func(string, ...any)) int {
 		log("prctl PR_SET_DUMPABLE: %v", errno)
 		return 1
 	}
+	if os.Getenv("MODE") == "repro" {
+		return runRepro(log)
+	}
 	env, err := loadEnv()
 	if err != nil {
 		log("%v", err)
