@@ -321,8 +321,13 @@ issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the
 task (change id `answers`, ruling 118), and every later session gets all
 of them, newest first, as `SessionInput.Answers` (worker env `ANSWERS`),
-each as `<author>, to "<the escalation's first line>": <answer>`,
-which the opencode prompt puts ahead of the objective as settled
+each as `<author>, to "<the escalation's first line>": <answer>` (the
+answer cut to 4000 bytes; the issue keeps it whole). Escalate records its
+comment as an `escalation` intake event, and `Reconcile` rebuilds the
+answers from the intake events (every trusted issue comment newer than an
+escalation's comment, tagged with its question; ruling 120), so a run the
+heal pass starts keeps them too. The opencode prompt puts the answers
+ahead of the objective as settled
 answers the agent must not escalate again; the `session_start` timeline
 step records them. The
 human is the one party allowed to raise a limit: the answer buys the

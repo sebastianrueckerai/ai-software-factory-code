@@ -655,6 +655,49 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 	}
 }
 
+// Ruling 120: Reconcile rebuilds the human's answers from the intake
+// events, newest first: every trusted issue comment newer than an
+// escalation's comment, tagged with that escalation's question; a healed
+// re-ask keeps the question it re-asks. A comment before any escalation,
+// an untrusted one and a bot's are no answers.
+func TestReconcileRebuildsTheAnswers(t *testing.T) {
+	r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-human"), &prForgejo{})
+	for _, e := range []IntakeEvent{
+		{Kind: "issue_comment", Author: "sebastian", Body: "before", CommentID: 500, Trusted: true, Signalled: true},
+		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which file?\nWhy: open", CommentID: 600},
+		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true},
+		{Kind: "issue_comment", Author: "reader", Body: "spam", CommentID: 602},
+		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603},
+		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 604},
+		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true},
+	} {
+		e.TaskID = "t1"
+		store.InsertIntakeEvent(context.Background(), e)
+	}
+	var got RunState
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	if err != nil || val.Get(&got) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}
+	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" {
+		t.Fatalf("answers = %q, question = %q; want %q, Which text?", got.Answers, got.Question, want)
+	}
+}
+
+// Escalate records its comment as an intake event, the durable anchor
+// Reconcile rebuilds the answers from.
+func TestEscalateRecordsTheEscalation(t *testing.T) {
+	r, store, _ := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open"); err != nil {
+		t.Fatal(err)
+	}
+	e := store.intakeEvents
+	if len(e) != 1 || e[0].Kind != IntakeEscalation || e[0].CommentID != 701 || e[0].Trusted || e[0].Body != "The agent asks: Which file?\nWhy: open" {
+		t.Fatalf("intake events = %+v", e)
+	}
+}
+
 func withPR(t Task, n int64) Task      { t.PRNumber = n; return t }
 func withStatus(t Task, s string) Task { t.Status = s; return t }
 func withKind(t Task, k string) Task   { t.Kind = k; return t }

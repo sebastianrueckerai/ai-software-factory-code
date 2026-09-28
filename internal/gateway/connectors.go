@@ -435,9 +435,9 @@ func falBoundImages(input map[string]any, maxMP float64) (map[string]any, error)
 	default:
 		return nil, errors.New("image_size must be a preset or {width, height}")
 	}
-	w, h = math.Ceil(w/falSizeStep)*falSizeStep, math.Ceil(h/falSizeStep)*falSizeStep
-	if mp := n * math.Ceil(w*h/1e6); mp > maxMP {
-		return nil, fmt.Errorf("%d images of %gx%g are %g megapixels (rounded up per image), above the factory's %g", int(n), w, h, mp, maxMP)
+	rw, rh := math.Ceil(w/falSizeStep)*falSizeStep, math.Ceil(h/falSizeStep)*falSizeStep
+	if mp := n * math.Ceil(rw*rh/1e6); mp > maxMP {
+		return nil, fmt.Errorf("%d images of %gx%g are %g megapixels (each side rounded up to a multiple of %d, then per image), above the factory's %g", int(n), w, h, mp, falSizeStep, maxMP)
 	}
 	return out, nil
 }

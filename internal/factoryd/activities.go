@@ -369,6 +369,11 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 		return 0, err
 	}
 	r.record(ctx, taskID, "escalated", map[string]any{"reason": reason, "comment": id})
+	// the durable anchor Reconcile rebuilds the answers from; a retry
+	// with the same comment records nothing twice
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
+		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
+	}
 	return id, nil
 }
 
@@ -514,9 +519,35 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 	}
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return RunState{}, err
+	}
+	st.Answers, st.Question = answersFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
-		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings)})
+		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
+		"answers": len(st.Answers)})
 	return st, nil
+}
+
+// answersFrom rebuilds the human's answers from a task's intake events
+// (oldest first), newest first: every trusted issue comment newer than an
+// escalation's comment, tagged with that escalation's question (a healed
+// re-ask keeps the question it re-asks). question is the last one asked.
+func answersFrom(events []IntakeEvent) (answers []string, question string) {
+	var since int64
+	for _, e := range events {
+		switch {
+		case e.Kind == IntakeEscalation:
+			since = e.CommentID
+			if e.Body != healedReason {
+				question = escalationQuestion(e.Body)
+			}
+		case e.Kind == "issue_comment" && e.Trusted && since != 0 && e.CommentID > since:
+			answers = append([]string{answerText(e.Author, question, e.Body)}, answers...)
+		}
+	}
+	return answers, question
 }
 
 // FirstLine is an objective's first line: the issue and pull request title.

@@ -527,6 +527,8 @@ func TestFalMegapixelInputBounded(t *testing.T) {
 	} {
 		if text, isErr := e.call(t, policy.ToolFal, map[string]any{"endpoint": "fal-ai/flux/schnell", "input": input}); !isErr || !strings.Contains(text, "refused_arguments") {
 			t.Errorf("%s = %q, want refused_arguments", name, text)
+		} else if name == "8 MP rounded" && !strings.Contains(text, "4 images of 1000x1000 are 8 megapixels") {
+			t.Errorf("%s names the rounded sides: %q", name, text)
 		}
 	}
 	if n := e.providers.called("POST /fal-ai/flux/schnell"); n != 0 || len(e.toolLedger()) != 0 {

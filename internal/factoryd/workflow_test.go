@@ -760,3 +760,38 @@ func TestTruncateKeepsWholeRunes(t *testing.T) {
 		t.Fatalf("truncate = %q, want a…", got)
 	}
 }
+
+// An answer's body is cut to 4000 bytes in the list every later session
+// gets (Linux caps one env string at 128 KiB); the issue keeps it whole.
+func TestWorkflowCutsLongAnswers(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "q?"}, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: strings.Repeat("x", 200<<10), Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	if want := `sebastian, to "q?": ` + strings.Repeat("x", 4000) + "…"; !slices.Equal(h.sessions[1].Answers, []string{want}) {
+		t.Fatalf("answer of %d bytes, want %d", len(h.sessions[1].Answers[0]), len(want))
+	}
+}
+
+// A healed run rebuilds the task's answers from Reconcile and tags the
+// answer to its re-asked question with the original question.
+func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Answers: []string{`sebastian, to "Which file?": a.txt`}, Question: "Which text?"}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "ok", Comment: 900})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}; len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
+		t.Fatalf("sessions = %+v, want answers %q", h.sessions, want)
+	}
+}

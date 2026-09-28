@@ -157,6 +157,11 @@ type RunState struct {
 	// signal and its next session starts one with them.
 	Findings []string
 	Usage    TaskUsage // what earlier runs used of the caps and were granted
+	// Answers are the human's answers to the task's escalations rebuilt
+	// from the intake events, newest first (ruling 120), and Question the
+	// question of its last escalation, which a healed run asks again.
+	Answers  []string
+	Question string
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -295,6 +300,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v5 >= versionPersistUsage {
 			u = st.Usage
 		}
+		if t.v7 >= versionAnswers {
+			t.answers = st.Answers
+		}
 		switch {
 		case st.Skip:
 			return st.Status, nil
@@ -308,7 +316,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("failed", "pull request closed without merge")
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitHuman("factoryd restarted while the task waited for a human; the question above still stands.")
+			question := st.Question
+			if question == "" {
+				question = healedReason
+			}
+			final, why, answer := t.awaitHuman(healedReason, question)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -386,7 +398,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
-			final, why, answer := t.awaitHuman(res.Reason)
+			final, why, answer := t.awaitHuman(res.Reason, escalationQuestion(res.Reason))
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -733,7 +745,7 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 // request on the task's PR) or a terminal signal decides the task. answer
 // is the change requests; the human's answers go to t.answers
 // (versionAnswers), or into answer before it.
-func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string) {
+func (t *taskRun) awaitHuman(reason, question string) (final, why string, answer []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", "escalate: " + errMessage(err), nil
 	}
@@ -754,9 +766,7 @@ func (t *taskRun) awaitHuman(reason string) (final, why string, answer []string)
 			}
 			answered = true
 			if t.v7 >= versionAnswers {
-				// the escalation's first line is the question it answers
-				question, _, _ := strings.Cut(strings.TrimPrefix(reason, agentAsks), "\n")
-				t.answers = append([]string{fmt.Sprintf("%s, to %q: %s", sig.Author, truncate(question, 300), sig.Body)}, t.answers...)
+				t.answers = append([]string{answerText(sig.Author, question, sig.Body)}, t.answers...)
 			} else {
 				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
 			}
@@ -889,4 +899,24 @@ func isWallClockTimeout(err error) bool {
 func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
+}
+
+// healedReason is what a healed run waiting for a human asks again.
+const healedReason = "factoryd restarted while the task waited for a human; the question above still stands."
+
+// maxAnswer bounds an answer's body in the list every later session gets
+// as the ANSWERS env var (Linux caps one at 128 KiB); the issue keeps it.
+const maxAnswer = 4000
+
+// escalationQuestion is an escalation reason's first line, an agent's
+// question without its prefix.
+func escalationQuestion(reason string) string {
+	q, _, _ := strings.Cut(strings.TrimPrefix(reason, agentAsks), "\n")
+	return q
+}
+
+// answerText is one human answer as the sessions get it, tagged with the
+// question it answers.
+func answerText(author, question, body string) string {
+	return fmt.Sprintf("%s, to %q: %s", author, truncate(question, 300), truncate(body, maxAnswer))
 }

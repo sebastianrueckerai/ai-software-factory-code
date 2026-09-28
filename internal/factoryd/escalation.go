@@ -26,6 +26,10 @@ type SessionEscalator interface {
 // recorded, never signalled (the session's supervision acts on it).
 const IntakeAgentEscalation = "agent_escalation"
 
+// IntakeEscalation records an escalation's issue comment (its CommentID)
+// and reason: human answers are the trusted issue comments newer than it.
+const IntakeEscalation = "escalation"
+
 // maxEscalationText bounds the question and the reason, as the gateway does.
 const maxEscalationText = 4000
 

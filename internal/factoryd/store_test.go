@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"slices"
@@ -592,14 +593,7 @@ func TestPGStore(t *testing.T) {
 			t.Fatalf("LiteLLM %v: spent = %v, want %v", step.reported, got.SpentEUR, step.want)
 		}
 	}
-	// float noise between LiteLLM's sum and the booked numeric sum (below a
-	// nano-euro) books nothing
-	if err := s.SettleSpend(ctx, "s-tool", 1.125+1e-17); err != nil {
-		t.Fatal(err)
-	}
-	if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != 1.375 {
-		t.Fatalf("after noise: spent = %v, want 1.375", got.SpentEUR)
-	}
+	// a difference below a nano-euro is float noise and books nothing
 	if err := s.SettleSpend(ctx, "s-tool", 1.125+5e-10); err != nil {
 		t.Fatal(err)
 	}
@@ -609,6 +603,16 @@ func TestPGStore(t *testing.T) {
 	var toolSettled string
 	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(eur::text, ' ' ORDER BY id) FROM ledger WHERE task_id = 's-tool' AND kind = 'settlement'`).Scan(&toolSettled); err != nil || toolSettled != "0.25 0.125" {
 		t.Fatalf("s-tool settlement rows = %q (%v), want 0.25 0.125", toolSettled, err)
+	}
+	// 2e-9 above the booked 1.125 is a real raise: one row of it
+	if err := s.SettleSpend(ctx, "s-tool", 1.125+2e-9); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	var last float64
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*), (array_agg(eur::float8 ORDER BY id DESC))[1] FROM ledger WHERE task_id = 's-tool' AND kind = 'settlement'`).Scan(&n, &last); err != nil ||
+		n != 3 || math.Abs(last-2e-9) > 1e-12 {
+		t.Fatalf("after 2e-9: %d settlement rows, last %v (%v); want 3, 2e-9", n, last, err)
 	}
 	if err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
