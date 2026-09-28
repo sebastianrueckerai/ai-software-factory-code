@@ -48,32 +48,7 @@ type memPolicy struct {
 	current  int64
 	records  int
 	costs    [][2]time.Time
-	// free is the task's and the day's free headroom TakeHold fits into
-	taskFree, dayFree float64
-	holds             []policy.HoldRequest
-	released          []releasedHold
-	sweeps            int
-}
-
-type releasedHold struct {
-	hold policy.Hold
-	cost *float64
-}
-
-func (m *memPolicy) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hold, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.holds = append(m.holds, r)
-	h, err := policy.Fit(m.taskFree, m.dayFree, r)
-	h.ID = int64(len(m.holds))
-	return h, err
-}
-
-func (m *memPolicy) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.released = append(m.released, releasedHold{h, cost})
-	return policy.Booking{}, nil
+	sweeps   int
 }
 
 func (m *memPolicy) SweepHolds(context.Context) (int, error) {

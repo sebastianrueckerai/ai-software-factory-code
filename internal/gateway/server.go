@@ -83,6 +83,10 @@ const (
 // factorydSA stands for the service account uid of factoryd's key slot.
 const factorydSA = "factoryd"
 
+// auditFactoryd is the audit kind of a factoryd call refused before its
+// purpose is known; it is no purpose.
+const auditFactoryd = "factoryd"
+
 // liveKey is a task's virtual key and what it was minted for: a new run,
 // policy version or UTC day mints a new key (its models and max_budget
 // follow from them) and retires this one. A retired key is blocked once
@@ -180,7 +184,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	id, purpose, err := s.identify(r)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "", "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
 		return
 	}
 	caller(ctx, id.TaskID)
@@ -284,7 +288,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // identify is the caller: factoryd by the gateway-factoryd token, with
 // the task and one of policy.Purposes in its headers, or a sandbox by its
-// ServiceAccount JWT (purpose ""), whose headers name nothing.
+// ServiceAccount JWT (purpose ""), whose headers name nothing. A factoryd
+// call without a known purpose is refused as kind auditFactoryd.
 func (s *Server) identify(r *http.Request) (Identity, string, error) {
 	raw, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if s.opts.FactorydToken == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(raw)), []byte(s.opts.FactorydToken)) != 1 {
@@ -294,7 +299,7 @@ func (s *Server) identify(r *http.Request) (Identity, string, error) {
 	id := Identity{TaskID: r.Header.Get(HeaderFactoryTask), SAUID: factorydSA}
 	purpose := r.Header.Get(HeaderFactoryPurpose)
 	if id.TaskID == "" || !slices.Contains(policy.Purposes, purpose) {
-		return id, "", fmt.Errorf("a factoryd call names its task in %s and one of %q in %s", HeaderFactoryTask, policy.Purposes, HeaderFactoryPurpose)
+		return id, auditFactoryd, fmt.Errorf("a factoryd call names its task in %s and one of %q in %s", HeaderFactoryTask, policy.Purposes, HeaderFactoryPurpose)
 	}
 	return id, purpose, nil
 }

@@ -28,7 +28,8 @@ type Task struct {
 
 type AuditRow struct {
 	TaskID string
-	// Kind is the factoryd purpose of the call (policy.Purposes), "" for an
+	// Kind is the factoryd purpose of the call (policy.Purposes), factoryd
+	// for a factoryd call refused before its purpose is known, "" for an
 	// agent's: stored as agent.
 	Kind       string
 	Decision   string

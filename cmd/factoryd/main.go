@@ -540,7 +540,8 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 }
 
 // escalationRoute is the gateway's hand-over of escalate_to_human, behind
-// the bearer only the gateway holds (secret factory/gateway-factoryd).
+// the gateway-factoryd bearer (secret factory/gateway-factoryd), which
+// factoryd and the gateway share: factoryd presents it for its model calls.
 func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {
 	return requireBearer(gatewayToken, factoryd.EscalationHandler(store, sessions))
 }

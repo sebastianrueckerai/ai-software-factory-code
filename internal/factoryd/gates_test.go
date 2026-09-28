@@ -340,6 +340,9 @@ func TestModelReviewWithoutAReviewModel(t *testing.T) {
 	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "the policy names no review model") || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v, calls %d", rv, len(ll.chats))
 	}
+	if len(fj.comments) != 1 || !strings.HasPrefix(fj.comments[0], "factoryd model review (no review model named by the policy) of c1.") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
 }
 
 func TestRequestApprovalOpensTheCard(t *testing.T) {

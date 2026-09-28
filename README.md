@@ -61,7 +61,10 @@ the agents work on.
   runs while the task is running or in review, is held and booked like an
   agent's under the ref `<purpose>/<alias>` (e.g. `review/review-frontier`),
   and its audit row has the purpose as `kind` (`agent` for an agent's
-  call). Its LiteLLM key is the task's factoryd slot, apart from the
+  call, `factoryd` for a factoryd call refused before its purpose is
+  known). The `X-Factory-*` headers are read only behind the token: with
+  a sandbox's JWT or a wrong bearer they are ignored and the call is an
+  agent's. Its LiteLLM key is the task's factoryd slot, apart from the
   session's key, limited to those aliases. A refusal names its decision in
   the `X-Gateway-Decision` header. It also serves the agent's tools over MCP at
   `/mcp`, see "Tools".
@@ -531,7 +534,23 @@ again. An invalid file, or one whose `coder` class leaves out a model of
 the ladder (`MODEL`, `STRONGER_MODEL`), logs `POLICY REJECTED` and the
 previous version stays in force; factoryd refuses to boot only when no
 valid version exists at all. The gateway never reads the file, only the
-version in force in Postgres. `day_eur: 0` stops all spend.
+version in force in Postgres. `day_eur: 0` stops all spend. Because the
+decoder is strict, a new key lands in infra BEFORE the factoryd that
+reads it, never after: the running factoryd logs `POLICY REJECTED` and
+keeps its version, harmless, and the new factoryd loads it at boot. A
+factoryd rolled before its keys would run on a policy without them (for
+`review_model` and `supervisor_model`: every review a note, every
+supervisor trip an escalation).
+
+The gateway checks a model call in this order: the caller (a sandbox's
+JWT, or factoryd's `gateway-factoryd` token with its `X-Factory-*`
+headers, which are read only behind that token), the task status (an
+agent's task running; factoryd's running or in review, checked with the
+hold), the alias (an agent's must be in its classes' `models`, factoryd's
+must be the class's alias for the purpose; else 403 `refused_capability`),
+the task headroom (else 402 `refused_budget`) and the day headroom (else
+402 `refused_day_cap`). `review-frontier` and `supervisor` are not in
+`coder`'s `models`: the agent cannot call them.
 
 Intake gives every agent task the capability class `coder`
 (`tasks.required_capabilities`; a one-shot backfill gave it to older
@@ -1371,7 +1390,7 @@ Metrics:
 Audit log records: every audit row the store accepted is also one log
 record (`Telemetry.Audited` wraps the store; Postgres stays the record),
 body `audit <decision>`, severity INFO, attributes `task.id`,
-`audit.decision`, `audit.kind` (`agent` or factoryd's purpose), `audit.reason`, `audit.model_alias`, `audit.tool`,
+`audit.decision`, `audit.kind` (`agent`, factoryd's purpose, or `factoryd`), `audit.reason`, `audit.model_alias`, `audit.tool`,
 `audit.spend_eur`, `audit.policy_version`, `audit.output_limit`,
 `audit.hold_eur`, `audit.over_hold`; a nil or empty column is left out.
 `task.id` and `audit.decision` are the gateway's own (the verified
@@ -1493,3 +1512,12 @@ reverts the `restartedAt` annotation about five minutes later and rolls
 it again. Both restarts are safe (Temporal retries the interrupted
 activity), but plan for the second one, or suspend the `factory`
 Kustomization first.
+
+Order when a change spans them: the infra policy first (new keys before
+the factoryd that reads them), then the gateway, then factoryd once the
+gateway is Ready. factoryd's model calls go to the gateway, so a new
+factoryd against an old gateway gets `refused_auth` on them (spurious
+escalations and review notes, nothing merged); a new gateway serves an
+old factoryd unchanged. The gateway reads the policy version at most
+30 s old, so a call in the first 30 s after a new version can still be
+judged under the previous one.

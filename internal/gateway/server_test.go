@@ -1483,6 +1483,10 @@ func TestFactorydReviewCall(t *testing.T) {
 		model   string
 		resp    stubResp
 		want    want
+		// authKind is a refused_auth row's kind; noToken runs the gateway
+		// without a FactorydToken
+		authKind string
+		noToken  bool
 	}{
 		"authorised": {
 			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
@@ -1514,7 +1518,19 @@ func TestFactorydReviewCall(t *testing.T) {
 		},
 		"unknown purpose": {
 			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
-			purpose: "session", model: "review-frontier",
+			purpose: "session", model: "review-frontier", authKind: "factoryd",
+			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
+		},
+		// the headers without the token are an agent's call: its JWT is
+		// checked, and fails here
+		"a wrong token with the factoryd headers": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: "not-the-token",
+			purpose: "review", model: "review-frontier",
+			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
+		},
+		"no factoryd token configured": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "review-frontier", noToken: true,
 			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
 		},
 	} {
@@ -1524,19 +1540,28 @@ func TestFactorydReviewCall(t *testing.T) {
 			store := newMemStore(tc.task)
 			store.setPolicy(factoryPolicy())
 			minter := &fakeMinter{}
+			token := testFactorydToken
+			if tc.noToken {
+				token = ""
+			}
 			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
-				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: testFactorydToken})
+				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: token})
 			rr := doFactorydChat(t, s.Routes("test"), tc.token, "42", tc.purpose, chatBody(tc.model))
 			if rr.Code != tc.want.status || rr.Header().Get(HeaderDecision) != tc.want.header {
 				t.Fatalf("status %d decision header %q, want %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), tc.want.status, tc.want.header, rr.Body)
 			}
+			// a task header behind no token names no task
+			wantTask := "42"
+			if tc.want.decision == "refused_auth" && tc.authKind == "" {
+				wantTask = ""
+			}
 			audits := store.auditRows()
-			if len(audits) != 1 || audits[0].Decision != tc.want.decision || audits[0].TaskID != "42" {
-				t.Fatalf("audits = %+v, want one %s row on task 42", audits, tc.want.decision)
+			if len(audits) != 1 || audits[0].Decision != tc.want.decision || audits[0].TaskID != wantTask {
+				t.Fatalf("audits = %+v, want one %s row on task %q", audits, tc.want.decision, wantTask)
 			}
 			wantKind := tc.purpose
 			if tc.want.decision == "refused_auth" {
-				wantKind = ""
+				wantKind = tc.authKind
 			}
 			if audits[0].Kind != wantKind {
 				t.Fatalf("audit kind = %q, want %q", audits[0].Kind, wantKind)
@@ -1587,6 +1612,10 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 	if rr := doChat(t, h, chatBody("review-frontier")); rr.Code != http.StatusForbidden {
 		t.Fatalf("agent call of the review alias = %d, want 403", rr.Code)
 	}
+	// the agent's credential with factoryd's headers is still the agent's call
+	if rr := doFactorydChat(t, h, "the-agents-jwt", "42", "review", chatBody("review-frontier")); rr.Code != http.StatusForbidden {
+		t.Fatalf("agent call with the factoryd headers = %d, want 403", rr.Code)
+	}
 	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
 		t.Fatalf("agent call = %d", rr.Code)
 	}
@@ -1611,7 +1640,7 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 	for _, a := range store.auditRows() {
 		kinds = append(kinds, a.Kind+" "+a.Decision)
 	}
-	if !reflect.DeepEqual(kinds, []string{" refused_capability", " allowed", "supervisor allowed", " allowed"}) {
+	if !reflect.DeepEqual(kinds, []string{" refused_capability", " refused_capability", " allowed", "supervisor allowed", " allowed"}) {
 		t.Fatalf("audit kinds = %q", kinds)
 	}
 }

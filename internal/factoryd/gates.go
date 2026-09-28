@@ -597,7 +597,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 }
 
 func reviewComment(model, commit string, rv Review) string {
-	head := fmt.Sprintf("factoryd model review (%s) of %s. Evidence for the human who approves the merge, and one of the conditions of the merge rule auto.\n\n", model, commit)
+	head := fmt.Sprintf("factoryd model review (%s) of %s. Evidence for the human who approves the merge, and one of the conditions of the merge rule auto.\n\n",
+		cmp.Or(model, "no review model named by the policy"), commit)
 	if rv.Verdict == "" {
 		return head + rv.Note
 	}
