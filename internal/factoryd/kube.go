@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -61,8 +62,8 @@ type Kube interface {
 	// PodStatus reports the pod phase and the container exit code (-1 while
 	// the container has not terminated).
 	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error)
-	// PodInitFinished is when the pod's first init container exited 0;
-	// false when it has none or it did not succeed.
+	// PodInitFinished is when the pod's first init container exited 0
+	// with the termination message "ready"; false otherwise.
 	PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error)
 	// PodLog streams the pod's stdout, following until the pod terminates or
 	// ctx is cancelled. The caller closes the stream.
@@ -259,6 +260,7 @@ func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name str
 				State struct {
 					Terminated *struct {
 						ExitCode   int32     `json:"exitCode"`
+						Message    string    `json:"message"`
 						FinishedAt time.Time `json:"finishedAt"`
 					} `json:"terminated"`
 				} `json:"state"`
@@ -272,7 +274,7 @@ func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name str
 		return time.Time{}, false, nil
 	}
 	t := pod.Status.InitContainerStatuses[0].State.Terminated
-	if t == nil || t.ExitCode != 0 {
+	if t == nil || t.ExitCode != 0 || strings.TrimSpace(t.Message) != buildReadyMessage {
 		return time.Time{}, false, nil
 	}
 	return t.FinishedAt, true, nil

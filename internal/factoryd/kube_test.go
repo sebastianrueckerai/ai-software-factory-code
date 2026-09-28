@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestInClusterKubeWire verifies the raw-REST client against a scripted
@@ -223,5 +224,44 @@ func TestInClusterKubeNeedsTheServiceAddress(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_PORT", "443")
 	if _, err := NewInClusterKube(); err == nil || !strings.Contains(err.Error(), "KUBERNETES_SERVICE_HOST") {
 		t.Fatalf("err = %v, want the missing service address named", err)
+	}
+}
+
+// The ready time is the first init container's finish, taken only when it
+// exited 0 with the termination message "ready".
+func TestPodInitFinishedTakesOnlyAReadyFinish(t *testing.T) {
+	pods := map[string]string{
+		"ready": `{"status":{"phase":"Succeeded","initContainerStatuses":[{"name":"buildkitd-ready","state":{"terminated":
+			{"exitCode":0,"reason":"Completed","message":"ready\n","startedAt":"2026-09-28T10:00:03Z","finishedAt":"2026-09-28T10:00:47Z"}}}]}}`,
+		"silent": `{"status":{"phase":"Succeeded","initContainerStatuses":[{"name":"buildkitd-ready","state":{"terminated":
+			{"exitCode":0,"reason":"Completed","startedAt":"2026-09-28T10:00:03Z","finishedAt":"2026-09-28T10:03:03Z"}}}]}}`,
+		"failed": `{"status":{"phase":"Failed","initContainerStatuses":[{"name":"buildkitd-ready","state":{"terminated":
+			{"exitCode":124,"reason":"Error","message":"ready","startedAt":"2026-09-28T10:00:03Z","finishedAt":"2026-09-28T10:03:03Z"}}}]}}`,
+		"running": `{"status":{"phase":"Pending","initContainerStatuses":[{"name":"buildkitd-ready","state":{"running":{"startedAt":"2026-09-28T10:00:03Z"}}}]}}`,
+		"none":    `{"status":{"phase":"Succeeded","containerStatuses":[{"name":"runner","state":{"terminated":{"exitCode":0,"message":"ready"}}}]}}`,
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ns, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/"), "/")
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/namespaces/"+ns+"/pods/ci-runner" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, pods[ns])
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	for ns, want := range map[string]time.Time{
+		"ready": time.Date(2026, 9, 28, 10, 0, 47, 0, time.UTC), "silent": {}, "failed": {}, "running": {}, "none": {},
+	} {
+		at, ok, err := k.PodInitFinished(context.Background(), ns, "ci-runner")
+		if err != nil || ok != !want.IsZero() || !at.Equal(want) {
+			t.Errorf("%s: (%v, %v, %v), want %v", ns, at, ok, err, want)
+		}
 	}
 }

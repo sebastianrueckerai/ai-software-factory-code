@@ -883,9 +883,10 @@ Image builds run outside the cluster instead (ruling 110,
   `BUILDKIT_TLS_DIR` and `BUILDKIT_TLS_SERVERNAME`. Before the runner
   starts, the pod's init container `buildkitd-ready` (same image, same
   mount and egress) waits up to three minutes for `buildctl debug
-  workers`; a VM that never answers fails the pod before any job code
-  runs, and the job is claimed again after the teardown. `image-build`
-  waits for it the same way, then builds the changed
+  workers` and, once it answers, writes `ready` as its termination
+  message; it exits 0 either way, so a VM that never answers fails the
+  job loudly in `image-build`'s own wait (up to three more minutes), not
+  in a loop of fresh VMs. `image-build` then builds the changed
   Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
 - **The cache.** Before each build the runner pod copies the image's
   cache, which main CI wrote, from the in-cluster build cache into a local
@@ -962,13 +963,16 @@ at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
   with no creation time, so a job a runner takes before a poll sees it
   waiting (the near-zero queues, mostly on the persistent trusted runner)
   is not measured: it counts in `factory.ci.job.queue.unmeasured{label,job}`,
-  and the histogram's low quantiles read high by that share. The `checks`
+  and the histogram's low quantiles read high by that share. A job that
+  is taken and finishes between two polls is never listed, so it is not
+  counted either. The `checks`
   timeline step lists the head's jobs under `jobs`: `name`, `status`,
   `run_s` and, where measured, `queue_s`.
 - `factory.ci.buildvm.lifetime`, `.ready` (create to buildkitd's first
   answer: a build runner pod's init container `buildkitd-ready` polls
   `buildctl debug workers` against its own VM, at most 3 minutes, before
-  the job starts; the spawner reads its `finishedAt` before the teardown)
+  the job starts; the spawner reads its `finishedAt` before the teardown,
+  only when its termination message is `ready`)
   and
   `.cost` (started hours times the row's hourly price), each
   `{server_type,deleted_by}` with `deleted_by` `teardown` or `collector`,

@@ -981,7 +981,8 @@ func TestCISpawnerBuildRunnerWaitsForBuildkitdAndReportsReady(t *testing.T) {
 	init := inits[0].(map[string]any)
 	cmd := fmt.Sprint(init["command"])
 	if init["name"] != "buildkitd-ready" || init["image"] != "reg/runner@sha256:abc" ||
-		!strings.HasPrefix(cmd, "[timeout 180 sh -c until buildctl") || !strings.Contains(cmd, "debug workers") {
+		!strings.HasPrefix(cmd, "[sh -c if timeout 180 sh -c 'until buildctl") || !strings.Contains(cmd, "debug workers") ||
+		!strings.HasSuffix(cmd, "then echo ready > /dev/termination-log; fi]") {
 		t.Fatalf("init container %v", init)
 	}
 	if !reflect.DeepEqual(init["securityContext"], container["securityContext"]) || !reflect.DeepEqual(init["resources"], container["resources"]) {

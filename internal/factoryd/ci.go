@@ -511,11 +511,14 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 		mounts = append(mounts, map[string]any{"name": buildTLSSecret, "mountPath": buildTLSDir, "readOnly": true})
 		volumes = append(volumes, map[string]any{"name": buildTLSSecret, "secret": map[string]any{"secretName": buildTLSSecret}})
 		// trusted code waits for buildkitd before the job's own steps run;
-		// its finish, written by the kubelet, is the VM's ready time
+		// its finish, written by the kubelet, is the VM's ready time when
+		// it reports ready. It always exits 0: a VM that never answers
+		// fails the job in pr.yml's own wait, loudly, instead of failing
+		// the pod and having the job claimed again with a fresh VM
 		initContainers = append(initContainers, map[string]any{
 			"name":    buildReadyContainer,
 			"image":   s.cfg.RunnerImage,
-			"command": []any{"timeout", strconv.Itoa(int(buildReadyTimeout / time.Second)), "sh", "-c", buildReadyScript},
+			"command": []any{"sh", "-c", buildReadyScript},
 			"env":     buildVMEnv(vm.IPv4),
 			"volumeMounts": []any{
 				map[string]any{"name": "tmp", "mountPath": "/tmp"},
@@ -569,8 +572,8 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 
 const (
 	buildReadyContainer = "buildkitd-ready"
-	buildReadyTimeout   = 3 * time.Minute
-	buildReadyScript    = `until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers >/dev/null; do sleep 2; done`
+	buildReadyMessage   = "ready"
+	buildReadyScript    = `if timeout 180 sh -c 'until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers >/dev/null; do sleep 2; done'; then echo ` + buildReadyMessage + ` > /dev/termination-log; fi`
 )
 
 // buildCacheHost is the in-cluster registry pr.yml's image-build reads
