@@ -3,19 +3,20 @@
 # credential beyond the per-run job token Forgejo injects, default-deny
 # egress. Every tool a step needs (Go, gosec) ships pre-installed in
 # Dockerfile.runner so no step reaches past the egress allowlist for
-# tooling; only actions/checkout itself, the Go module proxy, and the
-# Dockerfiles' base-image registries are reachable (see ciEgressSpec in
+# tooling; only actions/checkout itself, the Go module proxy and, for
+# image-build, the job's own build VM are reachable (see ciEgressSpec in
 # internal/factoryd/ci.go).
 #
-# No secrets.* anywhere in this file — the runner pod holds none.
+# No secrets.* anywhere in this file — the runner pod holds no repository
+# or registry credential.
 #
-# image-build (ruling 91) verifies Dockerfile / Dockerfile.sandbox /
-# Dockerfile.runner build cleanly, without ever pushing. No rootless BuildKit
-# path comes up under gVisor (task-41-report.md, design decision #4), so
-# `runs-on: pr-untrusted-build` gets factoryd's CI spawner to stand up a
-# second, sandbox-root buildkitd pod (internal/factoryd/ci.go) alongside the
-# usual restricted runner pod; the runner drives it over BUILDKIT_HOST with
-# no token, Secret or ServiceAccount token of its own.
+# image-build verifies the changed Dockerfiles build, without ever pushing.
+# `runs-on: pr-untrusted-build` gets factoryd's CI spawner to create a
+# throwaway Hetzner VM running buildkitd (ruling 110,
+# internal/factoryd/buildvm.go) and to hand the runner pod its address
+# (BUILDKIT_HOST) and a client certificate only that VM accepts
+# (BUILDKIT_TLS_DIR, BUILDKIT_TLS_SERVERNAME). The VM is deleted when the
+# job ends.
 name: pr
 on:
   pull_request:
@@ -119,15 +120,23 @@ jobs:
           echo "images to build: $images"
           echo "images=$images" >> "$GITHUB_OUTPUT"
   image-build:
-    # ruling 91: builds only, never pushes — output goes to /dev/null on the
-    # runner pod (BuildKit 0.33 has no cacheonly exporter). The buildkitd
-    # pod holds no token, Secret or ServiceAccount token; the runner reaches
-    # it over BUILDKIT_HOST, which factoryd's CI spawner injects.
+    # Builds only, never pushes: output goes to /dev/null on the runner pod
+    # (BuildKit 0.33 has no cacheonly exporter).
     needs: changes
     if: needs.changes.outputs.images != ''
     runs-on: pr-untrusted-build
     steps:
       - uses: actions/checkout@v4
+      - name: wait for the build VM's buildkitd
+        # the VM boots while the runner starts; buildkitd answers ~40 s after create
+        run: |
+          set -u
+          echo "buildkitd at $BUILDKIT_HOST, mTLS, server name $BUILDKIT_TLS_SERVERNAME"
+          deadline=$(( $(date +%s) + 180 ))
+          until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 3 minutes"; exit 1; fi
+            sleep 3
+          done
       - name: build changed images in parallel
         run: |
           set -uo pipefail
@@ -136,7 +145,8 @@ jobs:
           logdir=$(mktemp -d)
           declare -A pid_for
           for df in $images; do
-            buildctl build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+            buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
+              build --frontend dockerfile.v0 --local context=. --local dockerfile=. \
               --opt filename="$df" --output type=oci,dest=/dev/null \
               >"$logdir/$df.log" 2>&1 &
             pid_for[$df]=$!
