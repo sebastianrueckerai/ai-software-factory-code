@@ -84,8 +84,14 @@ func (i *openActivityInbound) ExecuteActivity(ctx context.Context, in *intercept
 	return i.Next.ExecuteActivity(ctx, in)
 }
 
+// alertKinds are the alerts table's kinds, reported by
+// factory.alert.count with every verdict.
+var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz}
+
 // RegisterAlertCount exports factory.alert.count{kind,verdict}, read from
-// the alerts table at each export.
+// the alerts table at each export: every kind and verdict, 0 when the table
+// has none, so a count whose rows moved on (open to real) drops to 0
+// rather than standing at its last value.
 func RegisterAlertCount(meter metric.Meter, counts func(context.Context) ([]AlertCount, error)) error {
 	_, err := meter.Int64ObservableUpDownCounter("factory.alert.count",
 		metric.WithDescription("alerts per kind and verdict (open until one is set)"),
@@ -94,8 +100,17 @@ func RegisterAlertCount(meter metric.Meter, counts func(context.Context) ([]Aler
 			if err != nil {
 				return err
 			}
+			n := map[[2]string]int64{}
+			for _, k := range alertKinds {
+				for _, v := range []string{VerdictReal, VerdictNoise, "open"} {
+					n[[2]string{k, v}] = 0
+				}
+			}
 			for _, r := range rows {
-				obs.Observe(r.N, metric.WithAttributes(attribute.String("kind", r.Kind), attribute.String("verdict", r.Verdict)))
+				n[[2]string{r.Kind, r.Verdict}] = r.N
+			}
+			for kv, c := range n {
+				obs.Observe(c, metric.WithAttributes(attribute.String("kind", kv[0]), attribute.String("verdict", kv[1])))
 			}
 			return nil
 		}))

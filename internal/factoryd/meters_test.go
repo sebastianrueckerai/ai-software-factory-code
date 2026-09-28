@@ -70,13 +70,22 @@ func TestOpenActivitiesTracksARunningActivity(t *testing.T) {
 	}
 }
 
+// Every kind and verdict is reported, 0 when the table has none, so a
+// series whose rows all moved on (an alert judged real) reads 0 at once
+// instead of its last count.
 func TestAlertCountReadsTheTableAtExport(t *testing.T) {
 	m, reader := testMetrics(t)
 	rows := []AlertCount{{"gate_bound", "open", 2}, {"supervisor_trip", "noise", 1}}
 	if err := RegisterAlertCount(m.Meter, func(context.Context) ([]AlertCount, error) { return rows, nil }); err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]float64{"kind=gate_bound,verdict=open": 2, "kind=supervisor_trip,verdict=noise": 1}
+	want := map[string]float64{}
+	for _, k := range []string{"gate_bound", "supervisor_trip", "escalation", "info_request", "alert"} {
+		for _, v := range []string{"real", "noise", "open"} {
+			want["kind="+k+",verdict="+v] = 0
+		}
+	}
+	want["kind=gate_bound,verdict=open"], want["kind=supervisor_trip,verdict=noise"] = 2, 1
 	if got := sums(t, reader, "factory.alert.count"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("alert counts %v, want %v", got, want)
 	}
