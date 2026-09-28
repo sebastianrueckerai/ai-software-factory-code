@@ -68,7 +68,17 @@ type CISpawner struct {
 	kube    Kube
 	forgejo *Forgejo
 	builds  *BuildVMs
+	now     func() time.Time
+	// tornDown remembers build jobs whose namespace was torn down, so one
+	// Forgejo still lists as waiting gets no second VM within
+	// ciReclaimWindow; the poll loop is the only user.
+	tornDown map[int64]time.Time
 }
+
+// ciReclaimWindow: a job whose runner served another waiting job is still
+// served by the next build runner that registers; after the window it is
+// claimed for itself again.
+const ciReclaimWindow = 3 * time.Minute
 
 const (
 	ciPodName    = "ci-runner"
@@ -89,7 +99,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -144,13 +154,16 @@ func (s *CISpawner) poll(ctx context.Context) {
 				continue
 			}
 			if kind.build {
+				if at, ok := s.tornDown[job.ID]; ok && s.now().Sub(at) < ciReclaimWindow {
+					continue
+				}
 				free, err := s.builds.FreeSlot(ctx)
 				if err != nil {
 					log.Printf("ci spawner: job %d stays queued: build vm slots: %v", job.ID, err)
 					continue
 				}
 				if !free {
-					log.Printf("ci spawner: job %d (%s) stays queued: %d build VMs live, the cap", job.ID, kind.label, s.builds.cfg.Max)
+					log.Printf("ci spawner: job %d (%s) stays queued: no build VM slot (%d live at most, or backing off a provider failure)", job.ID, kind.label, s.builds.cfg.Max)
 					continue
 				}
 			}
@@ -295,6 +308,11 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // still live; one whose status cannot be read counts as live, so the cap
 // fails closed.
 func (s *CISpawner) reconcile(ctx context.Context) (live int) {
+	for id, at := range s.tornDown {
+		if s.now().Sub(at) >= ciReclaimWindow {
+			delete(s.tornDown, id)
+		}
+	}
 	names, err := s.kube.NamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
 	if err != nil {
 		log.Printf("ci spawner: reconcile list: %v", err)
@@ -312,6 +330,11 @@ func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 		if err == nil && phase != "Succeeded" && phase != "Failed" {
 			live++
 			continue
+		}
+		if err == nil { // a runner ran: its job may still be listed waiting
+			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns, s.cfg.NamespacePrefix), 10, 64); perr == nil {
+				s.tornDown[id] = s.now()
+			}
 		}
 		s.teardown(ctx, ns)
 	}
@@ -501,16 +524,18 @@ const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
 // proxy and checksum database, the host actions/checkout resolves against,
 // and the read-only build cache (its own policy refuses writes). No
 // Kubernetes API, no other namespace, no LiteLLM, no gateway.
-// A build job additionally reaches its own VM's buildkitd. BuildKit fetches
-// registry tokens through the client session, so Docker Hub's token service
-// is the runner's to reach; layers and release downloads are the VM's.
+// A build job additionally reaches its own VM's buildkitd and, since
+// BuildKit fetches registry tokens through the client session, Docker Hub's
+// token service; layers and release downloads are the VM's.
 func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
 		"storage.googleapis.com", // proxy.golang.org redirects zip downloads there
 		"data.forgejo.org",       // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
-		"auth.docker.io",         // buildctl's session fetches the build VM's registry tokens
+	}
+	if vm != nil {
+		fqdns = append(fqdns, "auth.docker.io") // buildctl's session fetches the build VM's registry tokens
 	}
 	dnsNames := make([]any, 0, len(fqdns)+1)
 	for _, host := range fqdns {

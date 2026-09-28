@@ -245,7 +245,20 @@ type BuildVMs struct {
 	registry  cloudres.Registry
 	collector *cloudres.Collector
 	now       func() time.Time
+
+	// the spawner's poll loop is the only caller: no lock
+	pricing      hcloud.Pricing
+	pricedAt     time.Time
+	backoffUntil time.Time
 }
+
+const (
+	buildVMPricesTTL = time.Hour
+	// buildVMBackoff pauses build claims after a failed provision, so a
+	// provider outage or a bad token costs no runner registration and
+	// namespace per tick.
+	buildVMBackoff = time.Minute
+)
 
 func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.Registry, collector *cloudres.Collector) (*BuildVMs, error) {
 	if cfg.Max <= 0 {
@@ -277,9 +290,13 @@ type BuildVM struct {
 	PKI  buildPKI
 }
 
-// FreeSlot reports whether another VM may be created: open server rows
-// count, deleting ones included, since their IP is not yet released.
+// FreeSlot reports whether another VM may be created: not while backing
+// off a failed provision, and open server rows count, deleting ones
+// included, since their IP is not yet released.
 func (b *BuildVMs) FreeSlot(ctx context.Context) (bool, error) {
+	if b.now().Before(b.backoffUntil) {
+		return false, nil
+	}
 	rows, err := b.registry.Open(ctx, "ci")
 	if err != nil {
 		return false, err
@@ -305,14 +322,15 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 	}
 	defer func() {
 		if err != nil {
+			b.backoffUntil = b.now().Add(buildVMBackoff)
 			if rerr := b.Release(context.WithoutCancel(ctx), jobID); rerr != nil {
 				log.Printf("build vm: release after failed provision for job %d: %v", jobID, rerr)
 			}
 		}
 	}()
-	pricing, err := b.provider.Pricing(ctx)
+	pricing, err := b.prices(ctx)
 	if err != nil {
-		return BuildVM{}, fmt.Errorf("pricing: %w", err)
+		return BuildVM{}, err
 	}
 	serverPrice, err := pricing.ServerHourlyNet(b.cfg.ServerType, b.cfg.Location)
 	if err != nil {
@@ -381,6 +399,24 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 		return BuildVM{}, fmt.Errorf("server %d has no public IPv4", srv.ID)
 	}
 	return BuildVM{IPv4: srv.IPv4(), PKI: pki}, nil
+}
+
+// prices is GET /v1/pricing, refreshed hourly; a failed refresh keeps the
+// last catalogue.
+func (b *BuildVMs) prices(ctx context.Context) (hcloud.Pricing, error) {
+	if !b.pricedAt.IsZero() && b.now().Sub(b.pricedAt) < buildVMPricesTTL {
+		return b.pricing, nil
+	}
+	p, err := b.provider.Pricing(ctx)
+	if err != nil {
+		if b.pricedAt.IsZero() {
+			return hcloud.Pricing{}, fmt.Errorf("pricing: %w", err)
+		}
+		log.Printf("build vm: pricing: %v; keeping the catalogue from %s", err, b.pricedAt.Format(time.RFC3339))
+		return b.pricing, nil
+	}
+	b.pricing, b.pricedAt = p, b.now()
+	return p, nil
 }
 
 // Release deletes every open resource of jobID, servers first, and closes

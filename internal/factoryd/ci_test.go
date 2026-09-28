@@ -121,6 +121,8 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	builds.collector.OwnerDone = CIOwnerDone(kube)
+	builds.collector.ReleaseAttempts = 1 // as cmd/factoryd wires it
+	builds.collector.RetryWait = time.Hour
 	spawner, err := NewCISpawner(testCIConfig(), forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
@@ -459,13 +461,9 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "storage.googleapis.com") {
 		t.Fatalf("DNS rule missing storage.googleapis.com: %v", dnsRule)
 	}
-	// buildctl's session answers the VM's registry token requests, so the
-	// runner reaches Docker Hub's token service; the layers are the VM's
-	if !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "auth.docker.io") || !strings.Contains(fmt.Sprint(dnsRule), "auth.docker.io") {
-		t.Fatalf("runner egress lacks auth.docker.io in the 443 or DNS rule: %s", cnpStr)
-	}
-	if strings.Contains(cnpStr, "registry-1.docker.io") || strings.Contains(cnpStr, "docker.com") {
-		t.Fatalf("runner egress reaches Docker Hub's registry or CDN: %s", cnpStr)
+	// an ordinary job drives no build: no Docker Hub host at all
+	if strings.Contains(cnpStr, "docker.io") || strings.Contains(cnpStr, "docker.com") {
+		t.Fatalf("ordinary runner egress reaches Docker Hub: %s", cnpStr)
 	}
 	if !strings.Contains(cnpStr, "k8s:app.kubernetes.io/name:forgejo") || !strings.Contains(cnpStr, "port:3000") {
 		t.Fatal("egress missing the in-cluster forgejo allow")
@@ -705,6 +703,24 @@ func TestCISpawnerBuildJobGetsBuildVM(t *testing.T) {
 	if !reflect.DeepEqual(vmRule, want) {
 		t.Fatalf("VM egress rule = %v, want %v (CIDR and port in one item)", vmRule, want)
 	}
+	// buildctl's session answers the VM's registry token requests, so a
+	// build runner reaches Docker Hub's token service; the layers are the VM's
+	var fqdnRule, dnsRule map[string]any
+	for _, r := range kube.cnps[ns+"/ci-egress"]["egress"].([]any) {
+		m := r.(map[string]any)
+		switch {
+		case m["toFQDNs"] != nil:
+			fqdnRule = m
+		case strings.Contains(fmt.Sprint(m["toEndpoints"]), "kube-dns"):
+			dnsRule = m
+		}
+	}
+	if !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "auth.docker.io") || !strings.Contains(fmt.Sprint(dnsRule), "auth.docker.io") {
+		t.Fatalf("build runner egress lacks auth.docker.io in the 443 or DNS rule: %v %v", fqdnRule, dnsRule)
+	}
+	if s := fmt.Sprint(kube.cnps[ns+"/ci-egress"]); strings.Contains(s, "registry-1.docker.io") || strings.Contains(s, "docker.com") {
+		t.Fatalf("build runner egress reaches Docker Hub's registry or CDN: %s", s)
+	}
 	if quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any); quota["pods"] != "1" {
 		t.Fatalf("resource quota pods = %v, want 1", quota["pods"])
 	}
@@ -835,10 +851,79 @@ func TestCISpawnerBuildVMFailureRollsBack(t *testing.T) {
 	if rows, _ := reg.Open(ctx, "ci"); len(rows) != 0 || len(hz.firewalls) != 0 {
 		t.Fatalf("open rows = %+v, firewalls = %v", rows, hz.firewalls)
 	}
+	// the provider failed: further ticks claim nothing, no registration churn
+	spawner.poll(ctx)
+	spawner.poll(ctx)
+	if len(hub.registered) != 1 {
+		t.Fatalf("registered = %v while backing off, want the first attempt only", hub.registered)
+	}
 	hz.serverErr = nil
+	spawner.builds.now = func() time.Time { return buildVMNow.Add(time.Minute) }
 	spawner.poll(ctx)
 	spawner.poll(ctx)
 	if _, ok := kube.pods[ns+"/"+ciPodName]; !ok {
-		t.Fatal("job not claimed again once VMs could be created")
+		t.Fatal("job not claimed again after the back-off")
+	}
+}
+
+// A firewall its deleting server still holds must not stall the poll loop:
+// teardown tries it once and leaves the row deleting; the collector's next
+// pass deletes it.
+func TestCISpawnerTeardownLeavesAFirewallInUseToTheCollector(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 54, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	hz, reg := ciBuildFakes(spawner)
+	ctx := context.Background()
+	spawner.poll(ctx)
+	kube.pods["factory-agents-ci-54/"+ciPodName].phase = "Succeeded"
+	hz.calls, hz.fwInUseTimes = nil, 1
+
+	start := time.Now()
+	spawner.reconcile(ctx)
+
+	if time.Since(start) > time.Second {
+		t.Fatalf("teardown waited %s on the firewall", time.Since(start))
+	}
+	if strings.Join(hz.calls, ",") != "delete server/102,in use firewall/101" {
+		t.Fatalf("hetzner calls = %v", hz.calls)
+	}
+	if _, ok := kube.namespaces["factory-agents-ci-54"]; ok {
+		t.Fatal("namespace survived teardown")
+	}
+	if r, _ := reg.Get(1); r.State != cloudres.StateDeleting {
+		t.Fatalf("firewall row = %s, want deleting", r.State)
+	}
+	if err := spawner.builds.collector.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := reg.Get(1); r.State != cloudres.StateDeleted || len(hz.firewalls) != 0 {
+		t.Fatalf("firewall row = %s, firewalls = %v", r.State, hz.firewalls)
+	}
+}
+
+// A build job Forgejo still lists as waiting after its namespace was torn
+// down gets no second VM within the window; after it, it is claimed again.
+func TestCISpawnerDoesNotReclaimATornDownBuildJob(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 60, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	hz, _ := ciBuildFakes(spawner)
+	now := buildVMNow
+	spawner.now = func() time.Time { return now }
+	ctx := context.Background()
+	spawner.poll(ctx)
+	kube.pods["factory-agents-ci-60/"+ciPodName].phase = "Succeeded"
+
+	spawner.poll(ctx) // tears 60 down; Forgejo still lists it waiting
+	spawner.poll(ctx)
+
+	if len(hub.registered) != 1 || len(hz.serverReqs) != 1 {
+		t.Fatalf("registered = %v, servers created = %d: a torn-down job was claimed again", hub.registered, len(hz.serverReqs))
+	}
+	now = now.Add(ciReclaimWindow)
+	spawner.poll(ctx)
+	if len(hub.registered) != 2 || len(hz.serverReqs) != 2 {
+		t.Fatalf("registered = %v, servers created = %d: want the job claimed again after the window", hub.registered, len(hz.serverReqs))
 	}
 }

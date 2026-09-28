@@ -155,6 +155,7 @@ type fakeHetzner struct {
 	serverErr     error
 	fwInUseTimes  int // DeleteFirewall answers resource_in_use this many times
 	pricingCalled int
+	pricingErr    error
 }
 
 func newFakeHetzner() *fakeHetzner {
@@ -167,6 +168,9 @@ func (f *fakeHetzner) Pricing(ctx context.Context) (hcloud.Pricing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.pricingCalled++
+	if f.pricingErr != nil {
+		return hcloud.Pricing{}, f.pricingErr
+	}
 	var p hcloud.Pricing
 	err := json.Unmarshal([]byte(`{"server_types":[{"name":"cx23","prices":[{"location":"fsn1","price_hourly":{"net":"0.0088"}}]}],
 		"primary_ips":[{"type":"ipv4","prices":[{"location":"fsn1","price_hourly":{"net":"0.0008"}}]}]}`), &p)
@@ -292,7 +296,7 @@ var buildVMNow = time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
 func newTestBuildVMs(t *testing.T, max int) (*BuildVMs, *fakeHetzner, *cloudres.Memory) {
 	t.Helper()
 	hz, reg := newFakeHetzner(), cloudres.NewMemory()
-	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz, RetryWait: time.Nanosecond}
+	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}}
 	b, err := NewBuildVMs(BuildVMConfig{Max: max, AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"}, Lease: time.Hour}, hz, reg, col)
 	if err != nil {
 		t.Fatal(err)
@@ -465,5 +469,49 @@ func TestCIOwnerDone(t *testing.T) {
 	}
 	if _, err := done(context.Background(), "x"); err == nil {
 		t.Fatal("want an error for a non-numeric owner")
+	}
+}
+
+// The price catalogue is read once an hour; a failed refresh keeps the last.
+func TestProvisionCachesPricing(t *testing.T) {
+	b, hz, _ := newTestBuildVMs(t, 1)
+	ctx := context.Background()
+	provisionAndRelease := func(job int64) {
+		t.Helper()
+		if _, err := b.Provision(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Release(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+	}
+	provisionAndRelease(1)
+	provisionAndRelease(2)
+	if hz.pricingCalled != 1 {
+		t.Fatalf("pricing read %d times within the hour, want 1", hz.pricingCalled)
+	}
+	b.now = func() time.Time { return buildVMNow.Add(time.Hour + time.Second) }
+	hz.pricingErr = errors.New("hetzner down")
+	provisionAndRelease(3)
+	if hz.pricingCalled != 2 {
+		t.Fatalf("pricing read %d times, want a refresh after the hour", hz.pricingCalled)
+	}
+}
+
+// While the provider fails, no build job is claimed: FreeSlot is false for
+// a minute after a failed provision, then open again.
+func TestProvisionFailureBacksOffClaims(t *testing.T) {
+	b, hz, _ := newTestBuildVMs(t, 2)
+	ctx := context.Background()
+	hz.pricingErr = errors.New("hetzner down")
+	if _, err := b.Provision(ctx, 1); err == nil {
+		t.Fatal("provision succeeded without a price catalogue")
+	}
+	if free, _ := b.FreeSlot(ctx); free {
+		t.Fatal("slot free right after the provider failed")
+	}
+	b.now = func() time.Time { return buildVMNow.Add(time.Minute) }
+	if free, _ := b.FreeSlot(ctx); !free {
+		t.Fatal("still backing off a minute later")
 	}
 }
