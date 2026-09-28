@@ -647,9 +647,11 @@ repaired on the next pass. The sandbox image carries
 `openssh-client`.
 
 **The SSH CA.** OpenBao's `ssh-client-signer` engine with role
-`factory-agent` (user certificates, TTL at most 30 minutes; any principal,
-since OpenBao 2.6.3's `allowed_users` has no glob: the servers'
-principals file binds a certificate to one server). The gateway logs in
+`factory-agent` (user certificates, TTL at most 30 minutes, any
+principal: OpenBao 2.6.3's `allowed_users` has no glob). Ruling 125 as
+amended: the binding is the server's `AuthorizedPrincipalsFile` (its one
+principal `resource-<row id>`) plus the gateway signing only for the
+task's own server. The gateway logs in
 through Kubernetes auth role `factory-gateway` with a projected token of
 audience `openbao` (`/var/run/secrets/openbao/token`), its ServiceAccount
 only, and a policy that may only sign with that role; it re-reads the CA
