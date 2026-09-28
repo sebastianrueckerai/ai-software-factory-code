@@ -77,7 +77,8 @@ jobs:
     # context (a base image and ADD-fetched tools come from outside the
     # context and never change with the PR, so they need no entry):
     #   Dockerfile          COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/
-    #   Dockerfile.sandbox  COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/
+    #   Dockerfile.sandbox  COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/ ;
+    #                       COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
     #   Dockerfile.runner   copies nothing from the build context
     runs-on: pr-untrusted
     outputs:
@@ -98,14 +99,19 @@ jobs:
           images=""
           for df in Dockerfile Dockerfile.sandbox Dockerfile.runner; do
             case "$df" in
-              Dockerfile|Dockerfile.sandbox) inputs="go.mod go.sum cmd/ internal/" ;;
+              Dockerfile) inputs="go.mod go.sum cmd/ internal/" ;;
+              Dockerfile.sandbox) inputs="go.mod go.sum cmd/ internal/ opencode-plugin/" ;;
               Dockerfile.runner) inputs="" ;;
+              *) echo "no input map for $df" >&2; exit 1 ;;
             esac
             build=0
             echo "$changed" | grep -qxF "$df" && build=1
             echo "$changed" | grep -qxF ".dockerignore" && build=1
             for p in $inputs; do
-              echo "$changed" | grep -q "^$p" && build=1
+              case "$p" in
+                */) echo "$changed" | grep -q "^$p" && build=1 ;;
+                *) echo "$changed" | grep -qxF "$p" && build=1 ;;
+              esac
             done
             [ "$build" = 1 ] && images="$images $df"
           done
