@@ -36,39 +36,80 @@ func reproRemote(t *testing.T) (string, string) {
 	return remote, head
 }
 
-func TestReproduceRunsTheCommandAtTheHead(t *testing.T) {
+// reproEnvs sets the repro-fetch and repro modes' environment.
+func reproEnvs(t *testing.T, remote, sha, command string) {
+	for k, v := range map[string]string{"REPO_URL": remote, "REPO_TOKEN": "tok", "PR_REF": "refs/pull/9/head", "REPO_SHA": sha,
+		"REPRO_COMMAND": command, "REPRO_TIMEOUT": "60"} {
+		t.Setenv(k, v)
+	}
+}
+
+func nolog(string, ...any) {}
+
+// The fetch leaves the head in the workspace, the repro mode runs the
+// command there.
+func TestReproRunsTheCommandAtTheFetchedHead(t *testing.T) {
 	remote, head := reproRemote(t)
-	e := reproEnv{repoURL: remote, repoToken: "tok", ref: "refs/pull/9/head", sha: head, command: "sh check.sh", timeout: time.Minute}
-	got := reproduce(e, filepath.Join(t.TempDir(), "repo"))
-	if got != (harness.Repro{Exit: 3, Output: "checking\noops\n"}) {
+	reproEnvs(t, remote, head, "sh check.sh")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if got := repro(ws); got != (harness.Repro{Exit: 3, Output: "checking\noops\n"}) {
 		t.Fatalf("repro = %+v", got)
 	}
-	e.command = "true"
-	if got := reproduce(e, filepath.Join(t.TempDir(), "repo")); got != (harness.Repro{Exit: 0}) {
+	t.Setenv("REPRO_COMMAND", "true")
+	if got := repro(ws); got != (harness.Repro{Exit: 0}) {
 		t.Fatalf("repro = %+v", got)
 	}
 }
 
-// A head that is not the gated commit is not run.
-func TestReproduceRefusesAMovedHead(t *testing.T) {
+// A head that is not the gated commit is not run: the fetch records why,
+// the repro mode reports it.
+func TestReproRefusesAMovedHead(t *testing.T) {
 	remote, _ := reproRemote(t)
-	e := reproEnv{repoURL: remote, repoToken: "tok", ref: "refs/pull/9/head", sha: "0000", command: "touch ran", timeout: time.Minute}
-	dir := filepath.Join(t.TempDir(), "repo")
-	got := reproduce(e, dir)
+	reproEnvs(t, remote, "0000", "touch ran")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	got := repro(ws)
 	if got.Exit != -1 || !strings.Contains(got.Output, "the pull request moved") {
 		t.Fatalf("repro = %+v", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "ran")); err == nil {
+	if _, err := os.Stat(filepath.Join(ws, "repo", "ran")); err == nil {
 		t.Fatal("the command ran on a moved head")
+	}
+}
+
+// The repro mode needs no token: its environment has none.
+func TestReproModeReadsNoToken(t *testing.T) {
+	remote, head := reproRemote(t)
+	reproEnvs(t, remote, head, "printf %s \"$REPO_TOKEN\"")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	os.Unsetenv("REPO_TOKEN")
+	for _, k := range []string{"REPO_URL", "PR_REF", "REPO_SHA"} {
+		os.Unsetenv(k)
+	}
+	if got := repro(ws); got != (harness.Repro{Exit: 0}) {
+		t.Fatalf("repro = %+v", got)
 	}
 }
 
 // A command past its time is killed with its process group.
 func TestReproduceTimesOut(t *testing.T) {
 	remote, head := reproRemote(t)
-	e := reproEnv{repoURL: remote, repoToken: "tok", ref: "refs/pull/9/head", sha: head, command: "echo start; sleep 30 & sleep 30", timeout: 300 * time.Millisecond}
+	reproEnvs(t, remote, head, "")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	e := reproEnv{command: "echo start; sleep 30 & sleep 30", timeout: 300 * time.Millisecond}
 	began := time.Now()
-	got := reproduce(e, filepath.Join(t.TempDir(), "repo"))
+	got := reproduce(e, filepath.Join(ws, "repo"))
 	if got.Exit != -1 || !strings.Contains(got.Output, "start\n") || !strings.Contains(got.Output, "timed out after 300ms") {
 		t.Fatalf("repro = %+v", got)
 	}
@@ -86,16 +127,12 @@ func TestTailBufferKeepsTheEnd(t *testing.T) {
 	}
 }
 
-func TestLoadReproEnvDropsTheToken(t *testing.T) {
-	for k, v := range map[string]string{"REPO_URL": "u", "REPO_TOKEN": "secret", "PR_REF": "refs/pull/9/head", "REPO_SHA": "c1", "REPRO_COMMAND": "make", "REPRO_TIMEOUT": "600"} {
-		t.Setenv(k, v)
-	}
+func TestLoadReproEnv(t *testing.T) {
+	t.Setenv("REPRO_COMMAND", "make")
+	t.Setenv("REPRO_TIMEOUT", "600")
 	e, err := loadReproEnv()
-	if err != nil || e.repoToken != "secret" || e.timeout != 10*time.Minute {
+	if err != nil || e != (reproEnv{command: "make", timeout: 10 * time.Minute}) {
 		t.Fatalf("env = %+v, %v", e, err)
-	}
-	if _, ok := os.LookupEnv("REPO_TOKEN"); ok {
-		t.Fatal("REPO_TOKEN is still in the environment the command inherits")
 	}
 	t.Setenv("REPRO_TIMEOUT", "0")
 	if _, err := loadReproEnv(); err == nil {

@@ -49,7 +49,10 @@ func run(log func(string, ...any)) int {
 		log("prctl PR_SET_DUMPABLE: %v", errno)
 		return 1
 	}
-	if os.Getenv("MODE") == "repro" {
+	switch os.Getenv("MODE") {
+	case "repro-fetch":
+		return runReproFetch(log, workspace)
+	case "repro":
 		return runRepro(log)
 	}
 	env, err := loadEnv()

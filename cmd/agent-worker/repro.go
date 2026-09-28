@@ -15,45 +15,74 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
-// reproEnv is the repro mode's contract with factoryd (GateReproduction):
-// fetch ref (the pull request head on the task's repository) with a read
-// token, check it is sha, run command there. No agent, no gateway token,
-// no push token.
+// The repro pod is factoryd's GateReproduction: an init container in
+// repro-fetch mode, the only holder of the read token on the task's
+// repository, fetches ref (the pull request head) into the workspace and
+// checks it is sha; the worker container in repro mode, with no token of
+// any kind, runs command there. No agent, no gateway token, no push token.
+type fetchEnv struct {
+	repoURL, repoToken, ref, sha string
+}
+
 type reproEnv struct {
-	repoURL, repoToken, ref, sha, command string
-	timeout                               time.Duration
+	command string
+	timeout time.Duration
+}
+
+func required(names ...string) (map[string]string, error) {
+	vals := map[string]string{}
+	for _, name := range names {
+		if vals[name] = os.Getenv(name); vals[name] == "" {
+			return nil, fmt.Errorf("%s is required", name)
+		}
+	}
+	return vals, nil
+}
+
+func loadFetchEnv() (fetchEnv, error) {
+	v, err := required("REPO_URL", "REPO_TOKEN", "PR_REF", "REPO_SHA")
+	if err != nil {
+		return fetchEnv{}, err
+	}
+	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"]}, nil
 }
 
 func loadReproEnv() (reproEnv, error) {
-	e := reproEnv{
-		repoURL: os.Getenv("REPO_URL"), repoToken: os.Getenv("REPO_TOKEN"), ref: os.Getenv("PR_REF"),
-		sha: os.Getenv("REPO_SHA"), command: os.Getenv("REPRO_COMMAND"),
-	}
-	// the command inherits this process's environment
-	os.Unsetenv("REPO_TOKEN")
-	for name, val := range map[string]string{"REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken, "PR_REF": e.ref, "REPO_SHA": e.sha, "REPRO_COMMAND": e.command} {
-		if val == "" {
-			return e, fmt.Errorf("%s is required", name)
-		}
+	v, err := required("REPRO_COMMAND")
+	if err != nil {
+		return reproEnv{}, err
 	}
 	secs, err := strconv.Atoi(os.Getenv("REPRO_TIMEOUT"))
 	if err != nil || secs <= 0 {
-		return e, fmt.Errorf("REPRO_TIMEOUT: want positive seconds")
+		return reproEnv{}, fmt.Errorf("REPRO_TIMEOUT: want positive seconds")
 	}
-	e.timeout = time.Duration(secs) * time.Second
-	return e, nil
+	return reproEnv{command: v["REPRO_COMMAND"], timeout: time.Duration(secs) * time.Second}, nil
+}
+
+// fetchFailed is where the fetch leaves its failure for the repro mode to
+// report: the init container always exits 0, so the report is one path.
+func fetchFailed(ws string) string { return filepath.Join(ws, "fetch-failed") }
+
+// runReproFetch is the init container's repro-fetch mode, into ws.
+func runReproFetch(log func(string, ...any), ws string) int {
+	e, err := loadFetchEnv()
+	if err == nil {
+		err = fetchHead(e, filepath.Join(ws, "repo"))
+	}
+	if err == nil {
+		return 0
+	}
+	if werr := os.WriteFile(fetchFailed(ws), []byte(err.Error()), 0o600); werr != nil {
+		log("record the fetch failure %q: %v", err, werr)
+		return 1
+	}
+	return 0
 }
 
 // runRepro is the worker's repro mode: it reports one repro envelope on
 // stdout, whatever happens, and exits 0 once it reported.
 func runRepro(log func(string, ...any)) int {
-	e, err := loadReproEnv()
-	rep := harness.Repro{Exit: -1}
-	if err != nil {
-		rep.Output = "repro mode: " + err.Error()
-	} else {
-		rep = reproduce(e, filepath.Join(workspace, "repo"))
-	}
+	rep := repro(workspace)
 	if err := killOthers(); err != nil {
 		log("stop the command's processes: %v", err)
 	}
@@ -62,29 +91,43 @@ func runRepro(log func(string, ...any)) int {
 	return 0
 }
 
+// fetchHead fetches e.ref into dir and checks out e.sha there, or fails.
+func fetchHead(e fetchEnv, dir string) error {
+	var w workerEnv
+	if _, err := w.git("", "init", "-q", dir); err != nil {
+		return fmt.Errorf("init: %w", err)
+	}
+	if err := w.gitAuth(e.repoToken, dir, "fetch", "-q", "--no-tags", e.repoURL, e.ref); err != nil {
+		return fmt.Errorf("fetch %s: %w", e.ref, err)
+	}
+	if _, err := w.git(dir, "checkout", "-q", "--detach", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("checkout: %w", err)
+	}
+	if head, err := w.git(dir, "rev-parse", "HEAD"); err != nil || head != e.sha {
+		return fmt.Errorf("%s is at %s, not the gated head %s: the pull request moved", e.ref, head, e.sha)
+	}
+	return nil
+}
+
 // maxReproOutput is the output tail kept in memory and reported.
 const maxReproOutput = 4 << 10
 
-// reproduce fetches the head into dir and runs the command there under
-// sh, its output (stdout and stderr) tail kept. Exit -1: it could not run
-// or ran out of time.
+// repro is the repro mode's report on ws: the fetch's failure, a bad
+// environment (exit -1), or the command's run at the fetched head.
+func repro(ws string) harness.Repro {
+	if b, err := os.ReadFile(fetchFailed(ws)); err == nil {
+		return harness.Repro{Exit: -1, Output: "repro mode: " + string(b)}
+	}
+	e, err := loadReproEnv()
+	if err != nil {
+		return harness.Repro{Exit: -1, Output: "repro mode: " + err.Error()}
+	}
+	return reproduce(e, filepath.Join(ws, "repo"))
+}
+
+// reproduce runs the command under sh in dir, its output (stdout and
+// stderr) tail kept. Exit -1: it could not run or ran out of time.
 func reproduce(e reproEnv, dir string) harness.Repro {
-	w := workerEnv{repoToken: e.repoToken}
-	fail := func(format string, args ...any) harness.Repro {
-		return harness.Repro{Exit: -1, Output: fmt.Sprintf(format, args...)}
-	}
-	if _, err := w.git("", "init", "-q", dir); err != nil {
-		return fail("init: %v", err)
-	}
-	if err := w.gitAuth(e.repoToken, dir, "fetch", "-q", "--no-tags", e.repoURL, e.ref); err != nil {
-		return fail("fetch %s: %v", e.ref, err)
-	}
-	if _, err := w.git(dir, "checkout", "-q", "--detach", "FETCH_HEAD"); err != nil {
-		return fail("checkout: %v", err)
-	}
-	if head, err := w.git(dir, "rev-parse", "HEAD"); err != nil || head != e.sha {
-		return fail("%s is at %s, not the gated head %s: the pull request moved", e.ref, head, e.sha)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
 	defer cancel()
 	out := &tailBuffer{max: maxReproOutput}
@@ -102,7 +145,7 @@ func reproduce(e reproEnv, dir string) harness.Repro {
 	case errors.As(err, &exit):
 		return harness.Repro{Exit: exit.ExitCode(), Output: out.String()}
 	case err != nil:
-		return fail("run: %v", err)
+		return harness.Repro{Exit: -1, Output: fmt.Sprintf("run: %v", err)}
 	}
 	return harness.Repro{Exit: 0, Output: out.String()}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -290,19 +291,29 @@ func tail(s string, n int) string {
 
 // reproPodSpec is the worker pod in repro mode: no gateway token, no push
 // token, the same labels (so the sandbox egress policy selects it), image
-// and confinement.
+// and confinement. Its fetch init container alone holds the read token and
+// leaves the head in the workspace; the container that runs the
+// agent-written command holds no token at all.
 func (r *Runner) reproPodSpec(t Task, repo Repo, pr int64, commit string) map[string]any {
-	return r.sandboxPodSpec(t, []map[string]any{
+	pod := r.sandboxPodSpec(t, []map[string]any{
 		{"name": "MODE", "value": "repro"},
 		{"name": "TASK_ID", "value": t.ID},
+		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
+		{"name": "REPRO_TIMEOUT", "value": strconv.Itoa(int(r.cfg.ReproTimeout.Seconds()))},
+	}, false)
+	spec := pod["spec"].(map[string]any)
+	fetch := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
+	fetch["name"] = "fetch"
+	fetch["env"] = []map[string]any{
+		{"name": "MODE", "value": "repro-fetch"},
 		{"name": "REPO_URL", "value": r.repoURL(repo)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
 		{"name": "PR_REF", "value": fmt.Sprintf("refs/pull/%d/head", pr)},
 		{"name": "REPO_SHA", "value": commit},
-		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
-		{"name": "REPRO_TIMEOUT", "value": strconv.Itoa(int(r.cfg.ReproTimeout.Seconds()))},
-	}, false)
+	}
+	spec["initContainers"] = []any{fetch}
+	return pod
 }
 
 // reviewDiffMax caps the diff the model review reads.

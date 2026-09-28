@@ -515,6 +515,37 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 			t.Fatalf("pod spec carries %s: %s", not, spec)
 		}
 	}
+	// the read token is the fetch init container's alone: the container
+	// that runs the agent-written command has none
+	var parsed struct {
+		Spec struct {
+			InitContainers, Containers []struct {
+				Name string
+				Env  []struct{ Name string }
+			}
+		}
+	}
+	json.Unmarshal(spec, &parsed)
+	envOf := func(cs []struct {
+		Name string
+		Env  []struct{ Name string }
+	}) string {
+		var out []string
+		for _, c := range cs {
+			var names []string
+			for _, e := range c.Env {
+				names = append(names, e.Name)
+			}
+			out = append(out, c.Name+": "+strings.Join(names, " "))
+		}
+		return strings.Join(out, "; ")
+	}
+	if got := envOf(parsed.Spec.InitContainers); got != "fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
+		t.Fatalf("init containers = %s", got)
+	}
+	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT" {
+		t.Fatalf("containers = %s", got)
+	}
 	if calls := strings.Join(hub.calls, "\n"); !strings.Contains(calls, "mint task-t1-base read:repository sf/repo") || strings.Contains(calls, "write:repository") {
 		t.Fatalf("forgejo calls = %s", calls)
 	}

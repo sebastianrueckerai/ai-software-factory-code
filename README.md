@@ -239,11 +239,15 @@ activities, each with a timeline step and a comment on the pull request:
 3. `GateReproduction`, when the task carries a reproduction
    (`repro_command`: the issue body's first fenced block labelled `repro`,
    or `repro_command` on `POST /tasks`): a fresh sandbox namespace, a read
-   token on the task's repository only, and the worker image in its repro
-   mode (`MODE=repro`, no agent, no gateway token, no push token, the
-   agents' egress policy) fetches `refs/pull/<n>/head`, checks it is the
-   gated head and runs the command with `sh -c` for at most
-   `REPRO_TIMEOUT` (default 10m, at most 15m). Exit 0 passes. Anything
+   token on the task's repository only, and one pod of the worker image
+   (no agent, no gateway token, no push token, the agents' egress policy).
+   Its init container (`MODE=repro-fetch`), the token's only holder,
+   fetches `refs/pull/<n>/head` into the workspace and checks it is the
+   gated head; the worker container (`MODE=repro`), with no token in its
+   environment, runs the command there with `sh -c` for at most
+   `REPRO_TIMEOUT` (default 10m, at most 15m). A failed fetch is reported
+   as exit -1. The activity heartbeats from its start, through the
+   namespace wait and the image pull. Exit 0 passes. Anything
    else sends the next attempt back to the agent on the stronger rung with
    the exit code and the output tail as findings, like red checks. The
    namespace and the token go when it ends.
