@@ -788,7 +788,8 @@ Image builds run outside the cluster instead (ruling 110,
 - **The VM.** A job whose `runs_on` includes `pr-untrusted-build`
   (`pr.yml`'s `image-build`, labelled so only when the `changes` job
   selected an image: Forgejo hands a job to a runner before evaluating
-  its `if`) gets a throwaway `cx23` server (debian-12,
+  its `if`) gets a throwaway server of type `CI_BUILD_VM_TYPE` (default
+  `cx23`; debian-12,
   fsn1) in the Hetzner CI project, which holds nothing else. Its
   cloud-init installs the checksum-pinned buildkitd v0.33.0 release (with
   the release's own runc) and serves it on tcp 1234 behind mTLS. No SSH

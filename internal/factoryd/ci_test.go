@@ -468,29 +468,9 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	if !strings.Contains(cnpStr, "k8s:app.kubernetes.io/name:forgejo") || !strings.Contains(cnpStr, "port:3000") {
 		t.Fatal("egress missing the in-cluster forgejo allow")
 	}
-	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "build-cache.forgejo.svc.cluster.local") {
-		t.Fatalf("DNS rule missing the build cache: %v", dnsRule)
-	}
-	var cacheRule map[string]any
-	for _, rule := range cnp["egress"].([]any) {
-		r := rule.(map[string]any)
-		if strings.Contains(fmt.Sprint(r["toEndpoints"]), "build-cache") {
-			cacheRule = r
-		}
-	}
-	wantCache := map[string]any{
-		"toEndpoints": []any{map[string]any{
-			"matchLabels": map[string]string{
-				"k8s:io.kubernetes.pod.namespace": "forgejo",
-				"k8s:app.kubernetes.io/name":      "build-cache",
-			},
-		}},
-		"toPorts": []any{map[string]any{
-			"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
-		}},
-	}
-	if !reflect.DeepEqual(cacheRule, wantCache) {
-		t.Fatalf("build cache egress rule = %v, want %v", cacheRule, wantCache)
+	// only image-build reads the build cache
+	if strings.Contains(cnpStr, "build-cache") {
+		t.Fatalf("ordinary runner egress reaches the build cache: %s", cnpStr)
 	}
 	if strings.Contains(cnpStr, "kubernetes.default") || strings.Contains(cnpStr, "443 protocol:TCP] map[port:6443") {
 		t.Fatal("egress must not reach the Kubernetes API")
@@ -720,6 +700,30 @@ func TestCISpawnerBuildJobGetsBuildVM(t *testing.T) {
 	}
 	if s := fmt.Sprint(kube.cnps[ns+"/ci-egress"]); strings.Contains(s, "registry-1.docker.io") || strings.Contains(s, "docker.com") {
 		t.Fatalf("build runner egress reaches Docker Hub's registry or CDN: %s", s)
+	}
+	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "build-cache.forgejo.svc.cluster.local") {
+		t.Fatalf("DNS rule missing the build cache: %v", dnsRule)
+	}
+	var cacheRule map[string]any
+	for _, rule := range kube.cnps[ns+"/ci-egress"]["egress"].([]any) {
+		r := rule.(map[string]any)
+		if strings.Contains(fmt.Sprint(r["toEndpoints"]), "build-cache") {
+			cacheRule = r
+		}
+	}
+	wantCache := map[string]any{
+		"toEndpoints": []any{map[string]any{
+			"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "forgejo",
+				"k8s:app.kubernetes.io/name":      "build-cache",
+			},
+		}},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
+		}},
+	}
+	if !reflect.DeepEqual(cacheRule, wantCache) {
+		t.Fatalf("build cache egress rule = %v, want %v", cacheRule, wantCache)
 	}
 	if quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any); quota["pods"] != "1" {
 		t.Fatalf("resource quota pods = %v, want 1", quota["pods"])

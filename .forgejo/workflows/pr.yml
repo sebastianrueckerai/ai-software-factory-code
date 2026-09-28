@@ -156,14 +156,17 @@ jobs:
           cache=build-cache.forgejo.svc.cluster.local:5000/cache
           declare -A image_for=([Dockerfile]=factory-gateway [Dockerfile.sandbox]=opencode-worker [Dockerfile.runner]=ci-runner)
           build() {
-            local df=$1 image=${image_for[$1]} digest import=() start=$SECONDS
-            if digest=$(crane digest --insecure "$cache/$image:main" 2>"$logdir/$df.crane") \
-              && crane pull --insecure --format=oci "$cache/$image@$digest" "$cachedir/$image" 2>"$logdir/$df.crane"; then
+            local df=$1 image=${image_for[$1]:-} digest reason import=() start=$SECONDS
+            # bounded: a stalled cache must fall through to a cold build
+            if [ -n "$image" ] \
+              && digest=$(timeout 120 crane digest --insecure "$cache/$image:main" 2>"$logdir/$df.crane") \
+              && timeout 120 crane pull --insecure --format=oci "$cache/$image@$digest" "$cachedir/$image" 2>"$logdir/$df.crane"; then
               echo "cache: $cache/$image@$digest, fetched in $((SECONDS - start)) s"
               # crane's layout carries no tag, so name the manifest by digest
               import=(--import-cache "type=local,src=$cachedir/$image,digest=$digest")
             else
-              echo "no cache for $image, building without it: $(tail -n 1 "$logdir/$df.crane")"
+              reason=$(tail -n 1 "$logdir/$df.crane" 2>/dev/null)
+              echo "no cache for ${image:-$df}, building without it: ${reason:-no cache name for $df, or the fetch timed out}"
             fi
             buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
               build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \

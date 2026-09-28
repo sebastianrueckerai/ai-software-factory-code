@@ -150,6 +150,7 @@ func main() {
 	const ciJobTimeout = 45 * time.Minute
 	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
 		Max:            envInt("CI_BUILD_VMS_MAX", 2),
+		ServerType:     env("CI_BUILD_VM_TYPE", "cx23"),
 		AllowedSources: nodeIPs,
 		Lease:          ciJobTimeout + 15*time.Minute,
 	}, hetznerCI, cloudRegistry, ciCollector)

@@ -521,12 +521,12 @@ const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
 // #5): the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
-// proxy and checksum database, the host actions/checkout resolves against,
-// and the read-only build cache (its own policy refuses writes). No
-// Kubernetes API, no other namespace, no LiteLLM, no gateway.
-// A build job additionally reaches its own VM's buildkitd and, since
-// BuildKit fetches registry tokens through the client session, Docker Hub's
-// token service; layers and release downloads are the VM's.
+// proxy and checksum database, and the host actions/checkout resolves
+// against. No Kubernetes API, no other namespace, no LiteLLM, no gateway.
+// A build job additionally reaches its own VM's buildkitd, the read-only
+// build cache (its own policy refuses writes) and, since BuildKit fetches
+// registry tokens through the client session, Docker Hub's token service;
+// layers and release downloads are the VM's.
 func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
@@ -541,7 +541,10 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	for _, host := range fqdns {
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
-	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()}, map[string]any{"matchName": buildCacheHost})
+	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	if vm != nil {
+		dnsNames = append(dnsNames, map[string]any{"matchName": buildCacheHost})
+	}
 
 	toFQDNs := make([]any, 0, len(fqdns))
 	for _, host := range fqdns {
@@ -558,17 +561,6 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 			}},
 			"toPorts": []any{map[string]any{
 				"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
-			}},
-		},
-		map[string]any{
-			"toEndpoints": []any{map[string]any{
-				"matchLabels": map[string]string{
-					"k8s:io.kubernetes.pod.namespace": "forgejo",
-					"k8s:app.kubernetes.io/name":      "build-cache",
-				},
-			}},
-			"toPorts": []any{map[string]any{
-				"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
 			}},
 		},
 		map[string]any{
@@ -591,7 +583,17 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 		},
 	}
 	if vm != nil {
-		egress = append(egress, buildVMEgressRule(vm.IPv4))
+		egress = append(egress, buildVMEgressRule(vm.IPv4), map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "forgejo",
+					"k8s:app.kubernetes.io/name":      "build-cache",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "5000", "protocol": "TCP"}},
+			}},
+		})
 	}
 
 	return map[string]any{
