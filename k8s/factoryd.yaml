@@ -82,12 +82,17 @@ rules:
 - apiGroups: [kustomize.toolkit.fluxcd.io]
   resources: [kustomizations]
   verbs: [get, create, patch]
+- apiGroups: [cilium.io]
+  resources: [ciliumnetworkpolicies]
+  verbs: [get, create, patch]
 ---
 # What a project's Flux Kustomization applies with, as the namespace's flux
 # account (ruling 157): the workload kinds a project deploys, nothing
-# cluster-scoped, no RBAC and no Flux kind. admin and edit would not do:
-# both aggregate Flux's kinds, and a Kustomization without an account runs
-# with the controller's rights.
+# cluster-scoped, no RBAC, no Flux kind and no network policy (the
+# namespace's default deny is factoryd's; policies add up, so one of the
+# project's would widen it). admin and edit would not do: both aggregate
+# Flux's kinds, and a Kustomization without an account runs with the
+# controller's rights.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -114,20 +119,15 @@ rules:
 - apiGroups: [autoscaling]
   resources: [horizontalpodautoscalers]
   verbs: [get, list, watch, create, update, patch, delete]
-- apiGroups: [networking.k8s.io]
-  resources: [networkpolicies]
-  verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [gateway.networking.k8s.io]
   resources: [httproutes]
-  verbs: [get, list, watch, create, update, patch, delete]
-- apiGroups: [cilium.io]
-  resources: [ciliumnetworkpolicies]
   verbs: [get, list, watch, create, update, patch, delete]
 - apiGroups: [postgresql.cnpg.io]
   resources: [clusters, databases, scheduledbackups, backups]
   verbs: [get, list, watch, create, update, patch, delete]
 ---
-# Each project's Flux source (Task 65).
+# Each project's Flux source and its read credential <project>-git (Task
+# 65); the admission policy confines both to the project's own names.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -136,6 +136,9 @@ metadata:
 rules:
 - apiGroups: [source.toolkit.fluxcd.io]
   resources: [gitrepositories]
+  verbs: [get, create, patch]
+- apiGroups: [""]
+  resources: [secrets]
   verbs: [get, create, patch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -249,26 +252,44 @@ spec:
       variables.kind != 'Namespace' && !variables.task && request.operation != 'DELETE' &&
       namespaceObject != null && has(namespaceObject.metadata.labels) &&
       'factory/project' in namespaceObject.metadata.labels
-  # a project's Flux source: labelled, named after its project, the Flux
-  # credential sent to the factory's Forgejo only
+  # a project's Flux source: labelled, named after its project, its
+  # repository <project>/<project> on the factory's Forgejo read with the
+  # project's own credential, nothing included from elsewhere, no proxy
   - name: projectSource
     expression: >-
       variables.kind == 'GitRepository' && request.namespace == 'flux-system' && request.operation != 'DELETE' &&
       has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
       object.metadata.name == object.metadata.labels['factory/project'] &&
-      object.spec.url.startsWith('https://git.aisoftwarefactory.world/') &&
-      object.spec.secretRef.name == 'forgejo-pat' &&
+      object.spec.url == 'https://git.aisoftwarefactory.world/' + object.metadata.name + '/' + object.metadata.name &&
+      has(object.spec.secretRef) && object.spec.secretRef.name == object.metadata.name + '-git' &&
+      !has(object.spec.include) && !has(object.spec.proxySecretRef) &&
       (request.operation == 'CREATE' ||
        (has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
         oldObject.metadata.labels['factory/project'] == object.metadata.labels['factory/project']))
+  # that source's credential
+  - name: projectGitSecret
+    expression: >-
+      variables.kind == 'Secret' && request.namespace == 'flux-system' && request.operation != 'DELETE' &&
+      has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
+      object.metadata.name == object.metadata.labels['factory/project'] + '-git' &&
+      (!has(object.type) || object.type == 'Opaque')
   validations:
-  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource
+  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret
     message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces and on its projects' Flux sources
   - expression: >-
       variables.task ? variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod'] :
-      variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization'] :
+      variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization', 'CiliumNetworkPolicy'] :
       true
     message: factoryd may not create this kind of object
+  # a service account token would carry the account's rights (the flux
+  # account's deployer role) past factoryd's own lockdown
+  - expression: >-
+      variables.kind != 'Secret' || request.operation == 'DELETE' ||
+      !has(object.type) || object.type != 'kubernetes.io/service-account-token'
+    message: factoryd may not mint service account tokens
+  # the project's default deny is the one network policy factoryd keeps there
+  - expression: variables.kind != 'CiliumNetworkPolicy' || !variables.inProject || object.metadata.name == 'project'
+    message: a project namespace's one network policy is named project
   - expression: >-
       variables.kind != 'Namespace' || !variables.task || request.operation == 'DELETE' ||
       (has(object.metadata.labels) &&
@@ -414,16 +435,17 @@ spec:
         # factory-merge: merge whitelist of main only; the workflow's Merge
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
-        # factory-projects: creates project repositories and keeps their
-        # webhook, collaborators and protection (Task 65)
+        # factory-projects: owns every project organisation (ruling 164)
+        # and keeps its repository's hooks, collaborators, protection,
+        # deploy key, Actions secrets and runners; write:repository only
         - name: FORGEJO_PROJECTS_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-projects, key: token}}
-        # SigNoz's root login, a copy of platform/signoz-root: the alerts
-        # endpoint reads the firing alerts with it
+        # a SigNoz user with the viewer role: the alerts endpoint reads the
+        # firing alerts with it and can change nothing
         - name: SIGNOZ_EMAIL
-          valueFrom: {secretKeyRef: {name: signoz-root, key: email}}
+          valueFrom: {secretKeyRef: {name: signoz-factoryd, key: email}}
         - name: SIGNOZ_PASSWORD
-          valueFrom: {secretKeyRef: {name: signoz-root, key: password}}
+          valueFrom: {secretKeyRef: {name: signoz-factoryd, key: password}}
         - name: CI_RUNNER_IMAGE
           value: git.aisoftwarefactory.world/sf/ci-runner@sha256:a04f38ba01b1748ae96b42c6525349781655fb4182835b66ae46cea039e3be39
         - name: LITELLM_MASTER_KEY
@@ -547,12 +569,13 @@ spec:
     - matchLabels: {app: factory-gateway}
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
-  # the org runner's main-branch jobs ask GET /projects/{name}/alerts
-  # (Task 65), with their project's FACTORY_READ_TOKEN
+  # a project's main workflow, on a CI runner the spawner started for the
+  # project, asks GET /projects/{name}/alerts with its FACTORY_READ_TOKEN
   - fromEndpoints:
     - matchLabels:
-        app.kubernetes.io/name: forgejo-runner
-        "k8s:io.kubernetes.pod.namespace": forgejo
+        app.kubernetes.io/name: ci-runner
+      matchExpressions:
+      - {key: "k8s:io.cilium.k8s.namespace.labels.factory.ai/ci-project", operator: Exists}
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
 ---
