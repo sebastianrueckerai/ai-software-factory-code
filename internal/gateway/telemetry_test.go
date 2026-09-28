@@ -149,6 +149,8 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 		{TaskID: "t1", Decision: "refused_budget", Reason: "task headroom 0.000000 EUR", ModelAlias: "coding-cheap", PolicyVersion: &three},
 		// a task id as long as a key stays whole: it is the join key
 		{TaskID: "t-0123456789abcdef0123456789abcdef01", Decision: "escalated", Tool: policy.ToolEscalate},
+		{TaskID: "t1", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "review-frontier", PolicyVersion: &three, SpendEUR: &spend,
+			OutputLimit: &limit, HoldEUR: &hold},
 	}
 	for _, row := range rows {
 		if err := audited.InsertAudit(context.Background(), row); err != nil {
@@ -159,14 +161,16 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 		t.Fatalf("stored rows %+v, want them unchanged", got)
 	}
 	want := []map[string]string{
-		{"body": "audit error_tool", "task.id": "t1", "audit.decision": "error_tool", "audit.tool": policy.ToolReplicate,
+		{"body": "audit error_tool", "task.id": "t1", "audit.decision": "error_tool", "audit.kind": "agent", "audit.tool": policy.ToolReplicate,
 			"audit.reason": "provider answered 401: [body dropped]", "audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.hold_eur": "0.5"},
-		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.model_alias": "[redacted]",
+		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.kind": "agent", "audit.model_alias": "[redacted]",
 			"audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.output_limit": "2250", "audit.hold_eur": "0.5",
 			"audit.over_hold": "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full"},
-		{"body": "audit refused_budget", "task.id": "t1", "audit.decision": "refused_budget", "audit.reason": "task headroom 0.000000 EUR",
+		{"body": "audit refused_budget", "task.id": "t1", "audit.decision": "refused_budget", "audit.kind": "agent", "audit.reason": "task headroom 0.000000 EUR",
 			"audit.model_alias": "coding-cheap", "audit.policy_version": "3"},
-		{"body": "audit escalated", "task.id": "t-0123456789abcdef0123456789abcdef01", "audit.decision": "escalated", "audit.tool": policy.ToolEscalate},
+		{"body": "audit escalated", "task.id": "t-0123456789abcdef0123456789abcdef01", "audit.decision": "escalated", "audit.kind": "agent", "audit.tool": policy.ToolEscalate},
+		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.kind": "review", "audit.model_alias": "review-frontier",
+			"audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.output_limit": "2250", "audit.hold_eur": "0.5"},
 	}
 	got := rig.logs.attributes()
 	if !reflect.DeepEqual(got, want) {
@@ -187,8 +191,8 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 	if err := failing.InsertAudit(context.Background(), rows[0]); err == nil {
 		t.Fatal("the store's error was swallowed")
 	}
-	if n := len(rig.logs.attributes()); n != 4 {
-		t.Fatalf("%d log records after a refused insert, want 4", n)
+	if n := len(rig.logs.attributes()); n != len(want) {
+		t.Fatalf("%d log records after a refused insert, want %d", n, len(want))
 	}
 }
 

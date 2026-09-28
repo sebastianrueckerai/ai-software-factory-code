@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -26,7 +27,10 @@ type Task struct {
 }
 
 type AuditRow struct {
-	TaskID     string
+	TaskID string
+	// Kind is the factoryd purpose of the call (policy.Purposes), "" for an
+	// agent's: stored as agent.
+	Kind       string
 	Decision   string
 	Reason     string
 	ModelAlias string
@@ -44,6 +48,11 @@ type AuditRow struct {
 	// within the hold or without a booking.
 	OverHold string
 }
+
+func (row AuditRow) kind() string { return cmp.Or(row.Kind, AuditKindAgent) }
+
+// AuditKindAgent is the audit kind of an agent's call.
+const AuditKindAgent = "agent"
 
 // Store is the task and audit state every gateway decision reads and writes.
 // The production implementation is Postgres; tests use an in-memory fake.
@@ -99,9 +108,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind())
 	return err
 }
 

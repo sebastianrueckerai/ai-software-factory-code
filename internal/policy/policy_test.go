@@ -363,6 +363,56 @@ func TestAllowsModel(t *testing.T) {
 	}
 }
 
+const withFactoryModels = `
+version: 1
+budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
+classes:
+  coder:
+    models: [coding-cheap]
+    review_model: review-frontier
+    supervisor_model: supervisor
+  researcher:
+    models: [coding-cheap]
+    review_model: review-cheap
+  plain:
+    models: [coding-cheap]
+risk:
+  classes: [{name: normal, outcome: requires_approval}]
+  default: normal
+envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
+`
+
+func TestFactoryModel(t *testing.T) {
+	d, err := Parse([]byte(withFactoryModels))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		classes []string
+		purpose string
+		want    string
+	}{
+		{[]string{"coder"}, PurposeReview, "review-frontier"},
+		{[]string{"coder"}, PurposeSupervisor, "supervisor"},
+		{[]string{"coder"}, PurposeGateSupervisor, "supervisor"},
+		{[]string{"researcher", "coder"}, PurposeReview, "review-cheap"},
+		{[]string{"researcher", "coder"}, PurposeSupervisor, "supervisor"},
+		{[]string{"plain"}, PurposeReview, ""},
+		{[]string{"coder"}, "session", ""},
+		{nil, PurposeReview, ""},
+	} {
+		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
+			t.Errorf("FactoryModel(%v, %s) = %q, want %q", tc.classes, tc.purpose, got, tc.want)
+		}
+	}
+	if d.AllowsModel([]string{"coder"}, "review-frontier") || d.AllowsModel([]string{"coder"}, "supervisor") {
+		t.Fatal("a factory model is not an agent model")
+	}
+	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"review-cheap", "supervisor"}) {
+		t.Fatalf("FactoryModels = %v", got)
+	}
+}
+
 func TestClampBudget(t *testing.T) {
 	b := Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20}
 	for requested, want := range map[float64]float64{0: 2, -1: 2, 0.01: 0.01, 3: 3, 5: 5, 9: 5} {

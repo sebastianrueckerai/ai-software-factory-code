@@ -90,9 +90,10 @@ func main() {
 			HTTP: &http.Client{Timeout: 75 * time.Second}},
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: &http.Client{Timeout: 120 * time.Second}},
-		Escalator: &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
-		Cloud:     cloud,
-		Telemetry: tel,
+		Escalator:     &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
+		Cloud:         cloud,
+		Telemetry:     tel,
+		FactorydToken: cfg.FactorydToken,
 	})
 	go cloud.Run(ctx)
 

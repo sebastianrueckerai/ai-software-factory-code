@@ -180,7 +180,7 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	if row.TaskID != "" {
 		r.AddAttributes(otellog.String(string(telemetry.TaskID), row.TaskID))
 	}
-	r.AddAttributes(otellog.String("audit.decision", row.Decision))
+	r.AddAttributes(otellog.String("audit.decision", row.Decision), otellog.String("audit.kind", row.kind()))
 	str("audit.reason", row.Reason)
 	str("audit.model_alias", row.ModelAlias)
 	str("audit.tool", row.Tool)

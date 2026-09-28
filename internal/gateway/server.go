@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,7 +67,21 @@ type ServerOptions struct {
 	Cloud *Cloud
 	// Telemetry receives the spans and metrics; nil = none.
 	Telemetry *Telemetry
+	// FactorydToken is the gateway-factoryd token: with it factoryd calls a
+	// model on a task's account for one of policy.Purposes.
+	FactorydToken string
 }
+
+// factoryd names the task and the purpose of its model calls in these
+// headers; the gateway answers a refusal's decision in HeaderDecision.
+const (
+	HeaderFactoryTask    = "X-Factory-Task"
+	HeaderFactoryPurpose = "X-Factory-Purpose"
+	HeaderDecision       = "X-Gateway-Decision"
+)
+
+// factorydSA stands for the service account uid of factoryd's key slot.
+const factorydSA = "factoryd"
 
 // liveKey is a task's virtual key and what it was minted for: a new run,
 // policy version or UTC day mints a new key (its models and max_budget
@@ -162,96 +178,125 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		pid = &pv.ID
 	}
 
-	id, err := s.opts.Auth.Authenticate(r)
+	id, purpose, err := s.identify(r)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
+		s.refuse(w, pid, id.TaskID, "", "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
 		return
 	}
 	caller(ctx, id.TaskID)
 	if polErr != nil {
-		s.refuse(w, pid, id.TaskID, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
 		return
 	}
 	chatReq, err := parseChat(body)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 	task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
 	if !ok {
-		s.refuse(w, pid, id.TaskID, "refused_task_unknown", "no task row for "+id.TaskID, chatReq.Model, http.StatusNotFound, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_task_unknown", "no task row for "+id.TaskID, chatReq.Model, http.StatusNotFound, "invalid_request_error")
 		return
 	}
-	if task.Status != "running" {
-		s.refuse(w, pid, id.TaskID, "refused_task_status", "task status is "+task.Status, chatReq.Model, http.StatusConflict, "invalid_request_error")
+	// factoryd's calls run in review too: the hold admits a running or
+	// in-review task
+	if purpose == "" && task.Status != "running" {
+		s.refuse(w, pid, id.TaskID, purpose, "refused_task_status", "task status is "+task.Status, chatReq.Model, http.StatusConflict, "invalid_request_error")
 		return
 	}
 
-	if !pv.Document.AllowsModel(task.Classes, chatReq.Model) {
-		s.refuse(w, pid, id.TaskID, "refused_capability",
+	if purpose == "" && !pv.Document.AllowsModel(task.Classes, chatReq.Model) {
+		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
 			fmt.Sprintf("model %q is not allowed for capability classes %q under policy version %d", chatReq.Model, task.Classes, pv.ID),
+			chatReq.Model, http.StatusForbidden, "permission_error")
+		return
+	}
+	if want := pv.Document.FactoryModel(task.Classes, purpose); purpose != "" && (want == "" || chatReq.Model != want) {
+		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
+			fmt.Sprintf("model %q is not the %s model %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
 	price, err := s.opts.Prices.Price(ctx, chatReq.Model)
 	if err != nil {
 		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, chatReq.Model, err)
-		s.refuse(w, pid, id.TaskID, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
 	if chatReq.Stream {
 		if err := withStreamUsage(chatReq.fields); err != nil {
-			s.refuse(w, pid, id.TaskID, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+			s.refuse(w, pid, id.TaskID, purpose, "refused_body", "stream_options is not a JSON object", chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 			return
 		}
 	}
 	if body, err = json.Marshal(chatReq.fields); err != nil {
-		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
 
+	ref, slot, models := chatReq.Model, task.ID, pv.Document.Models(task.Classes)
+	if purpose != "" {
+		ref, slot, models = purpose+"/"+chatReq.Model, task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
+	}
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
-		TaskID: task.ID, Kind: policy.KindModel, Ref: chatReq.Model,
+		TaskID: task.ID, Kind: policy.KindModel, Ref: ref,
 		InTokens: len(body) + inTokenSlack, Price: price, WantOut: chatReq.WantOut,
 		DayEUR: pv.Document.Budget.DayEUR,
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
-		s.refuseSpend(w, pid, task, refusal.Decision, chatReq.Model, refusal.Reason)
+		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, refusal.Reason)
 		return
 	}
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model}
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose, slot: slot}
 
 	if body, err = chatReq.withOutputLimit(hold.MaxOut); err != nil {
 		s.finish(call, zeroCost, "")
-		s.refuse(w, pid, id.TaskID, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
+		s.refuse(w, pid, id.TaskID, purpose, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
-	key, err := s.keyFor(ctx, task, id.SAUID, pv, hold)
+	key, err := s.keyFor(ctx, slot, task, id.SAUID, models, pv, hold)
 	if err != nil {
 		s.finish(call, zeroCost, "")
-		s.refuse(w, pid, id.TaskID, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
-	defer s.doneWith(task.ID, key)
+	defer s.doneWith(slot, key)
 	call.key = key
 
 	s.proxy(w, r, call, key.key, body, chatReq.Stream)
+}
+
+// identify is the caller: factoryd by the gateway-factoryd token, with
+// the task and one of policy.Purposes in its headers, or a sandbox by its
+// ServiceAccount JWT (purpose ""), whose headers name nothing.
+func (s *Server) identify(r *http.Request) (Identity, string, error) {
+	raw, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if s.opts.FactorydToken == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(raw)), []byte(s.opts.FactorydToken)) != 1 {
+		id, err := s.opts.Auth.Authenticate(r)
+		return id, "", err
+	}
+	id := Identity{TaskID: r.Header.Get(HeaderFactoryTask), SAUID: factorydSA}
+	purpose := r.Header.Get(HeaderFactoryPurpose)
+	if id.TaskID == "" || !slices.Contains(policy.Purposes, purpose) {
+		return id, "", fmt.Errorf("a factoryd call names its task in %s and one of %q in %s", HeaderFactoryTask, policy.Purposes, HeaderFactoryPurpose)
+	}
+	return id, purpose, nil
 }
 
 // forwardedFields are the request fields LiteLLM receives: the OpenAI chat
@@ -435,39 +480,39 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 // allow (so LiteLLM refuses any other target) and capped at the hold's
 // headroom, the smaller of the task's and the day's. The key counts the
 // call as in flight until doneWith.
-func (s *Server) keyFor(ctx context.Context, task Task, saUID string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
+func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID string, models []string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
 	want := liveKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout), bound: hold.Bound}
 	// a key minted here and superseded before this call takes it is rare
 	// (a version or day change within the mint); three rounds cover it
 	for range 3 {
-		if k := s.acquire(task.ID, want); k != nil {
+		if k := s.acquire(slot, want); k != nil {
 			return k, nil
 		}
 		// one mint per run at a time, and no task waits on another's mint
-		_, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", task.ID, saUID, pv.ID, want.day), func() (any, error) {
+		_, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", slot, saUID, pv.ID, want.day), func() (any, error) {
 			s.mu.Lock()
-			fresh := s.matches(s.keysByTask[task.ID], want)
+			fresh := s.matches(s.keysByTask[slot], want)
 			s.mu.Unlock()
 			if fresh {
 				return nil, nil
 			}
 			ctx := context.WithoutCancel(ctx)
-			key, err := s.opts.Minter.Mint(ctx, task.ID, hold.Headroom, pv.Document.Models(task.Classes))
+			key, err := s.opts.Minter.Mint(ctx, task.ID, hold.Headroom, models)
 			if err != nil {
 				return nil, fmt.Errorf("mint virtual key: %w", err)
 			}
 			k := want
 			k.key = key
 			s.mu.Lock()
-			old := s.keysByTask[task.ID]
-			s.keysByTask[task.ID] = &k
+			old := s.keysByTask[slot]
+			s.keysByTask[slot] = &k
 			idle := old != nil && old.inFlight == 0
 			if old != nil {
 				old.retired = true
 			}
 			s.mu.Unlock()
 			if idle {
-				s.block(task.ID, old)
+				s.block(slot, old)
 			}
 			return nil, nil
 		})
@@ -482,12 +527,12 @@ func (s *Server) matches(k *liveKey, want liveKey) bool {
 	return k != nil && k.saUID == want.saUID && k.version == want.version && k.day == want.day
 }
 
-// acquire returns the task's current key if it matches want, counting one
+// acquire returns the slot's current key if it matches want, counting one
 // more call in flight on it.
-func (s *Server) acquire(taskID string, want liveKey) *liveKey {
+func (s *Server) acquire(slot string, want liveKey) *liveKey {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	k := s.keysByTask[taskID]
+	k := s.keysByTask[slot]
 	if !s.matches(k, want) {
 		return nil
 	}
@@ -496,19 +541,19 @@ func (s *Server) acquire(taskID string, want liveKey) *liveKey {
 }
 
 // doneWith ends a call on k; the last call on a retired key blocks it.
-func (s *Server) doneWith(taskID string, k *liveKey) {
+func (s *Server) doneWith(slot string, k *liveKey) {
 	s.mu.Lock()
 	k.inFlight--
 	last := k.retired && k.inFlight == 0
 	s.mu.Unlock()
 	if last {
-		s.block(taskID, k)
+		s.block(slot, k)
 	}
 }
 
-func (s *Server) block(taskID string, k *liveKey) {
+func (s *Server) block(slot string, k *liveKey) {
 	if err := s.opts.Minter.Block(context.Background(), k.key); err != nil {
-		log.Printf("task %s: block superseded key (version %d, day %s): %v", taskID, k.version, k.day, err)
+		log.Printf("key slot %s: block superseded key (version %d, day %s): %v", slot, k.version, k.day, err)
 	}
 }
 
@@ -518,6 +563,8 @@ type modelCall struct {
 	task     Task
 	hold     policy.Hold
 	alias    string
+	kind     string // the factoryd purpose, "" for an agent's call
+	slot     string // the key slot: the task, or the task's factoryd slot
 	key      *liveKey
 	overHold string        // the booking's flag, on every audit row after it
 	up       *upstreamCall // nil until the call goes upstream
@@ -562,7 +609,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		s.finish(c, zeroCost, "")
-		s.refuse(w, c.pid, c.task.ID, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	upReq.Header.Set("Content-Type", contentType(r))
@@ -572,7 +619,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 	if err != nil {
 		// the provider may have run part of the call: book the hold
 		s.finish(c, nil, "")
-		s.refuse(w, c.pid, c.task.ID, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
+		s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 		return
 	}
 	defer res.Body.Close()
@@ -597,6 +644,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 			// the key's max_budget was the task's or the day's headroom
 			reason := "litellm budget_exceeded: " + liteErr.Error.Message
 			s.auditCall(c, c.key.bound, reason, &c.task.SpentEUR)
+			w.Header().Set(HeaderDecision, c.key.bound)
 			writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
 			return
 		}
@@ -718,20 +766,22 @@ func contentType(r *http.Request) string {
 // refuseSpend writes a 402 refusal: the task's budget or the day cap. The
 // gateway refuses with 402; LiteLLM's 429 + budget_exceeded is only the
 // backstop mapped onto it.
-func (s *Server) refuseSpend(w http.ResponseWriter, pid *int64, task Task, decision, alias, reason string) {
-	s.audit(pid, task.ID, decision, reason, alias, &task.SpentEUR)
+func (s *Server) refuseSpend(w http.ResponseWriter, pid *int64, task Task, kind, decision, alias, reason string) {
+	s.audit(pid, task.ID, kind, decision, reason, alias, &task.SpentEUR)
+	w.Header().Set(HeaderDecision, decision)
 	writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
 }
 
-func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, decision, reason, alias string, status int, typ string) {
-	s.audit(pid, taskID, decision, reason, alias, nil)
+func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, kind, decision, reason, alias string, status int, typ string) {
+	s.audit(pid, taskID, kind, decision, reason, alias, nil)
+	w.Header().Set(HeaderDecision, decision)
 	writeError(w, status, typ, reason)
 }
 
 // auditCall audits an admitted call with its output limit and hold.
 func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
-		TaskID: c.task.ID, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
+		TaskID: c.task.ID, Kind: c.kind, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
 		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, decision %s): %v", c.task.ID, decision, err)
@@ -740,9 +790,10 @@ func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64
 
 // audit persists the decision on a background context: audit rows are the
 // record of what the gateway did and must survive the caller disconnecting.
-func (s *Server) audit(pid *int64, taskID, decision, reason, alias string, spend *float64) {
+func (s *Server) audit(pid *int64, taskID, kind, decision, reason, alias string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
 		TaskID:        taskID,
+		Kind:          kind,
 		Decision:      decision,
 		Reason:        reason,
 		ModelAlias:    alias,

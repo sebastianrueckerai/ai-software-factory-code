@@ -87,21 +87,21 @@ func (s *Server) mcpHandler() http.Handler {
 		}
 		id, err := s.opts.Auth.Authenticate(r)
 		if err != nil {
-			s.refuse(w, pid, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
+			s.refuse(w, pid, id.TaskID, "", "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
 			return
 		}
 		caller(ctx, id.TaskID)
 		if polErr != nil {
-			s.refuse(w, pid, id.TaskID, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
+			s.refuse(w, pid, id.TaskID, "", "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
 			return
 		}
 		task, ok, err := s.opts.Store.Task(ctx, id.TaskID)
 		if err != nil {
-			s.refuse(w, pid, id.TaskID, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
+			s.refuse(w, pid, id.TaskID, "", "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
 			return
 		}
 		if !ok {
-			s.refuse(w, pid, id.TaskID, "refused_task_unknown", "no task row for "+id.TaskID, "", http.StatusNotFound, "invalid_request_error")
+			s.refuse(w, pid, id.TaskID, "", "refused_task_unknown", "no task row for "+id.TaskID, "", http.StatusNotFound, "invalid_request_error")
 			return
 		}
 		h.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerKey{}, &toolCaller{pv: pv, task: task})))

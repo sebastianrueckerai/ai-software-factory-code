@@ -93,6 +93,9 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	if !ok {
 		return policy.Hold{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
 	}
+	if t.Status != "running" && t.Status != "in-review" {
+		return policy.Hold{}, &policy.Refusal{Decision: "refused_task_status", Reason: "task " + t.ID + " is " + t.Status}
+	}
 	dayTotal := m.day
 	for _, l := range m.ledger {
 		dayTotal += l.eur
@@ -1435,5 +1438,180 @@ func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
 	}
 	if b := minter.blockedKeys(); !reflect.DeepEqual(b, []string{"sk-task-key-1"}) {
 		t.Fatalf("blocked = %v, want key 1 once its call is done", b)
+	}
+}
+
+const testFactorydToken = "factoryd-shared-token"
+
+func doFactorydChat(t *testing.T, h http.Handler, token, task, purpose, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set(HeaderFactoryTask, task)
+	r.Header.Set(HeaderFactoryPurpose, purpose)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, r)
+	return rr
+}
+
+func factoryPolicy() policy.Version {
+	v := testPolicy(1, 20)
+	v.Document.Classes["coder"] = policy.Class{Models: []string{"coding-cheap", "coding-frontier"},
+		ReviewModel: "review-frontier", SupervisorModel: "supervisor"}
+	return v
+}
+
+// factoryd's review call on a task in review: the gateway-factoryd token
+// and the task, the policy's review alias, the hold and the cost booked
+// to the task under ref review/review-frontier, an audit row of kind
+// review; the agent's JWT path never reaches the alias.
+func TestFactorydReviewCall(t *testing.T) {
+	prices := fakePrices{"coding-cheap": testPrice, "review-frontier": testPrice, "supervisor": testPrice}
+	type want struct {
+		status   int
+		decision string
+		header   string // X-Gateway-Decision
+		upstream int
+		ledger   []ledgerRow
+		spent    float64
+	}
+	for name, tc := range map[string]struct {
+		task    Task
+		token   string
+		purpose string
+		model   string
+		resp    stubResp
+		want    want
+	}{
+		"authorised": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "review-frontier",
+			resp: stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}},
+			want: want{status: 200, decision: "allowed", upstream: 1,
+				ledger: []ledgerRow{{"42", "review/review-frontier", 0.125, policy.KindModel}}, spent: 2.125},
+		},
+		"at the budget cap": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 2, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "review-frontier",
+			want: want{status: 402, decision: "refused_budget", header: "refused_budget", spent: 2},
+		},
+		"upstream error": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "review-frontier",
+			resp: stubResp{status: 500, body: `{"error":"provider down"}`},
+			want: want{status: 500, decision: "error_upstream", upstream: 1, spent: 2},
+		},
+		"not the review alias": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "coding-frontier",
+			want: want{status: 403, decision: "refused_capability", header: "refused_capability", spent: 2},
+		},
+		"a finished task": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "done"}, token: testFactorydToken,
+			purpose: "review", model: "review-frontier",
+			want: want{status: 402, decision: "refused_task_status", header: "refused_task_status", spent: 2},
+		},
+		"unknown purpose": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "session", model: "review-frontier",
+			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(tc.resp)
+			store := newMemStore(tc.task)
+			store.setPolicy(factoryPolicy())
+			minter := &fakeMinter{}
+			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: testFactorydToken})
+			rr := doFactorydChat(t, s.Routes("test"), tc.token, "42", tc.purpose, chatBody(tc.model))
+			if rr.Code != tc.want.status || rr.Header().Get(HeaderDecision) != tc.want.header {
+				t.Fatalf("status %d decision header %q, want %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), tc.want.status, tc.want.header, rr.Body)
+			}
+			audits := store.auditRows()
+			if len(audits) != 1 || audits[0].Decision != tc.want.decision || audits[0].TaskID != "42" {
+				t.Fatalf("audits = %+v, want one %s row on task 42", audits, tc.want.decision)
+			}
+			wantKind := tc.purpose
+			if tc.want.decision == "refused_auth" {
+				wantKind = ""
+			}
+			if audits[0].Kind != wantKind {
+				t.Fatalf("audit kind = %q, want %q", audits[0].Kind, wantKind)
+			}
+			if tc.want.decision != "refused_auth" && audits[0].ModelAlias != tc.model {
+				t.Fatalf("audit alias = %q, want %q", audits[0].ModelAlias, tc.model)
+			}
+			if tc.want.decision == "allowed" && (audits[0].SpendEUR == nil || *audits[0].SpendEUR != tc.want.spent) {
+				t.Fatalf("audit spend = %v, want %v", audits[0].SpendEUR, tc.want.spent)
+			}
+			auths, _, _ := stub.seen()
+			if len(auths) != tc.want.upstream {
+				t.Fatalf("upstream calls = %d, want %d", len(auths), tc.want.upstream)
+			}
+			if tc.want.upstream > 0 {
+				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "review-frontier,supervisor" || calls[0].taskID != "42" {
+					t.Fatalf("mints = %+v, want one key for task 42 on the factory aliases only", calls)
+				}
+			}
+			if !reflect.DeepEqual(store.ledger, tc.want.ledger) {
+				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.want.ledger)
+			}
+			if got := store.tasks["42"].SpentEUR; got != tc.want.spent {
+				t.Fatalf("spent = %v, want %v", got, tc.want.spent)
+			}
+			if store.openHolds() != 0 {
+				t.Fatal("a hold is left open")
+			}
+		})
+	}
+}
+
+// The factoryd token is no agent's: a sandbox's JWT never reaches the
+// review alias, and factoryd's key is its own, so a review or supervisor
+// call during a session neither retires nor shares the session's key.
+func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{
+		Auth:  fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store: store, Minter: minter, LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"coding-cheap": testPrice, "review-frontier": testPrice, "supervisor": testPrice},
+	})
+	h := s.Routes("test")
+	if rr := doChat(t, h, chatBody("review-frontier")); rr.Code != http.StatusForbidden {
+		t.Fatalf("agent call of the review alias = %d, want 403", rr.Code)
+	}
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("agent call = %d", rr.Code)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", "supervisor", chatBody("supervisor")); rr.Code != http.StatusOK {
+		t.Fatalf("supervisor call = %d: %s", rr.Code, rr.Body)
+	}
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("agent call = %d", rr.Code)
+	}
+	calls := minter.mintCalls()
+	if len(calls) != 2 || calls[0].models != "coding-cheap,coding-frontier" || calls[1].models != "review-frontier,supervisor" {
+		t.Fatalf("mints = %+v, want the session's key and factoryd's", calls)
+	}
+	if b := minter.blockedKeys(); len(b) != 0 {
+		t.Fatalf("blocked = %v, want none", b)
+	}
+	auths, _, _ := stub.seen()
+	if !reflect.DeepEqual(auths, []string{"Bearer sk-task-key-1", "Bearer sk-task-key-2", "Bearer sk-task-key-1"}) {
+		t.Fatalf("upstream auths = %v", auths)
+	}
+	var kinds []string
+	for _, a := range store.auditRows() {
+		kinds = append(kinds, a.Kind+" "+a.Decision)
+	}
+	if !reflect.DeepEqual(kinds, []string{" refused_capability", " allowed", "supervisor allowed", " allowed"}) {
+		t.Fatalf("audit kinds = %q", kinds)
 	}
 }

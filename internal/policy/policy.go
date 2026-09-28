@@ -144,11 +144,24 @@ type Budget struct {
 }
 
 // Class is a capability class a task can hold: the model aliases it may
-// call through the gateway and its tools with per-task caps.
+// call through the gateway and its tools with per-task caps, and the
+// aliases factoryd calls on the task's account, which the agent may not.
 type Class struct {
-	Models []string           `yaml:"models" json:"models"`
-	Tools  map[string]ToolCap `yaml:"tools" json:"tools"`
+	Models          []string           `yaml:"models" json:"models"`
+	Tools           map[string]ToolCap `yaml:"tools" json:"tools"`
+	ReviewModel     string             `yaml:"review_model" json:"review_model,omitempty"`
+	SupervisorModel string             `yaml:"supervisor_model" json:"supervisor_model,omitempty"`
 }
+
+// The purposes factoryd calls a model for on a task's account.
+const (
+	PurposeReview         = "review"
+	PurposeSupervisor     = "supervisor"
+	PurposeGateSupervisor = "gate-supervisor"
+)
+
+// Purposes are the factoryd purposes the gateway admits.
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor}
 
 type ToolCap struct {
 	MaxRequests int     `yaml:"max_requests" json:"max_requests"`
@@ -383,6 +396,38 @@ func (d Document) AllowsModel(classes []string, model string) bool {
 		}
 	}
 	return false
+}
+
+// FactoryModel is the alias factoryd calls for purpose on a task of
+// classes: the first of classes that names one; "" when none does.
+func (d Document) FactoryModel(classes []string, purpose string) string {
+	for _, c := range classes {
+		cl := d.Classes[c]
+		var alias string
+		switch purpose {
+		case PurposeReview:
+			alias = cl.ReviewModel
+		case PurposeSupervisor, PurposeGateSupervisor:
+			alias = cl.SupervisorModel
+		}
+		if alias != "" {
+			return alias
+		}
+	}
+	return ""
+}
+
+// FactoryModels are the aliases factoryd may call on a task of classes,
+// sorted, once each.
+func (d Document) FactoryModels(classes []string) []string {
+	var out []string
+	for _, p := range Purposes {
+		if m := d.FactoryModel(classes, p); m != "" {
+			out = append(out, m)
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // Models are the aliases any of classes may call, sorted, once each.

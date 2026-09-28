@@ -96,6 +96,15 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("InsertAudit (no spend): %v", err)
 	}
 
+	if err := s.InsertAudit(ctx, AuditRow{TaskID: "t2", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "review-frontier"}); err != nil {
+		t.Fatalf("InsertAudit (review): %v", err)
+	}
+	var kinds string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(task_id || '=' || kind, ';' ORDER BY id) FROM audit`).Scan(&kinds); err != nil ||
+		kinds != "t1=agent;t1=agent;t2=review" {
+		t.Fatalf("audit kinds = (%q, %v), want an agent's two and the review", kinds, err)
+	}
+
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM audit WHERE task_id = 't1'`).Scan(&n); err != nil {
 		t.Fatal(err)
