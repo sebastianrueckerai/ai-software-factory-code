@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,6 +68,73 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	// the session is gone (it was on the first escalation): a late one finds none
 	if err := runner.EscalateSession("t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
 		t.Fatalf("late escalation = %v", err)
+	}
+}
+
+// An escalate_to_human that arrives while a supervisor call is in flight
+// wins: the agent was told "escalated", so the supervisor's redirect never
+// takes effect, and the call is cut.
+func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.stopWait = 5 * time.Second
+	inFlight := make(chan struct{})
+	var once sync.Once
+	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/key/list":
+			io.WriteString(w, `{"keys":[],"total_pages":1}`)
+		case "/key/generate":
+			io.WriteString(w, `{"key":"sk-super-1","token":"hash1"}`)
+		case "/v1/chat/completions":
+			io.ReadAll(r.Body)
+			once.Do(func() { close(inFlight) })
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(3 * time.Second):
+			}
+			io.WriteString(w, `{"choices":[{"message":{"content":"{\"action\":\"redirect\",\"guidance\":\"try another way\"}"}}]}`)
+		}
+	}))
+	t.Cleanup(sup.Close)
+	runner.supervisor = testSupervisorModel(sup.URL)
+
+	delivered := make(chan error, 1)
+	go func() {
+		<-inFlight
+		delivered <- runner.EscalateSession("t2", "Which license applies?", "the issue names none")
+	}()
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + cutLogs +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed at c-wip") + "\n"
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	if took := time.Since(began); took > 2500*time.Millisecond {
+		t.Fatalf("took %s: the escalation did not cut the supervisor call", took)
+	}
+	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, "The agent asks: Which license applies?") || res.Commit != "c-wip" {
+		t.Fatalf("result = %+v, want the agent's escalation with the work in progress", res)
+	}
+	if strings.Contains(strings.Join(res.Findings, "\n"), "try another way") {
+		t.Fatalf("findings = %v carry the superseded redirect", res.Findings)
+	}
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want the question left to the workflow's Escalate", hub.comments)
+	}
+	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
+	if !strings.Contains(record, `"detector":"agent_escalation"`) || strings.Contains(record, `"decision":"redirect"`) {
+		t.Fatalf("record = %s", record)
+	}
+	// the stopped session takes no second escalation
+	if err := runner.EscalateSession("t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("escalation after the stop = %v", err)
 	}
 }
 

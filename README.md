@@ -365,7 +365,9 @@ tool call at this timeout), and the model sees the tools as
   class. The gateway posts it to factoryd's `POST /internal/escalations`
   (bearer from secret `gateway-factoryd`, key `token`); factoryd records
   an `agent_escalation` intake event and trips the running session's
-  supervision with an escalation, no supervisor call: the worker pushes
+  supervision with an escalation, no supervisor call (one arriving during
+  a supervisor call cuts the call and wins over its answer; a stopping
+  session takes none, and the agent is told so): the worker pushes
   its work in progress, the task goes `waiting-human`, the question is
   commented on the issue, and a trusted answer resumes the task. The
   agent reads "escalated; this session will end".

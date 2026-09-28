@@ -324,7 +324,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// stop asks the worker to end (SIGTERM through the pod's deletion) and
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
+	// the agent's escalate_to_human reaches the session here until it stops
+	escalations, unregister := r.liveSession(t.ID)
+	defer unregister()
 	stop := func(trip *Trip) {
+		// a stopping session takes no escalation: the gateway tells the
+		// agent it did not arrive
+		unregister()
 		out.trip = r.abandon(recorder, trip)
 		if err := r.kube.DeletePod(ctx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: stop pod %s: %v", t.ID, podName, err)
@@ -385,14 +391,32 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			d, called = supervision.onTrip(callCtx, trip)
 		}()
+		// the agent was told "escalated": its escalation during the call
+		// wins over whatever the supervisor answers, and cuts the call
+		var esc *agentEscalation
 		select {
 		case <-answered:
+			select {
+			case e := <-escalations:
+				esc = &e
+			default:
+			}
+		case e := <-escalations:
+			esc = &e
+			cancel()
+			<-answered
 		case <-workerStop:
 			stopAt = time.Now()
 			cancel()
 			<-answered
 			log.Printf("task %s: factoryd stopping cut the supervisor call for %s", t.ID, trip.Kind)
 			return true, shutdown()
+		}
+		if esc != nil && trip.decided == nil {
+			log.Printf("task %s: the agent escalated during the supervisor call for %s", t.ID, trip.Kind)
+			sup.tripped = nil
+			trip = sup.AgentEscalation(esc.question, esc.reason)
+			d = *trip.decided
 		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
@@ -419,8 +443,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return true, ctx.Err()
 	}
 
-	escalations, unregister := r.liveSession(t.ID)
-	defer unregister()
 	tick := time.NewTicker(r.supervisionTick())
 	defer tick.Stop()
 	for {
@@ -428,8 +450,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case <-ctx.Done():
 			return out, ctx.Err()
 		case esc := <-escalations:
-			// the session is ending: a second escalation finds none
-			unregister()
 			if end, err := onTrip(sup.AgentEscalation(esc.question, esc.reason)); end {
 				return out, err
 			}
