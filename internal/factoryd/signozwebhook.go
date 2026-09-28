@@ -23,7 +23,7 @@ import (
 // SourceAlert is the source of a task filed from a SigNoz alert.
 const SourceAlert = "alert"
 
-// refileAfter is how long after its task ended an alert still firing from
+// refileAfter is how long after its task merged an alert still firing from
 // the same start is filed once more: the merged fix did not fix it.
 const refileAfter = 30 * time.Minute
 
@@ -149,9 +149,9 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	}
 	if row.Detail["starts_at"] == at {
 		// the same firing again (Alertmanager resends a group's every
-		// alert): nothing, unless the task ended a while ago and it still
-		// fires, filed once more
-		if ok && Final(t.Status) && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
+		// alert): nothing, unless the task's fix merged a while ago and it
+		// still fires, filed once more; a human's close is their answer
+		if ok && t.Status == "done" && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
 			return in.file(ctx, a, p, ns, at, true)
 		}
 		return nil
@@ -176,7 +176,7 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	}
 	title, body := alertIssue(a, p.Name, ns)
 	if refiled {
-		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the task of its last issue ended.\n\n" + body
+		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, []string{"bug"}, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),

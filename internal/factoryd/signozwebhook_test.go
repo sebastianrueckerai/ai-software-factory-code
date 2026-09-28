@@ -356,13 +356,21 @@ func TestAlertVerdict(t *testing.T) {
 }
 
 // A fix that did not fix: the same firing still resent 30 minutes after
-// its task ended is filed once more, and only once.
+// its task merged is filed once more, and only once; after a human closed
+// the issue without a merge it is not.
 func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 	r := newAlertRig(t)
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
 	first := r.store.alertRows()[0].TaskID
-	ended := time.Now().Add(-10 * time.Minute)
+	ended := time.Now().Add(-31 * time.Minute)
 	task := r.store.tasks[first]
+	task.Status, task.FinishedAt = "failed", &ended
+	r.store.tasks[first] = task
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	if len(r.fj.issues) != 1 {
+		t.Fatalf("31 minutes after a human closed it: %d issues, want 1", len(r.fj.issues))
+	}
+	ended = time.Now().Add(-10 * time.Minute)
 	task.Status, task.FinishedAt = "done", &ended
 	r.store.tasks[first] = task
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
@@ -373,7 +381,7 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 	task.FinishedAt = &ended
 	r.store.tasks[first] = task
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
-	if len(r.fj.issues) != 2 || !strings.Contains(r.fj.issues[1], "\n\nfactoryd: the alert still fires from the same start 30m0s after the task of its last issue ended.\n\nfactoryd: SigNoz fires") {
+	if len(r.fj.issues) != 2 || !strings.Contains(r.fj.issues[1], "\n\nfactoryd: the alert still fires from the same start 30m0s after the fix of its last issue merged.\n\nfactoryd: SigNoz fires") {
 		t.Fatalf("31 minutes after: issues %q", r.fj.issues)
 	}
 	rows := r.store.alertRows()

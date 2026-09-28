@@ -1179,11 +1179,14 @@ day's headroom.
 ## Build and test
 
     go build ./...
-    go test -race -p 1 ./...
+    go test -race ./...
 
 The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
-`GATEWAY_TEST_DATABASE_URL` set to a throwaway Postgres (they wipe it);
-`-p 1` keeps the two packages from racing on the same database. The
+`GATEWAY_TEST_DATABASE_URL` set to a throwaway Postgres (they wipe it).
+Each package behind `FACTORYD_TEST_DATABASE_URL` migrates its own database
+`factory_test_<package>`, dropped and created empty at its first test
+(`internal/schema/schematest`), so the packages run in parallel; that
+URL's user must be allowed to create databases. The
 revocation test runs only with the `FACTORYD_LIVE_*` variables set
 against the live cluster. CI (`.forgejo/workflows/ci.yml`) runs on push
 to protected `main` only, on the privileged dind runner, tests, then
