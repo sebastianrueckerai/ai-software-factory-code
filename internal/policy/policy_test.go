@@ -84,7 +84,7 @@ func TestParseRejects(t *testing.T) {
 		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
 		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
-		"escalate listed":     {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "always allowed for coder"},
+		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "tool escalate_to_human is free: list it as {}"},
 		"scrape unpriced":     {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
 		"replicate sku without rate": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 90, models: {a/b: gpu-t4}, eur_per_second: {cpu: 0.0001}}}\n", `runs on "gpu-t4", which has no positive eur_per_second`},

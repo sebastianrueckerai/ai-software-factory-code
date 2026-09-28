@@ -88,18 +88,33 @@ type ToolCap struct {
 // ClassCoder is the class intake gives agent tasks.
 const ClassCoder = "coder"
 
-// The gateway's paid tools, the names classes.<c>.tools caps.
-// ToolEscalate is free and always allowed for the coder class.
+// The gateway's paid tools: a class allows one by listing it in
+// classes.<c>.tools with its caps.
 const (
 	ToolWebScrape = "web_scrape"
 	ToolWebSearch = "web_search"
 	ToolReplicate = "replicate_predict"
 	ToolFal       = "fal_run"
-	ToolEscalate  = "escalate_to_human"
 )
 
-// PaidTools are the tools a class may list.
+// PaidTools are the tools a class lists with caps.
 var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
+
+// The gateway's free tools: a class allows one by listing it in
+// classes.<c>.tools without caps ({}). The commissioning tools spend
+// through their own reservation and envelope, not a per-task tool cap.
+const (
+	ToolEscalate       = "escalate_to_human"
+	ToolCloudPrices    = "cloud_prices"
+	ToolCommission     = "commission_server"
+	ToolListResources  = "list_resources"
+	ToolRelease        = "release_resource"
+	ToolSSHCertificate = "ssh_certificate"
+	ToolRequestStatus  = "resource_request_status"
+)
+
+// FreeTools are the tools a class lists without caps.
+var FreeTools = []string{ToolEscalate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
@@ -199,11 +214,14 @@ func (d Document) Validate() error {
 			return fmt.Errorf("policy: class %s lists an empty model", name)
 		}
 		for tool, tc := range c.Tools {
-			if tool == ToolEscalate {
-				return fmt.Errorf("policy: class %s lists %s, which is free and always allowed for coder", name, tool)
+			if slices.Contains(FreeTools, tool) {
+				if tc != (ToolCap{}) {
+					return fmt.Errorf("policy: class %s tool %s is free: list it as {}, without max_requests or max_eur", name, tool)
+				}
+				continue
 			}
 			if !slices.Contains(PaidTools, tool) {
-				return fmt.Errorf("policy: class %s lists unknown tool %q (known: %v)", name, tool, PaidTools)
+				return fmt.Errorf("policy: class %s lists unknown tool %q (paid: %v, free: %v)", name, tool, PaidTools, FreeTools)
 			}
 			if tc.MaxRequests <= 0 || tc.MaxEUR <= 0 {
 				return fmt.Errorf("policy: class %s tool %q needs a positive max_requests and max_eur", name, tool)
@@ -257,6 +275,12 @@ func (d Document) ToolCap(classes []string, tool string) (ToolCap, bool) {
 		}
 	}
 	return best, found
+}
+
+// AllowsTool reports whether any of classes lists tool, paid or free.
+func (d Document) AllowsTool(classes []string, tool string) bool {
+	_, ok := d.ToolCap(classes, tool)
+	return ok
 }
 
 // AllowsModel reports whether any of classes may call model.

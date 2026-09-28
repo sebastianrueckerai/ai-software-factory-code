@@ -481,11 +481,14 @@ opencode's config names it the remote MCP server `factory-tools`
 (timeout 150 s, above the slowest connector; the pinned opencode cuts a
 tool call at this timeout), and the model sees the tools as
 `factory-tools_<tool>`. The provider keys live only in the gateway
-(secret `gateway-tool-keys`).
+(secret `gateway-tool-keys`). A task may call a tool only when one of its
+classes lists it in the policy (`classes.<c>.tools`, ruling 132): the paid
+tools with their caps, the free ones (`escalate_to_human` and the
+commissioning tools) as `{}`; any other call is `refused_capability`.
 
 - `web_scrape` (`url`, at most 2048 bytes): Firecrawl `/v2/scrape`,
   markdown only, basic proxy, no PDF parser, the text capped at 64 KiB
-  (cut on a rune boundary). Hosts that are not public DNS names (IP
+  (cut on a character boundary, marked "…"). Hosts that are not public DNS names (IP
   literals in any spelling, single labels, `localhost`, `.local`,
   `.internal` and the like, so every cluster name) are refused before
   any hold.
@@ -512,8 +515,7 @@ tool call at this timeout), and the model sees the tools as
   (a fal preset or `{width, height}`, default `landscape_4_3`, each side
   rounded up to a multiple of 64), rounded up per image, must fit
   `max_megapixels`, and both are sent explicitly.
-- `escalate_to_human` (`question`, `reason`): free, for the `coder`
-  class. The gateway posts it to factoryd's `POST /internal/escalations`
+- `escalate_to_human` (`question`, `reason`): free. The gateway posts it to factoryd's `POST /internal/escalations`
   (bearer from secret `gateway-factoryd`, key `token`); factoryd hands
   it to the running session, answers 202 only once the session took it
   (a session that stops or ends first answers 409, and the agent is told
@@ -574,7 +576,8 @@ Agents get servers for a task through gateway tools (architecture 5.5),
 never through a provider key. They live in their own Hetzner project,
 `agent`, whose token only the gateway holds (`HETZNER_AGENT_KEY`, secret
 `hetzner-agent`); factoryd never sees it. Every tool is for running
-`coder` tasks; the project is the task's repository (`owner/name`).
+tasks whose classes list it (the infra policy lists all of them for
+`coder`); the project is the task's repository (`owner/name`).
 
 - `cloud_prices`: the project's server types with EUR/h and EUR/month
   (net, `fsn1`, the server's primary IPv4 included), the volume price,

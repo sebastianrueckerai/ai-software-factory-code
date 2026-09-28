@@ -29,6 +29,9 @@ func toolPolicy(scrape policy.ToolCap) policy.Version {
 		policy.ToolReplicate: {MaxRequests: 5, MaxEUR: 0.5},
 		policy.ToolFal:       {MaxRequests: 5, MaxEUR: 0.5},
 	}}
+	for _, tool := range policy.FreeTools {
+		v.Document.Classes["coder"].Tools[tool] = policy.ToolCap{}
+	}
 	v.Document.Prices = policy.ToolPrices{
 		Firecrawl: policy.FirecrawlPrices{EURPerCredit: 0.005, ScrapeCredits: 1, SearchCredits: 2},
 		Replicate: policy.ReplicatePrices{EURPerSecond: map[string]float64{"cpu": 0.0001}, MaxSeconds: 90,

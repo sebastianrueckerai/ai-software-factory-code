@@ -359,7 +359,8 @@ func cloudPolicy() policy.Version {
 	return v
 }
 
-func newCloudEnv(t *testing.T, task Task) *cloudEnv {
+// newCloudEnv serves task under cloudPolicy, or under pv when given.
+func newCloudEnv(t *testing.T, task Task, pv ...policy.Version) *cloudEnv {
 	t.Helper()
 	reg := cloudres.NewMemory()
 	reg.Now = func() time.Time { return cloudNow }
@@ -367,7 +368,7 @@ func newCloudEnv(t *testing.T, task Task) *cloudEnv {
 	cs := &fakeCloudStore{reg: reg, addresses: map[int64]string{}, approvals: map[int64]cloudres.Approval{}}
 	signer := &fakeSigner{}
 	store := newMemStore(task)
-	store.setPolicy(cloudPolicy())
+	store.setPolicy(append(pv, cloudPolicy())[0])
 	cloud := &Cloud{Provider: hz, Store: cs, Registry: reg, Signer: signer, Sources: []string{"198.51.100.1/32", "198.51.100.2/32"},
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}},
 		Audit:     store, Now: func() time.Time { return cloudNow }}
@@ -404,7 +405,7 @@ func TestCloudToolsListed(t *testing.T) {
 
 func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
-	text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 90,
+	text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 90,
 		"volume_gb": 20, "ssh_public_key": agentKey})
 	if isErr {
 		t.Fatal(text)
@@ -469,7 +470,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 		t.Fatalf("signs = %v", e.signer.signs)
 	}
 	a := e.lastAudit(t)
-	if a.Tool != ToolCommission || a.Decision != "allowed" || a.HoldEUR == nil || !near6(*a.HoldEUR, 0.0192+2*1.144/730) {
+	if a.Tool != policy.ToolCommission || a.Decision != "allowed" || a.HoldEUR == nil || !near6(*a.HoldEUR, 0.0192+2*1.144/730) {
 		t.Fatalf("audit = %+v", a)
 	}
 }
@@ -477,7 +478,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 func TestCommissionBeyondEnvelopeIsPending(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
 	e.cs.outcome = &cloudres.Commission{Status: cloudres.Pending, ApprovalID: 7, Violations: []string{"a lease of 300 minutes exceeds the envelope's 4 h"}}
-	text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx33", "purpose": "soak", "lease_minutes": 300})
+	text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx33", "purpose": "soak", "lease_minutes": 300})
 	if isErr || !strings.HasPrefix(text, "pending human approval 7") || !strings.Contains(text, "resource_request_status") {
 		t.Fatalf("answer = %v %s", isErr, text)
 	}
@@ -488,16 +489,16 @@ func TestCommissionBeyondEnvelopeIsPending(t *testing.T) {
 		t.Fatalf("audit = %+v", a)
 	}
 	e.cs.approvals[7] = cloudres.Approval{ID: 7, Status: "approved"}
-	text, isErr = e.call(t, ToolRequestStatus, map[string]any{"request_id": 7})
+	text, isErr = e.call(t, policy.ToolRequestStatus, map[string]any{"request_id": 7})
 	if isErr || !strings.Contains(text, "approved: call commission_server again") {
 		t.Fatalf("status = %s", text)
 	}
-	if text, isErr := e.call(t, ToolRequestStatus, map[string]any{"request_id": 8}); !isErr || !strings.Contains(text, "refused_arguments") {
+	if text, isErr := e.call(t, policy.ToolRequestStatus, map[string]any{"request_id": 8}); !isErr || !strings.Contains(text, "refused_arguments") {
 		t.Fatalf("unknown request = %s", text)
 	}
 
 	e.cs.outcome = &cloudres.Commission{Status: cloudres.Denied, ApprovalID: 7, Note: "too long"}
-	text, isErr = e.call(t, ToolCommission, map[string]any{"server_type": "cx33", "purpose": "soak", "lease_minutes": 300})
+	text, isErr = e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx33", "purpose": "soak", "lease_minutes": 300})
 	if !isErr || !strings.Contains(text, "a human denied this request (approval request 7): too long") {
 		t.Fatalf("denied = %s", text)
 	}
@@ -514,7 +515,7 @@ func TestCommissionRefusals(t *testing.T) {
 		"key":     {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "ssh_public_key": "ssh-ed25519 AAAA\nrm -rf /"},
 		"price":   {"server_type": "cx99", "purpose": "p", "lease_minutes": 60},
 	} {
-		text, isErr := e.call(t, ToolCommission, args)
+		text, isErr := e.call(t, policy.ToolCommission, args)
 		if !isErr || !strings.Contains(text, "refused by the factory policy") {
 			t.Fatalf("%s: %v %s", name, isErr, text)
 		}
@@ -523,14 +524,14 @@ func TestCommissionRefusals(t *testing.T) {
 		t.Fatalf("refused calls reached the store or provider: %d, %s", len(e.cs.reqs), e.hz.callList())
 	}
 	e.cs.refusal = &policy.Refusal{Decision: "refused_budget", Reason: "cx23: worst case 0.0096 EUR exceeds the free headroom"}
-	if text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60}); !isErr ||
+	if text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60}); !isErr ||
 		!strings.Contains(text, "(refused_budget)") {
 		t.Fatalf("budget = %s", text)
 	}
 
 	for _, task := range []Task{{ID: "42", Status: "done", Classes: []string{"coder"}, Repository: "sf/app"}, {ID: "42", Status: "running", Classes: []string{"other"}, Repository: "sf/app"}} {
 		e := newCloudEnv(t, task)
-		if text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60}); !isErr ||
+		if text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60}); !isErr ||
 			!strings.Contains(text, "refused") {
 			t.Fatalf("task %+v: %s", task, text)
 		}
@@ -540,7 +541,7 @@ func TestCommissionRefusals(t *testing.T) {
 func TestCommissionCreateFailureReleasesEverything(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
 	e.hz.serverErr = &hcloud.APIError{Status: 422, Code: "invalid_input", Message: "no"}
-	text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "volume_gb": 10})
+	text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "volume_gb": 10})
 	if !isErr || !strings.Contains(text, "commissioning failed: create server") {
 		t.Fatalf("answer = %s", text)
 	}
@@ -559,12 +560,12 @@ func TestCommissionCreateFailureReleasesEverything(t *testing.T) {
 
 func TestReleaseAndCertificates(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
-	if text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 10, "volume_gb": 10}); isErr {
+	if text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 10, "volume_gb": 10}); isErr {
 		t.Fatal(text)
 	}
 	// a certificate never outlives the egress: 10 minutes left, the address
 	// leaves 2 min + 90 s before the end: 6m30s
-	text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey})
+	text, isErr := e.call(t, policy.ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey})
 	if isErr || !strings.Contains(text, "root@203.0.113.102, valid 6m30s") || e.signer.signs[0] != agentKey+"|resource-2|6m30s|task=42 resource=2" {
 		t.Fatalf("certificate = %s, signs %v", text, e.signer.signs)
 	}
@@ -573,16 +574,16 @@ func TestReleaseAndCertificates(t *testing.T) {
 		"unknown":  {"resource_id": 99, "public_key": agentKey},
 		"bad key":  {"resource_id": 2, "public_key": "not a key"},
 	} {
-		if text, isErr := e.call(t, ToolSSHCertificate, args); !isErr || !strings.Contains(text, "refused_arguments") {
+		if text, isErr := e.call(t, policy.ToolSSHCertificate, args); !isErr || !strings.Contains(text, "refused_arguments") {
 			t.Fatalf("%s: %s", name, text)
 		}
 	}
-	text, _ = e.call(t, ToolListResources, map[string]any{})
+	text, _ = e.call(t, policy.ToolListResources, map[string]any{})
 	if !strings.Contains(text, "resource 2: server") || !strings.Contains(text, "203.0.113.102") || !strings.Contains(text, "resource 3: volume") ||
 		strings.Contains(text, "firewall") {
 		t.Fatalf("list = %s", text)
 	}
-	text, isErr = e.call(t, ToolRelease, map[string]any{"resource_id": 2})
+	text, isErr = e.call(t, policy.ToolRelease, map[string]any{"resource_id": 2})
 	if isErr || !strings.Contains(text, "resource 2 released") {
 		t.Fatalf("release = %s", text)
 	}
@@ -597,17 +598,17 @@ func TestReleaseAndCertificates(t *testing.T) {
 	if e.cs.accrues != 1 {
 		t.Fatalf("accrual passes = %d", e.cs.accrues)
 	}
-	if text, _ := e.call(t, ToolRelease, map[string]any{"resource_id": 2}); !strings.Contains(text, "already released") {
+	if text, _ := e.call(t, policy.ToolRelease, map[string]any{"resource_id": 2}); !strings.Contains(text, "already released") {
 		t.Fatalf("second release = %s", text)
 	}
-	if text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey}); !isErr || !strings.Contains(text, "is deleted") {
+	if text, isErr := e.call(t, policy.ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey}); !isErr || !strings.Contains(text, "is deleted") {
 		t.Fatalf("certificate for a deleted server = %s", text)
 	}
 }
 
 func TestCloudPrices(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
-	text, isErr := e.call(t, ToolCloudPrices, map[string]any{})
+	text, isErr := e.call(t, policy.ToolCloudPrices, map[string]any{})
 	for _, want := range []string{"- cx23: 0.0096 EUR/h, 5.99 EUR/month", "- cx33: 0.0144 EUR/h, 8.99 EUR/month", "0.0572 EUR per GB",
 		"the standard envelope (policy version 7)", "10.00 EUR a month (0.500000 used", "at most 2 servers at once (1 open), leases up to 4 h"} {
 		if isErr || !strings.Contains(text, want) {
@@ -615,7 +616,7 @@ func TestCloudPrices(t *testing.T) {
 		}
 	}
 	e.cs.envelope = &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}
-	text, _ = e.call(t, ToolCloudPrices, map[string]any{})
+	text, _ = e.call(t, policy.ToolCloudPrices, map[string]any{})
 	if !strings.Contains(text, "the project's envelope") || strings.Contains(text, "cx33") {
 		t.Fatalf("project envelope prices = %s", text)
 	}
@@ -652,7 +653,7 @@ func TestCertificateForAnotherTasksServerIsRefused(t *testing.T) {
 		OwnerRef: "other-task", HoldID: 9, LeaseExpires: cloudNow.Add(time.Hour)})
 	e.reg.SetLive(context.Background(), other.ID, "555")
 	e.cs.ids = append(e.cs.ids, other.ID)
-	text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": other.ID, "public_key": agentKey})
+	text, isErr := e.call(t, policy.ToolSSHCertificate, map[string]any{"resource_id": other.ID, "public_key": agentKey})
 	if !isErr || !strings.Contains(text, "not one of this task's servers") || len(e.signer.signs) != 0 {
 		t.Fatalf("certificate for another task's server = %s, signs %v", text, e.signer.signs)
 	}
@@ -667,8 +668,27 @@ func TestAccrualOverrunIsAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := e.lastAudit(t)
-	if a.Decision != "allowed_over_hold" || a.TaskID != "42" || a.Tool != ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
+	if a.Decision != "allowed_over_hold" || a.TaskID != "42" || a.Tool != policy.ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
 		a.Reason != "COST OVER HOLD: resource 38" {
 		t.Fatalf("audit = %+v", a)
+	}
+}
+
+// Ruling 132: the free tools follow the policy's class lists like the paid
+// ones, no class name in code: a class that lists escalate_to_human may
+// escalate, a coder class that does not list commission_server may not
+// commission.
+func TestFreeToolsFollowThePolicysClassLists(t *testing.T) {
+	v := cloudPolicy()
+	v.Document.Classes["odd"] = policy.Class{Models: []string{"unpriced"}, Tools: map[string]policy.ToolCap{"escalate_to_human": {}}}
+	delete(v.Document.Classes["coder"].Tools, "commission_server")
+	odd := newToolEnv(t, running("odd"), v)
+	if text, isErr := odd.call(t, "escalate_to_human", map[string]any{"question": "q", "reason": "r"}); isErr {
+		t.Fatalf("escalate for a class that lists it = %s", text)
+	}
+	e := newCloudEnv(t, coderTask(), v)
+	text, isErr := e.call(t, "commission_server", map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 90, "ssh_public_key": agentKey})
+	if !isErr || !strings.Contains(text, "refused_capability") || e.hz.callList() != "" {
+		t.Fatalf("commission for a class that does not list it = %s, calls %q", text, e.hz.callList())
 	}
 }

@@ -165,11 +165,10 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	if c.task.Status != "running" {
 		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
 	}
-	toolCap, ok := c.pv.Document.ToolCap(c.task.Classes, tool)
-	if !ok {
-		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf(
-			"%s is not allowed for capability classes %q under policy version %d", tool, c.task.Classes, c.pv.ID))
+	if r := s.admitTool(c, tool); r != nil {
+		return r
 	}
+	toolCap, _ := c.pv.Document.ToolCap(c.task.Classes, tool)
 	worst, decision, reason := p.prepare(ctx)
 	if decision != "" {
 		return s.refuseTool(c, tool, decision, reason)
@@ -410,15 +409,24 @@ func (s *Server) fal(c *toolCaller, in FalIn) paidCall {
 // escalationTimeout bounds the hand-over to factoryd.
 const escalationTimeout = 30 * time.Second
 
+// admitTool refuses a tool none of the task's classes lists in the policy.
+func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
+	if !c.pv.Document.AllowsTool(c.task.Classes, tool) {
+		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf(
+			"%s is not allowed for capability classes %q under policy version %d", tool, c.task.Classes, c.pv.ID))
+	}
+	return nil
+}
+
 // escalate hands the agent's question to factoryd, which stops the session
-// the way a supervisor's escalate does. Free, for the coder class.
+// the way a supervisor's escalate does. Free, for the classes that list it.
 func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mcp.CallToolResult {
 	tool := policy.ToolEscalate
 	if c.task.Status != "running" {
 		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
 	}
-	if !slices.Contains(c.task.Classes, policy.ClassCoder) {
-		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("%s is for the %s class; the task holds %q", tool, policy.ClassCoder, c.task.Classes))
+	if r := s.admitTool(c, tool); r != nil {
+		return r
 	}
 	q, why := strings.TrimSpace(in.Question), strings.TrimSpace(in.Reason)
 	if q == "" || why == "" || len(q) > maxQuestion || len(why) > maxQuestion {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,17 +17,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-)
-
-// The commissioning tools (architecture 5.5): agents get servers in the
-// agent Hetzner project through the gateway, which alone holds its token.
-const (
-	ToolCloudPrices    = "cloud_prices"
-	ToolCommission     = "commission_server"
-	ToolListResources  = "list_resources"
-	ToolRelease        = "release_resource"
-	ToolSSHCertificate = "ssh_certificate"
-	ToolRequestStatus  = "resource_request_status"
 )
 
 // Commissioned servers: one location and image, root login by certificate
@@ -154,7 +142,7 @@ func (c *Cloud) accrue(ctx context.Context) error {
 	for _, o := range acc.Overruns {
 		spend := o.EUR
 		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "allowed_over_hold",
-			Reason: o.Reason, Tool: ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
+			Reason: o.Reason, Tool: policy.ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
 			err = errors.Join(err, aerr)
 		}
 	}
@@ -198,44 +186,46 @@ type RequestStatusIn struct {
 
 // addCloudTools lists the commissioning tools on srv.
 func (s *Server) addCloudTools(srv *mcp.Server, c *toolCaller) {
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolCloudPrices, Description: "The server types your project may commission, with EUR per hour and month (net, incl. the IPv4), " +
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolCloudPrices, Description: "The server types your project may commission, with EUR per hour and month (net, incl. the IPv4), " +
 		"the volume price and the project's envelope (monthly cap, count, longest lease). Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ CloudPricesIn) (*mcp.CallToolResult, any, error) {
 			return s.cloudPrices(ctx, c), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolCommission, Description: "Commission a throwaway server (Debian 12, public IPv4, SSH as root by certificate only, from this sandbox only) " +
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolCommission, Description: "Commission a throwaway server (Debian 12, public IPv4, SSH as root by certificate only, from this sandbox only) " +
 		"for lease_minutes. Its cost is reserved against the task budget and charged per started hour; release it when done. " +
 		"A request beyond the project's envelope becomes a human approval request."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CommissionIn) (*mcp.CallToolResult, any, error) {
 			return s.commission(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolListResources, Description: "List this task's commissioned resources: id, type, address, state, lease end and cost so far. Free."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolListResources, Description: "List this task's commissioned resources: id, type, address, state, lease end and cost so far. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ CloudPricesIn) (*mcp.CallToolResult, any, error) {
 			return s.listResources(ctx, c), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolRelease, Description: "Delete a commissioned server now, with its firewall and volume; the unused reservation returns to the task. Free."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRelease, Description: "Delete a commissioned server now, with its firewall and volume; the unused reservation returns to the task. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ResourceIn) (*mcp.CallToolResult, any, error) {
 			return s.releaseResource(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolSSHCertificate, Description: "Sign your SSH public key for a commissioned server: a certificate that logs in as root on that server only, valid at most 30 minutes " +
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolSSHCertificate, Description: "Sign your SSH public key for a commissioned server: a certificate that logs in as root on that server only, valid at most 30 minutes " +
 		"and never past the lease. Save it next to the private key as <key>-cert.pub. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CertificateIn) (*mcp.CallToolResult, any, error) {
 			return s.sshCertificate(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolRequestStatus, Description: "The status of a resource approval request: pending, approved (then call commission_server again with the same arguments) or denied. Free."},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestStatus, Description: "The status of a resource approval request: pending, approved (then call commission_server again with the same arguments) or denied. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestStatusIn) (*mcp.CallToolResult, any, error) {
 			return s.requestStatus(ctx, c, in), nil, nil
 		})
 }
 
-// admitCloud: the commissioning tools are for running coder tasks with a
-// repository (the envelope's project).
+// admitCloud: the commissioning tools (architecture 5.5: agents get
+// servers in the agent Hetzner project through the gateway, which alone
+// holds its token) are for running tasks whose classes list the tool and
+// that have a repository (the envelope's project).
 func (s *Server) admitCloud(c *toolCaller, tool string) *mcp.CallToolResult {
 	if c.task.Status != "running" {
 		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
 	}
-	if !slices.Contains(c.task.Classes, policy.ClassCoder) {
-		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("%s is for the %s class; the task holds %q", tool, policy.ClassCoder, c.task.Classes))
+	if r := s.admitTool(c, tool); r != nil {
+		return r
 	}
 	if c.task.Repository == "" {
 		return s.refuseTool(c, tool, "refused_arguments", "the task has no repository, so no project envelope applies")
@@ -254,7 +244,7 @@ func (s *Server) envelope(ctx context.Context, c *toolCaller) (policy.Envelope, 
 }
 
 func (s *Server) cloudPrices(ctx context.Context, c *toolCaller) *mcp.CallToolResult {
-	tool := ToolCloudPrices
+	tool := policy.ToolCloudPrices
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
@@ -322,7 +312,7 @@ func (in CommissionIn) validate() error {
 }
 
 func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn) *mcp.CallToolResult {
-	tool := ToolCommission
+	tool := policy.ToolCommission
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
@@ -548,7 +538,7 @@ func (s *Server) owned(ctx context.Context, c *toolCaller, id int64) (cloudres.R
 }
 
 func (s *Server) listResources(ctx context.Context, c *toolCaller) *mcp.CallToolResult {
-	tool := ToolListResources
+	tool := policy.ToolListResources
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
@@ -576,7 +566,7 @@ func (s *Server) listResources(ctx context.Context, c *toolCaller) *mcp.CallTool
 }
 
 func (s *Server) releaseResource(ctx context.Context, c *toolCaller, in ResourceIn) *mcp.CallToolResult {
-	tool := ToolRelease
+	tool := policy.ToolRelease
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
@@ -610,7 +600,7 @@ func (s *Server) releaseResource(ctx context.Context, c *toolCaller, in Resource
 }
 
 func (s *Server) sshCertificate(ctx context.Context, c *toolCaller, in CertificateIn) *mcp.CallToolResult {
-	tool := ToolSSHCertificate
+	tool := policy.ToolSSHCertificate
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
@@ -651,7 +641,7 @@ func (s *Server) sign(ctx context.Context, c *toolCaller, row cloudres.Resource,
 }
 
 func (s *Server) requestStatus(ctx context.Context, c *toolCaller, in RequestStatusIn) *mcp.CallToolResult {
-	tool := ToolRequestStatus
+	tool := policy.ToolRequestStatus
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
