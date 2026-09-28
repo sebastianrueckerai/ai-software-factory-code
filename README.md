@@ -287,8 +287,12 @@ activities, each with a timeline step and a comment on the pull request:
    gated head; the worker container (`MODE=repro`), with no token in its
    environment, runs the command there with `sh -c` for at most
    `REPRO_TIMEOUT` (default 10m, at most 15m). It runs twice, one pod
-   each: first at the task's base (`CHECKOUT_SHA`, checked out from the
-   head's history), then at the head. A failed fetch is reported as exit
+   each: first at the task's base (`CHECKOUT_SHA`, from the head's
+   history), then at the head. The fetch writes only the commit's files
+   into the workspace (a scratch bare repository, `checkout --work-tree`,
+   the scratch removed), so the command sees no `.git`: a git command
+   exits the same at both, and only a change in the files can tell them
+   apart. A failed fetch is reported as exit
    -1. The activity heartbeats from its start, through the namespace wait
    and the image pull. The fault is reproduced when the command fails at
    the base (exit above 0) and passes at the head; one that passes at the
@@ -312,11 +316,12 @@ activities, each with a timeline step and a comment on the pull request:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
-   decoder refuses it on any other), the review's verdict is `approve`,
-   and the fix is proven one of two ways (ruling 167): the reproduction
-   failed at the base and passes at the head, or the agent recorded the
-   fault it fixed (`not_reproduced`) and the review answers
-   `strict_improvement: true`, with or without a reproduction command.
+   decoder refuses it on any other), the review's verdict is `approve`
+   with `strict_improvement: true` (ruling 169: the review answers it on
+   every pull request; false or missing sends it to the card), and the
+   fix is proven one of two ways (ruling 167): the reproduction failed at
+   the base and passes at the head, or the agent recorded the fault it
+   fixed (`not_reproduced`), with or without a reproduction command.
    Then `AutoMergeNote` comments the three conditions and the review's
    summary on the pull request and `Merge` merges as factory-merge with no
    card (main of an `auto` project requires no approval). Anything else,

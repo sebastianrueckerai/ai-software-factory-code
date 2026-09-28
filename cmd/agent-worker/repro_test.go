@@ -191,3 +191,55 @@ func TestReproRunsAtTheBase(t *testing.T) {
 		}
 	}
 }
+
+// The command sees the commit's files and no git metadata (re-review R1):
+// a git command cannot tell the base from the head, so it exits the same
+// at both and proves no fix; the files still differ.
+func TestReproHasNoGitMetadata(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	commit := func(content string) string {
+		if err := os.WriteFile(filepath.Join(seed, "f"), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		run("-C", seed, "add", "f")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	base, head := commit("broken\n"), commit("fixed\n")
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	exits := map[string][]int{}
+	for _, at := range []string{base, ""} {
+		for _, command := range []string{`test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)"`, "git status", "test ! -e .git", "grep -q fixed f"} {
+			reproEnvs(t, remote, head, command)
+			t.Setenv("CHECKOUT_SHA", at)
+			ws := t.TempDir()
+			if code := runReproFetch(nolog, ws); code != 0 {
+				t.Fatalf("fetch exit %d", code)
+			}
+			if _, err := os.Stat(filepath.Join(ws, "repo.fetch")); err == nil {
+				t.Fatal("the scratch repository is left in the workspace")
+			}
+			exits[command] = append(exits[command], repro(ws).Exit)
+		}
+	}
+	for command, got := range exits {
+		same := got[0] == got[1]
+		if command == "grep -q fixed f" {
+			if got[0] != 1 || got[1] != 0 {
+				t.Errorf("%s: exits %v at base and head, want 1 then 0: the files differ", command, got)
+			}
+		} else if !same || (command == "test ! -e .git" && got[0] != 0) {
+			t.Errorf("%s: exits %v at base and head, want the same (no .git)", command, got)
+		}
+	}
+}

@@ -484,7 +484,8 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 	ep["action"] = "edited"
 	edited, _ = json.Marshal(ep)
 	postWebhook(in, "issues", edited, sign(webhookSecret, edited))
-	for _, sender := range []string{"outsider", ""} {
+	// the bot's own label events (its state mirror) start nothing (re-review m1)
+	for _, sender := range []string{"outsider", "", "factory-agent"} {
 		b := labelled(sender)
 		if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 			t.Fatalf("status = %d", rr.Code)

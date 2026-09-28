@@ -225,21 +225,21 @@ func TestParseReview(t *testing.T) {
 		note   string
 		strict bool
 	}{
-		"strict asked, true":      {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &yes}, "", true},
-		"strict asked, false":     {`{"verdict":"approve","summary":"s","strict_improvement":false}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &no}, "", true},
-		"strict asked, missing":   {`{"verdict":"approve","summary":"s"}`, Review{}, "no strict_improvement", true},
-		"strict not asked, given": {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s"}, "", false},
-		"approve":                 {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, "", false},
-		"concerns, fenced":        {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, "", false},
-		"not json":                {"looks good to me", Review{}, "model review answer invalid", false},
-		"unknown verdict":         {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`, false},
-		"extra field":             {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`, false},
-		"no summary":              {`{"verdict":"approve","summary":" "}`, Review{}, "no summary", false},
-		"trailing text":           {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
-		"a note smuggled":         {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
+		"strict asked, true":  {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &yes}, "", true},
+		"strict asked, false": {`{"verdict":"approve","summary":"s","strict_improvement":false}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &no}, "", true},
+
+		"strict missing":   {`{"verdict":"approve","summary":"s"}`, Review{Verdict: "approve", Summary: "s"}, "", false},
+		"approve":          {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, "", false},
+		"concerns, fenced": {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, "", false},
+		"not json":         {"looks good to me", Review{}, "model review answer invalid", false},
+		"unknown verdict":  {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`, false},
+		"extra field":      {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`, false},
+		"no summary":       {`{"verdict":"approve","summary":" "}`, Review{}, "no summary", false},
+		"trailing text":    {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
+		"a note smuggled":  {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := parseReview(tc.in, tc.strict)
+			got := parseReview(tc.in)
 			if tc.note != "" {
 				if got.Verdict != "" || !strings.Contains(got.Note, tc.note) {
 					t.Fatalf("parseReview = %+v, want a note containing %q", got, tc.note)

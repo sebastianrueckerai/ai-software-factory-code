@@ -93,28 +93,39 @@ func runRepro(log func(string, ...any)) int {
 	return 0
 }
 
-// fetchHead fetches e.ref into dir and checks out e.sha there, or e.at
-// when given, or fails.
+// fetchHead fetches e.ref into a scratch repository, checks its head is
+// e.sha, and writes the tree of e.sha, or of e.at when given (a commit of
+// the head's history: the task's base), into dir, then removes the
+// scratch repository: the command sees the commit's files and no git
+// metadata, so only a change in the files can make it fail at the base
+// and pass at the head.
 func fetchHead(e fetchEnv, dir string) error {
 	w := workerEnv{repoToken: e.repoToken} // git's failures are scrubbed of it
-	if _, err := w.git("", "init", "-q", dir); err != nil {
+	scratch := dir + ".fetch"
+	defer os.RemoveAll(scratch) // #nosec G104 -- a leftover scratch repository holds no token and is outside dir
+	if _, err := w.git("", "init", "-q", "--bare", scratch); err != nil {
 		return fmt.Errorf("init: %w", err)
 	}
-	if err := w.gitAuth(e.repoToken, dir, "fetch", "-q", "--no-tags", e.repoURL, e.ref); err != nil {
+	if err := w.gitAuth(e.repoToken, scratch, "fetch", "-q", "--no-tags", e.repoURL, e.ref); err != nil {
 		return fmt.Errorf("fetch %s: %w", e.ref, err)
 	}
-	if _, err := w.git(dir, "checkout", "-q", "--detach", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("checkout: %w", err)
-	}
-	if head, err := w.git(dir, "rev-parse", "HEAD"); err != nil || head != e.sha {
+	if head, err := w.git(scratch, "rev-parse", "FETCH_HEAD"); err != nil || head != e.sha {
 		return fmt.Errorf("%s is at %s, not the gated head %s: the pull request moved", e.ref, head, e.sha)
 	}
+	commit := e.sha
 	if e.at != "" {
-		if _, err := w.git(dir, "checkout", "-q", "--detach", e.at+"^{commit}"); err != nil {
-			return fmt.Errorf("check out %s in the history of %s: %w", e.at, e.sha, err)
+		if _, err := w.git(scratch, "cat-file", "-e", e.at+"^{commit}"); err != nil {
+			return fmt.Errorf("%s is not in the history of %s: %w", e.at, e.sha, err)
 		}
+		commit = e.at
 	}
-	return nil
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	if _, err := w.git(scratch, "--work-tree="+dir, "checkout", "-q", "-f", commit, "--", "."); err != nil {
+		return fmt.Errorf("check out %s: %w", commit, err)
+	}
+	return os.RemoveAll(scratch)
 }
 
 // maxReproOutput is the output tail kept in memory and reported.

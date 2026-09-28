@@ -520,7 +520,8 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 // promote starts suggested task t on a writer's agent label (ruling 148).
 // The heal pass knows no sender and leaves it to the label's webhook.
 func (in *Intake) promote(ctx context.Context, via string, t Task, defaultBranch, sender string) error {
-	if sender == "" {
+	// the bot's own label events (the state mirror) start nothing
+	if sender == "" || sender == in.BotUser {
 		return nil
 	}
 	if ok, err := in.trusted(ctx, t.Repository, sender); err != nil || !ok {
