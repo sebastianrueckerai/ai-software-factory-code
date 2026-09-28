@@ -389,6 +389,48 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, verdict, by stri
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
 }
 
+func (s *fakeStore) AlertByFingerprint(ctx context.Context, fingerprint string) (Alert, bool, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i := len(s.alerts) - 1; i >= 0; i-- {
+		if a := s.alerts[i]; a.Kind == AlertSigNoz && a.Fingerprint == fingerprint {
+			a.Detail = maps.Clone(a.Detail)
+			return a, true, nil
+		}
+	}
+	return Alert{}, false, nil
+}
+
+func (s *fakeStore) MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.ID == id {
+			a.Detail = maps.Clone(a.Detail)
+			if a.Detail == nil {
+				a.Detail = map[string]any{}
+			}
+			maps.Copy(a.Detail, detail)
+			s.alerts[i] = a
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Kind == AlertSigNoz && a.Verdict == "" {
+			now := time.Now()
+			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
+			s.alerts[i] = a
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) alertRows() []Alert {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -1030,5 +1072,66 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	}
 	if _, ok, err := s.ProjectByRepository(ctx, "sf/nothing"); err != nil || ok {
 		t.Fatalf("unknown repository: %v %v", ok, err)
+	}
+}
+
+// Migration 0027 on a real Postgres: a SigNoz alert row found again by its
+// fingerprint (the newest one), its detail merged, and the verdict set once
+// on a task's open alert rows only.
+func TestPGStoreSigNozAlerts(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
+		t.Fatal(err)
+	}
+	// a later run of the migrations from the start (the schema package's
+	// test) re-adds 0026's kind check, which a row of kind alert breaks
+	defer s.db.ExecContext(ctx, `DELETE FROM alerts WHERE kind = 'alert'`) // #nosec G104 -- best-effort cleanup
+	if _, ok, err := s.AlertByFingerprint(ctx, "fp1"); err != nil || ok {
+		t.Fatalf("before any row: %v %v", ok, err)
+	}
+	old, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t-old", Fingerprint: "fp1", Detail: map[string]any{"issue": 3}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newest, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t-new", Fingerprint: "fp1", Detail: map[string]any{"issue": 9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "p95", TaskID: "t-new", Fingerprint: "fp2"}); err != nil {
+		t.Fatal(err)
+	}
+	a, ok, err := s.AlertByFingerprint(ctx, "fp1")
+	if err != nil || !ok || a.ID != newest || a.TaskID != "t-new" || a.Fingerprint != "fp1" || a.Detail["issue"] != float64(9) {
+		t.Fatalf("by fingerprint: %+v %v %v, want row %d", a, ok, err, newest)
+	}
+	if err := s.MergeAlertDetail(ctx, newest, map[string]any{"resolved_at": "2026-09-28T20:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ = s.AlertByFingerprint(ctx, "fp1")
+	if a.Detail["issue"] != float64(9) || a.Detail["resolved_at"] != "2026-09-28T20:00:00Z" {
+		t.Fatalf("merged detail %v", a.Detail)
+	}
+	if err := s.JudgeTaskAlerts(ctx, "t-new", VerdictReal, "merge"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.JudgeTaskAlerts(ctx, "t-new", VerdictNoise, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.AlertCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Verdict, b.Verdict) })
+	if want := []AlertCount{{"alert", "open", 1}, {"alert", "real", 2}}; !reflect.DeepEqual(counts, want) {
+		t.Fatalf("counts %v, want %v (row %d stays open)", counts, want, old)
 	}
 }

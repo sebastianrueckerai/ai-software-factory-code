@@ -314,6 +314,9 @@ func main() {
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
+	// SigNoz's webhook channel factoryd (the signoz-objects job creates it)
+	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: mustEnv("SIGNOZ_WEBHOOK_PASSWORD"),
+		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Budget: policyLoader.Budget})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
@@ -459,37 +462,20 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		if in.ReproCommand != "" {
 			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
 		}
-		ref, err := forgejo.CreateIssue(r.Context(), repoParts.Owner, repoParts.Name, factoryd.FirstLine(in.Objective), issueBody)
-		if err != nil {
-			http.Error(w, "create issue: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := forgejo.ReplaceIssueLabels(r.Context(), repoParts.Owner, repoParts.Name, ref.Number,
-			[]string{"agent", "state/queued"}); err != nil {
-			log.Printf("task %s: label issue %d: %v", id, ref.Number, err)
-		}
-		task := factoryd.Task{
-			ID: id, Priority: in.Priority, RiskClass: "standard",
-			BudgetEUR: in.BudgetEUR, Status: "queued", RequiredCapabilities: factoryd.AgentCapabilities,
-			Objective: in.Objective, Repository: in.Repository,
-			SHA:  sha,
-			Kind: "agent", IssueNumber: ref.Number, Source: "api",
-			ReproCommand: in.ReproCommand,
+		task, ref, err := factoryd.FileTask(r.Context(), store, forgejo, workflows, repoParts, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
+			ID: id, Priority: in.Priority, RiskClass: "standard", BudgetEUR: in.BudgetEUR,
+			Objective: in.Objective, SHA: sha, Source: "api", ReproCommand: in.ReproCommand,
 			// the intake token's holder files as the bot, with a writer's standing
 			Author: forgejo.BotUser, AuthorWriter: true,
-		}
-		if err := store.CreateTask(r.Context(), task); err != nil {
+		})
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
-		}
-		// a failed start is healed by the next HealPass
-		if err := workflows.Start(r.Context(), id); err != nil {
-			log.Printf("task %s: start workflow: %v", id, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{ // #nosec G104 -- best-effort response write
-			"id": id, "budget_eur": in.BudgetEUR,
+			"id": task.ID, "budget_eur": in.BudgetEUR,
 			"issue_number": ref.Number, "issue_url": ref.URL,
 		})
 	}

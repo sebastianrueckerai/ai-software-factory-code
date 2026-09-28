@@ -796,6 +796,11 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {
 		return err
 	}
+	if v := alertVerdict(final, reason); v != "" {
+		if err := r.store.JudgeTaskAlerts(ctx, taskID, v, FactoryDecider); err != nil {
+			return err
+		}
+	}
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}

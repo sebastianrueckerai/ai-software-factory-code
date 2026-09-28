@@ -44,14 +44,7 @@ type FiringAlert struct {
 // resource attribute, its Prometheus form, and Kubernetes' own.
 var namespaceLabels = []string{"k8s.namespace.name", "k8s_namespace_name", "namespace"}
 
-func (a FiringAlert) namespace() string {
-	for _, l := range namespaceLabels {
-		if v := a.Labels[l]; v != "" {
-			return v
-		}
-	}
-	return ""
-}
+func (a FiringAlert) namespace() string { return namespaceOf(a.Labels) }
 
 // AlertSource lists the alerts firing now.
 type AlertSource interface {

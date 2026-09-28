@@ -165,6 +165,19 @@ func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string
 	return names, nil
 }
 
+// NamespaceLabel is namespace name's label key, "" when it has none.
+func (k *InClusterKube) NamespaceLabel(ctx context.Context, name, key string) (string, error) {
+	var ns struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+name, &ns); err != nil {
+		return "", err
+	}
+	return ns.Metadata.Labels[key], nil
+}
+
 func (k *InClusterKube) CreateServiceAccount(ctx context.Context, namespace, name string) error {
 	body := map[string]any{
 		"apiVersion": "v1", "kind": "ServiceAccount",

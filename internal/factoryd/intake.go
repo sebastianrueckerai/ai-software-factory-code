@@ -517,6 +517,32 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 	return sha, nil
 }
 
+// FileTask files agent task t the way the API and the alert intake do
+// (task 42): the issue on repo first, as the bot, labelled labels and
+// state/queued, then the task row linked to it, then its workflow; a
+// failed start is logged and healed by the next HealPass. No row exists
+// without its issue.
+func FileTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, workflows Workflows, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+	ref, err := forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
+	if err != nil {
+		return Task{}, IssueRef{}, fmt.Errorf("create issue: %w", err)
+	}
+	if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, ref.Number, append(slices.Clone(labels), "state/queued")); err != nil {
+		log.Printf("task %s: label issue %d: %v", t.ID, ref.Number, err)
+	}
+	t.Repository, t.IssueNumber, t.Kind, t.Status = repo.String(), ref.Number, "agent", "queued"
+	t.RequiredCapabilities = AgentCapabilities
+	if err := store.CreateTask(ctx, t); err != nil {
+		return Task{}, IssueRef{}, err
+	}
+	if err := workflows.Start(ctx, t.ID); err != nil {
+		log.Printf("task %s: start workflow: %v", t.ID, err)
+	}
+	return t, ref, nil
+}
+
 // promote starts suggested task t on a writer's agent label (ruling 148).
 // The heal pass knows no sender and leaves it to the label's webhook.
 func (in *Intake) promote(ctx context.Context, via string, t Task, defaultBranch, sender string) error {

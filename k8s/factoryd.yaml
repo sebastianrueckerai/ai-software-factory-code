@@ -446,6 +446,10 @@ spec:
           valueFrom: {secretKeyRef: {name: signoz-factoryd, key: email}}
         - name: SIGNOZ_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-factoryd, key: password}}
+        # the basic auth of SigNoz's webhook channel factoryd (seeded, the
+        # signoz-objects job reads its copy in platform)
+        - name: SIGNOZ_WEBHOOK_PASSWORD
+          valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
           value: git.aisoftwarefactory.world/sf/ci-runner@sha256:86f4d1d430eb06cbe5de42963673f36139065403fc6f1a53d4c09efdeb37ddba
         - name: LITELLM_MASTER_KEY
@@ -567,6 +571,14 @@ spec:
     - ports: [{port: "8080", protocol: TCP}]
   - fromEndpoints:
     - matchLabels: {app: factory-gateway}
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]
+  # SigNoz's webhook channel posts alerts to POST /webhooks/signoz
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/instance: signoz
+        app.kubernetes.io/component: signoz
+        "k8s:io.kubernetes.pod.namespace": platform
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
   # a project's main workflow, on a CI runner the spawner started for the
