@@ -55,6 +55,9 @@ type Registrar struct {
 	GitURL, RegistryHost string
 	// MergeUser is factory-merge; ProjectsUser is factory-projects.
 	MergeUser, ProjectsUser string
+	// HostKey scans Forgejo's SSH host key from inside the cluster (ruling
+	// 165); nil: no FORGEJO_SSH_HOST_KEY.
+	HostKey func(ctx context.Context) (string, error)
 
 	mu sync.Mutex
 }
@@ -84,6 +87,9 @@ const (
 	SecretRegistryPassword = "REGISTRY_PASSWORD"
 	SecretFactoryRead      = "FACTORY_READ_TOKEN"
 	SecretDeployKey        = "DEPLOY_KEY"
+	// SecretSSHHostKey is Forgejo's ed25519 host key as a scan finds it,
+	// type and key, so no workflow pins a key a rebuild changes (ruling 165)
+	SecretSSHHostKey = "FORGEJO_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
 )
 
 // Waiting is an object that needs register-project first.
@@ -192,6 +198,11 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 	}
 	if c, err := run.readToken(ctx, names); !run.fail("actions secret "+SecretFactoryRead, err) {
 		run.line("actions secret "+SecretFactoryRead, c)
+	}
+	if run.r.HostKey != nil {
+		if c, err := run.hostKey(ctx, names); !run.fail("actions secret "+SecretSSHHostKey, err) {
+			run.line("actions secret "+SecretSSHHostKey, c)
+		}
 	}
 	for _, name := range []string{SecretRegistryUser, SecretRegistryPassword} {
 		c := Unchanged
@@ -344,6 +355,30 @@ func NewDeployKey(comment string) (public, private string, err error) {
 		return "", "", err
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))), string(pem.EncodeToMemory(block)), nil
+}
+
+// hostKey keeps FORGEJO_SSH_HOST_KEY at the key a scan finds now; the row
+// keeps its hash, since a secret cannot be read back.
+func (run *reconcileRun) hostKey(ctx context.Context, secrets []string) (Change, error) {
+	key, err := run.r.HostKey(ctx)
+	if err != nil {
+		return "", err
+	}
+	hash := HashToken(key)
+	has := slices.Contains(secrets, SecretSSHHostKey)
+	if has && run.p.HostKeyHash == hash {
+		return Unchanged, nil
+	}
+	if err := run.r.Forgejo.PutActionSecret(ctx, run.p.Repo(), SecretSSHHostKey, key); err != nil {
+		return "", err
+	}
+	if err := run.r.Store.SetProjectTokens(ctx, run.p.Name, ProjectTokens{HostKeyHash: hash}); err != nil {
+		return "", err
+	}
+	if has {
+		return Updated, nil
+	}
+	return Created, nil
 }
 
 // readToken keeps FACTORY_READ_TOKEN and its hash on the row. A secret or

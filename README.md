@@ -937,7 +937,13 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   commits with it; Forgejo admits no Actions job token to a whitelist; a key
   or secret gone missing makes both anew); `FACTORY_READ_TOKEN` (random, its
   sha256 in `read_token_hash`; of two reconciles racing only the one that
-  stores its hash sets the secret). As the bot: its private fork
+  stores its hash sets the secret); `FORGEJO_SSH_HOST_KEY`, Forgejo's
+  SSH host key, ed25519 when offered (the built-in server offers RSA only
+  unless configured otherwise), type and key as factoryd's own handshake with
+  `forgejo-ssh.forgejo:22` finds it at every reconcile, its sha256 in
+  `host_key_hash`, so a rebuild that makes new host keys updates every project
+  and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
+  2222). As the bot: its private fork
   `factory-agent/<name>` and the boot labels. A project recorded on the
   console waits for `register-project` here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and

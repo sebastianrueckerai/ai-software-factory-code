@@ -16,7 +16,7 @@ ARG CRANE_VERSION=0.22.1
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends \
-           git bash nodejs curl tar ca-certificates gcc libc6-dev \
+           git openssh-client bash nodejs curl tar ca-certificates gcc libc6-dev \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash runner
 

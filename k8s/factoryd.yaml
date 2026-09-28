@@ -609,6 +609,7 @@ spec:
         - matchName: api.hetzner.cloud
         - matchName: signoz-otel-collector.platform.svc.cluster.local
         - matchName: signoz.platform.svc.cluster.local
+        - matchName: forgejo-ssh.forgejo.svc.cluster.local
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -621,7 +622,9 @@ spec:
         "k8s:io.kubernetes.pod.namespace": forgejo
         app.kubernetes.io/name: forgejo
     toPorts:
-    - ports: [{port: "3000", protocol: TCP}]
+    # 2222: Forgejo's SSH (Service port 22), whose host key registration
+    # scans for the projects' FORGEJO_SSH_HOST_KEY (ruling 165)
+    - ports: [{port: "3000", protocol: TCP}, {port: "2222", protocol: TCP}]
   - toEndpoints:
     - matchLabels:
         "k8s:io.kubernetes.pod.namespace": platform

@@ -167,7 +167,7 @@ func TestPGProjects(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repository) VALUES ('upper', 'Upper/upper')`); err == nil {
 		t.Fatal("the table admits a repository in capitals")
 	}
-	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{HookSecretHash: "k1", GitToken: "g1", MergeToken: "m1"}); err != nil {
+	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{HookSecretHash: "k1", GitToken: "g1", MergeToken: "m1", HostKeyHash: "s1"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{PullToken: "p1"}); err != nil {
@@ -188,7 +188,7 @@ func TestPGProjects(t *testing.T) {
 	got, ok, err := s.Project(ctx, "demo-app")
 	want := demo
 	want.MergeRule, want.Notify, want.Quota = "human", []string{"alice"}, policy.Quota{CPU: "1", Memory: "1Gi", Storage: "1Gi"}
-	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken = "h1", "k1", "p1", "g1", "m1"
+	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken, want.HostKeyHash = "h1", "k1", "p1", "g1", "m1", "s1"
 	want.CreatedAt, want.UpdatedAt = got.CreatedAt, got.UpdatedAt
 	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("project = %+v, %v, %v\nwant %+v", got, ok, err, want)

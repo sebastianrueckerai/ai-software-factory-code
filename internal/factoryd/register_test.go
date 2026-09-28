@@ -391,7 +391,7 @@ func (s *memProjects) SetProjectTokens(_ context.Context, name string, t Project
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.m[name]
-	for _, f := range []struct{ from, to *string }{{&t.ReadTokenHash, &p.ReadTokenHash}, {&t.HookSecretHash, &p.HookSecretHash},
+	for _, f := range []struct{ from, to *string }{{&t.ReadTokenHash, &p.ReadTokenHash}, {&t.HookSecretHash, &p.HookSecretHash}, {&t.HostKeyHash, &p.HostKeyHash},
 		{&t.PullToken, &p.PullToken}, {&t.GitToken, &p.GitToken}, {&t.MergeToken, &p.MergeToken}} {
 		if *f.from != "" {
 			*f.to = *f.from

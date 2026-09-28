@@ -48,9 +48,11 @@ type Project struct {
 	// write:repository limited to it (MergeToken, the merge).
 	ReadTokenHash  string
 	HookSecretHash string
-	PullToken      string
-	GitToken       string
-	MergeToken     string
+	// HostKeyHash is sha256 hex of the FORGEJO_SSH_HOST_KEY secret set.
+	HostKeyHash string
+	PullToken   string
+	GitToken    string
+	MergeToken  string
 }
 
 // Minted reports whether register-project has run: the organisation, the
@@ -240,7 +242,7 @@ type ProjectStore interface {
 
 // ProjectTokens: an empty field leaves the stored one.
 type ProjectTokens struct {
-	ReadTokenHash, HookSecretHash, PullToken, GitToken, MergeToken string
+	ReadTokenHash, HookSecretHash, HostKeyHash, PullToken, GitToken, MergeToken string
 }
 
 // ErrProjectExists refuses a second registration of a name, a repository
@@ -248,7 +250,7 @@ type ProjectTokens struct {
 var ErrProjectExists = errors.New("project, repository or namespace already registered")
 
 const projectColumns = `name, repository, merge_rule, notify, namespaces, environments, quota_cpu, quota_memory, quota_storage,
-	secrets, managed, read_token_hash, hook_secret_hash, pull_token, git_token, merge_token, created_at, updated_at`
+	secrets, managed, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at`
 
 func (s *PGStore) Projects(ctx context.Context) ([]Project, error) {
 	return s.projects(ctx, `SELECT `+projectColumns+` FROM projects ORDER BY name`)
@@ -275,7 +277,7 @@ func (s *PGStore) projects(ctx context.Context, q string, args ...any) ([]Projec
 		var envs []byte
 		if err := rows.Scan(&p.Name, &p.Repository, &p.MergeRule, m.SQLScanner(&p.Notify), m.SQLScanner(&p.Namespaces), &envs,
 			&p.Quota.CPU, &p.Quota.Memory, &p.Quota.Storage, m.SQLScanner(&p.Secrets), &p.Managed,
-			&p.ReadTokenHash, &p.HookSecretHash, &p.PullToken, &p.GitToken, &p.MergeToken, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.PullToken, &p.GitToken, &p.MergeToken, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(envs, &p.Environments); err != nil {
@@ -316,8 +318,9 @@ func (s *PGStore) SetProjectSettings(ctx context.Context, name, mergeRule string
 func (s *PGStore) SetProjectTokens(ctx context.Context, name string, t ProjectTokens) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE projects SET read_token_hash = COALESCE(NULLIF($2, ''), read_token_hash),
 		hook_secret_hash = COALESCE(NULLIF($3, ''), hook_secret_hash), pull_token = COALESCE(NULLIF($4, ''), pull_token),
-		git_token = COALESCE(NULLIF($5, ''), git_token), merge_token = COALESCE(NULLIF($6, ''), merge_token), updated_at = now()
-		WHERE name = $1`, name, t.ReadTokenHash, t.HookSecretHash, t.PullToken, t.GitToken, t.MergeToken)
+		git_token = COALESCE(NULLIF($5, ''), git_token), merge_token = COALESCE(NULLIF($6, ''), merge_token),
+		host_key_hash = COALESCE(NULLIF($7, ''), host_key_hash), updated_at = now()
+		WHERE name = $1`, name, t.ReadTokenHash, t.HookSecretHash, t.PullToken, t.GitToken, t.MergeToken, t.HostKeyHash)
 	return oneRow(res, err, "project "+name)
 }
 

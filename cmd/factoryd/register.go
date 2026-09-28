@@ -11,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -133,6 +134,9 @@ func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube f
 		WebhookSecret:    mustEnv("FORGEJO_WEBHOOK_SECRET"),
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),
 		GitURL: env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"), RegistryHost: env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
-		MergeUser:    env("FORGEJO_MERGE_USER", "factory-merge"),
+		MergeUser: env("FORGEJO_MERGE_USER", "factory-merge"),
+		HostKey: func(ctx context.Context) (string, error) {
+			return factoryd.ScanHostKey(ctx, env("FORGEJO_SSH_ADDR", "forgejo-ssh.forgejo.svc.cluster.local:22"), 10*time.Second)
+		},
 		ProjectsUser: env("FORGEJO_PROJECTS_USER", "factory-projects")}
 }
