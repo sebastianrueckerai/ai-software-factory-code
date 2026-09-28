@@ -22,6 +22,9 @@ const (
 	KindTool       = "tool"
 	KindResource   = "resource"
 	KindSettlement = "settlement"
+	// KindStanding is a standing resource's accrual, booked to its project
+	// (cloudres.StandingLedgerTask), outside any task and day headroom.
+	KindStanding = "standing"
 )
 
 // Version is one loaded policy document, immutable once written.

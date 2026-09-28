@@ -194,7 +194,7 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR float64
 	err := tx.QueryRowContext(ctx,
 		`SELECT status, (budget_eur - spent_eur)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
-		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date), 0))::float8,
+		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
 		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
 		 FROM tasks WHERE id = $1`, taskID, dayEUR,
 	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &dayHeld)

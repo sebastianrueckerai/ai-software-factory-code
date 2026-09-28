@@ -520,9 +520,10 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	var accrued, due int
 	var hold int64
 	var standing bool
+	var repo string
 	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), lifetime = 'standing',
-		GREATEST(reserved_eur - accrued_eur, 0)::float8
-		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &standing, &share); err != nil {
+		GREATEST(reserved_eur - accrued_eur, 0)::float8, repo
+		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &standing, &share, &repo); err != nil {
 		return 0, nil, err
 	}
 	if due <= accrued {
@@ -538,12 +539,20 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	}
 	// the row's own share, as far as the reservation still holds it
 	held = min(held, share)
-	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'resource', $2, $3)`,
-		owner, "resource/"+strconv.FormatInt(id, 10), eur); err != nil {
+	// a standing resource is its project's monthly line: no task's spend
+	// and no day's headroom (ruling 147)
+	ledgerTask, kind := owner, policy.KindResource
+	if standing {
+		ledgerTask, kind = StandingLedgerTask(repo), policy.KindStanding
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, $3, $4)`,
+		ledgerTask, kind, "resource/"+strconv.FormatInt(id, 10), eur); err != nil {
 		return 0, nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, owner, eur); err != nil {
-		return 0, nil, err
+	if !standing {
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, owner, eur); err != nil {
+			return 0, nil, err
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE holds SET eur = GREATEST(eur - $2, 0) WHERE id = $1`, hold, min(eur, held)); err != nil {
 		return 0, nil, err
@@ -563,6 +572,10 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	}
 	return eur, nil, nil
 }
+
+// StandingLedgerTask is the ledger's task_id for a project's standing
+// resources.
+func StandingLedgerTask(repo string) string { return "standing:" + repo }
 
 // Owned lists every agent row of a task, oldest first.
 func (a AgentStore) Owned(ctx context.Context, taskID string) ([]Resource, error) {

@@ -628,6 +628,13 @@ func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 	if acc, err := a.Accrue(ctx); err != nil || !near(acc.EUR, 0.0096) || len(acc.Overruns) != 0 {
 		t.Fatalf("promoted accrual = %+v, %v", acc, err)
 	}
+	// m1: the standing hour is the project's line, not the task's spend
+	if spent := scalar[float64](t, db, `SELECT spent_eur::float8 FROM tasks WHERE id = 't1'`); !near(spent, 0.0192) {
+		t.Fatalf("spent after a standing hour = %v, want the leased hours only", spent)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM ledger WHERE task_id = 'standing:sf/app' AND kind = 'standing' AND ref = $1`, "resource/"+itoa(srv.ID)); n != 1 {
+		t.Fatalf("standing ledger rows = %d", n)
+	}
 }
 
 // A promoted commission the human later releases has no reservation left:

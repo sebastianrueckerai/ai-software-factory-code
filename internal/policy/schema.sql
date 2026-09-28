@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     id bigserial PRIMARY KEY,
     task_id text NOT NULL,
     day date NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')::date,
-    kind text NOT NULL CHECK (kind IN ('model', 'tool', 'resource', 'settlement')),
+    kind text NOT NULL CONSTRAINT ledger_kind_check CHECK (kind IN ('model', 'tool', 'resource', 'settlement', 'standing')),
     ref text NOT NULL DEFAULT '',
     eur numeric NOT NULL CONSTRAINT ledger_eur_check CHECK (eur >= 0),
     created_at timestamptz NOT NULL DEFAULT now()
@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS ledger (
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ledger_eur_check') THEN
         ALTER TABLE ledger ADD CONSTRAINT ledger_eur_check CHECK (eur >= 0);
+    END IF;
+END $$;
+
+-- a standing resource's cost is its project's monthly line, no task's
+-- spend and no day's headroom (ruling 147)
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ledger_kind_check'
+                   AND pg_get_constraintdef(oid) LIKE '%standing%') THEN
+        ALTER TABLE ledger DROP CONSTRAINT IF EXISTS ledger_kind_check;
+        ALTER TABLE ledger ADD CONSTRAINT ledger_kind_check
+            CHECK (kind IN ('model', 'tool', 'resource', 'settlement', 'standing'));
     END IF;
 END $$;
 

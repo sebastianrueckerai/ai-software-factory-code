@@ -221,7 +221,12 @@ func TestHolds(t *testing.T) {
 		t.Fatalf("release without a cost = (%+v, %v), want spent 0.02, the hold's 0.006 booked, no flag", b, err)
 	}
 
-	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b nothing
+	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b
+	// nothing. A standing resource's hours are its project's monthly line
+	// and take nothing of the day (ruling 147).
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('standing:sf/app', 'standing', 'resource/1', 5)`); err != nil {
+		t.Fatal(err)
+	}
 	bReq := req
 	bReq.TaskID, bReq.DayEUR = "b", 0.01
 	bReq.InTokens = 0
@@ -287,7 +292,7 @@ func TestHolds(t *testing.T) {
 		rows.Scan(&l)
 		ledger = append(ledger, l)
 	}
-	want := []string{"a model coding-cheap 0.004", "a model coding-cheap 0.006", "b model x 0.003", "b model y 0.003",
+	want := []string{"a model coding-cheap 0.004", "a model coding-cheap 0.006", "standing:sf/app standing resource/1 5", "b model x 0.003", "b model y 0.003",
 		"b model z 0.004", "b model z 0.004", "b model z 0.004"}
 	if !reflect.DeepEqual(ledger, want) {
 		t.Fatalf("ledger = %q, want %q", ledger, want)
