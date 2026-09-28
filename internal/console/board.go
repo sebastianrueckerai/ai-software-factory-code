@@ -20,7 +20,6 @@ import (
 )
 
 var funcs = template.FuncMap{
-	"eur":  func(v float64) string { return fmt.Sprintf("%.2f", v) },
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {

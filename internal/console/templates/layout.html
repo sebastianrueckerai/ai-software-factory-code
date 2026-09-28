@@ -25,6 +25,6 @@
 
 {{define "card"}}<article class="card">
 <h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
-<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur .SpentEUR}} / {{eur .BudgetEUR}} EUR</p>
+<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR</p>
 <p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
 </article>{{end}}

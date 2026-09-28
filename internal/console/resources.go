@@ -100,7 +100,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		for i := range v.Rows {
 			if j, ok := actions[v.Rows[i].HoldID]; ok && j == i && v.Rows[i].Open {
 				v.Rows[i].Actions = true
-				v.Rows[i].PromoteNote = fmt.Sprintf("promoted, about %.2f EUR a month against the envelope's %.2f EUR (%.4f used or reserved this month)",
+				v.Rows[i].PromoteNote = fmt.Sprintf("promoted, about %.4f EUR a month against the envelope's %.4f EUR (%.4f used or reserved this month)",
 					monthly[v.Rows[i].HoldID], v.Envelope.MonthlyEUR, v.Envelope.Use.MonthEUR)
 			}
 		}

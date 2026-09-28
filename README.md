@@ -711,7 +711,8 @@ its own Service `factoryd-console` and the HTTPRoute `console` on the edge
 gateway's `https-console` listener (https://console.aisoftwarefactory.world);
 the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 `html/template` with htmx 2.0.11 vendored in `internal/console/static`
-(sha256 pinned by a test), no build step.
+(sha256 pinned by a test), no build step. Every EUR amount shows four
+decimals (ruling 135): a task's model calls cost fractions of a cent.
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,

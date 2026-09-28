@@ -1,11 +1,11 @@
 {{template "head" .}}
 <h2>Costs</h2>
-<p class="daycap">Today (UTC): <strong>{{eur .Today}} EUR</strong> of the {{eur .DayCap}} EUR day cap (policy version {{.PolicyID}}).</p>
+<p class="daycap">Today (UTC): <strong>{{eur4 .Today}} EUR</strong> of the {{eur4 .DayCap}} EUR day cap (policy version {{.PolicyID}}).</p>
 <table>
 <caption>Per day, {{.From}} to {{.To}}, EUR</caption>
 <thead><tr><th scope="col">Day</th>{{range .Kinds}}<th scope="col">{{.}}</th>{{end}}<th scope="col">Total</th></tr></thead>
 <tbody>
-{{range .Days}}<tr><th scope="row">{{.Day}}</th>{{range .Kinds}}<td>{{eur .}}</td>{{end}}<td>{{eur .Total}}</td></tr>
+{{range .Days}}<tr><th scope="row">{{.Day}}</th>{{range .Kinds}}<td>{{eur4 .}}</td>{{end}}<td>{{eur4 .Total}}</td></tr>
 {{else}}<tr><td colspan="6">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table>
@@ -13,7 +13,7 @@
 <caption>Per task, {{.From}} to {{.To}}, EUR</caption>
 <thead><tr><th scope="col">Task</th><th scope="col">Total</th></tr></thead>
 <tbody>
-{{range .Tasks}}<tr><th scope="row"><a href="/tasks/{{.TaskID}}/timeline">{{.TaskID}}</a></th><td>{{eur .EUR}}</td></tr>
+{{range .Tasks}}<tr><th scope="row"><a href="/tasks/{{.TaskID}}/timeline">{{.TaskID}}</a></th><td>{{eur4 .EUR}}</td></tr>
 {{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table>

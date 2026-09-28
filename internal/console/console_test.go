@@ -597,7 +597,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-q", Kind: "agent", Status: "queued", Objective: "queued work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 11},
-		{ID: "t-r", Kind: "agent", Status: "closing", Objective: "closing work", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 1.234, PRNumber: 12},
+		{ID: "t-r", Kind: "agent", Status: "closing", Objective: "closing work", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 0.000543, PRNumber: 12},
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 13},
 		{ID: "t-v", Kind: "agent", Status: "in-review", Objective: "review work", Repository: "sf/code", BudgetEUR: 5},
 		{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code", BudgetEUR: 5},
@@ -627,9 +627,9 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="https://git.example/sf/code/issues/11"`, `href="https://git.example/sf/code/pulls/12"`,
-		`href="/tasks/t-q/timeline"`, "spent 1.23 / 5.00 EUR",
+		`href="/tasks/t-q/timeline"`, "spent 0.0005 / 5.0000 EUR",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
-		"human work", "load test", "8.99 EUR per month",
+		"human work", "load test", "8.9900 EUR per month",
 		`hx-get="/board"`, `hx-trigger="every 10s"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -793,7 +793,7 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 			{Day: "2026-09-20", ByKind: map[string]float64{"model": 0.5}, Total: 0.5},
 			{Day: today, ByKind: map[string]float64{"model": 1.25, "settlement": 0.5, "resource": 2}, Total: 3.75},
 		},
-		Tasks: []policy.TaskCost{{TaskID: "t-big", EUR: 3.25}, {TaskID: "t-small", EUR: 1}}}
+		Tasks: []policy.TaskCost{{TaskID: "t-big", EUR: 3.25}, {TaskID: "t-small", EUR: 1}, {TaskID: "t-tiny", EUR: 0.000543}}}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/costs = %d: %s", rec.Code, rec.Body)
@@ -806,10 +806,11 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"<strong>3.75 EUR</strong> of the 20.00 EUR day cap",
-		"<th scope=\"row\">" + today + "</th><td>1.25</td><td>0.00</td><td>2.00</td><td>0.50</td><td>3.75</td>",
-		"<th scope=\"row\">2026-09-20</th><td>0.50</td>",
-		`<a href="/tasks/t-big/timeline">t-big</a></th><td>3.25</td>`,
+		"<strong>3.7500 EUR</strong> of the 20.0000 EUR day cap",
+		"<th scope=\"row\">" + today + "</th><td>1.2500</td><td>0.0000</td><td>2.0000</td><td>0.5000</td><td>3.7500</td>",
+		"<th scope=\"row\">2026-09-20</th><td>0.5000</td>",
+		`<a href="/tasks/t-big/timeline">t-big</a></th><td>3.2500</td>`,
+		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td>0.0005</td>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/costs lacks %q", want)
@@ -842,7 +843,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	lane := body[start : start+end]
 	for _, want := range []string{
 		// the resource request: type, purpose, lease, monthly cost, project, the task
-		"Resource request", "<dd>cx33</dd>", "<dd>load test</dd>", "<dd>5 h</dd>", "8.99 EUR per month; this lease 0.0720 EUR",
+		"Resource request", "<dd>cx33</dd>", "<dd>load test</dd>", "<dd>5 h</dd>", "8.9900 EUR per month; this lease 0.0720 EUR",
 		"<dd>sf/code</dd>", "a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
 		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `name="scope" value="task" checked`, `name="scope" value="project"`,
 		// the merge request: the PR, the risk class, the migration, the review
@@ -1014,7 +1015,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>2026-09-28 14:30 UTC</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
 		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
-		`<span id="promote-11" class="meta">promoted, about 10.13 EUR a month against the envelope&#39;s 10.00 EUR (0.0000 used or reserved this month)</span>`,
+		`<span id="promote-11" class="meta">promoted, about 10.1340 EUR a month against the envelope&#39;s 10.0000 EUR (0.0000 used or reserved this month)</span>`,
 		// the code repository has no envelope yet: the policy default
 		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
 		`name="server_types" type="text" value="cx23"`,

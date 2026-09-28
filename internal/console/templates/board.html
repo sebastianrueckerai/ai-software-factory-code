@@ -45,7 +45,7 @@
 <dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>
 <dt>Purpose</dt><dd>{{.Resource.Purpose}}</dd>
 <dt>Lease</dt><dd>{{lease .Resource.LeaseMinutes}}</dd>
-<dt>Cost</dt><dd>{{eur .Monthly}} EUR per month; this lease {{eur4 .Resource.ReservationEUR}} EUR</dd>
+<dt>Cost</dt><dd>{{eur4 .Monthly}} EUR per month; this lease {{eur4 .Resource.ReservationEUR}} EUR</dd>
 <dt>Project</dt><dd>{{.Project}}</dd>
 <dt>Beyond the envelope</dt><dd>{{range $i, $v := .Resource.BeyondEnvelope}}{{if $i}}; {{end}}{{$v}}{{end}}</dd>
 </dl>
