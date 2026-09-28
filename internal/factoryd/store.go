@@ -73,6 +73,8 @@ func (t Task) Standing() string {
 	switch {
 	case t.Author == "":
 		return ""
+	case t.Source == SourceAlert:
+		return harness.StandingTelemetry
 	case t.AuthorWriter:
 		return harness.StandingWriter
 	}

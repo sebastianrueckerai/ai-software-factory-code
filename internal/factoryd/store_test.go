@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"maps"
 	"math"
-	"os"
 	"reflect"
 	"slices"
 	"sort"
@@ -438,10 +438,7 @@ func (s *fakeStore) alertRows() []Alert {
 }
 
 func TestPGStore(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 
 	s, err := OpenStore(ctx, dsn)
@@ -843,10 +840,7 @@ func TestPGStore(t *testing.T) {
 }
 
 func TestPGStoreApprovals(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -947,10 +941,7 @@ func TestPGStoreApprovals(t *testing.T) {
 }
 
 func TestPGStoreRollsAndAlertCounts(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -1009,10 +1000,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 // on the row, a suggested task outside every gate until promoted, closed
 // as a final state, the info_request alert kind, projects by repository.
 func TestPGStoreIntakeAuto(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -1079,10 +1067,7 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 // fingerprint (the newest one), its detail merged, and the verdict set once
 // on a task's open alert rows only.
 func TestPGStoreSigNozAlerts(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -1092,9 +1077,6 @@ func TestPGStoreSigNozAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
 		t.Fatal(err)
 	}
-	// a later run of the migrations from the start (the schema package's
-	// test) re-adds 0026's kind check, which a row of kind alert breaks
-	defer s.db.ExecContext(ctx, `DELETE FROM alerts WHERE kind = 'alert'`) // #nosec G104 -- best-effort cleanup
 	if _, ok, err := s.AlertByFingerprint(ctx, "fp1"); err != nil || ok {
 		t.Fatalf("before any row: %v %v", ok, err)
 	}

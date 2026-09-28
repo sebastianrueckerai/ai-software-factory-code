@@ -5,8 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"math"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -117,10 +117,7 @@ func TestLabelValue(t *testing.T) {
 // the factory schema applied, wiped.
 func agentDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "cloudres")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)

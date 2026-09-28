@@ -3,7 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
-	"os"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"reflect"
 	"strings"
 	"testing"
@@ -129,10 +129,7 @@ func TestListenerYAML(t *testing.T) {
 }
 
 func TestPGProjects(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {

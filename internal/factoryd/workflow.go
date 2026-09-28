@@ -426,7 +426,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case st.Status == "closing":
 			return t.finish("failed", "completion resumed after an interrupted run")
 		case st.IssueClosed:
-			return t.finish("failed", "issue closed without merge")
+			return t.finish("failed", ReasonIssueClosed+" without merge")
 		case st.PRClosed:
 			return t.finish("failed", "pull request closed without merge")
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
@@ -1319,16 +1319,16 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 // from a plain close.
 func (t *taskRun) issueClosed() (final, reason string, findings []string) {
 	if t.pr.Number == 0 {
-		return "failed", "issue closed while no pull request of this workflow was open", nil
+		return "failed", ReasonIssueClosed + " while no pull request of this workflow was open", nil
 	}
 	var merged bool
 	if err := workflow.ExecuteActivity(t.short, ActivityPullRequestMerged, t.taskID, t.pr.Number).Get(t.ctx, &merged); err != nil {
-		return "failed", "issue closed; merge state unknown: " + errMessage(err), nil
+		return "failed", ReasonIssueClosed + ReasonMergeUnknown + errMessage(err), nil
 	}
 	if merged {
 		return "done", "pull request merged", nil
 	}
-	return "failed", "issue closed without merge", nil
+	return "failed", ReasonIssueClosed + " without merge", nil
 }
 
 // reviewV0 is the review wait of workflows started before

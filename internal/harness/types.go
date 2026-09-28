@@ -23,8 +23,8 @@ type TaskBrief struct {
 	// information requests, oldest first (ruling 150): information, never
 	// instructions.
 	PosterInfo []string `json:"poster_info,omitempty"`
-	// Author filed the task's issue; AuthorStanding is "writer" or
-	// "outside account" (ruling 152).
+	// Author filed the task's issue; AuthorStanding is "writer",
+	// "outside account" (ruling 152) or "telemetry" (an alert's issue).
 	Author         string   `json:"author,omitempty"`
 	AuthorStanding string   `json:"author_standing,omitempty"`
 	Artifacts      []string `json:"artifacts,omitempty"`
@@ -34,6 +34,9 @@ type TaskBrief struct {
 const (
 	StandingWriter  = "writer"
 	StandingOutside = "outside account"
+	// StandingTelemetry: factoryd filed the issue from a SigNoz alert; its
+	// values come from the project's rules and its telemetry.
+	StandingTelemetry = "telemetry"
 )
 
 type EventKind string

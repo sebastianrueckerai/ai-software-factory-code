@@ -552,6 +552,8 @@ func TestStandingOfAnAuthorlessTask(t *testing.T) {
 		{Task{}, ""},
 		{Task{Author: "visitor"}, "outside account"},
 		{Task{Author: "sebastian", AuthorWriter: true}, "writer"},
+		{Task{Author: "factory-agent", Source: SourceAlert}, "telemetry"},
+		{Task{Author: "factory-agent", AuthorWriter: true, Source: SourceAlert}, "telemetry"},
 	} {
 		if got := tc.task.Standing(); got != tc.want {
 			t.Errorf("%+v: standing %q, want %q", tc.task, got, tc.want)

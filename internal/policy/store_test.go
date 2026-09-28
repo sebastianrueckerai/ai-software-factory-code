@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"math"
-	"os"
 	"reflect"
 	"strconv"
 	"sync"
@@ -19,10 +19,7 @@ import (
 // at a database this test may wipe. Skipped otherwise; CI stays hermetic.
 func testDB(t *testing.T) *sql.DB {
 	t.Helper()
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "policy")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)

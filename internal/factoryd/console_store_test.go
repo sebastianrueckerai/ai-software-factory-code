@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"slices"
 	"testing"
 	"time"
@@ -12,10 +12,7 @@ import (
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL), like TestPGStore.
 func TestPGStoreBoardTasks(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -75,10 +72,7 @@ func TestPGStoreBoardTasks(t *testing.T) {
 // A task row carries when the work was asked for and the gate it is in;
 // alerts are raised by the machine and a human alert takes one verdict.
 func TestPGStoreGatesAndAlerts(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {
@@ -201,10 +195,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 // The gate supervisor judges an open gate_bound alert once, its action
 // merged into the detail.
 func TestPGStoreResolveAlert(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
 	s, err := OpenStore(ctx, dsn)
 	if err != nil {

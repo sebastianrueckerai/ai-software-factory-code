@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"io/fs"
 	"log"
 	"os"
@@ -18,17 +19,16 @@ import (
 // apply each migration once: one applies them all under the lock, the
 // other finds them recorded.
 func TestConcurrentMigratorsApplyEachFileOnce(t *testing.T) {
-	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
+	dsn := schematest.DSN(t, "schema")
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `DROP TABLE IF EXISTS schema_migrations`); err != nil {
+	// an empty database: the rows other packages' tests leave behind would
+	// meet a later migration's check on the re-run
+	if _, err := db.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer

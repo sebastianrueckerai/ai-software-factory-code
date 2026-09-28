@@ -20,6 +20,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// SourceAlert is the source of a task filed from a SigNoz alert.
+const SourceAlert = "alert"
+
+// refileAfter is how long after its task ended an alert still firing from
+// the same start is filed once more: the merged fix did not fix it.
+const refileAfter = 30 * time.Minute
+
 // SigNozAlert is one alert of a SigNoz v0.143.0 webhook notification (the
 // Alertmanager v4 message).
 type SigNozAlert struct {
@@ -95,8 +102,9 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		// SigNoz sends the notification again on a 5xx; every step above
-		// is keyed by fingerprint and firing time, so a retry repeats none
+		// SigNoz sends the notification again on a 5xx. The alerts row, the
+		// dedupe key, is written last: a failure after the issue was filed
+		// files a second issue and task on the retry
 		log.Printf("signoz webhook: %v", err) // #nosec G706 -- strconv.Quote escapes the alert's text
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -132,38 +140,49 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at})
 	}
 	at := stamp(a.StartsAt)
-	if seen && row.Detail["starts_at"] == at {
-		return nil // the same firing again: Alertmanager resends a group's every alert
+	if !seen {
+		return in.file(ctx, a, p, ns, at, false)
 	}
-	if seen {
-		t, ok, err := in.Store.Task(ctx, row.TaskID)
-		if err != nil {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil {
+		return err
+	}
+	if row.Detail["starts_at"] == at {
+		// the same firing again (Alertmanager resends a group's every
+		// alert): nothing, unless the task ended a while ago and it still
+		// fires, filed once more
+		if ok && Final(t.Status) && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
+			return in.file(ctx, a, p, ns, at, true)
+		}
+		return nil
+	}
+	if ok && !Final(t.Status) {
+		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced("value="+oneLine(a.Annotations["value"]))
+		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issueOf(row), msg); err != nil {
 			return err
 		}
-		if ok && !Final(t.Status) {
-			msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced("value="+oneLine(a.Annotations["value"]))
-			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issueOf(row), msg); err != nil {
-				return err
-			}
-			return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
-		}
+		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
 	}
-	return in.file(ctx, a, p, ns, at)
+	return in.file(ctx, a, p, ns, at, false)
 }
 
-// file files the alert's bug issue and task, then its alerts row.
-func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string) error {
+// file files the alert's bug issue and task, then its alerts row; refiled
+// when the same firing outlived the task of the last one.
+func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
 	repo := p.Repo()
 	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
 	if err != nil {
 		return fmt.Errorf("base sha: %w", err)
 	}
 	title, body := alertIssue(a, p.Name, ns)
+	if refiled {
+		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the task of its last issue ended.\n\n" + body
+	}
 	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, []string{"bug"}, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
-		Objective: title + "\n\n" + body, SHA: sha, Source: "alert",
-		// factoryd files as the bot; the values from the alert stand fenced
-		Author: in.Forgejo.BotUser, AuthorWriter: true,
+		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
+		// factoryd files as the bot; the brief marks the text as telemetry
+		Author: in.Forgejo.BotUser,
 	})
 	if err != nil {
 		return err
@@ -174,7 +193,7 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	}
 	if _, err := in.Store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: t.ID, Fingerprint: a.Fingerprint,
 		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": repo.String(), "issue": ref.Number,
-			"starts_at": at, "link": link, "labels": a.Labels}}); err != nil {
+			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled}}); err != nil {
 		return err
 	}
 	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
@@ -238,13 +257,21 @@ func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
 	return "alert: " + name + " in " + ns, b.String()
 }
 
+// The final reasons of a task whose issue a human closed; the merge state
+// may be unknown.
+const (
+	ReasonIssueClosed  = "issue closed"
+	ReasonMergeUnknown = "; merge state unknown: "
+)
+
 // alertVerdict is the verdict a SigNoz alert's task gives it when it ends
-// final for reason: real on a merge, noise on its issue closed without one.
+// final for reason: real on a merge, noise on its issue closed without one,
+// none while the merge state is unknown.
 func alertVerdict(final, reason string) string {
 	switch {
 	case final == "done":
 		return VerdictReal
-	case strings.HasPrefix(reason, "issue closed"):
+	case strings.HasPrefix(reason, ReasonIssueClosed) && !strings.HasPrefix(reason, ReasonIssueClosed+ReasonMergeUnknown):
 		return VerdictNoise
 	}
 	return ""
@@ -271,8 +298,10 @@ func issueOf(a Alert) int64 {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
+// oneLine is s on one line, a mention broken by a zero-width space so
+// project text rings no bell.
 func oneLine(s string) string {
-	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", " ")), " ")
+	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "@", "@\u200b")
 }
 
 func safeLink(u string) bool {

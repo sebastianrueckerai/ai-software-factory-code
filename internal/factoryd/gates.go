@@ -297,10 +297,11 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err != nil {
 		return ReproResult{}, err
 	}
-	// an issue without a reproduction (an alert's) takes the agent's own,
-	// which proves the fault the same way: failing at the base
+	// an alert-filed issue carries no reproduction: it takes the agent's
+	// own, which proves the fault the same way, failing at the base
+	// (ruling 170); no other issue does
 	byAgent := false
-	if t.ReproCommand == "" {
+	if t.ReproCommand == "" && t.Source == SourceAlert {
 		t.ReproCommand = ReproCommand(t.AgentSummary)
 		byAgent = t.ReproCommand != ""
 	}
