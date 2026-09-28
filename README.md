@@ -639,6 +639,8 @@ its server, beyond the sandbox's allowlist, for at most the lease.
 
 ## Console (task 54)
 
+The console's approvals were first proven live on this task.
+
 `internal/console`, served by factoryd on `:8090` (`-console-addr`) behind
 its own Service `factoryd-console` and the HTTPRoute `console` on the edge
 gateway's `https-console` listener (https://console.aisoftwarefactory.world);
