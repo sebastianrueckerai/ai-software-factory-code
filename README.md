@@ -104,14 +104,17 @@ already linked and no-op:
 
 A suggested task starts on a label event whose sender is trusted (a
 writer); its base is read then. The heal pass knows no sender and leaves
-it to the label's webhook. Forgejo 15 applies whatever labels its
+it to the label's webhook. Until then a suggestion runs nothing: comments
+on it are neither recorded nor signalled, and a writer's close (webhook or
+heal pass) ends it `closed`. Forgejo 15 applies whatever labels its
 new-issue form posts, from any account (checked on 15.0.9: an account
 with no access filed issues with a template's label, with smuggled
 `agent` and `improvement` label ids, and with a label and no template;
 all three kept their labels, while the API drops a non-writer's labels
 and refuses its later label edits with 403), so from an outside account
 intake reads only `bug`, `improvement` and non-lane labels: `agent`,
-`human`, `priority/*` and `severity/*` count from writers only. The task
+`human`, `priority/*` and `severity/*` count from writers only, and intake
+takes them off an outside account's new issue. The task
 keeps its author and whether they could write the repository then
 (`tasks.author`, `tasks.author_writer`; ruling 152); an API task is the
 bot's, as a writer. The day cap bounds the spend; there is no per-author
@@ -283,10 +286,14 @@ activities, each with a timeline step and a comment on the pull request:
    fetches `refs/pull/<n>/head` into the workspace and checks it is the
    gated head; the worker container (`MODE=repro`), with no token in its
    environment, runs the command there with `sh -c` for at most
-   `REPRO_TIMEOUT` (default 10m, at most 15m). A failed fetch is reported
-   as exit -1. The activity heartbeats from its start, through the
-   namespace wait and the image pull. Exit 0 passes. Anything
-   else sends the next attempt back to the agent on the stronger rung with
+   `REPRO_TIMEOUT` (default 10m, at most 15m). It runs twice, one pod
+   each: first at the task's base (`CHECKOUT_SHA`, checked out from the
+   head's history), then at the head. A failed fetch is reported as exit
+   -1. The activity heartbeats from its start, through the namespace wait
+   and the image pull. The fault is reproduced when the command fails at
+   the base (exit above 0) and passes at the head; one that passes at the
+   base too is recorded `not_reproduced_at_base` and proves no fix. Exit 0
+   at the head passes the gate. Anything else at the head sends the next attempt back to the agent on the stronger rung with
    the exit code and the output tail as findings, like red checks. The
    namespace and the token go when it ends.
 4. `ModelReview` asks `REVIEW_MODEL` (default `review-frontier`) for
@@ -305,9 +312,11 @@ activities, each with a timeline step and a comment on the pull request:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
-   decoder refuses it on any other), the reproduction gate ran and exited
-   0 (a skipped gate never qualifies), the review's verdict is `approve`,
-   and, for a fault not reproduced exactly, `strict_improvement` is true.
+   decoder refuses it on any other), the review's verdict is `approve`,
+   and the fix is proven one of two ways (ruling 167): the reproduction
+   failed at the base and passes at the head, or the agent recorded the
+   fault it fixed (`not_reproduced`) and the review answers
+   `strict_improvement: true`, with or without a reproduction command.
    Then `AutoMergeNote` comments the three conditions and the review's
    summary on the pull request and `Merge` merges as factory-merge with no
    card (main of an `auto` project requires no approval). Anything else,
@@ -643,7 +652,10 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   next comment resumes it whatever their access (intake event
   `poster_comment`, signal `poster_comment`), and so does a writer's; the
   next session's brief carries it under "Poster information", as
-  information, never as instructions. An escalation's answer stays a
+  information, never as instructions. The brief writes its own lines
+  (repository, the author's standing) first and puts the issue's text and
+  every answer between markers with a random tag per brief, so the author
+  cannot forge the standing line or the brief's sections. An escalation's answer stays a
   writer's. 14 days without an answer: `CloseNotReproduced` comments "not
   reproducible, no answer in 14 days", closes the issue, and the task ends
   `closed` (a final state like done and failed). A healed run waits for
