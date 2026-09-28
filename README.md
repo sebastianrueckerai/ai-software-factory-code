@@ -602,8 +602,9 @@ label or deleted as unknown.
 agent project every 2 minutes: it deletes resources whose lease ended
 (unless promoted) or whose task is `done` or `failed`, deletes every
 server, firewall and volume the registry does not know as open and every
-primary IP no server holds, and closes rows whose resource is gone. Then
-it accrues: each resource's started hours not yet booked go to a
+primary IP no server holds, and closes rows whose resource is gone; the
+interlock of ruling 123 (see the untrusted runner below) guards every
+pass, with the cluster nodes from `AGENT_SSH_SOURCES`. Then it accrues: each resource's started hours not yet booked go to a
 `resource` ledger row (`ref` `resource/<id>`) and the task's spend, and
 come off the reservation; once a commission's rows are closed and fully
 booked, the rest of the reservation returns. A reservation expires 24 h
@@ -731,9 +732,9 @@ queue for a later tick) holding one
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
 module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
-redirects zip downloads there), `data.forgejo.org`, `auth.docker.io`
-(BuildKit fetches the build VM's registry tokens through the `buildctl`
-session), the build cache on tcp 5000; nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
+redirects zip downloads there), `data.forgejo.org`, and for a build job
+`auth.docker.io` (BuildKit fetches the build VM's registry tokens through
+the `buildctl` session) and the build cache on tcp 5000; nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 45-minute deadline passes. Idempotency is the Forgejo job id on the
@@ -753,7 +754,11 @@ Image builds run outside the cluster instead (ruling 110,
   fsn1) in the Hetzner CI project, which holds nothing else. Its
   cloud-init installs the checksum-pinned buildkitd v0.33.0 release (with
   the release's own runc) and serves it on tcp 1234 behind mTLS. No SSH
-  key, no credential: the VM holds only its own server key.
+  key, no credential: the VM holds only its own server key. The user_data
+  (the server key and the CA certificate) stays readable from inside the
+  VM through Hetzner's metadata service, so a Dockerfile's `RUN` step can
+  read it; that gives nothing: the key authenticates only this VM, and the
+  CA key that could sign another client is gone.
 - **The certificates.** factoryd mints a CA per VM, signs a server
   certificate (fixed DNS name `buildkitd`, since the IP is unknown until
   the server exists) and a client certificate, and drops the CA key. The
@@ -783,12 +788,31 @@ Image builds run outside the cluster instead (ruling 110,
   `cloud_resources`, written before the create call and labelled
   `factory=ci`, `job=<id>`, `resource=<row>`. When the job's pod finishes
   (success, failure, deadline) the spawner deletes the server, then the
-  firewall, then the namespace. The collector (every minute) is the
-  backstop: it deletes resources whose lease (job deadline plus 15
-  minutes) expired or whose job namespace is gone, deletes any server or
-  firewall in the project the registry does not know, and marks rows
-  whose resource vanished. Deletes are idempotent; primary-IP counts lag
-  a few seconds after a delete, so nothing trusts one snapshot.
+  firewall (once: a firewall its deleting server still holds is left to
+  the collector, so teardown never stalls the poll loop), then the
+  namespace. For three minutes after a runner finished, its job is not
+  claimed again even if Forgejo still lists it waiting. The collector
+  (every minute) is the backstop: it deletes resources whose lease (job
+  deadline plus 15 minutes) expired or whose job namespace is gone,
+  deletes any server or firewall in the project the registry does not
+  know and any primary IP no server holds, and marks rows whose resource
+  vanished. Deletes are idempotent; primary-IP counts lag a few seconds
+  after a delete, so nothing trusts one snapshot.
+- **The interlock (ruling 123).** The collector deletes whatever its
+  project holds, so a wrong token would wipe another project. A pass
+  that lists a server on one of the cluster nodes' IPv4s, or a server
+  labelled `factory=` another project, deletes nothing and logs
+  `refusing the pass: ...`; so does a pass without node IPs to compare.
+  A hand-made unlabelled server off the node addresses is still deleted.
+  The gateway's agent-project collector runs the same check.
+- **Failure and back-off.** The price catalogue is read once an hour (a
+  failed refresh keeps the last one). A failed provision (the API down, a
+  bad token, the quota) pauses build claims for a minute, so an outage
+  costs no runner registration and namespace per tick. The Hetzner
+  client retries a 429 after its `Retry-After` (at most three tries, only
+  short waits). A missing or malformed `cluster-facts` stops factoryd at
+  boot, not just the builds: intake, heal and settle wait for it too, as
+  with an invalid policy.
 - **The cap and the cost.** At most `CI_BUILD_VMS_MAX` (2, the project's
   primary-IP quota) VMs live at once; further build jobs stay queued in
   Forgejo while other jobs run. A build costs one billed hour of `cx23`
