@@ -981,4 +981,3 @@ reverts the `restartedAt` annotation about five minutes later and rolls
 it again. Both restarts are safe (Temporal retries the interrupted
 activity), but plan for the second one, or suspend the `factory`
 Kustomization first.
-Ruling 133 replay history: a merge that failed once and merged on its retry.
