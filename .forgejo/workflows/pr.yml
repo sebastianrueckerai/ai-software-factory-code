@@ -12,7 +12,7 @@
 # or registry credential.
 #
 # image-build verifies the changed Dockerfiles build, without ever pushing.
-# `runs-on: pr-untrusted-build` gets factoryd's CI spawner to create a
+# `runs-on: pr-untrusted-build` (only when there is something to build) gets factoryd's CI spawner to create a
 # throwaway Hetzner VM running buildkitd (ruling 110,
 # internal/factoryd/buildvm.go) and to hand the runner pod its address
 # (BUILDKIT_HOST) and a client certificate only that VM accepts
@@ -122,10 +122,13 @@ jobs:
           echo "images=$images" >> "$GITHUB_OUTPUT"
   image-build:
     # Builds only, never pushes: output goes to /dev/null on the runner pod
-    # (BuildKit 0.33 has no cacheonly exporter).
+    # (BuildKit 0.33 has no cacheonly exporter). Forgejo hands a job to a
+    # runner before its `if` is evaluated, so the label carries the same
+    # test: with nothing to build, an ordinary runner skips the job and no
+    # build VM is made.
     needs: changes
     if: needs.changes.outputs.images != ''
-    runs-on: pr-untrusted-build
+    runs-on: ${{ needs.changes.outputs.images != '' && 'pr-untrusted-build' || 'pr-untrusted' }}
     steps:
       - uses: actions/checkout@v4
       - name: wait for the build VM's buildkitd
