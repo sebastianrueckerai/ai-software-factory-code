@@ -212,7 +212,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v8:  workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
 		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
 		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap),
-		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted)}
+		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted),
+		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -222,7 +223,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -297,6 +298,15 @@ const (
 	// began: the approval request, or the last refused merge or the
 	// exhausted retries that ask for a new approval.
 	versionGateStarted workflow.Version = 1
+	// versionGateSupervisor (change id "gate-supervisor", ruling 141): a
+	// machine gate's activity (the session, the checks, the policy,
+	// migration and reproduction gates, the model review, the approval
+	// request and the merge) takes GateWatch's gate_bound signal while it
+	// runs and asks SuperviseGate once per trip: wait and retry act in the
+	// activity's worker, at most once each per run; cancel stops the
+	// activity and fails the task with the diagnosis; escalate stops it
+	// and waits for a human like the session supervisor's escalation.
+	versionGateSupervisor workflow.Version = 1
 )
 
 type taskRun struct {
@@ -305,7 +315,7 @@ type taskRun struct {
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
 	v6, v7, v8, v9    workflow.Version
-	v10, v11          workflow.Version
+	v10, v11, v12     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -318,6 +328,10 @@ type verdict struct {
 	final, reason string
 	findings      []string
 	stronger      bool
+	// escalate is the gate supervisor's reason for a human (settle waits
+	// for one); granted: a human's answer bought the next attempt
+	escalate string
+	granted  bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -333,6 +347,9 @@ func (t *taskRun) lifecycle() (string, error) {
 	apply := func(v verdict) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
+		}
+		if v.granted {
+			t.grant(&u)
 		}
 		findings, reason = v.findings, v.reason
 	}
@@ -406,7 +423,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
-		final, why, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
+		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
 			Findings: findings, Answers: t.answers, StartRef: startRef, ParentSessionID: parent,
 		})
@@ -414,7 +431,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		u.Attempts = attempt
 		t.recordUsage(u)
 		if decided {
-			return t.finish(final, why)
+			if v = t.settle(v); v.final != "" {
+				return t.finish(v.final, v.reason)
+			}
+			apply(v)
+			continue
 		}
 		if isWallClockTimeout(err) {
 			return t.finish("failed", "wall-clock cap reached")
@@ -456,7 +477,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 		}
-		v := t.verify(res.Commit)
+		v = t.verify(res.Commit)
 		if v.final != "" {
 			return t.finish(v.final, v.reason)
 		}
@@ -502,9 +523,9 @@ func (t *taskRun) verify(commit string) verdict {
 		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
 	}
 	var checks ChecksResult
-	final, why, decided, err := t.race(t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
+	v, decided, err := t.race(t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
 	if decided {
-		return verdict{final: final, reason: why}
+		return t.settle(v)
 	}
 	if err != nil {
 		return verdict{final: "failed", reason: "wait for checks: " + errMessage(err)}
@@ -542,7 +563,9 @@ func (t *taskRun) gate(commit string) verdict {
 	if t.v8 >= versionGatesPinned {
 		policyArgs = append(policyArgs, commit)
 	}
-	if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, policyArgs...).Get(t.ctx, &g.Policy); err != nil {
+	if v, decided, err := t.call(finishOptions(), &g.Policy, ActivityGatePolicy, policyArgs...); decided {
+		return t.settle(v)
+	} else if err != nil {
 		return verdict{final: "failed", reason: "policy gate: " + errMessage(err)}
 	}
 	if g.Policy.Outcome == policy.OutcomeForbidden {
@@ -550,13 +573,15 @@ func (t *taskRun) gate(commit string) verdict {
 			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
 	}
 	if len(g.Policy.Migrations) > 0 {
-		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
+		if v, decided, err := t.call(finishOptions(), nil, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations); decided {
+			return t.settle(v)
+		} else if err != nil {
 			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
 		}
 	}
-	final, why, decided, err := t.race(reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+	v, decided, err := t.race(reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
 	if decided {
-		return verdict{final: final, reason: why}
+		return t.settle(v)
 	}
 	if err != nil {
 		return verdict{final: "failed", reason: "reproduction gate: " + errMessage(err)}
@@ -568,9 +593,9 @@ func (t *taskRun) gate(commit string) verdict {
 	}
 	var review Review
 	if t.v8 >= versionGatesPinned {
-		final, why, decided, err := t.race(reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
+		v, decided, err := t.race(reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
 		if decided {
-			return verdict{final: final, reason: why}
+			return t.settle(v)
 		}
 		if err != nil {
 			review = Review{Note: "model review failed: " + errMessage(err)}
@@ -590,8 +615,10 @@ func (t *taskRun) gate(commit string) verdict {
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 	}
-	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
-		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}).Get(t.ctx, nil); err != nil {
+	if v, decided, err := t.call(finishOptions(), nil, ActivityRequestApproval, t.taskID,
+		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}); decided {
+		return t.settle(v)
+	} else if err != nil {
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	if t.v11 >= versionGateStarted {
@@ -649,12 +676,16 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		}
 		cancelRetry = nil
 		retry = nil
-		opts := t.short
+		opts := finishOptions()
 		if t.v8 >= versionGatesPinned {
-			opts = workflow.WithActivityOptions(t.ctx, mergeOptions())
+			opts = mergeOptions()
 		}
 		var res MergeResult
-		if err := workflow.ExecuteActivity(opts, ActivityMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, &res); err != nil {
+		v, decided, err := t.call(opts, &res, ActivityMerge, t.taskID, t.pr.Number, commit, approver)
+		if decided {
+			return t.settle(v)
+		}
+		if err != nil {
 			workflow.GetLogger(t.ctx).Warn("merge", "task", t.taskID, "error", err)
 			if t.v9 < versionMergeFailureReported {
 				continue
@@ -768,30 +799,120 @@ func reviewOptions() workflow.ActivityOptions {
 // terminal signals: when one decides the task, the activity is cancelled
 // (RunSession then deletes its pod and namespace and revokes its
 // credentials; the workflow waits for that) and the decision returned.
-func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, args ...any) (final, reason string, decided bool, err error) {
+// From versionGateSupervisor on it takes the gate supervisor's trips too.
+func (t *taskRun) race(opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	if t.v2 < versionReconcileRace {
-		return "", "", false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
+		return verdict{}, false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
+	}
+	return t.watch(true, opts, out, activity, args...)
+}
+
+// call runs a gate activity that races no terminal signal: from
+// versionGateSupervisor on it takes the gate supervisor's trips.
+func (t *taskRun) call(opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
+	if t.v12 < versionGateSupervisor {
+		return verdict{}, false, workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, opts), activity, args...).Get(t.ctx, out)
+	}
+	return t.watch(false, opts, out, activity, args...)
+}
+
+// watch runs the activity until it returns, a terminal signal decides the
+// task (terminal), or the gate supervisor stops it. decided: the verdict
+// is the task's, the activity cancelled and waited for.
+func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
+	supervised := t.v12 >= versionGateSupervisor
+	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
+	if supervised {
+		// trips of activities that ended before this one: none is its own
+		for trips.ReceiveAsync(nil) {
+		}
 	}
 	actCtx, cancel := workflow.WithCancel(t.ctx)
 	opts.WaitForCancellation = true
 	fut := workflow.ExecuteActivity(workflow.WithActivityOptions(actCtx, opts), activity, args...)
+	var run gateRun
 	for {
 		done := false
 		sel := workflow.NewSelector(t.ctx)
 		sel.AddFuture(fut, func(workflow.Future) { done = true })
-		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
-			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		if terminal {
+			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
+				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+			}
+		}
+		if supervised {
+			sel.AddReceive(trips, func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
 		if done {
-			return "", "", false, fut.Get(t.ctx, out)
+			return verdict{}, false, fut.Get(t.ctx, out)
 		}
-		if final, reason, ok := t.decided(); ok {
-			cancel()
-			_ = fut.Get(t.ctx, nil)
-			return final, reason, true, nil
+		if terminal {
+			if final, reason, ok := t.decided(); ok {
+				cancel()
+				_ = fut.Get(t.ctx, nil)
+				return verdict{final: final, reason: reason}, true, nil
+			}
+		}
+		var trip GateTrip
+		for supervised && trips.ReceiveAsync(&trip) {
+			if trip.Activity != activity {
+				continue
+			}
+			if v, stop := t.superviseGate(trip, args, &run, fut); stop {
+				cancel()
+				_ = fut.Get(t.ctx, nil)
+				return v, true, nil
+			}
 		}
 	}
+}
+
+// gateRun is what one activity run used of the gate supervisor.
+type gateRun struct{ waited, retried bool }
+
+// superviseGate asks SuperviseGate about one trip of the running activity;
+// stop with the task's verdict on cancel and escalate. A decision that
+// arrives after the activity returned changes nothing.
+func (t *taskRun) superviseGate(trip GateTrip, args []any, run *gateRun, fut workflow.Future) (verdict, bool) {
+	var d GateDecision
+	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited, CanRetry: !run.retried}
+	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in).Get(t.ctx, &d); err != nil {
+		d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor failed: " + errMessage(err),
+			Recommendation: "look at the activity and its alert yourself"}
+	}
+	if fut.IsReady() {
+		return verdict{}, false
+	}
+	switch d.Action {
+	case ActionWait:
+		run.waited = true
+	case ActionRetry:
+		run.retried = true
+	case ActionCancel:
+		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis}, true
+	case ActionEscalate:
+		reason := fmt.Sprintf("The gate supervisor stopped %s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
+			strings.ReplaceAll(d.Diagnosis, "\n", " "))
+		if d.Recommendation != "" {
+			reason += "\nRecommendation: " + d.Recommendation
+		}
+		return verdict{escalate: reason}, true
+	}
+	return verdict{}, false
+}
+
+// settle waits for a human when the gate supervisor escalated: their
+// answer buys the next attempt, a terminal signal decides the task.
+func (t *taskRun) settle(v verdict) verdict {
+	if v.escalate == "" {
+		return v
+	}
+	final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
+	if final != "" {
+		return verdict{final: final, reason: why}
+	}
+	return verdict{findings: answer, granted: true, reason: "a human answered the gate supervisor's escalation"}
 }
 
 // sessionOptions: the RunSession activity heartbeats; a factoryd that dies

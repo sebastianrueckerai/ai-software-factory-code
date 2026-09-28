@@ -102,6 +102,9 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		},
 		ActivityReportMergeFailure:          func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },
 		ActivityReportMergeRetriesExhausted: func(ctx context.Context, taskID string, pr int64, commit, approver string) error { return nil },
+		ActivitySuperviseGate: func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
+			return GateDecision{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
