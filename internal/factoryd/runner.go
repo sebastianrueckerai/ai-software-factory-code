@@ -603,8 +603,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 func (r *Runner) supervisorConfig() SupervisorConfig {
 	c, d := r.cfg.Supervisor, r.cfg.Policy().Document
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
-	c.NoCommitAfter = d.Detector(policy.DetectorNoCommit)
-	c.EventsWithoutWritesAfter = d.Detector(policy.DetectorEventsWithoutWrites)
 	return c
 }
 

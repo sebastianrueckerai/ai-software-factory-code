@@ -163,7 +163,7 @@ func mustSupervisor(t *testing.T, noProgress, wallClock time.Duration, repetitio
 		NoProgressAfter:  noProgress,
 		WallClockCap:     wallClock,
 		RepetitionEvents: repetition,
-		NoWriteAfter:     100 * time.Hour, NoCommitAfter: 100 * time.Hour, EventsWithoutWritesAfter: 100 * time.Hour,
+		NoWriteAfter:     100 * time.Hour,
 	}, time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -595,118 +595,58 @@ func TestSameFailureFirstCheckpointIsNoChange(t *testing.T) {
 	}
 }
 
-// progressSupervisor watches from t0 with only the progress detectors in
-// reach: no stall, no repetition, no cap, the half-way check-in done.
-func progressSupervisor(t *testing.T, noWrite, noCommit, eventsWithoutWrites time.Duration) *Supervisor {
-	t.Helper()
-	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000,
-		NoWriteAfter: noWrite, NoCommitAfter: noCommit, EventsWithoutWritesAfter: eventsWithoutWrites}, time.Unix(0, 0), time.Unix(0, 0))
+func minute(m float64) time.Time { return time.Unix(0, 0).Add(time.Duration(m * float64(time.Minute))) }
+
+// no_write with the policy's default wait (5 min): only an agent's event
+// trips it, the wait after the last write or edit tool call; a command, a
+// shell edit's diff, a checkpoint or silence never do.
+func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000},
+		time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.halfWayDone = true
-	return s
-}
-
-func minute(m float64) time.Time { return time.Unix(0, 0).Add(time.Duration(m * float64(time.Minute))) }
-
-func TestNoWriteTripsFifteenMinutesAfterTheLastWrite(t *testing.T) {
-	s := progressSupervisor(t, 15*time.Minute, 10*time.Hour, 10*time.Hour)
-	if trip := s.Event(fileEvent("main.go", "a"), minute(2)); trip != nil {
-		t.Fatalf("write tripped: %+v", trip)
-	}
-	// a command, a diff change through the shell and a checkpoint are no write
-	s.Event(cmdEvent("sed -i s/a/b/ main.go", 0, ""), minute(5))
-	s.Event(diffEvent(3, 1), minute(6))
-	if trip := s.Tick(minute(17).Add(-time.Second)); trip != nil {
-		t.Fatalf("tripped at 16:59: %+v", trip)
-	}
-	trip := s.Tick(minute(17))
-	if trip == nil || trip.Kind != TripNoWrite || trip.Detail != "no file write or edit for 15m0s" {
-		t.Fatalf("trip = %+v, want no_write at 17:00", trip)
-	}
-	s.Resume(minute(18))
-	if trip := s.Tick(minute(33).Add(-time.Second)); trip != nil {
-		t.Fatalf("tripped again before 15 min after the continue: %+v", trip)
-	}
-	if trip := s.Tick(minute(33)); trip == nil || trip.Kind != TripNoWrite {
-		t.Fatalf("trip = %+v, want no_write again at 33:00", trip)
-	}
-}
-
-func TestNoCommitCountsOnlySuccessfulGitCommits(t *testing.T) {
-	s := progressSupervisor(t, 10*time.Hour, 45*time.Minute, 10*time.Hour)
 	for _, step := range []struct {
 		at float64
-		ev harness.Event
+		ev *harness.Event
 	}{
-		{10, cmdEvent(`git -C /work commit -am "wip"`, 0, "[factory/t1 abc123] wip")},
-		{20, cmdEvent(`git commit -m "fix"`, 1, "nothing to commit")},
-		{30, cmdEvent("git log --grep commit", 0, "")},
-		{31, cmdEvent("echo git commit", 0, "git commit")},
+		{2, &harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "main.go"}}},
+		{5, ptr(cmdEvent("sed -i s/a/b/ main.go", 0, ""))},
+		{6, ptr(diffEvent(3, 1))},
+		{7 - 1.0/60, &harness.Event{Kind: harness.EventModelCall}},
+		{7.5, nil},
+		{7 + 40.0/60, ptr(diffEvent(4, 1))},
 	} {
-		if trip := s.Event(step.ev, minute(step.at)); trip != nil {
-			t.Fatalf("minute %v tripped: %+v", step.at, trip)
+		var trip *Trip
+		if step.ev == nil {
+			trip = s.Tick(minute(step.at))
+		} else {
+			trip = s.Event(*step.ev, minute(step.at))
+		}
+		if trip != nil {
+			t.Fatalf("minute %.2f tripped: %+v", step.at, trip)
 		}
 	}
-	if trip := s.Tick(minute(55).Add(-time.Second)); trip != nil {
-		t.Fatalf("tripped at 54:59: %+v", trip)
+	trip := s.Event(toolEvent("grep", map[string]any{"pattern": "x"}), minute(7.75))
+	if trip == nil || trip.Kind != TripNoWrite || trip.Detail != "agent events for 5m45s without a file write or edit" {
+		t.Fatalf("trip = %+v, want no_write at 7:45", trip)
 	}
-	trip := s.Tick(minute(55))
-	if trip == nil || trip.Kind != TripNoCommit || trip.Detail != "no git commit for 45m0s" {
-		t.Fatalf("trip = %+v, want no_commit at 55:00, 45 min after the commit at 10:00", trip)
+	s.Resume(minute(8))
+	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(13).Add(-time.Second)); trip != nil {
+		t.Fatalf("tripped again before 5 min after the continue: %+v", trip)
+	}
+	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(13)); trip == nil || trip.Kind != TripNoWrite {
+		t.Fatalf("trip = %+v, want no_write again at 13:00", trip)
 	}
 }
 
-func TestEventsWithoutWritesTripsOnAnAgentEvent(t *testing.T) {
-	s := progressSupervisor(t, 10*time.Hour, 10*time.Hour, 30*time.Minute)
-	s.Event(fileEvent("main.go", "a"), minute(5))
-	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(20)); trip != nil {
-		t.Fatalf("model call at 20 tripped: %+v", trip)
-	}
-	// silence is the stall detector's: a tick never trips it
-	if trip := s.Tick(minute(36)); trip != nil {
-		t.Fatalf("tick at 36 tripped: %+v", trip)
-	}
-	// the worker's own diff checkpoint is no agent event
-	if trip := s.Event(diffEvent(1, 0), minute(37)); trip != nil {
-		t.Fatalf("checkpoint at 37 tripped: %+v", trip)
-	}
-	trip := s.Event(toolEvent("grep", map[string]any{"pattern": "x"}), minute(38))
-	if trip == nil || trip.Kind != TripEventsWithoutWrites || trip.Detail != "agent events for 33m0s without a file write" {
-		t.Fatalf("trip = %+v, want events_without_writes at 38:00", trip)
-	}
-}
+func ptr[T any](v T) *T { return &v }
 
-// With the policy's defaults (15, 45, 30 min) and an agent that only
-// calls the model once a minute: no_write at 15, events_without_writes
-// at 30 (whose continue restarts no_write too), no_write at 45 and
-// no_commit at 46.
-func TestProgressDetectorsOnTheDefaults(t *testing.T) {
-	s := progressSupervisor(t, 0, 0, 0)
-	var trips []string
-	for m := 1; m <= 50; m++ {
-		if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(float64(m))); trip != nil {
-			trips = append(trips, fmt.Sprintf("%d %s", m, trip.Kind))
-			s.Resume(minute(float64(m)))
-		}
-	}
-	want := "15 no_write, 30 events_without_writes, 45 no_write, 46 no_commit"
-	if got := strings.Join(trips, ", "); got != want {
-		t.Fatalf("trips = %s, want %s", got, want)
-	}
-}
-
-func TestProgressDetectorsRejectANegativeWait(t *testing.T) {
-	for name, cfg := range map[string]SupervisorConfig{
-		"no_write":              {NoWriteAfter: -time.Minute},
-		"no_commit":             {NoCommitAfter: -time.Minute},
-		"events_without_writes": {EventsWithoutWritesAfter: -time.Minute},
-	} {
-		cfg.NoProgressAfter, cfg.WallClockCap, cfg.RepetitionEvents = time.Minute, time.Hour, 10
-		if _, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0)); err == nil {
-			t.Errorf("%s: a negative wait was accepted", name)
-		}
+func TestNoWriteRejectsANegativeWait(t *testing.T) {
+	if _, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, NoWriteAfter: -time.Minute},
+		time.Unix(0, 0), time.Unix(0, 0)); err == nil {
+		t.Fatal("a negative wait was accepted")
 	}
 }
 
@@ -717,7 +657,7 @@ func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
 			return policy.Version{Document: policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60}}}
 		}}}
 	c := r.supervisorConfig()
-	if c.NoWriteAfter != time.Minute || c.NoCommitAfter != 45*time.Minute || c.EventsWithoutWritesAfter != 30*time.Minute || c.RepetitionEvents != 24 {
-		t.Fatalf("config = %+v, want no_write 1m from the policy, the defaults 45m and 30m, the rest as configured", c)
+	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 {
+		t.Fatalf("config = %+v, want no_write 1m from the policy, the rest as configured", c)
 	}
 }

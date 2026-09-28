@@ -36,20 +36,16 @@ type Document struct {
 	Bounds map[string]int `yaml:"bounds" json:"bounds"`
 	// Supervisor holds the session supervisor's progress detectors: how
 	// many seconds without the progress each names before it trips;
-	// absent keys take DefaultDetectors.
+	// absent keys take DefaultDetectors (ruling 161: no_write only).
 	Supervisor map[string]int `yaml:"supervisor" json:"supervisor"`
 }
 
-// The progress detectors (ruling 141): no file write or edit, no git
-// commit, agent events arriving without a write.
-const (
-	DetectorNoWrite             = "no_write"
-	DetectorNoCommit            = "no_commit"
-	DetectorEventsWithoutWrites = "events_without_writes"
-)
+// DetectorNoWrite is the progress detector (rulings 141, 161): agent
+// events keep coming but no file write or edit tool call.
+const DetectorNoWrite = "no_write"
 
 // DefaultDetectors are the seconds a policy without them gets.
-var DefaultDetectors = map[string]int{DetectorNoWrite: 900, DetectorNoCommit: 2700, DetectorEventsWithoutWrites: 1800}
+var DefaultDetectors = map[string]int{DetectorNoWrite: 300}
 
 // Detector is how long the named progress detector waits before it trips.
 func (d Document) Detector(name string) time.Duration {
@@ -278,7 +274,7 @@ func (d Document) Validate() error {
 	}
 	for name, s := range d.Supervisor {
 		if _, ok := DefaultDetectors[name]; !ok {
-			return fmt.Errorf("policy: supervisor: unknown detector %q (known: %s, %s, %s)", name, DetectorNoWrite, DetectorNoCommit, DetectorEventsWithoutWrites)
+			return fmt.Errorf("policy: supervisor: unknown detector %q (known: %s)", name, DetectorNoWrite)
 		}
 		if s <= 0 {
 			return fmt.Errorf("policy: supervisor.%s must be a positive number of seconds, is %d", name, s)

@@ -423,31 +423,23 @@ func TestDetectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]time.Duration{
-		DetectorNoWrite: 15 * time.Minute, DetectorNoCommit: 45 * time.Minute, DetectorEventsWithoutWrites: 30 * time.Minute,
-	} {
-		if got := d.Detector(name); got != want {
-			t.Errorf("default Detector(%s) = %s, want %s", name, got, want)
-		}
+	if got := d.Detector(DetectorNoWrite); got != 5*time.Minute {
+		t.Errorf("default no_write = %s, want 5m", got)
 	}
-	d, err = Parse([]byte(valid + "supervisor: {no_write: 60, events_without_writes: 90}\n"))
+	d, err = Parse([]byte(valid + "supervisor: {no_write: 60}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]time.Duration{
-		DetectorNoWrite: time.Minute, DetectorNoCommit: 45 * time.Minute, DetectorEventsWithoutWrites: 90 * time.Second,
-	} {
-		if got := d.Detector(name); got != want {
-			t.Errorf("Detector(%s) = %s, want %s", name, got, want)
-		}
+	if got := d.Detector(DetectorNoWrite); got != time.Minute {
+		t.Errorf("no_write = %s, want 1m", got)
 	}
 }
 
 func TestDetectorsRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ section, want string }{
-		"unknown detector": {"{no_writes: 60}", `supervisor: unknown detector "no_writes"`},
-		"zero seconds":     {"{no_commit: 0}", "supervisor.no_commit must be a positive number of seconds"},
-		"negative":         {"{events_without_writes: -1}", "supervisor.events_without_writes must be a positive number of seconds"},
+		"dropped detector": {"{no_commit: 60}", `supervisor: unknown detector "no_commit"`},
+		"zero seconds":     {"{no_write: 0}", "supervisor.no_write must be a positive number of seconds"},
+		"negative":         {"{no_write: -1}", "supervisor.no_write must be a positive number of seconds"},
 		"not seconds":      {"{no_write: 15m}", "policy:"},
 	} {
 		t.Run(name, func(t *testing.T) {
