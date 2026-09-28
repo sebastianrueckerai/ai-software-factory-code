@@ -34,6 +34,30 @@ type Document struct {
 	// it raises a gate_bound alert, per activity name and a default for the
 	// rest; absent keys take DefaultBounds.
 	Bounds map[string]int `yaml:"bounds" json:"bounds"`
+	// Supervisor holds the session supervisor's progress detectors: how
+	// many seconds without the progress each names before it trips;
+	// absent keys take DefaultDetectors.
+	Supervisor map[string]int `yaml:"supervisor" json:"supervisor"`
+}
+
+// The progress detectors (ruling 141): no file write or edit, no git
+// commit, agent events arriving without a write.
+const (
+	DetectorNoWrite             = "no_write"
+	DetectorNoCommit            = "no_commit"
+	DetectorEventsWithoutWrites = "events_without_writes"
+)
+
+// DefaultDetectors are the seconds a policy without them gets.
+var DefaultDetectors = map[string]int{DetectorNoWrite: 900, DetectorNoCommit: 2700, DetectorEventsWithoutWrites: 1800}
+
+// Detector is how long the named progress detector waits before it trips.
+func (d Document) Detector(name string) time.Duration {
+	s, ok := d.Supervisor[name]
+	if !ok {
+		s = DefaultDetectors[name]
+	}
+	return time.Duration(s) * time.Second
 }
 
 // BoundDefault is the bounds key for every activity without its own.
@@ -41,9 +65,10 @@ const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
 // 154): a session at the 20 min wall-clock cap is stopped by the cap
-// already, so its bound is for one that outlives the cap by a minute.
+// already, so its bound is for one that outlives the cap by a minute; the
+// gate supervisor gets its model call's whole start-to-close.
 var DefaultBounds = map[string]int{
-	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, BoundDefault: 120,
+	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, "SuperviseGate": 360, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -51,7 +76,7 @@ var DefaultBounds = map[string]int{
 var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
 	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
-	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted",
+	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
 }
 
 // Bound is how long one run of activity may take before it alerts: the
@@ -249,6 +274,14 @@ func (d Document) Validate() error {
 		}
 		if s <= 0 {
 			return fmt.Errorf("policy: bounds.%s must be a positive number of seconds, is %d", name, s)
+		}
+	}
+	for name, s := range d.Supervisor {
+		if _, ok := DefaultDetectors[name]; !ok {
+			return fmt.Errorf("policy: supervisor: unknown detector %q (known: %s, %s, %s)", name, DetectorNoWrite, DetectorNoCommit, DetectorEventsWithoutWrites)
+		}
+		if s <= 0 {
+			return fmt.Errorf("policy: supervisor.%s must be a positive number of seconds, is %d", name, s)
 		}
 	}
 	for name, c := range d.Classes {

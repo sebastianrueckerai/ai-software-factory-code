@@ -382,6 +382,7 @@ func TestBounds(t *testing.T) {
 	for name, want := range map[string]time.Duration{
 		"RunSession": 21 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
 		"ModelReview": 3 * time.Minute, "Merge": 5 * time.Minute, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
+		"SuperviseGate": 6 * time.Minute,
 	} {
 		if got := d.Bound(name); got != want {
 			t.Errorf("default Bound(%s) = %s, want %s", name, got, want)
@@ -410,6 +411,47 @@ func TestBoundsRejects(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(valid + "bounds: " + tc.bounds + "\n"))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDetectors(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Duration{
+		DetectorNoWrite: 15 * time.Minute, DetectorNoCommit: 45 * time.Minute, DetectorEventsWithoutWrites: 30 * time.Minute,
+	} {
+		if got := d.Detector(name); got != want {
+			t.Errorf("default Detector(%s) = %s, want %s", name, got, want)
+		}
+	}
+	d, err = Parse([]byte(valid + "supervisor: {no_write: 60, events_without_writes: 90}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]time.Duration{
+		DetectorNoWrite: time.Minute, DetectorNoCommit: 45 * time.Minute, DetectorEventsWithoutWrites: 90 * time.Second,
+	} {
+		if got := d.Detector(name); got != want {
+			t.Errorf("Detector(%s) = %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestDetectorsRejects(t *testing.T) {
+	for name, tc := range map[string]struct{ section, want string }{
+		"unknown detector": {"{no_writes: 60}", `supervisor: unknown detector "no_writes"`},
+		"zero seconds":     {"{no_commit: 0}", "supervisor.no_commit must be a positive number of seconds"},
+		"negative":         {"{events_without_writes: -1}", "supervisor.events_without_writes must be a positive number of seconds"},
+		"not seconds":      {"{no_write: 15m}", "policy:"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(valid + "supervisor: " + tc.section + "\n"))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Parse error = %v, want it to contain %q", err, tc.want)
 			}

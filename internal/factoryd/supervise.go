@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -49,6 +50,10 @@ type SupervisorConfig struct {
 	SameCall         int           // 0 = DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
 	MaxCalls         int           // 0 = DefaultMaxCalls
+	// the progress detectors (ruling 141); 0 = policy.DefaultDetectors
+	NoWriteAfter             time.Duration
+	NoCommitAfter            time.Duration
+	EventsWithoutWritesAfter time.Duration
 }
 
 func (c SupervisorConfig) validate() error {
@@ -63,6 +68,9 @@ func (c SupervisorConfig) validate() error {
 	}
 	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 0 {
 		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 0: %+v", c)
+	}
+	if c.NoWriteAfter < 0 || c.NoCommitAfter < 0 || c.EventsWithoutWritesAfter < 0 {
+		return fmt.Errorf("supervisor: the progress detectors' waits must be positive (0 = default): %+v", c)
 	}
 	return nil
 }
@@ -83,6 +91,9 @@ type Supervisor struct {
 	spent       float64 // the task's spend as a fraction of its budget
 	findings    []string
 	tripped     *Trip
+
+	// the progress detectors' anchors: the last write, the last commit
+	noWriteFrom, eventsFrom, commitFrom time.Time
 }
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
@@ -94,7 +105,7 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	}
 	cfg = cfg.withDefaults()
 	return &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), halfAt: taskStarted.Add(cfg.WallClockCap / 2),
-		lastSeen: now, traces: newTraceDetectors(cfg)}, nil
+		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, eventsFrom: now, commitFrom: now}, nil
 }
 
 // Event observes one harness event. A nil return means the session may run on.
@@ -109,6 +120,10 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		s.sinceChange++
 	case harness.EventFileChange:
 		s.sinceChange = 0
+		s.noWriteFrom, s.eventsFrom = at, at
+	}
+	if isCommit(ev) {
+		s.commitFrom = at
 	}
 	// every detector sees every event, whichever trips
 	traced := s.traces.observe(ev)
@@ -120,6 +135,10 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	if s.sinceChange >= s.cfg.RepetitionEvents {
 		return s.trip(&Trip{Kind: TripRepetition, Detail: fmt.Sprintf("%d tool calls and commands without a file change", s.sinceChange)})
+	}
+	agent := ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand || ev.Kind == harness.EventModelCall
+	if trip := s.progress(at, agent); trip != nil {
+		return trip
 	}
 	return s.halfWay(at)
 }
@@ -139,7 +158,33 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if silent := now.Sub(s.lastSeen); silent >= s.cfg.NoProgressAfter {
 		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
 	}
+	return s.progress(now, false)
+}
+
+// progress runs the progress detectors at now; events_without_writes
+// only on an agent's event, since silence is the stall detector's.
+func (s *Supervisor) progress(now time.Time, agentEvent bool) *Trip {
+	switch {
+	case agentEvent && now.Sub(s.eventsFrom) >= s.cfg.EventsWithoutWritesAfter:
+		return s.trip(&Trip{Kind: TripEventsWithoutWrites, Detail: fmt.Sprintf("agent events for %s without a file write", now.Sub(s.eventsFrom).Round(time.Second))})
+	case now.Sub(s.noWriteFrom) >= s.cfg.NoWriteAfter:
+		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("no file write or edit for %s", now.Sub(s.noWriteFrom).Round(time.Second))})
+	case now.Sub(s.commitFrom) >= s.cfg.NoCommitAfter:
+		return s.trip(&Trip{Kind: TripNoCommit, Detail: fmt.Sprintf("no git commit for %s", now.Sub(s.commitFrom).Round(time.Second))})
+	}
 	return nil
+}
+
+// gitCommit is a git invocation whose subcommand is commit.
+var gitCommit = regexp.MustCompile(`(^|[;&|(\n])\s*git(\s+(-[Cc]\s+\S+|--?[\w-]+(=\S+)?))*\s+commit\b`)
+
+// isCommit is a command event that committed: git commit, exit 0.
+func isCommit(ev harness.Event) bool {
+	if ev.Kind != harness.EventCommand || !gitCommit.MatchString(detailString(ev, "command")) {
+		return false
+	}
+	exit, ok := detailInt(ev, "exit")
+	return !ok || exit == 0
 }
 
 // agentAsks opens an agent escalation's reason, before its question.
@@ -188,6 +233,13 @@ func (s *Supervisor) Resume(now time.Time) {
 	switch s.tripped.Kind {
 	case TripRepetition:
 		s.sinceChange = 0
+	case TripNoWrite:
+		s.noWriteFrom = now
+	case TripEventsWithoutWrites:
+		// a continue says the agent progresses: no_write starts over too
+		s.noWriteFrom, s.eventsFrom = now, now
+	case TripNoCommit:
+		s.commitFrom = now
 	default:
 		s.traces.reset(s.tripped)
 	}
@@ -243,6 +295,10 @@ const (
 	TripFlipFlop    TripKind = "flip_flop"
 	TripChurn       TripKind = "churn"
 	TripHalfWay     TripKind = "half_way"
+	// progress detectors (ruling 141), their waits in the policy
+	TripNoWrite             TripKind = "no_write"
+	TripNoCommit            TripKind = "no_commit"
+	TripEventsWithoutWrites TripKind = "events_without_writes"
 )
 
 // Detector defaults; each has an env override in cmd/factoryd.
@@ -266,6 +322,15 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	}
 	if c.MaxCalls == 0 {
 		c.MaxCalls = DefaultMaxCalls
+	}
+	var d policy.Document
+	for _, w := range []struct {
+		wait *time.Duration
+		name string
+	}{{&c.NoWriteAfter, policy.DetectorNoWrite}, {&c.NoCommitAfter, policy.DetectorNoCommit}, {&c.EventsWithoutWritesAfter, policy.DetectorEventsWithoutWrites}} {
+		if *w.wait == 0 {
+			*w.wait = d.Detector(w.name)
+		}
 	}
 	return c
 }

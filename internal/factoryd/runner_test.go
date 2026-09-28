@@ -992,7 +992,8 @@ func TestRunSessionContinueLetsTheSessionRunOn(t *testing.T) {
 		t.Fatalf("alerts = %+v, want the one trip", alerts)
 	}
 	if a := alerts[0]; a.Kind != AlertSupervisorTrip || a.Source != string(TripSameFailure) || a.TaskID != "t2" ||
-		a.Verdict != VerdictNoise || a.ResolvedBy != "supervisor" || a.Detail["action"] != "continue" || a.Detail["session"] != res.SessionID {
+		a.Verdict != VerdictNoise || a.ResolvedBy != "supervisor" || a.Detail["action"] != "continue" || a.Detail["session"] != res.SessionID ||
+		a.Detail["diagnosis"] != "each run fails later" {
 		t.Fatalf("alert = %+v", a)
 	}
 }

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -307,7 +308,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	sup, err := NewSupervisor(r.cfg.Supervisor, deadline.Add(-r.cfg.Supervisor.WallClockCap), time.Now())
+	sup, err := NewSupervisor(r.supervisorConfig(), deadline.Add(-r.cfg.Supervisor.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
 	}
@@ -561,6 +562,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 }
 
+// supervisorConfig is the session supervisor's configuration with the
+// progress detectors of the policy in force.
+func (r *Runner) supervisorConfig() SupervisorConfig {
+	c, d := r.cfg.Supervisor, r.cfg.Policy().Document
+	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
+	c.NoCommitAfter = d.Detector(policy.DetectorNoCommit)
+	c.EventsWithoutWritesAfter = d.Detector(policy.DetectorEventsWithoutWrites)
+	return c
+}
+
 // askSupervisor builds the supervisor's input and calls it; the call is
 // metered against the task's and the day's headroom.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
@@ -590,7 +601,7 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		return // the agent's question: the workflow's escalation alert
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "supervisor",
-		Detail: map[string]any{"session": s.id, "action": string(d.Action), "trip": trip.Detail, "called": called}}
+		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}
 	if _, err := r.store.InsertAlert(ctx, a); err != nil {
 		log.Printf("task %s: record the supervisor trip alert: %v", t.ID, err)
 	}
