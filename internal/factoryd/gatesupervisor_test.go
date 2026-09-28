@@ -344,17 +344,18 @@ func TestSuperviseGateRefusedCallEscalates(t *testing.T) {
 	}
 }
 
-// The whole bundle is scrubbed: the task's git tokens and a JWT in the
-// timeline, the last error and the input are gone.
+// The whole bundle is scrubbed: while the sandbox runs, the task's git
+// tokens and a JWT in the timeline, the last error and the input are gone.
 func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
-	c := newGateCase(t, ActivityMerge, `{"action":"wait","diagnosis":"x"}`, map[string]string{
-		"GET /api/v1/repos/sf/r/pulls/9": `{"number":9,"state":"open","mergeable":true,"head":{"sha":"c1"}}`,
-	})
+	c := newGateCase(t, ActivityRunSession, `{"action":"retry","diagnosis":"x"}`, nil)
 	c.kube.secrets["factory-agents-t1/task-git"] = map[string]string{"REPO_TOKEN": "tok-read-secret", "PUSH_TOKEN": "tok-push-secret"}
+	c.kube.CreatePod(context.Background(), "factory-agents-t1", "worker-s-1", nil)
+	c.kube.scriptPods(0, "working")
+	defer c.runner.trackPod("t1", "factory-agents-t1", "worker-s-1")()
 	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"x","error":"push tok-push-secret refused"}`+"\n"))
 	c.failure = "merge as eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0In0.c2lnbmF0dXJl refused"
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
-	_, bundle := c.supervise(t, ActivityMerge, []any{"t1", 9, "c1", "tok-read-secret"}, true, true)
+	_, bundle := c.supervise(t, ActivityRunSession, []any{"t1", 9, "c1", "tok-read-secret"}, true, true)
 	all := jsonOf(bundle)
 	for _, gone := range []string{"tok-read-secret", "tok-push-secret", "eyJhbGci"} {
 		if strings.Contains(all, gone) {
@@ -363,5 +364,31 @@ func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
 	}
 	if !strings.Contains(fmt.Sprint(bundle["timeline"]), "push [redacted] refused") || bundle["input"] != `["t1",9,"c1","[redacted]"]` {
 		t.Fatalf("bundle = %s", all)
+	}
+}
+
+// After the session the task's namespace is gone, and a secret read there
+// is refused (403, no role binding left), not "not found": a check wait's
+// bundle has no tokens to scrub of and is not withheld. With a sandbox
+// running, a refused read still withholds the bundle.
+func TestSuperviseGateReadsTokensOnlyWhileASandboxRuns(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"checks run"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
+	c.kube.getErr = map[string]error{"factory-agents-t1/task-git": fmt.Errorf("%w: GET secret", ErrForbidden)}
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+	d, bundle := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	if d.Action != ActionWait || bundle["input"] != `["t1","c1"]` || jsonOf(bundle["state"]) != `{"checks":{"commit":"c1","runner_queue":[],"state":"pending","statuses":[]}}` {
+		t.Fatalf("decision %+v, bundle %s", d, jsonOf(bundle))
+	}
+
+	c = newGateCase(t, ActivityRunSession, `{"action":"wait","diagnosis":"x"}`, nil)
+	c.kube.getErr = map[string]error{"factory-agents-t1/task-git": fmt.Errorf("%w: GET secret", ErrForbidden)}
+	c.kube.CreatePod(context.Background(), "factory-agents-t1", "worker-s-1", nil)
+	defer c.runner.trackPod("t1", "factory-agents-t1", "worker-s-1")()
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+	_, bundle = c.supervise(t, ActivityRunSession, nil, true, true)
+	if bundle["input"] != "" || !strings.Contains(jsonOf(bundle["state"]), "withheld") {
+		t.Fatalf("bundle %s, want it withheld", jsonOf(bundle))
 	}
 }

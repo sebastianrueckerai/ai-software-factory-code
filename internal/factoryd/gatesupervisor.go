@@ -153,13 +153,18 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 	} else {
 		b.LastError = last
 	}
-	tokens, err := r.kube.GetSecretData(ctx, r.agentNamespace(t.ID), "task-git")
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		b.State = map[string]any{"withheld": "the task's tokens are unreadable to scrub the bundle: " + err.Error()}
-		b.Timeline, b.LastError, b.Input = "", "", ""
-		return b, nil
+	// the task's git tokens exist only while its sandbox runs: after the
+	// session its namespace, and factoryd's binding in it, are gone
+	var secrets []string
+	if ns, _, ok := r.sandboxPod(t.ID); ok {
+		tokens, err := r.kube.GetSecretData(ctx, ns, "task-git")
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			b.State = map[string]any{"withheld": "the task's tokens are unreadable to scrub the bundle: " + err.Error()}
+			b.Timeline, b.LastError, b.Input = "", "", ""
+			return b, nil
+		}
+		secrets = slices.Collect(maps.Values(tokens))
 	}
-	secrets := slices.Collect(maps.Values(tokens))
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return b, secrets
