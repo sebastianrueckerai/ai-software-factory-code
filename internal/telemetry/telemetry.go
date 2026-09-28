@@ -1,21 +1,33 @@
-// Package telemetry is factoryd's OpenTelemetry metrics: an OTLP HTTP
-// export every 30 s configured from OTEL_EXPORTER_OTLP_ENDPOINT and
-// OTEL_SERVICE_NAME, a no-op meter when the endpoint is unset. The export is
-// fire and forget: a failed export drops its samples and blocks nothing.
+// Package telemetry is the binaries' OpenTelemetry: metrics, traces and
+// logs over OTLP HTTP to OTEL_EXPORTER_OTLP_ENDPOINT, each stamped with the
+// binary's service.name, and no-op providers when the endpoint is unset.
+// Every export is fire and forget: a failed export drops its data and
+// blocks nothing.
 package telemetry
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	otellog "go.opentelemetry.io/otel/log"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
 // Buckets are every duration histogram's boundaries, in seconds.
@@ -23,18 +35,48 @@ var Buckets = []float64{5, 10, 30, 60, 120, 300, 600, 900, 1200, 1800, 2700, 360
 
 const exportInterval = 30 * time.Second
 
-// Setup returns the meter provider and its shutdown.
-func Setup(ctx context.Context) (metric.MeterProvider, func(context.Context) error, error) {
+// TaskID is the attribute key that joins a task's spans and log records
+// across the binaries.
+const TaskID = attribute.Key("task.id")
+
+// Providers are a binary's three signal providers and their joint shutdown.
+type Providers struct {
+	Meter    metric.MeterProvider
+	Tracer   trace.TracerProvider
+	Logger   otellog.LoggerProvider
+	Shutdown func(context.Context) error
+}
+
+// Setup returns the providers for the binary named service.
+func Setup(ctx context.Context, service string) (Providers, error) {
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
-		return noop.NewMeterProvider(), func(context.Context) error { return nil }, nil
+		return Providers{Meter: noop.NewMeterProvider(), Tracer: tracenoop.NewTracerProvider(), Logger: lognoop.NewLoggerProvider(),
+			Shutdown: func(context.Context) error { return nil }}, nil
 	}
-	exporter, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}))
+	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(attribute.String("service.name", service)))
 	if err != nil {
-		return nil, nil, err
+		return Providers{}, err
+	}
+	metrics, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}))
+	if err != nil {
+		return Providers{}, err
+	}
+	traces, err := otlptracehttp.New(ctx, otlptracehttp.WithRetry(otlptracehttp.RetryConfig{Enabled: false}))
+	if err != nil {
+		return Providers{}, err
+	}
+	logs, err := otlploghttp.New(ctx, otlploghttp.WithRetry(otlploghttp.RetryConfig{Enabled: false}))
+	if err != nil {
+		return Providers{}, err
 	}
 	otel.SetErrorHandler(&throttledHandler{log: log.Default(), now: time.Now})
-	p := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter, sdkmetric.WithInterval(exportInterval))))
-	return p, p.Shutdown, nil
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithResource(res),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metrics, sdkmetric.WithInterval(exportInterval))))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithResource(res), sdktrace.WithBatcher(traces))
+	lp := sdklog.NewLoggerProvider(sdklog.WithResource(res), sdklog.WithProcessor(sdklog.NewBatchProcessor(logs)))
+	return Providers{Meter: mp, Tracer: tp, Logger: lp, Shutdown: func(ctx context.Context) error {
+		return errors.Join(tp.Shutdown(ctx), lp.Shutdown(ctx), mp.Shutdown(ctx))
+	}}, nil
 }
 
 // throttledHandler logs an export error at most once a minute.

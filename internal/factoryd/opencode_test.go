@@ -496,7 +496,7 @@ func TestOpencodeFileHashRefusesNonRegularFiles(t *testing.T) {
 	go func() {
 		defer close(done)
 		for _, name := range []string{"link", "fifo", "missing"} {
-			if h := fileSHA256(filepath.Join(dir, name)); h != "" {
+			if h, _ := fileSHA256(filepath.Join(dir, name)); h != "" {
 				t.Errorf("%s hashed to %s, want no hash", name, h)
 			}
 		}

@@ -63,6 +63,8 @@ type ServerOptions struct {
 	Escalator Escalator
 	// Cloud is the commissioning connector (the agent Hetzner project).
 	Cloud *Cloud
+	// Telemetry receives the spans and metrics; nil = none.
+	Telemetry *Telemetry
 }
 
 // liveKey is a task's virtual key and what it was minted for: a new run,
@@ -83,6 +85,7 @@ type liveKey struct {
 
 type Server struct {
 	opts       ServerOptions
+	tel        *Telemetry
 	http       *http.Client
 	mu         sync.Mutex
 	keysByTask map[string]*liveKey
@@ -102,7 +105,11 @@ func NewServer(opts ServerOptions) *Server {
 	if opts.HTTP == nil {
 		opts.HTTP = &http.Client{}
 	}
-	return &Server{opts: opts, http: opts.HTTP, keysByTask: map[string]*liveKey{}, now: time.Now}
+	tel := opts.Telemetry
+	if tel == nil {
+		tel = noTelemetry()
+	}
+	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, now: time.Now}
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -133,7 +140,7 @@ func (s *Server) Routes(version string) http.Handler {
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
-	return mux
+	return s.tel.handler(mux)
 }
 
 // inTokenSlack covers the bytes the output limit adds to the body after the
@@ -160,6 +167,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
 		return
 	}
+	caller(ctx, id.TaskID)
 	if polErr != nil {
 		s.refuse(w, pid, id.TaskID, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
 		return
@@ -511,7 +519,8 @@ type modelCall struct {
 	hold     policy.Hold
 	alias    string
 	key      *liveKey
-	overHold string // the booking's flag, on every audit row after it
+	overHold string        // the booking's flag, on every audit row after it
+	up       *upstreamCall // nil until the call goes upstream
 }
 
 var zero = 0.0
@@ -537,6 +546,9 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 		b.Spent = c.task.SpentEUR
 	}
 	c.overHold = b.OverHold
+	if c.up != nil {
+		c.up.booked(b.Booked, b.OverHold)
+	}
 	if decision == "" {
 		return
 	}
@@ -544,7 +556,9 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key string, body []byte, stream bool) {
-	ctx := r.Context()
+	ctx, up := s.tel.startCall(r.Context(), c.task, "model", c.alias, c.hold.EUR)
+	c.up = up
+	defer up.end()
 	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		s.finish(c, zeroCost, "")
@@ -562,6 +576,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 		return
 	}
 	defer res.Body.Close()
+	up.status = strconv.Itoa(res.StatusCode)
 
 	if res.StatusCode/100 != 2 {
 		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))

@@ -69,6 +69,7 @@ func (s *Server) mcpHandler() http.Handler {
 			s.refuse(w, pid, id.TaskID, "refused_auth", err.Error(), "", http.StatusUnauthorized, "authentication_error")
 			return
 		}
+		caller(ctx, id.TaskID)
 		if polErr != nil {
 			s.refuse(w, pid, id.TaskID, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
 			return
@@ -185,9 +186,12 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		s.auditTool(c, tool, "error_store", err.Error(), nil, nil)
 		return toolError("the factory could not reserve the call's cost: " + err.Error())
 	}
+	ctx, up := s.tel.startCall(ctx, c.task, "tool", tool, hold.EUR)
+	defer up.end()
 	// a disconnecting agent must not cut a call the provider bills; the
 	// connectors' client timeouts bound it
 	text, cost, callErr := p.run(context.WithoutCancel(ctx))
+	up.status = toolStatus(callErr)
 	decision, note := "allowed", ""
 	if cost == nil {
 		note = fmt.Sprintf("; cost not reported, booked the hold %.6f EUR", hold.EUR)
@@ -201,6 +205,7 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
 		b.Spent = c.task.SpentEUR
 	}
+	up.booked(b.Booked, b.OverHold)
 	spend := b.Spent
 	if callErr != nil {
 		s.auditBooked(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR, b.OverHold)

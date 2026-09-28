@@ -67,16 +67,16 @@ func main() {
 	}
 	log.Printf("policy: version %d current", policyLoader.Current().ID)
 
-	meters, shutdownMeters, err := telemetry.Setup(context.Background())
+	otelProviders, err := telemetry.Setup(context.Background(), "factoryd")
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		shutdownMeters(ctx) // #nosec G104 -- fire and forget: the last samples may be lost
+		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last samples may be lost
 	}()
-	metrics, err := telemetry.New(meters.Meter("factoryd"))
+	metrics, err := telemetry.New(otelProviders.Meter.Meter("factoryd"))
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
@@ -144,9 +144,10 @@ func main() {
 		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
 		// the gateway commissions servers into the registry; factoryd only
 		// admits their addresses into the task's egress
-		Leases:  cloudres.AgentStore(store.CloudResources()),
-		CIQueue: ciQueue,
-		Metrics: metrics,
+		Leases:       cloudres.AgentStore(store.CloudResources()),
+		CIQueue:      ciQueue,
+		Metrics:      metrics,
+		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		BaseURL: litellm.BaseURL,
 		Admin:   litellm,
@@ -213,7 +214,8 @@ func main() {
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(&factoryd.GateWatch{Store: store,
-		Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}, openActivities))
+		Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}, openActivities,
+		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
@@ -553,7 +555,8 @@ func envInt(name string, def int) int {
 // workerOptions: a stop closes the activities' worker stop channel and
 // cancels them after WorkerStopTimeout; heartbeats go out at most
 // HeartbeatEvery apart, so a workflow's cancel reaches a running activity
-// within that. extra: GateWatch and the open-activity gauge.
+// within that. extra: GateWatch, the open-activity gauge and the activity
+// spans.
 func workerOptions(extra ...interceptor.WorkerInterceptor) worker.Options {
 	return worker.Options{
 		WorkerStopTimeout:            120 * time.Second,

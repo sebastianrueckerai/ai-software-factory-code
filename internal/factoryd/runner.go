@@ -56,6 +56,9 @@ type RunnerConfig struct {
 	CIQueue *CIQueue
 	// Metrics receives the timeline's gate durations; nil = the no-op meter.
 	Metrics *telemetry.Metrics
+	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
+	// workers send their telemetry (ruling 158); "" = none.
+	OTLPEndpoint string
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the
@@ -152,7 +155,11 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.Models.Start == "" || cfg.Models.Stronger == "" {
 		return nil, fmt.Errorf("runner: both model ladder rungs are required")
 	}
-	for _, raw := range []string{cfg.GatewayURL, cfg.GitBaseURL} {
+	urls := []string{cfg.GatewayURL, cfg.GitBaseURL}
+	if cfg.OTLPEndpoint != "" {
+		urls = append(urls, cfg.OTLPEndpoint)
+	}
+	for _, raw := range urls {
 		if u, err := url.Parse(raw); err != nil || u.Hostname() == "" {
 			return nil, fmt.Errorf("runner: %q is not an absolute URL", raw)
 		}
@@ -841,6 +848,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
 	}
+	if r.cfg.OTLPEndpoint != "" {
+		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
+	}
 	return r.sandboxPodSpec(t, env, true)
 }
 
@@ -947,6 +957,10 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
+	if r.cfg.OTLPEndpoint != "" {
+		u, _ := url.Parse(r.cfg.OTLPEndpoint) // validated in NewRunner
+		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	}
 	spec := map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": "opencode-worker"},
@@ -996,6 +1010,20 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 				}},
 			},
 		},
+	}
+	if r.cfg.OTLPEndpoint != "" {
+		spec["egress"] = append(spec["egress"].([]any), map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "platform",
+					"app.kubernetes.io/instance":      "signoz",
+					"app.kubernetes.io/component":     "otel-collector",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "4318", "protocol": "TCP"}},
+			}},
+		})
 	}
 	for _, ip := range leased {
 		spec["egress"] = append(spec["egress"].([]any), leasedServerRule(ip))

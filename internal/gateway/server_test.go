@@ -156,7 +156,7 @@ func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) 
 		m.spends[h.TaskID] = t.SpentEUR
 		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount, h.Kind})
 	}
-	b := policy.Booking{Spent: t.SpentEUR}
+	b := policy.Booking{Spent: t.SpentEUR, Booked: amount}
 	if cost != nil {
 		b.OverHold = policy.OverHold(h.TaskID, h.Kind+" "+h.Ref, *cost, h.EUR)
 	}

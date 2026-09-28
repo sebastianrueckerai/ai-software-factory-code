@@ -11,6 +11,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 var version = "dev"
@@ -29,10 +30,21 @@ func main() {
 	}
 
 	ctx := context.Background()
-	store, err := gateway.OpenStore(ctx, cfg.DatabaseURL)
+	otelProviders, err := telemetry.Setup(ctx, "factory-gateway")
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	tel, err := gateway.NewTelemetry(otelProviders.Tracer, otelProviders.Meter, otelProviders.Logger,
+		cfg.LiteLLMMasterKey, cfg.FirecrawlKey, cfg.ReplicateKey, cfg.FalKey, cfg.FactorydToken, cfg.HetznerAgentKey)
+	if err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	pg, err := gateway.OpenStore(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("open task store: %v", err)
 	}
+	// every audit row goes to Postgres and, as a log record, to OTel
+	store := tel.Audited(pg)
 	auth, err := gateway.NewAuth(gateway.AuthOptions{
 		Audience:   cfg.Audience,
 		FetchBase:  gateway.InClusterFetchBase(),
@@ -44,10 +56,10 @@ func main() {
 	// the agent Hetzner project holds only commissioned resources: its
 	// collector deletes whatever the registry does not know
 	hetzner := hcloud.New(cfg.HetznerAgentKey)
-	registry := cloudres.PG{DB: store.DB()}
+	registry := cloudres.PG{DB: pg.DB()}
 	cloud := &gateway.Cloud{
 		Provider: hetzner,
-		Store:    cloudres.AgentStore{DB: store.DB()},
+		Store:    cloudres.AgentStore{DB: pg.DB()},
 		Registry: registry,
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: registry, Provider: hetzner,
 			OwnerDone: gateway.TaskOwnerDone(store), NodeIPs: sshSources, Interval: cloudres.AgentInterval},
@@ -73,6 +85,7 @@ func main() {
 			HTTP: &http.Client{Timeout: 120 * time.Second}},
 		Escalator: &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
 		Cloud:     cloud,
+		Telemetry: tel,
 	})
 	go cloud.Run(ctx)
 

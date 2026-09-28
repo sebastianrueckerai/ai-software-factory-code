@@ -26,6 +26,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 func main() {
@@ -63,11 +64,32 @@ func run(log func(string, ...any)) int {
 	ctx := context.Background()
 	log("task %s session %s", env.taskID, env.sessionID)
 
+	otelProviders, err := telemetry.Setup(ctx, "agent-worker")
+	if err != nil {
+		log("telemetry: %v", err)
+		return 1
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
+	}()
+	tel, err := newSessionTelemetry(otelProviders.Tracer, otelProviders.Meter, env.taskID, env.sessionID, env.model)
+	if err != nil {
+		log("telemetry: %v", err)
+		return 1
+	}
+	tel.start()
+	outcome := "failed"
+	defer func() { tel.end(outcome) }()
+	endBrief := tel.phase("brief")
+
 	// The pod mounts an emptyDir over HOME (the image root is read-only), so
 	// restore the image-baked opencode provider packages into it.
 	if _, err := os.Stat(filepath.Join(env.home, ".config", "opencode")); os.IsNotExist(err) {
 		if err := os.CopyFS(filepath.Join(env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
 			log("restore pre-baked opencode config: %v", err)
+			endBrief(err)
 			return 1
 		}
 	}
@@ -75,11 +97,13 @@ func run(log func(string, ...any)) int {
 	repoDir := filepath.Join(workspace, "repo")
 	if err := cloneBase(env, repoDir); err != nil {
 		log("clone: %v", err)
+		endBrief(err)
 		return 1
 	}
 	base, err := prepareRepo(repoDir, env)
 	if err != nil {
 		log("prepare repo: %v", err)
+		endBrief(err)
 		return 1
 	}
 
@@ -99,16 +123,20 @@ func run(log func(string, ...any)) int {
 	}
 	if err := oc.Prepare(ctx, harness.SandboxEnv{}, brief); err != nil {
 		log("prepare: %v", err)
+		endBrief(err)
 		return 1
 	}
 
 	ck, err := newCheckpointer(repoDir, env, base)
 	if err != nil {
 		log("checkpoint store: %v", err)
+		endBrief(err)
 		return 1
 	}
+	endBrief(nil)
 	var emitMu sync.Mutex
 	emit := func(ev harness.Event) {
+		tel.observe(ev)
 		line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev})
 		if err != nil {
 			return
@@ -129,6 +157,7 @@ func run(log func(string, ...any)) int {
 	// period runs out.
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
+	endRun := tel.phase("run")
 	res := oc.Run(runCtx, brief, emit)
 	stopped := runCtx.Err() != nil
 	stopCheckpoints()
@@ -136,7 +165,20 @@ func run(log func(string, ...any)) int {
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}
-	res = deliver(res, stopped, func() (string, error) { return commitAndPush(repoDir, env, base, killOthers) }, env.branch, emit)
+	if res.Success || stopped {
+		endRun(nil)
+	} else {
+		endRun(errors.New("the agent did not finish"))
+	}
+	var commit string
+	var pushErr error
+	res = deliver(res, stopped, func() (string, error) {
+		endPush := tel.phase("push")
+		commit, pushErr = commitAndPush(repoDir, env, base, killOthers)
+		endPush(pushErr)
+		return commit, pushErr
+	}, env.branch, emit)
+	outcome = sessionOutcome(res, stopped, commit, pushErr)
 	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &res})
 	fmt.Println(string(line))
 	if !res.Success {
@@ -144,6 +186,21 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 	return 0
+}
+
+// sessionOutcome is the session's outcome for its duration metric.
+func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr error) string {
+	switch {
+	case pushErr != nil:
+		return "failed"
+	case res.Success && commit != "":
+		return "pushed"
+	case res.Success:
+		return "no_changes"
+	case stopped:
+		return "stopped"
+	}
+	return "failed"
 }
 
 // deliver pushes a finished session's result, or a stopped session's work

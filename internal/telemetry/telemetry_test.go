@@ -4,48 +4,137 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	otellog "go.opentelemetry.io/otel/log"
+	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
+	logcol "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	metriccol "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	tracecol "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
+	"google.golang.org/protobuf/proto"
 )
 
-func TestNoEndpointGivesANoopMeter(t *testing.T) {
+func TestNoEndpointGivesNoopProviders(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	provider, shutdown, err := Setup(context.Background())
+	p, err := Setup(context.Background(), "factoryd")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := provider.(noop.MeterProvider); !ok {
-		t.Fatalf("provider = %T, want noop.MeterProvider", provider)
+	if _, ok := p.Meter.(noop.MeterProvider); !ok {
+		t.Fatalf("meter provider = %T, want the no-op one", p.Meter)
 	}
-	m, err := New(provider.Meter("factoryd"))
+	if _, ok := p.Tracer.(tracenoop.TracerProvider); !ok {
+		t.Fatalf("tracer provider = %T, want the no-op one", p.Tracer)
+	}
+	if _, ok := p.Logger.(lognoop.LoggerProvider); !ok {
+		t.Fatalf("logger provider = %T, want the no-op one", p.Logger)
+	}
+	m, err := New(p.Meter.Meter("factoryd"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.CIJobDuration.Record(context.Background(), 12)
-	if err := shutdown(context.Background()); err != nil {
+	_, span := p.Tracer.Tracer("factoryd").Start(context.Background(), "x")
+	span.End()
+	if err := p.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestEndpointGivesTheSDKMeter(t *testing.T) {
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
-	t.Setenv("OTEL_SERVICE_NAME", "factoryd")
-	provider, shutdown, err := Setup(context.Background())
+// One endpoint carries all three signals, each stamped with the binary's
+// service.name; the environment's OTEL_SERVICE_NAME does not override it.
+func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var res *resourcepb.Resource
+		switch r.URL.Path {
+		case "/v1/traces":
+			var req tracecol.ExportTraceServiceRequest
+			if proto.Unmarshal(body, &req) == nil && len(req.ResourceSpans) > 0 {
+				res = req.ResourceSpans[0].Resource
+			}
+		case "/v1/logs":
+			var req logcol.ExportLogsServiceRequest
+			if proto.Unmarshal(body, &req) == nil && len(req.ResourceLogs) > 0 {
+				res = req.ResourceLogs[0].Resource
+			}
+		case "/v1/metrics":
+			var req metriccol.ExportMetricsServiceRequest
+			if proto.Unmarshal(body, &req) == nil && len(req.ResourceMetrics) > 0 {
+				res = req.ResourceMetrics[0].Resource
+			}
+		}
+		for _, kv := range res.GetAttributes() {
+			if kv.Key == "service.name" {
+				mu.Lock()
+				got[r.URL.Path] = kv.Value.GetStringValue()
+				mu.Unlock()
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
+	t.Setenv("OTEL_SERVICE_NAME", "someone-else")
+	p, err := Setup(context.Background(), "factory-gateway")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := provider.(*sdkmetric.MeterProvider); !ok {
-		t.Fatalf("provider = %T, want the SDK provider", provider)
+	ctx := context.Background()
+	_, span := p.Tracer.Tracer("t").Start(ctx, "call")
+	span.End()
+	var rec otellog.Record
+	rec.SetBody(otellog.StringValue("audit"))
+	p.Logger.Logger("t").Emit(ctx, rec)
+	c, err := p.Meter.Meter("t").Int64Counter("c")
+	if err != nil {
+		t.Fatal(err)
 	}
+	c.Add(ctx, 1)
+	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := p.Shutdown(sctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]string{"/v1/traces": "factory-gateway", "/v1/logs": "factory-gateway", "/v1/metrics": "factory-gateway"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("service.name per path = %v, want %v", got, want)
+	}
+}
+
+// Nothing listens: the shutdown still returns, the export error is only
+// logged.
+func TestAnUnreachableEndpointBlocksNothing(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+	p, err := Setup(context.Background(), "agent-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span := p.Tracer.Tracer("t").Start(context.Background(), "x")
+	span.End()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	shutdown(ctx) // #nosec G104 -- nothing listens; only that it returns
+	p.Shutdown(ctx) // #nosec G104 -- nothing listens; only that it returns
+	if ctx.Err() != nil {
+		t.Fatal("shutdown ran into its deadline")
+	}
 }
 
 func TestHistogramsUseTheFixedBoundaries(t *testing.T) {

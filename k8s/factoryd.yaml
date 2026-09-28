@@ -310,11 +310,10 @@ spec:
           valueFrom: {secretKeyRef: {name: console-oauth, key: session_key}}
         - name: CONSOLE_PUBLIC_URL
           value: https://console.aisoftwarefactory.world
-        # metrics to SigNoz's collector, OTLP over HTTP
+        # metrics, traces and logs to SigNoz's collector, OTLP over HTTP;
+        # the agent sandboxes get the same endpoint (ruling 158)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://signoz-otel-collector.platform.svc.cluster.local:4318
-        - name: OTEL_SERVICE_NAME
-          value: factoryd
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:

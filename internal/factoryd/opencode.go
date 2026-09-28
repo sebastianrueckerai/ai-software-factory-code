@@ -387,12 +387,17 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harnes
 			Metadata struct {
 				Exit *int `json:"exit"`
 			} `json:"metadata"`
+			Time struct {
+				Start int64 `json:"start"`
+				End   int64 `json:"end"`
+			} `json:"time"`
 		} `json:"state"`
 	}
 	if err := json.Unmarshal(partJSON, &part); err != nil {
 		p.errMsg = fmt.Sprintf("unparseable tool_use: %s", partJSON)
 		return
 	}
+	duration := part.State.Time.End - part.State.Time.Start
 	if part.State.Status != "completed" {
 		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: map[string]any{
 			"tool":        part.Tool,
@@ -400,23 +405,29 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harnes
 			"error":       part.State.Error,
 			"args":        capArgs(part.State.Input),
 			"args_sha256": argsHash(part.State.Input),
+			"duration_ms": duration,
 		}})
 		return
 	}
 	switch part.Tool {
 	case "bash":
-		detail := map[string]any{"command": part.State.Input["command"], "status": "completed", "output": outputTail(part.State.Output)}
+		detail := map[string]any{"command": part.State.Input["command"], "status": "completed", "output": outputTail(part.State.Output),
+			"duration_ms": duration, "bytes": len(part.State.Output)}
 		if part.State.Metadata.Exit != nil {
 			detail["exit"] = *part.State.Metadata.Exit
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventCommand, Detail: detail})
 	case "write", "edit", "patch":
-		detail := map[string]any{"path": part.State.Input["filePath"]}
+		detail := map[string]any{"path": part.State.Input["filePath"], "tool": part.Tool, "duration_ms": duration}
 		if path, ok := part.State.Input["filePath"].(string); ok && path != "" {
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(p.workDir, path)
 			}
-			detail["sha256"] = fileSHA256(path)
+			sum, size := fileSHA256(path)
+			detail["sha256"] = sum
+			if sum != "" {
+				detail["bytes"] = int(size)
+			}
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail})
 	default:
@@ -425,6 +436,7 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harnes
 			"status":      "completed",
 			"args":        capArgs(part.State.Input),
 			"args_sha256": argsHash(part.State.Input),
+			"duration_ms": duration,
 		}})
 	}
 }
@@ -463,21 +475,22 @@ func capArgs(in map[string]any) map[string]any {
 // fileSHA256 hashes a regular file's content. The agent controls the path,
 // so a symlink, fifo or device yields no hash instead of a read through it
 // or a blocked open.
-func fileSHA256(path string) string {
+func fileSHA256(path string) (string, int64) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- only hashed, never returned; non-regular files are refused below
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() > maxHashedFile {
-		return ""
+		return "", 0
 	}
 	h := sha256.New()
-	if _, err := io.Copy(h, io.LimitReader(f, maxHashedFile)); err != nil {
-		return ""
+	n, err := io.Copy(h, io.LimitReader(f, maxHashedFile))
+	if err != nil {
+		return "", 0
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), n
 }
 
 func (p *opencodeParser) stepFinish(partJSON []byte, at time.Time, emit func(harness.Event)) {

@@ -223,7 +223,9 @@ func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int
 // Booking is what ReleaseHold booked: the task's spend after it, and the
 // COST OVER HOLD flag when the known cost exceeded the hold ("" within it).
 type Booking struct {
-	Spent    float64
+	Spent float64
+	// Booked is what this release added to the task's spend.
+	Booked   float64
 	OverHold string
 }
 
@@ -272,6 +274,7 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (Bookin
 	if err := tx.Commit(); err != nil {
 		return Booking{}, err
 	}
+	b.Booked = amount
 	if cost != nil {
 		b.OverHold = OverHold(h.TaskID, h.Kind+" "+h.Ref, *cost, h.EUR)
 	}

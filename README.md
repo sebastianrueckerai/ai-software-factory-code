@@ -65,8 +65,10 @@ the agents work on.
   image); its egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
   and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
-  there) by name on 443, and kube-dns for exactly those names; the cloud
-  metadata address is denied outright. The module proxy is a covert
+  there) by name on 443, SigNoz's collector pods on 4318 when factoryd has
+  an `OTEL_EXPORTER_OTLP_ENDPOINT` (ruling 158: the worker's own spans and
+  metrics; the pod gets the same variable), and kube-dns for exactly
+  those names; the cloud metadata address is denied outright. The module proxy is a covert
   channel: a `go get` of a made-up module path carries that path to
   proxy.golang.org, so an agent can leak a few hundred bytes per request
   through it. Ruling 99 accepts this as the price of a usable Go
@@ -572,8 +574,8 @@ factoryd on 8080, OpenBao on 8200 (the SSH CA), the API server (by
 entity on 6443, the backend port behind the Service's 443, dialled at the
 injected `KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
 `api.replicate.com`, `fal.run`, `api.fal.ai` and `api.hetzner.cloud` by
-name on 443, with kube-dns for exactly those names (`ndots: 1`, every
-callee named in full). factoryd's ingress admits the gateway on 8080.
+name on 443, SigNoz's collector on 4318, with kube-dns for exactly those
+names (`ndots: 1`, every callee named in full). factoryd's ingress admits the gateway on 8080.
 
 ## Commissioned resources
 
@@ -943,13 +945,30 @@ Image builds run outside the cluster instead (ruling 110,
   Forgejo while other jobs run. A build costs one billed hour of `cx23`
   plus its IPv4: 0.0096 EUR net.
 
-## Metrics
+## Telemetry
 
-factoryd exports OpenTelemetry metrics over OTLP HTTP every 30 s to
-`OTEL_EXPORTER_OTLP_ENDPOINT` as `OTEL_SERVICE_NAME` (SigNoz's collector);
-unset, the meter is a no-op. A failed export drops its samples and logs
-at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
-60, 120, 300, 600, 900, 1200, 1800, 2700 and 3600, money in `EUR`.
+Every binary sends OpenTelemetry metrics, traces and logs over OTLP HTTP
+to `OTEL_EXPORTER_OTLP_ENDPOINT` (SigNoz's collector,
+`signoz-otel-collector.platform:4318`), stamped with its own
+`service.name`: `factoryd`, `factory-gateway`, `agent-worker`. Unset, all
+three providers are no-ops. Every export is fire and forget: no retry, a
+failed export drops its data and logs at most once a minute. Metrics go
+out every 30 s, spans and log records in batches. Every span and log
+record that belongs to a task carries `task.id`, so one search for a task
+id in SigNoz shows its gateway calls, audit rows, sessions and factoryd
+activities. The traces are separate: a session is its own trace, and no
+binary accepts trace context from another. Durations are in `s`, money
+in `EUR`.
+
+### factoryd
+
+Spans: one per Temporal activity (`ActivitySpans`), named after it
+(`RunSession`, `WaitChecks`, ...), with `temporal.workflow_id`,
+`temporal.attempt` and, for a task's workflow `task-<id>`, `task.id`; a
+failed activity ends in error with its message.
+
+Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
+1800, 2700 and 3600:
 
 - `factory.ci.job.duration{job,event,status}`: a 60 s poll of the code
   repository's `actions/tasks` (the registrar token), once per finished
@@ -996,6 +1015,75 @@ at most once a minute. Durations are in `s` with the buckets 5, 10, 30,
   activity per name.
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
   `open` for no verdict yet.
+
+### factory-gateway
+
+Spans: a server span per request (`otelhttp`, `/healthz` not traced),
+named `POST /v1/chat/completions` or `POST /mcp`, with `task.id` once the
+token is verified. Under it one client span per upstream call, `model
+<alias>` for an admitted model call and `tool <tool>` for a paid tool
+call (web_scrape, web_search, replicate_predict, fal_run), with
+`task.id`, `project` (the task's repository), `kind` (`model` or
+`tool`), `name` (the alias or the tool), `upstream.status`, `hold_eur`,
+`cost_eur` (what the booking added to the task's spend: the reported
+cost, else the hold) and `over_hold` (bool). `upstream.status` is the
+HTTP status for a model call and `error` when LiteLLM did not answer; for
+a tool `ok`, the provider's status when it refused or failed, or
+`error`. Anything but 2xx or `ok` ends the span in error. The free tools
+and commissioning have no upstream span; their audit rows are logged.
+
+Metrics:
+
+- `gateway.calls{kind,name,status}`: one per upstream call, `status` as
+  `upstream.status`.
+- `gateway.call.duration{kind,name}`: span start to the booking, buckets
+  0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120 and 300.
+- `gateway.spend.eur{project}`: what each model and tool booking added
+  to the task's `spent_eur` (the ledger's amount, `policy.Booking.Booked`).
+  The hold sweep and commissioned-resource accruals book outside a call
+  and are not in it.
+- `gateway.refusals{reason}`: every audit row whose decision starts with
+  `refused_`, the decision as `reason`.
+
+Audit log records: every audit row the store accepted is also one log
+record (`Telemetry.Audited` wraps the store; Postgres stays the record),
+body `audit <decision>`, severity INFO, attributes `task.id`,
+`audit.decision`, `audit.reason`, `audit.model_alias`, `audit.tool`,
+`audit.spend_eur`, `audit.policy_version`, `audit.output_limit`,
+`audit.hold_eur`, `audit.over_hold`; a nil or empty column is left out.
+Every string goes through the scrubber first: the gateway's own keys
+(`LITELLM_MASTER_KEY`, the tool keys, `FACTORYD_TOKEN`,
+`HETZNER_AGENT_KEY`), bearer and basic credentials, JWTs, `sk-` keys and
+any run of 32 or more key characters become `[redacted]`, and a
+connector error's provider body (`provider answered <status>: ...`)
+becomes `[body dropped]`. No request or response body is logged. An
+escalation's row carries the agent's question (its first 500 bytes) as
+the reason.
+
+### agent-worker
+
+One trace per session: the root span `session` (`task.id`, `session.id`,
+`model_alias`, `outcome`), its children `brief` (restoring the opencode
+config, the clone, the brief and the checkpoint store), `run` (the
+harness) and `push` (the commit and push, when the session finished or
+was stopped), and under `run` one span per tool call from the harness
+event stream: named after the tool (`bash` for a command), with
+`task.id`, `tool.name`, `tool.status` (`ok` or `error`; a command is ok
+on exit 0), `tool.exit_code` for a command and `tool.bytes_written` (a
+command's output length, a file change's size after it), timed from the
+tool's own `state.time`. Arguments and outputs never reach a span.
+
+Metrics:
+
+- `worker.session.duration{outcome,model_alias}`: worker start to the
+  result, `outcome` `pushed`, `no_changes`, `stopped` or `failed`,
+  factoryd's buckets.
+- `worker.tool.calls{tool,status}`.
+- `worker.session.tokens{model_alias,direction}`: the tokens each model
+  step reports, `direction` `input`, `output` or `reasoning`.
+
+`model_alias` is the part of `MODEL` after the provider
+(`coding-cheap`), the gateway's alias.
 
 ## factoryd's own network
 

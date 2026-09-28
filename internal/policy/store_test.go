@@ -204,12 +204,12 @@ func TestHolds(t *testing.T) {
 	// released at its real cost, the rest is free again
 	cost := 0.004
 	b, err := ReleaseHold(ctx, db, h, &cost)
-	if err != nil || !near(b.Spent, 0.014) || b.OverHold != "" {
-		t.Fatalf("release = (%+v, %v), want spent 0.014, no flag", b, err)
+	if err != nil || !near(b.Spent, 0.014) || !near(b.Booked, 0.004) || b.OverHold != "" {
+		t.Fatalf("release = (%+v, %v), want spent 0.014, booked 0.004, no flag", b, err)
 	}
 	// released once only
-	if b, err := ReleaseHold(ctx, db, h, &cost); err != nil || !near(b.Spent, 0.014) {
-		t.Fatalf("second release = (%v, %v), want spent unchanged at 0.014", b.Spent, err)
+	if b, err := ReleaseHold(ctx, db, h, &cost); err != nil || !near(b.Spent, 0.014) || b.Booked != 0 {
+		t.Fatalf("second release = (%+v, %v), want spent unchanged at 0.014, nothing booked", b, err)
 	}
 	// 0.006 free: 0.005 after the input buys 1250 tokens
 	h2, err := TakeHold(ctx, db, req)
@@ -217,8 +217,8 @@ func TestHolds(t *testing.T) {
 		t.Fatalf("hold after release = (%+v, %v), want 1250 tokens", h2, err)
 	}
 	// unknown cost: the hold is booked in full
-	if b, err := ReleaseHold(ctx, db, h2, nil); err != nil || !near(b.Spent, 0.02) || b.OverHold != "" {
-		t.Fatalf("release without a cost = (%+v, %v), want spent 0.02, no flag", b, err)
+	if b, err := ReleaseHold(ctx, db, h2, nil); err != nil || !near(b.Spent, 0.02) || !near(b.Booked, 0.006) || b.OverHold != "" {
+		t.Fatalf("release without a cost = (%+v, %v), want spent 0.02, the hold's 0.006 booked, no flag", b, err)
 	}
 
 	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b nothing
@@ -262,7 +262,7 @@ func TestHolds(t *testing.T) {
 	swept := Hold{ID: -1, TaskID: "b", Kind: KindModel, Ref: "y", EUR: 0.001}
 	over := 0.004
 	b, err = ReleaseHold(ctx, db, swept, &over)
-	if err != nil || !near(b.Spent, 0.006) || b.OverHold != "COST OVER HOLD: model y cost 0.004000 EUR against a hold of 0.001000 EUR; booked in full" {
+	if err != nil || !near(b.Spent, 0.006) || !near(b.Booked, 0.003) || b.OverHold != "COST OVER HOLD: model y cost 0.004000 EUR against a hold of 0.001000 EUR; booked in full" {
 		t.Fatalf("late release above the swept hold = (%+v, %v), want b's spent 0.006, flagged", b, err)
 	}
 	// a cost that is not a finite non-negative number books the hold
