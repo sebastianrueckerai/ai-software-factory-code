@@ -15,3 +15,4 @@ COPY --from=build /out/factoryd /usr/local/bin/factoryd
 USER 65534:65534
 EXPOSE 8081
 ENTRYPOINT ["factory-gateway"]
+# Stage 7 exit test: a high-risk path waits for a human approval.
