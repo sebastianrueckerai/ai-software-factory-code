@@ -31,8 +31,9 @@ const (
 )
 
 // Kinds are the registered kinds in deletion order: a firewall and a
-// volume are in use until their server is gone.
-var Kinds = []string{KindServer, KindFirewall, KindVolume}
+// volume are in use until their server is gone, and the volume, which
+// bills, goes before the firewall.
+var Kinds = []string{KindServer, KindVolume, KindFirewall}
 
 // OpenStates are the states whose resource may exist at the provider.
 var OpenStates = []string{StateRequested, StateLive, StateDeleting}
@@ -75,6 +76,10 @@ type Resource struct {
 	ApprovalID   int64
 	AccruedHours int
 	AccruedEUR   float64
+	// the row's share of its commission's reservation (its reserved hours
+	// at its hourly price) and its catalogue monthly price
+	ReservedEUR float64
+	MonthlyEUR  float64
 	// who promoted or released the commission in the console
 	PromotedBy string
 	ReleasedBy string
@@ -140,11 +145,11 @@ func insert(ctx context.Context, q querier, r Resource) (Resource, error) {
 	}
 	err = q.QueryRowContext(ctx,
 		`INSERT INTO cloud_resources (id, project, kind, name, labels, owner_ref, price_per_hour_eur, lease_expires, state,
-		        repo, session_ref, size, purpose, promoted, hold_id, approval_id)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0))
+		        repo, session_ref, size, purpose, promoted, hold_id, approval_id, reserved_eur, monthly_eur)
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, 0), NULLIF($16, 0), $17, $18)
 		 RETURNING created_at`,
 		id, r.Project, r.Kind, r.Name, labels, r.OwnerRef, r.PricePerHourEUR, r.LeaseExpires, r.State,
-		r.Repo, r.SessionRef, r.Size, r.Purpose, r.Promoted, r.HoldID, r.ApprovalID).Scan(&r.CreatedAt)
+		r.Repo, r.SessionRef, r.Size, r.Purpose, r.Promoted, r.HoldID, r.ApprovalID, r.ReservedEUR, r.MonthlyEUR).Scan(&r.CreatedAt)
 	if err != nil {
 		return Resource{}, err
 	}
@@ -185,7 +190,8 @@ func affected(res sql.Result, err error) (bool, error) {
 
 const resourceColumns = `id, project, kind, provider_id, name, labels, owner_ref, price_per_hour_eur::float8,
 	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, promoted,
-	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8, promoted_by, released_by`
+	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8, promoted_by, released_by,
+	reserved_eur::float8, monthly_eur::float8`
 
 func (p PG) Open(ctx context.Context, project string) ([]Resource, error) {
 	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
@@ -219,7 +225,7 @@ func (p PG) query(ctx context.Context, q string, args ...any) ([]Resource, error
 		if err := rows.Scan(&r.ID, &r.Project, &r.Kind, &r.ProviderID, &r.Name, &labels, &r.OwnerRef,
 			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt, &r.Repo, &r.SessionRef, &r.Size,
 			&r.Purpose, &r.Address, &r.Promoted, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR,
-			&r.PromotedBy, &r.ReleasedBy); err != nil {
+			&r.PromotedBy, &r.ReleasedBy, &r.ReservedEUR, &r.MonthlyEUR); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(labels, &r.Labels); err != nil {

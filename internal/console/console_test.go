@@ -989,7 +989,9 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	r.resources.rows = []cloudres.Resource{
 		{ID: 10, Kind: "firewall", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", LeaseExpires: lease},
 		{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "cx33", Address: "203.0.113.9",
-			LeaseExpires: lease, PricePerHourEUR: 0.0144, AccruedEUR: 0.0288, Purpose: "load test"},
+			LeaseExpires: lease, PricePerHourEUR: 0.0144, AccruedEUR: 0.0288, Purpose: "load test", MonthlyEUR: 8.99},
+		{ID: 14, Kind: "volume", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "20GB",
+			LeaseExpires: lease, PricePerHourEUR: 1.144 / 730, MonthlyEUR: 1.144},
 		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Promoted: true, PromotedBy: "alice"},
 		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", ReleasedBy: "sebastian"},
 	}
@@ -1005,8 +1007,8 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>2026-09-28 14:30 UTC</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
 		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
-		// the commission's month at 730 h: 0.0144 x 730 = 10.512, the firewall free
-		`<span id="promote-11" class="meta">promoted, about 10.51 EUR a month against the envelope&#39;s 10.00 EUR (0.0000 used or reserved this month)</span>`,
+		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
+		`<span id="promote-11" class="meta">promoted, about 10.13 EUR a month against the envelope&#39;s 10.00 EUR (0.0000 used or reserved this month)</span>`,
 		// the code repository has no envelope yet: the policy default
 		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
 		`name="server_types" type="text" value="cx23"`,

@@ -218,6 +218,14 @@ func TestReserveWithinEnvelope(t *testing.T) {
 	if !near(c.Rows[1].PricePerHourEUR, 0.0096) || !near(c.Rows[2].PricePerHourEUR, 1.144/730) {
 		t.Fatalf("prices = %v %v", c.Rows[1].PricePerHourEUR, c.Rows[2].PricePerHourEUR)
 	}
+	// each row's share of the reservation and its catalogue month, as stored:
+	// server 2 x 0.0096 and 5.49 + 0.50, volume 2 x 1.144/730 and 20 x 0.0572
+	stored, _ := a.Owned(ctx, "t1")
+	if len(stored) != 3 || stored[0].ReservedEUR != 0 || stored[0].MonthlyEUR != 0 ||
+		!near(stored[1].ReservedEUR, 0.0192) || !near(stored[1].MonthlyEUR, 5.99) ||
+		!near(stored[2].ReservedEUR, 2*1.144/730) || !near(stored[2].MonthlyEUR, 1.144) {
+		t.Fatalf("stored rows = %+v", stored)
+	}
 	use, err := a.Use(ctx, "sf/app")
 	if err != nil || use.OpenServers != 1 || !near(use.MonthEUR, 0.0192+2*1.144/730) {
 		t.Fatalf("use = %+v, %v", use, err)
@@ -639,7 +647,7 @@ func TestLiveAddressesEndAtTheCutoff(t *testing.T) {
 	for _, tc := range []struct {
 		left string
 		want int
-	}{{"151 seconds", 1}, {"149 seconds", 0}} {
+	}{{"211 seconds", 1}, {"209 seconds", 0}} { // the cutoff: 2 min + 90 s = 210 s
 		db.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now() + $2::interval WHERE id = $1`, srv.ID, tc.left)
 		if addrs, _ := a.LiveAddresses(ctx); len(addrs["t1"]) != tc.want {
 			t.Fatalf("lease ending in %s: addresses %v", tc.left, addrs)
@@ -689,5 +697,38 @@ func TestApprovalCoversItsOwnViolationsAndPendingIsCapped(t *testing.T) {
 	// a request a pending one covers is still answered with it at the cap
 	if r, err := a.Reserve(ctx, commissionReq(t, "t1", "cx33", 60, 0)); err != nil || r.Status != Pending || r.ApprovalID != again.ApprovalID {
 		t.Fatalf("repeat = %+v, %v", r, err)
+	}
+}
+
+// An overrun is the row's that overran, measured against its own share of
+// the reservation: a cx23 for 60 minutes with 20 GB reserves 0.0096 for the
+// server and 1.144/730 = 0.0015671 for the volume. The server lives into
+// its second hour (2 x 0.0096 = 0.0192 against its 0.0096), the volume
+// stays in its first (0.0015671, its whole share): one overrun, the
+// server's, and the volume's share is still held for it.
+func TestOverrunIsTheRowThatOverran(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	c, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range c.Rows {
+		(PG{DB: db}).SetLive(ctx, r.ID, itoa(int64(900+i)))
+	}
+	srv, vol := c.Rows[1], c.Rows[2]
+	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '70 minutes' WHERE id = $1`, srv.ID)
+	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '30 minutes' WHERE id = $1`, vol.ID)
+	acc, err := a.Accrue(ctx)
+	if err != nil || !near(acc.EUR, 0.0192+1.144/730) || len(acc.Overruns) != 1 {
+		t.Fatalf("accrual = %+v, %v", acc, err)
+	}
+	if o := acc.Overruns[0]; o.ResourceID != srv.ID || !near(o.EUR, 0.0192) || !near(o.HeldEUR, 0.0096) {
+		t.Fatalf("overrun = %+v", o)
+	}
+	if held := scalar[float64](t, db, `SELECT eur::float8 FROM holds WHERE id = $1`, c.Hold.ID); !near(held, 0) {
+		t.Fatalf("held = %v", held)
 	}
 }

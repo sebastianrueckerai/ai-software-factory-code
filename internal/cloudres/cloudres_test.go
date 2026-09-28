@@ -27,17 +27,48 @@ type fakeProvider struct {
 	deleted   []string
 	inUse     map[int64]bool // firewall ids answering resource_in_use
 	listLag   map[int64]bool // server ids missing from listings but present on GET
+
+	// With clk set, every call takes callTook on it and a server delete
+	// completes deleteTook after its call: until then the server exists,
+	// holds its volumes and refuses their detach (locked), as Hetzner's.
+	clk        *clock
+	callTook   time.Duration
+	deleteTook time.Duration
+	goneAt     map[int64]time.Time
+	calledAt   map[string]time.Time // delete calls by "kind/id"
 }
 
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{servers: map[int64]hcloud.Server{}, firewalls: map[int64]hcloud.Firewall{},
 		volumes: map[int64]hcloud.Volume{}, ips: map[int64]hcloud.PrimaryIP{},
-		inUse: map[int64]bool{}, listLag: map[int64]bool{}}
+		inUse: map[int64]bool{}, listLag: map[int64]bool{}, goneAt: map[int64]time.Time{}, calledAt: map[string]time.Time{}}
+}
+
+// call models one API call's latency and completes due server deletes.
+func (f *fakeProvider) call() {
+	if f.clk == nil {
+		return
+	}
+	f.clk.t = f.clk.t.Add(f.callTook)
+	for id, at := range f.goneAt {
+		if !f.clk.t.Before(at) {
+			f.removeServer(id)
+			delete(f.goneAt, id)
+		}
+	}
+}
+
+func (f *fakeProvider) did(name string) {
+	f.deleted = append(f.deleted, name)
+	if f.clk != nil {
+		f.calledAt[name] = f.clk.t
+	}
 }
 
 func (f *fakeProvider) Servers(ctx context.Context, sel string) ([]hcloud.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	var out []hcloud.Server
 	for id, s := range f.servers {
 		if !f.listLag[id] && selects(sel, s.Labels) {
@@ -51,6 +82,7 @@ func (f *fakeProvider) Servers(ctx context.Context, sel string) ([]hcloud.Server
 func (f *fakeProvider) Server(ctx context.Context, id int64) (hcloud.Server, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	s, ok := f.servers[id]
 	if !ok {
 		return s, &hcloud.APIError{Status: 404, Code: "not_found"}
@@ -63,6 +95,17 @@ func (f *fakeProvider) Server(ctx context.Context, id int64) (hcloud.Server, err
 func (f *fakeProvider) DeleteServer(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
+	f.did("server/" + itoa(id))
+	if f.deleteTook > 0 {
+		f.goneAt[id] = f.clk.t.Add(f.deleteTook)
+		return nil
+	}
+	f.removeServer(id)
+	return nil
+}
+
+func (f *fakeProvider) removeServer(id int64) {
 	delete(f.servers, id)
 	for vid, v := range f.volumes {
 		if v.Server != nil && *v.Server == id {
@@ -75,13 +118,12 @@ func (f *fakeProvider) DeleteServer(ctx context.Context, id int64) error {
 			delete(f.ips, ipID)
 		}
 	}
-	f.deleted = append(f.deleted, "server/"+itoa(id))
-	return nil
 }
 
 func (f *fakeProvider) Volumes(ctx context.Context, sel string) ([]hcloud.Volume, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	var out []hcloud.Volume
 	for _, v := range f.volumes {
 		if selects(sel, v.Labels) {
@@ -95,6 +137,7 @@ func (f *fakeProvider) Volumes(ctx context.Context, sel string) ([]hcloud.Volume
 func (f *fakeProvider) Volume(ctx context.Context, id int64) (hcloud.Volume, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	v, ok := f.volumes[id]
 	if !ok {
 		return v, &hcloud.APIError{Status: 404, Code: "not_found"}
@@ -105,7 +148,13 @@ func (f *fakeProvider) Volume(ctx context.Context, id int64) (hcloud.Volume, err
 func (f *fakeProvider) DetachVolume(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	v := f.volumes[id]
+	if v.Server != nil {
+		if _, deleting := f.goneAt[*v.Server]; deleting {
+			return &hcloud.APIError{Status: 423, Code: "locked"}
+		}
+	}
 	v.Server = nil
 	f.volumes[id] = v
 	f.deleted = append(f.deleted, "detach/"+itoa(id))
@@ -115,17 +164,19 @@ func (f *fakeProvider) DetachVolume(ctx context.Context, id int64) error {
 func (f *fakeProvider) DeleteVolume(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	if v, ok := f.volumes[id]; ok && v.Server != nil {
 		return &hcloud.APIError{Status: 423, Code: "locked"}
 	}
 	delete(f.volumes, id)
-	f.deleted = append(f.deleted, "volume/"+itoa(id))
+	f.did("volume/" + itoa(id))
 	return nil
 }
 
 func (f *fakeProvider) PrimaryIPs(ctx context.Context, sel string) ([]hcloud.PrimaryIP, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	out := slices.Collect(maps.Values(f.ips))
 	slices.SortFunc(out, func(a, b hcloud.PrimaryIP) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
@@ -134,14 +185,16 @@ func (f *fakeProvider) PrimaryIPs(ctx context.Context, sel string) ([]hcloud.Pri
 func (f *fakeProvider) DeletePrimaryIP(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	delete(f.ips, id)
-	f.deleted = append(f.deleted, "primary_ip/"+itoa(id))
+	f.did("primary_ip/" + itoa(id))
 	return nil
 }
 
 func (f *fakeProvider) Firewalls(ctx context.Context, sel string) ([]hcloud.Firewall, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	var out []hcloud.Firewall
 	for _, fw := range f.firewalls {
 		if selects(sel, fw.Labels) {
@@ -155,6 +208,7 @@ func (f *fakeProvider) Firewalls(ctx context.Context, sel string) ([]hcloud.Fire
 func (f *fakeProvider) Firewall(ctx context.Context, id int64) (hcloud.Firewall, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	fw, ok := f.firewalls[id]
 	if !ok {
 		return fw, &hcloud.APIError{Status: 404, Code: "not_found"}
@@ -165,11 +219,12 @@ func (f *fakeProvider) Firewall(ctx context.Context, id int64) (hcloud.Firewall,
 func (f *fakeProvider) DeleteFirewall(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.call()
 	if f.inUse[id] {
 		return &hcloud.APIError{Status: 409, Code: "resource_in_use"}
 	}
 	delete(f.firewalls, id)
-	f.deleted = append(f.deleted, "firewall/"+itoa(id))
+	f.did("firewall/" + itoa(id))
 	return nil
 }
 
@@ -201,7 +256,7 @@ type harness struct {
 func newHarness() *harness {
 	h := &harness{reg: NewMemory(), prov: newFakeProvider(), clk: &clock{t: t0}, done: map[string]bool{}}
 	h.reg.Now = h.clk.now
-	h.col = &Collector{Project: "ci", Registry: h.reg, Provider: h.prov, Now: h.clk.now, NodeIPs: testNodeIPs,
+	h.col = &Collector{Project: "ci", Registry: h.reg, Provider: h.prov, Now: h.clk.now, NodeIPs: testNodeIPs, RetryWait: time.Millisecond,
 		OwnerDone: func(ctx context.Context, owner string) (bool, error) { return h.done[owner], nil }}
 	return h
 }
@@ -658,7 +713,7 @@ func TestReleaseServersFirstAndClosesNeverCreatedRows(t *testing.T) {
 	if err := h.col.Release(context.Background(), rows); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(h.prov.deleted, ",") != "server/100,firewall/200,firewall/201,volume/400" {
+	if strings.Join(h.prov.deleted, ",") != "server/100,volume/400,firewall/200,firewall/201" {
 		t.Fatalf("deleted = %v", h.prov.deleted)
 	}
 	for _, id := range []int64{f.ID, s.ID, v.ID, never.ID, byLabel.ID} {
@@ -678,11 +733,11 @@ func TestCollectEndsALeaseOnTheLastPassBeforeItsHour(t *testing.T) {
 	h := newHarness()
 	h.col.Interval = 2 * time.Minute
 	s := h.create(t, KindServer, "5", 100, time.Hour)
-	h.clk.t = t0.Add(57*time.Minute + 29*time.Second) // ends in 2m31s: one more pass fits
+	h.clk.t = t0.Add(56*time.Minute + 29*time.Second) // ends in 3m31s, over 2m + 90s: one more pass fits
 	if err := h.col.Collect(context.Background()); err != nil || len(h.prov.deleted) != 0 {
 		t.Fatalf("deleted early: %v, %v", h.prov.deleted, err)
 	}
-	h.clk.t = t0.Add(57*time.Minute + 30*time.Second) // ends in 2m30s: the next pass would be late
+	h.clk.t = t0.Add(56*time.Minute + 30*time.Second) // ends in 3m30s: the next pass would be late
 	if err := h.col.Collect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -714,5 +769,68 @@ func TestCollectAdoptsALateCreate(t *testing.T) {
 	h.col.Collect(context.Background())
 	if got, _ := h.reg.Get(r.ID); got.ProviderID != "100" {
 		t.Fatalf("row = %+v", got)
+	}
+}
+
+// ruling 124 with a volume: the lease's last pass deletes the whole
+// commission, the volume waiting for its server's delete to detach it, and
+// both deletes are issued before the lease ends. Modelled on the fake
+// clock: every API call takes 1 s, a server delete completes 20 s after its
+// call, retries wait 3 s.
+func TestCollectEndsACommissionWithAVolumeBeforeItsHour(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness()
+	h.col.Interval = 2 * time.Minute
+	h.col.RetryWait = 3 * time.Second
+	h.col.After = func(d time.Duration) <-chan time.Time {
+		h.clk.t = h.clk.t.Add(d)
+		ch := make(chan time.Time, 1)
+		ch <- h.clk.t
+		return ch
+	}
+	lease := t0.Add(time.Hour)
+	row := func(kind string, providerID int64) Resource {
+		r, err := h.reg.Insert(ctx, Resource{Project: "ci", Kind: kind, OwnerRef: "5", LeaseExpires: lease, HoldID: 7})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h.reg.SetLive(ctx, r.ID, itoa(providerID))
+		return r
+	}
+	fw, srv, vol := row(KindFirewall, 200), row(KindServer, 100), row(KindVolume, 400)
+	h.prov.firewalls[200] = hcloud.Firewall{ID: 200, Labels: fw.Labels}
+	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: srv.Labels}
+	h.prov.volumes[400] = hcloud.Volume{ID: 400, Labels: vol.Labels, Server: ptr(100)}
+	h.prov.clk, h.prov.callTook, h.prov.deleteTook = h.clk, time.Second, 20*time.Second
+
+	// 56:25 + four listings = 56:29: the lease ends in 3m31s, one more pass fits
+	h.clk.t = t0.Add(56*time.Minute + 25*time.Second)
+	if err := h.col.Collect(ctx); err != nil || len(h.prov.deleted) != 0 {
+		t.Fatalf("deleted early: %v, %v", h.prov.deleted, err)
+	}
+	// 58:25 + four listings = 58:29 (ends in 1m31s): server delete at 58:30,
+	// done at 58:50; the volume is read and its detach refused (locked) at
+	// 58:31/32, 58:36/37, 58:41/42, 58:46/47 with 3 s waits, read detached
+	// at 58:51 and deleted at 58:52; the firewall at 58:53.
+	h.clk.t = t0.Add(58*time.Minute + 25*time.Second)
+	if err := h.col.Collect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100,volume/400,firewall/200" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+	for name, want := range map[string]time.Duration{
+		"server/100":   58*time.Minute + 30*time.Second,
+		"volume/400":   58*time.Minute + 52*time.Second,
+		"firewall/200": 58*time.Minute + 53*time.Second,
+	} {
+		if got := h.prov.calledAt[name]; !got.Equal(t0.Add(want)) || !got.Before(lease) {
+			t.Fatalf("%s deleted at %v, want %v", name, got.Sub(t0), want)
+		}
+	}
+	for _, r := range []Resource{fw, srv, vol} {
+		if h.state(t, r.ID) != StateDeleted {
+			t.Fatalf("row %d = %s", r.ID, h.state(t, r.ID))
+		}
 	}
 }

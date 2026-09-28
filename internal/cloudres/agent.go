@@ -43,6 +43,9 @@ type Quote struct {
 	Hours        int     // started hours the lease covers
 	ServerHourly float64 // the server type plus its primary IPv4, EUR/h
 	VolumeHourly float64 // the volume's GB-month price prorated, EUR/h
+	// the catalogue's monthly prices: the server with its IPv4, the volume
+	ServerMonthly float64
+	VolumeMonthly float64
 	// ReservationEUR is Hours at both hourly prices: what the task's,
 	// the day's and the project's month headroom hold until accrual.
 	ReservationEUR float64
@@ -73,15 +76,16 @@ func PriceCommission(p hcloud.Pricing, location, serverType string, leaseMinutes
 	if err != nil {
 		return Quote{}, err
 	}
-	q := Quote{Hours: (leaseMinutes + 59) / 60, ServerHourly: server + ip, MonthlyEUR: serverMonth + ipMonth}
+	q := Quote{Hours: (leaseMinutes + 59) / 60, ServerHourly: server + ip, ServerMonthly: serverMonth + ipMonth}
 	if volumeGB > 0 {
 		gbMonth, err := p.VolumeGBMonthNet()
 		if err != nil {
 			return Quote{}, err
 		}
 		q.VolumeHourly = float64(volumeGB) * gbMonth / HoursPerMonth
-		q.MonthlyEUR += float64(volumeGB) * gbMonth
+		q.VolumeMonthly = float64(volumeGB) * gbMonth
 	}
+	q.MonthlyEUR = q.ServerMonthly + q.VolumeMonthly
 	q.ReservationEUR = float64(q.Hours) * (q.ServerHourly + q.VolumeHourly)
 	return q, nil
 }
@@ -369,23 +373,24 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 		Purpose: r.Purpose, HoldID: hold.ID, ApprovalID: c.ApprovalID,
 		Labels: map[string]string{"task": LabelValue(r.TaskID), "project": LabelValue(r.Repo)},
 	}
-	add := func(kind, size string, price float64) error {
+	add := func(kind, size string, price, monthly float64) error {
 		row := base
-		row.Kind, row.Size, row.PricePerHourEUR = kind, size, price
+		row.Kind, row.Size, row.PricePerHourEUR, row.MonthlyEUR = kind, size, price, monthly
+		row.ReservedEUR = float64(r.Quote.Hours) * price
 		row.Name = fmt.Sprintf("agent-%s-%d-%s", LabelValue(r.TaskID), hold.ID, kind)
 		row.Labels = map[string]string{"task": base.Labels["task"], "project": base.Labels["project"]}
 		out, err := insert(ctx, tx, row)
 		c.Rows = append(c.Rows, out)
 		return err
 	}
-	if err := add(KindFirewall, "", 0); err != nil {
+	if err := add(KindFirewall, "", 0, 0); err != nil {
 		return Commission{}, err
 	}
-	if err := add(KindServer, r.ServerType, r.Quote.ServerHourly); err != nil {
+	if err := add(KindServer, r.ServerType, r.Quote.ServerHourly, r.Quote.ServerMonthly); err != nil {
 		return Commission{}, err
 	}
 	if r.VolumeGB > 0 {
-		if err := add(KindVolume, strconv.Itoa(r.VolumeGB)+"GB", r.Quote.VolumeHourly); err != nil {
+		if err := add(KindVolume, strconv.Itoa(r.VolumeGB)+"GB", r.Quote.VolumeHourly, r.Quote.VolumeMonthly); err != nil {
 			return Commission{}, err
 		}
 	}
@@ -420,8 +425,9 @@ type Accrual struct {
 	Overruns []Overrun
 }
 
-// Overrun is an accrual booked in full beyond what its reservation still
-// held: the resource lived longer than its lease paid for (ruling 124).
+// Overrun is an accrual booked in full beyond what the resource's own
+// share of its reservation still held: it lived longer than its lease paid
+// for (ruling 124).
 type Overrun struct {
 	TaskID     string
 	ResourceID int64
@@ -487,12 +493,13 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 		return 0, nil, err
 	}
 	var owner string
-	var price float64
+	var price, share float64
 	var accrued, due int
 	var hold int64
 	var promoted bool
-	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), promoted
-		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &promoted); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), promoted,
+		GREATEST(reserved_eur - accrued_eur, 0)::float8
+		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &promoted, &share); err != nil {
 		return 0, nil, err
 	}
 	if due <= accrued {
@@ -504,6 +511,8 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return 0, nil, err
 	}
+	// the row's own share, as far as the reservation still holds it
+	held = min(held, share)
 	var over *Overrun
 	if !promoted && eur > held+1e-12 {
 		over = &Overrun{TaskID: owner, ResourceID: id, EUR: eur, HeldEUR: held}
@@ -515,7 +524,7 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, owner, eur); err != nil {
 		return 0, nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE holds SET eur = GREATEST(eur - $2, 0) WHERE id = $1`, hold, eur); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE holds SET eur = GREATEST(eur - $2, 0) WHERE id = $1`, hold, min(eur, held)); err != nil {
 		return 0, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET accrued_hours = $2, accrued_eur = accrued_eur + $3 WHERE id = $1`,

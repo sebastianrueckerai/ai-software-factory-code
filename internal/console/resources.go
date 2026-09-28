@@ -81,7 +81,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 	monthly := map[int64]float64{}
 	for _, res := range rows {
 		if slices.Contains(cloudres.OpenStates, res.State) {
-			monthly[res.HoldID] += res.PricePerHourEUR * cloudres.HoursPerMonth
+			monthly[res.HoldID] += res.MonthlyEUR
 		}
 		v := view(res.Repo)
 		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State),

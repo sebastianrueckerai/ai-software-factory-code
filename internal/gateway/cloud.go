@@ -180,7 +180,7 @@ type CloudPricesIn struct{}
 type CommissionIn struct {
 	ServerType   string `json:"server_type" jsonschema:"a Hetzner server type the project's envelope allows (see cloud_prices), e.g. cx23"`
 	Purpose      string `json:"purpose" jsonschema:"what the server is for, shown to the human on approval cards"`
-	LeaseMinutes int    `json:"lease_minutes" jsonschema:"how long the server may live; billed per started hour; it is deleted when the lease ends or the task finishes"`
+	LeaseMinutes int    `json:"lease_minutes" jsonschema:"how long the server may live, at least 5; billed per started hour; access ends and it is deleted shortly before the lease ends, or when the task finishes"`
 	VolumeGB     int    `json:"volume_gb,omitempty" jsonschema:"an optional block volume in GB (at least 10), mounted on the server"`
 	SSHPublicKey string `json:"ssh_public_key,omitempty" jsonschema:"optional: your SSH public key (one line); the answer then carries a certificate for it"`
 }
@@ -297,8 +297,11 @@ var (
 	sshPublicKey  = regexp.MustCompile(`^(ssh-ed25519|ecdsa-sha2-nistp(256|384|521)|ssh-rsa) [A-Za-z0-9+/]+={0,2}( [^\r\n]{0,200})?$`)
 )
 
-// maxLeaseMinutes bounds any lease, approved or not: a week.
+// A lease runs past the collector's cutoff (cloudres.LeaseCutoff, 3.5
+// minutes before its end) by at least a minute and a half, and at most a
+// week, approved or not.
 const (
+	minLeaseMinutes = 5
 	maxLeaseMinutes = 7 * 24 * 60
 	maxVolumeGB     = 1024
 	maxPurpose      = 500
@@ -310,8 +313,8 @@ func (in CommissionIn) validate() error {
 		return errors.New("server_type must be a Hetzner server type name such as cx23")
 	case strings.TrimSpace(in.Purpose) == "" || len(in.Purpose) > maxPurpose:
 		return fmt.Errorf("purpose is required, at most %d bytes", maxPurpose)
-	case in.LeaseMinutes < 1 || in.LeaseMinutes > maxLeaseMinutes:
-		return fmt.Errorf("lease_minutes must be 1 to %d", maxLeaseMinutes)
+	case in.LeaseMinutes < minLeaseMinutes || in.LeaseMinutes > maxLeaseMinutes:
+		return fmt.Errorf("lease_minutes must be %d to %d", minLeaseMinutes, maxLeaseMinutes)
 	case in.VolumeGB != 0 && (in.VolumeGB < policy.MinVolumeGB || in.VolumeGB > maxVolumeGB):
 		return fmt.Errorf("volume_gb must be 0 (none) or %d to %d", policy.MinVolumeGB, maxVolumeGB)
 	case in.SSHPublicKey != "" && !sshPublicKey.MatchString(strings.TrimSpace(in.SSHPublicKey)):
@@ -381,8 +384,8 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	row := com.Rows[1]
 	lease := row.LeaseExpires.UTC().Format(time.RFC3339)
 	var b strings.Builder
-	fmt.Fprintf(&b, "commissioned resource %d: %s server %s at %s, login %s; lease until %s (billed per started hour; it is deleted up to 2.5 minutes before then, at the collector's last pass, or when the task ends).\n",
-		row.ID, in.ServerType, row.Name, srv.IPv4(), loginUser, lease)
+	fmt.Fprintf(&b, "commissioned resource %d: %s server %s at %s, login %s; lease until %s (billed per started hour; your access ends and it is deleted up to %s before then, at the collector's last pass, or when the task ends).\n",
+		row.ID, in.ServerType, row.Name, srv.IPv4(), loginUser, lease, cloudres.LeaseCutoff)
 	fmt.Fprintf(&b, "Reserved %.6f EUR against the task budget (%.4f EUR/h incl. the IPv4", q.ReservationEUR, q.ServerHourly)
 	if vol.ID != 0 {
 		fmt.Fprintf(&b, ", plus %.6f EUR/h for the %d GB volume mounted at /mnt/HC_Volume_%d", q.VolumeHourly, in.VolumeGB, vol.ID)
@@ -635,15 +638,15 @@ func (s *Server) sshCertificate(ctx context.Context, c *toolCaller, in Certifica
 	return textResult(fmt.Sprintf("certificate for %s@%s, valid %s; save it next to your private key as <key>-cert.pub:\n%s", loginUser, row.Address, ttl, cert))
 }
 
-// sign certifies key for row's login user until the lease ends, at most
-// maxCertTTL.
+// sign certifies key for row's login user until the egress drops the
+// server (the lease's cutoff), at most maxCertTTL.
 func (s *Server) sign(ctx context.Context, c *toolCaller, row cloudres.Resource, key string) (string, time.Duration, error) {
 	ttl := maxCertTTL
 	if !row.Promoted {
-		ttl = min(ttl, row.LeaseExpires.Sub(s.opts.Cloud.now()).Truncate(time.Second))
+		ttl = min(ttl, row.LeaseExpires.Add(-cloudres.LeaseCutoff).Sub(s.opts.Cloud.now()).Truncate(time.Second))
 	}
 	if ttl < time.Minute {
-		return "", 0, fmt.Errorf("the lease of server %d ends in under a minute", row.ID)
+		return "", 0, fmt.Errorf("server %d stays reachable for under a minute: its lease ends in under %s", row.ID, cloudres.LeaseCutoff+time.Minute)
 	}
 	cert, err := s.opts.Cloud.Signer.Sign(ctx, key, principal(row.ID), ttl, fmt.Sprintf("task=%s resource=%d", c.task.ID, row.ID))
 	return cert, ttl, err

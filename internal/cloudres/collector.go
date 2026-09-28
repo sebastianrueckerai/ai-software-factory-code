@@ -52,6 +52,8 @@ type Collector struct {
 	// RetryWait spaces Release's retries of a firewall or volume its
 	// deleting server still holds. 0 = 3 seconds.
 	RetryWait time.Duration
+	// After waits out a retry; nil = time.After.
+	After func(time.Duration) <-chan time.Time
 	// ReleaseAttempts bounds Release's tries per resource (0 = 10). An
 	// owner releasing from a loop that must not stall sets 1: what is still
 	// held stays deleting for the next pass.
@@ -66,11 +68,20 @@ func (c *Collector) now() time.Time {
 	return time.Now()
 }
 
-// LeaseMargin covers a pass's own run time: a leased resource is deleted
-// on the last pass before its lease ends, when the lease ends within one
-// interval plus this margin (ruling 124), so a lease of N started hours
-// never lives into hour N+1.
-const LeaseMargin = 30 * time.Second
+// LeaseMargin covers a pass's own run time up to a commission's last
+// delete: a leased resource is deleted on the last pass before its lease
+// ends, when the lease ends within one interval plus this margin (ruling
+// 124), so a lease of N started hours never lives into hour N+1. It holds
+// the listings and a commission's release, whose volume waits (RetryWait,
+// ReleaseAttempts: up to 30 s) for its server's delete to detach it.
+const LeaseMargin = 90 * time.Second
+
+func (c *Collector) after(d time.Duration) <-chan time.Time {
+	if c.After != nil {
+		return c.After(d)
+	}
+	return time.After(d)
+}
 
 func (c *Collector) interval() time.Duration {
 	if c.Interval <= 0 {
@@ -108,6 +119,12 @@ type providerResource struct {
 // rows: a server's own address goes with the server, so only an address
 // no server holds is collected.
 func (c *Collector) Collect(ctx context.Context) error {
+	start := time.Now()
+	defer func() {
+		if took := time.Since(start); took > LeaseMargin {
+			log.Printf("cloud collector (%s): the pass took %s, over the lease margin %s: a lease it ended may have run into its next hour", c.Project, took.Round(time.Second), LeaseMargin)
+		}
+	}()
 	servers, err := c.Provider.Servers(ctx, "")
 	if err != nil {
 		return fmt.Errorf("list servers: %w", err)
@@ -145,17 +162,22 @@ func (c *Collector) Collect(ctx context.Context) error {
 
 	var errs []error
 	matched := map[providerKey]bool{}
+	found := make([]providerResource, len(rows))
+	ok := make([]bool, len(rows))
+	for i, row := range rows {
+		if found[i], ok[i] = match(row, listed); ok[i] {
+			matched[key(found[i])] = true
+		}
+	}
 	ownerDone := map[string]bool{}
+	handled := map[int64]bool{}
 	for _, kind := range Kinds {
-		for _, row := range rows {
-			if row.Kind != kind {
+		for i, row := range rows {
+			if row.Kind != kind || handled[row.ID] {
 				continue
 			}
-			found, ok := match(row, listed)
-			if ok {
-				matched[key(found)] = true
-			}
-			if err := c.collectRow(ctx, row, found, ok, ownerDone); err != nil {
+			handled[row.ID] = true
+			if err := c.collectRow(ctx, rows, handled, row, found[i], ok[i], ownerDone); err != nil {
 				errs = append(errs, fmt.Errorf("resource %d (%s %s): %w", row.ID, row.Kind, row.Name, err))
 			}
 		}
@@ -260,7 +282,11 @@ func match(row Resource, listed []providerResource) (providerResource, bool) {
 	return providerResource{}, false
 }
 
-func (c *Collector) collectRow(ctx context.Context, row Resource, found providerResource, ok bool, ownerDone map[string]bool) error {
+// collectRow deletes row when its lease ends, its owner finished or its
+// delete is pending, together with the rest of its commission (the open
+// rows sharing its reservation) through Release: a volume waits for its
+// server's delete within the same pass.
+func (c *Collector) collectRow(ctx context.Context, rows []Resource, handled map[int64]bool, row Resource, found providerResource, ok bool, ownerDone map[string]bool) error {
 	now := c.now()
 	if !ok {
 		return c.closeAbsent(ctx, row, now)
@@ -269,7 +295,7 @@ func (c *Collector) collectRow(ctx context.Context, row Resource, found provider
 		if _, err := c.Registry.SetLive(ctx, row.ID, strconv.FormatInt(found.id, 10)); err != nil {
 			return err
 		}
-		row.State = StateLive
+		row.State, row.ProviderID = StateLive, strconv.FormatInt(found.id, 10)
 	}
 	reason := ""
 	switch {
@@ -290,8 +316,15 @@ func (c *Collector) collectRow(ctx context.Context, row Resource, found provider
 	if reason == "" {
 		return nil
 	}
-	log.Printf("cloud collector (%s): deleting %s %d (resource %d): %s", c.Project, row.Kind, found.id, row.ID, reason)
-	return c.Delete(ctx, row, found.id)
+	group := []Resource{row}
+	for _, r := range rows {
+		if row.HoldID != 0 && r.HoldID == row.HoldID && !handled[r.ID] {
+			handled[r.ID] = true
+			group = append(group, r)
+		}
+	}
+	log.Printf("cloud collector (%s): deleting %s %d (resource %d) and %d more of its commission: %s", c.Project, row.Kind, found.id, row.ID, len(group)-1, reason)
+	return c.Release(ctx, group)
 }
 
 func (c *Collector) ownerDone(ctx context.Context, owner string, cache map[string]bool) (bool, error) {
@@ -447,13 +480,13 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 	}
 	for attempt := 1; ; attempt++ {
 		err := c.Delete(ctx, row, id)
-		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || errors.Is(err, ErrDetaching)) || attempt >= attempts {
+		if err == nil || !(hcloud.IsCode(err, "resource_in_use") || hcloud.IsCode(err, "locked") || errors.Is(err, ErrDetaching)) || attempt >= attempts {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(wait):
+		case <-c.after(wait):
 		}
 	}
 }

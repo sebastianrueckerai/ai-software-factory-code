@@ -509,6 +509,7 @@ func TestCommissionRefusals(t *testing.T) {
 		"type":    {"server_type": "CX23;", "purpose": "p", "lease_minutes": 60},
 		"purpose": {"server_type": "cx23", "purpose": " ", "lease_minutes": 60},
 		"lease":   {"server_type": "cx23", "purpose": "p", "lease_minutes": 0},
+		"short":   {"server_type": "cx23", "purpose": "p", "lease_minutes": 4},
 		"volume":  {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "volume_gb": 5},
 		"key":     {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "ssh_public_key": "ssh-ed25519 AAAA\nrm -rf /"},
 		"price":   {"server_type": "cx99", "purpose": "p", "lease_minutes": 60},
@@ -561,9 +562,10 @@ func TestReleaseAndCertificates(t *testing.T) {
 	if text, isErr := e.call(t, ToolCommission, map[string]any{"server_type": "cx23", "purpose": "p", "lease_minutes": 10, "volume_gb": 10}); isErr {
 		t.Fatal(text)
 	}
-	// a certificate never outlives the lease: 10 minutes left
+	// a certificate never outlives the egress: 10 minutes left, the address
+	// leaves 2 min + 90 s before the end: 6m30s
 	text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey})
-	if isErr || !strings.Contains(text, "root@203.0.113.102, valid 10m0s") || e.signer.signs[0] != agentKey+"|resource-2|10m0s|task=42 resource=2" {
+	if isErr || !strings.Contains(text, "root@203.0.113.102, valid 6m30s") || e.signer.signs[0] != agentKey+"|resource-2|6m30s|task=42 resource=2" {
 		t.Fatalf("certificate = %s, signs %v", text, e.signer.signs)
 	}
 	for name, args := range map[string]map[string]any{
@@ -584,7 +586,7 @@ func TestReleaseAndCertificates(t *testing.T) {
 	if isErr || !strings.Contains(text, "resource 2 released") {
 		t.Fatalf("release = %s", text)
 	}
-	if got := e.hz.callList(); got != "create firewall,create server,create volume,delete server/102,delete firewall/101,delete volume/103" {
+	if got := e.hz.callList(); got != "create firewall,create server,create volume,delete server/102,delete volume/103,delete firewall/101" {
 		t.Fatalf("provider calls = %s", got)
 	}
 	for id := int64(1); id <= 3; id++ {

@@ -562,8 +562,8 @@ never through a provider key. They live in their own Hetzner project,
   and the envelope with what the month has used. Prices come from
   `GET /v1/pricing`, cached an hour (a failed refresh keeps the last
   catalogue).
-- `commission_server` (`server_type`, `purpose`, `lease_minutes`,
-  optional `volume_gb` 10 to 1024 and `ssh_public_key`): a Debian 12
+- `commission_server` (`server_type`, `purpose`, `lease_minutes` at
+  least 5, optional `volume_gb` 10 to 1024 and `ssh_public_key`): a Debian 12
   server with a public IPv4 only, a firewall admitting SSH only from the
   cluster nodes' IPv4s (`AGENT_SSH_SOURCES`, ConfigMap `cluster-facts`)
   and outbound only DNS, HTTP and HTTPS, and an optional ext4 volume
@@ -576,8 +576,9 @@ never through a provider key. They live in their own Hetzner project,
   when a key was given.
 - `ssh_certificate` (`resource_id`, `public_key`): for one of the task's
   own servers only, OpenBao signs the key for principal
-  `resource-<row id>`, for 30 minutes or until the lease ends, whichever
-  is sooner, with key id `task=<id> resource=<id>`.
+  `resource-<row id>`, for 30 minutes or until the lease's cutoff (3.5
+  minutes before it ends, when the egress drops the server), whichever is
+  sooner, with key id `task=<id> resource=<id>`.
 - `list_resources`, `release_resource` (`resource_id`: the server, its
   firewall and volume are deleted now), `resource_request_status`
   (`request_id`).
@@ -625,16 +626,22 @@ label or deleted as unknown.
 
 **Leases and the collector.** The gateway runs the collector on the
 agent project every 2 minutes: it deletes resources whose lease ends
-before its next pass (within the interval plus 30 s, ruling 124, so a
-lease of N started hours never lives into hour N+1), unless promoted, or whose task is `done` or `failed`, deletes every
+before its next pass (within the interval plus 90 s, ruling 124, so a
+lease of N started hours never lives into hour N+1), unless promoted, or
+whose task is `done` or `failed`, each with its whole commission through
+the retrying release (server, volume, firewall: the volume waits, 3 s at a
+time up to 10 tries, for the server's delete to detach it), so both
+billed deletes are issued within the pass; a pass that takes longer than
+the 90 s is logged. It deletes every
 server, firewall and volume the registry does not know as open and every
 primary IP no server holds, and closes rows whose resource is gone; the
 interlock of ruling 123 (see the untrusted runner below) guards every
 pass, with the cluster nodes from `AGENT_SSH_SOURCES`. Then it accrues: each resource's started hours not yet booked go to a
 `resource` ledger row (`ref` `resource/<id>`) and the task's spend, and
-come off the reservation, under the headroom lock. A booking beyond what
-the reservation still holds (a resource that outlived its lease) is
-booked in full and flagged: `COST OVER HOLD` in the log and an
+come off the reservation, under the headroom lock. A booking beyond the
+resource's own share of the reservation (its reserved hours at its price,
+as far as the reservation still holds it: a resource that outlived its
+lease) is booked in full and flagged: `COST OVER HOLD` in the log and an
 `allowed_over_hold` audit row (rulings 117, 124). Once a commission's
 rows are closed and fully booked, the rest of the reservation returns.
 factoryd's hold sweep skips resource reservations: accrual books and
@@ -649,7 +656,7 @@ the project's month as it accrues.
 (same database) every 10 s, reads each task namespace's `worker-egress`
 and server-side applies it when it differs from the desired policy: one
 rule item per leased server, `toCIDR <ip>/32` and `toPorts 22/TCP`
-together. A lease leaves at the collector's cutoff (2.5 minutes before
+together. A lease leaves at the collector's cutoff (3.5 minutes before
 it ends) or when the server is released, and an edit out of band is
 repaired on the next pass. The sandbox image carries
 `openssh-client`.
@@ -737,7 +744,9 @@ the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 - `/resources`: the agent project's commissions by project and task (open,
   or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
   booked so far and state; promote and release per commission (a released
-  commission, or one whose lease has ended, cannot be promoted: 409); each
+  commission, or one whose lease has ended, cannot be promoted: 409; the
+  promote note gives the commission's catalogue monthly price, as the
+  approval cards do, against the envelope); each
   project's envelope (the code repository's shows the policy default until
   saved) with an edit form, saved with `set_by`.
 - Boot creates the labels intake reads on the code repository
