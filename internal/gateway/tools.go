@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Escalator hands an agent's question to the running session's supervision.
@@ -429,7 +430,7 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())
 	}
-	s.auditTool(c, tool, "escalated", truncate(q, 500), &c.task.SpentEUR, nil)
+	s.auditTool(c, tool, "escalated", textutil.Truncate(q, 500), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: "escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now."}}}
 }

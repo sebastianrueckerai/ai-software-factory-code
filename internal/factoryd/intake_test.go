@@ -31,7 +31,7 @@ func sign(secret string, body []byte) string {
 // intakeForgejoStub answers the handful of read endpoints handleIssue and
 // handleIssueComment call out to: repo default branch, branch head SHA, a
 // pull request's head branch, and the issue-labels GET/PUT pair behind
-// SetStateLabel (state mirroring, fix round 1). requests records every path
+// SetStateLabel (state mirroring). requests records every path
 // hit, so tests can assert a lookup was — or was not — made; a test can read
 // back the labels the stub now holds for an issue via the same *Forgejo's
 // IssueLabels.
@@ -275,7 +275,7 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 			t.Fatalf("RepoDefaultBranch was called even though the payload carried default_branch: %v", *requests)
 		}
 	}
-	// fix round 1: a webhook-created agent task must carry state/queued
+	// a webhook-created agent task must carry state/queued
 	// immediately, not only once a runner later claims it.
 	if labels := issueLabels(t, in.Forgejo, 7); !slices.Contains(labels, "state/queued") {
 		t.Fatalf("labels = %v, want state/queued", labels)
@@ -309,7 +309,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 			t.Fatalf("forgejo was called to resolve the agent's branch/SHA for a human-lane issue: %v", *requests)
 		}
 	}
-	// fix round 1: the human lane gets its own consistent label
+	// the human lane gets its own consistent label
 	// (architecture 5.6's "waiting on a human" board column), not
 	// state/queued, since no runner will ever claim a human-lane task.
 	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
@@ -684,7 +684,7 @@ func writerReads(requests []string) int {
 	return n
 }
 
-// I1: a webhook Forgejo delivered while factoryd was down is gone; the heal
+// A webhook Forgejo delivered while factoryd was down is gone; the heal
 // pass re-reads the task's pull request, issue and comments. A terminal
 // state and a comment alike are recorded and signalled once, whichever of
 // the webhook or a re-read saw it first, and a trusted event recorded but
@@ -1145,7 +1145,7 @@ func TestIntakeRedeliveryIsProcessedOnce(t *testing.T) {
 	}
 }
 
-// M2: only people with write access steer a task; anyone else's comment or
+// Only people with write access steer a task; anyone else's comment or
 // review is recorded and signals nothing. Verdicts are cached.
 func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
 	in, store, requests := newTestIntake(t)
@@ -1180,7 +1180,7 @@ func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
 	}
 }
 
-// m5: closing the issue fails the task, so only people with write access,
+// Closing the issue fails the task, so only people with write access,
 // or factoryd's bot, can do it through the webhook.
 func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 	for closer, want := range map[string]int{"mallory": 0, "reader": 0, "sebastian": 1, "factory-agent": 1} {

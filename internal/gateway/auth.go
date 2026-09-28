@@ -43,7 +43,7 @@ const (
 	defaultAudience = "factory-gateway"
 
 	// InClusterTokenPath is the pod's own ServiceAccount token: the JWKS
-	// fetch and the OpenBao login present it.
+	// fetch presents it.
 	InClusterTokenPath = "/var/run/secrets/kubernetes.io/serviceaccount/token" // #nosec G101 -- projected token file path, not a credential value
 
 	// InClusterCACertPath is the pod's mounted CA bundle; the JWKS fetch to

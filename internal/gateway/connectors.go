@@ -18,9 +18,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The provider connectors. Their keys live only in the gateway; the agent
@@ -39,7 +39,7 @@ type providerError struct {
 }
 
 func (e *providerError) Error() string {
-	return fmt.Sprintf("provider answered %d: %s", e.status, truncate(e.body, 500))
+	return fmt.Sprintf("provider answered %d: %s", e.status, textutil.Truncate(e.body, 500))
 }
 
 // billedNothing: a 4xx is refused before any work, so nothing was billed;
@@ -82,15 +82,6 @@ func call(ctx context.Context, client *http.Client, method, target string, heade
 }
 
 // truncate cuts s to at most n bytes on a rune boundary.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "\n[truncated]"
-}
 
 // Firecrawl scrapes and searches the web (api.firecrawl.dev/v2). A call
 // costs the creditsUsed its response reports.
@@ -134,7 +125,7 @@ func (f *Firecrawl) Scrape(ctx context.Context, pageURL string) (string, *int, e
 		return "", noResultCredits(res.Data.Metadata.CreditsUsed), fmt.Errorf("firecrawl scrape: %s", res.Error)
 	}
 	text := fmt.Sprintf("Title: %s\nStatus: %d\n\n%s", res.Data.Metadata.Title, res.Data.Metadata.StatusCode, res.Data.Markdown)
-	return truncate(text, maxToolText), res.Data.Metadata.CreditsUsed, nil
+	return textutil.Truncate(text, maxToolText), res.Data.Metadata.CreditsUsed, nil
 }
 
 // noResultCredits: "A scrape that returns no result is not charged"
@@ -167,7 +158,7 @@ func (f *Firecrawl) Search(ctx context.Context, query string, limit int) (string
 	if !res.Success {
 		return "", noResultCredits(res.CreditsUsed), fmt.Errorf("firecrawl search: %s", res.Error)
 	}
-	return truncate(string(res.Data.Web), maxToolText), res.CreditsUsed, nil
+	return textutil.Truncate(string(res.Data.Web), maxToolText), res.CreditsUsed, nil
 }
 
 // Replicate runs a prediction of a model version (api.replicate.com/v1). A
@@ -256,7 +247,7 @@ func (r *Replicate) Predict(ctx context.Context, version string, input map[strin
 	}
 	var p prediction
 	if err := json.Unmarshal(b, &p); err != nil || p.ID == "" {
-		return "", nil, fmt.Errorf("replicate: unreadable prediction: %s", truncate(string(b), 300))
+		return "", nil, fmt.Errorf("replicate: unreadable prediction: %s", textutil.Truncate(string(b), 300))
 	}
 	if !p.done() {
 		// still running after the wait: cancel it, then read what it used
@@ -275,9 +266,9 @@ func (r *Replicate) Predict(ctx context.Context, version string, input map[strin
 		}
 	}
 	if p.Status != "succeeded" {
-		return "", p.Metrics.PredictTime, fmt.Errorf("replicate: prediction %s %s: %s", p.ID, p.Status, truncate(string(p.Error), 500))
+		return "", p.Metrics.PredictTime, fmt.Errorf("replicate: prediction %s %s: %s", p.ID, p.Status, textutil.Truncate(string(p.Error), 500))
 	}
-	return truncate(string(p.Output), maxToolText), p.Metrics.PredictTime, nil
+	return textutil.Truncate(string(p.Output), maxToolText), p.Metrics.PredictTime, nil
 }
 
 // cancel cancels a prediction, retried with backoff.
@@ -490,5 +481,5 @@ func (f *Fal) Run(ctx context.Context, endpoint string, input map[string]any, un
 			}
 		}
 	}
-	return truncate(string(b), maxToolText), units, nil
+	return textutil.Truncate(string(b), maxToolText), units, nil
 }

@@ -14,7 +14,7 @@ import (
 
 // SpendSettleWindow must outlast HoldTTL: a hold taken just before a task
 // finishes is swept and booked up to HoldTTL after finishing, and the
-// settlement pass needs one more tick past that to see it (n1, fix round 3).
+// settlement pass needs one more tick past that to see it.
 func TestSpendSettleWindowOutlastsHoldTTL(t *testing.T) {
 	if want := policy.HoldTTL + time.Hour; SpendSettleWindow != want {
 		t.Fatalf("SpendSettleWindow = %s, want %s (policy.HoldTTL + 1h)", SpendSettleWindow, want)

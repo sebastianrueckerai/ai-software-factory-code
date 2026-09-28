@@ -98,11 +98,13 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
 		json.NewEncoder(w).Encode(map[string]any{"login": f.user})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/labels":
-		if r.URL.Query().Get("page") != "1" {
-			json.NewEncoder(w).Encode([]label{})
-			return
+		// two a page, as a Forgejo whose MAX_RESPONSE_ITEMS is below the
+		// limit asked for; an empty page ends the list
+		pages := map[string][]factoryd.RepoLabel{
+			"1": {{ID: 1, Name: "agent"}, {ID: 2, Name: "human"}},
+			"2": {{ID: 7, Name: "priority/p1"}, {ID: 9, Name: "state/done"}},
 		}
-		json.NewEncoder(w).Encode([]label{{ID: 1, Name: "agent"}, {ID: 2, Name: "human"}, {ID: 7, Name: "priority/p1"}, {ID: 9, Name: "state/done"}})
+		json.NewEncoder(w).Encode(append([]factoryd.RepoLabel{}, pages[r.URL.Query().Get("page")]...))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/sf/code/issues":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -721,6 +723,7 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin
 	ck, s := r.loggedIn(t)
+	r.fg.expiresIn = 3600 // the refreshed token lasts: one refresh serves every page read
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusOK {
 		t.Fatalf("GET /tasks/new = %d", rec.Code)
 	}
@@ -732,6 +735,9 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 		t.Fatalf("after refresh: call %q, refresh %q", last, s.refresh)
 	}
 	r.fg.refuse = true
+	s.mu.Lock()
+	s.expiry = time.Now() // the refreshed token runs out too
+	s.mu.Unlock()
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
 		t.Fatalf("refused refresh: %d to %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
 	}

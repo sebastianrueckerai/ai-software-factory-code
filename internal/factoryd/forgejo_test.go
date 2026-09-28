@@ -154,7 +154,7 @@ func TestForgejoCreateIssueRefused(t *testing.T) {
 
 func TestForgejoEnsureLabelsCreatesOnlyMissing(t *testing.T) {
 	var created []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet:
 			io.WriteString(w, `[{"id":1,"name":"agent"},{"id":2,"name":"state/queued"}]`)
@@ -196,6 +196,8 @@ func TestBootLabelsCoverPriorityAndSeverityAcrossPages(t *testing.T) {
 			json.NewEncoder(w).Encode(append(page, RepoLabel{ID: 1, Name: "agent"}))
 		case r.Method == http.MethodGet && r.URL.Query().Get("page") == "2":
 			io.WriteString(w, `[{"id":2,"name":"priority/p0"}]`)
+		case r.Method == http.MethodGet && r.URL.Query().Get("page") == "3":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet:
 			t.Errorf("unexpected page %q", r.URL.RawQuery)
 		case r.Method == http.MethodPost:
@@ -710,7 +712,7 @@ func TestForgejoIssueClosedBy(t *testing.T) {
 
 // Every paged list reads on until an empty page: Forgejo may serve fewer
 // items a page than the limit asked for. The boot sweep must see every
-// token (I3), and the open pull request may sit on any page.
+// token, every label, and the open pull request may sit on any page.
 func TestForgejoPagedListsReadEveryPage(t *testing.T) {
 	pr := func(n int, ref string) string {
 		return fmt.Sprintf(`{"number":%d,"state":"open","head":{"ref":%q,"repo":{"full_name":"factory-agent/r"}}}`, n, ref)
@@ -721,6 +723,8 @@ func TestForgejoPagedListsReadEveryPage(t *testing.T) {
 			servePage(w, r, 2, `{"id":1}`, `{"id":2}`, `{"id":3}`, `{"id":4}`, `{"id":5}`)
 		case "/api/v1/repos/sf/r/pulls":
 			servePage(w, r, 2, pr(1, "a"), pr(2, "b"), pr(3, "c"), pr(4, "factory/t1"))
+		case "/api/v1/repos/sf/r/labels":
+			servePage(w, r, 2, `{"id":1,"name":"agent"}`, `{"id":2,"name":"human"}`, `{"id":3,"name":"state/done"}`)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(404)
@@ -734,6 +738,9 @@ func TestForgejoPagedListsReadEveryPage(t *testing.T) {
 	}
 	if got, err := f.FindOpenPullRequestForBranch(ctx, "sf", "r", Repo{Owner: "factory-agent", Name: "r"}, "factory/t1"); err != nil || got == nil || got.Number != 4 {
 		t.Fatalf("open pull request = (%+v, %v), want #4 from the second page", got, err)
+	}
+	if labels, err := f.ListLabels(ctx, "sf", "r"); err != nil || len(labels) != 3 || labels[2].Name != "state/done" {
+		t.Fatalf("labels = (%v, %v), want all 3", labels, err)
 	}
 }
 
@@ -761,7 +768,7 @@ func TestForgejoListIssueCommentsIsOneRequest(t *testing.T) {
 	}
 }
 
-// A 4xx no retry can fix is a refusal (I4): the activity interceptor ends
+// A 4xx no retry can fix is a refusal: the activity interceptor ends
 // the retries on it. 404 is Forgejo's own not-found (also ErrNotFound), and 408, 409 and 429 are as
 // transient as a 5xx.
 func TestForgejoClientErrorsAreRefusals(t *testing.T) {
@@ -812,7 +819,7 @@ func TestForgejoClosePullRequest(t *testing.T) {
 	}
 }
 
-// The trust gate trusts code writers only (I-2): members of the org's
+// The trust gate trusts code writers only: members of the org's
 // teams with code write on the repository, and direct collaborators with
 // write. A collaborator's own permission is unreadable with a scoped
 // token, so a collaborator counts by being on the assignee list (write or

@@ -419,7 +419,7 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 
 // A Forgejo or LiteLLM outage longer than any bounded retry must not strand
 // the task: Finish and the other short activities retry for a day, backoff
-// capped at five minutes; only a refusal ends them sooner (I4). (The test
+// capped at five minutes; only a refusal ends them sooner. (The test
 // environment caps unlimited retries at 10, so the policy itself is what
 // is checked.)
 func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
@@ -514,7 +514,7 @@ func TestWorkflowReconcileSkipsAFinishedTask(t *testing.T) {
 	}
 }
 
-// M8: a terminal signal cancels the running session or check wait at once
+// A terminal signal cancels the running session or check wait at once
 // instead of after it returns.
 func TestWorkflowTerminalSignalCancelsTheRunningActivity(t *testing.T) {
 	h := newWorkflowHarness(t)
@@ -756,12 +756,6 @@ func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	}
 	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran y", "human sebastian answered the escalation: write ok"}) {
 		t.Fatalf("third session = %+v", s)
-	}
-}
-
-func TestTruncateKeepsWholeRunes(t *testing.T) {
-	if got := truncate("aé", 2); got != "a…" {
-		t.Fatalf("truncate = %q, want a…", got)
 	}
 }
 

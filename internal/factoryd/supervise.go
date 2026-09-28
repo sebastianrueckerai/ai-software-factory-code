@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // TripKind names why a session was killed mid-run.
@@ -394,7 +394,7 @@ func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
 	if n := d.calls[key]; n >= d.cfg.SameCall {
 		args, _ := json.Marshal(ev.Detail["args"])
 		return &Trip{Kind: TripSameCall, key: key,
-			Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s", tool, n, truncate(string(args), 300))}
+			Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s", tool, n, textutil.Truncate(string(args), 300))}
 	}
 	return nil
 }
@@ -527,12 +527,3 @@ func toInt(v any) (int, bool) {
 }
 
 // truncate cuts s to at most n bytes on a rune boundary.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "…"
-}

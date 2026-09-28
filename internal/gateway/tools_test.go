@@ -687,15 +687,3 @@ func TestWebToolsRefuseLocalTargets(t *testing.T) {
 		t.Fatalf("provider called: %v", e.providers.calls)
 	}
 }
-
-func TestTruncateCutsOnARuneBoundary(t *testing.T) {
-	for in, want := range map[[2]any]string{
-		{"aé", 2}:  "a\n[truncated]",
-		{"aé", 3}:  "aé",
-		{"abc", 2}: "ab\n[truncated]",
-	} {
-		if got := truncate(in[0].(string), in[1].(int)); got != want {
-			t.Errorf("truncate(%q, %d) = %q, want %q", in[0], in[1], got, want)
-		}
-	}
-}

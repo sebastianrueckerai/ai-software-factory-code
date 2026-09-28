@@ -11,16 +11,19 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // OpenBao signs sandbox SSH keys with the SSH CA (secrets engine
-// ssh-client-signer). The gateway logs in with its ServiceAccount token
-// through Kubernetes auth; its policy may only sign with SSHRole.
+// ssh-client-signer). The gateway logs in through Kubernetes auth with its
+// projected ServiceAccount token of audience openbao (OpenBaoTokenPath);
+// its policy may only sign with SSHRole.
 type OpenBao struct {
 	BaseURL   string // http://openbao.platform.svc.cluster.local:8200
 	AuthRole  string // the Kubernetes auth role bound to the gateway's ServiceAccount
 	SSHRole   string // the ssh-client-signer role for commissioned servers
-	TokenFile string // the pod's ServiceAccount token
+	TokenFile string // the projected token of audience openbao
 	HTTP      *http.Client
 
 	mu      sync.Mutex
@@ -55,7 +58,7 @@ func (o *OpenBao) CAPublicKey(ctx context.Context) (string, error) {
 	}
 	key := strings.TrimSpace(string(b))
 	if !strings.HasPrefix(key, "ssh-") && !strings.HasPrefix(key, "ecdsa-") {
-		return "", fmt.Errorf("openbao ca public key: unexpected answer %q", truncate(key, 80))
+		return "", fmt.Errorf("openbao ca public key: unexpected answer %q", textutil.Truncate(key, 80))
 	}
 	o.caKey, o.caAt = key, time.Now()
 	return key, nil

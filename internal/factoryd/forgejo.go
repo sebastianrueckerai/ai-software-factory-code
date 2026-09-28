@@ -112,13 +112,14 @@ type TokenRef struct {
 // tokens by name: completion and the boot sweep must revoke a task's token
 // even when the mint's ID was lost to a crash.
 func (f *Forgejo) ListTokens(ctx context.Context) ([]TokenRef, error) {
-	return getPages[TokenRef](ctx, f.call, fmt.Sprintf("/api/v1/users/%s/tokens?", f.BotUser))
+	return GetPages[TokenRef](ctx, f.call, fmt.Sprintf("/api/v1/users/%s/tokens?", f.BotUser))
 }
 
-// getPages reads every page of a paged Forgejo list; path ends in ? or &.
+// GetPages reads every page of a paged Forgejo list through call; path
+// ends in ? or &.
 // A page may hold fewer items than the limit asked for (the server caps
 // it at its MAX_RESPONSE_ITEMS), so only an empty page ends the list.
-func getPages[T any](ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), path string) ([]T, error) {
+func GetPages[T any](ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), path string) ([]T, error) {
 	var all []T
 	for page := 1; ; page++ {
 		body, err := call(ctx, http.MethodGet, fmt.Sprintf("%spage=%d&limit=50", path, page), nil, http.StatusOK)
@@ -219,7 +220,7 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 }
 
 // RepoWriters lists the users who may write the repository's code, the
-// users the trust gate lets steer a task (I-2): members of the owner org's
+// users the trust gate lets steer a task: members of the owner org's
 // teams with write or more on the code unit of this repository, and direct
 // collaborators with write or more. Forgejo shows no collaborator's
 // permission to a scoped token (the per-user endpoint refuses every one
@@ -247,7 +248,7 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 		}
 		return set
 	}
-	teams, err := getPages[struct {
+	teams, err := GetPages[struct {
 		ID       int64             `json:"id"`
 		AllRepos bool              `json:"includes_all_repositories"`
 		UnitsMap map[string]string `json:"units_map"`
@@ -259,7 +260,7 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 	writers, others := map[string]bool{}, map[string]bool{}
 	for _, t := range teams {
 		if !t.AllRepos {
-			repos, err := getPages[repository](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/repos?", t.ID))
+			repos, err := GetPages[repository](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/repos?", t.ID))
 			if err != nil {
 				return fail(err)
 			}
@@ -267,7 +268,7 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 				continue
 			}
 		}
-		members, err := getPages[user](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/members?", t.ID))
+		members, err := GetPages[user](ctx, f.orgCall, fmt.Sprintf("/api/v1/teams/%d/members?", t.ID))
 		if err != nil {
 			return fail(err)
 		}
@@ -288,7 +289,7 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 	if err := json.Unmarshal(body, &assignees); err != nil {
 		return fail(err)
 	}
-	collaborators, err := getPages[user](ctx, f.ciCall, fmt.Sprintf("/api/v1/repos/%s/collaborators?", full))
+	collaborators, err := GetPages[user](ctx, f.ciCall, fmt.Sprintf("/api/v1/repos/%s/collaborators?", full))
 	if err != nil {
 		return fail(err)
 	}
@@ -461,22 +462,7 @@ type RepoLabel struct {
 
 // ListLabels lists owner/repo's currently defined labels, all pages.
 func (f *Forgejo) ListLabels(ctx context.Context, owner, repo string) ([]RepoLabel, error) {
-	var out []RepoLabel
-	for page := 1; ; page++ {
-		path := fmt.Sprintf("/api/v1/repos/%s/%s/labels?limit=50&page=%d", owner, repo, page)
-		body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
-		if err != nil {
-			return nil, err
-		}
-		var labels []RepoLabel
-		if err := json.Unmarshal(body, &labels); err != nil {
-			return nil, fmt.Errorf("forgejo list labels %s/%s: %w", owner, repo, err)
-		}
-		out = append(out, labels...)
-		if len(labels) < 50 {
-			return out, nil
-		}
-	}
+	return GetPages[RepoLabel](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/labels?", owner, repo))
 }
 
 // CreateLabel defines a new repository label. color is a hex RGB string
@@ -752,7 +738,7 @@ func (f *Forgejo) CreatePullRequest(ctx context.Context, owner, repo, head, base
 // across a retried or replayed attempt). A nil ref with a nil error means no
 // open PR exists yet.
 func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo string, headRepo Repo, branch string) (*PullRequestRef, error) {
-	all, err := getPages[wirePR](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&", owner, repo))
+	all, err := GetPages[wirePR](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&", owner, repo))
 	if err != nil {
 		return nil, err
 	}
@@ -963,7 +949,7 @@ func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number 
 	if err != nil || !closed {
 		return "", err
 	}
-	events, err := getPages[struct {
+	events, err := GetPages[struct {
 		Type string `json:"type"`
 		User struct {
 			UserName string `json:"login"`
@@ -987,7 +973,7 @@ func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number 
 // OpenIssuesLabelled lists owner/repo's open issues, not pull requests,
 // carrying label.
 func (f *Forgejo) OpenIssuesLabelled(ctx context.Context, owner, repo, label string) ([]webhookIssue, error) {
-	return getPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&labels=%s&", owner, repo, url.QueryEscape(label)))
+	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&labels=%s&", owner, repo, url.QueryEscape(label)))
 }
 
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
@@ -1026,7 +1012,7 @@ func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (st
 // guarded directory still counts against it. (The compare API's file list
 // carries no previous name.)
 func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, number int64) ([]string, error) {
-	files, err := getPages[struct {
+	files, err := GetPages[struct {
 		Filename         string `json:"filename"`
 		PreviousFilename string `json:"previous_filename"`
 	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", owner, repo, number))

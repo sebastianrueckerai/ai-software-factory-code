@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // EscalationStore is what the escalation endpoint reads and records.
@@ -76,7 +78,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, err.Error(), status)
 			return
 		}
-		log.Printf("task %s: the agent escalated: %s", t.ID, truncate(q, 200))
+		log.Printf("task %s: the agent escalated: %s", t.ID, textutil.Truncate(q, 200))
 		// the session already took it: a failed record is logged, not undone
 		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
 			TaskID: t.ID, Kind: IntakeAgentEscalation, Author: "agent", Body: q + "\n\nWhy: " + why,

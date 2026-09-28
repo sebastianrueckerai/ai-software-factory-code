@@ -3,6 +3,7 @@ package console
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -184,27 +185,23 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		"Card": c.card(t), "Entries": entries})
 }
 
-type label struct {
-	ID   int64  `json:"id"`
-	Name string `json:"name"`
-}
-
 // labels lists the repository's labels as the human, all pages.
 func (c *Console) labels(r *http.Request) (map[string]int64, error) {
-	out := map[string]int64{}
-	for page := 1; ; page++ {
-		var ls []label
-		path := fmt.Sprintf("/api/v1/repos/%s/%s/labels?limit=50&page=%d", url.PathEscape(c.cfg.Repo.Owner), url.PathEscape(c.cfg.Repo.Name), page)
-		if err := c.asUser(r, http.MethodGet, path, nil, http.StatusOK, &ls); err != nil {
-			return nil, err
-		}
-		for _, l := range ls {
-			out[l.Name] = l.ID
-		}
-		if len(ls) < 50 {
-			return out, nil
-		}
+	asUser := func(_ context.Context, method, path string, _ []byte, want int) ([]byte, error) {
+		var raw json.RawMessage
+		err := c.asUser(r, method, path, nil, want, &raw)
+		return raw, err
 	}
+	ls, err := factoryd.GetPages[factoryd.RepoLabel](r.Context(), asUser,
+		fmt.Sprintf("/api/v1/repos/%s/%s/labels?", url.PathEscape(c.cfg.Repo.Owner), url.PathEscape(c.cfg.Repo.Name)))
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]int64{}
+	for _, l := range ls {
+		out[l.Name] = l.ID
+	}
+	return out, nil
 }
 
 var priorities = []string{"priority/p0", "priority/p1", "priority/p2", "priority/p3"}

@@ -1023,7 +1023,7 @@ func TestRunSessionResultCarriesFindings(t *testing.T) {
 	}
 }
 
-// I1: the half-way check-in is once per task: it fires in the session that
+// The half-way check-in is once per task: it fires in the session that
 // crosses the point, is recorded on the task, and no later session (a new
 // attempt, a retried activity, a restarted workflow) fires it again.
 func TestRunSessionHalfWayIsOncePerTask(t *testing.T) {
@@ -1419,7 +1419,7 @@ func TestReadLogLinesSkipsDropsLongLinesAndHoldsBrokenTails(t *testing.T) {
 	}
 }
 
-// m6: the follower reads the whole log ahead while nobody consumes (a
+// The follower reads the whole log ahead while nobody consumes (a
 // supervisor call blocks the session loop), so a pod deleted meanwhile
 // loses nothing; every line is delivered afterwards, in order.
 func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
@@ -1475,7 +1475,7 @@ func TestFollowPodLogFailsLoudlyPastItsBuffer(t *testing.T) {
 	}
 }
 
-// m2: an escalation overtaken by the session's own push is commented as
+// An escalation overtaken by the session's own push is commented as
 // superseded; the task goes to verification, not to a human.
 func TestRunSessionEscalationSupersededByAPush(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})

@@ -538,7 +538,7 @@ func TestSupervisorResumeResetsReadingWithoutWriting(t *testing.T) {
 	}
 }
 
-// M5: the event that trips reading-without-writing still reaches the trace
+// The event that trips reading-without-writing still reaches the trace
 // detectors.
 func TestSupervisorTracesSeeTheEventThatTripsRepetition(t *testing.T) {
 	s := mustSupervisor(t, time.Hour, 10*time.Hour, 2)
@@ -552,7 +552,7 @@ func TestSupervisorTracesSeeTheEventThatTripsRepetition(t *testing.T) {
 	}
 }
 
-// I2': a healthy edit → test (green, same output) loop is progress, not a
+// A healthy edit → test (green, same output) loop is progress, not a
 // circle; only a command that masks its exit status is judged by output.
 func TestSameFailureAPassEndsTheRunUnlessTheExitIsMasked(t *testing.T) {
 	d := newTraces()
@@ -575,7 +575,7 @@ func TestSameFailureAPassEndsTheRunUnlessTheExitIsMasked(t *testing.T) {
 	}
 }
 
-// m1: the first checkpoint only sets the baseline; it is no change.
+// The first checkpoint only sets the baseline; it is no change.
 func TestSameFailureFirstCheckpointIsNoChange(t *testing.T) {
 	d := newTraces()
 	d.observe(cmdEvent("go test", 1, "boom"))

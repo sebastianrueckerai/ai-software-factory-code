@@ -678,7 +678,7 @@ func TestLiveAddressesEndAtTheCutoff(t *testing.T) {
 	}
 }
 
-// m2, m3: an approval covers only the ways it was beyond; a task has at
+// An approval covers only the ways it was beyond; a task has at
 // most MaxPendingRequests pending.
 func TestApprovalCoversItsOwnViolationsAndPendingIsCapped(t *testing.T) {
 	db := agentDB(t)

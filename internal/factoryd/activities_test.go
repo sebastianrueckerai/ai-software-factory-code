@@ -197,7 +197,7 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 }
 
 // A Forgejo refusal or a not-found that escapes an activity ends its
-// retries (I4), and one the activity already made terminal stays as it is;
+// retries, and one the activity already made terminal stays as it is;
 // anything else stays retryable.
 func TestTerminalForgejoErrorsEndRetries(t *testing.T) {
 	for name, tc := range map[string]struct {

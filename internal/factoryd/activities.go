@@ -58,7 +58,7 @@ func (r *Runner) RegisterActivities(w interface {
 }
 
 // TerminalForgejoErrors is the worker interceptor that ends an activity's
-// retries on a Forgejo refusal or on a Forgejo 404 that escaped it (I4): no
+// retries on a Forgejo refusal or on a Forgejo 404 that escaped it: no
 // retry fixes a 4xx, and the activities that tolerate an absent object
 // swallow ErrNotFound themselves, so one that escapes names an object gone
 // for good. A kube, S3 or store not-found keeps retrying. Temporal reads

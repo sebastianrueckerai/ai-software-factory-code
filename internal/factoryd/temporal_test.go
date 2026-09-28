@@ -40,7 +40,7 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 
 // Every agent task not yet finished gets its workflow (re)started: a task
 // whose workflow died in review or mid-completion is not stranded. A task
-// waiting on Forgejo (in review, on a human) is re-read there too (I1); a
+// waiting on Forgejo (in review, on a human) is re-read there too; a
 // running one is not, its own run reads Forgejo.
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()

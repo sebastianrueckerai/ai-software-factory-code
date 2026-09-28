@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // TokenBudget is the caller-side answer-token budget for one task. GLM is
@@ -452,7 +453,7 @@ func capArgs(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
 	for k, v := range in {
 		if s, ok := v.(string); ok {
-			v = truncate(s, maxArgString)
+			v = textutil.Truncate(s, maxArgString)
 		}
 		out[k] = v
 	}

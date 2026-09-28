@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // TaskQueue is the Temporal task queue factoryd's worker polls.
@@ -973,7 +974,7 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 
 // finishOptions are the short activities' options: MaximumAttempts 0 is
 // unlimited within the day the schedule-to-close allows; a terminal error
-// (a Forgejo refusal among them, I4) ends the retries sooner.
+// (a Forgejo refusal among them) ends the retries sooner.
 func finishOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		StartToCloseTimeout:    2 * time.Minute,
@@ -1031,5 +1032,5 @@ func escalationQuestion(reason string) string {
 // answerText is one human answer as the sessions get it, tagged with the
 // question it answers.
 func answerText(author, question, body string) string {
-	return fmt.Sprintf("%s, to %q: %s", author, truncate(question, 300), truncate(body, maxAnswer))
+	return fmt.Sprintf("%s, to %q: %s", author, textutil.Truncate(question, 300), textutil.Truncate(body, maxAnswer))
 }

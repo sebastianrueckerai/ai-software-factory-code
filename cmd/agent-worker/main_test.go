@@ -30,7 +30,7 @@ func setRequiredEnv(t *testing.T) {
 }
 
 // A malformed FINDINGS must fail loudly, not silently become a first
-// attempt with no findings (fix round 1).
+// attempt with no findings.
 func TestLoadEnvRejectsMalformedFindings(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("FINDINGS", "not json")

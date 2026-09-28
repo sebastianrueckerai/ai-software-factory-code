@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The supervisor (architecture 6.6) is a model factoryd asks after a
@@ -47,7 +48,7 @@ func parseDecision(content string) Decision {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
 	invalid := func(why string) Decision {
-		return Decision{Action: ActionEscalate, Reason: "supervisor answer invalid (" + why + "): " + truncate(content, 300)}
+		return Decision{Action: ActionEscalate, Reason: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300)}
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
@@ -58,7 +59,7 @@ func parseDecision(content string) Decision {
 	if _, err := dec.Token(); err != io.EOF {
 		return invalid("text after the JSON object")
 	}
-	d.Guidance, d.Reason = truncate(strings.TrimSpace(d.Guidance), maxDecisionText), truncate(strings.TrimSpace(d.Reason), maxDecisionText)
+	d.Guidance, d.Reason = textutil.Truncate(strings.TrimSpace(d.Guidance), maxDecisionText), textutil.Truncate(strings.TrimSpace(d.Reason), maxDecisionText)
 	switch d.Action {
 	case ActionContinue, ActionRetryStronger:
 	case ActionRedirect:
@@ -268,7 +269,7 @@ const supervisorTimeout = 4 * time.Minute
 func (m *SupervisorModel) Decide(ctx context.Context, taskID string, in SupervisorInput) Decision {
 	d, err := m.decide(ctx, taskID, in)
 	if err != nil {
-		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + truncate(err.Error(), 500)}
+		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + textutil.Truncate(err.Error(), 500)}
 	}
 	return d
 }
@@ -367,7 +368,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 		return "", err
 	}
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status %d: %s", res.StatusCode, truncate(string(body), 300))
+		return "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
 	}
 	var out struct {
 		Choices []struct {
@@ -377,7 +378,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil || len(out.Choices) == 0 {
-		return "", fmt.Errorf("unreadable completion: %s", truncate(string(body), 300))
+		return "", fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(body), 300))
 	}
 	return out.Choices[0].Message.Content, nil
 }

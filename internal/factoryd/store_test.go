@@ -18,7 +18,7 @@ import (
 
 // fromJSON must surface a decode failure rather than silently returning an
 // empty slice, so corrupt required_capabilities/findings columns fail the
-// read instead of quietly discarding data (fix round 1).
+// read instead of quietly discarding data.
 func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 	if _, err := fromJSON([]byte(`not json`)); err == nil {
 		t.Fatal("want an error for malformed JSON, got nil")

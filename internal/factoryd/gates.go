@@ -18,6 +18,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The verification plane after green checks (architecture 7, ruling 109):
@@ -227,7 +228,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err != nil {
 		return ReproResult{}, err
 	}
-	res := ReproResult{Ran: true, Command: t.ReproCommand, Exit: rep.Exit, Output: tail(rep.Output, reproOutputTail)}
+	res := ReproResult{Ran: true, Command: t.ReproCommand, Exit: rep.Exit, Output: textutil.Tail(rep.Output, reproOutputTail)}
 	verdict := "passed"
 	if !res.Passed() {
 		verdict = "**failed**"
@@ -280,13 +281,6 @@ func fenced(s string) string {
 	}
 	f := strings.Repeat("`", max(3, longest+1))
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
-}
-
-func tail(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return "…" + s[len(s)-n:]
 }
 
 // reproPodSpec is the worker pod in repro mode: no gateway token, no push
@@ -345,7 +339,7 @@ func parseReview(content string) Review {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
 	invalid := func(why string) Review {
-		return Review{Note: "model review answer invalid (" + why + "): " + truncate(content, 300)}
+		return Review{Note: "model review answer invalid (" + why + "): " + textutil.Truncate(content, 300)}
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
@@ -362,13 +356,13 @@ func parseReview(content string) Review {
 	if rv.Note != "" {
 		return invalid("note is not an answer field")
 	}
-	if rv.Summary = truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
+	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
 	}
 	var findings []string
 	for _, f := range rv.Findings {
 		if f = strings.TrimSpace(f); f != "" && len(findings) < maxReviewFindings {
-			findings = append(findings, truncate(f, maxReviewFinding))
+			findings = append(findings, textutil.Truncate(f, maxReviewFinding))
 		}
 	}
 	rv.Findings = findings
@@ -417,7 +411,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	case errors.As(err, &refusal):
 		rv.Note = "model review skipped: the task's headroom does not pay for it (" + refusal.Reason + ")"
 	case err != nil:
-		rv.Note = "model review failed: " + truncate(err.Error(), 500)
+		rv.Note = "model review failed: " + textutil.Truncate(err.Error(), 500)
 	default:
 		rv = parseReview(content)
 	}
@@ -491,7 +485,7 @@ func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, app
 func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, last bool) (MergeResult, error) {
 	res, err := r.merge(ctx, t, repo, pr, commit, approver)
 	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
-		res = MergeResult{Failed: truncate(err.Error(), 500)}
+		res = MergeResult{Failed: textutil.Truncate(err.Error(), 500)}
 		r.reportMergeFailure(ctx, t, repo, pr, commit, approver, res.Failed)
 		return res, nil
 	}
@@ -506,7 +500,7 @@ func (r *Runner) ReportMergeFailure(ctx context.Context, taskID string, pr int64
 	if err != nil {
 		return err
 	}
-	r.reportMergeFailure(ctx, t, repo, pr, commit, approver, truncate(reason, 500))
+	r.reportMergeFailure(ctx, t, repo, pr, commit, approver, textutil.Truncate(reason, 500))
 	return nil
 }
 
@@ -599,7 +593,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 }
 
 func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: truncate(why, 500)}
+	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
 		commit, approver, res.Refusal))

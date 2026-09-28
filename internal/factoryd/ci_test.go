@@ -496,8 +496,8 @@ func TestCISpawnerPullSecretCopiedNoOtherCredentials(t *testing.T) {
 	}
 }
 
-// The factoryd-task ClusterRole grants only create, not get, on secrets
-// (finding 1, fix round 1): a Forbidden read of the registration secret
+// The factoryd-task ClusterRole grants only create, not get, on secrets:
+// a Forbidden read of the registration secret
 // must not be mistaken for "no secret was ever written" — the namespace
 // must survive so the next reconcile tick retries the read, instead of
 // silently losing the deregistration forever.
@@ -532,8 +532,7 @@ func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
 
 // A crash between RegisterCIRunner succeeding and any local write (the
 // namespace, the registration secret) leaves an orphaned Forgejo
-// registration with nothing local to recover it from (finding 2, fix round
-// 1). Forgejo's own runner list is the only record that survives that
+// registration with nothing local to recover it from. Forgejo's own runner list is the only record that survives that
 // crash: reconcile must find and deregister a runner named for a job that
 // has no namespace.
 func TestCISpawnerReconcileSweepsOrphanRunnerRegistration(t *testing.T) {
