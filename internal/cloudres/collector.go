@@ -151,7 +151,7 @@ func (c *Collector) Collect(ctx context.Context) error {
 	for _, v := range volumes {
 		listed = append(listed, providerResource{KindVolume, v.ID, v.Labels})
 	}
-	if err := c.interlock(servers, listed); err != nil {
+	if err := c.interlock(servers, ips, listed); err != nil {
 		log.Printf("cloud collector (%s): refusing the pass: %v", c.Project, err)
 		return fmt.Errorf("refusing the pass: %w", err)
 	}
@@ -226,14 +226,20 @@ func (c *Collector) adopt(ctx context.Context, p providerResource) error {
 
 // interlock is ruling 123: the collector deletes whatever its project
 // holds, so a token that opens another project (the cluster's, another
-// factory project's) must stop it before anything is deleted.
-func (c *Collector) interlock(servers []hcloud.Server, listed []providerResource) error {
+// factory project's) must stop it before anything is deleted: a server or
+// primary IP on a node address, or anything with another project's label.
+func (c *Collector) interlock(servers []hcloud.Server, ips []hcloud.PrimaryIP, listed []providerResource) error {
 	if len(c.NodeIPs) == 0 {
 		return errors.New("no cluster node IPs to check the project against")
 	}
 	for _, r := range listed {
 		if p, ok := r.labels["factory"]; ok && p != c.Project {
 			return fmt.Errorf("%s %d carries factory=%s: the token opens another project", r.kind, r.id, p)
+		}
+	}
+	for _, ip := range ips {
+		if p, ok := ip.Labels["factory"]; ok && p != c.Project {
+			return fmt.Errorf("primary ip %d carries factory=%s: the token opens another project", ip.ID, p)
 		}
 	}
 	nodes := make([]*net.IPNet, 0, len(c.NodeIPs))
@@ -244,12 +250,23 @@ func (c *Collector) interlock(servers []hcloud.Server, listed []providerResource
 		}
 		nodes = append(nodes, cidr)
 	}
-	for _, s := range servers {
-		ip := net.ParseIP(s.IPv4())
+	onNode := func(addr string) net.IP {
+		ip := net.ParseIP(addr)
 		for _, n := range nodes {
 			if ip != nil && n.Contains(ip) {
-				return fmt.Errorf("server %d is on cluster node address %s: the token opens the cluster's project", s.ID, ip)
+				return ip
 			}
+		}
+		return nil
+	}
+	for _, s := range servers {
+		if ip := onNode(s.IPv4()); ip != nil {
+			return fmt.Errorf("server %d is on cluster node address %s: the token opens the cluster's project", s.ID, ip)
+		}
+	}
+	for _, p := range ips {
+		if ip := onNode(p.IP); ip != nil {
+			return fmt.Errorf("primary ip %d is cluster node address %s: the token opens the cluster's project", p.ID, ip)
 		}
 	}
 	return nil

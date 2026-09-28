@@ -482,6 +482,29 @@ func TestCollectRefusesAForeignLabelOnAnyKind(t *testing.T) {
 	}
 }
 
+// An unassigned primary IP on a node's address (the cluster's own during a
+// rebuild) or with another project's label is the wrong token too: the
+// pass would delete it (ruling 123).
+func TestCollectRefusesOverAWrongProjectsPrimaryIP(t *testing.T) {
+	for name, wrong := range map[string]hcloud.PrimaryIP{
+		"a node's address":        {ID: 900, IP: "198.51.100.11"},
+		"another project's label": {ID: 900, IP: "203.0.113.9", Labels: map[string]string{"factory": "agent"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			h.prov.ips[900] = wrong
+			h.prov.ips[901] = hcloud.PrimaryIP{ID: 901, IP: "203.0.113.10"} // would be deleted
+			err := h.col.Collect(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "refusing the pass") {
+				t.Fatalf("err = %v, want a refused pass", err)
+			}
+			if len(h.prov.deleted) != 0 || len(h.prov.ips) != 2 {
+				t.Fatalf("deleted = %v, addresses %v, want nothing", h.prov.deleted, h.prov.ips)
+			}
+		})
+	}
+}
+
 // Without the node IPs to compare with, the interlock cannot hold: refuse.
 func TestCollectRefusesWithoutNodeIPs(t *testing.T) {
 	h := newHarness()
