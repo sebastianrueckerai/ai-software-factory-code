@@ -222,6 +222,21 @@ func (f *Forgejo) PutActionSecret(ctx context.Context, repo Repo, name, value st
 	return err
 }
 
+// IsCollaborator reports whether user is a direct collaborator on repo.
+func (f *Forgejo) IsCollaborator(ctx context.Context, repo Repo, user string) (bool, error) {
+	_, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String()+"/collaborators/"+url.PathEscape(user), nil, http.StatusNoContent)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// AdminAddCollaborator makes user a collaborator on repo with the site
+// admin's login.
+func (f *Forgejo) AdminAddCollaborator(ctx context.Context, a AdminAuth, repo Repo, user, permission string) error {
+	return addCollaborator(ctx, f.adminCall(a), repo, user, permission)
+}
+
 // DeployKey is a repository deploy key.
 type DeployKey struct {
 	ID       int64  `json:"id"`

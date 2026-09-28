@@ -227,17 +227,27 @@ func (run *reconcileRun) webhook(ctx context.Context) (Change, error) {
 	return c, run.r.Store.SetProjectTokens(ctx, run.p.Name, ProjectTokens{HookSecretHash: secretHash})
 }
 
+// collaborator keeps user a collaborator with write or more. Membership
+// is read first: the permission a site admin reads as is admin whether or
+// not it is a collaborator, and Forgejo drops a non-collaborator from the
+// whitelists.
 func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change, error) {
-	perm, err := run.r.Forgejo.CollaboratorPermission(ctx, run.p.Repo(), user)
+	f, repo := run.r.Forgejo, run.p.Repo()
+	is, err := f.IsCollaborator(ctx, repo, user)
+	if err != nil {
+		return "", err
+	}
+	if !is {
+		return Created, f.AddProjectCollaborator(ctx, repo, user, "write")
+	}
+	perm, err := f.CollaboratorPermission(ctx, repo, user)
 	switch {
 	case err != nil:
 		return "", err
 	case perm == "write" || perm == "admin" || perm == "owner":
 		return Unchanged, nil
-	case perm == "" || perm == "none":
-		return Created, run.r.Forgejo.AddProjectCollaborator(ctx, run.p.Repo(), user, "write")
 	}
-	return Updated, run.r.Forgejo.AddProjectCollaborator(ctx, run.p.Repo(), user, "write")
+	return Updated, f.AddProjectCollaborator(ctx, repo, user, "write")
 }
 
 // Protection is main's protection for a project: the code repository's
@@ -617,6 +627,12 @@ func (r *Registrar) admin(ctx context.Context, a AdminAuth, p *Project, rotate b
 	c, err = f.AdminEnsurePackageTeam(ctx, a, org, ciTeam, ci)
 	if err := logged("team "+ciTeam, c, err); err != nil {
 		return err
+	}
+	// a repository-limited token needs its user to see the repository
+	if p.MergeToken == "" || rotate {
+		if err := f.AdminAddCollaborator(ctx, a, repo, r.MergeUser, "write"); err != nil {
+			return fmt.Errorf("collaborator %s: %w", r.MergeUser, err)
+		}
 	}
 	var t ProjectTokens
 	mint := func(have *string, into *string, user, name string, scopes []string, repos []Repo) error {

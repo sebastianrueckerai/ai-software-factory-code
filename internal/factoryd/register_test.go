@@ -188,10 +188,19 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, repo+"/collaborators/") && strings.HasSuffix(p, "/permission"):
 			user := strings.TrimSuffix(strings.TrimPrefix(p, repo+"/collaborators/"), "/permission")
 			perm := s.collabs[user]
-			if perm == "" {
+			switch {
+			case user == "sebastian": // a site admin reads as admin, collaborator or not
+				perm = "admin"
+			case perm == "":
 				perm = "none"
 			}
 			fmt.Fprintf(w, `{"permission":%q}`, perm)
+		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodGet:
+			if s.collabs[strings.TrimPrefix(p, repo+"/collaborators/")] == "" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodPut:
 			s.collabs[strings.TrimPrefix(p, repo+"/collaborators/")] = body["permission"].(string)
 			w.WriteHeader(http.StatusNoContent)
@@ -445,7 +454,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		"row: created", "organisation demo-app: created", "repository demo-app/demo-app: created", "user ci-demo-app: created",
 		"team ci: created", "token pull of ci-demo-app: minted", "token git-demo-app of factory-projects: minted",
 		"token project-demo-app of factory-merge: minted", "token registry of ci-demo-app: minted",
-		"webhook: created", "collaborator factory-agent: created", "collaborator factory-merge: created", "collaborator sebastian: created",
+		"webhook: created", "collaborator factory-agent: created", "collaborator factory-merge: no change", "collaborator sebastian: created",
 		"protection main: created", "fork factory-agent/demo-app: ready", "deploy key: created",
 		"actions secret FACTORY_READ_TOKEN: created", "actions secret REGISTRY_USER: no change",
 		"namespace demo-staging: created", "demo-staging networkpolicy: created", "demo-prod resourcequota: created",
@@ -502,7 +511,7 @@ func TestRegistrationObjects(t *testing.T) {
 	for _, w := range fj.writes {
 		switch {
 		case strings.Contains(w, "/admin/") || strings.Contains(w, "/tokens") || strings.Contains(w, "/teams") ||
-			strings.HasPrefix(w, "POST /api/v1/orgs/demo-app/repos"):
+			strings.HasPrefix(w, "POST /api/v1/orgs/demo-app/repos") || w == "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-merge by basic sebastian":
 			if !strings.HasSuffix(w, "by basic sebastian") {
 				t.Errorf("%s: want the admin", w)
 			}
