@@ -40,8 +40,8 @@ type Document struct {
 const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
-// 154): a session at the 20 min wall-clock cap is already a supervisor
-// trip, so its bound is for one that outlives the cap by a minute.
+// 154): a session at the 20 min wall-clock cap is stopped by the cap
+// already, so its bound is for one that outlives the cap by a minute.
 var DefaultBounds = map[string]int{
 	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, BoundDefault: 120,
 }
