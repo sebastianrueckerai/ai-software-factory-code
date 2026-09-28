@@ -104,3 +104,15 @@ func TestBoundActivitiesAreTheRegisteredOnes(t *testing.T) {
 type nameRecorder func(string)
 
 func (f nameRecorder) RegisterActivityWithOptions(_ any, o activity.RegisterOptions) { f(o.Name) }
+
+// The supervisor's action is its trip's verdict: only a continue found
+// nothing to act on.
+func TestTripVerdict(t *testing.T) {
+	for action, want := range map[SupervisorAction]string{
+		ActionContinue: VerdictNoise, ActionRedirect: VerdictReal, ActionRetryStronger: VerdictReal, ActionEscalate: VerdictReal,
+	} {
+		if got := tripVerdict(action); got != want {
+			t.Errorf("tripVerdict(%s) = %s, want %s", action, got, want)
+		}
+	}
+}

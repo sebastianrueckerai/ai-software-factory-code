@@ -22,7 +22,7 @@ import (
 func TestRunSessionAgentEscalation(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	f := &fakeLiteLLM{content: `{"action":"continue"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 	runner.stopWait = 200 * time.Millisecond
@@ -52,6 +52,10 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	}
 	if len(f.chats) != 0 {
 		t.Fatalf("supervisor called %d times, want none", len(f.chats))
+	}
+	// the agent's question is the workflow's escalation alert, no trip
+	if alerts := store.alertRows(); len(alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none from the session", alerts)
 	}
 	if len(kube.deletedPods) == 0 {
 		t.Fatal("the worker was not stopped")

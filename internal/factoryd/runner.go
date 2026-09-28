@@ -554,8 +554,8 @@ func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recor
 	})
 }
 
-// recordDecision writes a supervisor decision into the session record and
-// the timeline.
+// recordDecision writes a supervisor decision into the session record, the
+// timeline and, for a detector's trip, an alert the decision judged.
 func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, called bool, digest string) {
 	detail := map[string]any{"detector": string(trip.Kind), "trip": trip.Detail, "digest": digest,
 		"decision": string(d.Action), "guidance": d.Guidance, "reason": d.Reason, "called": called}
@@ -564,6 +564,14 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	detail["session"] = s.id
 	r.record(ctx, t.ID, "supervisor", detail)
+	if trip.Kind == TripAgentEscalation {
+		return // the agent's question: the workflow's escalation alert
+	}
+	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "supervisor",
+		Detail: map[string]any{"session": s.id, "action": string(d.Action), "trip": trip.Detail, "called": called}}
+	if _, err := r.store.InsertAlert(ctx, a); err != nil {
+		log.Printf("task %s: record the supervisor trip alert: %v", t.ID, err)
+	}
 }
 
 // commentDecision puts a decision on the issue, with a note when the

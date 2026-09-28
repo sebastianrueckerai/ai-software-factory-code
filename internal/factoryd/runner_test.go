@@ -950,7 +950,7 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 
 func TestRunSessionContinueLetsTheSessionRunOn(t *testing.T) {
 	kube := newFakeKube()
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	f := &fakeLiteLLM{content: `{"action":"continue","reason":"each run fails later"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 
@@ -968,12 +968,21 @@ func TestRunSessionContinueLetsTheSessionRunOn(t *testing.T) {
 	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**continue**") {
 		t.Fatalf("comments = %v", hub.comments)
 	}
+	// the trip is an alert the supervisor judged noise by continuing
+	alerts := store.alertRows()
+	if len(alerts) != 1 {
+		t.Fatalf("alerts = %+v, want the one trip", alerts)
+	}
+	if a := alerts[0]; a.Kind != AlertSupervisorTrip || a.Source != string(TripSameFailure) || a.TaskID != "t2" ||
+		a.Verdict != VerdictNoise || a.ResolvedBy != "supervisor" || a.Detail["action"] != "continue" || a.Detail["session"] != res.SessionID {
+		t.Fatalf("alert = %+v", a)
+	}
 }
 
 // Three continues use up the session's calls; the fourth trip escalates
 // without a call, and the escalation is left to the workflow's comment.
 func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	f := &fakeLiteLLM{content: `{"action":"continue"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 
@@ -993,6 +1002,13 @@ func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
 	}
 	if len(hub.comments) != 4 || !strings.Contains(hub.comments[3], "**escalate**") {
 		t.Fatalf("comments = %q, want one per decision, the escalation too", hub.comments)
+	}
+	var verdicts []string
+	for _, a := range store.alertRows() {
+		verdicts = append(verdicts, a.Verdict+" "+fmt.Sprint(a.Detail["action"]))
+	}
+	if want := []string{"noise continue", "noise continue", "noise continue", "real escalate"}; !slices.Equal(verdicts, want) {
+		t.Fatalf("trip verdicts = %q, want %q", verdicts, want)
 	}
 }
 
@@ -1080,7 +1096,7 @@ func TestRunSessionRecordsEveryLineOfATricklingLog(t *testing.T) {
 }
 
 func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
 	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"write the file instead of reading"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
@@ -1093,6 +1109,9 @@ func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
 	}
 	if res.Outcome != OutcomeRedirect || !slices.Contains(res.Findings, "supervisor guidance: write the file instead of reading") {
 		t.Fatalf("result = %+v", res)
+	}
+	if alerts := store.alertRows(); len(alerts) != 1 || alerts[0].Verdict != VerdictReal || alerts[0].Detail["action"] != "redirect" {
+		t.Fatalf("alerts = %+v, want the trip judged real by the redirect", alerts)
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // prBase is the branch every task pull request targets.
@@ -378,6 +380,10 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	// with the same comment records nothing twice
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
 		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
+	}
+	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: taskID,
+		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
+		log.Printf("task %s: record the escalation alert: %v", taskID, err)
 	}
 	return id, nil
 }
