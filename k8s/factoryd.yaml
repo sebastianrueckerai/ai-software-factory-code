@@ -15,14 +15,16 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [namespaces]
-  verbs: [create, delete, list]
+  # get and patch: a project's namespaces are server-side applied with
+  # their label (Task 65); the policy confines it to labelled ones
+  verbs: [create, delete, list, get, patch]
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [rolebindings]
-  verbs: [create]
+  verbs: [create, get, patch]
 - apiGroups: [rbac.authorization.k8s.io]
   resources: [clusterroles]
   verbs: [bind]
-  resourceNames: [factoryd-task]
+  resourceNames: [factoryd-task, factoryd-project, factory-project-deployer]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -63,6 +65,92 @@ rules:
   # get, patch: the worker egress is read and server-side applied again
   # whenever it differs from what the task's leases admit
   verbs: [create, get, patch]
+---
+# Bound per project namespace by factoryd itself (Task 65): what
+# registration keeps there, and the Deployments the alerts endpoint reads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factoryd-project
+rules:
+- apiGroups: [""]
+  resources: [resourcequotas, limitranges, serviceaccounts, secrets]
+  verbs: [get, create, patch]
+- apiGroups: [apps]
+  resources: [deployments]
+  verbs: [list]
+- apiGroups: [kustomize.toolkit.fluxcd.io]
+  resources: [kustomizations]
+  verbs: [get, create, patch]
+---
+# What a project's Flux Kustomization applies with, as the namespace's flux
+# account (ruling 157): the workload kinds a project deploys, nothing
+# cluster-scoped, no RBAC and no Flux kind. admin and edit would not do:
+# both aggregate Flux's kinds, and a Kustomization without an account runs
+# with the controller's rights.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factory-project-deployer
+rules:
+- apiGroups: [""]
+  resources: [configmaps, secrets, services, serviceaccounts, persistentvolumeclaims]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [""]
+  resources: [pods, pods/log, events, endpoints]
+  verbs: [get, list, watch]
+- apiGroups: [apps]
+  resources: [deployments, statefulsets]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [apps]
+  resources: [replicasets]
+  verbs: [get, list, watch]
+- apiGroups: [batch]
+  resources: [jobs, cronjobs]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [policy]
+  resources: [poddisruptionbudgets]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [autoscaling]
+  resources: [horizontalpodautoscalers]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [networking.k8s.io]
+  resources: [networkpolicies]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [gateway.networking.k8s.io]
+  resources: [httproutes]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [cilium.io]
+  resources: [ciliumnetworkpolicies]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [postgresql.cnpg.io]
+  resources: [clusters, databases, scheduledbackups, backups]
+  verbs: [get, list, watch, create, update, patch, delete]
+---
+# Each project's Flux source (Task 65).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factoryd-projects
+  namespace: flux-system
+rules:
+- apiGroups: [source.toolkit.fluxcd.io]
+  resources: [gitrepositories]
+  verbs: [get, create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd-projects
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factoryd-projects
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
 ---
 # The registry pull secret factoryd copies into each task namespace.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -141,13 +229,48 @@ spec:
     expression: request.kind.kind
   - name: target
     expression: "request.kind.kind != 'Namespace' ? request.namespace : request.operation == 'DELETE' ? oldObject.metadata.name : object.metadata.name"
+  - name: task
+    expression: variables.target.startsWith('factory-agents-')
+  # a project's namespace (Task 65): created with factory/project and the
+  # restricted pod security level, or updated keeping the label it had; a
+  # namespace without the label (the cluster's, the factory's) never gets it
+  - name: projectNamespace
+    expression: >-
+      variables.kind == 'Namespace' && !variables.task && request.operation != 'DELETE' &&
+      has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
+      'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
+      object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' &&
+      (request.operation == 'CREATE' ||
+       (has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+        oldObject.metadata.labels['factory/project'] == object.metadata.labels['factory/project']))
+  # inside a namespace carrying factory/project
+  - name: inProject
+    expression: >-
+      variables.kind != 'Namespace' && !variables.task && request.operation != 'DELETE' &&
+      namespaceObject != null && has(namespaceObject.metadata.labels) &&
+      'factory/project' in namespaceObject.metadata.labels
+  # a project's Flux source: labelled, named after its project, the Flux
+  # credential sent to the factory's Forgejo only
+  - name: projectSource
+    expression: >-
+      variables.kind == 'GitRepository' && request.namespace == 'flux-system' && request.operation != 'DELETE' &&
+      has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
+      object.metadata.name == object.metadata.labels['factory/project'] &&
+      object.spec.url.startsWith('https://git.aisoftwarefactory.world/') &&
+      object.spec.secretRef.name == 'forgejo-pat' &&
+      (request.operation == 'CREATE' ||
+       (has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+        oldObject.metadata.labels['factory/project'] == object.metadata.labels['factory/project']))
   validations:
-  - expression: variables.target.startsWith('factory-agents-')
-    message: factoryd may only act in factory-agents-* namespaces
-  - expression: variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod']
+  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource
+    message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces and on its projects' Flux sources
+  - expression: >-
+      variables.task ? variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod'] :
+      variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization'] :
+      true
     message: factoryd may not create this kind of object
   - expression: >-
-      variables.kind != 'Namespace' || request.operation == 'DELETE' ||
+      variables.kind != 'Namespace' || !variables.task || request.operation == 'DELETE' ||
       (has(object.metadata.labels) &&
        'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
        ('factory.ai/task' in object.metadata.labels) &&
@@ -155,10 +278,23 @@ spec:
     message: task namespaces must carry factory.ai/task and pod-security.kubernetes.io/enforce=restricted
   - expression: >-
       variables.kind != 'RoleBinding' || request.operation == 'DELETE' ||
-      (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'factoryd-task' &&
-       has(object.subjects) && object.subjects.all(s, s.kind == 'ServiceAccount' &&
-       s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory'))
-    message: factoryd may only bind factoryd-task to itself
+      (object.roleRef.kind == 'ClusterRole' && has(object.subjects) && (
+        (variables.task && object.roleRef.name == 'factoryd-task' &&
+         object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory')) ||
+        (variables.inProject && object.roleRef.name == 'factoryd-project' &&
+         object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'factoryd' && has(s.namespace) && s.namespace == 'factory')) ||
+        (variables.inProject && object.roleRef.name == 'factory-project-deployer' &&
+         object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'flux' && has(s.namespace) && s.namespace == request.namespace))))
+    message: factoryd may only bind factoryd-task or factoryd-project to itself and factory-project-deployer to a project namespace's flux account
+  # a project's Kustomization applies its own repository into its own
+  # namespace as that namespace's flux account (ruling 157)
+  - expression: >-
+      variables.kind != 'Kustomization' || request.operation == 'DELETE' ||
+      (has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'flux' &&
+       has(object.spec.targetNamespace) && object.spec.targetNamespace == request.namespace &&
+       object.spec.sourceRef.kind == 'GitRepository' && object.spec.sourceRef.namespace == 'flux-system' &&
+       object.spec.sourceRef.name == namespaceObject.metadata.labels['factory/project'])
+    message: a project Kustomization runs as its namespace's flux account, into that namespace, from its project's GitRepository
   - expression: >-
       variables.kind != 'Pod' || request.operation == 'DELETE' ||
       (has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor' &&
@@ -278,6 +414,16 @@ spec:
         # factory-merge: merge whitelist of main only; the workflow's Merge
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
+        # factory-projects: creates project repositories and keeps their
+        # webhook, collaborators and protection (Task 65)
+        - name: FORGEJO_PROJECTS_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-projects, key: token}}
+        # SigNoz's root login, a copy of platform/signoz-root: the alerts
+        # endpoint reads the firing alerts with it
+        - name: SIGNOZ_EMAIL
+          valueFrom: {secretKeyRef: {name: signoz-root, key: email}}
+        - name: SIGNOZ_PASSWORD
+          valueFrom: {secretKeyRef: {name: signoz-root, key: password}}
         - name: CI_RUNNER_IMAGE
           value: git.aisoftwarefactory.world/sf/ci-runner@sha256:a04f38ba01b1748ae96b42c6525349781655fb4182835b66ae46cea039e3be39
         - name: LITELLM_MASTER_KEY
@@ -401,6 +547,14 @@ spec:
     - matchLabels: {app: factory-gateway}
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
+  # the org runner's main-branch jobs ask GET /projects/{name}/alerts
+  # (Task 65), with their project's FACTORY_READ_TOKEN
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: forgejo-runner
+        "k8s:io.kubernetes.pod.namespace": forgejo
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]
 ---
 # factoryd holds the LiteLLM master key, the bot password, the S3 keys and
 # the Hetzner CI token, so its egress is default-deny with exactly its
@@ -431,6 +585,7 @@ spec:
         - matchName: fsn1.your-objectstorage.com
         - matchName: api.hetzner.cloud
         - matchName: signoz-otel-collector.platform.svc.cluster.local
+        - matchName: signoz.platform.svc.cluster.local
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -469,4 +624,10 @@ spec:
         app.kubernetes.io/component: otel-collector
     toPorts:
     - ports: [{port: "4318", protocol: TCP}]
-
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/instance: signoz
+        app.kubernetes.io/component: signoz
+    toPorts:
+    - ports: [{port: "8080", protocol: TCP}]
