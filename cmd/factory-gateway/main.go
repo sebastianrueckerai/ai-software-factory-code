@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -29,7 +33,10 @@ func main() {
 		log.Fatalf("AGENT_SSH_SOURCES: %v", err)
 	}
 
-	ctx := context.Background()
+	// SIGTERM (a roll) drains the server and flushes the telemetry within
+	// the pod's grace period
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
 	otelProviders, err := telemetry.Setup(ctx, "factory-gateway")
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
@@ -96,5 +103,20 @@ func main() {
 		Handler:           srv.Routes(version),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Fatal(server.ListenAndServe())
+	go func() {
+		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+	<-ctx.Done()
+	drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(drain); err != nil {
+		log.Printf("shutdown: %v", err)
+	}
+	flush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFlush()
+	if err := otelProviders.Shutdown(flush); err != nil {
+		log.Printf("telemetry shutdown: %v", err)
+	}
 }

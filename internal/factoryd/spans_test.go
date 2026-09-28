@@ -66,7 +66,7 @@ func TestActivitySpansCarryTheTaskID(t *testing.T) {
 			t.Fatalf("span %s attributes %v", s.Name(), attrs)
 		}
 	}
-	if ended[1].Status().Description != "worker pod failed" {
+	if ended[1].Status().Description != "RunSession failed" {
 		t.Fatalf("RunSession status %v", ended[1].Status())
 	}
 }

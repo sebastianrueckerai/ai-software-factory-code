@@ -163,7 +163,9 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	r.SetTimestamp(time.Now())
 	r.SetSeverity(otellog.SeverityInfo)
 	r.SetSeverityText("INFO")
-	r.SetBody(otellog.StringValue("audit " + t.scrubber.scrub(row.Decision)))
+	// the task id (from the verified token) and the decision (a constant)
+	// are the gateway's own, and task.id is the cross-binary join key
+	r.SetBody(otellog.StringValue("audit " + row.Decision))
 	str := func(key, v string) {
 		if v != "" {
 			r.AddAttributes(otellog.String(key, t.scrubber.scrub(v)))
@@ -174,8 +176,10 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 			r.AddAttributes(otellog.Float64(key, *v))
 		}
 	}
-	str(string(telemetry.TaskID), row.TaskID)
-	str("audit.decision", row.Decision)
+	if row.TaskID != "" {
+		r.AddAttributes(otellog.String(string(telemetry.TaskID), row.TaskID))
+	}
+	r.AddAttributes(otellog.String("audit.decision", row.Decision))
 	str("audit.reason", row.Reason)
 	str("audit.model_alias", row.ModelAlias)
 	str("audit.tool", row.Tool)
@@ -191,16 +195,20 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	return r
 }
 
-// scrubber keeps keys and provider bodies out of the audit log records:
-// the gateway's own secrets, bearer and basic credentials, JWTs, sk- keys,
-// any run of 32 or more key characters, and the provider body a connector
-// error carries.
+// scrubber keeps keys and response bodies out of the audit log records:
+// PEM blocks, the gateway's own secrets, the body an upstream error
+// carries (a provider's answer, LiteLLM's key API answer, an unreadable
+// Replicate prediction; the gateway's booking note after it stays), URL
+// userinfo, bearer and basic credentials, JWTs, sk- keys and any run of 32
+// or more key characters.
 type scrubber struct {
 	secrets []string
 }
 
 var (
-	providerBody = regexp.MustCompile(`(?s)(provider answered \d{3}): .*`)
+	pemBlock     = regexp.MustCompile(`(?s)-----BEGIN [A-Z ]+-----.*?-----END [A-Z ]+-----`)
+	upstreamBody = regexp.MustCompile(`(?s)(provider answered \d{3}|key (?:generate|block): status \d{3}|unreadable prediction): .*?(; cost not reported, booked the hold [\d.]+ EUR)?$`)
+	userinfo     = regexp.MustCompile(`(\w+://)[^/\s@]+@`)
 	credential   = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[^\s"',;]+`)
 	keyLike      = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|[\w+/=-]{32,}`)
 )
@@ -219,10 +227,12 @@ func newScrubber(secrets ...string) *scrubber {
 }
 
 func (s *scrubber) scrub(v string) string {
+	v = pemBlock.ReplaceAllString(v, "[pem redacted]")
 	for _, secret := range s.secrets {
 		v = strings.ReplaceAll(v, secret, "[redacted]")
 	}
-	v = providerBody.ReplaceAllString(v, "$1: [body dropped]")
+	v = upstreamBody.ReplaceAllString(v, "$1: [body dropped]$2")
+	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
 	v = credential.ReplaceAllString(v, "$1 [redacted]")
 	return keyLike.ReplaceAllString(v, "[redacted]")
 }

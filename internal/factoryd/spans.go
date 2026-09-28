@@ -16,7 +16,8 @@ import (
 // ActivitySpans is the worker interceptor that runs every activity inside
 // a span named after it. An activity of a task's workflow (WorkflowID)
 // carries the task's id as task.id, the key the gateway's and the worker's
-// spans and the audit log records carry too.
+// spans and the audit log records carry too. A failed activity's span is
+// in error, described by its name only.
 type ActivitySpans struct {
 	interceptor.WorkerInterceptorBase
 	Tracer trace.Tracer
@@ -44,7 +45,9 @@ func (i *activitySpanInbound) ExecuteActivity(ctx context.Context, in *intercept
 	defer span.End()
 	out, err := i.Next.ExecuteActivity(ctx, in)
 	if err != nil {
-		span.SetStatus(codes.Error, err.Error())
+		// the error's text (Forgejo's and the API server's answers) stays
+		// in the workflow history, not in a span
+		span.SetStatus(codes.Error, info.ActivityType.Name+" failed")
 	}
 	return out, err
 }

@@ -94,7 +94,7 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 			t.Fatalf("%s: parent %v, attributes %v", name, spans[name].Parent(), attrs(spans[name]))
 		}
 	}
-	if spans["push"].Status().Code != codes.Error || spans["push"].Status().Description != "push refused" {
+	if spans["push"].Status().Code != codes.Error || spans["push"].Status().Description != "push failed" {
 		t.Fatalf("push status %v", spans["push"].Status())
 	}
 	run := spans["run"].SpanContext().SpanID()
@@ -120,10 +120,10 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 		tools = append(tools, a)
 	}
 	wantTools := []map[string]string{
-		{"task.id": "t1", "tool.name": "bash", "tool.status": "ok", "tool.exit_code": "0", "tool.bytes_written": "11", "duration": "37ms", "code": "Unset"},
-		{"task.id": "t1", "tool.name": "edit", "tool.status": "ok", "tool.bytes_written": "15", "duration": "12ms", "code": "Unset"},
+		{"task.id": "t1", "tool.name": "bash", "tool.status": "ok", "tool.exit_code": "0", "tool.bytes": "11", "duration": "37ms", "code": "Unset"},
+		{"task.id": "t1", "tool.name": "edit", "tool.status": "ok", "tool.bytes": "15", "duration": "12ms", "code": "Unset"},
 		{"task.id": "t1", "tool.name": "write", "tool.status": "error", "duration": "2ms", "code": "Error"},
-		{"task.id": "t1", "tool.name": "bash", "tool.status": "error", "tool.exit_code": "1", "tool.bytes_written": "4", "duration": "1.5s", "code": "Error"},
+		{"task.id": "t1", "tool.name": "bash", "tool.status": "error", "tool.exit_code": "1", "tool.bytes": "4", "duration": "1.5s", "code": "Error"},
 		{"task.id": "t1", "tool.name": "factory-tools_echo", "tool.status": "ok", "duration": "4ms", "code": "Unset"},
 	}
 	if !reflect.DeepEqual(tools, wantTools) {
@@ -199,3 +199,30 @@ func TestSessionOutcome(t *testing.T) {
 		}
 	}
 }
+
+// The session span is exported before the result line: factoryd deletes
+// the pod as soon as it reads that line.
+func TestResultLineComesAfterTheSessionSpan(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)),
+		sdkmetric.NewMeterProvider(), "t1", "s-1", "factory/coding-cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tel.start()
+	var sessionEndedFirst bool
+	w := writerFunc(func(p []byte) (int, error) {
+		for _, s := range rec.Ended() {
+			sessionEndedFirst = sessionEndedFirst || s.Name() == "session"
+		}
+		return len(p), nil
+	})
+	writeResult(w, harness.Result{Success: true}, func() { tel.end("pushed") })
+	if !sessionEndedFirst {
+		t.Fatal("the result line was written before the session span ended")
+	}
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

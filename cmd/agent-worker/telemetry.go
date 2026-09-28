@@ -18,7 +18,8 @@ import (
 // sessionTelemetry makes one session one trace: a root span "session",
 // children brief, run and push, and under run a span per tool call from the
 // adapter's event stream, with the tool's name, run time, status, exit code
-// and bytes written, never its arguments or output.
+// and size (tool.bytes: a command's output length, a file change's size
+// after it), never its arguments or output.
 type sessionTelemetry struct {
 	tracer   trace.Tracer
 	now      func() time.Time
@@ -68,7 +69,8 @@ func (s *sessionTelemetry) start() {
 }
 
 // phase starts a child span of the session; the returned func ends it,
-// in error when err is not nil. Tool spans go under the run phase.
+// in error when err is not nil, described only as "<name> failed": the
+// error's text can carry what a span must not. Tool spans go under run.
 func (s *sessionTelemetry) phase(name string) func(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,7 +80,7 @@ func (s *sessionTelemetry) phase(name string) func(err error) {
 	}
 	return func(err error) {
 		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
+			span.SetStatus(codes.Error, name+" failed")
 		}
 		span.End(trace.WithTimestamp(s.now()))
 	}
@@ -127,7 +129,7 @@ func (s *sessionTelemetry) observe(ev harness.Event) {
 	}
 	attrs = append(attrs, attribute.String("tool.name", name), attribute.String("tool.status", status))
 	if n, ok := number(ev.Detail["bytes"]); ok {
-		attrs = append(attrs, attribute.Int64("tool.bytes_written", n))
+		attrs = append(attrs, attribute.Int64("tool.bytes", n))
 	}
 	end := ev.Time
 	if end.IsZero() {

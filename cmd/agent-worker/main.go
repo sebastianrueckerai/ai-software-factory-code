@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -69,11 +70,6 @@ func run(log func(string, ...any)) int {
 		log("telemetry: %v", err)
 		return 1
 	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
-	}()
 	tel, err := newSessionTelemetry(otelProviders.Tracer, otelProviders.Meter, env.taskID, env.sessionID, env.model)
 	if err != nil {
 		log("telemetry: %v", err)
@@ -81,7 +77,15 @@ func run(log func(string, ...any)) int {
 	}
 	tel.start()
 	outcome := "failed"
-	defer func() { tel.end(outcome) }()
+	// factoryd deletes the pod once it reads the result line, so the session
+	// span and the last metrics leave before it
+	closeTelemetry := sync.OnceFunc(func() {
+		tel.end(outcome)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
+	})
+	defer closeTelemetry()
 	endBrief := tel.phase("brief")
 
 	// The pod mounts an emptyDir over HOME (the image root is read-only), so
@@ -179,13 +183,19 @@ func run(log func(string, ...any)) int {
 		return commit, pushErr
 	}, env.branch, emit)
 	outcome = sessionOutcome(res, stopped, commit, pushErr)
-	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &res})
-	fmt.Println(string(line))
+	writeResult(os.Stdout, res, closeTelemetry)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
 	}
 	return 0
+}
+
+// writeResult runs before, then writes the result envelope.
+func writeResult(w io.Writer, res harness.Result, before func()) {
+	before()
+	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &res})
+	fmt.Fprintln(w, string(line))
 }
 
 // sessionOutcome is the session's outcome for its duration metric.

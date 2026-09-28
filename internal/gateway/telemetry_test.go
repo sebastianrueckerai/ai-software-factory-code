@@ -117,11 +117,23 @@ func spanAttrs(s sdktrace.ReadOnlySpan) map[string]string {
 func TestScrubRemovesKeysAndBodies(t *testing.T) {
 	s := newScrubber("hunter2-master")
 	for in, want := range map[string]string{
-		`provider answered 402: {"error":"Insufficient credits","key":"fc-123"}; cost not reported`: "provider answered 402: [body dropped]",
-		"Authorization: Bearer abc.def":                                                               "Authorization: Bearer [redacted]",
-		"litellm refused key sk-task-key-1: blocked":                                                  "litellm refused key [redacted]: blocked",
-		"token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused":                                     "token [redacted] refused",
-		"hetzner token 0123456789abcdefghijABCDEFGHIJ0123456789 refused":                              "hetzner token [redacted] refused",
+		`provider answered 402: {"error":"Insufficient credits","key":"fc-123"}; cost not reported, booked the hold 0.005000 EUR`:  "provider answered 402: [body dropped]; cost not reported, booked the hold 0.005000 EUR",
+		`provider answered 500: {"error":"stub failure"}`:                                                                          "provider answered 500: [body dropped]",
+		`key generate: status 500: {"error":{"message":"db down"}}`:                                                                "key generate: status 500: [body dropped]",
+		`key block: status 404: {"detail":"key sk-x not found"}`:                                                                   "key block: status 404: [body dropped]",
+		"replicate: unreadable prediction: <html><body>Bad gateway</body></html>; cost not reported, booked the hold 0.009000 EUR": "replicate: unreadable prediction: [body dropped]; cost not reported, booked the hold 0.009000 EUR",
+		"Authorization: Bearer abc.def":                                                                                            "Authorization: Bearer [redacted]",
+		"Authorization: Basic dXNlcjpwYXNzd29yZA==":                                                                                "Authorization: Basic [redacted]",
+		"clone https://x-access-token:ghp_abc123shortpass@git.example/sf/repo.git failed":                                          "clone https://[redacted]@git.example/sf/repo.git failed",
+		"litellm refused key sk-task-key-1: blocked":                                                                               "litellm refused key [redacted]: blocked",
+		"token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused":                                                                  "token [redacted] refused",
+		"hetzner token 0123456789abcdefghijABCDEFGHIJ0123456789 refused":                                                           "hetzner token [redacted] refused",
+		"hetzner token AAAAAAAAAAAAAAAAAAAAbbbbbbbbbbbbbbbbbbbb01234567890123456789wxyz refused":                                   "hetzner token [redacted] refused",
+		"fal key 0b7e3f1a-2c4d-4e5f-8a9b-1c2d3e4f5a6b:0123456789abcdef0123456789abcdef refused":                                    "fal key [redacted]:[redacted] refused",
+		"replicate token r8_0123456789abcdefghijABCDEFGHIJ01234 refused":                                                           "replicate token [redacted] refused",
+		"firecrawl key fc-0123456789abcdef0123456789abcdef refused":                                                                "firecrawl key [redacted] refused",
+		"openbao token hvs.CAESIJ0123456789abcdefghijklmnopqrstuvwxyz expired":                                                     "openbao token hvs.[redacted] expired",
+		"key -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACD=\n-----END OPENSSH PRIVATE KEY----- rejected": "key [pem redacted] rejected",
 		"the master key hunter2-master is in use":                                                     "the master key [redacted] is in use",
 		`model "coding-cheap" is not allowed for capability classes ["coder"] under policy version 3`: `model "coding-cheap" is not allowed for capability classes ["coder"] under policy version 3`,
 	} {
@@ -145,6 +157,8 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 		{TaskID: "t1", Decision: "allowed", ModelAlias: "sk-sneaky-alias-0123", PolicyVersion: &three, SpendEUR: &spend,
 			OutputLimit: &limit, HoldEUR: &hold, OverHold: "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full"},
 		{TaskID: "t1", Decision: "refused_budget", Reason: "task headroom 0.000000 EUR", ModelAlias: "coding-cheap", PolicyVersion: &three},
+		// a task id as long as a key stays whole: it is the join key
+		{TaskID: "t-0123456789abcdef0123456789abcdef01", Decision: "escalated", Tool: policy.ToolEscalate},
 	}
 	for _, row := range rows {
 		if err := audited.InsertAudit(context.Background(), row); err != nil {
@@ -162,6 +176,7 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 			"audit.over_hold": "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full"},
 		{"body": "audit refused_budget", "task.id": "t1", "audit.decision": "refused_budget", "audit.reason": "task headroom 0.000000 EUR",
 			"audit.model_alias": "coding-cheap", "audit.policy_version": "3"},
+		{"body": "audit escalated", "task.id": "t-0123456789abcdef0123456789abcdef01", "audit.decision": "escalated", "audit.tool": policy.ToolEscalate},
 	}
 	got := rig.logs.attributes()
 	if !reflect.DeepEqual(got, want) {
@@ -182,8 +197,8 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 	if err := failing.InsertAudit(context.Background(), rows[0]); err == nil {
 		t.Fatal("the store's error was swallowed")
 	}
-	if n := len(rig.logs.attributes()); n != 3 {
-		t.Fatalf("%d log records after a refused insert, want 3", n)
+	if n := len(rig.logs.attributes()); n != 4 {
+		t.Fatalf("%d log records after a refused insert, want 4", n)
 	}
 }
 

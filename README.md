@@ -965,7 +965,8 @@ in `EUR`.
 Spans: one per Temporal activity (`ActivitySpans`), named after it
 (`RunSession`, `WaitChecks`, ...), with `temporal.workflow_id`,
 `temporal.attempt` and, for a task's workflow `task-<id>`, `task.id`; a
-failed activity ends in error with its message.
+failed activity ends in error, described by its name only (`RunSession
+failed`).
 
 Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 1800, 2700 and 3600:
@@ -1051,14 +1052,28 @@ body `audit <decision>`, severity INFO, attributes `task.id`,
 `audit.decision`, `audit.reason`, `audit.model_alias`, `audit.tool`,
 `audit.spend_eur`, `audit.policy_version`, `audit.output_limit`,
 `audit.hold_eur`, `audit.over_hold`; a nil or empty column is left out.
-Every string goes through the scrubber first: the gateway's own keys
-(`LITELLM_MASTER_KEY`, the tool keys, `FACTORYD_TOKEN`,
-`HETZNER_AGENT_KEY`), bearer and basic credentials, JWTs, `sk-` keys and
-any run of 32 or more key characters become `[redacted]`, and a
-connector error's provider body (`provider answered <status>: ...`)
-becomes `[body dropped]`. No request or response body is logged. An
+`task.id` and `audit.decision` are the gateway's own (the verified
+token's task, a constant) and go out as they are. Every other string goes
+through the scrubber first: a PEM block becomes `[pem redacted]`; the
+gateway's own keys (`LITELLM_MASTER_KEY`, the tool keys, `FACTORYD_TOKEN`,
+`HETZNER_AGENT_KEY`), URL userinfo, bearer and basic credentials, JWTs,
+`sk-` keys and any run of 32 or more key characters become `[redacted]`
+(which also catches long paths and digests; Postgres keeps them); and the
+body an upstream error carries (`provider answered <status>: ...`, `key
+generate|block: status <status>: ...`, `unreadable prediction: ...`)
+becomes `[body dropped]`, keeping the gateway's own `; cost not reported,
+booked the hold ... EUR` after it. No request or response body is logged. An
 escalation's row carries the agent's question (its first 500 bytes) as
 the reason.
+
+Postgres is the authoritative audit record. The SigNoz copy is not proof:
+ruling 158 lets sandbox code send OTLP to the same collector, so an agent
+can forge a record with `service.name=factory-gateway`, an `audit`
+body and any `task.id`.
+
+On SIGTERM the gateway stops accepting, lets in-flight calls finish and
+book (at most 10 s), then flushes its telemetry (at most 5 s), inside the
+pod's 30 s grace period.
 
 ### agent-worker
 
@@ -1069,9 +1084,12 @@ harness) and `push` (the commit and push, when the session finished or
 was stopped), and under `run` one span per tool call from the harness
 event stream: named after the tool (`bash` for a command), with
 `task.id`, `tool.name`, `tool.status` (`ok` or `error`; a command is ok
-on exit 0), `tool.exit_code` for a command and `tool.bytes_written` (a
-command's output length, a file change's size after it), timed from the
-tool's own `state.time`. Arguments and outputs never reach a span.
+on exit 0), `tool.exit_code` for a command and `tool.bytes` (a command's
+output length, a file change's size after it; not bytes written), timed
+from the tool's own `state.time`. Arguments and outputs never reach a
+span, and a failed phase's status says only `<phase> failed`. The worker
+ends the session span and flushes all three signals (at most 5 s) before
+it prints its result line, because factoryd deletes the pod on reading it.
 
 Metrics:
 
