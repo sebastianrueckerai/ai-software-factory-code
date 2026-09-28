@@ -451,8 +451,13 @@ dated the day the pass runs, `tool` per tool call with the tool as ref,
 `resource` for the later leases), ref, EUR (never negative). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
 `policy_activations`, `ledger` and `holds` lives in
-`internal/policy/schema.sql` and is applied by both binaries, which share
-the `gateway` database.
+`internal/policy/schema.sql`. Both binaries share the `gateway` database
+and migrate all of it at boot (`internal/schema`): factoryd's and the
+gateway's migrations (`internal/schema/migrations/<set>/`, by file name)
+and then the policy schema, under one advisory lock, so whichever boots
+first migrates and the other waits. Each file applies once with its row
+in `schema_migrations`, logged as `migration <set>/<file> applied`; a
+boot with nothing to apply logs `migrations up to date`.
 
 Both endpoints take the intake bearer token:
 

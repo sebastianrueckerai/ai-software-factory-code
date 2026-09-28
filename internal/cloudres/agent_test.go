@@ -7,15 +7,14 @@ import (
 	"errors"
 	"math"
 	"os"
-	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 )
 
 // livePricing is GET /v1/pricing for fsn1 as the agent project read it on
@@ -114,7 +113,7 @@ func TestLabelValue(t *testing.T) {
 }
 
 // agentDB opens a disposable Postgres (FACTORYD_TEST_DATABASE_URL) with
-// factoryd's migrations and the policy schema applied, wiped.
+// the factory schema applied, wiped.
 func agentDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
@@ -127,22 +126,7 @@ func agentDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
-	files, _ := filepath.Glob("../factoryd/migrations/*.sql")
-	sort.Strings(files)
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, stmt := range strings.Split(string(b), ";") {
-			if strings.TrimSpace(stmt) != "" {
-				if _, err := db.ExecContext(ctx, stmt); err != nil {
-					t.Fatalf("%s: %v", f, err)
-				}
-			}
-		}
-	}
-	if err := policy.Migrate(ctx, db); err != nil {
+	if err := schema.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	// the ledger is append-only by trigger; a test database is wiped whole

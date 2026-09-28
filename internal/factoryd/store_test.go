@@ -12,6 +12,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 )
 
 // fromJSON must surface a decode failure rather than silently returning an
@@ -669,7 +671,7 @@ func TestPGStore(t *testing.T) {
 	); err != nil {
 		t.Fatalf("gateway-style seed: %v", err)
 	}
-	if err := s2.migrate(ctx); err != nil {
+	if err := schema.Migrate(ctx, s2.db); err != nil {
 		t.Fatalf("migrate over gateway-created row: %v", err)
 	}
 	gw, ok, err := s2.Task(ctx, "t-gw")
@@ -680,11 +682,12 @@ func TestPGStore(t *testing.T) {
 
 	// the capability backfill gives pre-policy agent tasks "coder", once
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM backfills WHERE name = '0014_task_capabilities';
+		DELETE FROM schema_migrations WHERE name = 'factoryd/0014_task_capabilities.sql';
 		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities) VALUES
 		('b-agent', 1, 'done', 'agent', 'null'), ('b-human', 1, 'done', 'human', 'null')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s2.migrate(ctx); err != nil {
+	if err := schema.Migrate(ctx, s2.db); err != nil {
 		t.Fatal(err)
 	}
 	for id, want := range map[string][]string{"b-agent": {"coder"}, "b-human": nil, "t-gw": {"coder"}} {
@@ -695,7 +698,7 @@ func TestPGStore(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '[]' WHERE id = 't-gw'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s2.migrate(ctx); err != nil {
+	if err := schema.Migrate(ctx, s2.db); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s2.Task(ctx, "t-gw"); len(got.RequiredCapabilities) != 0 {

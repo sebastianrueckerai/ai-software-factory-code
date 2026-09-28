@@ -3,22 +3,17 @@ package factoryd
 import (
 	"context"
 	"database/sql"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 )
-
-//go:embed migrations/*.sql
-var migrations embed.FS
 
 // Task is a factory task row. factoryd owns these rows; the gateway reads
 // budget/spend and refuses model spend unless status is running.
@@ -217,41 +212,11 @@ func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 		return nil, err
 	}
 	s := &PGStore{db: db}
-	if err := s.migrate(ctx); err != nil {
+	if err := schema.Migrate(ctx, db); err != nil {
 		db.Close() // #nosec G104 -- already returning the migrate error; the close error would only mask it
 		return nil, err
 	}
 	return s, nil
-}
-
-func (s *PGStore) migrate(ctx context.Context) error {
-	entries, err := migrations.ReadDir("migrations")
-	if err != nil {
-		return err
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	for _, e := range entries {
-		sqlText, err := migrations.ReadFile("migrations/" + e.Name())
-		if err != nil {
-			return err
-		}
-		for _, stmt := range splitSQL(string(sqlText)) {
-			if _, err := s.db.ExecContext(ctx, stmt); err != nil {
-				return fmt.Errorf("migrate %s: %w", e.Name(), err)
-			}
-		}
-	}
-	return policy.Migrate(ctx, s.db)
-}
-
-func splitSQL(sqlText string) []string {
-	var stmts []string
-	for _, stmt := range strings.Split(sqlText, ";") {
-		if strings.TrimSpace(stmt) != "" {
-			stmts = append(stmts, stmt)
-		}
-	}
-	return stmts
 }
 
 func toJSON(v any) ([]byte, error) {
