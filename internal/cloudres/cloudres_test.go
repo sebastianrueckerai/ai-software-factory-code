@@ -1,12 +1,14 @@
 package cloudres
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +44,7 @@ func (f *fakeProvider) Servers(ctx context.Context, sel string) ([]hcloud.Server
 			out = append(out, s)
 		}
 	}
+	slices.SortFunc(out, func(a, b hcloud.Server) int { return cmp.Compare(a.ID, b.ID) }) // the API lists by id
 	return out, nil
 }
 
@@ -70,6 +73,7 @@ func (f *fakeProvider) Firewalls(ctx context.Context, sel string) ([]hcloud.Fire
 	for _, fw := range f.firewalls {
 		out = append(out, fw)
 	}
+	slices.SortFunc(out, func(a, b hcloud.Firewall) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
