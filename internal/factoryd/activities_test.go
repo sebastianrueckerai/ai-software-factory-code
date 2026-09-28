@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -45,6 +46,7 @@ type prForgejo struct {
 	statuses   []string          // combined-status bodies, served in order, the last repeating
 	polls      int
 	tasks      string             // actions/tasks page 1 body (testdata file); later pages empty
+	tasksAuth  string             // the token actions/tasks expects; "" = registrar-tok
 	created    []map[string]any   // POST /pulls bodies
 	comments   []string           // issue comment bodies
 	labels     map[int64][]string // issue → labels
@@ -147,7 +149,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(pr)
 		case r.Method == "GET" && p == "/actions/tasks":
-			if r.Header.Get("Authorization") != "token registrar-tok" {
+			if r.Header.Get("Authorization") != "token "+cmp.Or(f.tasksAuth, "registrar-tok") {
 				t.Errorf("actions/tasks auth %q", r.Header.Get("Authorization"))
 			}
 			body := `{"workflow_runs":[],"total_count":0}`
@@ -390,11 +392,23 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 }
 
 // When the checks finish, the checks step lists the head's jobs: name,
-// status, queue and run seconds.
+// status, queue and run seconds. A managed project's jobs are read with
+// the projects token (its organisation's owner), the code repository's
+// with the registrar's.
 func TestWaitChecksRecordsTheHeadsJobs(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		testWaitChecksRecordsTheHeadsJobs(t, managed)
+	}
+}
+
+func testWaitChecksRecordsTheHeadsJobs(t *testing.T, managed bool) {
 	head := "c62cd2d1ad2dd06b8e73354a0ff07fde47321184"
 	fj := &prForgejo{statuses: []string{statusBody("success", [4]string{"success", "pr / test", "", ""})}, tasks: "actions-tasks-3.json"}
-	r, _, objects := newActivityRunner(t, prTask, fj)
+	r, store, objects := newActivityRunner(t, prTask, fj)
+	if managed {
+		fj.tasksAuth, r.forgejo.ProjectsToken = "projects-tok", "projects-tok"
+		store.projects = []Project{{Name: "repo", Repository: prTask.Repository, Managed: true, MergeRule: "auto", GitToken: "g", MergeToken: "m"}}
+	}
 	r.cfg.CIQueue = NewCIQueue(telemetry.Noop())
 	r.cfg.CIQueue.byTask[103] = queued{seconds: 40}
 	if _, err := execActivity(t, r, ActivityWaitChecks, "t1", head); err != nil {

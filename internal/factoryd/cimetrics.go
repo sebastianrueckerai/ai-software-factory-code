@@ -132,7 +132,7 @@ func (c *CIRuns) poll(ctx context.Context) {
 func (c *CIRuns) pollJobs(ctx context.Context) error {
 	taskID := func(t ActionTask) int64 { return t.ID }
 	tasks, err := readPages(ctx, &c.jobs, func(ctx context.Context, page int) ([]ActionTask, error) {
-		return c.Forgejo.ActionTasks(ctx, c.Owner, c.Repo, page)
+		return c.Forgejo.ActionTasks(ctx, c.Forgejo.CIRegistrarToken, c.Owner, c.Repo, page)
 	}, taskID)
 	if err != nil {
 		return err
@@ -284,10 +284,10 @@ const ciJobsPages = 3
 
 // CIJobsOf lists the finished jobs of the runs on sha, oldest first: name,
 // status, queue seconds where the queue measured them and run seconds.
-func CIJobsOf(ctx context.Context, f *Forgejo, owner, repo, sha string, queue *CIQueue) ([]map[string]any, error) {
+func CIJobsOf(ctx context.Context, f *Forgejo, token, owner, repo, sha string, queue *CIQueue) ([]map[string]any, error) {
 	var matched []ActionTask
 	for page := 1; page <= ciJobsPages; page++ {
-		items, err := f.ActionTasks(ctx, owner, repo, page)
+		items, err := f.ActionTasks(ctx, token, owner, repo, page)
 		if err != nil {
 			return nil, err
 		}

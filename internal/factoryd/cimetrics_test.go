@@ -203,7 +203,7 @@ func TestCIJobsOfAHeadListsNameQueueAndRun(t *testing.T) {
 	m, _ := testMetrics(t)
 	q := NewCIQueue(m)
 	q.byTask[101] = queued{seconds: 30}
-	jobs, err := CIJobsOf(context.Background(), &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}, "sf", "ai-software-factory-code",
+	jobs, err := CIJobsOf(context.Background(), &Forgejo{BaseURL: srv.URL}, "registrar-tok", "sf", "ai-software-factory-code",
 		"c62cd2d1ad2dd06b8e73354a0ff07fde47321184", q)
 	if err != nil {
 		t.Fatal(err)

@@ -408,9 +408,9 @@ func (t ActionTask) RunSeconds() float64 { return t.UpdatedAt.Sub(t.RunStartedAt
 
 // ActionTasks reads one page (from 1) of owner/repo's actions/tasks,
 // newest first.
-func (f *Forgejo) ActionTasks(ctx context.Context, owner, repo string, page int) ([]ActionTask, error) {
+func (f *Forgejo) ActionTasks(ctx context.Context, token, owner, repo string, page int) ([]ActionTask, error) {
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/tasks?page=%d&limit=%d", owner, repo, page, actionTasksPage)
-	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+	body, err := f.tokenCall(token)(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
