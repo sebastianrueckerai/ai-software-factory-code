@@ -103,6 +103,9 @@ func main() {
 		SecretKey: mustEnv("S3_SECRET_ACCESS_KEY"),
 	}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm}
+	// the gateway-factoryd token: the gateway's escalation hand-over to
+	// factoryd, and factoryd's model calls on a task's account
+	gatewayURL, gatewayToken := env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"), mustEnv("GATEWAY_TOKEN")
 
 	kube, err := factoryd.NewInClusterKube()
 	if err != nil {
@@ -122,7 +125,7 @@ func main() {
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
-		GatewayURL:           env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"),
+		GatewayURL:           gatewayURL,
 		GitBaseURL:           gitBase,
 		Models:               ladder,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
@@ -140,7 +143,6 @@ func main() {
 			MaxCalls:         envInt("SUPERVISOR_MAX_CALLS", factoryd.DefaultMaxCalls),
 		},
 		Policy:       policyLoader.Current,
-		ReviewModel:  env("REVIEW_MODEL", "review-frontier"),
 		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
 		// the gateway commissions servers into the registry; factoryd only
 		// admits their addresses into the task's egress
@@ -153,16 +155,12 @@ func main() {
 			return workflows.LastFailure(ctx, workflowID, activityID)
 		},
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
-		BaseURL: litellm.BaseURL,
-		Admin:   litellm,
-		Alias:   env("SUPERVISOR_MODEL", "supervisor"),
+		GatewayURL: gatewayURL,
+		Token:      gatewayToken,
 		Budget: factoryd.TokenBudget{
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
 			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
-		Prices: &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
-		Meter:  store,
-		DayEUR: policyLoader.DayEUR,
 	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)
@@ -225,7 +223,6 @@ func main() {
 	runner.RegisterActivities(taskWorker)
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
-	gatewayToken := mustEnv("GATEWAY_TOKEN")
 	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
 	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	webhookIntake := &factoryd.Intake{

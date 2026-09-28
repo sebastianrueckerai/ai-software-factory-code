@@ -90,8 +90,6 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 		switch r.URL.Path {
 		case "/key/list":
 			io.WriteString(w, `{"keys":[],"total_pages":1}`)
-		case "/key/generate":
-			io.WriteString(w, `{"key":"sk-super-1","token":"hash1"}`)
 		case "/v1/chat/completions":
 			io.ReadAll(r.Body)
 			once.Do(func() { close(inFlight) })

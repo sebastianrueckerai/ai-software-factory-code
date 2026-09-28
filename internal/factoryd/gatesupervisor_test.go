@@ -51,7 +51,7 @@ func newGateCase(t *testing.T, activity, answer string, routes map[string]string
 	t.Helper()
 	c := &gateCase{kube: newFakeKube(), objects: &fakeObjectStore{}, model: &fakeLiteLLM{content: answer}}
 	c.runner, _, c.store = newTestRunner(t, Task{ID: "t1", Status: "in-review", Objective: "fix the short link", Repository: "sf/r",
-		IssueNumber: 3, PRNumber: 9}, c.kube, c.objects)
+		IssueNumber: 3, PRNumber: 9, RequiredCapabilities: AgentCapabilities}, c.kube, c.objects)
 	c.runner.supervisor = testSupervisorModel(c.model.srv(t).URL)
 	c.runner.cfg.LastFailure = func(_ context.Context, workflowID, activityID string) (string, error) {
 		if workflowID != testWorkflowID || activityID != "7" {
@@ -148,9 +148,8 @@ func TestSuperviseGateWaitChecks(t *testing.T) {
 	if got := jsonOf(bundle["state"]); got != want {
 		t.Fatalf("state = %s\nwant    %s", got, want)
 	}
-	meter := c.runner.supervisor.Meter.(*memPolicy)
-	if len(meter.holds) != 1 || meter.holds[0].TaskID != "t1" || meter.holds[0].Ref != "supervisor" {
-		t.Fatalf("holds = %+v, want the call held on the task", meter.holds)
+	if len(c.model.chats) != 1 || c.model.chats[0]["model"] != "supervisor" || c.model.tasks[0] != "t1" || c.model.purposes[0] != "gate-supervisor" {
+		t.Fatalf("calls = %d, tasks %v, purposes %v; want one gate-supervisor call on t1", len(c.model.chats), c.model.tasks, c.model.purposes)
 	}
 	if !c.runner.cfg.Gates.runs[runKey(testWorkflowID, "7")].extended || len(*live) != 0 {
 		t.Fatal("the run's bound was not extended, or it was cancelled")
@@ -328,15 +327,16 @@ func TestSuperviseGateOnlyActsOnTheAttemptThatTripped(t *testing.T) {
 	}
 }
 
-// A call the task's headroom cannot pay for is not made: escalate.
+// A call the gateway refuses (the task's headroom cannot pay for it):
+// escalate.
 func TestSuperviseGateRefusedCallEscalates(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
 		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
 	})
-	c.runner.supervisor.Meter.(*memPolicy).taskFree = 0
+	c.model.status, c.model.decision = http.StatusPaymentRequired, "refused_budget"
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
 	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
-	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis, "could not be asked") || len(c.model.chats) != 0 {
+	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis, "could not be asked") || !strings.Contains(d.Diagnosis, "refused_budget") {
 		t.Fatalf("decision = %+v after %d calls", d, len(c.model.chats))
 	}
 	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "escalate" {

@@ -550,3 +550,27 @@ func TestWorkflowIssueCloseEndsTheApprovalWait(t *testing.T) {
 		t.Fatalf("the wait lasted %s, want 2h", wait)
 	}
 }
+
+// A review the gateway refused at the task's budget cap is the approval
+// card with the refusal as the review's note: nothing merges until a human
+// approves, and a closed issue ends the task unmerged.
+func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
+	note := "model review refused by the gateway (refused_budget): free headroom 0.000000 EUR (task 0.000000, day 12.000000)"
+	g := newGateHarness(t, func(g *gateHarness) { g.review = Review{Note: note} })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Review.Note != note || g.approvals[0].Review.Verdict != "" {
+		t.Fatalf("approvals = %+v, want one card carrying the refusal", g.approvals)
+	}
+	if len(g.merges) != 0 {
+		t.Fatalf("merges = %v, want none", g.merges)
+	}
+	if strings.Join(g.steps, ", ") != "policy, repro c1, review c1, approval c1" {
+		t.Fatalf("steps = %v", g.steps)
+	}
+}

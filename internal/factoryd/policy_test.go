@@ -25,6 +25,8 @@ classes:
   coder:
     models: [coding-cheap, coding-frontier]
     tools: {}
+    review_model: review-frontier
+    supervisor_model: supervisor
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}
@@ -146,9 +148,6 @@ func TestPolicyLoader(t *testing.T) {
 	}
 	if cur := l.Current(); cur.ID != 2 || cur.Document.Budget.DayEUR != 7 {
 		t.Fatalf("after edit current = %+v, want version 2 with day_eur 7", cur)
-	}
-	if l.DayEUR() != 7 {
-		t.Fatalf("DayEUR = %v, want 7", l.DayEUR())
 	}
 
 	// invalid content: rejected, version 2 stays current, and not retried

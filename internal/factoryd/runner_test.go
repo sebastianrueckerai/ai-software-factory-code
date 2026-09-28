@@ -489,7 +489,6 @@ func testRunnerConfig() RunnerConfig {
 		// 10 minute cap puts the half-way point 3 minutes into each session
 		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
 		Policy:      testPolicyVersion,
-		ReviewModel: "review-frontier",
 		Leases:      &fakeLeases{},
 		Gates:       &GateWatch{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
@@ -931,11 +930,12 @@ func loopFailure(i int) string {
 }
 
 func supervisedTask(id string) Task {
-	return Task{ID: id, Status: "running", Objective: "make loopcheck pass", Repository: "sf/repo", BudgetEUR: 0.3, SpentEUR: 0.05, IssueNumber: 7}
+	return Task{ID: id, Status: "running", Objective: "make loopcheck pass", Repository: "sf/repo", BudgetEUR: 0.3, SpentEUR: 0.05, IssueNumber: 7,
+		RequiredCapabilities: AgentCapabilities}
 }
 
-// The third identical failure trips same_failure; the supervisor (under
-// the task's own key) says retry_stronger; the worker is stopped, pushes
+// The third identical failure trips same_failure; the supervisor (through
+// the gateway on the task's account) says retry_stronger; the worker is stopped, pushes
 // its work in progress, and the decision lands in the session record, the
 // timeline and on the issue.
 func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
@@ -960,9 +960,8 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	if !strings.Contains(joined, "supervisor guidance: the check needs a file") || !strings.Contains(joined, "c-wip") {
 		t.Fatalf("findings = %v, want the guidance and the pushed work", res.Findings)
 	}
-	meter := runner.supervisor.Meter.(*memPolicy)
-	if len(f.mints) != 1 || len(meter.released) != 1 || f.mints[0]["max_budget"] != meter.released[0].hold.EUR {
-		t.Fatalf("mints = %v, released = %+v; want one key capped at the call's hold", f.mints, meter.released)
+	if len(f.chats) != 1 || f.chats[0]["model"] != "supervisor" || f.tasks[0] != "t2" || f.purposes[0] != "supervisor" {
+		t.Fatalf("calls = %d, tasks %v, purposes %v; want one supervisor call through the gateway on t2", len(f.chats), f.tasks, f.purposes)
 	}
 	if len(kube.deletedPods) == 0 {
 		t.Fatal("the worker was not stopped")
@@ -1316,8 +1315,6 @@ func TestRunSessionWorkerStopCutsAnInFlightSupervisorCall(t *testing.T) {
 		switch r.URL.Path {
 		case "/key/list":
 			io.WriteString(w, `{"keys":[],"total_pages":1}`)
-		case "/key/generate":
-			io.WriteString(w, `{"key":"sk-super-1","token":"hash1"}`)
 		case "/v1/chat/completions":
 			// factoryd starts stopping while this call is in flight
 			io.ReadAll(r.Body)

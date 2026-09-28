@@ -7,12 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -241,55 +240,31 @@ const supervisorPrompt = `You supervise an autonomous coding agent that works on
 You cannot raise a time limit, a budget or a model beyond the next rung; only a human can.
 Answer with one JSON object and nothing else: {"action": "continue|redirect|retry_stronger|escalate", "guidance": "...", "reason": "..."}. guidance is required for redirect, reason for escalate; each under 1000 characters.`
 
-// Metering admits a model call into the task's and the day's free headroom
-// and books its cost (see policy.TakeHold and policy.ReleaseHold).
-type Metering interface {
-	TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error)
-	ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error)
-}
-
-// Pricer is an alias's worst-case price. Implemented by policy.PriceBook.
-type Pricer interface {
-	Price(ctx context.Context, alias string) (policy.Price, error)
-}
-
-// SupervisorModel calls the supervisor alias on LiteLLM directly, metered
-// like an agent call through the gateway: the answer limit is clamped to
-// what the free headroom pays for at the alias's price, that worst case is
-// held, and the call's cost is booked as a model ledger row (ref the alias)
-// right after it. Its virtual key, minted per call, carries metadata
-// task_id (the settlement pass reconciles it and the session end blocks
-// it), max_budget the hold and the supervisor alias as its only model.
+// SupervisorModel is factoryd's model client: every call it makes (the
+// session supervisor, the gate supervisor, the model review) goes to the
+// gateway on the task's account, like an agent's. It presents the
+// gateway-factoryd token with the task and the purpose; the gateway admits
+// only the alias the task's class names for the purpose, clamps the answer
+// limit to the free headroom, holds that worst case, books the call's
+// cost to the task and audits it with the purpose as its kind.
 type SupervisorModel struct {
-	BaseURL string // LiteLLM
-	Admin   *LiteLLMAdmin
-	Alias   string // "supervisor"
-	Budget  TokenBudget
-	Prices  Pricer
-	Meter   Metering
-	DayEUR  func() float64 // the policy in force's day cap
-	HTTP    *http.Client   // nil = supervisorTimeout
+	GatewayURL string
+	Token      string // the gateway-factoryd token
+	Budget     TokenBudget
+	HTTP       *http.Client // nil = supervisorTimeout
 }
 
 // supervisorTimeout bounds one call: GLM reasons before it answers.
 const supervisorTimeout = 4 * time.Minute
 
-// Decide never fails: a failed or invalid answer, or a call the headroom
-// cannot pay for, is an escalation.
-func (m *SupervisorModel) Decide(ctx context.Context, taskID string, in SupervisorInput) Decision {
-	d, err := m.decide(ctx, taskID, in)
+// Decide never fails: a failed or invalid answer, or a call the gateway
+// refuses, is an escalation.
+func (m *SupervisorModel) Decide(ctx context.Context, taskID, alias string, in SupervisorInput) Decision {
+	content, err := m.Chat(ctx, taskID, alias, policy.PurposeSupervisor, supervisorPrompt, in)
 	if err != nil {
 		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + textutil.Truncate(err.Error(), 500)}
 	}
-	return d
-}
-
-func (m *SupervisorModel) decide(ctx context.Context, taskID string, in SupervisorInput) (Decision, error) {
-	content, err := m.Chat(ctx, taskID, m.Alias, "supervisor", supervisorPrompt, in)
-	if err != nil {
-		return Decision{}, err
-	}
-	return parseDecision(content), nil
+	return parseDecision(content)
 }
 
 func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
@@ -304,19 +279,16 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 	})
 }
 
-// Chat is one metered JSON-mode call of alias on the task's account, with
-// system as the system prompt and input, indented JSON, as the user
-// message: the answer limit is clamped to what the free task and day
-// headroom pays for, that worst case is held, and the call's cost booked
-// as a model ledger row right after it. The virtual key, minted for this
-// call with purpose, carries the task, the hold as max_budget and alias as
-// its only model. No headroom is a *policy.Refusal in the chain.
+// Chat is one JSON-mode call of alias through the gateway on the task's
+// account for purpose, with system as the system prompt and input,
+// indented JSON, as the user message. A gateway refusal is a
+// *policy.Refusal in the chain; alias "" (the policy names none) makes no
+// call.
 func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, system string, input any) (string, error) {
-	limit, err := m.Budget.OutputLimit()
-	if err != nil {
-		return "", err
+	if alias == "" {
+		return "", fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
 	}
-	price, err := m.Prices.Price(ctx, alias)
+	limit, err := m.Budget.OutputLimit()
 	if err != nil {
 		return "", err
 	}
@@ -328,37 +300,14 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 	if err != nil {
 		return "", err
 	}
-	hold, err := m.Meter.TakeHold(ctx, policy.HoldRequest{
-		TaskID: taskID, Kind: policy.KindModel, Ref: alias,
-		InTokens: len(payload), Price: price, WantOut: limit, DayEUR: m.DayEUR(),
-	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return "", fmt.Errorf("no headroom for the %s call: %w", purpose, err)
-	}
-	// unknown until the call answers with its cost: the hold is booked
-	var cost *float64
-	defer func() {
-		if _, err := m.Meter.ReleaseHold(context.WithoutCancel(ctx), hold, cost); err != nil {
-			log.Printf("task %s: book the %s call: %v", taskID, purpose, err)
-		}
-	}()
-	zero := 0.0
-	if payload, err = chatPayload(alias, system, user, hold.MaxOut); err != nil {
-		cost = &zero
 		return "", err
 	}
-	key, err := m.Admin.MintKey(ctx, taskID, hold.EUR, []string{alias}, purpose)
-	if err != nil {
-		cost = &zero
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.BaseURL+"/v1/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		cost = &zero
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+m.Token)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(gateway.HeaderFactoryTask, taskID)
+	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
 	client := m.HTTP
 	if client == nil {
 		client = &http.Client{Timeout: supervisorTimeout}
@@ -368,16 +317,19 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 		return "", err
 	}
 	defer res.Body.Close()
-	if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
-		cost = &v
-	} else if res.StatusCode != http.StatusOK {
-		cost = &zero
-	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return "", err
 	}
 	if res.StatusCode != http.StatusOK {
+		var refused struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
+			return "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+		}
 		return "", fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(body), 300))
 	}
 	var out struct {

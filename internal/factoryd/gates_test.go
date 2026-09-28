@@ -100,7 +100,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 }
 
 var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check target", Repository: "sf/repo",
-	SHA: "base", IssueNumber: 4, Source: "api", PRNumber: 9, Kind: "agent"}
+	SHA: "base", IssueNumber: 4, Source: "api", PRNumber: 9, Kind: "agent", RequiredCapabilities: AgentCapabilities}
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
@@ -256,13 +256,14 @@ func TestParseReview(t *testing.T) {
 	}
 }
 
-// The review is one metered call of the review alias on the task's
-// account, over the brief, the capped diff and the gates, posted on the
-// pull request.
+// The review is one call through the gateway of the review alias the
+// policy names for the task's class, on the task's account with the
+// purpose review, over the brief, the capped diff and the gates, posted on
+// the pull request.
 func TestModelReviewPostsTheVerdict(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
 	r, _, objects := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the target skips vet","findings":["Makefile: check does not run go vet"]}`, cost: "0.03"}
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"the target skips vet","findings":["Makefile: check does not run go vet"]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval}}
 	from := time.Now()
@@ -271,12 +272,8 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	if rv.Verdict != "concerns" || rv.Findings[0] != "Makefile: check does not run go vet" {
 		t.Fatalf("review = %+v", rv)
 	}
-	if len(ll.chats) != 1 || ll.chats[0]["model"] != "review-frontier" {
-		t.Fatalf("chats = %v", ll.chats)
-	}
-	meta, _ := ll.mints[0]["metadata"].(map[string]any)
-	if meta["task_id"] != "t1" || meta["purpose"] != "review" {
-		t.Fatalf("mint = %v", ll.mints[0])
+	if len(ll.chats) != 1 || ll.chats[0]["model"] != "review-frontier" || ll.auth[0] != "Bearer gw-token" || ll.tasks[0] != "t1" || ll.purposes[0] != "review" {
+		t.Fatalf("chats = %v, auth %v, tasks %v, purposes %v", ll.chats, ll.auth, ll.tasks, ll.purposes)
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
@@ -285,11 +282,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 			t.Fatalf("review input lacks %q: %s", want, user)
 		}
 	}
-	meter := r.supervisor.Meter.(*memPolicy)
-	if len(meter.released) != 1 || *meter.released[0].cost != 0.03 || meter.released[0].hold.Ref != "review-frontier" {
-		t.Fatalf("released = %+v, want the review booked at 0.03", meter.released)
-	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "factoryd model review (review-frontier) of c1") || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"model_review"`) {
@@ -298,23 +291,54 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	startedWithin(t, objects, "model_review", from)
 }
 
-// No headroom: no call, a note; an invalid answer: a note. Neither fails.
+// A task at its budget cap: the gateway refuses the review with
+// refused_budget, which becomes the review's note on the pull request and
+// the card; an upstream error and an invalid answer are notes too. None
+// fails the gate.
 func TestModelReviewNotes(t *testing.T) {
+	for name, tc := range map[string]struct {
+		model *fakeLiteLLM
+		note  string
+	}{
+		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid"},
+		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
+			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR"},
+		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: "d"}
+			r, _, objects := newGateRunner(t, gateTask, fj)
+			r.supervisor = testSupervisorModel(tc.model.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			if rv.Verdict != "" || !strings.HasPrefix(rv.Note, tc.note) {
+				t.Fatalf("review = %+v, want a note starting %q", rv, tc.note)
+			}
+			if len(tc.model.chats) != 1 || tc.model.purposes[0] != "review" {
+				t.Fatalf("calls = %d, want one review call", len(tc.model.chats))
+			}
+			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.note) {
+				t.Fatalf("comments = %q", fj.comments)
+			}
+			if step := timelineStep(t, objects, "t1", "model_review"); !strings.HasPrefix(fmt.Sprint(step["note"]), tc.note) {
+				t.Fatalf("model_review step = %v", step)
+			}
+		})
+	}
+}
+
+// A policy that names no review model for the task's class: no call, a
+// note.
+func TestModelReviewWithoutAReviewModel(t *testing.T) {
 	fj := &gateForgejo{diff: "d"}
-	r, _, _ := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{content: "LGTM"}
+	task := gateTask
+	task.RequiredCapabilities = nil
+	r, _, _ := newGateRunner(t, task, fj)
+	ll := &fakeLiteLLM{content: "{}"}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); rv.Verdict != "" || !strings.Contains(rv.Note, "answer invalid") {
-		t.Fatalf("review = %+v", rv)
-	}
-	r.supervisor.Meter = &memPolicy{taskFree: 0.0001, dayFree: 20}
-	val, err = execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "model review skipped: the task's headroom does not pay for it") {
-		t.Fatalf("review = %+v", rv)
-	}
-	if len(ll.chats) != 1 || len(fj.comments) != 2 || !strings.Contains(fj.comments[1], "skipped") {
-		t.Fatalf("chats = %d, comments = %q", len(ll.chats), fj.comments)
+	if rv := getInto[Review](t, val, err); !strings.Contains(rv.Note, "the policy names no review model") || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v, calls %d", rv, len(ll.chats))
 	}
 }
 
@@ -744,8 +768,8 @@ func TestFencedCannotBeClosedEarly(t *testing.T) {
 }
 
 // The review heartbeats while its model call runs, so the workflow's
-// cancel (a terminal signal during the review) reaches the call; a call
-// cut by the cancel books its hold and leaves none open.
+// cancel (a terminal signal during the review) reaches the call and cuts
+// it; the gateway books a cut call's hold.
 func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 	defer func(d time.Duration) { gateHeartbeatEvery = d }(gateHeartbeatEvery)
 	gateHeartbeatEvery = 20 * time.Millisecond
@@ -777,9 +801,8 @@ func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err == nil {
 		t.Fatal("a cancelled review succeeded")
 	}
-	meter := r.supervisor.Meter.(*memPolicy)
-	if time.Since(began) > 10*time.Second || len(meter.holds) != 2 || len(meter.released) != 2 {
-		t.Fatalf("after %s: holds %d, released %d; want the cut call's hold released", time.Since(began), len(meter.holds), len(meter.released))
+	if time.Since(began) > 10*time.Second || len(ll.chats) != 2 {
+		t.Fatalf("after %s: %d calls; want the second call cut at the cancel", time.Since(began), len(ll.chats))
 	}
 }
 

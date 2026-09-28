@@ -45,8 +45,6 @@ type RunnerConfig struct {
 	Supervisor           SupervisorConfig
 	// Policy is the policy version in force (GatePolicy's risk rules).
 	Policy func() policy.Version
-	// ReviewModel is the model review's alias (review-frontier).
-	ReviewModel string
 	// ReproTimeout bounds one reproduction command run.
 	ReproTimeout time.Duration
 	// Leases reads the commissioned servers each task holds; their IPv4s
@@ -201,8 +199,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if err := cfg.Supervisor.validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
-	if cfg.Policy == nil || cfg.ReviewModel == "" {
-		return nil, fmt.Errorf("runner: the policy in force and the review model are required")
+	if cfg.Policy == nil {
+		return nil, fmt.Errorf("runner: the policy in force is required")
 	}
 	if cfg.Gates == nil || cfg.LastFailure == nil {
 		return nil, fmt.Errorf("runner: the gate watch and the last failure reader are required")
@@ -610,10 +608,16 @@ func (r *Runner) supervisorConfig() SupervisorConfig {
 	return c
 }
 
-// askSupervisor builds the supervisor's input and calls it; the call is
-// metered against the task's and the day's headroom.
+// factoryModel is the alias the policy in force names for purpose on t's
+// capability classes; "" when it names none.
+func (r *Runner) factoryModel(t Task, purpose string) string {
+	return r.cfg.Policy().Document.FactoryModel(t.RequiredCapabilities, purpose)
+}
+
+// askSupervisor builds the supervisor's input and calls it through the
+// gateway on the task's account.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
-	return r.supervisor.Decide(ctx, t.ID, SupervisorInput{
+	return r.supervisor.Decide(ctx, t.ID, r.factoryModel(t, policy.PurposeSupervisor), SupervisorInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
 			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
 		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},

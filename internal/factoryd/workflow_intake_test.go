@@ -441,7 +441,7 @@ func TestModelReviewAsksForStrictImprovementAndNamesTheStanding(t *testing.T) {
 	task := gateTask
 	task.Author, task.AuthorWriter = "visitor", false
 	r, _, _ := newGateRunner(t, task, fj)
-	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"narrow fix","findings":[],"strict_improvement":true}`, cost: "0.01"}
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"narrow fix","findings":[],"strict_improvement":true}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto"},
 		Reproduction: ReproResult{NotReproduced: "the URL is gone"}}

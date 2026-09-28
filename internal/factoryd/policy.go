@@ -19,7 +19,6 @@ import (
 // PolicyStore holds the loaded policy versions, the holds and the cost
 // ledger.
 type PolicyStore interface {
-	Metering
 	// RecordPolicy stores doc under sha unless known and activates it.
 	RecordPolicy(ctx context.Context, sha string, doc policy.Document) (policy.Version, bool, error)
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
@@ -150,8 +149,6 @@ func (l *PolicyLoader) Current() policy.Version {
 
 func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budget }
 
-func (l *PolicyLoader) DayEUR() float64 { return l.Budget().DayEUR }
-
 func (l *PolicyLoader) fitsLadder(d policy.Document) error {
 	for _, m := range l.LadderModels {
 		if !d.AllowsModel(AgentCapabilities, m) {
@@ -253,14 +250,6 @@ func (s *PGStore) RecordPolicy(ctx context.Context, sha string, doc policy.Docum
 
 func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {
 	return policy.Current(ctx, s.db)
-}
-
-func (s *PGStore) TakeHold(ctx context.Context, r policy.HoldRequest) (policy.Hold, error) {
-	return policy.TakeHold(ctx, s.db, r)
-}
-
-func (s *PGStore) ReleaseHold(ctx context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
-	return policy.ReleaseHold(ctx, s.db, h, cost)
 }
 
 func (s *PGStore) SweepHolds(ctx context.Context) (int, error) {

@@ -15,6 +15,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -107,7 +108,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
 		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in)
 		cancel()
-		content, err := r.supervisor.Chat(ctx, t.ID, r.supervisor.Alias, "gate-supervisor", gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
+		content, err := r.supervisor.Chat(ctx, t.ID, r.factoryModel(t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}
@@ -193,7 +194,7 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 		}
 		b.State = map[string]any{"pull_request": pr}
 	case ActivityModelReview:
-		review := map[string]any{"model": r.cfg.ReviewModel, "last_result": "none on this task's timeline"}
+		review := map[string]any{"model": r.factoryModel(t, policy.PurposeReview), "last_result": "none on this task's timeline"}
 		if step := lastStep(tl, "model_review"); step != nil {
 			review["last_result"] = step
 		}

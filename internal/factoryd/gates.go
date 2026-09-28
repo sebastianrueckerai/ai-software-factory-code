@@ -540,11 +540,12 @@ func parseReview(content string) Review {
 	return rv
 }
 
-// ModelReview asks the review model for a verdict over the brief, the
-// diff and the gate results, on the task's account within its headroom,
-// and posts it on the pull request. It is evidence only: no answer (no
-// headroom, a failed call, an invalid answer) is a note, and nothing it
-// says skips a gate or merges.
+// ModelReview asks the review model the policy names for the task's class
+// for a verdict over the brief, the diff and the gate results, through the
+// gateway on the task's account, and posts it on the pull request. It is
+// evidence only: no answer (a gateway refusal such as refused_budget, a
+// failed call, an invalid answer) is a note the approval card shows, and
+// nothing it says skips a gate or merges.
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (Review, error) {
 	// the heartbeats, from the start to the answer, carry the workflow's
 	// cancel (a terminal signal during the review) into the Forgejo reads
@@ -555,12 +556,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	model := r.factoryModel(t, policy.PurposeReview)
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) {
 			return Review{}, err
 		}
 		rv := Review{Note: "model review not run: " + errMessage(err)}
-		r.comment(ctx, t, repo, pr.Number, reviewComment(r.cfg.ReviewModel, commit, rv))
+		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv))
 		r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
 		return rv, nil
 	}
@@ -568,7 +570,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	content, err := r.supervisor.Chat(ctx, t.ID, r.cfg.ReviewModel, "review", reviewPrompt, reviewInput{
+	content, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, reviewPrompt, reviewInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()},
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates,
 	})
@@ -580,16 +582,16 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	var refusal *policy.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		rv.Note = "model review skipped: the task's headroom does not pay for it (" + refusal.Reason + ")"
+		rv.Note = "model review refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
 	case err != nil:
 		rv.Note = "model review failed: " + textutil.Truncate(err.Error(), 500)
 	default:
 		rv = parseReview(content)
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, reviewComment(r.cfg.ReviewModel, commit, rv)); err != nil {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, reviewComment(model, commit, rv)); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": r.cfg.ReviewModel,
+	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": model,
 		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note}))
 	return rv, nil
 }
