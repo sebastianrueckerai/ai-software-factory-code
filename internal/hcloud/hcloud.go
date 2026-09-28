@@ -53,14 +53,40 @@ func New(token string) *Client {
 	return &Client{Token: token, BaseURL: DefaultBaseURL, HTTP: &http.Client{Timeout: 30 * time.Second}}
 }
 
+// A 429 is retried after its Retry-After, at most rateLimitTries times and
+// only when the wait is short: a caller's loop must not hang on the API.
+const (
+	rateLimitTries   = 3
+	rateLimitMaxWait = 10 * time.Second
+)
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
-	var body io.Reader
+	var payload []byte
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
 			return err
 		}
-		body = bytes.NewReader(b)
+		payload = b
+	}
+	for try := 1; ; try++ {
+		wait, err := c.once(ctx, method, path, payload, out)
+		if wait < 0 || try == rateLimitTries || wait > rateLimitMaxWait {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// once sends one request; a non-negative wait means it was rate limited.
+func (c *Client) once(ctx context.Context, method, path string, payload []byte, out any) (time.Duration, error) {
+	var body io.Reader
+	if payload != nil {
+		body = bytes.NewReader(payload)
 	}
 	base := c.BaseURL
 	if base == "" {
@@ -68,10 +94,10 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
-	if in != nil {
+	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	hc := c.HTTP
@@ -80,12 +106,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return -1, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var e struct {
@@ -95,12 +121,31 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(data, &e) // #nosec G104 -- a non-JSON error body still yields the status
-		return &APIError{Status: resp.StatusCode, Code: e.Error.Code, Message: e.Error.Message}
+		apiErr := &APIError{Status: resp.StatusCode, Code: e.Error.Code, Message: e.Error.Message}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return retryAfter(resp.Header), apiErr
+		}
+		return -1, apiErr
 	}
 	if out == nil || len(data) == 0 {
-		return nil
+		return -1, nil
 	}
-	return json.Unmarshal(data, out)
+	return -1, json.Unmarshal(data, out)
+}
+
+// retryAfter reads Retry-After (seconds) or Hetzner's RateLimit-Reset (unix
+// time); one second when neither is given.
+func retryAfter(h http.Header) time.Duration {
+	if s, err := strconv.Atoi(h.Get("Retry-After")); err == nil && s >= 0 {
+		return time.Duration(s) * time.Second
+	}
+	if reset, err := strconv.ParseInt(h.Get("RateLimit-Reset"), 10, 64); err == nil {
+		if d := time.Until(time.Unix(reset, 0)); d > 0 {
+			return d
+		}
+		return 0
+	}
+	return time.Second
 }
 
 type pagination struct {
@@ -131,6 +176,9 @@ func (c *Client) list(ctx context.Context, path, labelSelector string, decode fu
 		}
 		if p.Meta.Pagination.NextPage == nil {
 			return nil
+		}
+		if *p.Meta.Pagination.NextPage <= page {
+			return fmt.Errorf("%s: next_page %d does not follow page %d", path, *p.Meta.Pagination.NextPage, page)
 		}
 		page = *p.Meta.Pagination.NextPage
 	}

@@ -250,3 +250,66 @@ func TestPricingMonthlyAndVolume(t *testing.T) {
 		t.Fatalf("volume = %v, %v", v, err)
 	}
 }
+
+// 429: wait what Retry-After says and try again, the body intact; at most
+// three tries, and a wait longer than a caller can afford is not waited.
+func TestRateLimitedRequestsRetry(t *testing.T) {
+	var bodies []string
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if len(bodies) < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"slow down"}}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"firewall":{"id":9}}`)
+	})
+	fw, err := c.CreateFirewall(context.Background(), CreateFirewallRequest{Name: "fw"})
+	if err != nil || fw.ID != 9 {
+		t.Fatalf("firewall = %+v, err = %v", fw, err)
+	}
+	if len(bodies) != 3 || bodies[0] != bodies[2] || bodies[0] == "" {
+		t.Fatalf("bodies = %q, want the same body three times", bodies)
+	}
+}
+
+func TestRateLimitGivesUp(t *testing.T) {
+	for name, after := range map[string]string{"after three tries": "0", "a wait too long to hold": "3600"} {
+		t.Run(name, func(t *testing.T) {
+			n := 0
+			c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				n++
+				w.Header().Set("Retry-After", after)
+				w.WriteHeader(http.StatusTooManyRequests)
+				io.WriteString(w, `{"error":{"code":"rate_limit_exceeded","message":"slow down"}}`)
+			})
+			_, err := c.Server(context.Background(), 1)
+			if !IsCode(err, "rate_limit_exceeded") {
+				t.Fatalf("err = %v", err)
+			}
+			if want := map[string]int{"0": 3, "3600": 1}[after]; n != want {
+				t.Fatalf("requests = %d, want %d", n, want)
+			}
+		})
+	}
+}
+
+// A next_page that does not move forward is an error, not an endless loop.
+func TestListRefusesANextPageThatDoesNotAdvance(t *testing.T) {
+	n := 0
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n > 5 {
+			t.Error("still listing after 5 pages")
+			io.WriteString(w, `{"servers":[],"meta":{"pagination":{"next_page":null}}}`)
+			return
+		}
+		io.WriteString(w, `{"servers":[{"id":1}],"meta":{"pagination":{"page":1,"next_page":1}}}`)
+	})
+	if _, err := c.Servers(context.Background(), ""); err == nil {
+		t.Fatal("want an error for a next_page that does not advance")
+	}
+}
