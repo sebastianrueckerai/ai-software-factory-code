@@ -963,7 +963,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	}
 }
 
-// Migration 0025 on a real Postgres: the author and the agent's summary
+// Migration 0026 on a real Postgres: the author and the agent's summary
 // on the row, a suggested task outside every gate until promoted, closed
 // as a final state, the info_request alert kind, projects by repository.
 func TestPGStoreIntakeAuto(t *testing.T) {
