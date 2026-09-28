@@ -1406,3 +1406,59 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }
+
+// A suggestion takes only a writer's agent label as its start (review
+// I1): comments by its author or a writer are neither recorded nor
+// signalled (a signal would start its workflow), and a writer's close
+// ends it closed without one.
+func TestIntakeSuggestionRunsNothingUntilItStarts(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", IssueNumber: 30, Kind: "agent", Author: "visitor"}
+	for i, user := range []string{"visitor", "sebastian"} {
+		b, _ := json.Marshal(map[string]any{
+			"action":     "created",
+			"issue":      map[string]any{"number": 30, "user": map[string]string{"login": "visitor"}},
+			"comment":    map[string]any{"id": i + 1, "user": map[string]string{"login": user}, "body": "+1"},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		})
+		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status %d", user, rr.Code)
+		}
+	}
+	closed := func(sender string) []byte {
+		b, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": 30, "user": map[string]string{"login": "visitor"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"}, "sender": map[string]string{"login": sender}})
+		return b
+	}
+	b := closed("visitor")
+	postWebhook(in, "issues", b, sign(webhookSecret, b))
+	if got := store.tasks["t-s"].Status; got != "suggested" {
+		t.Fatalf("after the author's close: %s, want suggested (an outsider's close decides nothing)", got)
+	}
+	b = closed("sebastian")
+	if rr := postWebhook(in, "issues", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+		t.Fatalf("close: status %d", rr.Code)
+	}
+	if w := workflowsOf(in); len(w.signals) != 0 || len(w.started) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("signals %q, starts %q, events %d: want none for a suggestion", w.signals, w.started, len(store.intakeEvents))
+	}
+	if got := store.tasks["t-s"]; got.Status != "closed" || got.FinishedAt == nil {
+		t.Fatalf("task = %+v, want closed", got)
+	}
+	if labels := issueLabels(t, in.Forgejo, 30); !slices.Contains(labels, "state/closed") {
+		t.Fatalf("labels = %v", labels)
+	}
+}
+
+// The heal pass takes in a suggestion's close the webhook missed, and
+// starts nothing.
+func TestHealPassClosesASuggestion(t *testing.T) {
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	store := newFakeStore()
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", Kind: "agent", IssueNumber: 30}
+	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
+	if got := store.tasks["t-s"].Status; got != "closed" || len(workflowsOf(in).started) != 0 || len(workflowsOf(in).signals) != 0 {
+		t.Fatalf("status %s, started %q, signals %q", got, workflowsOf(in).started, workflowsOf(in).signals)
+	}
+}

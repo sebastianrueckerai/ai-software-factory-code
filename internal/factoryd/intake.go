@@ -550,10 +550,23 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 			return err
 		}
 	}
-	if t.Kind == "human" {
+	switch {
+	case t.Kind == "human":
 		return in.finishHumanTask(ctx, t)
+	case t.Status == "suggested":
+		return in.closeSuggestion(ctx, t)
 	}
 	return in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
+}
+
+// closeSuggestion: a suggestion whose issue closed ends closed, no
+// workflow ever started.
+func (in *Intake) closeSuggestion(ctx context.Context, t Task) error {
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"suggested"}, "closed"); err != nil {
+		return err
+	}
+	mirrorTaskState(ctx, in.Forgejo, t, "closed")
+	return nil
 }
 
 // decide records a decision — issue number closed, pull request number
@@ -611,7 +624,8 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 // human-lane task has none.
 func (in *Intake) agentTask(ctx context.Context, id string) (Task, bool, error) {
 	t, ok, err := in.Store.Task(ctx, id)
-	return t, ok && t.Kind == "agent", err
+	// a suggestion runs nothing until a writer's agent label starts it
+	return t, ok && t.Kind == "agent" && t.Status != "suggested", err
 }
 
 // taskOfHead is the task whose pull request has head ref in headRepo: a
@@ -850,7 +864,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
-	if t.Kind == "human" {
+	if t.Kind == "human" || t.Status == "suggested" {
 		if t.IssueNumber == 0 {
 			return nil
 		}
