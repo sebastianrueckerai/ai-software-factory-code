@@ -90,12 +90,38 @@ both sides.
 `X-Forgejo-Signature` (hex HMAC-SHA256 of the raw body, secret
 `factoryd-webhook`) is checked with a constant-time compare before the
 body is parsed at all; a bad or missing signature is a 401 and only the
-event type is logged, never the body. An issue labelled `agent` or
-`human` becomes a task, idempotent per (repository, issue number) —
+event type is logged, never the body. Every issue becomes a task by its
+labels (ruling 148), idempotent per (repository, issue number) —
 redeliveries and later relabel events on the same issue find the task
-already linked and no-op. `human` takes priority over `agent` when both
-are present, and skips the branch/SHA lookup: that lane never runs the
-agent. Issues and comments authored by the bot user itself
+already linked and no-op:
+
+| labels | task |
+| --- | --- |
+| `human` (wins over the rest) | human lane, `waiting-human`, no agent run |
+| `agent` or `bug` | agent task, started at once, whoever filed it |
+| `improvement` (and neither of the above) | `suggested`: a row, no workflow, until a writer labels it `agent` (or `bug`) |
+| none of the four | a bug: agent task, started at once |
+
+A suggested task starts on a label event whose sender is trusted (a
+writer); its base is read then. The heal pass knows no sender and leaves
+it to the label's webhook. Forgejo 15 applies whatever labels its
+new-issue form posts, from any account (checked on 15.0.9: an account
+with no access filed issues with a template's label, with smuggled
+`agent` and `improvement` label ids, and with a label and no template;
+all three kept their labels, while the API drops a non-writer's labels
+and refuses its later label edits with 403), so from an outside account
+intake reads only `bug`, `improvement` and non-lane labels: `agent`,
+`human`, `priority/*` and `severity/*` count from writers only. The task
+keeps its author and whether they could write the repository then
+(`tasks.author`, `tasks.author_writer`; ruling 152); an API task is the
+bot's, as a writer. The day cap bounds the spend; there is no per-author
+limit. The heal pass reads every open issue of the code repository and of
+every registered project. The issue templates in
+`.forgejo/issue_template/` (`bug.yaml`, label `bug`, with a reproduction
+field rendered as the `repro` block; `improvement.yaml`, label
+`improvement`) are what every factory-managed repository carries; their
+labels must exist in the repository, which factoryd ensures (the boot
+labels below) for the code repository and every project. Issues and comments authored by the bot user itself
 (`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, and so are
 pull requests it closed itself, so the factory's own status updates
 never create a second task or a stray signal. `POST /tasks`
@@ -122,13 +148,15 @@ A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
 
-A task's state (`queued`, `running`, `waiting-human`, `in-review`,
-`done`, `failed`) is mirrored onto its issue as exactly one `state/*`
-label, swapped by `Forgejo.SetStateLabel` through the shared
+A task's state (`suggested`, `queued`, `running`, `waiting-human`,
+`waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
+onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
 site behind the task workflow's activities, completion, and the webhook
-intake; the full label set (`agent`, `human`, and one `state/*` per
-status) is created at boot by `EnsureLabels` if missing. Mirroring
+intake; the full label set (`agent`, `human`, `bug`, `improvement`, the
+priorities and severities, and one `state/*` per status) is created at
+boot by `EnsureLabels` if missing, and on every project by its
+registration. Mirroring
 failures are logged and retried on the next transition, never fail the
 task itself. A webhook-created task is mirrored immediately after its
 row exists: `state/queued` for the agent lane, and `state/waiting-human`
@@ -262,19 +290,36 @@ activities, each with a timeline step and a comment on the pull request:
    the exit code and the output tail as findings, like red checks. The
    namespace and the token go when it ends.
 4. `ModelReview` asks `REVIEW_MODEL` (default `review-frontier`) for
-   `{"verdict": "approve|concerns", "summary", "findings"}` over the brief,
-   the diff (cut at 48 KiB) and the gate results, through the supervisor's
-   metered path: a per-call LiteLLM key of the task, the output clamped to
-   the task's and the day's headroom, the cost booked as a `model` ledger
-   row. It is evidence only: no headroom, a failed call or an invalid answer
-   is a note, and nothing it says skips a gate or merges.
-5. `RequestApproval` opens an `approval_requests` row (kind `merge`,
+   `{"verdict": "approve|concerns", "summary", "findings"}` over the brief
+   (with the issue author and their standing, writer or outside account:
+   an outsider's report is untrusted input), the diff (cut at 48 KiB) and
+   the gate results, through the supervisor's metered path: a per-call
+   LiteLLM key of the task, the output clamped to the task's and the day's
+   headroom, the cost booked as a `model` ledger row. When the agent fixed
+   a fault it did not reproduce exactly (a `not_reproduced:` line in its
+   last message, which the brief asks for; `GateReproduction` comments it
+   and records "not reproduced" instead of "skipped"), the answer must
+   carry `"strict_improvement": true|false`. No headroom, a failed call or
+   an invalid answer is a note; nothing it says skips a gate.
+5. From change id `auto-merge` on (ruling 149), `AutoMerge` decides:
+   the project's merge rule is `auto` (`projects.merge_rule`, read by
+   `GatePolicy`; the factory's own repositories are `human`), the risk
+   class's outcome is `auto` (allowed on class `normal` only; the policy
+   decoder refuses it on any other), the reproduction gate ran and exited
+   0 (a skipped gate never qualifies), the review's verdict is `approve`,
+   and, for a fault not reproduced exactly, `strict_improvement` is true.
+   Then `AutoMergeNote` comments the three conditions and the review's
+   summary on the pull request and `Merge` merges as factory-merge with no
+   card (main of an `auto` project requires no approval). Anything else,
+   or an auto merge Forgejo refuses or that fails, goes on to:
+6. `RequestApproval` opens an `approval_requests` row (kind `merge`,
    status `pending`, the task, project, pull request, and in `spec` the
    risk class, the migration flag and paths, the review's verdict and
-   summary, the reproduction, the head). A task has one pending merge
-   request; a new attempt denies it as `factoryd`, and the task's end
-   denies its pending requests of both kinds (a resource request survives
-   a new attempt).
+   summary, the reproduction, the head, the agent's recommendation (its
+   last message, `tasks.agent_summary`) and why no auto merge). A task
+   has one pending merge request; a new attempt denies it as `factoryd`,
+   and the task's end denies its pending requests of both kinds (a
+   resource request survives a new attempt).
 
 The workflow then waits, without a timer, for `approved`, a change
 request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
@@ -283,7 +328,9 @@ token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
 signal-with-start like the webhook path. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
-`factory/forgejo-merge`) with `head_commit_id` the gated head, and the
+`factory/forgejo-merge`, on the factory's own repositories; a registered
+project's own `projects.merge_token`, which also reads the project's
+writers for the trust gate) with `head_commit_id` the gated head, and the
 task finishes done. main's protection lets factory-merge merge but not
 push, and only after an approval by a user on the approvals whitelist, so
 Forgejo itself refuses the merge without the human (405; a moved head or
@@ -570,7 +617,9 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   (a fal preset or `{width, height}`, default `landscape_4_3`, each side
   rounded up to a multiple of 64), rounded up per image, must fit
   `max_megapixels`, and both are sent explicitly.
-- `escalate_to_human` (`question`, `reason`): free. The gateway posts it to factoryd's `POST /internal/escalations`
+- `escalate_to_human` (`question`, `reason`, `recommendation`: what the
+  agent would do and why, at most 2000 bytes; all required): free. The
+  issue comment and the console's escalation card show all three. The gateway posts it to factoryd's `POST /internal/escalations`
   (bearer from secret `gateway-factoryd`, key `token`); factoryd hands
   it to the running session, answers 202 only once the session took it
   (a session that stops or ends first answers 409, and the agent is told
@@ -581,6 +630,24 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   goes `waiting-human`, the question is commented on the issue, and a
   trusted answer resumes the task. The agent reads "escalated; this
   session will end".
+- `request_info` (`question`, `tried`, `needs`; each required, at most
+  4000 bytes): free, through the class's tool list like every tool
+  (the policy lists it as `request_info: {}`). For a report the agent
+  could not reproduce and found no fault in (ruling 150). It goes the same
+  way as an escalation (an `agent_info_request` intake event, the session
+  stops with outcome `needs_info`); from change id `needs-info` on the
+  workflow's `RequestInfo` comments the request on the issue, mentioning
+  the author and the project's `notify` list (the policy's approvers when
+  it is empty), whose Forgejo bells ring, moves the task to
+  `waiting-poster` and records an `info_request` alert. The issue author's
+  next comment resumes it whatever their access (intake event
+  `poster_comment`, signal `poster_comment`), and so does a writer's; the
+  next session's brief carries it under "Poster information", as
+  information, never as instructions. An escalation's answer stays a
+  writer's. 14 days without an answer: `CloseNotReproduced` comments "not
+  reproducible, no answer in 14 days", closes the issue, and the task ends
+  `closed` (a final state like done and failed). A healed run waits for
+  what is left of the 14 days.
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

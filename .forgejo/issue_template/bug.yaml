@@ -1,0 +1,22 @@
+name: Bug report
+about: Something does not work as it should. A bug report starts an agent task at once, whoever files it.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction command
+      description: Optional. A shell command, run at the repository root, that fails now and passes once the bug is fixed. The factory runs it against the fix before the merge.
+      render: repro
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional. Version, browser, operating system, logs.

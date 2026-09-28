@@ -1,0 +1,11 @@
+name: Improvement
+about: A change you would like. It waits as a suggestion until a writer labels it agent.
+labels: ["improvement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+      description: The change, and what it makes better for whom.
+    validations:
+      required: true
