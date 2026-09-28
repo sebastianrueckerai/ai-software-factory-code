@@ -51,7 +51,19 @@ the agents work on.
   are done. A LiteLLM budget refusal is labelled by the headroom the key
   was capped at (`refused_budget` or `refused_day_cap`). Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
-  output limit and hold. It also serves the agent's tools over MCP at
+  output limit and hold. factoryd's own model calls (the session
+  supervisor, the gate supervisor, the model review) take the same route:
+  the `gateway-factoryd` token (the gateway's `FACTORYD_TOKEN`) with the
+  task in `X-Factory-Task` and the purpose (`supervisor`,
+  `gate-supervisor`, `review`) in `X-Factory-Purpose`. Such a call may use
+  only the alias the task's class names for the purpose
+  (`supervisor_model`, `review_model`; 403 `refused_capability` else),
+  runs while the task is running or in review, is held and booked like an
+  agent's under the ref `<purpose>/<alias>` (e.g. `review/review-frontier`),
+  and its audit row has the purpose as `kind` (`agent` for an agent's
+  call). Its LiteLLM key is the task's factoryd slot, apart from the
+  session's key, limited to those aliases. A refusal names its decision in
+  the `X-Gateway-Decision` header. It also serves the agent's tools over MCP at
   `/mcp`, see "Tools".
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
@@ -300,18 +312,21 @@ activities, each with a timeline step and a comment on the pull request:
    at the head passes the gate. Anything else at the head sends the next attempt back to the agent on the stronger rung with
    the exit code and the output tail as findings, like red checks. The
    namespace and the token go when it ends.
-4. `ModelReview` asks `REVIEW_MODEL` (default `review-frontier`) for
+4. `ModelReview` asks the `review_model` of the task's class for
    `{"verdict": "approve|concerns", "summary", "findings"}` over the brief
    (with the issue author and their standing, writer or outside account:
    an outsider's report is untrusted input), the diff (cut at 48 KiB) and
-   the gate results, through the supervisor's metered path: a per-call
-   LiteLLM key of the task, the output clamped to the task's and the day's
-   headroom, the cost booked as a `model` ledger row. When the agent fixed
+   the gate results, through the gateway on the task's account (purpose
+   `review`): its hold, the `model` ledger row `review/<alias>` and an
+   audit row of kind `review`. When the agent fixed
    a fault it did not reproduce exactly (a `not_reproduced:` line in its
    last message, which the brief asks for; `GateReproduction` comments it
    and records "not reproduced" instead of "skipped"), the answer must
-   carry `"strict_improvement": true|false`. No headroom, a failed call or
-   an invalid answer is a note; nothing it says skips a gate.
+   carry `"strict_improvement": true|false`. A gateway refusal
+   (`refused_budget` at the task's cap: "model review refused by the
+   gateway (refused_budget): ..."), a failed call, an invalid answer or a
+   class without a review model is a note on the pull request and the
+   approval card; nothing it says skips a gate.
 5. From change id `auto-merge` on (ruling 149), `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
@@ -397,13 +412,12 @@ once per task, recorded on the task row), and no write (rulings 141,
 session's start (the policy's `supervisor` section, read at each session
 start, 300 by default); a tick or the worker's checkpoint never trips it,
 silence is the stall's. The wall-clock cap ends the
-session. Every other trip asks the supervisor, a model under the LiteLLM
-alias `supervisor`, called directly and metered like a gateway call: its
-answer limit is clamped to the free headroom, the worst case is held, and
-its cost is booked as a `model` ledger row with ref `supervisor` right
-after the call; a call that cannot fit escalates. Its virtual key is
-minted per call (metadata `task_id`, `max_budget` the hold, model
-`supervisor` only, so the session end blocks it).
+session. Every other trip asks the supervisor, the `supervisor_model` of
+the task's class, through the gateway on the task's account (purpose
+`supervisor`): its answer limit is clamped to the free headroom, the
+worst case is held, its cost is booked as a `model` ledger row with ref
+`supervisor/<alias>`, and it has an audit row of kind `supervisor`; a
+call the gateway refuses escalates.
 It reads the brief, the trip, a progress digest and the session record's
 tail, and answers one of `continue` (the detector resets, the session
 runs on), `redirect` (new session, same rung, its guidance as findings),
@@ -456,13 +470,12 @@ info), and per activity the check statuses of the commit with the CI
 runner queue (`WaitChecks`), the sandbox pod's phase, conditions,
 container states and last 100 log lines (`RunSession`,
 `GateReproduction`), the pull request's state and mergeability (`Merge`)
-or the review model and its last `model_review` step (`ModelReview`; the
-review call does not pass the gateway). Every string of the bundle goes
+or the review model and its last `model_review` step (`ModelReview`). Every string of the bundle goes
 through `internal/redact` with the task's git tokens, the factory's one
 scrubber (the gateway's audit records and the worker's git errors use it
 too); its 32-character rule also takes long URL paths and commit ids.
-The reads have a minute. The `supervisor` alias answers through the same
-metered call as the session supervisor, on the task's account (purpose
+The reads have a minute. The `supervisor_model` answers through the gateway
+like the session supervisor, on the task's account (purpose
 `gate-supervisor`): `wait` (the attempt's bound is extended once by its
 own length, and at least half a bound after the answer; not offered for
 a session, whose start-to-close ends first), `retry` (the attempt is
@@ -504,7 +517,10 @@ The capability policy is a YAML document in the infra repository
 by Flux; its README says how to change it), schema v1 in
 `internal/policy`: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day over all tasks) and `classes` (per capability
-class the model aliases it may call and its tools with per-task caps).
+class the model aliases it may call, its tools with per-task caps, and
+the aliases factoryd calls on its tasks' account, which the agent may
+not: `review_model` for the model review, `supervisor_model` for the
+session and gate supervisor; a class without one gets no such call).
 Unknown keys are rejected. factoryd mounts it read-only at
 `/etc/factory-policy/policy.yaml` (`POLICY_FILE`), reads it on boot and
 every 30 s, and records each new valid content as an immutable
@@ -585,7 +601,9 @@ Both endpoints take the intake bearer token:
 - `GET /policy`: the version in force, `{id, sha256, document, loaded_at, activated_at}`.
 - `GET /costs?from=YYYY-MM-DD&to=YYYY-MM-DD` (UTC days, both included,
   each defaulting to today, at most 366 days apart): `days` (per day
-  `by_kind` and `total`) and `tasks` (per task total, largest first).
+  `by_kind` and `total`) and `tasks` (per task total, largest first, with
+  its `lines` per ledger `kind` and `ref`, so a review is its own line,
+  `model review/<alias>`).
 
 ## Tools
 
@@ -949,8 +967,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   (`factoryd.BootLabels`): `agent`, `human`, `state/*`, `priority/p0..p3`
   and `severity/critical|high|medium|low`; the new-task form offers the
   priorities.
-- `/costs`: the ledger per day and kind and per task for 14 days, today
-  against the day cap. `/policy`: the version in force, linked to its file
+- `/costs`: the ledger per day and kind and per task for 14 days, each
+  task with its lines per kind and ref (a model review is its own line,
+  `model review/<alias>`), today against the day cap. `/policy`: the version in force, linked to its file
   in the infra repository for edits.
 
 ## Projects (task 65)
@@ -1352,7 +1371,7 @@ Metrics:
 Audit log records: every audit row the store accepted is also one log
 record (`Telemetry.Audited` wraps the store; Postgres stays the record),
 body `audit <decision>`, severity INFO, attributes `task.id`,
-`audit.decision`, `audit.reason`, `audit.model_alias`, `audit.tool`,
+`audit.decision`, `audit.kind` (`agent` or factoryd's purpose), `audit.reason`, `audit.model_alias`, `audit.tool`,
 `audit.spend_eur`, `audit.policy_version`, `audit.output_limit`,
 `audit.hold_eur`, `audit.over_hold`; a nil or empty column is left out.
 `task.id` and `audit.decision` are the gateway's own (the verified

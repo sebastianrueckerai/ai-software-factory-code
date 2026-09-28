@@ -610,6 +610,7 @@ spec:
         - matchName: signoz-otel-collector.platform.svc.cluster.local
         - matchName: signoz.platform.svc.cluster.local
         - matchName: forgejo-ssh.forgejo.svc.cluster.local
+        - matchName: factory-gateway.factory.svc.cluster.local
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -631,6 +632,12 @@ spec:
         app.kubernetes.io/name: litellm
     toPorts:
     - ports: [{port: "4000", protocol: TCP}]
+  # the gateway: factoryd's model calls (supervisor, gate supervisor,
+  # review) on a task's account
+  - toEndpoints:
+    - matchLabels: {app: factory-gateway}
+    toPorts:
+    - ports: [{port: "8081", protocol: TCP}]
   - toEndpoints:
     - matchLabels:
         "k8s:io.kubernetes.pod.namespace": platform
