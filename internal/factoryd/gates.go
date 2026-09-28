@@ -516,6 +516,7 @@ func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string,
 		commit, approver, maxMergeRetries))
 	r.note(ctx, t, fmt.Sprintf("waiting: the merge after %s's approval failed %d times; approve again to retry", approver, maxMergeRetries))
 	r.record(ctx, t.ID, "merge_retries_exhausted", map[string]any{"pr": pr, "commit": commit, "approver": approver, "retries": maxMergeRetries})
+	r.awaitApprovalAgain(ctx, t)
 	return nil
 }
 
@@ -599,7 +600,16 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 		commit, approver, res.Refusal))
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
+	r.awaitApprovalAgain(ctx, t)
 	return res
+}
+
+// awaitApprovalAgain puts the task back in the approval gate: its merge
+// waits for a new approval.
+func (r *Runner) awaitApprovalAgain(ctx context.Context, t Task) {
+	if err := r.store.SetGate(ctx, t.ID, GateApproval, time.Now()); err != nil {
+		log.Printf("task %s: back to the approval gate: %v", t.ID, err)
+	}
 }
 
 // comment posts on the pull request; a failure is logged, the comment is

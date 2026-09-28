@@ -378,6 +378,10 @@ func TestMergeRefusal(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
 		t.Fatal("no merge_refused step")
 	}
+	// a refused merge waits for an approval again
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Gate != GateApproval || got.GateSince.Before(from) {
+		t.Fatalf("after a refusal the task is in %q since %v, want approval since the refusal", got.Gate, got.GateSince)
+	}
 	fj.merged = true
 	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.comments) != 1 {
@@ -774,8 +778,12 @@ func TestReportMergeRetriesExhausted(t *testing.T) {
 	fj := &gateForgejo{}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	from := time.Now()
 	if _, err := execActivity(t, r, ActivityReportMergeRetriesExhausted, "t1", int64(9), "c1", "sebastian"); err != nil {
 		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Gate != GateApproval || got.GateSince.Before(from) {
+		t.Fatalf("after the exhausted retries the task is in %q since %v, want approval since now", got.Gate, got.GateSince)
 	}
 	if note := store.approvals[0].DecisionNote; note != "waiting: the merge after sebastian's approval failed 6 times; approve again to retry" {
 		t.Fatalf("approval note = %q", note)

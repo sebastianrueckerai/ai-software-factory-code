@@ -265,6 +265,18 @@ func TestWorkflowRefusedMergeKeepsWaiting(t *testing.T) {
 	if final := g.run(t); final != "done" || len(g.merges) != 2 {
 		t.Fatalf("final = %q after merges %v", final, g.merges)
 	}
+	// the refusal starts a new approval wait: the second approval's
+	// started is the first one's hour later
+	var started []string
+	for _, r := range g.recorded {
+		if r.step == "signal" && r.detail["signal"] == SignalApproved {
+			started = append(started, fmt.Sprint(r.detail["started"]))
+		}
+	}
+	req := g.requested[0].UTC()
+	if want := []string{req.Format(time.RFC3339Nano), req.Add(time.Hour).Format(time.RFC3339Nano)}; !slices.Equal(started, want) {
+		t.Fatalf("approvals started %q, want %q", started, want)
+	}
 }
 
 // A refused merge followed by a human's merge in Forgejo stays valid.
@@ -461,6 +473,18 @@ func TestWorkflowMergeRetriesAreCapped(t *testing.T) {
 	}
 	if d := g.finishAt.Sub(g.started); d < 10*time.Hour {
 		t.Fatalf("finished %s after the start: a timer merged before the new approval", d)
+	}
+	// the exhausted retries start a new approval wait: the seventh
+	// failed merge, 1 h + 6 x 10 min after the request
+	var started []string
+	for _, r := range g.recorded {
+		if r.step == "signal" && r.detail["signal"] == SignalApproved {
+			started = append(started, fmt.Sprint(r.detail["started"]))
+		}
+	}
+	req := g.requested[0].UTC()
+	if want := []string{req.Format(time.RFC3339Nano), req.Add(2 * time.Hour).Format(time.RFC3339Nano)}; !slices.Equal(started, want) {
+		t.Fatalf("approvals started %q, want %q", started, want)
 	}
 }
 

@@ -221,15 +221,6 @@ type gateRow struct {
 	Seconds                                 int
 }
 
-// stepGates are the timeline steps that end a gate, when they carry
-// started.
-var stepGates = map[string]string{
-	"intake": factoryd.GateIntake, "session_end": factoryd.GateSession, "checks": factoryd.GateChecks,
-	"gate_policy": factoryd.GatePolicy, "gate_migration": factoryd.GateMigration, "gate_reproduction": factoryd.GateReproduction,
-	"model_review": factoryd.GateReview, "signal": factoryd.GateApproval, "merged": factoryd.GateMerge,
-	"merge_failed": factoryd.GateMerge, "merge_refused": factoryd.GateMerge, "commissioned": factoryd.GateCommissioning,
-}
-
 // gateRows are the task's gates from its timeline, each from its start to
 // the step that ended it, the CI jobs under their checks, and the gate the
 // task's row is in when no step ended it yet; longest scales the bars.
@@ -241,7 +232,7 @@ func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []ga
 		if step == "session_end" {
 			attempt = fmt.Sprint(m["attempt"])
 		}
-		gate, ok := stepGates[step]
+		gate, ok := factoryd.StepGates[step]
 		startS, _ := m["started"].(string)
 		start, err := time.Parse(time.RFC3339, startS)
 		if !ok || err != nil {

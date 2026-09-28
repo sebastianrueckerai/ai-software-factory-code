@@ -291,8 +291,9 @@ const (
 	// one exhausted report, no timer; a new approval restarts the count.
 	versionMergeRetryCap workflow.Version = 1
 	// versionGateStarted (change id "gate-started", ruling 140): the
-	// approved signal's timeline step carries when the approval was
-	// requested, the start of the approval wait.
+	// approved signal's timeline step carries when the approval wait
+	// began: the approval request, or the last refused merge or the
+	// exhausted retries that ask for a new approval.
 	versionGateStarted workflow.Version = 1
 )
 
@@ -671,6 +672,9 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 				workflow.GetLogger(t.ctx).Warn("report merge retries exhausted", "task", t.taskID, "error", err)
 			}
 			approver = ""
+			if t.v11 >= versionGateStarted {
+				t.approvalRequested = workflow.Now(t.ctx)
+			}
 		case res.Failed != "" && t.v9 >= versionMergeFailureReported:
 			failures++
 			timerCtx, cancel := workflow.WithCancel(t.ctx)
@@ -678,7 +682,11 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		case res.Failed != "":
 			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
 		default:
+			// refused: a new approval wait
 			approver = ""
+			if t.v11 >= versionGateStarted {
+				t.approvalRequested = workflow.Now(t.ctx)
+			}
 		}
 	}
 }

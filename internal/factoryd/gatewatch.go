@@ -26,6 +26,16 @@ const (
 	GateCommissioning = "commissioning"
 )
 
+// StepGates are the timeline steps that end a gate, each carrying the
+// gate's start as started: the signal step for an approval, the others
+// by name.
+var StepGates = map[string]string{
+	"intake": GateIntake, "session_end": GateSession, "checks": GateChecks,
+	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
+	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
+	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning,
+}
+
 // activityGates are the gates the activities open: the task's row is in
 // the gate from the activity's schedule until the next one opens.
 var activityGates = map[string]string{
