@@ -47,7 +47,7 @@ func (s *S3) Get(ctx context.Context, key string) ([]byte, error) {
 
 func (s *S3) do(ctx context.Context, method, key string, body []byte) ([]byte, error) {
 	url := fmt.Sprintf("%s/%s/%s", s.Endpoint, s.Bucket, uriEncode(key))
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body)) // #nosec G704 -- endpoint and bucket are configuration; the key is URI-encoded into the path
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func (s *S3) do(ctx context.Context, method, key string, body []byte) ([]byte, e
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // #nosec G704 -- the request built above
 	if err != nil {
 		return nil, fmt.Errorf("s3 %s %s: %w", method, key, err)
 	}

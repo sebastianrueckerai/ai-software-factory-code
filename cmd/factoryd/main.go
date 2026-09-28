@@ -247,6 +247,7 @@ func main() {
 	}
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
+	webhookIntake.MainPushed = registrar.MainPushed
 	// ruling 156: every project's objects come back from its row at boot,
 	// and again when a new policy version may change the approvers in the
 	// projects' protection

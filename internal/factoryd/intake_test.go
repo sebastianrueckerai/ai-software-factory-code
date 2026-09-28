@@ -1220,3 +1220,35 @@ func TestReproCommand(t *testing.T) {
 		}
 	}
 }
+
+// A push to main reaches MainPushed with the repository; a push to any
+// other branch does not, and its failure fails the delivery.
+func TestIntakePushToMain(t *testing.T) {
+	in, _, _ := newTestIntake(t)
+	var got []string
+	fail := false
+	in.MainPushed = func(_ context.Context, repository string) error {
+		got = append(got, repository)
+		if fail {
+			return errors.New("forgejo down")
+		}
+		return nil
+	}
+	push := func(ref string) int {
+		body, _ := json.Marshal(map[string]any{"ref": ref, "repository": map[string]any{"full_name": "demo-app/demo-app"}})
+		return postWebhook(in, "push", body, sign(webhookSecret, body)).Code
+	}
+	if c := push("refs/heads/main"); c != http.StatusOK {
+		t.Fatalf("status %d", c)
+	}
+	if c := push("refs/heads/task-1"); c != http.StatusOK {
+		t.Fatalf("status %d", c)
+	}
+	fail = true
+	if c := push("refs/heads/main"); c != http.StatusInternalServerError {
+		t.Fatalf("failed reconcile: status %d", c)
+	}
+	if !slices.Equal(got, []string{"demo-app/demo-app", "demo-app/demo-app"}) {
+		t.Fatalf("MainPushed got %v", got)
+	}
+}

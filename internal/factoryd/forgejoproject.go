@@ -190,19 +190,26 @@ func (f *Forgejo) ProjectBranchProtection(ctx context.Context, repo Repo, branch
 // NoMain is DeployBranch before main's first push.
 const NoMain Change = "waiting: main has no commit yet"
 
+// ProjectBranchExists reports whether repo has branch.
+func (f *Forgejo) ProjectBranchExists(ctx context.Context, repo Repo, branch string) (bool, error) {
+	_, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String()+"/branches/"+url.PathEscape(branch), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // EnsureBranchFrom creates branch at from's head unless branch exists.
 func (f *Forgejo) EnsureBranchFrom(ctx context.Context, repo Repo, branch, from string) (Change, error) {
-	path := "/api/v1/repos/" + repo.String() + "/branches/"
-	_, err := f.projectsCall(ctx, http.MethodGet, path+url.PathEscape(branch), nil, http.StatusOK)
-	if !errors.Is(err, ErrNotFound) {
+	if ok, err := f.ProjectBranchExists(ctx, repo, branch); ok || err != nil {
 		return Unchanged, err
 	}
-	_, err = f.projectsCall(ctx, http.MethodGet, path+url.PathEscape(from), nil, http.StatusOK)
-	if errors.Is(err, ErrNotFound) {
-		return NoMain, nil
-	}
+	ok, err := f.ProjectBranchExists(ctx, repo, from)
 	if err != nil {
 		return "", err
+	}
+	if !ok {
+		return NoMain, nil
 	}
 	_, err = f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/branches",
 		mustJSON(map[string]string{"new_branch_name": branch, "old_branch_name": from}), http.StatusCreated)

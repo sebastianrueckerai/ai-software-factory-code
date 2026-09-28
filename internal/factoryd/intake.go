@@ -38,6 +38,8 @@ type Intake struct {
 	// Repositories are where the heal pass looks for agent and human
 	// issues no webhook turned into a task.
 	Repositories []Repo
+	// MainPushed is told of every push to a repository's main.
+	MainPushed func(ctx context.Context, repository string) error
 
 	trustMu sync.Mutex
 	trust   map[string]time.Time // repo + user → trusted until
@@ -121,6 +123,8 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		procErr = in.handleReview(ctx, body, eventType, delivery)
 	case "pull_request":
 		procErr = in.handlePullRequest(ctx, body)
+	case "push":
+		procErr = in.handlePush(ctx, body)
 	default:
 		// an event type this factory does not act on yet: accepted so
 		// Forgejo's delivery list reads all 2xx, nothing to process
@@ -303,6 +307,22 @@ var AgentCapabilities = []string{policy.ClassCoder}
 
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.
+func (in *Intake) handlePush(ctx context.Context, body []byte) error {
+	var p struct {
+		Ref        string `json:"ref"`
+		Repository struct {
+			FullName string `json:"full_name"`
+		} `json:"repository"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return fmt.Errorf("decode push: %w", err)
+	}
+	if p.Ref != "refs/heads/main" || in.MainPushed == nil {
+		return nil
+	}
+	return in.MainPushed(ctx, p.Repository.FullName)
+}
+
 func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string) error {
 	var p issuesPayload
 	if err := json.Unmarshal(body, &p); err != nil {

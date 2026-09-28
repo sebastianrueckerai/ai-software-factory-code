@@ -920,7 +920,7 @@ and when a new policy version is in force (the approvers), one log line per
 object (`project <name>: <object>: created|updated|no change|waiting: ...`):
 
 - Forgejo, with the projects token: the webhook to factoryd (every issue and
-  pull request event, JSON, the intake secret; the row keeps the secret's
+  pull request event and pushes, JSON, the intake secret; the row keeps the secret's
   sha256, so a re-seeded secret reaches the hook), `factory-agent`,
   `factory-merge` and the policy's approvers as write collaborators (Forgejo
   keeps only writers in a whitelist), `main`'s protection: the code
@@ -931,8 +931,8 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   humans change workflows on main like any file (ruling 166); the branch
   `deploy`, the project's rolled state and what Flux reads, made from `main`
   once main has a commit (the repository starts empty; until then the line
-  says `waiting: main has no commit yet`, and the next reconcile after the
-  first push makes it) and then protected: only the deploy key may push, no
+  says `waiting: main has no commit yet`; a push to main while `deploy` is
+  missing runs the project's reconcile from intake, so the first push makes it) and then protected: only the deploy key may push, no
   approvals, apply to admins, and the protected file patterns
   `.forgejo/**;.gitea/**;.github/**`, since every non-fork job holds
   `DEPLOY_KEY`: `deploy` keeps the workflows it was made with, and a roll

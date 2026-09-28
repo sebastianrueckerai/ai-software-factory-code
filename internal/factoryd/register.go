@@ -73,8 +73,9 @@ const (
 	deployKeyTitle    = "factory-roll"
 )
 
-// ProjectHookEvents are every issue and pull request event.
-var ProjectHookEvents = []string{"issues", "issue_assign", "issue_label", "issue_milestone", "issue_comment",
+// ProjectHookEvents are every issue and pull request event, and pushes
+// (main's first push makes DeployBranch).
+var ProjectHookEvents = []string{"push", "issues", "issue_assign", "issue_label", "issue_milestone", "issue_comment",
 	"pull_request", "pull_request_assign", "pull_request_label", "pull_request_milestone", "pull_request_comment",
 	"pull_request_review_approved", "pull_request_review_rejected", "pull_request_review_comment", "pull_request_sync",
 	"pull_request_review_request"}
@@ -129,6 +130,26 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 		errs = append(errs, r.Reconcile(ctx, p))
 	}
 	return errors.Join(errs...)
+}
+
+// MainPushed reconciles the project whose repository this is when its
+// main was pushed and DeployBranch does not exist yet: a new project's
+// first push (ruling 166). Any other repository or push is nothing to do.
+func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
+	repo, err := SplitRepo(strings.ToLower(repository))
+	if err != nil {
+		return err
+	}
+	p, ok, err := r.Store.Project(ctx, repo.Owner)
+	if err != nil || !ok || !p.Managed || p.Repository != repo.String() {
+		return err
+	}
+	exists, err := r.Forgejo.ProjectBranchExists(ctx, repo, DeployBranch)
+	if err != nil || exists {
+		return err
+	}
+	log.Printf("project %s: main pushed, no %s branch yet: reconcile", p.Name, DeployBranch)
+	return r.Reconcile(ctx, p)
 }
 
 // Reconcile brings p's objects to its row. An unmanaged row has none of

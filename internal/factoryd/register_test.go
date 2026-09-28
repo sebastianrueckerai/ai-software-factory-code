@@ -824,3 +824,41 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 		t.Fatalf("used a foreign team: minted %v, members %v", rig.fj.minted, rig.fj.team)
 	}
 }
+
+// A new project's first push to main makes deploy through the project's
+// reconcile; later pushes, and repositories of no managed project, do nothing.
+func TestMainPushedMakesDeploy(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rig.fj.hooks[0]["events"].([]any), any("push")) {
+		t.Fatalf("webhook events %v lack push", rig.fj.hooks[0]["events"])
+	}
+	rig.fj.branches["main"] = "c0ffee"
+	rig.logs.Reset()
+	if err := rig.reg.MainPushed(ctx, "demo-app/demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	got := rig.logs.String()
+	for _, want := range []string{"project demo-app: main pushed, no deploy branch yet: reconcile\n",
+		"project demo-app: branch deploy: created\n", "project demo-app: protection deploy: created\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log lacks %q:\n%s", want, got)
+		}
+	}
+	if rig.fj.branches["deploy"] != "c0ffee" {
+		t.Fatalf("deploy = %q", rig.fj.branches["deploy"])
+	}
+	writes := len(rig.fj.writes)
+	rig.logs.Reset()
+	for _, repo := range []string{"demo-app/demo-app", "sf/ai-software-factory-code", "other/other"} {
+		if err := rig.reg.MainPushed(ctx, repo); err != nil {
+			t.Fatalf("%s: %v", repo, err)
+		}
+	}
+	if rig.logs.Len() != 0 || len(rig.fj.writes) != writes {
+		t.Fatalf("later pushes: log %q, writes %v", rig.logs, rig.fj.writes[writes:])
+	}
+}
