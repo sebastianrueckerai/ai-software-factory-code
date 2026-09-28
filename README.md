@@ -619,9 +619,15 @@ released, the address leaves the policy. The sandbox image carries
 `factory-gateway` (its ServiceAccount only) with a policy that may only
 sign with that role. The infra README has the setup commands.
 
-Buckets are not offered: Hetzner's Cloud API has no Object Storage
-endpoint, and its S3 keys are made in the console and reach every bucket
-of a project.
+The envelope covers servers with their primary IPv4 and volumes. Buckets
+are not offered (ruling 121): Hetzner's Cloud API has no Object Storage
+endpoint (the agent token gets 404 on every candidate path), and its S3
+keys are made in the console and reach every bucket of a project.
+
+A server's firewall admits SSH only from the cluster nodes and lets it
+out only on 53, 80 and 443, as build VMs (ruling 122). Its egress is not
+name-restricted: an agent can reach the internet on those ports through
+its server, beyond the sandbox's allowlist, for at most the lease.
 
 ## Console (task 54)
 
