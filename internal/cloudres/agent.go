@@ -593,6 +593,37 @@ func (a AgentStore) LiveAddresses(ctx context.Context) (map[string][]string, err
 	return out, rows.Err()
 }
 
+// Commissioned is an agent server that went live: requested (its row
+// written) and live (its provider id recorded).
+type Commissioned struct {
+	ID              int64
+	TaskID          string
+	ServerType      string
+	Requested, Live time.Time
+}
+
+// ClaimCommissioned returns the agent servers gone live since the last
+// claim and marks them claimed: each one's commissioning reaches its
+// task's timeline once.
+func (a AgentStore) ClaimCommissioned(ctx context.Context) ([]Commissioned, error) {
+	rows, err := a.DB.QueryContext(ctx, `UPDATE cloud_resources SET timeline_recorded = true
+		WHERE project = 'agent' AND kind = 'server' AND live_at IS NOT NULL AND NOT timeline_recorded
+		RETURNING id, owner_ref, size, created_at, live_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Commissioned
+	for rows.Next() {
+		var c Commissioned
+		if err := rows.Scan(&c.ID, &c.TaskID, &c.ServerType, &c.Requested, &c.Live); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // Approval is a resource approval request as its task sees it.
 type Approval struct {
 	ID     int64

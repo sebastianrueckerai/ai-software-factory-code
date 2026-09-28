@@ -755,3 +755,33 @@ func TestOverrunIsTheRowThatOverran(t *testing.T) {
 		t.Fatalf("held = %v", held)
 	}
 }
+
+// A commissioned server's commissioning, from its request to its live
+// moment, is claimed for its task's timeline once.
+func TestClaimCommissionedOncePerServer(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	c, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := a.ClaimCommissioned(ctx); err != nil || len(got) != 0 {
+		t.Fatalf("before the server is live: %+v, %v", got, err)
+	}
+	srv := c.Rows[1]
+	(PG{DB: db}).SetLive(ctx, c.Rows[0].ID, "fw-1")
+	(PG{DB: db}).SetLive(ctx, srv.ID, "900")
+	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = live_at - interval '95 seconds' WHERE id = $1`, srv.ID)
+	got, err := a.ClaimCommissioned(ctx)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("claimed %+v, %v; want the one server", got, err)
+	}
+	if g := got[0]; g.ID != srv.ID || g.TaskID != "t1" || g.ServerType != "cx23" || g.Live.Sub(g.Requested) != 95*time.Second {
+		t.Fatalf("claimed %+v, want server %d of t1, cx23, live 95 s after its request", g, srv.ID)
+	}
+	if again, _ := a.ClaimCommissioned(ctx); len(again) != 0 {
+		t.Fatalf("claimed twice: %+v", again)
+	}
+}

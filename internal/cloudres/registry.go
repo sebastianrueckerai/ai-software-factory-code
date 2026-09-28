@@ -158,7 +158,7 @@ func insert(ctx context.Context, q querier, r Resource) (Resource, error) {
 
 func (p PG) SetLive(ctx context.Context, id int64, providerID string) (bool, error) {
 	res, err := p.DB.ExecContext(ctx,
-		`UPDATE cloud_resources SET state = 'live', provider_id = $2 WHERE id = $1 AND state = 'requested'`, id, providerID)
+		`UPDATE cloud_resources SET state = 'live', provider_id = $2, live_at = now() WHERE id = $1 AND state = 'requested'`, id, providerID)
 	return affected(res, err)
 }
 

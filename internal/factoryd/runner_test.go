@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -470,8 +471,17 @@ func testPolicyVersion() policy.Version {
 
 // fakeLeases is the registry's live leased addresses by task.
 type fakeLeases struct {
-	mu   sync.Mutex
-	byID map[string][]string
+	mu           sync.Mutex
+	byID         map[string][]string
+	commissioned []cloudres.Commissioned // what the next claim returns
+}
+
+func (f *fakeLeases) ClaimCommissioned(context.Context) ([]cloudres.Commissioned, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := f.commissioned
+	f.commissioned = nil
+	return out, nil
 }
 
 func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error) {
@@ -1539,6 +1549,29 @@ func TestWorkerEgressAdmitsLeasedServersOnSSH(t *testing.T) {
 		if _, ok := rule.(map[string]any)["toCIDR"]; ok {
 			t.Fatalf("a CIDR allow without a lease: %v", rule)
 		}
+	}
+}
+
+// A commissioned server's commissioning lands on its task's timeline, once,
+// running from the request to the server's live moment.
+func TestRecordCommissioned(t *testing.T) {
+	objects := &fakeObjectStore{}
+	requested := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	leases := &fakeLeases{commissioned: []cloudres.Commissioned{{ID: 11, TaskID: "t1", ServerType: "cx23", Requested: requested, Live: requested.Add(95 * time.Second)}}}
+	cfg := testRunnerConfig()
+	cfg.Leases = leases
+	r := &Runner{cfg: cfg, timeline: &Timeline{Objects: objects}}
+	for range 2 {
+		if err := r.RecordCommissioned(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := strings.Count(string(objGet(objects, "sessions/t1/timeline.jsonl")), `"step":"commissioned"`); n != 1 {
+		t.Fatalf("%d commissioned steps, want 1", n)
+	}
+	step := timelineStep(t, objects, "t1", "commissioned")
+	if step["started"] != "2026-09-28T10:00:00Z" || step["live"] != "2026-09-28T10:01:35Z" || step["resource"] != float64(11) || step["server_type"] != "cx23" {
+		t.Fatalf("commissioned step = %v", step)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -51,10 +52,12 @@ type RunnerConfig struct {
 	Leases LeaseReader
 }
 
-// LeaseReader is the live leased servers' IPv4s by owning task
-// (cloudres.AgentStore on the shared database).
+// LeaseReader is the live leased servers' IPv4s by owning task, and the
+// servers gone live since the last claim (cloudres.AgentStore on the
+// shared database).
 type LeaseReader interface {
 	LiveAddresses(ctx context.Context) (map[string][]string, error)
+	ClaimCommissioned(ctx context.Context) ([]cloudres.Commissioned, error)
 }
 
 // Runner owns the sandbox side of a task: per-session namespace,
@@ -1067,11 +1070,30 @@ func sameJSON(a, b any) (bool, error) {
 	return reflect.DeepEqual(na, nb), nil
 }
 
-// LeaseLoop runs AdmitLeases every interval until ctx ends.
+// RecordCommissioned puts each agent server gone live on its task's
+// timeline: the commissioning gate, from the request to the server's live
+// moment.
+func (r *Runner) RecordCommissioned(ctx context.Context) error {
+	cs, err := r.cfg.Leases.ClaimCommissioned(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range cs {
+		r.record(ctx, c.TaskID, "commissioned", map[string]any{"resource": c.ID, "server_type": c.ServerType,
+			"started": rfc3339(c.Requested), "live": rfc3339(c.Live)})
+	}
+	return nil
+}
+
+// LeaseLoop runs AdmitLeases and RecordCommissioned every interval until
+// ctx ends.
 func (r *Runner) LeaseLoop(ctx context.Context, every time.Duration) {
 	for {
 		if err := r.AdmitLeases(ctx); err != nil {
 			log.Printf("lease admission: %v", err)
+		}
+		if err := r.RecordCommissioned(ctx); err != nil {
+			log.Printf("commissioning on the timeline: %v", err)
 		}
 		select {
 		case <-ctx.Done():
