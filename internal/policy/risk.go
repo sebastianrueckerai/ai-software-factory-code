@@ -11,8 +11,9 @@ import (
 // Risk classifies a pull request by the paths it changes (architecture 7):
 // each changed path takes the class of the first rule with a matching glob,
 // else Default, and the pull request takes the most severe class among its
-// paths. Classes are listed most severe first. No outcome merges without a
-// human: the privileged main CI runs merged code (rulings 76, 77, 109).
+// paths. Classes are listed most severe first. Only auto, on class normal,
+// merges without a human, and only where the project's merge rule is auto
+// and the reproduction and the model review say so (ruling 149).
 type Risk struct {
 	Classes []RiskClass `yaml:"classes" json:"classes"`
 	Rules   []RiskRule  `yaml:"rules" json:"rules"`
@@ -38,7 +39,11 @@ type RiskRule struct {
 const (
 	OutcomeForbidden        = "forbidden"
 	OutcomeRequiresApproval = "requires_approval"
+	OutcomeAuto             = "auto"
 )
+
+// ClassNormal is the one class outcome auto is allowed on.
+const ClassNormal = "normal"
 
 func (r Risk) validate() error {
 	if len(r.Classes) == 0 {
@@ -52,8 +57,11 @@ func (r Risk) validate() error {
 		if slices.Contains(names, c.Name) {
 			return fmt.Errorf("policy: risk class %s is listed twice", c.Name)
 		}
-		if c.Outcome != OutcomeForbidden && c.Outcome != OutcomeRequiresApproval {
-			return fmt.Errorf("policy: risk class %s has outcome %q, want %s or %s", c.Name, c.Outcome, OutcomeForbidden, OutcomeRequiresApproval)
+		if c.Outcome != OutcomeForbidden && c.Outcome != OutcomeRequiresApproval && c.Outcome != OutcomeAuto {
+			return fmt.Errorf("policy: risk class %s has outcome %q, want %s, %s or %s", c.Name, c.Outcome, OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto)
+		}
+		if c.Outcome == OutcomeAuto && (c.Name != ClassNormal || c.Migration) {
+			return fmt.Errorf("policy: risk class %s: outcome auto is allowed on class %s only", c.Name, ClassNormal)
 		}
 		names = append(names, c.Name)
 	}

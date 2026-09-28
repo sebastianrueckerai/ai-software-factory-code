@@ -78,3 +78,30 @@ func TestParseRejectsBadRisk(t *testing.T) {
 		})
 	}
 }
+
+// auto merges without a human only on class normal (ruling 149): the
+// decoder refuses it on any other class.
+func TestParseAutoOnlyOnNormal(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	for name, tc := range map[string]struct {
+		risk string
+		ok   bool
+	}{
+		"normal auto":      {"risk: {classes: [{name: high, outcome: requires_approval}, {name: normal, outcome: auto}], default: normal}\n", true},
+		"high auto":        {"risk: {classes: [{name: high, outcome: auto}, {name: normal, outcome: requires_approval}], default: normal}\n", false},
+		"migration auto":   {"risk: {classes: [{name: migration, outcome: auto, migration: true}, {name: normal, outcome: requires_approval}], default: normal}\n", false},
+		"forbidden auto":   {"risk: {classes: [{name: forbidden, outcome: auto}, {name: normal, outcome: requires_approval}], default: normal}\n", false},
+		"normal approval":  {"risk: {classes: [{name: normal, outcome: requires_approval}], default: normal}\n", true},
+		"normal forbidden": {"risk: {classes: [{name: normal, outcome: forbidden}], default: normal}\n", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(base + tc.risk + rest))
+			if tc.ok && err != nil {
+				t.Fatalf("Parse: %v, want it accepted", err)
+			}
+			if !tc.ok && (err == nil || !strings.Contains(err.Error(), "outcome auto is allowed on class normal only")) {
+				t.Fatalf("Parse error = %v, want the auto refusal", err)
+			}
+		})
+	}
+}

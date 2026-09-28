@@ -450,3 +450,14 @@ func TestDetectorsRejects(t *testing.T) {
 		})
 	}
 }
+
+// request_info is a free tool a class allows by listing it without caps.
+func TestRequestInfoIsAFreeTool(t *testing.T) {
+	d, err := Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      request_info: {}\n      replicate_predict:", 1)))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !d.AllowsTool([]string{"coder"}, ToolRequestInfo) || d.AllowsTool([]string{"researcher"}, ToolRequestInfo) {
+		t.Fatal("request_info: want allowed for coder only")
+	}
+}
