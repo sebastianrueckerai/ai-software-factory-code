@@ -175,11 +175,26 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 			do     func() (Change, error)
 		}{"collaborator " + a, func() (Change, error) { return run.collaborator(ctx, a) }})
 	}
+	var deploy bool
 	steps = append(steps, []struct {
 		object string
 		do     func() (Change, error)
 	}{
-		{"protection main", func() (Change, error) { return run.protection(ctx) }},
+		{"protection main", func() (Change, error) {
+			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser))
+		}},
+		{"branch " + DeployBranch, func() (Change, error) {
+			c, err := f.EnsureBranchFrom(ctx, repo, DeployBranch, "main")
+			deploy = c != NoMain
+			return c, err
+		}},
+		// Forgejo refuses to create a branch its protection covers, even from the API
+		{"protection " + DeployBranch, func() (Change, error) {
+			if !deploy {
+				return NoMain, nil
+			}
+			return run.protection(ctx, DeployBranch, DeployProtection())
+		}},
 		{"fork " + f.Fork(repo).String(), func() (Change, error) { return "ready", f.EnsureFork(ctx, repo) }},
 		{"labels", func() (Change, error) { return "ensured", f.EnsureLabels(ctx, repo.Owner, repo.Name, BootLabels) }},
 	}...)
@@ -263,43 +278,54 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 }
 
 // Protection is main's protection for a project: the code repository's
-// (infra README, "The merge bot"), and the project's deploy key may push
-// (its main workflow's roll commits; Forgejo admits no Actions job token
-// to a whitelist). A project on auto needs no approval, so factory-merge
-// can merge a clean pull request (ruling 149). Forgejo keeps only users
-// with write in a whitelist, so the approvers are write collaborators.
+// (infra README, "The merge bot"). factory-merge and the approvers may push;
+// the deploy key may not, since the rolled state lives on DeployBranch
+// (ruling 166). A project on auto needs no approval, so factory-merge can
+// merge a clean pull request (ruling 149). Forgejo keeps only users with
+// write in a whitelist, so the approvers are write collaborators.
 func Protection(mergeRule string, approvers []string, mergeUser string) BranchProtection {
 	required := 1
 	if mergeRule == policy.MergeAuto {
 		required = 0
 	}
 	return BranchProtection{
-		EnablePush: true, EnablePushWhitelist: true, PushWhitelistUsernames: slices.Clone(approvers), PushWhitelistDeployKeys: true,
+		EnablePush: true, EnablePushWhitelist: true, PushWhitelistUsernames: append(slices.Clone(approvers), mergeUser),
 		EnableMergeWhitelist: true, MergeWhitelistUsernames: append(slices.Clone(approvers), mergeUser),
 		EnableApprovalsWhitelist: true, ApprovalsWhitelistUsernames: slices.Clone(approvers),
 		RequiredApprovals: required, ApplyToAdmins: true, BlockOnRejectedReviews: true, DismissStaleApprovals: true,
-		ProtectedFilePatterns: ProtectedWorkflows,
 	}
 }
 
-// ProtectedWorkflows are the paths no push to a project's main may touch,
-// the deploy key's included (review-task65 n1: every non-fork job holds
-// DEPLOY_KEY); Forgejo refuses a merge touching them for everyone too, so
-// a human changes a project's workflows by lifting the protection.
+// DeployBranch holds a project's rolled state: main merged in and the
+// digests set by the main workflow's roll commit, pushed with the deploy
+// key. Flux reads it.
+const DeployBranch = "deploy"
+
+// DeployProtection lets only the deploy key push to DeployBranch, and no
+// push there may touch ProtectedWorkflows: every non-fork job holds
+// DEPLOY_KEY (review-task65 n1).
+func DeployProtection() BranchProtection {
+	return BranchProtection{
+		EnablePush: true, EnablePushWhitelist: true, PushWhitelistDeployKeys: true,
+		EnableMergeWhitelist: true, ApplyToAdmins: true, ProtectedFilePatterns: ProtectedWorkflows,
+	}
+}
+
+// ProtectedWorkflows are the paths no push to DeployBranch may touch, so
+// its workflows are the ones it was created with from main.
 const ProtectedWorkflows = ".forgejo/**;.gitea/**;.github/**"
 
-func (run *reconcileRun) protection(ctx context.Context) (Change, error) {
-	want := Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser)
-	have, exists, err := run.r.Forgejo.ProjectBranchProtection(ctx, run.p.Repo(), "main")
+func (run *reconcileRun) protection(ctx context.Context, branch string, want BranchProtection) (Change, error) {
+	have, exists, err := run.r.Forgejo.ProjectBranchProtection(ctx, run.p.Repo(), branch)
 	switch {
 	case err != nil:
 		return "", err
 	case !exists:
-		return Created, run.r.Forgejo.SaveProjectBranchProtection(ctx, run.p.Repo(), "main", want, false)
+		return Created, run.r.Forgejo.SaveProjectBranchProtection(ctx, run.p.Repo(), branch, want, false)
 	case have.equal(want):
 		return Unchanged, nil
 	}
-	return Updated, run.r.Forgejo.SaveProjectBranchProtection(ctx, run.p.Repo(), "main", want, true)
+	return Updated, run.r.Forgejo.SaveProjectBranchProtection(ctx, run.p.Repo(), branch, want, true)
 }
 
 // deployKey keeps one write deploy key, its private half only in the
@@ -497,7 +523,7 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 		"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "GitRepository",
 		"metadata": map[string]any{"name": p.Name, "namespace": "flux-system", "labels": labels},
 		"spec": map[string]any{"interval": "1m", "url": strings.TrimSuffix(run.r.GitURL, "/") + "/" + p.Repository,
-			"ref": map[string]any{"branch": "main"}, "secretRef": map[string]any{"name": gitSecret}},
+			"ref": map[string]any{"branch": DeployBranch}, "secretRef": map[string]any{"name": gitSecret}},
 	}) {
 		return
 	}

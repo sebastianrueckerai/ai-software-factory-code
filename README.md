@@ -924,15 +924,21 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   sha256, so a re-seeded secret reaches the hook), `factory-agent`,
   `factory-merge` and the policy's approvers as write collaborators (Forgejo
   keeps only writers in a whitelist), `main`'s protection: the code
-  repository's (push whitelist the approvers, merge whitelist the approvers
-  and `factory-merge`, approvals whitelist the approvers, apply to admins,
-  stale approvals dismissed, rejected reviews block) plus
-  `push_whitelist_deploy_keys`, and `required_approvals` 0 on `auto` (1 on
-  `human`), and the protected file patterns `.forgejo/**;.gitea/**;.github/**`:
-  every non-fork job of the project holds `DEPLOY_KEY`, so no push to main,
-  the deploy key's included, may touch a workflow, and Forgejo refuses a merge
-  touching one for everyone too; a human changes a project's workflows by
-  lifting the protection for that change; a write deploy key `factory-roll` whose private half lives only in
+  repository's (push whitelist the approvers and `factory-merge`, merge
+  whitelist the same, approvals whitelist the approvers, apply to admins,
+  stale approvals dismissed, rejected reviews block), `required_approvals` 0
+  on `auto` (1 on `human`), no deploy key and no protected file pattern, so
+  humans change workflows on main like any file (ruling 166); the branch
+  `deploy`, the project's rolled state and what Flux reads, made from `main`
+  once main has a commit (the repository starts empty; until then the line
+  says `waiting: main has no commit yet`, and the next reconcile after the
+  first push makes it) and then protected: only the deploy key may push, no
+  approvals, apply to admins, and the protected file patterns
+  `.forgejo/**;.gitea/**;.github/**`, since every non-fork job holds
+  `DEPLOY_KEY`: `deploy` keeps the workflows it was made with, and a roll
+  commit that merges main into it must leave them alone (Forgejo refuses to
+  create a branch its protection covers, so the protection follows the
+  branch); a write deploy key `factory-roll` whose private half lives only in
   the Actions secret `DEPLOY_KEY` (the project's main workflow pushes its roll
   commits with it; Forgejo admits no Actions job token to a whitelist; a key
   or secret gone missing makes both anew); `FACTORY_READ_TOKEN` (random, its
@@ -961,7 +967,7 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   `pull_token`); each `secrets` entry's secret with a random value when
   missing, never replaced. In `flux-system`: the Secret `<name>-git`
   (`factory-projects` and `git_token`) and the GitRepository `<name>` (the
-  repository's `main`), and per environment a Kustomization `<name>` in the
+  repository's `deploy`), and per environment a Kustomization `<name>` in the
   environment's namespace (`serviceAccountName: flux`, `targetNamespace` that
   namespace, `prune`): Flux takes the account from the Kustomization's own
   namespace, and the deployer role cannot change it (ruling 157).

@@ -35,7 +35,8 @@ type forgejoState struct {
 	hooks         []map[string]any
 	hookSecret    string
 	collabs       map[string]string
-	protection    map[string]any
+	protection    map[string]map[string]any // branch -> its protection
+	branches      map[string]string         // branch -> head
 	keys          []map[string]any
 	labels        []string
 	secrets       map[string]string
@@ -50,7 +51,7 @@ type forgejoState struct {
 
 func newForgejoState() *forgejoState {
 	return &forgejoState{users: map[string]bool{"factory-projects": true, "factory-merge": true, "factory-agent": true, "sebastian": true},
-		collabs: map[string]string{}, secrets: map[string]string{}, tokens: map[int64][2]string{}, projectsAdmin: true}
+		collabs: map[string]string{}, protection: map[string]map[string]any{}, branches: map[string]string{}, secrets: map[string]string{}, tokens: map[int64][2]string{}, projectsAdmin: true}
 }
 
 func (s *forgejoState) server(t *testing.T) *httptest.Server {
@@ -100,7 +101,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			}
 			io.WriteString(w, `{}`)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/orgs/demo-app/repos":
-			if body["name"] != "demo-app" || body["private"] != true || body["default_branch"] != "main" {
+			if body["name"] != "demo-app" || body["private"] != true || body["default_branch"] != "main" || body["auto_init"] != nil {
 				t.Errorf("create repo %v", body)
 			}
 			s.repo = true
@@ -213,18 +214,40 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodPut:
 			s.collabs[strings.TrimPrefix(p, repo+"/collaborators/")] = body["permission"].(string)
 			w.WriteHeader(http.StatusNoContent)
-		case p == repo+"/branch_protections/main" && r.Method == http.MethodGet:
-			if s.protection == nil {
+		case strings.HasPrefix(p, repo+"/branch_protections/") && r.Method == http.MethodGet:
+			b, ok := s.protection[strings.TrimPrefix(p, repo+"/branch_protections/")]
+			if !ok {
 				http.NotFound(w, r)
 				return
 			}
-			json.NewEncoder(w).Encode(s.protection)
+			json.NewEncoder(w).Encode(b)
 		case p == repo+"/branch_protections" && r.Method == http.MethodPost:
-			s.protection = body
+			s.protection[body["rule_name"].(string)] = body
 			w.WriteHeader(http.StatusCreated)
-		case p == repo+"/branch_protections/main" && r.Method == http.MethodPatch:
-			s.protection = body
+		case strings.HasPrefix(p, repo+"/branch_protections/") && r.Method == http.MethodPatch:
+			name := strings.TrimPrefix(p, repo+"/branch_protections/")
+			body["rule_name"] = name
+			s.protection[name] = body
 			json.NewEncoder(w).Encode(body)
+		case strings.HasPrefix(p, repo+"/branches/") && r.Method == http.MethodGet:
+			head, ok := s.branches[strings.TrimPrefix(p, repo+"/branches/")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprintf(w, `{"commit":{"id":%q}}`, head)
+		case p == repo+"/branches" && r.Method == http.MethodPost:
+			head, ok := s.branches[body["old_branch_name"].(string)]
+			if _, covered := s.protection[body["new_branch_name"].(string)]; covered { // Forgejo 15: its pre-receive hook refuses
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			s.branches[body["new_branch_name"].(string)] = head
+			w.WriteHeader(http.StatusCreated)
 		case p == repo+"/keys" && r.Method == http.MethodGet:
 			list(nonNil(s.keys))
 		case p == repo+"/keys" && r.Method == http.MethodPost:
@@ -469,8 +492,8 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		"team ci: created", "token pull of ci-demo-app: minted", "token git-demo-app of factory-projects: minted",
 		"token project-demo-app of factory-merge: minted", "token registry of ci-demo-app: minted",
 		"webhook: created", "collaborator factory-agent: created", "collaborator factory-merge: no change", "collaborator sebastian: created",
-		"protection main: created", "fork factory-agent/demo-app: ready", "deploy key: created",
-		"actions secret FACTORY_READ_TOKEN: created", "actions secret REGISTRY_USER: no change",
+		"protection main: created", "branch deploy: waiting: main has no commit yet", "protection deploy: waiting: main has no commit yet",
+		"fork factory-agent/demo-app: ready", "deploy key: created", "actions secret FACTORY_READ_TOKEN: created", "actions secret REGISTRY_USER: no change",
 		"namespace demo-staging: created", "demo-staging networkpolicy: created", "demo-prod resourcequota: created",
 		"demo-staging secret forgejo-registry: created", "demo-prod secret demo-write-token/token: created",
 		"flux secret demo-app-git: created", "flux gitrepository: created", "demo-prod flux kustomization: created",
@@ -488,6 +511,16 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		"ci-demo-app registry [write:package] <nil>"}
 	if !reflect.DeepEqual(rig.fj.minted, want) {
 		t.Fatalf("minted %q", rig.fj.minted)
+	}
+
+	rig.fj.branches["main"] = "c0ffee"
+	rig.logs.Reset()
+	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rig.logs.String(), "project demo-app: branch deploy: created\n") || rig.fj.branches["deploy"] != "c0ffee" ||
+		!strings.Contains(rig.logs.String(), "project demo-app: protection deploy: created\n") {
+		t.Fatalf("deploy after main's first push: %v\n%s", rig.fj.branches, rig.logs)
 	}
 	writes, changes := len(rig.fj.writes), len(rig.kube.changes)
 	stored := rig.store.m["demo-app"]
@@ -518,10 +551,11 @@ func TestRegisterIsIdempotent(t *testing.T) {
 // What registration wrote, and with which credential.
 func TestRegistrationObjects(t *testing.T) {
 	rig := newRegisterRig(t)
+	rig.fj.branches["main"] = "c0ffee"
 	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err != nil {
 		t.Fatal(err)
 	}
-	fj := rig.fj
+	fj, k := rig.fj, rig.kube
 	for _, w := range fj.writes {
 		switch {
 		case strings.Contains(w, "/admin/") || strings.Contains(w, "/tokens") || strings.Contains(w, "/teams") ||
@@ -565,17 +599,24 @@ func TestRegistrationObjects(t *testing.T) {
 	if fj.collabs["factory-agent"] != "write" || fj.collabs["factory-merge"] != "write" || fj.collabs["sebastian"] != "write" {
 		t.Errorf("collaborators = %v", fj.collabs)
 	}
-	// auto: no required approval; pushes only by the approvers and the deploy key
-	want := map[string]any{"rule_name": "main", "enable_push": true, "enable_push_whitelist": true, "push_whitelist_usernames": []any{"sebastian"},
-		"push_whitelist_deploy_keys": true, "enable_merge_whitelist": true, "merge_whitelist_usernames": []any{"sebastian", "factory-merge"},
-		"enable_approvals_whitelist": true, "approvals_whitelist_username": []any{"sebastian"}, "required_approvals": float64(0),
-		"apply_to_admins": true, "block_on_rejected_reviews": true, "dismiss_stale_approvals": true, "enable_status_check": false,
-		"protected_file_patterns": ".forgejo/**;.gitea/**;.github/**", "unprotected_file_patterns": ""}
+	// auto: no required approval; pushes to main by factory-merge and the
+	// approvers, to deploy by the deploy key alone, never touching workflows
+	want := map[string]map[string]any{
+		"main": {"rule_name": "main", "enable_push": true, "enable_push_whitelist": true, "push_whitelist_usernames": []any{"sebastian", "factory-merge"},
+			"push_whitelist_deploy_keys": false, "enable_merge_whitelist": true, "merge_whitelist_usernames": []any{"sebastian", "factory-merge"},
+			"enable_approvals_whitelist": true, "approvals_whitelist_username": []any{"sebastian"}, "required_approvals": float64(0),
+			"apply_to_admins": true, "block_on_rejected_reviews": true, "dismiss_stale_approvals": true, "enable_status_check": false,
+			"protected_file_patterns": "", "unprotected_file_patterns": ""},
+		"deploy": {"rule_name": "deploy", "enable_push": true, "enable_push_whitelist": true, "push_whitelist_usernames": []any{},
+			"push_whitelist_deploy_keys": true, "enable_merge_whitelist": true, "merge_whitelist_usernames": []any{},
+			"enable_approvals_whitelist": false, "approvals_whitelist_username": []any{}, "required_approvals": float64(0),
+			"apply_to_admins": true, "block_on_rejected_reviews": false, "dismiss_stale_approvals": false, "enable_status_check": false,
+			"protected_file_patterns": ".forgejo/**;.gitea/**;.github/**", "unprotected_file_patterns": ""},
+	}
 	if !reflect.DeepEqual(fj.protection, want) {
 		t.Errorf("protection = %v", fj.protection)
 	}
 
-	k := rig.kube
 	ns := k.object(t, "/api/v1/namespaces/demo-staging")
 	if got := ns["metadata"].(map[string]any)["labels"]; !reflect.DeepEqual(got, map[string]any{"factory/project": "demo-app", "pod-security.kubernetes.io/enforce": "restricted"}) {
 		t.Errorf("namespace labels = %v", got)
@@ -601,7 +642,7 @@ func TestRegistrationObjects(t *testing.T) {
 	}
 	src := k.object(t, "/apis/source.toolkit.fluxcd.io/v1/namespaces/flux-system/gitrepositories/demo-app")
 	if !reflect.DeepEqual(src["spec"], map[string]any{"interval": "1m", "url": "https://git.aisoftwarefactory.world/demo-app/demo-app",
-		"ref": map[string]any{"branch": "main"}, "secretRef": map[string]any{"name": "demo-app-git"}}) {
+		"ref": map[string]any{"branch": "deploy"}, "secretRef": map[string]any{"name": "demo-app-git"}}) {
 		t.Errorf("gitrepository = %v", src["spec"])
 	}
 	if got := k.secrets["flux-system/demo-app-git"]; !reflect.DeepEqual(got, map[string]string{"username": "factory-projects", "password": "factory-projects-git-demo-app"}) {
@@ -668,9 +709,10 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 			t.Errorf("log lacks %q:\n%s", want, got)
 		}
 	}
-	if rig.fj.protection["required_approvals"] != float64(1) || rig.fj.hookSecret != "re-seeded" ||
-		!reflect.DeepEqual(rig.fj.protection["push_whitelist_usernames"], []any{"sebastian", "alice"}) {
-		t.Errorf("protection %v, hook secret %q", rig.fj.protection, rig.fj.hookSecret)
+	main := rig.fj.protection["main"]
+	if main["required_approvals"] != float64(1) || rig.fj.hookSecret != "re-seeded" ||
+		!reflect.DeepEqual(main["push_whitelist_usernames"], []any{"sebastian", "alice", "factory-merge"}) {
+		t.Errorf("protection %v, hook secret %q", main, rig.fj.hookSecret)
 	}
 	if rig.store.m[p.Name].HookSecretHash != HashToken("re-seeded") {
 		t.Error("the new hook secret's hash was not stored")

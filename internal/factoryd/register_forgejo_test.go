@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -14,7 +15,8 @@ import (
 // FORGEJO_TEST_ADMIN_PASSWORD, users factory-projects, factory-merge and
 // factory-agent (password FORGEJO_TEST_BOT_PASSWORD), and factory-projects'
 // write:repository token FORGEJO_TEST_PROJECTS_TOKEN), with a fake
-// cluster: every Forgejo call registration makes, on the real API, twice.
+// cluster: every Forgejo call registration makes, on the real API, before
+// and after main's first commit, then once more changing nothing.
 func TestRegisterOnForgejo(t *testing.T) {
 	base := os.Getenv("FORGEJO_TEST_URL")
 	if base == "" {
@@ -38,14 +40,28 @@ func TestRegisterOnForgejo(t *testing.T) {
 		t.Fatalf("first: %v\n%s", err, logs)
 	}
 	first := logs.String()
+	if !strings.Contains(first, "branch deploy: "+string(NoMain)) {
+		t.Fatalf("first run on an empty repository:\n%s", first)
+	}
+	if _, err := f.adminCall(a)(ctx, http.MethodPost, "/api/v1/repos/"+p.Repository+"/contents/README.md",
+		mustJSON(map[string]string{"content": "ZGVtbwo=", "branch": "main"}), http.StatusCreated); err != nil {
+		t.Fatalf("main's first commit: %v", err)
+	}
 	logs.Reset()
 	if _, err := reg.Register(ctx, p, a, false); err != nil {
 		t.Fatalf("second: %v\n%s", err, logs)
 	}
+	if !strings.Contains(logs.String(), "branch deploy: created") {
+		t.Fatalf("second run after main's first commit:\n%s", logs)
+	}
+	logs.Reset()
+	if _, err := reg.Register(ctx, p, a, false); err != nil {
+		t.Fatalf("third: %v\n%s", err, logs)
+	}
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
 		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") && !strings.HasSuffix(line, ": ensured") &&
 			!strings.HasSuffix(line, "(its settings are the console's)") {
-			t.Errorf("second run: %s", line)
+			t.Errorf("third run: %s", line)
 		}
 	}
 	t.Logf("first run:\n%s", first)

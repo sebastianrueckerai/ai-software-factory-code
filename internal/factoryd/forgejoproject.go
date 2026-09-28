@@ -187,8 +187,33 @@ func (f *Forgejo) ProjectBranchProtection(ctx context.Context, repo Repo, branch
 	return b, true, nil
 }
 
+// NoMain is DeployBranch before main's first push.
+const NoMain Change = "waiting: main has no commit yet"
+
+// EnsureBranchFrom creates branch at from's head unless branch exists.
+func (f *Forgejo) EnsureBranchFrom(ctx context.Context, repo Repo, branch, from string) (Change, error) {
+	path := "/api/v1/repos/" + repo.String() + "/branches/"
+	_, err := f.projectsCall(ctx, http.MethodGet, path+url.PathEscape(branch), nil, http.StatusOK)
+	if !errors.Is(err, ErrNotFound) {
+		return Unchanged, err
+	}
+	_, err = f.projectsCall(ctx, http.MethodGet, path+url.PathEscape(from), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return NoMain, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	_, err = f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/branches",
+		mustJSON(map[string]string{"new_branch_name": branch, "old_branch_name": from}), http.StatusCreated)
+	return Created, err
+}
+
 // SaveProjectBranchProtection creates branch's protection or edits it to b.
 func (f *Forgejo) SaveProjectBranchProtection(ctx context.Context, repo Repo, branch string, b BranchProtection, exists bool) error {
+	// an absent list leaves Forgejo's as it is on edit
+	b.PushWhitelistUsernames, b.MergeWhitelistUsernames = nonNil(b.PushWhitelistUsernames), nonNil(b.MergeWhitelistUsernames)
+	b.ApprovalsWhitelistUsernames = nonNil(b.ApprovalsWhitelistUsernames)
 	if !exists {
 		opt := map[string]any{}
 		json.Unmarshal(mustJSON(b), &opt) // #nosec G104 -- round trip of a struct just marshalled
@@ -300,8 +325,8 @@ func (f *Forgejo) AdminEnsureOrg(ctx context.Context, a AdminAuth, org, owner st
 	return Unchanged, nil
 }
 
-// AdminEnsureRepo creates repo in its organisation, private, with an
-// initial commit on main.
+// AdminEnsureRepo creates repo in its organisation, private and empty:
+// main's first commit is the project's own, so DeployBranch starts from it.
 func (f *Forgejo) AdminEnsureRepo(ctx context.Context, a AdminAuth, repo Repo) (Change, error) {
 	call := f.adminCall(a)
 	exists, _, err := adminExists(ctx, call, "/api/v1/repos/"+repo.String())
@@ -309,7 +334,7 @@ func (f *Forgejo) AdminEnsureRepo(ctx context.Context, a AdminAuth, repo Repo) (
 		return Unchanged, err
 	}
 	_, err = call(ctx, http.MethodPost, "/api/v1/orgs/"+url.PathEscape(repo.Owner)+"/repos",
-		mustJSON(map[string]any{"name": repo.Name, "private": true, "auto_init": true, "default_branch": "main"}), http.StatusCreated)
+		mustJSON(map[string]any{"name": repo.Name, "private": true, "default_branch": "main"}), http.StatusCreated)
 	return Created, err
 }
 
