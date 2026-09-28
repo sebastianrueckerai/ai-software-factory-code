@@ -50,6 +50,9 @@ type Kube interface {
 	// ApplyCiliumNetworkPolicy creates or replaces the policy (server-side
 	// apply, factoryd as the field manager).
 	ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error
+	// CiliumNetworkPolicySpec reads a policy's spec; ErrNotFound when it
+	// does not exist.
+	CiliumNetworkPolicySpec(ctx context.Context, namespace, name string) (map[string]any, error)
 	// Create POSTs a complete object to a collection path such as
 	// /api/v1/namespaces/<ns>/resourcequotas.
 	Create(ctx context.Context, path string, obj map[string]any) error
@@ -189,6 +192,14 @@ func (k *InClusterKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace,
 	_, err := k.call(ctx, http.MethodPatch,
 		"/apis/cilium.io/v2/namespaces/"+namespace+"/ciliumnetworkpolicies/"+name+"?fieldManager=factoryd&force=true", body, nil)
 	return err
+}
+
+func (k *InClusterKube) CiliumNetworkPolicySpec(ctx context.Context, namespace, name string) (map[string]any, error) {
+	var out struct {
+		Spec map[string]any `json:"spec"`
+	}
+	_, err := k.call(ctx, http.MethodGet, "/apis/cilium.io/v2/namespaces/"+namespace+"/ciliumnetworkpolicies/"+name, nil, &out)
+	return out.Spec, err
 }
 
 func (k *InClusterKube) Create(ctx context.Context, path string, obj map[string]any) error {

@@ -560,12 +560,15 @@ never through a provider key. They live in their own Hetzner project,
   cluster nodes' IPv4s (`AGENT_SSH_SOURCES`, ConfigMap `cluster-facts`)
   and outbound only DNS, HTTP and HTTPS, and an optional ext4 volume
   mounted at `/mnt/HC_Volume_<id>`. cloud-init installs the OpenBao SSH
-  CA's public key as `TrustedUserCAKeys` with `AuthorizedKeysFile none`
-  and no passwords: only certificates log in, as `root`. The answer
+  CA's public key as `TrustedUserCAKeys`, lists the one principal
+  `resource-<row id>` in `AuthorizedPrincipalsFile` for root, and sets
+  `AuthorizedKeysFile none` and no passwords: only a certificate for this
+  server logs in, as `root` (ruling 125). The answer
   carries the resource id, the IPv4 and the lease end, and a certificate
   when a key was given.
-- `ssh_certificate` (`resource_id`, `public_key`): OpenBao signs the key
-  for principal `root`, for 30 minutes or until the lease ends, whichever
+- `ssh_certificate` (`resource_id`, `public_key`): for one of the task's
+  own servers only, OpenBao signs the key for principal
+  `resource-<row id>`, for 30 minutes or until the lease ends, whichever
   is sooner, with key id `task=<id> resource=<id>`.
 - `list_resources`, `release_resource` (`resource_id`: the server, its
   firewall and volume are deleted now), `resource_request_status`
@@ -590,10 +593,14 @@ reservation against `monthly_eur`. Within it, the reservation is a
 otherwise, as for paid tools) and the registry rows are written in the
 same transaction. Beyond it, the tool files an `approval_requests` row
 (kind `resource`, the spec, the reason, `monthly_eur`) and answers
-`pending human approval <id>`; asking again finds the same request. An
-approval covers one commission of that spec or a smaller one for the
-task (the server row records `approval_id`); a denial is answered with
-the human's note. The console approves a request for the task (that one
+`pending human approval <id>`. The spec records the ways the request is
+beyond (`beyond_kinds`: type, lease, volume, count, month). A request
+covers a commission of the same type, at most its lease and volume, whose
+ways beyond are all among its own: asking again finds the same pending
+request, an approval admits one such commission for the task (the server
+row records `approval_id`) and nothing that is beyond in another way, and
+a denial is answered with the human's note. A task holds at most 3
+pending resource requests; a fourth is refused (`refused_approvals`). The console approves a request for the task (that one
 commission) or for the project: the envelope widens just enough for it
 (its type, lease, volume, one more server, and the month to the cent
 above use plus its reservation) and the request is approved, both as the
@@ -609,33 +616,46 @@ releases what was made; a create whose answer was lost is found by its
 label or deleted as unknown.
 
 **Leases and the collector.** The gateway runs the collector on the
-agent project every 2 minutes: it deletes resources whose lease ended
-(unless promoted) or whose task is `done` or `failed`, deletes every
+agent project every 2 minutes: it deletes resources whose lease ends
+before its next pass (within the interval plus 30 s, ruling 124, so a
+lease of N started hours never lives into hour N+1), unless promoted, or whose task is `done` or `failed`, deletes every
 server, firewall and volume the registry does not know as open and every
 primary IP no server holds, and closes rows whose resource is gone; the
 interlock of ruling 123 (see the untrusted runner below) guards every
 pass, with the cluster nodes from `AGENT_SSH_SOURCES`. Then it accrues: each resource's started hours not yet booked go to a
 `resource` ledger row (`ref` `resource/<id>`) and the task's spend, and
-come off the reservation; once a commission's rows are closed and fully
-booked, the rest of the reservation returns. A reservation expires 24 h
-after its lease, so factoryd's hold sweep books it whole only if the
-collector stopped for a day. Promotion (`promoted`, set in the console,
+come off the reservation, under the headroom lock. A booking beyond what
+the reservation still holds (a resource that outlived its lease) is
+booked in full and flagged: `COST OVER HOLD` in the log and an
+`allowed_over_hold` audit row (rulings 117, 124). Once a commission's
+rows are closed and fully booked, the rest of the reservation returns.
+factoryd's hold sweep skips resource reservations: accrual books and
+drops them. A create whose answer was lost is booked too: a release that
+finds it by its label records its id first, and a collector that deletes
+it as unknown gives its closed row the id. Promotion (`promoted`, set in the console,
 `promoted_by`) drops the reservation and the lease; a console release
 (`released_by`) ends the lease now and the collector deletes it; the resource then counts against
 the project's month as it accrues.
 
 **Reachability.** factoryd reads the live leases from the registry
-(same database) every 10 s and server-side applies the task namespace's
-`worker-egress` with one rule item per leased server: `toCIDR <ip>/32`
-and `toPorts 22/TCP` together. When the lease ends or the server is
-released, the address leaves the policy. The sandbox image carries
+(same database) every 10 s, reads each task namespace's `worker-egress`
+and server-side applies it when it differs from the desired policy: one
+rule item per leased server, `toCIDR <ip>/32` and `toPorts 22/TCP`
+together. A lease leaves at the collector's cutoff (2.5 minutes before
+it ends) or when the server is released, and an edit out of band is
+repaired on the next pass. The sandbox image carries
 `openssh-client`.
 
 **The SSH CA.** OpenBao's `ssh-client-signer` engine with role
-`factory-agent` (user certificates, principal `root` only, TTL at most
-30 minutes); the gateway logs in through Kubernetes auth role
-`factory-gateway` (its ServiceAccount only) with a policy that may only
-sign with that role. The infra README has the setup commands.
+`factory-agent` (user certificates, TTL at most 30 minutes; any principal,
+since OpenBao 2.6.3's `allowed_users` has no glob: the servers'
+principals file binds a certificate to one server). The gateway logs in
+through Kubernetes auth role `factory-gateway` with a projected token of
+audience `openbao` (`/var/run/secrets/openbao/token`), its ServiceAccount
+only, and a policy that may only sign with that role; it re-reads the CA
+public key hourly. OpenBao is reached over plain HTTP inside the cluster:
+Cilium's WireGuard encrypts pod traffic between nodes. The infra README
+has the setup commands.
 
 The envelope covers servers with their primary IPv4 and volumes. Buckets
 are not offered (ruling 121): Hetzner's Cloud API has no Object Storage

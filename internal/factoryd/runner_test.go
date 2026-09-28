@@ -178,6 +178,16 @@ func (k *fakeKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name
 	return nil
 }
 
+func (k *fakeKube) CiliumNetworkPolicySpec(ctx context.Context, namespace, name string) (map[string]any, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	spec, ok := k.cnps[namespace+"/"+name]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return spec, nil
+}
+
 func (k *fakeKube) Create(ctx context.Context, path string, obj map[string]any) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -1522,7 +1532,7 @@ func TestAdmitLeasesFollowsTheRegistry(t *testing.T) {
 	if err := r.AdmitLeases(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// after a restart every agent namespace is applied once; CI ones never
+	// agent namespaces without the desired policy get it; CI ones never
 	if got := strings.Join(kube.applies, ","); got != "factory-agents-t1/worker-egress,factory-agents-t2/worker-egress" {
 		t.Fatalf("applies = %s", got)
 	}
@@ -1541,6 +1551,16 @@ func TestAdmitLeasesFollowsTheRegistry(t *testing.T) {
 	}
 	if len(kube.applies) != 3 || strings.Contains(rules("factory-agents-t1"), "203.0.113.7") {
 		t.Fatalf("applies %v, t1 %s", kube.applies, rules("factory-agents-t1"))
+	}
+	// an edit out of band is repaired on the next pass
+	kube.mu.Lock()
+	kube.cnps["factory-agents-t2/worker-egress"] = map[string]any{"endpointSelector": map[string]any{}}
+	kube.mu.Unlock()
+	if err := r.AdmitLeases(ctx); err != nil || len(kube.applies) != 4 || kube.applies[3] != "factory-agents-t2/worker-egress" {
+		t.Fatalf("drift not repaired: %v, %v", kube.applies, err)
+	}
+	if !strings.Contains(rules("factory-agents-t2"), "kube-dns") {
+		t.Fatalf("t2 %s", rules("factory-agents-t2"))
 	}
 }
 

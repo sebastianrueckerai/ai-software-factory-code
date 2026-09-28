@@ -98,7 +98,7 @@ func TestEnvelopeViolations(t *testing.T) {
 		"month": {EnvelopeUse{MonthEUR: 9.995}, "cx23", 60, 0, 0.0096,
 			"the reservation of 0.009600 EUR on top of 9.995000 EUR this month exceeds the envelope's 10.00 EUR a month"},
 	} {
-		if v := EnvelopeViolations(testEnvelope, tc.use, tc.typ, tc.minutes, tc.gb, tc.res); len(v) != 1 || v[0] != tc.want {
+		if v := EnvelopeViolations(testEnvelope, tc.use, tc.typ, tc.minutes, tc.gb, tc.res); len(v) != 1 || v[0].Text != tc.want || v[0].Kind != name {
 			t.Errorf("%s: %v, want [%s]", name, v, tc.want)
 		}
 	}
@@ -200,8 +200,8 @@ func TestReserveWithinEnvelope(t *testing.T) {
 	if held := scalar[float64](t, db, `SELECT eur::float8 FROM holds WHERE id = $1 AND kind = 'resource' AND task_id = 't1'`, c.Hold.ID); !near(held, 0.0192+2*1.144/730) {
 		t.Fatalf("held = %v", held)
 	}
-	// the hold outlives the lease by the margin
-	if d := scalar[float64](t, db, `SELECT extract(epoch FROM expires_at - now())::float8 FROM holds WHERE id = $1`, c.Hold.ID); d < (90*time.Minute+HoldMargin).Seconds()-30 {
+	// the hold's expiry is the lease's (informational: the sweep skips it)
+	if d := scalar[float64](t, db, `SELECT extract(epoch FROM expires_at - now())::float8 FROM holds WHERE id = $1`, c.Hold.ID); d < (90*time.Minute).Seconds()-30 || d > (90*time.Minute).Seconds()+30 {
 		t.Fatalf("hold expires in %v s", d)
 	}
 	kinds := []string{}
@@ -346,12 +346,12 @@ func TestAccrueBooksStartedHoursAndReturnsTheRest(t *testing.T) {
 	a.SetAddress(ctx, srv.ID, "203.0.113.7")
 	// created 70 minutes ago: two started hours
 	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '70 minutes' WHERE hold_id = $1`, c.Hold.ID)
-	eur, err := a.Accrue(ctx)
+	acc, err := a.Accrue(ctx)
 	wantServer, wantVolume := 2*0.0096, 2*1.144/730
-	if err != nil || !near(eur, wantServer+wantVolume) {
-		t.Fatalf("accrued %v, %v", eur, err)
+	if err != nil || !near(acc.EUR, wantServer+wantVolume) || len(acc.Overruns) != 0 {
+		t.Fatalf("accrued %+v, %v", acc, err)
 	}
-	if again, _ := a.Accrue(ctx); again != 0 {
+	if again, _ := a.Accrue(ctx); again.EUR != 0 {
 		t.Fatalf("second pass booked %v", again)
 	}
 	reservation := 3 * (0.0096 + 1.144/730)
@@ -380,8 +380,8 @@ func TestAccrueBooksStartedHoursAndReturnsTheRest(t *testing.T) {
 		reg.Transition(ctx, r.ID, StateDeleted)
 	}
 	db.ExecContext(ctx, `UPDATE cloud_resources SET deleted_at = created_at + interval '70 minutes' WHERE hold_id = $1`, c.Hold.ID)
-	if eur, err := a.Accrue(ctx); err != nil || eur != 0 {
-		t.Fatalf("final pass %v, %v", eur, err)
+	if acc, err := a.Accrue(ctx); err != nil || acc.EUR != 0 {
+		t.Fatalf("final pass %+v, %v", acc, err)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM holds`); n != 0 {
 		t.Fatalf("reservation left: %d", n)
@@ -417,8 +417,8 @@ func TestFailedCreateRowIsClosedAndCostsNothing(t *testing.T) {
 			t.Fatalf("row %d = %s", r.ID, got.State)
 		}
 	}
-	if eur, err := a.Accrue(ctx); err != nil || eur != 0 {
-		t.Fatalf("accrued %v, %v", eur, err)
+	if acc, err := a.Accrue(ctx); err != nil || acc.EUR != 0 {
+		t.Fatalf("accrued %+v, %v", acc, err)
 	}
 	if n := scalar[int](t, db, `SELECT count(*) FROM holds`); n != 0 {
 		t.Fatalf("holds = %d", n)
@@ -567,5 +567,110 @@ func TestApproveForProjectAndEnvelopes(t *testing.T) {
 	if err != nil || len(rows) != 2 || rows[1].Kind != KindServer || rows[1].PromotedBy != "sebastian" || rows[1].ReleasedBy != "alice" ||
 		rows[1].Promoted {
 		t.Fatalf("commissions = %+v, %v", rows, err)
+	}
+}
+
+// ruling 124: a resource that outlives what its reservation paid for is
+// booked in full and reported as an overrun, never clamped.
+func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	c, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0)) // reserves 1 h: 0.0096
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range c.Rows {
+		(PG{DB: db}).SetLive(ctx, r.ID, itoa(int64(900+i)))
+	}
+	db.ExecContext(ctx, `UPDATE cloud_resources SET created_at = now() - interval '70 minutes' WHERE hold_id = $1`, c.Hold.ID)
+	acc, err := a.Accrue(ctx)
+	srv := c.Rows[1]
+	if err != nil || !near(acc.EUR, 0.0192) || len(acc.Overruns) != 1 {
+		t.Fatalf("accrual = %+v, %v", acc, err)
+	}
+	if o := acc.Overruns[0]; o.TaskID != "t1" || o.ResourceID != srv.ID || !near(o.EUR, 0.0192) || !near(o.HeldEUR, 0.0096) {
+		t.Fatalf("overrun = %+v", o)
+	}
+	if spent := scalar[float64](t, db, `SELECT spent_eur::float8 FROM tasks WHERE id = 't1'`); !near(spent, 0.0192) {
+		t.Fatalf("spent = %v", spent)
+	}
+	if held := scalar[float64](t, db, `SELECT eur::float8 FROM holds WHERE id = $1`, c.Hold.ID); held != 0 {
+		t.Fatalf("held = %v", held)
+	}
+	// promoted: no reservation, never an overrun
+	db.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, created_at = now() - interval '130 minutes' WHERE id = $1`, srv.ID)
+	if acc, err := a.Accrue(ctx); err != nil || !near(acc.EUR, 0.0096) || len(acc.Overruns) != 0 {
+		t.Fatalf("promoted accrual = %+v, %v", acc, err)
+	}
+}
+
+// ruling 124: the egress drops a lease's address at the collector's cutoff.
+func TestLiveAddressesEndAtTheCutoff(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 1)
+	a := AgentStore{DB: db}
+	c, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := c.Rows[1]
+	(PG{DB: db}).SetLive(ctx, srv.ID, "900")
+	a.SetAddress(ctx, srv.ID, "203.0.113.7")
+	for _, tc := range []struct {
+		left string
+		want int
+	}{{"151 seconds", 1}, {"149 seconds", 0}} {
+		db.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now() + $2::interval WHERE id = $1`, srv.ID, tc.left)
+		if addrs, _ := a.LiveAddresses(ctx); len(addrs["t1"]) != tc.want {
+			t.Fatalf("lease ending in %s: addresses %v", tc.left, addrs)
+		}
+	}
+}
+
+// m2, m3: an approval covers only the ways it was beyond; a task has at
+// most MaxPendingRequests pending.
+func TestApprovalCoversItsOwnViolationsAndPendingIsCapped(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 5)
+	a := AgentStore{DB: db}
+	long := commissionReq(t, "t1", "cx33", 300, 0) // lease beyond
+	c, err := a.Reserve(ctx, long)
+	if err != nil || c.Status != Pending {
+		t.Fatalf("first = %+v, %v", c, err)
+	}
+	if k := scalar[string](t, db, `SELECT spec->>'beyond_kinds' FROM approval_requests WHERE id = $1`, c.ApprovalID); k != `["lease"]` {
+		t.Fatalf("beyond_kinds = %s", k)
+	}
+	db.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved' WHERE id = $1`, c.ApprovalID)
+	// meanwhile the project fills its two servers: the approval covered
+	// the lease only, so the count is a new request
+	seedTask(t, db, "t2", 5)
+	for range 2 {
+		if r, err := a.Reserve(ctx, commissionReq(t, "t2", "cx23", 60, 0)); err != nil || r.Status != Reserved {
+			t.Fatalf("filler = %+v, %v", r, err)
+		}
+	}
+	again, err := a.Reserve(ctx, long)
+	if err != nil || again.Status != Pending || again.ApprovalID == c.ApprovalID {
+		t.Fatalf("after the count grew = %+v, %v", again, err)
+	}
+	// two more distinct requests reach the cap of 3 pending; a fourth is refused
+	for _, m := range []int{310, 400} {
+		if r, err := a.Reserve(ctx, commissionReq(t, "t1", "cx23", m, 0)); err != nil || r.Status != Pending {
+			t.Fatalf("pending %d = %+v, %v", m, r, err)
+		}
+	}
+	_, err = a.Reserve(ctx, commissionReq(t, "t1", "cx23", 500, 0))
+	var ref *policy.Refusal
+	if !errors.As(err, &ref) || ref.Decision != "refused_approvals" || !strings.Contains(ref.Reason, "3 pending resource requests (at most 3)") {
+		t.Fatalf("fourth = %v", err)
+	}
+	// a request a pending one covers is still answered with it at the cap
+	if r, err := a.Reserve(ctx, commissionReq(t, "t1", "cx33", 60, 0)); err != nil || r.Status != Pending || r.ApprovalID != again.ApprovalID {
+		t.Fatalf("repeat = %+v, %v", r, err)
 	}
 }

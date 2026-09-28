@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -26,6 +27,9 @@ type resourceRow struct {
 	// Actions marks the row carrying its commission's promote and release
 	// (the server while it is open): both act on the whole commission.
 	Actions bool
+	// PromoteNote is what promotion would cost a month against the
+	// project's envelope (on the Actions row).
+	PromoteNote string
 }
 
 type projectView struct {
@@ -71,7 +75,11 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		v.Envelope = cloudres.EnvelopeRecord{Project: v.Project, Envelope: p.Document.EnvelopeDefault}
 	}
 	actions := map[int64]int{} // commission (hold) -> index of its row with the buttons
+	monthly := map[int64]float64{}
 	for _, res := range rows {
+		if slices.Contains(cloudres.OpenStates, res.State) {
+			monthly[res.HoldID] += res.PricePerHourEUR * cloudres.HoursPerMonth
+		}
 		v := view(res.Repo)
 		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State)}
 		v.Rows = append(v.Rows, row)
@@ -88,6 +96,8 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		for i := range v.Rows {
 			if j, ok := actions[v.Rows[i].HoldID]; ok && j == i && v.Rows[i].Open {
 				v.Rows[i].Actions = true
+				v.Rows[i].PromoteNote = fmt.Sprintf("promoted, about %.2f EUR a month against the envelope's %.2f EUR (%.4f used or reserved this month)",
+					monthly[v.Rows[i].HoldID], v.Envelope.MonthlyEUR, v.Envelope.Use.MonthEUR)
 			}
 		}
 		projects = append(projects, v)

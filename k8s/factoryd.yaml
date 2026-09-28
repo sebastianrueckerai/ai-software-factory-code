@@ -60,9 +60,9 @@ rules:
   verbs: [create, get]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
-  # patch: the worker egress is server-side applied, and re-applied while
-  # a commissioned server's lease admits its address
-  verbs: [create, patch]
+  # get, patch: the worker egress is read and server-side applied again
+  # whenever it differs from what the task's leases admit
+  verbs: [create, get, patch]
 ---
 # The registry pull secret factoryd copies into each task namespace.
 apiVersion: rbac.authorization.k8s.io/v1

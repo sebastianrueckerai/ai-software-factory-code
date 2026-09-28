@@ -32,7 +32,8 @@ const (
 )
 
 // Commissioned servers: one location and image, root login by certificate
-// only, certificates at most maxCertTTL.
+// only, certificates at most maxCertTTL. A certificate's principal names
+// one server (principal), which alone lists it (ruling 125).
 const (
 	cloudLocation = "fsn1"
 	cloudImage    = "debian-12"
@@ -61,7 +62,7 @@ type CloudStore interface {
 	Owned(ctx context.Context, taskID string) ([]cloudres.Resource, error)
 	Group(ctx context.Context, holdID int64) ([]cloudres.Resource, error)
 	Approval(ctx context.Context, id int64, taskID string) (cloudres.Approval, bool, error)
-	Accrue(ctx context.Context) (float64, error)
+	Accrue(ctx context.Context) (cloudres.Accrual, error)
 	Session(ctx context.Context, taskID string) (string, error)
 }
 
@@ -87,7 +88,11 @@ type Cloud struct {
 	Collector *cloudres.Collector
 	Signer    SSHSigner
 	Sources   []string
-	Now       func() time.Time
+	// Audit records accrual overruns (the gateway's store).
+	Audit interface {
+		InsertAudit(ctx context.Context, row AuditRow) error
+	}
+	Now func() time.Time
 
 	mu       sync.Mutex
 	pricing  hcloud.Pricing
@@ -121,15 +126,16 @@ func (c *Cloud) prices(ctx context.Context) (hcloud.Pricing, error) {
 	return p, nil
 }
 
-// Run collects the agent project and accrues cost every interval.
-func (c *Cloud) Run(ctx context.Context, interval time.Duration) {
-	tick := time.NewTicker(interval)
+// Run collects the agent project and accrues cost every collector
+// interval.
+func (c *Cloud) Run(ctx context.Context) {
+	tick := time.NewTicker(c.Collector.Interval)
 	defer tick.Stop()
 	for {
 		if err := c.Collector.Collect(ctx); err != nil {
 			log.Printf("cloud collector (agent): %v", err)
 		}
-		if _, err := c.Store.Accrue(ctx); err != nil {
+		if err := c.accrue(ctx); err != nil {
 			log.Printf("cloud accrual (agent): %v", err)
 		}
 		select {
@@ -138,6 +144,23 @@ func (c *Cloud) Run(ctx context.Context, interval time.Duration) {
 		case <-tick.C:
 		}
 	}
+}
+
+// accrue books the resources' started hours; a booking past its
+// reservation is booked in full and flagged, loud in the log and as an
+// allowed_over_hold audit row (rulings 117, 124).
+func (c *Cloud) accrue(ctx context.Context) error {
+	acc, err := c.Store.Accrue(ctx)
+	for _, o := range acc.Overruns {
+		reason := fmt.Sprintf("COST OVER HOLD: resource %d billed %.6f EUR with %.6f EUR left of its reservation; booked in full", o.ResourceID, o.EUR, o.HeldEUR)
+		log.Printf("task %s: %s", o.TaskID, reason) // #nosec G706 -- the task id is a registry row's owner, written from a verified JWT
+		spend := o.EUR
+		if aerr := c.Audit.InsertAudit(context.WithoutCancel(ctx), AuditRow{TaskID: o.TaskID, Decision: "allowed_over_hold",
+			Reason: reason, Tool: ToolCommission, HoldEUR: &o.HeldEUR, SpendEUR: &spend}); aerr != nil {
+			err = errors.Join(err, aerr)
+		}
+	}
+	return err
 }
 
 // TaskOwnerDone is the agent collector's owner check: a task that reached
@@ -196,7 +219,7 @@ func (s *Server) addCloudTools(srv *mcp.Server, c *toolCaller) {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ResourceIn) (*mcp.CallToolResult, any, error) {
 			return s.releaseResource(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: ToolSSHCertificate, Description: "Sign your SSH public key for a commissioned server: a certificate for user root, valid at most 30 minutes " +
+	mcp.AddTool(srv, &mcp.Tool{Name: ToolSSHCertificate, Description: "Sign your SSH public key for a commissioned server: a certificate that logs in as root on that server only, valid at most 30 minutes " +
 		"and never past the lease. Save it next to the private key as <key>-cert.pub. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in CertificateIn) (*mcp.CallToolResult, any, error) {
 			return s.sshCertificate(ctx, c, in), nil, nil
@@ -358,7 +381,7 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	row := com.Rows[1]
 	lease := row.LeaseExpires.UTC().Format(time.RFC3339)
 	var b strings.Builder
-	fmt.Fprintf(&b, "commissioned resource %d: %s server %s at %s, login %s; lease until %s (billed per started hour, deleted then or when the task ends).\n",
+	fmt.Fprintf(&b, "commissioned resource %d: %s server %s at %s, login %s; lease until %s (billed per started hour; it is deleted up to 2.5 minutes before then, at the collector's last pass, or when the task ends).\n",
 		row.ID, in.ServerType, row.Name, srv.IPv4(), loginUser, lease)
 	fmt.Fprintf(&b, "Reserved %.6f EUR against the task budget (%.4f EUR/h incl. the IPv4", q.ReservationEUR, q.ServerHourly)
 	if vol.ID != 0 {
@@ -397,7 +420,7 @@ func (s *Server) create(ctx context.Context, com cloudres.Commission, in Commiss
 	if err != nil {
 		return hcloud.Server{}, hcloud.Volume{}, err
 	}
-	userData, err := commissionUserData(ca)
+	userData, err := commissionUserData(ca, principal(srvRow.ID))
 	if err != nil {
 		return hcloud.Server{}, hcloud.Volume{}, err
 	}
@@ -442,7 +465,7 @@ func (s *Server) abandon(ctx context.Context, com cloudres.Commission) string {
 	if err == nil {
 		err = cloud.Collector.Release(ctx, rows)
 	}
-	if _, aerr := cloud.Store.Accrue(ctx); aerr != nil {
+	if aerr := cloud.accrue(ctx); aerr != nil {
 		err = errors.Join(err, aerr)
 	}
 	if err != nil {
@@ -472,11 +495,16 @@ write_files:
 - path: /etc/ssh/factory-user-ca.pub
   permissions: '0644'
   content: |
-    {{.}}
+    {{.CA}}
+- path: /etc/ssh/factory-principals/root
+  permissions: '0644'
+  content: |
+    {{.Principal}}
 - path: /etc/ssh/sshd_config.d/10-factory-ca.conf
   permissions: '0644'
   content: |
     TrustedUserCAKeys /etc/ssh/factory-user-ca.pub
+    AuthorizedPrincipalsFile /etc/ssh/factory-principals/%u
     AuthorizedKeysFile none
     PasswordAuthentication no
     KbdInteractiveAuthentication no
@@ -487,18 +515,22 @@ runcmd:
 `))
 
 // commissionUserData makes sshd trust only certificates the factory CA
-// signed: no authorized keys, no passwords. Hetzner sets an expired root
+// signed for this server's principal, as root: no authorized keys, no
+// passwords. Hetzner sets an expired root
 // password on a server created without SSH keys, which blocks even a
 // certificate login ("Password change required"): it is removed, with
 // its expiry.
-func commissionUserData(caPublicKey string) (string, error) {
+func commissionUserData(caPublicKey, principal string) (string, error) {
 	if strings.ContainsAny(caPublicKey, "\r\n") {
 		return "", errors.New("the CA public key is not one line")
 	}
 	var b strings.Builder
-	err := userDataTmpl.Execute(&b, caPublicKey)
+	err := userDataTmpl.Execute(&b, struct{ CA, Principal string }{caPublicKey, principal})
 	return b.String(), err
 }
+
+// principal is the one SSH certificate principal server row id accepts.
+func principal(id int64) string { return "resource-" + strconv.FormatInt(id, 10) }
 
 // owned finds the task's row id among its resources.
 func (s *Server) owned(ctx context.Context, c *toolCaller, id int64) (cloudres.Resource, bool, error) {
@@ -565,7 +597,7 @@ func (s *Server) releaseResource(ctx context.Context, c *toolCaller, in Resource
 		return textResult(fmt.Sprintf("resource %d is already released (state %s)", row.ID, row.State))
 	}
 	relErr := cloud.Collector.Release(cctx, rows)
-	if _, err := cloud.Store.Accrue(cctx); err != nil {
+	if err := cloud.accrue(cctx); err != nil {
 		relErr = errors.Join(relErr, err)
 	}
 	if relErr != nil {
@@ -613,7 +645,7 @@ func (s *Server) sign(ctx context.Context, c *toolCaller, row cloudres.Resource,
 	if ttl < time.Minute {
 		return "", 0, fmt.Errorf("the lease of server %d ends in under a minute", row.ID)
 	}
-	cert, err := s.opts.Cloud.Signer.Sign(ctx, key, loginUser, ttl, fmt.Sprintf("task=%s resource=%d", c.task.ID, row.ID))
+	cert, err := s.opts.Cloud.Signer.Sign(ctx, key, principal(row.ID), ttl, fmt.Sprintf("task=%s resource=%d", c.task.ID, row.ID))
 	return cert, ttl, err
 }
 

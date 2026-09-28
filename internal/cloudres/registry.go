@@ -92,6 +92,10 @@ type Registry interface {
 	// reports whether it moved; entering deleted or vanished stamps
 	// deleted_at.
 	Transition(ctx context.Context, id int64, to string) (bool, error)
+	// Adopt records providerID on a closed row of that kind that never had
+	// one (a create that landed after its row was closed) and restamps its
+	// deleted_at to now; false when no such row.
+	Adopt(ctx context.Context, id int64, kind, providerID string) (bool, error)
 	// Open lists the project's rows in an open state, oldest first.
 	Open(ctx context.Context, project string) ([]Resource, error)
 	// OpenByOwner lists the open rows of one owner, oldest first.
@@ -150,6 +154,12 @@ func insert(ctx context.Context, q querier, r Resource) (Resource, error) {
 func (p PG) SetLive(ctx context.Context, id int64, providerID string) (bool, error) {
 	res, err := p.DB.ExecContext(ctx,
 		`UPDATE cloud_resources SET state = 'live', provider_id = $2 WHERE id = $1 AND state = 'requested'`, id, providerID)
+	return affected(res, err)
+}
+
+func (p PG) Adopt(ctx context.Context, id int64, kind, providerID string) (bool, error) {
+	res, err := p.DB.ExecContext(ctx, `UPDATE cloud_resources SET provider_id = $3, deleted_at = now()
+		WHERE id = $1 AND kind = $2 AND provider_id = '' AND state IN ('deleted', 'vanished')`, id, kind, providerID)
 	return affected(res, err)
 }
 
@@ -255,6 +265,19 @@ func (m *Memory) SetLive(ctx context.Context, id int64, providerID string) (bool
 		return false, nil
 	}
 	r.State, r.ProviderID = StateLive, providerID
+	m.rows[id] = r
+	return true, nil
+}
+
+func (m *Memory) Adopt(ctx context.Context, id int64, kind, providerID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || r.Kind != kind || r.ProviderID != "" || (r.State != StateDeleted && r.State != StateVanished) {
+		return false, nil
+	}
+	t := m.now()
+	r.ProviderID, r.DeletedAt = providerID, &t
 	m.rows[id] = r
 	return true, nil
 }

@@ -25,10 +25,17 @@ const AgentProject = "agent"
 // hour: the calendar year's 8760 hours over 12 months.
 const HoursPerMonth = 730
 
-// HoldMargin keeps a commission's reservation past its lease, so the
-// collector's final accrual books against it before factoryd's sweep could
-// book it whole.
-const HoldMargin = 24 * time.Hour
+// AgentInterval is the agent collector's pass interval. A lease ends at
+// the last pass before it runs out (LeaseCutoff before its end): the
+// collector deletes it then, and factoryd's egress drops its address at
+// the same cutoff (ruling 124).
+const (
+	AgentInterval = 2 * time.Minute
+	LeaseCutoff   = AgentInterval + LeaseMargin
+)
+
+// MaxPendingRequests caps a task's pending resource approval requests.
+const MaxPendingRequests = 3
 
 // Quote prices one commission: a server with its primary IPv4 and an
 // optional volume, for a lease billed per started hour.
@@ -86,25 +93,34 @@ type EnvelopeUse struct {
 	MonthEUR    float64
 }
 
+// Violation is one way a commission exceeds the project's envelope: its
+// Kind (type, lease, volume, count, month) and the text shown to the agent
+// and the human.
+type Violation struct {
+	Kind string
+	Text string
+}
+
 // EnvelopeViolations lists how a commission exceeds the project's
 // envelope; none means it fits.
-func EnvelopeViolations(env policy.Envelope, use EnvelopeUse, serverType string, leaseMinutes, volumeGB int, reservation float64) []string {
-	var out []string
+func EnvelopeViolations(env policy.Envelope, use EnvelopeUse, serverType string, leaseMinutes, volumeGB int, reservation float64) []Violation {
+	var out []Violation
+	add := func(kind, format string, a ...any) { out = append(out, Violation{kind, fmt.Sprintf(format, a...)}) }
 	if !slices.Contains(env.ServerTypes, serverType) {
-		out = append(out, fmt.Sprintf("server type %s is not in the envelope's types %v", serverType, env.ServerTypes))
+		add("type", "server type %s is not in the envelope's types %v", serverType, env.ServerTypes)
 	}
 	if leaseMinutes > env.MaxLeaseHours*60 {
-		out = append(out, fmt.Sprintf("a lease of %d minutes exceeds the envelope's %d h", leaseMinutes, env.MaxLeaseHours))
+		add("lease", "a lease of %d minutes exceeds the envelope's %d h", leaseMinutes, env.MaxLeaseHours)
 	}
 	if volumeGB > env.VolumeMaxGB {
-		out = append(out, fmt.Sprintf("a %d GB volume exceeds the envelope's %d GB", volumeGB, env.VolumeMaxGB))
+		add("volume", "a %d GB volume exceeds the envelope's %d GB", volumeGB, env.VolumeMaxGB)
 	}
 	if use.OpenServers+1 > env.MaxCount {
-		out = append(out, fmt.Sprintf("the project already holds %d of its %d servers", use.OpenServers, env.MaxCount))
+		add("count", "the project already holds %d of its %d servers", use.OpenServers, env.MaxCount)
 	}
 	if use.MonthEUR+reservation > env.MonthlyEUR+1e-12 {
-		out = append(out, fmt.Sprintf("the reservation of %.6f EUR on top of %.6f EUR this month exceeds the envelope's %.2f EUR a month",
-			reservation, use.MonthEUR, env.MonthlyEUR))
+		add("month", "the reservation of %.6f EUR on top of %.6f EUR this month exceeds the envelope's %.2f EUR a month",
+			reservation, use.MonthEUR, env.MonthlyEUR)
 	}
 	return out
 }
@@ -268,22 +284,46 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 	if err != nil {
 		return Commission{}, err
 	}
-	c := Commission{Violations: EnvelopeViolations(env, use, r.ServerType, r.LeaseMinutes, r.VolumeGB, r.Quote.ReservationEUR)}
-	if len(c.Violations) > 0 {
+	violations := EnvelopeViolations(env, use, r.ServerType, r.LeaseMinutes, r.VolumeGB, r.Quote.ReservationEUR)
+	c := Commission{}
+	var kinds []string
+	for _, v := range violations {
+		c.Violations = append(c.Violations, v.Text)
+		kinds = append(kinds, v.Kind)
+	}
+	if len(violations) > 0 {
+		// a request covers this one when it is for the same type, at least
+		// this lease and volume, and names every way this one is beyond
+		kindsJSON, err := json.Marshal(kinds)
+		if err != nil {
+			return Commission{}, err
+		}
 		var status string
-		err := tx.QueryRowContext(ctx,
+		err = tx.QueryRowContext(ctx,
 			`SELECT id, status, decision_note FROM approval_requests
 			 WHERE kind = 'resource' AND task_id = $1 AND spec->>'server_type' = $2
 			   AND (spec->>'lease_minutes')::int >= $3 AND (spec->>'volume_gb')::int >= $4
+			   AND COALESCE(spec->'beyond_kinds', '[]'::jsonb) @> $5::jsonb
 			   AND NOT EXISTS (SELECT 1 FROM cloud_resources c WHERE c.approval_id = approval_requests.id)
 			 ORDER BY status = 'approved' DESC, status = 'pending' DESC, id DESC LIMIT 1`,
-			r.TaskID, r.ServerType, r.LeaseMinutes, r.VolumeGB).Scan(&c.ApprovalID, &status, &c.Note)
+			r.TaskID, r.ServerType, r.LeaseMinutes, r.VolumeGB, kindsJSON).Scan(&c.ApprovalID, &status, &c.Note)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
+			var pending int
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM approval_requests
+				WHERE kind = 'resource' AND task_id = $1 AND status = 'pending'`, r.TaskID).Scan(&pending); err != nil {
+				return Commission{}, err
+			}
+			if pending >= MaxPendingRequests {
+				return Commission{}, &policy.Refusal{Decision: "refused_approvals", Reason: fmt.Sprintf(
+					"the task already has %d pending resource requests (at most %d); wait for a decision (resource_request_status) or work within the envelope",
+					pending, MaxPendingRequests)}
+			}
 			spec, err := json.Marshal(map[string]any{
 				"server_type": r.ServerType, "lease_minutes": r.LeaseMinutes, "volume_gb": r.VolumeGB,
 				"location": r.Location, "purpose": r.Purpose, "reservation_eur": r.Quote.ReservationEUR,
 				"hourly_eur": r.Quote.ServerHourly + r.Quote.VolumeHourly, "beyond_envelope": c.Violations,
+				"beyond_kinds": kinds,
 			})
 			if err != nil {
 				return Commission{}, err
@@ -318,7 +358,9 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 		return Commission{}, err
 	}
 	lease := r.Now.Add(time.Duration(r.LeaseMinutes) * time.Minute)
-	if hold.ID, err = policy.InsertHold(ctx, tx, hold, lease.Sub(r.Now)+HoldMargin); err != nil {
+	// accrual books and drops the reservation; factoryd's sweep skips
+	// resource holds, so their expiry is informational
+	if hold.ID, err = policy.InsertHold(ctx, tx, hold, lease.Sub(r.Now)); err != nil {
 		return Commission{}, err
 	}
 	c.Hold = hold
@@ -371,39 +413,60 @@ func (a AgentStore) SetAddress(ctx context.Context, id int64, address string) er
 // to its deletion (now while it lives), at least one.
 const dueHours = `GREATEST(1, ceil(extract(epoch FROM (COALESCE(deleted_at, now()) - created_at)) / 3600))::int`
 
+// Accrual is what one accrual pass booked, and the bookings that went past
+// their commission's reservation.
+type Accrual struct {
+	EUR      float64
+	Overruns []Overrun
+}
+
+// Overrun is an accrual booked in full beyond what its reservation still
+// held: the resource lived longer than its lease paid for (ruling 124).
+type Overrun struct {
+	TaskID     string
+	ResourceID int64
+	EUR        float64 // booked
+	HeldEUR    float64 // what the reservation still held
+}
+
 // Accrue books every agent resource's started hours not yet booked: a
 // resource ledger row (ref resource/<id>) on its task, the task's spend,
-// and the same amount off its commission's reservation. A resource never
-// created (no provider id) costs nothing. Then it drops the reservations
-// of commissions whose rows are all closed and fully booked: the unused
-// rest returns to the task, the day and the project. It returns the EUR
-// booked.
-func (a AgentStore) Accrue(ctx context.Context) (float64, error) {
+// and the same amount off its commission's reservation, under the
+// headroom lock. A booking beyond what the reservation still holds is
+// booked in full and returned as an overrun (a promoted resource has no
+// reservation and never overruns). A resource never created (no provider
+// id) costs nothing. Then it drops the reservations of commissions whose
+// rows are all closed and fully booked: the unused rest returns to the
+// task, the day and the project.
+func (a AgentStore) Accrue(ctx context.Context) (Accrual, error) {
+	var out Accrual
 	rows, err := a.DB.QueryContext(ctx, `SELECT id FROM cloud_resources
 		WHERE project = 'agent' AND provider_id <> '' AND price_per_hour_eur > 0 AND accrued_hours < `+dueHours+` ORDER BY id`)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			rows.Close() // #nosec G104 -- already returning the scan error
-			return 0, err
+			return out, err
 		}
 		ids = append(ids, id)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return 0, err
+		return out, err
 	}
-	var total float64
 	var errs []error
 	for _, id := range ids {
-		eur, err := a.accrueRow(ctx, id)
+		eur, over, err := a.accrueRow(ctx, id)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("accrue resource %d: %w", id, err))
 		}
-		total += eur
+		out.EUR += eur
+		if over != nil {
+			out.Overruns = append(out.Overruns, *over)
+		}
 	}
 	if _, err := a.DB.ExecContext(ctx, `DELETE FROM holds WHERE kind = 'resource' AND id IN (
 		SELECT hold_id FROM cloud_resources WHERE hold_id IS NOT NULL GROUP BY hold_id
@@ -411,42 +474,55 @@ func (a AgentStore) Accrue(ctx context.Context) (float64, error) {
 		                AND (provider_id = '' OR price_per_hour_eur = 0 OR accrued_hours >= `+dueHours+`)))`); err != nil {
 		errs = append(errs, fmt.Errorf("drop settled reservations: %w", err))
 	}
-	return total, errors.Join(errs...)
+	return out, errors.Join(errs...)
 }
 
-func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, error) {
+func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun, error) {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	if err := policy.LockHeadroom(ctx, tx); err != nil {
+		return 0, nil, err
+	}
 	var owner string
 	var price float64
 	var accrued, due int
 	var hold int64
-	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0)
-		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold); err != nil {
-		return 0, err
+	var promoted bool
+	if err := tx.QueryRowContext(ctx, `SELECT owner_ref, price_per_hour_eur::float8, accrued_hours, `+dueHours+`, COALESCE(hold_id, 0), promoted
+		FROM cloud_resources WHERE id = $1 FOR UPDATE`, id).Scan(&owner, &price, &accrued, &due, &hold, &promoted); err != nil {
+		return 0, nil, err
 	}
 	if due <= accrued {
-		return 0, nil
+		return 0, nil, nil
 	}
 	eur := float64(due-accrued) * price
+	var held float64
+	err = tx.QueryRowContext(ctx, `SELECT eur::float8 FROM holds WHERE id = $1`, hold).Scan(&held)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, err
+	}
+	var over *Overrun
+	if !promoted && eur > held+1e-12 {
+		over = &Overrun{TaskID: owner, ResourceID: id, EUR: eur, HeldEUR: held}
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'resource', $2, $3)`,
 		owner, "resource/"+strconv.FormatInt(id, 10), eur); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, owner, eur); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE holds SET eur = GREATEST(eur - $2, 0) WHERE id = $1`, hold, eur); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET accrued_hours = $2, accrued_eur = accrued_eur + $3 WHERE id = $1`,
 		id, due, eur); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	return eur, tx.Commit()
+	return eur, over, tx.Commit()
 }
 
 // Owned lists every agent row of a task, oldest first.
@@ -461,12 +537,14 @@ func (a AgentStore) Group(ctx context.Context, holdID int64) ([]Resource, error)
 		WHERE project = 'agent' AND hold_id = $1 AND state IN `+openStates+` ORDER BY id`, holdID)
 }
 
-// LiveAddresses are the IPv4s of every live leased (or promoted) agent
-// server by owning task: what the task's sandbox egress admits.
+// LiveAddresses are the IPv4s of every live agent server by owning task
+// whose lease runs past the cutoff (or that is promoted): what the task's
+// sandbox egress admits. The cutoff is the collector's, so the address
+// leaves when the collector deletes the server.
 func (a AgentStore) LiveAddresses(ctx context.Context) (map[string][]string, error) {
 	rows, err := a.DB.QueryContext(ctx, `SELECT owner_ref, address FROM cloud_resources
 		WHERE project = 'agent' AND kind = 'server' AND state = 'live' AND address <> ''
-		  AND (promoted OR lease_expires > now()) ORDER BY owner_ref, address`)
+		  AND (promoted OR lease_expires > now() + make_interval(secs => $1)) ORDER BY owner_ref, address`, LeaseCutoff.Seconds())
 	if err != nil {
 		return nil, err
 	}

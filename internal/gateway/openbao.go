@@ -27,16 +27,26 @@ type OpenBao struct {
 	token   string
 	expires time.Time
 	caKey   string
+	caAt    time.Time
 }
 
 const sshMount = "ssh-client-signer"
 
+// OpenBaoTokenPath is the gateway's projected ServiceAccount token with
+// audience "openbao", the only audience OpenBao's Kubernetes auth role
+// accepts (k8s/deployment.yaml).
+const OpenBaoTokenPath = "/var/run/secrets/openbao/token" // #nosec G101 -- a token file path, not a credential value
+
+// caTTL bounds how long a fetched CA public key is used: a CA rotation
+// reaches new servers within it.
+const caTTL = time.Hour
+
 // CAPublicKey is the CA's public key, which commissioned servers trust
-// (unauthenticated in OpenBao; cached: it changes only on a CA rotation).
+// (unauthenticated in OpenBao), fetched at most hourly.
 func (o *OpenBao) CAPublicKey(ctx context.Context) (string, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.caKey != "" {
+	if o.caKey != "" && time.Since(o.caAt) < caTTL {
 		return o.caKey, nil
 	}
 	b, err := call(ctx, o.HTTP, http.MethodGet, o.BaseURL+"/v1/"+sshMount+"/public_key", http.Header{}, nil)
@@ -47,7 +57,7 @@ func (o *OpenBao) CAPublicKey(ctx context.Context) (string, error) {
 	if !strings.HasPrefix(key, "ssh-") && !strings.HasPrefix(key, "ecdsa-") {
 		return "", fmt.Errorf("openbao ca public key: unexpected answer %q", truncate(key, 80))
 	}
-	o.caKey = key
+	o.caKey, o.caAt = key, time.Now()
 	return key, nil
 }
 

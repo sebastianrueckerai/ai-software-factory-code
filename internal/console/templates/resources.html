@@ -17,7 +17,7 @@
 <td>{{eur4 .PricePerHourEUR}}</td>
 <td>{{eur4 .AccruedEUR}}</td>
 <td>{{.State}}</td>
-<td>{{if .Actions}}{{if not .Promoted}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Promote</button></form>{{end}}
+<td>{{if .Actions}}{{if not .Promoted}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" aria-describedby="promote-{{.ID}}">Promote</button> <span id="promote-{{.ID}}" class="meta">{{.PromoteNote}}</span></form>{{end}}
 <form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny">Release</button></form>{{end}}</td>
 </tr>
 {{else}}<tr><td colspan="9">No resources.</td></tr>{{end}}

@@ -928,6 +928,8 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>2026-09-28 14:30 UTC</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
 		"none (promoted by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
+		// the commission's month at 730 h: 0.0144 x 730 = 10.512, the firewall free
+		`<span id="promote-11" class="meta">promoted, about 10.51 EUR a month against the envelope&#39;s 10.00 EUR (0.0000 used or reserved this month)</span>`,
 		// the code repository has no envelope yet: the policy default
 		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
 		`name="server_types" type="text" value="cx23"`,

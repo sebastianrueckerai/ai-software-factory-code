@@ -50,10 +50,11 @@ func main() {
 		Store:    cloudres.AgentStore{DB: store.DB()},
 		Registry: registry,
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: registry, Provider: hetzner,
-			OwnerDone: gateway.TaskOwnerDone(store), NodeIPs: sshSources},
+			OwnerDone: gateway.TaskOwnerDone(store), NodeIPs: sshSources, Interval: cloudres.AgentInterval},
 		Signer: &gateway.OpenBao{BaseURL: cfg.OpenBaoURL, AuthRole: "factory-gateway", SSHRole: "factory-agent",
-			TokenFile: gateway.InClusterTokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
+			TokenFile: gateway.OpenBaoTokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
 		Sources: sshSources,
+		Audit:   store,
 	}
 	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
 	srv := gateway.NewServer(gateway.ServerOptions{
@@ -73,7 +74,7 @@ func main() {
 		Escalator: &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
 		Cloud:     cloud,
 	})
-	go cloud.Run(ctx, 2*time.Minute)
+	go cloud.Run(ctx)
 
 	addr := ":" + cfg.Port
 	log.Printf("factory-gateway %s listening on %s", version, addr)

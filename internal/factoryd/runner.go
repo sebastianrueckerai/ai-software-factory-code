@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,10 +74,6 @@ type Runner struct {
 	liveMu sync.Mutex
 	live   map[string]*liveSession // by task: its running session
 
-	// admitted is the leased addresses last applied to each task
-	// namespace's egress policy.
-	admitMu  sync.Mutex
-	admitted map[string]string
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
@@ -679,11 +676,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoT
 			if err != nil {
 				return fmt.Errorf("read leases: %w", err)
 			}
-			if err := r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[t.ID])); err != nil {
-				return err
-			}
-			r.setAdmitted(ns, leased[t.ID])
-			return nil
+			return r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[t.ID]))
 		}},
 		{"git token secret", func() error {
 			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret, "PUSH_TOKEN": push.Secret})
@@ -998,19 +991,10 @@ func leasedServerRule(ipv4 string) map[string]any {
 	}
 }
 
-func (r *Runner) setAdmitted(ns string, leased []string) {
-	r.admitMu.Lock()
-	defer r.admitMu.Unlock()
-	if r.admitted == nil {
-		r.admitted = map[string]string{}
-	}
-	r.admitted[ns] = strings.Join(leased, ",")
-}
-
 // AdmitLeases brings every agent namespace's egress policy in line with
-// its task's live leases: a new lease's address joins, an ended one
-// leaves. A namespace whose policy this process has not applied yet
-// (after a restart) is applied once.
+// its task's live leases: it reads the live policy and applies the desired
+// one when they differ, so a new lease's address joins, an ended one
+// leaves, and an edit or loss out of band is repaired on the next pass.
 func (r *Runner) AdmitLeases(ctx context.Context) error {
 	leased, err := r.cfg.Leases.LiveAddresses(ctx)
 	if err != nil {
@@ -1020,38 +1004,57 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list agent namespaces: %w", err)
 	}
-	live := map[string]bool{}
 	var errs []error
 	for _, ns := range names {
 		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 		if id == ns || strings.HasPrefix(id, "ci-") {
 			continue
 		}
-		live[ns] = true
-		r.admitMu.Lock()
-		have, known := r.admitted[ns]
-		r.admitMu.Unlock()
-		if known && have == strings.Join(leased[id], ",") {
+		want := r.workerEgressSpec(leased[id])
+		have, err := r.kube.CiliumNetworkPolicySpec(ctx, ns, workerEgress)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
 			continue
 		}
-		err := r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[id]))
+		same, err := sameJSON(have, want)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
+			continue
+		}
+		if same {
+			continue
+		}
+		err = r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, want)
 		switch {
 		case errors.Is(err, ErrNotFound): // the namespace went meanwhile
 		case err != nil:
 			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
 		default:
 			log.Printf("task %s: egress admits leased servers %v", id, leased[id])
-			r.setAdmitted(ns, leased[id])
 		}
 	}
-	r.admitMu.Lock()
-	for ns := range r.admitted {
-		if !live[ns] {
-			delete(r.admitted, ns)
-		}
-	}
-	r.admitMu.Unlock()
 	return errors.Join(errs...)
+}
+
+// sameJSON compares two objects as their JSON: the live policy's spec
+// decoded from the API against the desired one built in Go.
+func sameJSON(a, b any) (bool, error) {
+	ja, err := json.Marshal(a)
+	if err != nil {
+		return false, err
+	}
+	jb, err := json.Marshal(b)
+	if err != nil {
+		return false, err
+	}
+	var na, nb any
+	if err := json.Unmarshal(ja, &na); err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(jb, &nb); err != nil {
+		return false, err
+	}
+	return reflect.DeepEqual(na, nb), nil
 }
 
 // LeaseLoop runs AdmitLeases every interval until ctx ends.

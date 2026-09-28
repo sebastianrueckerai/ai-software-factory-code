@@ -66,13 +66,22 @@ func (c *Collector) now() time.Time {
 	return time.Now()
 }
 
+// LeaseMargin covers a pass's own run time: a leased resource is deleted
+// on the last pass before its lease ends, when the lease ends within one
+// interval plus this margin (ruling 124), so a lease of N started hours
+// never lives into hour N+1.
+const LeaseMargin = 30 * time.Second
+
+func (c *Collector) interval() time.Duration {
+	if c.Interval <= 0 {
+		return time.Minute
+	}
+	return c.Interval
+}
+
 // Run collects every Interval until ctx ends.
 func (c *Collector) Run(ctx context.Context) {
-	interval := c.Interval
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	tick := time.NewTicker(interval)
+	tick := time.NewTicker(c.interval())
 	defer tick.Stop()
 	for {
 		if err := c.Collect(ctx); err != nil {
@@ -159,6 +168,10 @@ func (c *Collector) Collect(ctx context.Context) error {
 			log.Printf("cloud collector (%s): deleting unknown %s %d (labels %v)", c.Project, p.kind, p.id, p.labels)
 			if err := c.deleteProvider(ctx, p.kind, p.id); err != nil {
 				errs = append(errs, fmt.Errorf("unknown %s %d: %w", p.kind, p.id, err))
+				continue
+			}
+			if err := c.adopt(ctx, p); err != nil {
+				errs = append(errs, fmt.Errorf("unknown %s %d: %w", p.kind, p.id, err))
 			}
 		}
 	}
@@ -172,6 +185,21 @@ func (c *Collector) Collect(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// adopt books a create that landed after its row was closed as never
+// created: the row's resource label names it, so the row takes its provider
+// id and ends now, and accrual bills its hours.
+func (c *Collector) adopt(ctx context.Context, p providerResource) error {
+	if p.labels["factory"] != c.Project {
+		return nil
+	}
+	id, err := strconv.ParseInt(p.labels["resource"], 10, 64)
+	if err != nil {
+		return nil
+	}
+	_, err = c.Registry.Adopt(ctx, id, p.kind, strconv.FormatInt(p.id, 10))
+	return err
 }
 
 // interlock is ruling 123: the collector deletes whatever its project
@@ -248,8 +276,8 @@ func (c *Collector) collectRow(ctx context.Context, row Resource, found provider
 	case row.State == StateDeleting:
 		reason = "deletion pending"
 	case row.Promoted:
-	case !now.Before(row.LeaseExpires):
-		reason = "lease expired"
+	case !row.LeaseExpires.After(now.Add(c.interval() + LeaseMargin)):
+		reason = "lease ends before the next pass"
 	default:
 		done, err := c.ownerDone(ctx, row.OwnerRef, ownerDone)
 		if err != nil {
@@ -402,6 +430,12 @@ func (c *Collector) release(ctx context.Context, row Resource) error {
 		// finds its row closed, and the collector deletes it as unknown.
 		_, err := c.Registry.Transition(ctx, row.ID, StateDeleted)
 		return err
+	}
+	if row.ProviderID == "" {
+		// found by its label: record it, so its hours are booked
+		if _, err := c.Registry.SetLive(ctx, row.ID, strconv.FormatInt(id, 10)); err != nil {
+			return err
+		}
 	}
 	wait := c.RetryWait
 	if wait <= 0 {

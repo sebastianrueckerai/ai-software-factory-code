@@ -234,6 +234,7 @@ type fakeCloudStore struct {
 	ids       []int64
 	addresses map[int64]string
 	accrues   int
+	overruns  []cloudres.Overrun
 	approvals map[int64]cloudres.Approval
 	envelope  *policy.Envelope
 	hold      int64
@@ -312,11 +313,11 @@ func (f *fakeCloudStore) Approval(_ context.Context, id int64, taskID string) (c
 	return a, ok && taskID == "42", nil
 }
 
-func (f *fakeCloudStore) Accrue(context.Context) (float64, error) {
+func (f *fakeCloudStore) Accrue(context.Context) (cloudres.Accrual, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.accrues++
-	return 0, nil
+	return cloudres.Accrual{Overruns: f.overruns}, nil
 }
 
 func (f *fakeCloudStore) Session(context.Context, string) (string, error) { return "s-1", nil }
@@ -343,6 +344,7 @@ type cloudEnv struct {
 	cs     *fakeCloudStore
 	signer *fakeSigner
 	reg    *cloudres.Memory
+	cloud  *Cloud
 }
 
 func coderTask() Task {
@@ -368,7 +370,7 @@ func newCloudEnv(t *testing.T, task Task) *cloudEnv {
 	store.setPolicy(cloudPolicy())
 	cloud := &Cloud{Provider: hz, Store: cs, Registry: reg, Signer: signer, Sources: []string{"198.51.100.1/32", "198.51.100.2/32"},
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}},
-		Now:       func() time.Time { return cloudNow }}
+		Audit:     store, Now: func() time.Time { return cloudNow }}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{},
 		Prices: testPrices, Escalator: &fakeEscalator{}, Cloud: cloud})
 	srv := httptest.NewServer(s.Routes("test"))
@@ -379,7 +381,7 @@ func newCloudEnv(t *testing.T, task Task) *cloudEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &cloudEnv{toolEnv: &toolEnv{store: store, session: session}, hz: hz, cs: cs, signer: signer, reg: reg}
+	return &cloudEnv{toolEnv: &toolEnv{store: store, session: session}, hz: hz, cs: cs, signer: signer, reg: reg, cloud: cloud}
 }
 
 const agentKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJ0ZXN0a2V5 agent@sandbox"
@@ -430,6 +432,8 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"ssh-ed25519 AAAACAKEY factory-ca", "TrustedUserCAKeys /etc/ssh/factory-user-ca.pub", "AuthorizedKeysFile none", "PasswordAuthentication no",
+		"- path: /etc/ssh/factory-principals/root\n  permissions: '0644'\n  content: |\n    resource-2\n",
+		"AuthorizedPrincipalsFile /etc/ssh/factory-principals/%u",
 		"- [usermod, -p, '*', root]", "- [chage, -d, '-1', root]"} {
 		if !strings.Contains(sr.UserData, want) {
 			t.Fatalf("user data lacks %q:\n%s", want, sr.UserData)
@@ -461,7 +465,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 			t.Fatalf("answer lacks %q:\n%s", want, text)
 		}
 	}
-	if len(e.signer.signs) != 1 || e.signer.signs[0] != agentKey+"|root|30m0s|task=42 resource=2" {
+	if len(e.signer.signs) != 1 || e.signer.signs[0] != agentKey+"|resource-2|30m0s|task=42 resource=2" {
 		t.Fatalf("signs = %v", e.signer.signs)
 	}
 	a := e.lastAudit(t)
@@ -559,7 +563,7 @@ func TestReleaseAndCertificates(t *testing.T) {
 	}
 	// a certificate never outlives the lease: 10 minutes left
 	text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": 2, "public_key": agentKey})
-	if isErr || !strings.Contains(text, "root@203.0.113.102, valid 10m0s") || e.signer.signs[0] != agentKey+"|root|10m0s|task=42 resource=2" {
+	if isErr || !strings.Contains(text, "root@203.0.113.102, valid 10m0s") || e.signer.signs[0] != agentKey+"|resource-2|10m0s|task=42 resource=2" {
 		t.Fatalf("certificate = %s, signs %v", text, e.signer.signs)
 	}
 	for name, args := range map[string]map[string]any{
@@ -630,10 +634,39 @@ func TestTaskOwnerDone(t *testing.T) {
 }
 
 func TestCommissionUserDataRefusesAMultiLineKey(t *testing.T) {
-	if _, err := commissionUserData("ssh-rsa AAAA\nruncmd: evil"); err == nil {
+	if _, err := commissionUserData("ssh-rsa AAAA\nruncmd: evil", "resource-1"); err == nil {
 		t.Fatal("want an error")
 	}
-	if _, err := commissionUserData("x"); err != nil {
+	if _, err := commissionUserData("x", "resource-1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// ruling 125: a certificate is only ever signed for the task's own server,
+// with that server's principal.
+func TestCertificateForAnotherTasksServerIsRefused(t *testing.T) {
+	e := newCloudEnv(t, coderTask())
+	other, _ := e.reg.Insert(context.Background(), cloudres.Resource{Project: cloudres.AgentProject, Kind: cloudres.KindServer,
+		OwnerRef: "other-task", HoldID: 9, LeaseExpires: cloudNow.Add(time.Hour)})
+	e.reg.SetLive(context.Background(), other.ID, "555")
+	e.cs.ids = append(e.cs.ids, other.ID)
+	text, isErr := e.call(t, ToolSSHCertificate, map[string]any{"resource_id": other.ID, "public_key": agentKey})
+	if !isErr || !strings.Contains(text, "not one of this task's servers") || len(e.signer.signs) != 0 {
+		t.Fatalf("certificate for another task's server = %s, signs %v", text, e.signer.signs)
+	}
+}
+
+// ruling 124: an accrual past its reservation is booked in full by the
+// store and flagged here, in the log and the audit.
+func TestAccrualOverrunIsFlagged(t *testing.T) {
+	e := newCloudEnv(t, coderTask())
+	e.cs.overruns = []cloudres.Overrun{{TaskID: "42", ResourceID: 38, EUR: 0.0192, HeldEUR: 0.0096}}
+	if err := e.cloud.accrue(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a := e.lastAudit(t)
+	if a.Decision != "allowed_over_hold" || a.TaskID != "42" || a.Tool != ToolCommission || *a.SpendEUR != 0.0192 || *a.HoldEUR != 0.0096 ||
+		!strings.Contains(a.Reason, "COST OVER HOLD: resource 38 billed 0.019200 EUR with 0.009600 EUR left") {
+		t.Fatalf("audit = %+v", a)
 	}
 }

@@ -273,12 +273,14 @@ func KnownCost(cost *float64) *float64 {
 	return cost
 }
 
-// SweepHolds books every expired hold at its full amount and returns how
-// many it booked.
+// SweepHolds books every expired model and tool hold at its full amount
+// and returns how many it booked. A resource reservation is never swept:
+// accrual books its resource's hours and drops it, so a sweep would book
+// the same hours twice.
 func SweepHolds(ctx context.Context, db *sql.DB) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
-		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() RETURNING task_id, kind, ref, eur),
+		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING task_id, kind, ref, eur),
 		      t AS (UPDATE tasks SET spent_eur = spent_eur + g.eur
 		            FROM (SELECT task_id, sum(eur) AS eur FROM gone GROUP BY task_id) g WHERE tasks.id = g.task_id),
 		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT task_id, kind, ref, eur FROM gone WHERE eur > 0)

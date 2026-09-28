@@ -666,4 +666,53 @@ func TestReleaseServersFirstAndClosesNeverCreatedRows(t *testing.T) {
 			t.Fatalf("row %d = %s", id, h.state(t, id))
 		}
 	}
+	// the label-found one recorded its id, so its hours are billed
+	if got, _ := h.reg.Get(byLabel.ID); got.ProviderID != "201" {
+		t.Fatalf("label-found row = %+v", got)
+	}
+}
+
+// ruling 124: a 60-minute lease is deleted on the last pass before the hour
+// ends (lease end within one interval plus the margin), never after it.
+func TestCollectEndsALeaseOnTheLastPassBeforeItsHour(t *testing.T) {
+	h := newHarness()
+	h.col.Interval = 2 * time.Minute
+	s := h.create(t, KindServer, "5", 100, time.Hour)
+	h.clk.t = t0.Add(57*time.Minute + 29*time.Second) // ends in 2m31s: one more pass fits
+	if err := h.col.Collect(context.Background()); err != nil || len(h.prov.deleted) != 0 {
+		t.Fatalf("deleted early: %v, %v", h.prov.deleted, err)
+	}
+	h.clk.t = t0.Add(57*time.Minute + 30*time.Second) // ends in 2m30s: the next pass would be late
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100" || h.state(t, s.ID) != StateDeleted {
+		t.Fatalf("deleted = %v, state %s", h.prov.deleted, h.state(t, s.ID))
+	}
+	if got, _ := h.reg.Get(s.ID); got.DeletedAt == nil || got.DeletedAt.Sub(got.CreatedAt) >= time.Hour {
+		t.Fatalf("lived %v", got.DeletedAt.Sub(got.CreatedAt))
+	}
+}
+
+// A create that landed after its row was closed as never created is
+// deleted as unknown and its row adopts the provider id, so it is billed.
+func TestCollectAdoptsALateCreate(t *testing.T) {
+	h := newHarness()
+	r, _ := h.reg.Insert(context.Background(), Resource{Project: "ci", Kind: KindServer, OwnerRef: "5", LeaseExpires: t0.Add(time.Hour)})
+	h.reg.Transition(context.Background(), r.ID, StateDeleted)
+	h.clk.t = t0.Add(5 * time.Minute)
+	h.prov.servers[100] = hcloud.Server{ID: 100, Labels: r.Labels}
+	if err := h.col.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := h.reg.Get(r.ID)
+	if strings.Join(h.prov.deleted, ",") != "server/100" || got.ProviderID != "100" || got.State != StateDeleted || !got.DeletedAt.Equal(h.clk.t) {
+		t.Fatalf("deleted %v, row %+v", h.prov.deleted, got)
+	}
+	// a foreign project's label is not adopted
+	h.prov.servers[101] = hcloud.Server{ID: 101, Labels: map[string]string{"resource": itoa(r.ID)}}
+	h.col.Collect(context.Background())
+	if got, _ := h.reg.Get(r.ID); got.ProviderID != "100" {
+		t.Fatalf("row = %+v", got)
+	}
 }

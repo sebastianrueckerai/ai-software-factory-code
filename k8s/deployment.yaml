@@ -54,6 +54,8 @@ spec:
           valueFrom: {secretKeyRef: {name: hetzner-agent, key: token}}
         - name: AGENT_SSH_SOURCES
           valueFrom: {configMapKeyRef: {name: cluster-facts, key: node_public_ips}}
+        # plain HTTP in the cluster: Cilium's WireGuard encrypts pod traffic
+        # between nodes
         - name: OPENBAO_URL
           value: http://openbao.platform.svc.cluster.local:8200
         readinessProbe: {httpGet: {path: /healthz, port: http}}
@@ -67,6 +69,15 @@ spec:
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
+        volumeMounts:
+        - {name: openbao-token, mountPath: /var/run/secrets/openbao, readOnly: true}
+      volumes:
+      # a ServiceAccount token only OpenBao's Kubernetes auth accepts
+      # (role factory-gateway, audience openbao)
+      - name: openbao-token
+        projected:
+          sources:
+          - serviceAccountToken: {path: token, audience: openbao, expirationSeconds: 3600}
 ---
 # The gateway holds the LiteLLM master key, the tool providers' keys and
 # the agent Hetzner project's token, so its egress is default-deny with

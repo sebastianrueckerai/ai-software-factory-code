@@ -236,11 +236,20 @@ func TestHolds(t *testing.T) {
 
 	// an expired hold is booked in full by the sweep, and its caller's late
 	// release books nothing more
-	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('b', 'model', 'x', 0.003, now() - interval '1 second')`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('b', 'model', 'x', 0.003, now() - interval '1 second'),
+		('b', 'resource', 'cx23', 0.0096, now() - interval '1 second')`); err != nil {
 		t.Fatal(err)
 	}
+	// the expired resource reservation is accrual's to book and drop
 	if n, err := SweepHolds(ctx, db); err != nil || n != 1 {
 		t.Fatalf("sweep = (%d, %v), want 1", n, err)
+	}
+	var left int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE kind = 'resource'`).Scan(&left); err != nil || left != 1 {
+		t.Fatalf("resource holds left = %d, %v", left, err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM holds WHERE kind = 'resource'`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hb.ID); err != nil {
 		t.Fatal(err)
