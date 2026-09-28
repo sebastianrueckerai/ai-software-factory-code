@@ -339,6 +339,8 @@ func main() {
 		},
 		Resources: cloudres.AgentStore(store.CloudResources()),
 		Alerts:    store,
+		Projects:  store,
+		Reconcile: registrar.Reconcile,
 		PolicyURL: env("CONSOLE_POLICY_URL",
 			"https://git.aisoftwarefactory.world/sf/ai-software-factory-infra/src/branch/main/k8s/platform/policy/policy.yaml"),
 	})

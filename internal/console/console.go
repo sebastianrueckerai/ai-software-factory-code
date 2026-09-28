@@ -87,6 +87,9 @@ type Config struct {
 	ApproveMerge MergeApprover
 	Resources    Resources
 	Alerts       Alerts
+	Projects     Projects
+	// Reconcile brings a project's objects to its row (factoryd.Registrar).
+	Reconcile func(ctx context.Context, p factoryd.Project) error
 	HTTP         *http.Client // nil = 15 s timeout
 }
 
@@ -151,6 +154,9 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
 	c.mux.Handle("POST /envelopes", c.auth(c.spend("envelope edit", c.setEnvelope)))
 	c.mux.Handle("GET /alerts", c.auth(c.alerts))
+	c.mux.Handle("GET /projects", c.auth(c.projects))
+	c.mux.Handle("POST /projects", c.auth(c.spend("project registration", c.registerProject)))
+	c.mux.Handle("POST /projects/{name}/settings", c.auth(c.spend("project settings", c.projectSettings)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil
 }

@@ -55,3 +55,11 @@ type Alerts interface {
 	// factoryd.ErrNotFound when there is none.
 	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
 }
+
+// Projects is the projects table (factoryd.PGStore).
+type Projects interface {
+	Projects(ctx context.Context) ([]factoryd.Project, error)
+	Project(ctx context.Context, name string) (factoryd.Project, bool, error)
+	CreateProject(ctx context.Context, p factoryd.Project) error
+	SetProjectSettings(ctx context.Context, name, mergeRule string, notify []string, quota policy.Quota) error
+}

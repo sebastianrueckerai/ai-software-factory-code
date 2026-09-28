@@ -336,6 +336,7 @@ type rig struct {
 	approvals *fakeApprovals
 	resources *fakeResources
 	alerts    *fakeAlerts
+	projects  *fakeProjects
 	signalErr error
 }
 
@@ -354,13 +355,14 @@ func newRig(t *testing.T) *rig {
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123"}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
-		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}}
+		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}, projects: &fakeProjects{}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), Repo: factoryd.Repo{Owner: "sf", Name: "code"},
 		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
+		Projects: r.projects, Reconcile: r.projects.reconcile,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
