@@ -708,3 +708,20 @@ func TestCertificateForStandingServerIsRefused(t *testing.T) {
 		t.Fatalf("certificate for a standing server = %s, signs %v", text, e.signer.signs)
 	}
 }
+
+// ruling 147: a standing server lives until a human releases it; the task
+// that commissioned it cannot.
+func TestReleaseOfStandingServerIsRefused(t *testing.T) {
+	e := newCloudEnv(t, coderTask())
+	own, _ := e.reg.Insert(context.Background(), cloudres.Resource{Project: cloudres.AgentProject, Kind: cloudres.KindServer,
+		OwnerRef: "42", HoldID: 9, LeaseExpires: cloudNow.Add(time.Hour), Lifetime: cloudres.LifetimeStanding})
+	e.reg.SetLive(context.Background(), own.ID, "557")
+	e.cs.ids = append(e.cs.ids, own.ID)
+	text, isErr := e.call(t, policy.ToolRelease, map[string]any{"resource_id": own.ID})
+	if !isErr || !strings.Contains(text, "only a human on the console releases it") || e.hz.callList() != "" {
+		t.Fatalf("release of a standing server = %s, provider calls %q", text, e.hz.callList())
+	}
+	if row, _ := e.reg.Get(own.ID); row.State != cloudres.StateLive {
+		t.Fatalf("state = %s", row.State)
+	}
+}

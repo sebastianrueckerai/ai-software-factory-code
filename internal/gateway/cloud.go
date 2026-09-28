@@ -583,6 +583,9 @@ func (s *Server) releaseResource(ctx context.Context, c *toolCaller, in Resource
 	if !ok || row.HoldID == 0 {
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("resource %d is not one of this task's resources", in.ResourceID))
 	}
+	if row.Lifetime == cloudres.LifetimeStanding {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("resource %d is the project's standing server: only a human on the console releases it", row.ID))
+	}
 	cloud := s.opts.Cloud
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), createTimeout)
 	defer cancel()
