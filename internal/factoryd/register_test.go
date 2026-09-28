@@ -44,6 +44,8 @@ type forgejoState struct {
 	minted        []string
 	writes        []string
 	projectsAdmin bool // factory-projects sees the repository as admin
+	emails        map[string]string
+	teamUnits     map[string]string
 }
 
 func newForgejoState() *forgejoState {
@@ -104,11 +106,16 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			s.repo = true
 			w.WriteHeader(http.StatusCreated)
 		case admin && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/users/") && strings.Count(p, "/") == 4:
-			if !s.users[strings.TrimPrefix(p, "/api/v1/users/")] {
+			user := strings.TrimPrefix(p, "/api/v1/users/")
+			if !s.users[user] {
 				http.NotFound(w, r)
 				return
 			}
-			io.WriteString(w, `{}`)
+			email := user + "@factory.local"
+			if e, ok := s.emails[user]; ok {
+				email = e
+			}
+			fmt.Fprintf(w, `{"login":%q,"email":%q}`, user, email)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/admin/users":
 			if body["must_change_password"] != false || len(body["password"].(string)) < 32 {
 				t.Errorf("create user %v", body["username"])
@@ -120,12 +127,14 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				list([]any{map[string]any{"id": 1, "name": "Owners"}})
 				return
 			}
-			list([]any{map[string]any{"id": 1, "name": "Owners"}, map[string]any{"id": 7, "name": "ci"}})
+			list([]any{map[string]any{"id": 1, "name": "Owners"}, map[string]any{"id": 7, "name": "ci", "includes_all_repositories": false,
+				"units_map": s.teamUnits}})
 		case admin && r.Method == http.MethodPost && p == "/api/v1/orgs/demo-app/teams":
 			if !reflect.DeepEqual(body["units_map"], map[string]any{"repo.packages": "write"}) || body["includes_all_repositories"] != false {
 				t.Errorf("create team %v", body)
 			}
 			s.team = []string{}
+			s.teamUnits = map[string]string{"repo.code": "none", "repo.packages": "write"}
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":7}`)
 		case admin && strings.HasPrefix(p, "/api/v1/teams/7/members/"):
@@ -556,7 +565,7 @@ func TestRegistrationObjects(t *testing.T) {
 		"push_whitelist_deploy_keys": true, "enable_merge_whitelist": true, "merge_whitelist_usernames": []any{"sebastian", "factory-merge"},
 		"enable_approvals_whitelist": true, "approvals_whitelist_username": []any{"sebastian"}, "required_approvals": float64(0),
 		"apply_to_admins": true, "block_on_rejected_reviews": true, "dismiss_stale_approvals": true, "enable_status_check": false,
-		"protected_file_patterns": "", "unprotected_file_patterns": ""}
+		"protected_file_patterns": ".forgejo/**;.gitea/**;.github/**", "unprotected_file_patterns": ""}
 	if !reflect.DeepEqual(fj.protection, want) {
 		t.Errorf("protection = %v", fj.protection)
 	}
@@ -741,5 +750,30 @@ func TestRegisterRotates(t *testing.T) {
 	}
 	if len(rig.fj.minted)-n != 4 || len(rig.fj.tokens) != 4 {
 		t.Fatalf("rotate minted %d, %d tokens live (old ones must be revoked)", len(rig.fj.minted)-n, len(rig.fj.tokens))
+	}
+}
+
+// review-task65 n2: registration adopts only the CI user and team it made.
+func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.fj.users["ci-demo-app"] = true
+	rig.fj.emails = map[string]string{"ci-demo-app": "mallory@example.com"}
+	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err == nil ||
+		!strings.Contains(err.Error(), "a user ci-demo-app exists that registration did not make") {
+		t.Fatalf("foreign user = %v", err)
+	}
+	if len(rig.fj.minted) != 0 {
+		t.Fatalf("minted for a foreign user: %v", rig.fj.minted)
+	}
+
+	rig = newRegisterRig(t)
+	rig.fj.team = []string{}
+	rig.fj.teamUnits = map[string]string{"repo.code": "write", "repo.packages": "write"}
+	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err == nil ||
+		!strings.Contains(err.Error(), "a team ci exists in demo-app with more than package write") {
+		t.Fatalf("foreign team = %v", err)
+	}
+	if len(rig.fj.minted) != 0 || len(rig.fj.team) != 0 {
+		t.Fatalf("used a foreign team: minted %v, members %v", rig.fj.minted, rig.fj.team)
 	}
 }

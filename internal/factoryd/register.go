@@ -266,8 +266,15 @@ func Protection(mergeRule string, approvers []string, mergeUser string) BranchPr
 		EnableMergeWhitelist: true, MergeWhitelistUsernames: append(slices.Clone(approvers), mergeUser),
 		EnableApprovalsWhitelist: true, ApprovalsWhitelistUsernames: slices.Clone(approvers),
 		RequiredApprovals: required, ApplyToAdmins: true, BlockOnRejectedReviews: true, DismissStaleApprovals: true,
+		ProtectedFilePatterns: ProtectedWorkflows,
 	}
 }
+
+// ProtectedWorkflows are the paths no push to a project's main may touch,
+// the deploy key's included (review-task65 n1: every non-fork job holds
+// DEPLOY_KEY); Forgejo refuses a merge touching them for everyone too, so
+// a human changes a project's workflows by lifting the protection.
+const ProtectedWorkflows = ".forgejo/**;.gitea/**;.github/**"
 
 func (run *reconcileRun) protection(ctx context.Context) (Change, error) {
 	want := Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser)

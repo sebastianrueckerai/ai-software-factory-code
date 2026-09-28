@@ -892,7 +892,13 @@ secret `factory/forgejo-projects`); Forgejo lets no repository-limited token
 pass its admin checks, and as the owner of exactly the project organisations
 this token reaches them and nothing else. It cannot create or delete an
 organisation or a repository (that needs `write:organization`, which it
-lacks), and cannot touch teams.
+lacks), and cannot touch teams. It can transfer a project repository
+(Forgejo files transfer under the repository scope): accepted under ruling
+164, since the damage stays inside the projects' bound and the next reconcile
+reports the repository as waiting. Registration adopts only the CI user and
+team it made itself (the user's address `ci-<name>@factory.local`, the team
+package write and nothing else on no repository); any other `ci-<name>` or
+`ci` makes it stop with the reason.
 
 `factoryd register-project` (a human, with the Forgejo site admin's login on
 stdin) does what only the admin can: the organisation, the repository
@@ -922,7 +928,11 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   and `factory-merge`, approvals whitelist the approvers, apply to admins,
   stale approvals dismissed, rejected reviews block) plus
   `push_whitelist_deploy_keys`, and `required_approvals` 0 on `auto` (1 on
-  `human`); a write deploy key `factory-roll` whose private half lives only in
+  `human`), and the protected file patterns `.forgejo/**;.gitea/**;.github/**`:
+  every non-fork job of the project holds `DEPLOY_KEY`, so no push to main,
+  the deploy key's included, may touch a workflow, and Forgejo refuses a merge
+  touching one for everyone too; a human changes a project's workflows by
+  lifting the protection for that change; a write deploy key `factory-roll` whose private half lives only in
   the Actions secret `DEPLOY_KEY` (the project's main workflow pushes its roll
   commits with it; Forgejo admits no Actions job token to a whitelist; a key
   or secret gone missing makes both anew); `FACTORY_READ_TOKEN` (random, its

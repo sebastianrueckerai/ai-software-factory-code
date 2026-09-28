@@ -317,18 +317,48 @@ func (f *Forgejo) AdminEnsureRepo(ctx context.Context, a AdminAuth, repo Repo) (
 // tokens are minted with sudo.
 func (f *Forgejo) AdminEnsureUser(ctx context.Context, a AdminAuth, user string) (Change, error) {
 	call := f.adminCall(a)
-	exists, _, err := adminExists(ctx, call, "/api/v1/users/"+url.PathEscape(user))
-	if err != nil || exists {
-		return Unchanged, err
+	exists, body, err := adminExists(ctx, call, "/api/v1/users/"+url.PathEscape(user))
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		var u struct {
+			Email string `json:"email"`
+		}
+		if err := json.Unmarshal(body, &u); err != nil {
+			return "", err
+		}
+		if u.Email != ciUserEmail(user) {
+			return "", fmt.Errorf("a user %s exists that registration did not make (email %q): refusing to adopt it", user, u.Email)
+		}
+		return Unchanged, nil
 	}
 	pw := make([]byte, 24)
 	if _, err := rand.Read(pw); err != nil {
 		panic(err) // crypto/rand never fails on Linux
 	}
 	_, err = call(ctx, http.MethodPost, "/api/v1/admin/users", mustJSON(map[string]any{"username": user,
-		"email": user + "@factory.local", "password": hex.EncodeToString(pw), "must_change_password": false, "visibility": "private"}),
+		"email": ciUserEmail(user), "password": hex.EncodeToString(pw), "must_change_password": false, "visibility": "private"}),
 		http.StatusCreated)
 	return Created, err
+}
+
+// ciUserEmail is the address registration gives a CI user, which tells
+// its own users from others of the same name.
+func ciUserEmail(user string) string { return user + "@factory.local" }
+
+// packageWriteOnly reports whether a team's units are package write and
+// nothing else, on no repository.
+func packageWriteOnly(allRepos bool, units map[string]string) bool {
+	if allRepos || units["repo.packages"] != "write" {
+		return false
+	}
+	for unit, mode := range units {
+		if unit != "repo.packages" && mode != "none" {
+			return false
+		}
+	}
+	return true
 }
 
 // AdminEnsurePackageTeam keeps team in org with package write on no
@@ -336,8 +366,10 @@ func (f *Forgejo) AdminEnsureUser(ctx context.Context, a AdminAuth, user string)
 func (f *Forgejo) AdminEnsurePackageTeam(ctx context.Context, a AdminAuth, org, team, member string) (Change, error) {
 	call := f.adminCall(a)
 	teams, err := GetPages[struct {
-		ID   int64  `json:"id"`
-		Name string `json:"name"`
+		ID       int64             `json:"id"`
+		Name     string            `json:"name"`
+		AllRepos bool              `json:"includes_all_repositories"`
+		Units    map[string]string `json:"units_map"`
 	}](ctx, call, "/api/v1/orgs/"+url.PathEscape(org)+"/teams?")
 	if err != nil {
 		return "", err
@@ -345,6 +377,9 @@ func (f *Forgejo) AdminEnsurePackageTeam(ctx context.Context, a AdminAuth, org, 
 	c, id := Unchanged, int64(0)
 	for _, t := range teams {
 		if t.Name == team {
+			if !packageWriteOnly(t.AllRepos, t.Units) {
+				return "", fmt.Errorf("a team %s exists in %s with more than package write (%v, all repositories %v): refusing to adopt it", team, org, t.Units, t.AllRepos)
+			}
 			id = t.ID
 		}
 	}
