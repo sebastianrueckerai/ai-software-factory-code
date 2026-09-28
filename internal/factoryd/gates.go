@@ -431,7 +431,7 @@ func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, app
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if err := r.store.ResolveApprovals(ctx, t.ID, "approved", approver, "merged by factory-merge at "+commit); err != nil {
+	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by factory-merge at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", map[string]any{"pr": pr, "commit": commit, "approver": approver})

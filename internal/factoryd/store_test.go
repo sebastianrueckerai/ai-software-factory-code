@@ -276,9 +276,9 @@ func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64,
 	return a.ID, nil
 }
 
-func (s *fakeStore) ResolveApprovals(ctx context.Context, taskID, status, by, note string) error {
+func (s *fakeStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
 	for i := range s.approvals {
-		if s.approvals[i].TaskID == taskID && s.approvals[i].Status == "pending" {
+		if s.approvals[i].TaskID == taskID && (kind == "" || s.approvals[i].Kind == kind) && s.approvals[i].Status == "pending" {
 			s.approvals[i].Status, s.approvals[i].DecidedBy, s.approvals[i].DecisionNote = status, by, note
 		}
 	}
@@ -749,11 +749,38 @@ func TestPGStoreApprovals(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests (kind, task_id, project, status) VALUES ('merge', 'a2', 'sf/r', 'closed')`); err == nil {
 		t.Fatal("an unknown status was accepted")
 	}
-	if err := s.ResolveApprovals(ctx, "a1", "approved", "sebastian", "merged"); err != nil {
+	// a merge approves the merge request only: the task's resource
+	// request is no merge's business
+	if err := s.ResolveApprovals(ctx, "a1", "merge", "approved", "sebastian", "merged"); err != nil {
 		t.Fatal(err)
 	}
 	approved, _ := s.ApprovalRequests(ctx, "approved")
-	if len(approved) != 2 || approved[0].DecidedBy != "sebastian" || approved[0].DecisionNote != "merged" {
+	if len(approved) != 1 || approved[0].ID != second || approved[0].DecidedBy != "sebastian" || approved[0].DecisionNote != "merged" {
 		t.Fatalf("approved = %+v", approved)
+	}
+	// the console decides one pending request of its kind, once
+	if err := s.DecideApproval(ctx, res, "merge", "denied", "sebastian", "wrong kind"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deciding a resource request as a merge: %v", err)
+	}
+	if err := s.DecideApproval(ctx, res, "resource", "denied", "sebastian", "too big"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecideApproval(ctx, res, "resource", "approved", "sebastian", "changed my mind"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a decided request was decided again: %v", err)
+	}
+	denied, _ = s.ApprovalRequests(ctx, "denied")
+	if len(denied) != 2 || denied[1].ID != res || denied[1].DecidedBy != "sebastian" || denied[1].DecisionNote != "too big" || denied[1].DecidedAt == nil {
+		t.Fatalf("denied = %+v", denied)
+	}
+	// the task's end denies whatever of every kind is still pending
+	third, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "resource", TaskID: "a1", Project: "sf/r", Reason: "another VM"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveApprovals(ctx, "a1", "", "denied", "factoryd", "the task ended"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("pending after the end = %+v (third %d)", pending, third)
 	}
 }

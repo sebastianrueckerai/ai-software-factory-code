@@ -135,7 +135,7 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	if state == "running" {
 		// the pull request's head is about to change: its approval
 		// request is moot
-		if err := r.store.ResolveApprovals(ctx, taskID, "denied", FactoryDecider, "superseded: a new attempt changes the pull request"); err != nil {
+		if err := r.store.ResolveApprovals(ctx, taskID, "merge", "denied", FactoryDecider, "superseded: a new attempt changes the pull request"); err != nil {
 			return err
 		}
 		err = r.store.MarkStarted(ctx, taskID)
@@ -657,7 +657,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 			return err
 		}
 	}
-	if err := r.store.ResolveApprovals(ctx, taskID, "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {
+	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {
 		return err
 	}
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {

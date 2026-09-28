@@ -169,10 +169,10 @@ type Store interface {
 	// a merge request denies the task's earlier pending one (a retry, or
 	// a new head) as superseded.
 	OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error)
-	// ResolveApprovals decides the task's pending approval requests:
-	// status approved or denied, by whom ("factoryd" for the factory's own
-	// decisions) and why.
-	ResolveApprovals(ctx context.Context, taskID, status, by, note string) error
+	// ResolveApprovals decides the task's pending approval requests of
+	// kind ("" = every kind): status approved or denied, by whom
+	// ("factoryd" for the factory's own decisions) and why.
+	ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
@@ -627,11 +627,21 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 	return id, tx.Commit()
 }
 
-func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, status, by, note string) error {
+func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE approval_requests SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4
-		 WHERE task_id = $1 AND status = 'pending'`, taskID, status, by, note)
+		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
+		 WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending'`, taskID, kind, status, by, note)
 	return err
+}
+
+// DecideApproval decides one pending approval request of kind: a human's
+// approve or deny in the console. ErrNotFound when no such request is
+// pending.
+func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
+		 WHERE id = $1 AND kind = $2 AND status = 'pending'`, id, kind, status, by, note)
+	return oneRow(res, err, fmt.Sprintf("pending %s approval request %d", kind, id))
 }
 
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {

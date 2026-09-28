@@ -316,24 +316,31 @@ func TestMergeRefusal(t *testing.T) {
 	}
 }
 
-// A new session denies the task's pending approval as superseded; Finish
-// denies it with the task's end.
+// A new session denies the task's pending merge approval as superseded but
+// leaves its resource request waiting for the human; Finish denies both
+// with the task's end.
 func TestApprovalsFollowTheTask(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
 	task := prTask
 	task.Status = "in-review"
 	r, store, _ := newActivityRunner(t, task, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "resource", TaskID: "t1"})
 	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
 		t.Fatal(err)
+	}
+	if res := store.approvals[1]; res.Status != "pending" {
+		t.Fatalf("a new attempt decided the resource request: %+v", res)
 	}
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 		t.Fatal(err)
 	}
-	if a, b := store.approvals[0], store.approvals[1]; a.Status != "denied" || !strings.Contains(a.DecisionNote, "superseded") ||
-		b.Status != "denied" || b.DecisionNote != "the task ended done: pull request merged" {
-		t.Fatalf("approvals = %+v", store.approvals)
+	for i, want := range []string{"superseded: a new attempt changes the pull request", "the task ended done: pull request merged",
+		"the task ended done: pull request merged"} {
+		if a := store.approvals[i]; a.Status != "denied" || a.DecisionNote != want {
+			t.Fatalf("approval %d = %+v, want denied: %s", i, a, want)
+		}
 	}
 }
 
