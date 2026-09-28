@@ -494,8 +494,12 @@ change request sent meanwhile goes back to the agent. One `wait` and one
 `retry` per run; a disallowed or malformed answer, a refused or failed
 call escalates. The action, the diagnosis and the recommendation go on
 the alert (`detail`, verdict `noise` for `wait`, `real` otherwise,
-`resolved_by` `supervisor`) and on the timeline (`gate_supervisor`). A
-workflow started before the change leaves the signal unread.
+`resolved_by` `supervisor`) and on the timeline (`gate_supervisor`). The
+call runs beside the gate (ruling 171, change id `gate-supervisor-race`):
+a gate that ends first wins, the workflow goes on with its result, and
+the late answer is recorded on the alert with the note "gate ended
+before the answer" and acts on nothing. A workflow started before the
+change leaves the signal unread.
 
 The worker reports what the detectors read: commands with exit code and
 output tail, tool calls with arguments and their canonical hash, file

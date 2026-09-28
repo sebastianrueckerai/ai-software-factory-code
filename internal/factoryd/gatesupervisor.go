@@ -102,6 +102,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	}
 	workflowID := activity.GetInfo(ctx).WorkflowExecution.ID
 	var d GateDecision
+	late := false
 	if !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt) {
 		d = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
 	} else {
@@ -115,10 +116,14 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		} else {
 			d = parseGateDecision(content, bundle.Allowed)
 		}
-		switch d.Action {
-		case ActionWait:
+		// the gate may have ended during the call (ruling 171): the answer
+		// is recorded and acts on nothing
+		switch {
+		case !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt):
+			late = true
+		case d.Action == ActionWait:
 			r.cfg.Gates.Wait(workflowID, in.Trip.ActivityID, in.Trip.Attempt)
-		case ActionRetry:
+		case d.Action == ActionRetry:
 			r.cfg.Gates.Retry(workflowID, in.Trip.ActivityID, in.Trip.Attempt)
 		}
 	}
@@ -127,6 +132,9 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		verdict = VerdictNoise
 	}
 	detail := map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation}
+	if late {
+		detail["note"] = "gate ended before the answer"
+	}
 	if err := r.store.ResolveAlert(ctx, in.Trip.AlertID, verdict, "supervisor", detail); err != nil {
 		log.Printf("task %s: judge alert %d: %v", t.ID, in.Trip.AlertID, err)
 	}

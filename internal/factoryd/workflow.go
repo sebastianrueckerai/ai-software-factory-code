@@ -237,7 +237,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted),
 		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor),
 		v13: workflow.GetVersion(ctx, "auto-merge", workflow.DefaultVersion, versionAutoMerge),
-		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo)}
+		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo),
+		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -333,6 +334,11 @@ const (
 	// escalation, whose answer buys a session after a session and runs a
 	// gate again (a merge with its approval).
 	versionGateSupervisor workflow.Version = 1
+	// versionGateSupervisorRace (change id "gate-supervisor-race", ruling
+	// 171): the gate supervisor's call runs beside the gate; a gate that
+	// ends first wins and the late answer is dropped (SuperviseGate notes
+	// it on the alert).
+	versionGateSupervisorRace workflow.Version = 1
 	// versionAutoMerge (change id "auto-merge", ruling 149): after the
 	// model review, a pull request AutoMerge admits (the project's rule
 	// auto, class outcome auto, the reproduction ran and passed, the
@@ -363,7 +369,7 @@ type taskRun struct {
 	v, v2, v3, v4, v5 workflow.Version
 	v6, v7, v8, v9    workflow.Version
 	v10, v11, v12     workflow.Version
-	v13, v14          workflow.Version
+	v13, v14, v15     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -965,8 +971,10 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 	opts.WaitForCancellation = true
 	fut := workflow.ExecuteActivity(workflow.WithActivityOptions(actCtx, opts), activity, args...)
 	var run gateRun
+	var asking workflow.Future // the supervisor's call on trip (versionGateSupervisorRace)
+	var trip GateTrip
 	for {
-		done := false
+		done, answered := false, false
 		sel := workflow.NewSelector(t.ctx)
 		sel.AddFuture(fut, func(workflow.Future) { done = true })
 		if terminal {
@@ -974,7 +982,9 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 			}
 		}
-		if supervised {
+		if asking != nil {
+			sel.AddFuture(asking, func(workflow.Future) { answered = true })
+		} else if supervised {
 			sel.AddReceive(trips, func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
@@ -988,12 +998,30 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 				return verdict{final: final, reason: reason}, true, nil
 			}
 		}
-		var trip GateTrip
-		for supervised && trips.ReceiveAsync(&trip) {
+		if answered {
+			d := t.gateAnswer(asking)
+			asking = nil
+			if v, stop := t.actOnGate(trip, d, &run); stop {
+				cancel()
+				_ = fut.Get(t.ctx, nil)
+				return v, true, nil
+			}
+			continue
+		}
+		for asking == nil && supervised && trips.ReceiveAsync(&trip) {
 			if trip.Activity != activity {
 				continue
 			}
-			if v, stop := t.superviseGate(trip, opts, args, &run, fut); stop {
+			ask := t.askGate(trip, opts, args, &run)
+			if t.v15 >= versionGateSupervisorRace {
+				asking = ask
+				break
+			}
+			d := t.gateAnswer(ask)
+			if fut.IsReady() {
+				continue
+			}
+			if v, stop := t.actOnGate(trip, d, &run); stop {
 				cancel()
 				_ = fut.Get(t.ctx, nil)
 				return v, true, nil
@@ -1005,23 +1033,29 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 // gateRun is what one activity run used of the gate supervisor.
 type gateRun struct{ waited, retried bool }
 
-// superviseGate asks SuperviseGate about one trip of the running activity;
-// stop with the task's verdict on cancel and escalate. A decision that
-// arrives after the activity returned changes nothing.
-func (t *taskRun) superviseGate(trip GateTrip, opts workflow.ActivityOptions, args []any, run *gateRun, fut workflow.Future) (verdict, bool) {
-	var d GateDecision
+// askGate starts SuperviseGate on one trip of the running activity.
+func (t *taskRun) askGate(trip GateTrip, opts workflow.ActivityOptions, args []any, run *gateRun) workflow.Future {
 	// a session's wait would trip again past its own start-to-close; a
 	// retry on the last attempt would fail the activity
 	maxAttempts := opts.RetryPolicy.MaximumAttempts
 	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession,
 		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts)}
-	if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in).Get(t.ctx, &d); err != nil {
-		d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor failed: " + errMessage(err),
+	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
+}
+
+// gateAnswer waits for SuperviseGate's decision; a failed call escalates.
+func (t *taskRun) gateAnswer(ask workflow.Future) GateDecision {
+	var d GateDecision
+	if err := ask.Get(t.ctx, &d); err != nil {
+		return GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor failed: " + errMessage(err),
 			Recommendation: "look at the activity and its alert yourself"}
 	}
-	if fut.IsReady() {
-		return verdict{}, false
-	}
+	return d
+}
+
+// actOnGate takes the decision on the still running activity: stop with
+// the task's verdict on cancel and escalate.
+func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdict, bool) {
 	switch d.Action {
 	case ActionWait:
 		run.waited = true

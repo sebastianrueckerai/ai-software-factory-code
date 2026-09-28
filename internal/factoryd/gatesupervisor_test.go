@@ -392,3 +392,27 @@ func TestSuperviseGateReadsTokensOnlyWhileASandboxRuns(t *testing.T) {
 		t.Fatalf("bundle %s, want it withheld", jsonOf(bundle))
 	}
 }
+
+// An answer that arrives after the attempt ended is recorded on the alert
+// with a note and acts on nothing.
+func TestSuperviseGateLateAnswerIsRecordedAndDropped(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"retry","diagnosis":"the poll looks stale"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
+	c.model.delay = 300 * time.Millisecond
+	g := c.runner.cfg.Gates
+	live := liveRun(g, "7", time.Now(), 30*time.Second)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		g.mu.Lock()
+		delete(g.runs, runKey(testWorkflowID, "7"))
+		g.mu.Unlock()
+	}()
+	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	if d.Action != ActionRetry || len(*live) != 0 {
+		t.Fatalf("decision %+v, cancels %v", d, *live)
+	}
+	if a := c.alertRow(t); a.Detail["action"] != "retry" || a.Detail["diagnosis"] != "the poll looks stale" || a.Detail["note"] != "gate ended before the answer" {
+		t.Fatalf("alert = %+v", a)
+	}
+}

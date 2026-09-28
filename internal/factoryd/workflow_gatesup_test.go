@@ -252,3 +252,35 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 		t.Fatalf("final %q, calls %+v; want retry but no wait for a session", final, *sessionCalls)
 	}
 }
+
+// A gate that finishes while the supervisor deliberates wins (ruling
+// 171): the trip at 5 min starts a 10-min supervisor call, the checks end
+// at 10 min, and the gates go on at once; the late cancel changes
+// nothing. Before the change the workflow waited for the answer (15 min)
+// and then dropped it.
+func TestWorkflowGateThatEndsDuringTheSupervisorCallWins(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		request time.Duration
+	}{{"race", versionGateSupervisorRace, 10 * time.Minute}, {"before", workflow.DefaultVersion, 15 * time.Minute}} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t)
+			g.env.OnGetVersion("gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace).Return(tc.version)
+			g.onSessions(pushed("s1", "c1"))
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(10*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+			g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).After(10*time.Minute).
+				Return(GateDecision{Action: ActionCancel, Diagnosis: "stuck"}, nil)
+			start := g.env.Now()
+			g.tripAfter(5*time.Minute, ActivityWaitChecks, 1)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if len(g.requested) != 1 || g.requested[0].Sub(start) != tc.request {
+				t.Fatalf("approval requested %v after the start, want %s", g.requested[0].Sub(start), tc.request)
+			}
+		})
+	}
+}
