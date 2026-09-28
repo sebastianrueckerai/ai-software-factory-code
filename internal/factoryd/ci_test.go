@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -97,11 +98,12 @@ func (h *ciHub) srv(t *testing.T) *httptest.Server {
 	return srv
 }
 
+var codeCIRepos = []CIRepo{{Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok"}}
+
 func testCIConfig() CIConfig {
 	return CIConfig{
 		FactoryNamespace: "factory",
-		Owner:            "sf",
-		Repo:             "ai-software-factory-code",
+		Repos:            func(context.Context) ([]CIRepo, error) { return codeCIRepos, nil },
 		Label:            "pr-untrusted",
 		RunnerImage:      "reg/runner@sha256:abc",
 		PullSecret:       "forgejo-registry",
@@ -134,13 +136,10 @@ func TestNewCISpawnerRequiresConfig(t *testing.T) {
 	kube := newFakeKube()
 	forgejo := &Forgejo{BaseURL: "http://x", CIRegistrarToken: "t"}
 	cfg := testCIConfig()
-	cfg.Owner = ""
+	cfg.Repos = nil
 	builds, _, _ := newTestBuildVMs(t, 2)
 	if _, err := NewCISpawner(cfg, forgejo, kube, builds); err == nil {
-		t.Fatal("want an error for a missing Owner")
-	}
-	if _, err := NewCISpawner(testCIConfig(), &Forgejo{BaseURL: "http://x"}, kube, builds); err == nil {
-		t.Fatal("want an error for a missing CIRegistrarToken")
+		t.Fatal("want an error for missing Repos")
 	}
 	if _, err := NewCISpawner(testCIConfig(), forgejo, kube, nil); err == nil {
 		t.Fatal("want an error for missing build VMs")
@@ -201,7 +200,7 @@ func TestCISpawnerSpawnsRunnerForWaitingJob(t *testing.T) {
 		}
 	}
 	reg := kube.secrets[ns+"/"+ciSecretName]
-	if reg["token"] == "" || reg["uuid"] == "" || reg["runner_id"] == "" {
+	if reg["token"] == "" || reg["uuid"] == "" || reg["runner_id"] == "" || reg["repo"] != "sf/ai-software-factory-code" {
 		t.Fatalf("registration secret = %v", reg)
 	}
 	if typ := kube.secretTypes[ns+"/"+ciSecretName]; typ != "Opaque" {
@@ -327,7 +326,7 @@ func TestCISpawnerReconcileTearsDownSucceededPod(t *testing.T) {
 	ns := "factory-agents-ci-5"
 	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("finished namespace survived reconcile")
@@ -347,7 +346,7 @@ func TestCISpawnerReconcileTearsDownFailedPod(t *testing.T) {
 	ns := "factory-agents-ci-15"
 	kube.pods[ns+"/"+ciPodName].phase = "Failed"
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("deadline-exceeded namespace survived reconcile")
@@ -364,7 +363,7 @@ func TestCISpawnerReconcileLeavesRunningPodAlone(t *testing.T) {
 	spawner.poll(context.Background())
 	ns := "factory-agents-ci-6" // fakeKube.CreatePod defaults phase to "Running"
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; !ok {
 		t.Fatal("running namespace was torn down")
@@ -384,7 +383,7 @@ func TestCISpawnerReconcileIgnoresAgentNamespaces(t *testing.T) {
 	hub := &ciHub{}
 	spawner := newTestCISpawner(t, kube, hub)
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces["factory-agents-t1"]; !ok {
 		t.Fatal("agent task namespace was swept by the CI reconciler")
@@ -410,7 +409,7 @@ func TestCISpawnerRollsBackRunnerOnSetupFailure(t *testing.T) {
 		t.Fatal("half-built namespace should still exist until the next reconcile")
 	}
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("half-built namespace survived a reconcile tick")
@@ -510,7 +509,7 @@ func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
 	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
 	kube.getErr = map[string]error{ns + "/" + ciSecretName: ErrForbidden}
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; !ok {
 		t.Fatal("namespace was torn down despite a Forbidden registration read")
@@ -520,7 +519,7 @@ func TestCISpawnerReconcileRetriesForbiddenRegistrationRead(t *testing.T) {
 	}
 
 	delete(kube.getErr, ns+"/"+ciSecretName)
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if _, ok := kube.namespaces[ns]; ok {
 		t.Fatal("namespace survived once the registration read succeeded")
@@ -543,7 +542,7 @@ func TestCISpawnerReconcileSweepsOrphanRunnerRegistration(t *testing.T) {
 	// crashed before CreateNamespace ever ran for job 99
 	hub.runners = map[int64]string{99: "ci-job-99"}
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if len(hub.deleted) != 1 || hub.deleted[0] != 99 {
 		t.Fatalf("deleted = %v, want the orphan runner 99 deregistered", hub.deleted)
@@ -559,7 +558,7 @@ func TestCISpawnerReconcileLeavesActiveRunnerRegistrationAlone(t *testing.T) {
 	spawner := newTestCISpawner(t, kube, hub)
 	spawner.poll(context.Background()) // registers ci-job-6 and creates its namespace
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if len(hub.deleted) != 0 {
 		t.Fatalf("deleted = %v, want the active job's runner registration left alone", hub.deleted)
@@ -574,7 +573,7 @@ func TestCISpawnerReconcileIgnoresForeignRunnerNames(t *testing.T) {
 	spawner := newTestCISpawner(t, kube, hub)
 	hub.runners = map[int64]string{5: "some-other-runner"}
 
-	spawner.reconcile(context.Background())
+	spawner.reconcile(context.Background(), codeCIRepos)
 
 	if len(hub.deleted) != 0 {
 		t.Fatalf("deleted = %v, want a non-spawner runner name left alone", hub.deleted)
@@ -811,7 +810,7 @@ func TestCISpawnerTeardownReleasesBuildVM(t *testing.T) {
 			kube.pods[ns+"/"+ciPodName].phase = phase
 			hz.calls = nil
 
-			spawner.reconcile(ctx)
+			spawner.reconcile(ctx, codeCIRepos)
 
 			if _, ok := kube.namespaces[ns]; ok {
 				t.Fatal("finished build namespace survived reconcile")
@@ -883,7 +882,7 @@ func TestCISpawnerTeardownLeavesAFirewallInUseToTheCollector(t *testing.T) {
 	hz.calls, hz.fwInUseTimes = nil, 1
 
 	start := time.Now()
-	spawner.reconcile(ctx)
+	spawner.reconcile(ctx, codeCIRepos)
 
 	if time.Since(start) > time.Second {
 		t.Fatalf("teardown waited %s on the firewall", time.Since(start))
@@ -1012,5 +1011,79 @@ func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
 	spec, _ := podContainer(t, kube, "factory-agents-ci-52")
 	if inits := spec["initContainers"].([]any); len(inits) != 0 {
 		t.Fatalf("init containers %v", inits)
+	}
+}
+
+// Task 65: the spawner serves every registered project's repository, each
+// with its own CI token; a runner registers in, and is deleted from, the
+// repository whose job it serves.
+func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	tokens := map[string]string{"sf/ai-software-factory-code": "registrar-tok", "sf/demo-app": "demo-ci-tok"}
+	jobs := map[string][]CIJob{
+		"sf/ai-software-factory-code": {{ID: 7, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}},
+		"sf/demo-app":                 {{ID: 9, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}},
+	}
+	next := int64(100)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
+		parts := strings.SplitN(rest, "/", 3)
+		repo := parts[0] + "/" + parts[1]
+		if r.Header.Get("Authorization") != "token "+tokens[repo] {
+			t.Errorf("%s %s with %q, want %s's own token", r.Method, r.URL.Path, r.Header.Get("Authorization"), repo)
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
+			var out []CIJob
+			for _, j := range jobs[repo] {
+				if slices.Contains(j.RunsOn, r.URL.Query().Get("labels")) {
+					out = append(out, j)
+				}
+			}
+			json.NewEncoder(w).Encode(nonNil(out))
+		case r.Method == http.MethodPost:
+			next++
+			calls = append(calls, "register "+repo)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d,"uuid":"u","token":"t"}`, next)
+		case r.Method == http.MethodDelete:
+			calls = append(calls, "delete "+rest)
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet:
+			io.WriteString(w, "[]")
+		}
+	}))
+	defer srv.Close()
+	kube := newFakeKube()
+	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
+	builds, _, _ := newTestBuildVMs(t, 2)
+	store := &memProjects{m: map[string]Project{
+		"demo-app":                 {Name: "demo-app", Repository: "sf/demo-app", Managed: true, CIToken: "demo-ci-tok"},
+		"waiting":                  {Name: "waiting", Repository: "sf/waiting", Managed: true},
+		"ai-software-factory-code": {Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code"},
+	}}
+	cfg := testCIConfig()
+	cfg.Repos = CIReposOf(codeCIRepos[0], store)
+	spawner, err := NewCISpawner(cfg, &Forgejo{BaseURL: srv.URL, HTTP: srv.Client()}, kube, builds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spawner.poll(context.Background())
+	if kube.secrets["factory-agents-ci-9/"+ciSecretName]["repo"] != "sf/demo-app" {
+		t.Fatalf("job 9's registration = %v", kube.secrets["factory-agents-ci-9/"+ciSecretName])
+	}
+	kube.pods["factory-agents-ci-9/"+ciPodName].phase = "Succeeded"
+	mu.Lock()
+	jobs["sf/demo-app"][0].Status = "success"
+	mu.Unlock()
+	spawner.poll(context.Background())
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"register sf/ai-software-factory-code", "register sf/demo-app", "delete sf/demo-app/actions/runners/102"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
 	}
 }

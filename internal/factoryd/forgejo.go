@@ -337,9 +337,9 @@ type CIJob struct {
 // label must not. The spawner names one namespace per job id (its
 // idempotency key), but the runner it starts registers by label only and
 // the server, not the caller, assigns it whichever waiting job it serves.
-func (f *Forgejo) RunJobs(ctx context.Context, owner, repo, label string) ([]CIJob, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners/jobs?labels=%s", owner, repo, url.QueryEscape(label))
-	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+func (f *Forgejo) RunJobs(ctx context.Context, r CIRepo, label string) ([]CIJob, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/actions/runners/jobs?labels=%s", r.Repo, url.QueryEscape(label))
+	body, err := f.tokenCall(r.Token)(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +476,7 @@ type CIRunnerRegistration struct {
 // the runner process itself with the label it must serve. Forgejo's
 // scheduler, not this call, then decides which waiting job the runner
 // instance actually serves.
-func (f *Forgejo) RegisterCIRunner(ctx context.Context, owner, repo, name string) (CIRunnerRegistration, error) {
+func (f *Forgejo) RegisterCIRunner(ctx context.Context, r CIRepo, name string) (CIRunnerRegistration, error) {
 	var reg CIRunnerRegistration
 	payload, err := json.Marshal(map[string]any{
 		"name":      name,
@@ -485,8 +485,8 @@ func (f *Forgejo) RegisterCIRunner(ctx context.Context, owner, repo, name string
 	if err != nil {
 		return reg, err
 	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners", owner, repo)
-	body, err := f.ciCall(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	path := fmt.Sprintf("/api/v1/repos/%s/actions/runners", r.Repo)
+	body, err := f.tokenCall(r.Token)(ctx, http.MethodPost, path, payload, http.StatusCreated)
 	if err != nil {
 		return reg, err
 	}
@@ -507,9 +507,9 @@ func (f *Forgejo) RegisterCIRunner(ctx context.Context, owner, repo, name string
 // DeleteCIRunner removes a runner registration. A 404 means it is already
 // gone — an ephemeral runner deregisters itself on exit, so cleanup racing
 // that self-deregistration has nothing left to do.
-func (f *Forgejo) DeleteCIRunner(ctx context.Context, owner, repo string, id int64) error {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners/%d", owner, repo, id)
-	_, err := f.ciCall(ctx, http.MethodDelete, path, nil, http.StatusNoContent)
+func (f *Forgejo) DeleteCIRunner(ctx context.Context, r CIRepo, id int64) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/actions/runners/%d", r.Repo, id)
+	_, err := f.tokenCall(r.Token)(ctx, http.MethodDelete, path, nil, http.StatusNoContent)
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
@@ -527,9 +527,9 @@ type CIRunnerRef struct {
 // Forgejo's own durable record of a registration: the reconciler's last
 // resort for a runner spawn registered but crashed before writing anything
 // local to recover it from.
-func (f *Forgejo) ListCIRunners(ctx context.Context, owner, repo string) ([]CIRunnerRef, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/runners", owner, repo)
-	body, err := f.ciCall(ctx, http.MethodGet, path, nil, http.StatusOK)
+func (f *Forgejo) ListCIRunners(ctx context.Context, r CIRepo) ([]CIRunnerRef, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/actions/runners", r.Repo)
+	body, err := f.tokenCall(r.Token)(ctx, http.MethodGet, path, nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}

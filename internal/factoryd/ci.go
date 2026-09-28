@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -19,9 +20,11 @@ import (
 type CIConfig struct {
 	FactoryNamespace string // where the pull secret lives
 	NamespacePrefix  string // "factory-agents-ci-"
-	Owner            string // Forgejo repo owner, e.g. "sf"
-	Repo             string // e.g. "ai-software-factory-code"
-	Label            string // "pr-untrusted"; the runner also declares ":host"
+	// Repos are the repositories served, each with the token that lists
+	// its jobs and registers its runners: the code repository with the
+	// registrar token, every registered project with its own CI token.
+	Repos func(ctx context.Context) ([]CIRepo, error)
+	Label string // "pr-untrusted"; the runner also declares ":host"
 	// BuildLabel jobs get the same runner pod plus a throwaway build VM in
 	// the Hetzner CI project (ruling 110, buildvm.go).
 	BuildLabel string // "pr-untrusted-build"
@@ -67,6 +70,35 @@ func (c *CIConfig) setDefaults() {
 	}
 }
 
+// CIRepo is a repository the spawner serves and factory-ci's token
+// limited to it; Forgejo keeps the runner API to the repository's owner,
+// which a repository-limited token of an org owner reaches and nothing
+// beyond it (Task 65).
+type CIRepo struct {
+	Repo  Repo
+	Token string
+}
+
+// CIReposOf serves the code repository with the registrar token and every
+// managed project that has its CI token.
+func CIReposOf(code CIRepo, projects interface {
+	Projects(ctx context.Context) ([]Project, error)
+}) func(ctx context.Context) ([]CIRepo, error) {
+	return func(ctx context.Context) ([]CIRepo, error) {
+		ps, err := projects.Projects(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := []CIRepo{code}
+		for _, p := range ps {
+			if p.Managed && p.CIToken != "" {
+				out = append(out, CIRepo{Repo: p.Repo(), Token: p.CIToken})
+			}
+		}
+		return out, nil
+	}
+}
+
 // CISpawner polls Forgejo for Actions jobs waiting on cfg.Label or
 // cfg.BuildLabel and, for each one not yet served, registers an ephemeral
 // runner and spawns a namespace holding one gVisor pod running
@@ -100,14 +132,11 @@ const (
 
 func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (*CISpawner, error) {
 	cfg.setDefaults()
-	if cfg.FactoryNamespace == "" || cfg.Owner == "" || cfg.Repo == "" || cfg.RunnerImage == "" || cfg.GitBaseURL == "" {
-		return nil, fmt.Errorf("ci spawner: FactoryNamespace, Owner, Repo, RunnerImage, GitBaseURL are required")
+	if cfg.FactoryNamespace == "" || cfg.Repos == nil || cfg.RunnerImage == "" || cfg.GitBaseURL == "" {
+		return nil, fmt.Errorf("ci spawner: FactoryNamespace, Repos, RunnerImage, GitBaseURL are required")
 	}
 	if u, err := url.Parse(cfg.GitBaseURL); err != nil || u.Hostname() == "" {
 		return nil, fmt.Errorf("ci spawner: GitBaseURL %q is not an absolute URL", cfg.GitBaseURL)
-	}
-	if forgejo.CIRegistrarToken == "" {
-		return nil, fmt.Errorf("ci spawner: forgejo.CIRegistrarToken is required")
 	}
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
@@ -145,21 +174,17 @@ func (s *CISpawner) jobKinds() []ciJobKind {
 }
 
 func (s *CISpawner) poll(ctx context.Context) {
-	slots := s.cfg.MaxConcurrent - s.reconcile(ctx)
-
-	if jobs, err := s.forgejo.RunJobs(ctx, s.cfg.Owner, s.cfg.Repo, s.cfg.TrustedLabel); err != nil {
-		log.Printf("ci spawner: jobs (%s): %v", s.cfg.TrustedLabel, err)
-	} else {
-		s.cfg.Queue.Observe(ctx, s.cfg.TrustedLabel, jobs)
+	repos, err := s.cfg.Repos(ctx)
+	if err != nil {
+		log.Printf("ci spawner: repositories: %v", err)
+		return
 	}
+	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
+
+	s.jobs(ctx, repos, s.cfg.TrustedLabel)
 	for _, kind := range s.jobKinds() {
-		jobs, err := s.forgejo.RunJobs(ctx, s.cfg.Owner, s.cfg.Repo, kind.label)
-		if err != nil {
-			log.Printf("ci spawner: jobs (%s): %v", kind.label, err)
-			continue
-		}
-		s.cfg.Queue.Observe(ctx, kind.label, jobs)
-		for _, job := range jobs {
+		for _, rj := range s.jobs(ctx, repos, kind.label) {
+			job := rj.job
 			if job.Status != "waiting" {
 				continue
 			}
@@ -189,13 +214,43 @@ func (s *CISpawner) poll(ctx context.Context) {
 					continue
 				}
 			}
-			if err := s.spawn(ctx, job.ID, kind); err != nil {
-				log.Printf("ci spawner: spawn for job %d: %v", job.ID, err)
+			if err := s.spawn(ctx, rj.repo, job.ID, kind); err != nil {
+				log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, rj.repo.Repo, err)
 				continue
 			}
 			slots--
 		}
 	}
+}
+
+type repoJob struct {
+	repo CIRepo
+	job  CIJob
+}
+
+// jobs lists label's jobs of every repository and hands them to the queue
+// meter, which only sees a complete poll: a repository that fails to list
+// would make its waiting jobs look vanished.
+func (s *CISpawner) jobs(ctx context.Context, repos []CIRepo, label string) []repoJob {
+	var out []repoJob
+	var all []CIJob
+	complete := true
+	for _, r := range repos {
+		jobs, err := s.forgejo.RunJobs(ctx, r, label)
+		if err != nil {
+			log.Printf("ci spawner: jobs of %s (%s): %v", r.Repo, label, err)
+			complete = false
+			continue
+		}
+		for _, j := range jobs {
+			out = append(out, repoJob{repo: r, job: j})
+		}
+		all = append(all, jobs...)
+	}
+	if complete {
+		s.cfg.Queue.Observe(ctx, label, all)
+	}
+	return out
 }
 
 func (s *CISpawner) served(ctx context.Context, jobID int64) (bool, error) {
@@ -216,15 +271,15 @@ func (s *CISpawner) namespaceFor(jobID int64) string {
 	return fmt.Sprintf("%s%d", s.cfg.NamespacePrefix, jobID)
 }
 
-func (s *CISpawner) spawn(ctx context.Context, jobID int64, kind ciJobKind) error {
+func (s *CISpawner) spawn(ctx context.Context, repo CIRepo, jobID int64, kind ciJobKind) error {
 	name := fmt.Sprintf("ci-job-%d", jobID)
-	reg, err := s.forgejo.RegisterCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, name)
+	reg, err := s.forgejo.RegisterCIRunner(ctx, repo, name)
 	if err != nil {
 		return fmt.Errorf("register runner: %w", err)
 	}
 	ns := s.namespaceFor(jobID)
-	if err := s.setupNamespace(ctx, ns, jobID, reg, kind); err != nil {
-		if derr := s.forgejo.DeleteCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, reg.ID); derr != nil {
+	if err := s.setupNamespace(ctx, ns, jobID, repo.Repo, reg, kind); err != nil {
+		if derr := s.forgejo.DeleteCIRunner(ctx, repo, reg.ID); derr != nil {
 			log.Printf("ci spawner: rollback delete runner %d: %v", reg.ID, derr)
 		}
 		return fmt.Errorf("setup namespace %s: %w", ns, err)
@@ -237,7 +292,7 @@ type ciSetupStep struct {
 	do   func() error
 }
 
-func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, reg CIRunnerRegistration, kind ciJobKind) error {
+func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, repo Repo, reg CIRunnerRegistration, kind ciJobKind) error {
 	if err := s.kube.CreateNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    jobLabel(jobID),
 		"factory.ai/ci":                      "true", // the build cache admits reads from these namespaces
@@ -295,13 +350,14 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 		{"runner registration secret", func() error {
 			// forgejo-runner reads its token from a file (--token-url
 			// file:...), never from argv or an env var that would land in
-			// the stored pod spec; the uuid and factoryd's own runner id
-			// ride the same secret since neither is repository or
-			// registry-scoped.
+			// the stored pod spec; the uuid, factoryd's own runner id and
+			// the repository it is registered in ride the same secret
+			// since none is repository or registry-scoped.
 			return s.kube.CreateSecret(ctx, ns, ciSecretName, "", map[string]string{
 				"token":     reg.Secret,
 				"uuid":      reg.UUID,
 				"runner_id": strconv.FormatInt(reg.ID, 10),
+				"repo":      repo.String(),
 			})
 		}},
 		{"pull secret", func() error {
@@ -329,7 +385,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // "not found", torn down the same way. It reports how many namespaces are
 // still live; one whose status cannot be read counts as live, so the cap
 // fails closed.
-func (s *CISpawner) reconcile(ctx context.Context) (live int) {
+func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 	for id, at := range s.tornDown {
 		if s.now().Sub(at) >= ciReclaimWindow {
 			delete(s.tornDown, id)
@@ -359,9 +415,9 @@ func (s *CISpawner) reconcile(ctx context.Context) (live int) {
 				s.recordReady(ctx, ns, id)
 			}
 		}
-		s.teardown(ctx, ns)
+		s.teardown(ctx, ns, repos)
 	}
-	s.sweepOrphanRunners(ctx)
+	s.sweepOrphanRunners(ctx, repos)
 	return live
 }
 
@@ -391,12 +447,20 @@ func isCINamespace(prefix, ns string) bool {
 // like "no secret was ever written": the namespace is left for the next
 // reconcile tick to retry, rather than deleted with the registration still
 // live in Forgejo.
-func (s *CISpawner) teardown(ctx context.Context, ns string) {
+func (s *CISpawner) teardown(ctx context.Context, ns string, repos []CIRepo) {
 	data, err := s.kube.GetSecretData(ctx, ns, ciSecretName)
 	switch {
 	case err == nil:
-		if id, convErr := strconv.ParseInt(data["runner_id"], 10, 64); convErr == nil {
-			if err := s.forgejo.DeleteCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, id); err != nil {
+		i := slices.IndexFunc(repos, func(r CIRepo) bool { return r.Repo.String() == data["repo"] })
+		id, convErr := strconv.ParseInt(data["runner_id"], 10, 64)
+		switch {
+		case convErr != nil:
+		case i < 0:
+			// an ephemeral runner deregisters itself; the orphan sweep of
+			// its repository takes one that did not
+			log.Printf("ci spawner: %s: runner %d of %q: not a repository served now, left to itself", ns, id, data["repo"])
+		default:
+			if err := s.forgejo.DeleteCIRunner(ctx, repos[i], id); err != nil {
 				log.Printf("ci spawner: delete runner registration for %s: %v", ns, err)
 			}
 		}
@@ -424,10 +488,16 @@ func (s *CISpawner) teardown(ctx context.Context, ns string) {
 // survives that crash. The single poll loop runs reconcile to completion
 // before spawning any job in the same tick, so a runner this finds with no
 // namespace can only be left over from a previous, crashed process.
-func (s *CISpawner) sweepOrphanRunners(ctx context.Context) {
-	runners, err := s.forgejo.ListCIRunners(ctx, s.cfg.Owner, s.cfg.Repo)
+func (s *CISpawner) sweepOrphanRunners(ctx context.Context, repos []CIRepo) {
+	for _, repo := range repos {
+		s.sweepRepo(ctx, repo)
+	}
+}
+
+func (s *CISpawner) sweepRepo(ctx context.Context, repo CIRepo) {
+	runners, err := s.forgejo.ListCIRunners(ctx, repo)
 	if err != nil {
-		log.Printf("ci spawner: sweep orphan runners: list: %v", err)
+		log.Printf("ci spawner: sweep orphan runners of %s: list: %v", repo.Repo, err)
 		return
 	}
 	for _, r := range runners {
@@ -443,7 +513,7 @@ func (s *CISpawner) sweepOrphanRunners(ctx context.Context) {
 		if len(names) > 0 {
 			continue
 		}
-		if err := s.forgejo.DeleteCIRunner(ctx, s.cfg.Owner, s.cfg.Repo, r.ID); err != nil {
+		if err := s.forgejo.DeleteCIRunner(ctx, repo, r.ID); err != nil {
 			log.Printf("ci spawner: sweep delete orphan runner %d: %v", r.ID, err)
 		}
 	}
