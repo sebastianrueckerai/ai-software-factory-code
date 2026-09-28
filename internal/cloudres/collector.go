@@ -72,8 +72,10 @@ func (c *Collector) now() time.Time {
 // delete: a leased resource is deleted on the last pass before its lease
 // ends, when the lease ends within one interval plus this margin (ruling
 // 124), so a lease of N started hours never lives into hour N+1. It holds
-// the listings and a commission's release, whose volume waits (RetryWait,
-// ReleaseAttempts: up to 30 s) for its server's delete to detach it.
+// the listings and a commission's release, whose volume waits for its
+// server's delete to detach it: ReleaseAttempts 10 with 9 waits of
+// RetryWait 3 s, at most 27 s of waiting per resource and 81 s for a
+// commission's server, volume and firewall.
 const LeaseMargin = 90 * time.Second
 
 func (c *Collector) after(d time.Duration) <-chan time.Time {

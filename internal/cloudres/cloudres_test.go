@@ -832,8 +832,11 @@ func TestCollectAdoptsALateCreate(t *testing.T) {
 // call, retries wait 3 s. The detach from the deleting server is refused
 // as locked, or with the 500 server_error Hetzner answered live.
 func TestCollectEndsACommissionWithAVolumeBeforeItsHour(t *testing.T) {
-	for _, refusal := range []*hcloud.APIError{nil, {Status: 500, Code: "server_error", Message: "internal server error"}} {
-		testCommissionWithAVolumeEnds(t, refusal)
+	for name, refusal := range map[string]*hcloud.APIError{
+		"detach locked":    nil,
+		"detach 500 error": {Status: 500, Code: "server_error", Message: "internal server error"},
+	} {
+		t.Run(name, func(t *testing.T) { testCommissionWithAVolumeEnds(t, refusal) })
 	}
 }
 
