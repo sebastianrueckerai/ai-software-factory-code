@@ -1,7 +1,7 @@
 {{template "head" .}}
 <h2>Projects</h2>
 {{if .Saved}}<p class="note" role="status">Saved the settings of {{.Saved}}; its objects were reconciled.</p>{{end}}
-{{if .Registered}}<p class="note" role="status">Registered {{.Registered}}; its objects were reconciled. Its CI token comes from <code>factoryd register-project</code> with the Forgejo admin's login, and its hostnames from one infra commit with the gateway YAML below.</p>{{end}}
+{{if .Registered}}<p class="note" role="status">Registered {{.Registered}}; its cluster objects were reconciled. Its Forgejo organisation, repository, CI user and tokens come from <code>factoryd register-project</code> with the Forgejo admin's login, and its hostnames from one infra commit with the gateway YAML below.</p>{{end}}
 <p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
 <h3 id="project-{{.Name}}">{{.Name}}</h3>
@@ -12,7 +12,7 @@
 <li>Namespaces: {{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</li>
 {{if .Managed}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
 <li>Environments: {{range $i, $e := .Environments}}{{if $i}}; {{end}}{{$e.Namespace}}: {{$e.Path}}{{if $e.Hostname}} at {{$e.Hostname}}{{end}}{{else}}none{{end}}</li>
-<li>CI token: {{if .HasCIToken}}minted{{else}}missing: run factoryd register-project with the Forgejo admin's login{{end}}</li>
+<li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: run factoryd register-project with the Forgejo admin's login{{end}}</li>
 {{else}}<li>Unmanaged: its objects are the infra repository's.</li>{{end}}
 <li>Task block: {{printf "%.2f" .Envelope.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{.Envelope.MaxCount}} servers at once, leases up to {{.Envelope.MaxLeaseHours}} h</li>
 <li>Standing block: {{printf "%.2f" .Envelope.Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{.Envelope.Standing.MaxCount}} servers</li>
@@ -24,7 +24,7 @@
 <fieldset>
 <legend>Settings of {{.Name}}</legend>
 <label for="rule-{{.Name}}">Merge rule</label>
-<select id="rule-{{.Name}}" name="merge_rule"><option value="human"{{if eq .MergeRule "human"}} selected{{end}}>human</option><option value="auto"{{if eq .MergeRule "auto"}} selected{{end}}>auto</option></select>
+<select id="rule-{{.Name}}" name="merge_rule"><option value="human"{{if eq .MergeRule "human"}} selected{{end}}>human</option>{{if .Managed}}<option value="auto"{{if eq .MergeRule "auto"}} selected{{end}}>auto</option>{{end}}</select>
 <label for="notify-{{.Name}}">Notify, comma separated (empty: the policy's approvers)</label>
 <input id="notify-{{.Name}}" name="notify" type="text" value="{{range $i, $u := .Notify}}{{if $i}}, {{end}}{{$u}}{{end}}">
 <label for="cpu-{{.Name}}">Quota CPU</label>
@@ -42,10 +42,8 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <fieldset>
 <legend>Register a project</legend>
-<label for="new-name">Name (lowercase letters, digits, dashes)</label>
+<label for="new-name">Name (lowercase letters, digits, dashes): its organisation and repository name/name</label>
 <input id="new-name" name="name" type="text" required>
-<label for="new-repo">Repository, owner/name (created private when missing)</label>
-<input id="new-repo" name="repository" type="text" required>
 <label for="new-rule">Merge rule</label>
 <select id="new-rule" name="merge_rule"><option value="human"{{if eq .Default.MergeRule "human"}} selected{{end}}>human</option><option value="auto"{{if eq .Default.MergeRule "auto"}} selected{{end}}>auto</option></select>
 <label for="new-ns">Namespaces, comma separated</label>

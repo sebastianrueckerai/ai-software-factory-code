@@ -61,9 +61,9 @@ func (f *fakeProjects) reconcile(_ context.Context, p factoryd.Project) error {
 func projectRows() []factoryd.Project {
 	return []factoryd.Project{
 		{Name: "ai-software-factory-code", Repository: "sf/code", MergeRule: "human", Namespaces: []string{"factory"}},
-		{Name: "demo-app", Repository: "sf/demo-app", MergeRule: "auto", Managed: true, Namespaces: []string{"demo-staging", "demo-prod"},
+		{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Managed: true, Namespaces: []string{"demo-staging", "demo-prod"},
 			Environments: []factoryd.Environment{{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"}},
-			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", CIToken: "secret-ci-token"},
+			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", GitToken: "secret-git-token", MergeToken: "secret-merge-token"},
 	}
 }
 
@@ -71,7 +71,7 @@ func TestProjectsPage(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.projects.rows = projectRows()
-	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/demo-app", SetBy: "sebastian",
+	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "demo-app/demo-app", SetBy: "sebastian",
 		Envelope: policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23"}, MaxCount: 3, MaxLeaseHours: 8,
 			Standing: policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 1}},
 		StandingUse: cloudres.StandingUse{Count: 1, MonthlyEUR: 5.99}}}
@@ -81,7 +81,7 @@ func TestProjectsPage(t *testing.T) {
 		t.Fatalf("GET /projects = %d: %s", rec.Code, body)
 	}
 	for _, want := range []string{
-		`<h3 id="project-demo-app">demo-app</h3>`, "sf/demo-app", "Merge rule: auto",
+		`<h3 id="project-demo-app">demo-app</h3>`, "demo-app/demo-app", "Merge rule: auto",
 		"Notify: sebastian (the policy's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
 		"Task block: 30.00 EUR a month, types cx23, 3 servers at once, leases up to 8 h",
@@ -89,7 +89,7 @@ func TestProjectsPage(t *testing.T) {
 		"Standing now: 1 servers, 5.9900 EUR a month.",
 		"demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world",
 		"hostname: demo-staging.aisoftwarefactory.world", // the gateway YAML
-		"CI token: minted", `<h3 id="project-ai-software-factory-code">ai-software-factory-code</h3>`,
+		"Forgejo: organisation, repository, CI user and tokens made", `<h3 id="project-ai-software-factory-code">ai-software-factory-code</h3>`,
 		"Unmanaged: its objects are the infra repository's.",
 		// the code repository has no envelope row: the policy's default
 		"Task block: 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h",
@@ -100,7 +100,7 @@ func TestProjectsPage(t *testing.T) {
 			t.Errorf("/projects lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "secret-ci-token") || strings.Contains(body, ">h<") {
+	if strings.Contains(body, "secret-git-token") || strings.Contains(body, "secret-merge-token") || strings.Contains(body, ">h<") {
 		t.Fatal("/projects shows a token")
 	}
 }
@@ -108,7 +108,7 @@ func TestProjectsPage(t *testing.T) {
 func TestRegisterProjectFromTheConsole(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	form := url.Values{"csrf": {s.csrf}, "name": {"demo-app"}, "repository": {"sf/demo-app"}, "merge_rule": {"auto"},
+	form := url.Values{"csrf": {s.csrf}, "name": {"demo-app"}, "merge_rule": {"auto"},
 		"namespaces": {"demo-staging, demo-prod"}, "environments": {"demo-staging=deploy/staging\r\ndemo-prod=deploy/prod"},
 		"hostnames": {"demo-staging=demo-staging.aisoftwarefactory.world\ndemo-prod=demo.aisoftwarefactory.world"},
 		"secrets":   {"demo-write-token/token"}}
@@ -116,7 +116,7 @@ func TestRegisterProjectFromTheConsole(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/projects?registered=demo-app" {
 		t.Fatalf("register = %d %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
-	want := factoryd.Project{Name: "demo-app", Repository: "sf/demo-app", MergeRule: "auto", Managed: true,
+	want := factoryd.Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Managed: true,
 		Namespaces: []string{"demo-staging", "demo-prod"},
 		Environments: []factoryd.Environment{
 			{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"},
@@ -131,6 +131,7 @@ func TestRegisterProjectFromTheConsole(t *testing.T) {
 	}
 	for name, change := range map[string][2]string{
 		"bad name":       {"name", "Demo"},
+		"name sf":        {"name", "sf"},
 		"system ns":      {"namespaces", "kube-system"},
 		"env outside":    {"environments", "other=deploy/x"},
 		"bad env":        {"environments", "demo-staging"},
@@ -142,7 +143,6 @@ func TestRegisterProjectFromTheConsole(t *testing.T) {
 			f[k] = v
 		}
 		f.Set("name", "other")
-		f.Set("repository", "sf/other")
 		f.Set(change[0], change[1])
 		n := len(r.projects.calls)
 		if rec := r.do(post("/projects", f), ck); rec.Code != http.StatusBadRequest || len(r.projects.calls) != n {
@@ -182,6 +182,13 @@ func TestProjectSettingsReconcile(t *testing.T) {
 	}
 	if rec := r.do(post("/projects/nope/settings", form), ck); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown project = %d", rec.Code)
+	}
+	// review-task65 m7: the factory's own rows keep their protection in
+	// the infra repository, so their rule stays human
+	form.Set("merge_rule", "auto")
+	n := len(r.projects.calls)
+	if rec := r.do(post("/projects/ai-software-factory-code/settings", form), ck); rec.Code != http.StatusBadRequest || len(r.projects.calls) != n {
+		t.Fatalf("auto on an unmanaged row = %d", rec.Code)
 	}
 }
 

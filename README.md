@@ -736,7 +736,7 @@ lease dropped, out of the task's egress, and no `ssh_certificate` for it
 standing block (standing server types, count, monthly EUR over the open
 unreleased standing rows' catalogue prices), else 409 and a human raises the
 block first. A task can never ask for `lifetime: standing` (refused as
-arguments). A console release (`released_by`) ends the lease now and the
+arguments) nor release a standing resource. A console release (`released_by`) ends the lease now and the
 collector deletes it, standing or not; a standing resource counts against the
 project's standing monthly line, not the task block's month.
 
@@ -874,76 +874,105 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
 A project is a repository the factory works on, the namespaces it deploys
 into, and its settings (ruling 146): table `projects` (`name`, `repository`,
 `merge_rule` auto|human, `notify` (empty: the policy's approvers),
-`namespaces`, `environments` (namespace, path, hostname), `quota_*`,
-`secrets`, `managed`). The factory's two repositories are unmanaged rows on
-`human`: their objects stay the infra repository's. Defaults come from the
-policy's optional `project_default` section (merge rule, quota, the
-envelope's standing block; built in: human, 2 CPU / 4Gi / 10Gi, a closed
-standing block).
+`namespaces` (each one project's), `environments` (namespace, path,
+hostname), `quota_*`, `secrets`, `managed`). The factory's two repositories
+are unmanaged rows on `human`: their objects stay the infra repository's, and
+the console refuses `auto` for them. Defaults come from the policy's optional
+`project_default` section (merge rule, quota, the envelope's standing block;
+built in: human, 2 CPU / 4Gi / 10Gi, a closed standing block).
 
-factoryd reconciles every managed project at boot and after each console
-change (ruling 156), one log line per object (`project <name>: <object>:
-created|updated|no change`):
+**A project is its own Forgejo organisation** (ruling 164): the organisation
+`<name>`, owned by `factory-projects`, with the one repository
+`<name>/<name>` (the row keeps that lower-case form; Forgejo folds case), its
+packages, and the team `ci` (package write, no repository) whose one member
+is the user `ci-<name>`. Nothing of org `sf` is reachable from it:
+`factory-projects` is no member of `sf` and holds one token,
+`write:repository` without a repository list (`FORGEJO_PROJECTS_TOKEN`,
+secret `factory/forgejo-projects`); Forgejo lets no repository-limited token
+pass its admin checks, and as the owner of exactly the project organisations
+this token reaches them and nothing else. It cannot create or delete an
+organisation or a repository (that needs `write:organization`, which it
+lacks), and cannot touch teams.
 
-- Forgejo, as `factory-projects` (`FORGEJO_PROJECTS_TOKEN`, secret
-  `factory/forgejo-projects`: a user in org `sf`'s team `projects`, which may
-  create org repositories and holds none; token scopes `write:repository`,
-  `write:organization`, no repository list): the repository (private, created
-  when missing; its creator becomes its admin), the webhook to factoryd (every
-  issue and pull request event, JSON, the intake secret), `factory-agent` and
-  `factory-merge` as write collaborators, and `main`'s protection: the code
-  repository's (merge whitelist the approvers and `factory-merge`, approvals
-  whitelist the approvers, apply to admins, stale approvals dismissed,
-  rejected reviews block) with the push whitelist off, because Forgejo admits
-  no Actions job token to one and the project's main workflow commits its
-  rolls, and `required_approvals` 0 on `auto` (1 on `human`). As the bot: its
-  private fork and the boot labels.
-- Forgejo, as `factory-ci` with the project's own token (`ci_token`,
-  `write:repository` limited to the repository): the Actions secrets
-  `REGISTRY_USER` and `REGISTRY_PASSWORD` (the login of the factory's pull
-  secret, as the code repository's main CI) and `FACTORY_READ_TOKEN` (random,
-  its sha256 in `read_token_hash`). Forgejo 15 keeps Actions secrets and the
-  runner API to org owners, and a repository-limited token of an owner
-  reaches its repository and nothing else, while an unlimited one would reach
-  the infra repository; tokens are minted only under a password, so
-  `factoryd register-project` mints this one with the Forgejo admin's login.
+`factoryd register-project` (a human, with the Forgejo site admin's login on
+stdin) does what only the admin can: the organisation, the repository
+(private, `main`), the user `ci-<name>` (random password, discarded) in the
+team, and the tokens, each minted with `?sudo=`: `ci-<name>`'s
+`write:package` (`registry`) straight into the Actions secrets
+`REGISTRY_USER`/`REGISTRY_PASSWORD` (the project pushes its own packages and
+no one else's), `ci-<name>`'s `read:package` (`pull`, row `pull_token`, the
+namespaces' image pull secret), `factory-projects`' `read:repository` limited
+to the repository (`git-<name>`, row `git_token`, Flux's source) and
+`factory-merge`'s `write:repository` limited to it (`project-<name>`, row
+`merge_token`, the Merge activity's on this project). An existing token is
+kept unless `--rotate`, which revokes and mints them all again. These tokens
+are plaintext in Postgres and so in its backups: the namespaces and Flux need
+them back after a rebuild; each reaches one project only.
+
+factoryd reconciles every managed project at boot, after each console change
+and when a new policy version is in force (the approvers), one log line per
+object (`project <name>: <object>: created|updated|no change|waiting: ...`):
+
+- Forgejo, with the projects token: the webhook to factoryd (every issue and
+  pull request event, JSON, the intake secret; the row keeps the secret's
+  sha256, so a re-seeded secret reaches the hook), `factory-agent`,
+  `factory-merge` and the policy's approvers as write collaborators (Forgejo
+  keeps only writers in a whitelist), `main`'s protection: the code
+  repository's (push whitelist the approvers, merge whitelist the approvers
+  and `factory-merge`, approvals whitelist the approvers, apply to admins,
+  stale approvals dismissed, rejected reviews block) plus
+  `push_whitelist_deploy_keys`, and `required_approvals` 0 on `auto` (1 on
+  `human`); a write deploy key `factory-roll` whose private half lives only in
+  the Actions secret `DEPLOY_KEY` (the project's main workflow pushes its roll
+  commits with it; Forgejo admits no Actions job token to a whitelist; a key
+  or secret gone missing makes both anew); `FACTORY_READ_TOKEN` (random, its
+  sha256 in `read_token_hash`; of two reconciles racing only the one that
+  stores its hash sets the secret). As the bot: its private fork
+  `factory-agent/<name>` and the boot labels. A project recorded on the
+  console waits for `register-project` here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
   pod security `restricted`; RoleBinding `factoryd` (ClusterRole
-  `factoryd-project`: quotas, limit ranges, service accounts, secrets,
-  Kustomizations, and listing Deployments); ResourceQuota `project` (CPU and
-  memory bound requests and limits alike, storage the claims' requests);
-  LimitRange `project` (defaults 50m/64Mi requested, 500m/512Mi limit);
-  ServiceAccount `flux` bound to ClusterRole `factory-project-deployer`
-  (workload kinds, HTTPRoutes, CNPG Clusters; no RBAC, no Flux kind, nothing
-  cluster-scoped: `admin` would aggregate Flux's kinds and lacks HTTPRoutes and
-  CNPG); the image pull secret `forgejo-registry` (factory-ci's
-  `read:package` token, `pull_token`); each `secrets` entry's secret with a
-  random value when missing, never replaced. The Flux GitRepository `<name>`
-  in `flux-system` (the repository's `main`, secret `forgejo-pat`) and, per
-  environment, a Kustomization `<name>` in the environment's namespace
-  (`serviceAccountName: flux`, `targetNamespace` that namespace, `prune`):
-  Flux takes the account from the Kustomization's own namespace, and the
-  deployer role cannot change it (ruling 157). The admission policy confines
-  all of it: only labelled namespaces (a namespace without the label never
-  gets it), these kinds, these bindings, Kustomizations of the namespace's
-  own project, and GitRepositories named after their project, pointing at
-  the factory's Forgejo with `forgejo-pat`.
+  `factoryd-project`); the CiliumNetworkPolicy `project`, a default deny that
+  admits in the namespace itself, the edge gateway's Envoy and the CNPG
+  operator (8000, 5432), and out the namespace itself, DNS, the API server
+  (CNPG's instance manager), the SigNoz collector on 4318 and anything on
+  443; ResourceQuota `project` (CPU and memory bound requests and limits
+  alike, storage the claims' requests); LimitRange `project` (defaults
+  50m/64Mi requested, 500m/512Mi limit); ServiceAccount `flux` bound to
+  ClusterRole `factory-project-deployer` (workload kinds, HTTPRoutes, CNPG
+  Clusters; no RBAC, no Flux kind, no network policy, nothing
+  cluster-scoped); the image pull secret `forgejo-registry` (`ci-<name>`,
+  `pull_token`); each `secrets` entry's secret with a random value when
+  missing, never replaced. In `flux-system`: the Secret `<name>-git`
+  (`factory-projects` and `git_token`) and the GitRepository `<name>` (the
+  repository's `main`), and per environment a Kustomization `<name>` in the
+  environment's namespace (`serviceAccountName: flux`, `targetNamespace` that
+  namespace, `prune`): Flux takes the account from the Kustomization's own
+  namespace, and the deployer role cannot change it (ruling 157).
+- The admission policy confines all of it: only labelled namespaces (a
+  namespace without the label never gets it, one never moves to another
+  project), these kinds, these bindings, the one network policy `project`, no
+  service account token Secret anywhere, Kustomizations of the namespace's own
+  project, GitRepositories named after their project at exactly
+  `https://git.aisoftwarefactory.world/<name>/<name>` with the secret
+  `<name>-git`, no `include` and no proxy, and that secret alone in
+  `flux-system`.
 
-`factoryd register-project` (in the factoryd pod: `kubectl -n factory exec -i
-deploy/factoryd -- factoryd register-project --name demo-app --repository
-sf/demo-app --merge-rule auto --environment demo-staging=deploy/staging
---environment demo-prod=deploy/prod --hostname
-demo-staging=demo-staging.aisoftwarefactory.world --hostname
-demo-prod=demo.aisoftwarefactory.world --secret demo-write-token/token`,
-the admin's password on stdin) records the project (a second run with the
-same repository, namespaces, environments and secrets changes nothing),
-makes `factory-projects` an admin of a repository that exists already, mints
-the CI and pull tokens, reconciles, and prints the edge gateway listeners
-and Certificates for the infra commit (ruling 155). The console's
-`/projects` lists every project with its settings, both envelope blocks and
-the standing monthly line; approvers register a project there (its CI token
-then waits for `register-project`) and edit its merge rule, notify list and
-quota, reconciled at once.
+```
+kubectl -n factory exec -i deploy/factoryd -- factoryd register-project --name demo-app --merge-rule auto \
+  --environment demo-staging=deploy/staging --environment demo-prod=deploy/prod \
+  --hostname demo-staging=demo-staging.aisoftwarefactory.world --hostname demo-prod=demo.aisoftwarefactory.world \
+  --secret demo-write-token/token
+```
+
+with the admin's password on stdin records the project (a second run with the
+same namespaces, environments and secrets changes nothing), makes the above,
+reconciles, and prints the edge gateway listeners and Certificates for the
+infra commit (ruling 155). The console's `/projects` lists every project with
+its settings, both envelope blocks and the standing monthly line; approvers
+register a project there (its Forgejo part then waits for
+`register-project`) and edit its merge rule, notify list and quota,
+reconciled at once.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
@@ -951,15 +980,27 @@ quota, reconciled at once.
 unknown project too), the namespace one of the project's (403 otherwise).
 It answers a JSON array: SigNoz's firing alerts whose `k8s.namespace.name`,
 `k8s_namespace_name` or `namespace` label is the namespace (`GET
-/api/v1/alerts` on SigNoz v0.143.0, logged in as `signoz-root`, a copy in
-`factory`), plus one `rollout_not_ready` per Deployment whose rollout has not
-finished (kubectl's test: generation observed, every replica updated, no old
-one left, every updated one available); `[]` when none. Cached 30 s per
-project and namespace; a source it cannot read answers 502, never `[]`.
+/api/v1/alerts` on SigNoz v0.143.0, logged in as a viewer-role user, secret
+`factory/signoz-factoryd`), plus one `rollout_not_ready` per Deployment whose
+rollout has not finished (kubectl's test: generation observed, every replica
+updated, no old one left, every updated one available); `[]` when none.
+Cached 30 s per project and namespace; a source it cannot read answers 502,
+never `[]`.
 
 The CI spawner serves the code repository (registrar token) and every
-managed project with a CI token, each with its own token; the registration
-secret in a CI namespace names the repository its runner is registered in.
+project `register-project` has made (the projects token: Forgejo keeps the
+runner API to the repository's owner), pull requests and the project's own
+main workflow alike: a project's CI never touches `sf`'s privileged org
+runner. A project's runs get two more callees: Forgejo's SSH
+(`forgejo-ssh.forgejo`, the pod's 2222) for the deploy-key push and factoryd
+on 8080 for the alerts endpoint; their namespace carries
+`factory.ai/ci-project=<name>`, which factoryd's ingress admits. The
+registration secret in a CI namespace names the repository its runner is
+registered in (none: the code repository's).
+
+A standing resource's hours go to the ledger as kind `standing` under
+`standing:<repository>`: its project's monthly line, no task's spend and no
+day's headroom.
 
 ## Build and test
 
@@ -1276,9 +1317,10 @@ the S3 endpoint on 443 (its FQDN must match `S3_ENDPOINT`), and
 callee is named in full and the pod runs with `ndots: 1`, so the first
 DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
-webhooks and the gateway's escalation hand-over on 8080, the org runner
-(`forgejo-runner` pods) on 8080 for the projects' alerts endpoint, and the
-edge gateway's Envoy (entity `ingress`) on the console port 8090 only.
+webhooks and the gateway's escalation hand-over on 8080, a project's CI
+runner pods (namespace label `factory.ai/ci-project`) on 8080 for the alerts
+endpoint, and the edge gateway's Envoy (entity `ingress`) on the console
+port 8090 only.
 
 ## Operating it
 

@@ -3,8 +3,10 @@
 -- Forgejo and cluster objects from factoryd (ruling 156), the factory's
 -- own repositories keep theirs in the infra repository
 CREATE TABLE IF NOT EXISTS projects (
-    name text PRIMARY KEY CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$'),
-    repository text NOT NULL UNIQUE CHECK (repository ~ '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'),
+    name text PRIMARY KEY CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$'),
+    -- a managed project is its own Forgejo organisation: <name>/<name>
+    -- (ruling 164). Forgejo folds case, so the row keeps the lower form
+    repository text NOT NULL UNIQUE CHECK (repository ~ '^[a-z0-9_.-]+/[a-z0-9_.-]+$'),
     merge_rule text NOT NULL DEFAULT 'human' CHECK (merge_rule IN ('auto', 'human')),
     -- empty: the policy's approvers
     notify text[] NOT NULL DEFAULT '{}',
@@ -14,16 +16,19 @@ CREATE TABLE IF NOT EXISTS projects (
     quota_cpu text NOT NULL DEFAULT '',
     quota_memory text NOT NULL DEFAULT '',
     quota_storage text NOT NULL DEFAULT '',
-    managed boolean NOT NULL DEFAULT true,
-    -- sha256 of FACTORY_READ_TOKEN, hex
-    read_token_hash text NOT NULL DEFAULT '',
-    -- factory-ci's token limited to this repository: its Actions secrets
-    -- and runners, which Forgejo keeps to the owner (minted at registration)
-    ci_token text NOT NULL DEFAULT '',
-    -- factory-ci's read:package token, the namespaces' image pull secret
-    pull_token text NOT NULL DEFAULT '',
     -- "secret/key" entries: a random value in each namespace when missing
     secrets text[] NOT NULL DEFAULT '{}',
+    managed boolean NOT NULL DEFAULT true,
+    -- sha256 hex of FACTORY_READ_TOKEN and of the webhook secret set
+    read_token_hash text NOT NULL DEFAULT '',
+    hook_secret_hash text NOT NULL DEFAULT '',
+    -- tokens minted by register-project, plaintext (the namespaces and Flux
+    -- need them back after a rebuild): ci-<name>'s read:package (the pull
+    -- secret), factory-projects' read:repository on the repository (Flux),
+    -- factory-merge's write:repository on the repository (the merge)
+    pull_token text NOT NULL DEFAULT '',
+    git_token text NOT NULL DEFAULT '',
+    merge_token text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );

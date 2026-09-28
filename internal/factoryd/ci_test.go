@@ -1020,10 +1020,10 @@ func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
 func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
-	tokens := map[string]string{"sf/ai-software-factory-code": "registrar-tok", "sf/demo-app": "demo-ci-tok"}
+	tokens := map[string]string{"sf/ai-software-factory-code": "registrar-tok", "demo-app/demo-app": "projects-tok"}
 	jobs := map[string][]CIJob{
 		"sf/ai-software-factory-code": {{ID: 7, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}},
-		"sf/demo-app":                 {{ID: 9, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}},
+		"demo-app/demo-app":           {{ID: 9, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}},
 	}
 	next := int64(100)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1061,29 +1061,61 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	store := &memProjects{m: map[string]Project{
-		"demo-app":                 {Name: "demo-app", Repository: "sf/demo-app", Managed: true, CIToken: "demo-ci-tok"},
-		"waiting":                  {Name: "waiting", Repository: "sf/waiting", Managed: true},
+		"demo-app":                 {Name: "demo-app", Repository: "demo-app/demo-app", Managed: true, GitToken: "g"},
+		"waiting":                  {Name: "waiting", Repository: "waiting/waiting", Managed: true},
 		"ai-software-factory-code": {Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code"},
 	}}
 	cfg := testCIConfig()
-	cfg.Repos = CIReposOf(codeCIRepos[0], store)
+	cfg.Repos = CIReposOf(codeCIRepos[0], "projects-tok", store)
 	spawner, err := NewCISpawner(cfg, &Forgejo{BaseURL: srv.URL, HTTP: srv.Client()}, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
 	spawner.poll(context.Background())
-	if kube.secrets["factory-agents-ci-9/"+ciSecretName]["repo"] != "sf/demo-app" {
+	if kube.secrets["factory-agents-ci-9/"+ciSecretName]["repo"] != "demo-app/demo-app" {
 		t.Fatalf("job 9's registration = %v", kube.secrets["factory-agents-ci-9/"+ciSecretName])
+	}
+	// a project's run (its main workflow too) reaches Forgejo's SSH for the
+	// deploy key and factoryd's alerts endpoint; the code repository's not
+	project, code := fmt.Sprint(kube.cnps["factory-agents-ci-9/ci-egress"]), fmt.Sprint(kube.cnps["factory-agents-ci-7/ci-egress"])
+	for _, want := range []string{"port:2222", "k8s:app:factoryd", "port:8080", "matchName:forgejo-ssh.forgejo.svc.cluster.local",
+		"matchName:factoryd.factory.svc.cluster.local"} {
+		if !strings.Contains(project, want) || strings.Contains(code, want) {
+			t.Errorf("%s: in the project's egress %v, in the code's %v", want, strings.Contains(project, want), strings.Contains(code, want))
+		}
+	}
+	if kube.createdNs["factory-agents-ci-9"][CIProjectLabel] != "demo-app" || kube.createdNs["factory-agents-ci-7"][CIProjectLabel] != "" {
+		t.Errorf("namespace labels: %v / %v", kube.createdNs["factory-agents-ci-9"], kube.createdNs["factory-agents-ci-7"])
 	}
 	kube.pods["factory-agents-ci-9/"+ciPodName].phase = "Succeeded"
 	mu.Lock()
-	jobs["sf/demo-app"][0].Status = "success"
+	jobs["demo-app/demo-app"][0].Status = "success"
 	mu.Unlock()
 	spawner.poll(context.Background())
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"register sf/ai-software-factory-code", "register sf/demo-app", "delete sf/demo-app/actions/runners/102"}
+	want := []string{"register sf/ai-software-factory-code", "register demo-app/demo-app", "delete demo-app/demo-app/actions/runners/102"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+// review-task65 m8: a CI namespace from before projects names no
+// repository; its runner is the code repository's.
+func TestCISpawnerTeardownOfAnOldNamespace(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 5, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.poll(context.Background())
+	ns := "factory-agents-ci-5"
+	delete(kube.secrets[ns+"/"+ciSecretName], "repo")
+	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
+	logs := captureLog(t)
+	spawner.reconcile(context.Background(), codeCIRepos)
+	if strings.Contains(logs.String(), "left to itself") {
+		t.Fatalf("teardown did not take the runner as the code repository's:\n%s", logs)
+	}
+	if len(hub.deleted) != 1 {
+		t.Fatalf("deleted registrations = %v, want the runner removed from the code repository", hub.deleted)
 	}
 }

@@ -192,7 +192,7 @@ func main() {
 	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
 		FactoryNamespace: kube.Namespace(),
 		Repos: factoryd.CIReposOf(factoryd.CIRepo{Repo: factoryd.Repo{Owner: env("CI_REPO_OWNER", "sf"), Name: env("CI_REPO_NAME", "ai-software-factory-code")},
-			Token: forgejo.CIRegistrarToken}, store),
+			Token: forgejo.CIRegistrarToken}, forgejo.ProjectsToken, store),
 		RunnerImage:   mustEnv("CI_RUNNER_IMAGE"),
 		PullSecret:    env("PULL_SECRET", "forgejo-registry"),
 		GitBaseURL:    gitBase,
@@ -247,8 +247,23 @@ func main() {
 	}
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
-	// ruling 156: every project's objects come back from its row at boot
-	go registrar.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
+	// ruling 156: every project's objects come back from its row at boot,
+	// and again when a new policy version may change the approvers in the
+	// projects' protection
+	go func() {
+		seen := int64(0)
+		for {
+			if v := policyLoader.Current().ID; v != seen {
+				seen = v
+				registrar.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Minute):
+			}
+		}
+	}()
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}

@@ -70,18 +70,20 @@ func (c *CIConfig) setDefaults() {
 	}
 }
 
-// CIRepo is a repository the spawner serves and factory-ci's token
-// limited to it; Forgejo keeps the runner API to the repository's owner,
-// which a repository-limited token of an org owner reaches and nothing
-// beyond it (Task 65).
+// CIRepo is a repository the spawner serves and the token that lists its
+// jobs and registers its runners, which Forgejo keeps to the repository's
+// owner: the registrar token for the code repository, factory-projects'
+// token (it owns every project organisation) for a project, whose main
+// workflow runs here too (ruling 164). Project names a project's.
 type CIRepo struct {
-	Repo  Repo
-	Token string
+	Repo    Repo
+	Token   string
+	Project string
 }
 
-// CIReposOf serves the code repository with the registrar token and every
-// managed project that has its CI token.
-func CIReposOf(code CIRepo, projects interface {
+// CIReposOf serves the code repository and every managed project that
+// register-project has made.
+func CIReposOf(code CIRepo, projectsToken string, projects interface {
 	Projects(ctx context.Context) ([]Project, error)
 }) func(ctx context.Context) ([]CIRepo, error) {
 	return func(ctx context.Context) ([]CIRepo, error) {
@@ -91,8 +93,8 @@ func CIReposOf(code CIRepo, projects interface {
 		}
 		out := []CIRepo{code}
 		for _, p := range ps {
-			if p.Managed && p.CIToken != "" {
-				out = append(out, CIRepo{Repo: p.Repo(), Token: p.CIToken})
+			if p.Managed && p.Minted() {
+				out = append(out, CIRepo{Repo: p.Repo(), Token: projectsToken, Project: p.Name})
 			}
 		}
 		return out, nil
@@ -278,7 +280,7 @@ func (s *CISpawner) spawn(ctx context.Context, repo CIRepo, jobID int64, kind ci
 		return fmt.Errorf("register runner: %w", err)
 	}
 	ns := s.namespaceFor(jobID)
-	if err := s.setupNamespace(ctx, ns, jobID, repo.Repo, reg, kind); err != nil {
+	if err := s.setupNamespace(ctx, ns, jobID, repo, reg, kind); err != nil {
 		if derr := s.forgejo.DeleteCIRunner(ctx, repo, reg.ID); derr != nil {
 			log.Printf("ci spawner: rollback delete runner %d: %v", reg.ID, derr)
 		}
@@ -292,12 +294,17 @@ type ciSetupStep struct {
 	do   func() error
 }
 
-func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, repo Repo, reg CIRunnerRegistration, kind ciJobKind) error {
-	if err := s.kube.CreateNamespace(ctx, ns, map[string]string{
+func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, repo CIRepo, reg CIRunnerRegistration, kind ciJobKind) error {
+	labels := map[string]string{
 		"factory.ai/task":                    jobLabel(jobID),
 		"factory.ai/ci":                      "true", // the build cache admits reads from these namespaces
 		"pod-security.kubernetes.io/enforce": "restricted",
-	}); err != nil {
+	}
+	if repo.Project != "" {
+		// factoryd's ingress admits a project run's runner to its alerts endpoint
+		labels[CIProjectLabel] = repo.Project
+	}
+	if err := s.kube.CreateNamespace(ctx, ns, labels); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
 	}
 	// The VM comes after the namespace: the collector reads a missing
@@ -345,7 +352,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.CreateServiceAccount(ctx, ns, "ci-runner")
 		}},
 		{"egress policy", func() error {
-			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm))
+			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm, repo.Project != ""))
 		}},
 		{"runner registration secret", func() error {
 			// forgejo-runner reads its token from a file (--token-url
@@ -357,7 +364,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 				"token":     reg.Secret,
 				"uuid":      reg.UUID,
 				"runner_id": strconv.FormatInt(reg.ID, 10),
-				"repo":      repo.String(),
+				"repo":      repo.Repo.String(),
 			})
 		}},
 		{"pull secret", func() error {
@@ -451,7 +458,10 @@ func (s *CISpawner) teardown(ctx context.Context, ns string, repos []CIRepo) {
 	data, err := s.kube.GetSecretData(ctx, ns, ciSecretName)
 	switch {
 	case err == nil:
-		i := slices.IndexFunc(repos, func(r CIRepo) bool { return r.Repo.String() == data["repo"] })
+		// a namespace from before projects names no repository: the code's
+		i := slices.IndexFunc(repos, func(r CIRepo) bool {
+			return r.Repo.String() == data["repo"] || (data["repo"] == "" && r.Project == "")
+		})
 		id, convErr := strconv.ParseInt(data["runner_id"], 10, 64)
 		switch {
 		case convErr != nil:
@@ -651,6 +661,16 @@ const (
 // layer caches from (infra k8s/platform/build-cache, ruling 111).
 const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
 
+// A project run's further callees: Forgejo's SSH (its Service's port 22
+// is the pod's 2222) and factoryd.
+const (
+	forgejoSSHHost = "forgejo-ssh.forgejo.svc.cluster.local"
+	forgejoSSHPort = "2222"
+	factorydHost   = "factoryd.factory.svc.cluster.local"
+	// CIProjectLabel marks a CI namespace running a project's job.
+	CIProjectLabel = "factory.ai/ci-project"
+)
+
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
 // #5): the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
@@ -660,7 +680,7 @@ const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
 // build cache (its own policy refuses writes) and, since BuildKit fetches
 // registry tokens through the client session, Docker Hub's token service;
 // layers and release downloads are the VM's.
-func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
+func (s *CISpawner) ciEgressSpec(vm *BuildVM, project bool) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
@@ -677,6 +697,9 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
 	if vm != nil {
 		dnsNames = append(dnsNames, map[string]any{"matchName": buildCacheHost})
+	}
+	if project {
+		dnsNames = append(dnsNames, map[string]any{"matchName": factorydHost}, map[string]any{"matchName": forgejoSSHHost})
 	}
 
 	toFQDNs := make([]any, 0, len(fqdns))
@@ -714,6 +737,19 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM) map[string]any {
 				"rules": map[string]any{"dns": dnsNames},
 			}},
 		},
+	}
+	if project {
+		// a project's main workflow pushes its roll commits with its deploy
+		// key over Forgejo's SSH and asks factoryd's alerts endpoint
+		egress = append(egress, map[string]any{
+			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "forgejo", "k8s:app.kubernetes.io/name": "forgejo"}}},
+			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": forgejoSSHPort, "protocol": "TCP"}}}},
+		}, map[string]any{
+			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": s.cfg.FactoryNamespace, "k8s:app": "factoryd"}}},
+			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
+		})
 	}
 	if vm != nil {
 		egress = append(egress, buildVMEgressRule(vm.IPv4), map[string]any{

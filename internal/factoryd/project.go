@@ -20,9 +20,11 @@ import (
 )
 
 // Project is a repository the factory works on, the namespaces it deploys
-// into and its settings (ruling 146). A managed project gets its Forgejo
-// and cluster objects from factoryd (ruling 156); the factory's own
-// repositories are unmanaged rows whose objects the infra repository owns.
+// into and its settings (ruling 146). A managed project is its own Forgejo
+// organisation <name> with the repository <name>/<name> (ruling 164) and
+// gets its Forgejo and cluster objects from factoryd (ruling 156); the
+// factory's own repositories are unmanaged rows whose objects the infra
+// repository owns.
 type Project struct {
 	Name         string
 	Repository   string // owner/name
@@ -38,13 +40,26 @@ type Project struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
-	// ReadTokenHash is sha256 of FACTORY_READ_TOKEN, hex; CIToken is
-	// factory-ci's token limited to the repository (its Actions secrets and
-	// runners); PullToken is factory-ci's read:package token. Never shown.
-	ReadTokenHash string
-	CIToken       string
-	PullToken     string
+	// ReadTokenHash and HookSecretHash are sha256 hex of FACTORY_READ_TOKEN
+	// and of the webhook secret last set. The tokens register-project
+	// mints, never shown: ci-<name>'s read:package (PullToken, the image
+	// pull secret), factory-projects' read:repository limited to the
+	// repository (GitToken, Flux's source) and factory-merge's
+	// write:repository limited to it (MergeToken, the merge).
+	ReadTokenHash  string
+	HookSecretHash string
+	PullToken      string
+	GitToken       string
+	MergeToken     string
 }
+
+// Minted reports whether register-project has run: the organisation, the
+// repository and the tokens exist.
+func (p Project) Minted() bool { return p.GitToken != "" }
+
+// CIUser is the project's own CI user, member of its organisation only
+// with package write (ruling 164).
+func (p Project) CIUser() string { return "ci-" + p.Name }
 
 // Environment is one Flux Kustomization: path of the repository applied
 // into namespace (ruling 157), and the public hostname, if any, the infra
@@ -62,9 +77,8 @@ func (p Project) Repo() Repo {
 }
 
 var (
-	projectName  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$`)
+	projectName  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$`)
 	dnsLabel     = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	repoPart     = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 	deployPath   = regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$`)
 	hostname     = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
 	forgejoLogin = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,40}$`)
@@ -85,12 +99,11 @@ func reservedNamespace(ns string) bool {
 func (p Project) Validate() error {
 	var errs []error
 	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
-	if !projectName.MatchString(p.Name) || strings.HasPrefix(p.Name, "factory-") || p.Name == "flux-system" {
-		bad("name %q: lowercase letters, digits and dashes, at most 40, not factory-* or flux-system", p.Name)
+	if !projectName.MatchString(p.Name) || strings.HasPrefix(p.Name, "factory-") || p.Name == "flux-system" || p.Name == "sf" {
+		bad("name %q: lowercase letters, digits and dashes, at most 37, not factory-*, flux-system or sf", p.Name)
 	}
-	owner, name, ok := strings.Cut(p.Repository, "/")
-	if !ok || !repoPart.MatchString(owner) || !repoPart.MatchString(name) || owner == "." || name == "." || name == ".." {
-		bad("repository %q: want owner/name", p.Repository)
+	if p.Repository != p.Name+"/"+p.Name {
+		bad("repository %q: a project is its own organisation, its repository %s/%s", p.Repository, p.Name, p.Name)
 	}
 	if p.MergeRule != policy.MergeAuto && p.MergeRule != policy.MergeHuman {
 		bad("merge rule %q: want auto or human", p.MergeRule)
@@ -218,18 +231,24 @@ type ProjectStore interface {
 	// SetProjectSettings changes what the console edits.
 	SetProjectSettings(ctx context.Context, name, mergeRule string, notify []string, quota policy.Quota) error
 	SetProjectTokens(ctx context.Context, name string, t ProjectTokens) error
+	// ClaimReadToken stores hash as the read token's when none is stored
+	// and reports whether it did: of two reconciles racing, only the one
+	// that stored its hash sets the Actions secret.
+	ClaimReadToken(ctx context.Context, name, hash string) (bool, error)
+	ForgetReadToken(ctx context.Context, name, hash string) error
 }
 
 // ProjectTokens: an empty field leaves the stored one.
 type ProjectTokens struct {
-	ReadTokenHash, CIToken, PullToken string
+	ReadTokenHash, HookSecretHash, PullToken, GitToken, MergeToken string
 }
 
-// ErrProjectExists refuses a second registration of a name or repository.
-var ErrProjectExists = errors.New("project already registered")
+// ErrProjectExists refuses a second registration of a name, a repository
+// or a namespace another project has.
+var ErrProjectExists = errors.New("project, repository or namespace already registered")
 
 const projectColumns = `name, repository, merge_rule, notify, namespaces, environments, quota_cpu, quota_memory, quota_storage,
-	secrets, managed, read_token_hash, ci_token, pull_token, created_at, updated_at`
+	secrets, managed, read_token_hash, hook_secret_hash, pull_token, git_token, merge_token, created_at, updated_at`
 
 func (s *PGStore) Projects(ctx context.Context) ([]Project, error) {
 	return s.projects(ctx, `SELECT `+projectColumns+` FROM projects ORDER BY name`)
@@ -256,7 +275,7 @@ func (s *PGStore) projects(ctx context.Context, q string, args ...any) ([]Projec
 		var envs []byte
 		if err := rows.Scan(&p.Name, &p.Repository, &p.MergeRule, m.SQLScanner(&p.Notify), m.SQLScanner(&p.Namespaces), &envs,
 			&p.Quota.CPU, &p.Quota.Memory, &p.Quota.Storage, m.SQLScanner(&p.Secrets), &p.Managed,
-			&p.ReadTokenHash, &p.CIToken, &p.PullToken, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.ReadTokenHash, &p.HookSecretHash, &p.PullToken, &p.GitToken, &p.MergeToken, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(envs, &p.Environments); err != nil {
@@ -274,7 +293,8 @@ func (s *PGStore) CreateProject(ctx context.Context, p Project) error {
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repository, merge_rule, notify, namespaces, environments,
 		quota_cpu, quota_memory, quota_storage, secrets, managed)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING`,
+		SELECT $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11
+		WHERE NOT EXISTS (SELECT 1 FROM projects WHERE namespaces && $5) ON CONFLICT DO NOTHING`,
 		p.Name, p.Repository, p.MergeRule, nonNil(p.Notify), nonNil(p.Namespaces), envs,
 		p.Quota.CPU, p.Quota.Memory, p.Quota.Storage, nonNil(p.Secrets), p.Managed)
 	if err != nil {
@@ -295,9 +315,26 @@ func (s *PGStore) SetProjectSettings(ctx context.Context, name, mergeRule string
 
 func (s *PGStore) SetProjectTokens(ctx context.Context, name string, t ProjectTokens) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE projects SET read_token_hash = COALESCE(NULLIF($2, ''), read_token_hash),
-		ci_token = COALESCE(NULLIF($3, ''), ci_token), pull_token = COALESCE(NULLIF($4, ''), pull_token), updated_at = now()
-		WHERE name = $1`, name, t.ReadTokenHash, t.CIToken, t.PullToken)
+		hook_secret_hash = COALESCE(NULLIF($3, ''), hook_secret_hash), pull_token = COALESCE(NULLIF($4, ''), pull_token),
+		git_token = COALESCE(NULLIF($5, ''), git_token), merge_token = COALESCE(NULLIF($6, ''), merge_token), updated_at = now()
+		WHERE name = $1`, name, t.ReadTokenHash, t.HookSecretHash, t.PullToken, t.GitToken, t.MergeToken)
 	return oneRow(res, err, "project "+name)
+}
+
+func (s *PGStore) ClaimReadToken(ctx context.Context, name, hash string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE projects SET read_token_hash = $2, updated_at = now() WHERE name = $1 AND read_token_hash = ''`, name, hash)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ForgetReadToken clears the stored hash when it is still hash, so the
+// next reconcile mints a fresh token.
+func (s *PGStore) ForgetReadToken(ctx context.Context, name, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE projects SET read_token_hash = '' WHERE name = $1 AND read_token_hash = $2`, name, hash)
+	return err
 }
 
 func nonNil[T any](s []T) []T {

@@ -27,8 +27,7 @@ func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 func parseRegistration(args []string, def policy.ProjectDefault) (factoryd.Project, string, bool, error) {
 	fs := flag.NewFlagSet("register-project", flag.ContinueOnError)
 	var namespaces, envs, hosts, secrets listFlag
-	name := fs.String("name", "", "project name, [a-z0-9-]")
-	repo := fs.String("repository", "", "Forgejo repository owner/name, created private when missing")
+	name := fs.String("name", "", "project name, [a-z0-9-]: its Forgejo organisation and repository name/name")
 	rule := fs.String("merge-rule", def.MergeRule, "auto or human")
 	notify := fs.String("notify", "", "comma separated Forgejo users to ping; empty: the policy's approvers")
 	cpu := fs.String("quota-cpu", def.Quota.CPU, "each namespace's CPU quota")
@@ -58,7 +57,7 @@ func parseRegistration(args []string, def policy.ProjectDefault) (factoryd.Proje
 			notifyList = append(notifyList, u)
 		}
 	}
-	p := factoryd.Project{Name: *name, Repository: *repo, MergeRule: *rule, Notify: notifyList, Namespaces: namespaces,
+	p := factoryd.Project{Name: *name, Repository: *name + "/" + *name, MergeRule: *rule, Notify: notifyList, Namespaces: namespaces,
 		Environments: environments, Quota: policy.Quota{CPU: *cpu, Memory: *memory, Storage: *storage}, Secrets: secrets, Managed: true}
 	return p, *admin, *rotate, p.Validate()
 }
@@ -134,6 +133,6 @@ func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube f
 		WebhookSecret:    mustEnv("FORGEJO_WEBHOOK_SECRET"),
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),
 		GitURL: env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"), RegistryHost: env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
-		MergeUser: env("FORGEJO_MERGE_USER", "factory-merge"), CIUser: env("FORGEJO_CI_USER", "factory-ci"),
+		MergeUser:    env("FORGEJO_MERGE_USER", "factory-merge"),
 		ProjectsUser: env("FORGEJO_PROJECTS_USER", "factory-projects")}
 }

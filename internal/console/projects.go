@@ -22,7 +22,7 @@ type projectRow struct {
 	NotifyList    []string
 	NotifyDefault bool
 	Envelope      cloudres.EnvelopeRecord
-	HasCIToken    bool
+	Minted        bool
 	GatewayYAML   string
 }
 
@@ -49,7 +49,7 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 	var rows []projectRow
 	for _, p := range ps {
 		row := projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.Document.Approvers), NotifyDefault: len(p.Notify) == 0,
-			HasCIToken: p.CIToken != "", GatewayYAML: factoryd.ListenerYAML(p),
+			Minted: p.Minted(), GatewayYAML: factoryd.ListenerYAML(p),
 			Envelope: cloudres.EnvelopeRecord{Project: p.Repository, Envelope: v.Document.DefaultEnvelope()}}
 		if i := slices.IndexFunc(envs, func(e cloudres.EnvelopeRecord) bool { return e.Project == p.Repository }); i >= 0 {
 			row.Envelope = envs[i]
@@ -61,9 +61,9 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 		"Default": v.Document.Project(), "Saved": r.URL.Query().Get("saved"), "Registered": r.URL.Query().Get("registered")})
 }
 
-// registerProject records a project from the form and reconciles it; its
-// CI token, which only the Forgejo admin can mint, waits for
-// factoryd register-project.
+// registerProject records a project from the form and reconciles it;
+// its organisation, repository, CI user and tokens, which only the Forgejo
+// admin can make, wait for factoryd register-project.
 func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
 	v, _, err := c.cfg.Policies.CurrentPolicy(r.Context())
 	if err != nil {
@@ -76,7 +76,8 @@ func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	p := factoryd.Project{Name: strings.TrimSpace(r.PostFormValue("name")), Repository: strings.TrimSpace(r.PostFormValue("repository")),
+	name := strings.TrimSpace(r.PostFormValue("name"))
+	p := factoryd.Project{Name: name, Repository: name + "/" + name,
 		MergeRule: cmpOrForm(r.PostFormValue("merge_rule"), def.MergeRule), Namespaces: words(r.PostFormValue("namespaces")),
 		Environments: envs, Quota: def.Quota, Secrets: words(r.PostFormValue("secrets")), Managed: true}
 	if err := p.Validate(); err != nil {
@@ -87,7 +88,7 @@ func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
 	if err := c.cfg.Projects.CreateProject(r.Context(), p); err != nil {
 		log.Printf("console: %s registers %s: %v", user, p.Name, err)
 		if errors.Is(err, factoryd.ErrProjectExists) {
-			http.Error(w, "project "+p.Name+" or repository "+p.Repository+" is registered already", http.StatusConflict)
+			http.Error(w, "project "+p.Name+" or one of its namespaces is registered already", http.StatusConflict)
 			return
 		}
 		http.Error(w, "cannot record the project", http.StatusInternalServerError)
@@ -113,6 +114,10 @@ func (c *Console) projectSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.MergeRule = r.PostFormValue("merge_rule")
+	if !p.Managed && p.MergeRule == policy.MergeAuto {
+		http.Error(w, "the factory's own repositories keep their protection in the infra repository: their merge rule stays human", http.StatusBadRequest)
+		return
+	}
 	p.Notify = words(r.PostFormValue("notify"))
 	p.Quota = policy.Quota{CPU: strings.TrimSpace(r.PostFormValue("quota_cpu")), Memory: strings.TrimSpace(r.PostFormValue("quota_memory")),
 		Storage: strings.TrimSpace(r.PostFormValue("quota_storage"))}
@@ -134,7 +139,7 @@ func (c *Console) projectSettings(w http.ResponseWriter, r *http.Request) {
 // settingsProblem checks what the settings form changes, for any row, the
 // factory's own included.
 func settingsProblem(p factoryd.Project) error {
-	check := factoryd.Project{Name: "x", Repository: "o/r", MergeRule: p.MergeRule, Notify: p.Notify, Namespaces: []string{"x"}, Quota: p.Quota}
+	check := factoryd.Project{Name: "x", Repository: "x/x", MergeRule: p.MergeRule, Notify: p.Notify, Namespaces: []string{"x"}, Quota: p.Quota}
 	return check.Validate()
 }
 
