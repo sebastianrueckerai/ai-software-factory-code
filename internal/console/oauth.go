@@ -93,7 +93,8 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if e := q.Get("error"); e != "" {
-		http.Error(w, "Forgejo refused the login: "+e, http.StatusForbidden)
+		log.Printf("console: Forgejo refused a login: %.200q", e) // #nosec G706 -- %q escapes every control character
+		http.Error(w, "Forgejo refused the login", http.StatusForbidden)
 		return
 	}
 	s := &session{}

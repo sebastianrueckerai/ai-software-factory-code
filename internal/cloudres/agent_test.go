@@ -466,6 +466,23 @@ func TestPromoteAndEndLease(t *testing.T) {
 	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND NOT promoted AND lease_expires <= now()`, c.Hold.ID); n != 2 {
 		t.Fatalf("ended rows = %d", n)
 	}
+	// a released commission is not promoted back to life before the
+	// collector deletes it
+	if err := a.Promote(ctx, c.Rows[1].ID, "sebastian"); !errors.Is(err, ErrLeaseEnded) {
+		t.Fatalf("promote after release: %v", err)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE hold_id = $1 AND promoted`, c.Hold.ID); n != 0 {
+		t.Fatalf("promoted after release: %d rows", n)
+	}
+	seedTask(t, db, "t9", 1)
+	late, err := a.Reserve(ctx, commissionReq(t, "t9", "cx23", 60, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now() - interval '1 minute' WHERE hold_id = $1`, late.Hold.ID)
+	if err := a.Promote(ctx, late.Rows[1].ID, "sebastian"); !errors.Is(err, ErrLeaseEnded) {
+		t.Fatalf("promote after the lease ended: %v", err)
+	}
 	if err := a.Promote(ctx, 999999, "sebastian"); err == nil {
 		t.Fatal("want an error for an unknown resource")
 	}

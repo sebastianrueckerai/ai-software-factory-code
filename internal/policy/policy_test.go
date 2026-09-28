@@ -40,6 +40,7 @@ envelope_default:
   max_count: 2
   max_lease_hours: 4
   volume_max_gb: 20
+approvers: [sebastian]
 `
 
 func TestParseValid(t *testing.T) {
@@ -53,6 +54,9 @@ func TestParseValid(t *testing.T) {
 	want := Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}
 	if !reflect.DeepEqual(d.EnvelopeDefault, want) {
 		t.Fatalf("envelope_default = %+v, want %+v", d.EnvelopeDefault, want)
+	}
+	if !reflect.DeepEqual(d.Approvers, []string{"sebastian"}) {
+		t.Fatalf("approvers = %v", d.Approvers)
 	}
 	if got := d.Classes["coder"].Models; len(got) != 2 || got[0] != "coding-cheap" || got[1] != "coding-frontier" {
 		t.Fatalf("coder models = %v", got)
@@ -88,9 +92,11 @@ func TestParseRejects(t *testing.T) {
 			"prices: {replicate: {max_seconds: 9, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
 		"replicate fractional max_seconds": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 30.5, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
-		"fal unbounded": {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
-		"two documents": {valid + "---\nversion: 1\n", "more than one YAML document"},
-		"not yaml":      {"version: [1", "policy:"},
+		"fal unbounded":      {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
+		"two documents":      {valid + "---\nversion: 1\n", "more than one YAML document"},
+		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
+		"duplicate approver": {strings.Replace(valid, "approvers: [sebastian]", "approvers: [sebastian, sebastian]", 1), "approvers must be distinct"},
+		"not yaml":           {"version: [1", "policy:"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.doc))

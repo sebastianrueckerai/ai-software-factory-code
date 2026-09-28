@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -30,6 +31,8 @@ type resourceRow struct {
 	// PromoteNote is what promotion would cost a month against the
 	// project's envelope (on the Actions row).
 	PromoteNote string
+	// Promotable: not promoted, not released, lease still running.
+	Promotable bool
 }
 
 type projectView struct {
@@ -81,7 +84,8 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 			monthly[res.HoldID] += res.PricePerHourEUR * cloudres.HoursPerMonth
 		}
 		v := view(res.Repo)
-		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State)}
+		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State),
+			Promotable: !res.Promoted && res.ReleasedBy == "" && time.Now().Before(res.LeaseExpires)}
 		v.Rows = append(v.Rows, row)
 		i := len(v.Rows) - 1
 		if !row.Open || res.HoldID == 0 {
@@ -104,7 +108,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(projects, func(a, b *projectView) int { return cmp.Compare(a.Project, b.Project) })
 	s := current(r)
-	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": projects,
+	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": projects, "Approver": c.approver(r),
 		"Saved": r.URL.Query().Get("saved")})
 }
 
@@ -137,7 +141,14 @@ func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what st
 	user := current(r).user
 	if err := change(r.Context(), id, user); err != nil {
 		log.Printf("console: %s %s resource %d: %v", user, what, id, err)
-		http.Error(w, "cannot "+what+": "+err.Error(), http.StatusConflict)
+		switch {
+		case errors.Is(err, cloudres.ErrLeaseEnded):
+			http.Error(w, "cannot "+what+": its lease has ended or it was released; the collector deletes it", http.StatusConflict)
+		case errors.Is(err, cloudres.ErrNotOpen):
+			http.Error(w, "cannot "+what+": the resource is no longer open", http.StatusConflict)
+		default:
+			http.Error(w, "cannot "+what+"; see the factoryd log", http.StatusInternalServerError)
+		}
 		return
 	}
 	log.Printf("console: %s %sd the commission of resource %d", user, what, id)

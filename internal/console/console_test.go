@@ -135,31 +135,49 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type fakeTasks struct{ tasks []factoryd.Task }
+type fakeTasks struct{ tasks []factoryd.BoardTask }
 
 func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.ID == id {
-			return t, true, nil
+			return t.Task, true, nil
 		}
 	}
 	return factoryd.Task{}, false, nil
 }
 
-func (s *fakeTasks) BoardTasks(context.Context, time.Time) ([]factoryd.Task, error) {
-	return s.tasks, nil
+func (s *fakeTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
+	return s.tasks[:min(limit, len(s.tasks))], nil
+}
+
+// set replaces the tasks; the escalated ones carry reason.
+func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
+	s.tasks = nil
+	for _, t := range tasks {
+		b := factoryd.BoardTask{Task: t}
+		if t.Status == "waiting-human" {
+			b.Escalation = reason
+		}
+		s.tasks = append(s.tasks, b)
+	}
 }
 
 type fakeWriters struct {
 	mu    sync.Mutex
 	users []string
 	asked int
+	err   error
+	delay time.Duration
 }
 
 func (w *fakeWriters) RepoWriters(_ context.Context, owner, repo string) ([]string, error) {
+	time.Sleep(w.delay)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.asked++
+	if w.err != nil {
+		return nil, w.err
+	}
 	if owner+"/"+repo != "sf/code" {
 		return nil, fmt.Errorf("unexpected repo %s/%s", owner, repo)
 	}
@@ -218,6 +236,8 @@ type fakeResources struct {
 	envs  []cloudres.EnvelopeRecord
 	calls []string
 	set   map[string]policy.Envelope
+
+	approveErr error
 }
 
 func (f *fakeResources) Commissions(_ context.Context, since time.Time) ([]cloudres.Resource, error) {
@@ -237,18 +257,24 @@ func (f *fakeResources) SetEnvelope(_ context.Context, project string, env polic
 
 func (f *fakeResources) ApproveForProject(_ context.Context, id int64, by string) (policy.Envelope, error) {
 	f.calls = append(f.calls, fmt.Sprintf("project-approve %d by %s", id, by))
-	return policy.Envelope{}, nil
+	return policy.Envelope{}, f.approveErr
 }
 
 func (f *fakeResources) Promote(_ context.Context, id int64, by string) error {
 	f.calls = append(f.calls, fmt.Sprintf("promote %d by %s", id, by))
+	if id == 410 {
+		return fmt.Errorf("resource %d: %w", id, cloudres.ErrLeaseEnded)
+	}
+	if id == 500 {
+		return errors.New(`pq: deadlock detected in "cloud_resources"`)
+	}
 	return nil
 }
 
 func (f *fakeResources) EndLease(_ context.Context, id int64, by string) error {
 	f.calls = append(f.calls, fmt.Sprintf("release %d by %s", id, by))
 	if id == 404 {
-		return fmt.Errorf("resource %d is not an open agent resource", id)
+		return fmt.Errorf("resource %d: %w", id, cloudres.ErrNotOpen)
 	}
 	return nil
 }
@@ -268,6 +294,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}}}, true, nil
 }
 
@@ -566,7 +593,7 @@ func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.Task{
+	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-q", Kind: "agent", Status: "queued", Objective: "queued work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 11},
 		{ID: "t-r", Kind: "agent", Status: "closing", Objective: "closing work", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 1.234, PRNumber: 12},
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 13},
@@ -575,10 +602,9 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		{ID: "t-f", Kind: "agent", Status: "failed", Objective: "failed work", Repository: "sf/code", BudgetEUR: 5},
 		{ID: "t-h", Kind: "human", Status: "waiting-human", Objective: "human work", Repository: "sf/code", IssueNumber: 14},
 		{ID: "t-hd", Kind: "human", Status: "done", Objective: "finished human work", Repository: "sf/code"},
-	}
-	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"intake","time":"2026-09-28T10:00:00Z"}
-{"step":"escalated","reason":"old reason","comment":4}
-{"step":"escalated","reason":"cannot reach the database","comment":5}
+	}...)
+	// the reason comes from the task's row; the board reads no timeline
+	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"escalated","reason":"old reason","comment":4}
 `)
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	if rec.Code != http.StatusOK {
@@ -666,10 +692,10 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.Task{
+	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13},
 		{ID: "t-r", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 14},
-	}
+	}...)
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
@@ -732,7 +758,7 @@ func TestLogoutEndsTheSession(t *testing.T) {
 func TestTimelinePageAndStaticAssets(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.Task{{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"}}
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"})
 	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_started","time":"2026-09-28T10:00:00Z","session":"s-<b>"}` + "\n")
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
 	if !strings.Contains(body, "session_started") || !strings.Contains(body, "s-\\u003cb\\u003e") && !strings.Contains(body, "s-&lt;b&gt;") {
@@ -803,7 +829,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.Task{{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21}}
+	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	start := strings.Index(body, `id="col-approvals"`)
 	end := strings.Index(body[start:], "</section>")
@@ -1068,4 +1094,146 @@ func serverState(c *Console) int {
 		}
 	}
 	return n
+}
+
+// Ruling 128: only the policy's approvers may spend (approve a resource or
+// a merge, edit an envelope, promote); other writers see the cards without
+// those buttons, get 403, and may still deny and release.
+func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
+	r := newRig(t)
+	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
+	ck, s := r.loggedIn(t)
+	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
+		LeaseExpires: time.Now().Add(time.Hour)}}
+	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(board, "/approve\"") || !strings.Contains(board, `action="/approvals/3/deny"`) ||
+		!strings.Contains(board, "Only the policy's approvers may approve.") {
+		t.Fatalf("board for a non-approver: approve buttons %v, deny %v", strings.Contains(board, "/approve\""),
+			strings.Contains(board, "/deny\""))
+	}
+	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
+	if strings.Contains(page, "/promote\"") || strings.Contains(page, "Save the envelope") || !strings.Contains(page, "/resources/11/release\"") {
+		t.Fatal("resources for a non-approver offer promote or the envelope save, or lack release")
+	}
+	r.fg.calls = nil
+	for _, req := range []*http.Request{
+		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}),
+		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}),
+		post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}),
+		post("/resources/11/promote", url.Values{"csrf": {s.csrf}}),
+		post("/envelopes", url.Values{"csrf": {s.csrf}, "project": {"sf/code"}, "monthly_eur": {"99"}, "server_types": {"cx23"},
+			"max_count": {"9"}, "max_lease_hours": {"9"}, "volume_max_gb": {"0"}}),
+	} {
+		if rec := r.do(req, ck); rec.Code != http.StatusForbidden {
+			t.Errorf("%s by a non-approver = %d, want 403", req.URL.Path, rec.Code)
+		}
+	}
+	if len(r.fg.calls) != 0 || len(r.resources.calls) != 1 || r.approvals.get(3).Status != "pending" || r.approvals.get(4).Status != "pending" {
+		t.Fatalf("a refused spend acted: forgejo %q, resources %q", r.fg.calls, r.resources.calls)
+	}
+	if rec := r.do(post("/resources/11/release", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("release by a writer = %d", rec.Code)
+	}
+	if rec := r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("deny by a writer = %d", rec.Code)
+	}
+}
+
+// A merge Forgejo refused after the approve says so on its card.
+func TestMergeCardShowsWhyItHasNotMerged(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.rows[1].DecisionNote = "waiting: Forgejo refused the merge after sebastian's approval: status 405"
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<p class="problem" role="status">waiting: Forgejo refused the merge after sebastian&#39;s approval: status 405</p>`) {
+		t.Fatal("the card does not show the refusal")
+	}
+}
+
+// Pages say what failed in a fixed sentence; the details go to the log.
+func TestErrorsShowNoInternals(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/resources/410/promote", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "lease has ended or it was released") {
+		t.Fatalf("promote after release = %d: %s", rec.Code, rec.Body)
+	}
+	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
+		t.Fatalf("a store error = %d: %s", rec.Code, rec.Body)
+	}
+	r.resources.approveErr = errors.New(`pq: could not serialize access due to concurrent update`)
+	rec = r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}), ck)
+	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
+		t.Fatalf("a project approve error = %d: %s", rec.Code, rec.Body)
+	}
+}
+
+// Each repeated button names its row for screen readers.
+func TestRepeatedButtonsNameTheirRow(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
+		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
+	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
+	for _, want := range []string{
+		`aria-label="Approve resource request 3 of t-res"`, `aria-label="Deny resource request 3 of t-res"`,
+		`aria-label="Approve as you: merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
+	} {
+		if !strings.Contains(board, want) {
+			t.Errorf("board lacks %s", want)
+		}
+	}
+	for _, want := range []string{`aria-label="Promote cx33 server 11 of t-res"`, `aria-label="Release cx33 server 11 of t-res"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("/resources lacks %s", want)
+		}
+	}
+}
+
+// The writer list is fetched once for concurrent requests when it expires,
+// and a Forgejo error serves the last good list for up to five minutes.
+func TestWriterListRefreshIsSharedAndSurvivesABlip(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.writers.mu.Lock()
+	r.writers.asked, r.writers.delay = 0, 50*time.Millisecond
+	r.writers.mu.Unlock()
+	r.c.mu.Lock()
+	r.c.writersT = time.Time{}.Add(time.Hour) // expired, yet a list is known
+	r.c.mu.Unlock()
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck)
+		}()
+	}
+	wg.Wait()
+	if r.writers.asked != 1 {
+		t.Fatalf("20 concurrent requests fetched the writers %d times", r.writers.asked)
+	}
+	r.writers.delay, r.writers.err = 0, errors.New("forgejo: 502")
+	r.c.mu.Lock()
+	r.c.writersT = time.Now().Add(-4 * time.Minute)
+	r.c.mu.Unlock()
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck); rec.Code != http.StatusOK {
+		t.Fatalf("a blip with a 4-minute-old list = %d, want the stale list served", rec.Code)
+	}
+	r.c.mu.Lock()
+	r.c.writersT = time.Now().Add(-6 * time.Minute)
+	r.c.mu.Unlock()
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("a blip with a 6-minute-old list = %d, want 503", rec.Code)
+	}
+}
+
+func TestResponsesCarryHSTS(t *testing.T) {
+	r := newRig(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "max-age=31536000; includeSubDomains" {
+		t.Fatalf("Strict-Transport-Security = %q", got)
+	}
 }

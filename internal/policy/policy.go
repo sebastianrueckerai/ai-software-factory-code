@@ -25,6 +25,10 @@ type Document struct {
 	// EnvelopeDefault is the resource envelope a project's first
 	// commissioning request copies into its envelopes row.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
+	// Approvers are the Forgejo users who may authorize spend in the
+	// console (ruling 128): approve a resource request or a merge, edit an
+	// envelope, promote a resource. Empty: nobody.
+	Approvers []string `yaml:"approvers" json:"approvers"`
 }
 
 // Envelope bounds what a project's tasks may commission in the agent
@@ -178,6 +182,11 @@ func (d Document) Validate() error {
 	}
 	if err := d.EnvelopeDefault.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	for i, a := range d.Approvers {
+		if a == "" || slices.Contains(d.Approvers[:i], a) {
+			return fmt.Errorf("policy: approvers must be distinct, non-empty user names (%q)", a)
+		}
 	}
 	for name, c := range d.Classes {
 		if name == "" {

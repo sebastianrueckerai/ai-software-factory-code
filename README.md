@@ -690,19 +690,35 @@ the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,
-  `client_secret`; redirect `/auth/callback`), always the explicit scopes
+  `client_secret`, `session_key`; redirect `/auth/callback`), always the explicit scopes
   `read:user write:repository write:issue` (an unscoped grant would carry
   the user's full power). Browsers go to `FORGEJO_PUBLIC_URL`, the code
-  exchange and API calls to `FORGEJO_URL`. Only the trust gate's writers
+  exchange and API calls to `FORGEJO_URL`. An anonymous `/login` keeps
+  nothing on the server: the state and the PKCE verifier travel in the
+  `__Host-console-login` cookie, signed with HMAC-SHA256 under
+  `session_key` (`CONSOLE_SESSION_KEY`, at least 32 bytes) and valid for
+  10 minutes. Only the trust gate's writers
   of the code repository get in, checked at login and on every request
-  (list cached a minute); others get 403. Sessions are in memory (a
+  (list cached a minute, fetched by one request while the others wait, the
+  last list served up to 5 minutes while Forgejo fails); others get 403.
+  A refused login's fresh tokens are dropped, not revoked: Forgejo has no
+  token revocation API, so they lapse within their hour. Sessions are in memory (a
   restart logs everyone out), the tokens never leave the server and are
   refreshed before their hour runs out; the cookie is `__Host-`,
   HttpOnly, Secure, SameSite=Lax. Every POST needs the session's CSRF
-  token (form field `csrf` or header `X-CSRF-Token`).
-- `/`: the agent lane by task status (done and failed for 7 days), the
-  human lane (approval requests, escalations with their reason and an
-  answer box, human tasks); htmx polls `/board` every 10 s.
+  token (form field `csrf` or header `X-CSRF-Token`). Responses carry
+  HSTS; the listener has read, write and idle timeouts. Error pages say
+  what failed in a fixed sentence, the details go to the log.
+- Spend is the policy's `approvers` (ruling 128; the policy file's
+  `approvers: [...]`): only they approve a resource request or a merge,
+  edit an envelope, or promote. Other writers see the cards and the
+  envelope without those buttons (a POST gets 403) and may still deny,
+  request changes, reject and release. Forgejo's approvals whitelist on
+  main stays the merge authority.
+- `/`: the agent lane by task status (done and failed for 7 days, at most
+  300 tasks, open ones first), the human lane (approval requests,
+  escalations with their reason, read from the escalation's intake event,
+  and an answer box, human tasks); htmx polls `/board` every 10 s.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the
@@ -716,10 +732,12 @@ the webhook and intake API on `:8080` stay in-cluster. Server-rendered
   took it calls `factoryd.ApproveMerge`; deny with a reason submits a
   REQUEST_CHANGES review (the changes-requested path sends the task back)
   or rejects: the reason is commented and the pull request closed as the
-  human, which fails the task.
+  human, which fails the task. A merge Forgejo refuses (or that fails and
+  is retried) notes why on the pending request, and the card shows it.
 - `/resources`: the agent project's commissions by project and task (open,
   or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
-  booked so far and state; promote and release per commission; each
+  booked so far and state; promote and release per commission (a released
+  commission, or one whose lease has ended, cannot be promoted: 409); each
   project's envelope (the code repository's shows the policy default until
   saved) with an edit form, saved with `set_by`.
 - Boot creates the labels intake reads on the code repository

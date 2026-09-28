@@ -58,7 +58,11 @@ type boardData struct {
 	Escalations []card
 	Approvals   []approvalCard
 	Problems    []string
+	Approver    bool // may authorize spend (ruling 128)
 }
+
+// boardLimit bounds the tasks one board render reads.
+const boardLimit = 300
 
 func (c *Console) card(t factoryd.Task) card {
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + t.Repository
@@ -75,13 +79,16 @@ func (c *Console) card(t factoryd.Task) card {
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	s := current(r)
-	tasks, err := c.cfg.Tasks.BoardTasks(r.Context(), time.Now().Add(-finishedSince))
+	tasks, err := c.cfg.Tasks.BoardTasks(r.Context(), time.Now().Add(-finishedSince), boardLimit)
 	if err != nil {
 		log.Printf("console: board tasks: %v", err)
 		http.Error(w, "cannot read tasks", http.StatusInternalServerError)
 		return
 	}
-	d := boardData{User: s.user, CSRF: s.csrf, Filed: r.URL.Query().Get("filed")}
+	d := boardData{User: s.user, CSRF: s.csrf, Filed: r.URL.Query().Get("filed"), Approver: c.approver(r)}
+	if len(tasks) == boardLimit {
+		d.Problems = append(d.Problems, fmt.Sprintf("the board shows the first %d tasks", boardLimit))
+	}
 	byStatus := map[string]int{}
 	for i, col := range columns {
 		d.Columns = append(d.Columns, column{Title: col.Title})
@@ -89,7 +96,8 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	}
 	byStatus["closing"] = byStatus["running"]
 	byID := map[string]factoryd.Task{}
-	for _, t := range tasks {
+	for _, bt := range tasks {
+		t := bt.Task
 		byID[t.ID] = t
 		k := c.card(t)
 		if t.Kind == "human" {
@@ -102,7 +110,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 		}
 		if t.Status == "waiting-human" {
-			k.Reason = c.escalationReason(r, t.ID)
+			k.Reason = bt.Escalation
 			d.Escalations = append(d.Escalations, k)
 		}
 	}
@@ -112,7 +120,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		d.Problems = append(d.Problems, "approval requests could not be read")
 	}
 	for _, a := range pending {
-		d.Approvals = append(d.Approvals, c.approvalCard(a, byID, s.csrf))
+		d.Approvals = append(d.Approvals, c.approvalCard(a, byID, s.csrf, d.Approver))
 	}
 	name := "page.html"
 	if r.URL.Path == "/board" {
@@ -154,22 +162,6 @@ func (c *Console) readTimeline(r *http.Request, taskID string) ([]timelineEntry,
 		out = append(out, e)
 	}
 	return out, sc.Err()
-}
-
-// escalationReason is the reason of the task's latest escalation, from its
-// timeline; empty when unreadable.
-func (c *Console) escalationReason(r *http.Request, taskID string) string {
-	entries, err := c.readTimeline(r, taskID)
-	if err != nil {
-		log.Printf("console: timeline of %s: %v", taskID, err)
-		return ""
-	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].Step == "escalated" {
-			return entries[i].Reason
-		}
-	}
-	return ""
 }
 
 func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
@@ -307,7 +299,8 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	}
 	repo, err := factoryd.SplitRepo(t.Repository)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("console: task %s: %v", t.ID, err)
+		http.Error(w, "the task names no repository", http.StatusInternalServerError)
 		return
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), t.IssueNumber)

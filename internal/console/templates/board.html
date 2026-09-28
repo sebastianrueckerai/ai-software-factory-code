@@ -50,14 +50,15 @@
 <dt>Beyond the envelope</dt><dd>{{range $i, $v := .Resource.BeyondEnvelope}}{{if $i}}; {{end}}{{$v}}{{end}}</dd>
 </dl>
 {{end}}<p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-<form method="post" action="/approvals/{{.ID}}/approve">
+{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
+{{end}}{{if .Approver}}<form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 {{if eq .Kind "resource"}}<fieldset><legend>Approve for</legend>
 <label><input type="radio" name="scope" value="task" checked> this task, once</label>
 <label><input type="radio" name="scope" value="project"> the project (widens its envelope)</label>
 </fieldset>{{end}}
-<button type="submit">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
-</form>
+<button type="submit" aria-label="{{if eq .Kind "merge"}}Approve as you: merge PR #{{.PRNumber}}{{else}}Approve resource request {{.ID}}{{end}} of {{.TaskID}}">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
+</form>{{else}}<p class="meta">Only the policy's approvers may approve.</p>{{end}}
 <form method="post" action="/approvals/{{.ID}}/deny">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
@@ -66,6 +67,6 @@
 <label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
 <label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
 </fieldset>{{end}}
-<button type="submit" class="deny">Deny</button>
+<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>
 </form>
 </article>{{end}}

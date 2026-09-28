@@ -34,10 +34,11 @@ type approvalCard struct {
 	Merge    factoryd.MergeSpec
 	Resource resourceSpec
 	CSRF     string
+	Approver bool
 }
 
-func (c *Console) approvalCard(a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string) approvalCard {
-	k := approvalCard{ApprovalRequest: a, CSRF: csrf}
+func (c *Console) approvalCard(a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
+	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
 	}
@@ -91,7 +92,7 @@ func (c *Console) decided(w http.ResponseWriter, r *http.Request, a factoryd.App
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", a.ID, current(r).user, status)
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", a.ID, err)
-		http.Error(w, "cannot record the decision: "+err.Error(), http.StatusConflict)
+		http.Error(w, "cannot record the decision; see the factoryd log", http.StatusInternalServerError)
 		return false
 	}
 	log.Printf("console: %s %s %s request %d of %s: %s", current(r).user, status, a.Kind, a.ID, a.TaskID, note)
@@ -120,7 +121,7 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 			env, err := c.cfg.Resources.ApproveForProject(r.Context(), a.ID, user)
 			if err != nil {
 				log.Printf("console: approve request %d for its project: %v", a.ID, err)
-				http.Error(w, "cannot approve for the project: "+err.Error(), http.StatusConflict)
+				http.Error(w, "cannot approve for the project; see the factoryd log", http.StatusInternalServerError)
 				return
 			}
 			log.Printf("console: %s approved resource request %d for %s: envelope now %+v", user, a.ID, a.Project, env)
@@ -172,7 +173,8 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	case "merge":
 		repo, err := factoryd.SplitRepo(a.Project)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("console: approval request %d: %v", a.ID, err)
+			http.Error(w, "the request names no repository", http.StatusInternalServerError)
 			return
 		}
 		switch r.PostFormValue("action") {

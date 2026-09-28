@@ -285,6 +285,15 @@ func (s *fakeStore) ResolveApprovals(ctx context.Context, taskID, kind, status, 
 	return nil
 }
 
+func (s *fakeStore) NoteApproval(ctx context.Context, taskID, kind, note string) error {
+	for i := range s.approvals {
+		if s.approvals[i].TaskID == taskID && s.approvals[i].Kind == kind && s.approvals[i].Status == "pending" {
+			s.approvals[i].DecisionNote = note
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
 	var out []ApprovalRequest
 	for _, a := range s.approvals {
@@ -771,6 +780,19 @@ func TestPGStoreApprovals(t *testing.T) {
 	denied, _ = s.ApprovalRequests(ctx, "denied")
 	if len(denied) != 2 || denied[1].ID != res || denied[1].DecidedBy != "sebastian" || denied[1].DecisionNote != "too big" || denied[1].DecidedAt == nil {
 		t.Fatalf("denied = %+v", denied)
+	}
+	// a refused merge is noted on the pending merge request only
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "a3", Project: "sf/r", PRNumber: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.NoteApproval(ctx, "a3", "merge", "waiting: Forgejo refused the merge"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 1 || p[0].DecisionNote != "waiting: Forgejo refused the merge" || p[0].Status != "pending" {
+		t.Fatalf("noted = %+v", p)
+	}
+	if err := s.ResolveApprovals(ctx, "a3", "", "denied", "factoryd", "done"); err != nil {
+		t.Fatal(err)
 	}
 	// the task's end denies whatever of every kind is still pending
 	third, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "resource", TaskID: "a1", Project: "sf/r", Reason: "another VM"})

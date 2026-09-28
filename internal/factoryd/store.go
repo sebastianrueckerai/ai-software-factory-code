@@ -173,6 +173,9 @@ type Store interface {
 	// kind ("" = every kind): status approved or denied, by whom
 	// ("factoryd" for the factory's own decisions) and why.
 	ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error
+	// NoteApproval sets the note of the task's pending requests of kind:
+	// why an approval has not taken effect yet (a refused merge).
+	NoteApproval(ctx context.Context, taskID, kind, note string) error
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
@@ -631,6 +634,12 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
 		 WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending'`, taskID, kind, status, by, note)
+	return err
+}
+
+func (s *PGStore) NoteApproval(ctx context.Context, taskID, kind, note string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET decision_note = $3
+		WHERE task_id = $1 AND kind = $2 AND status = 'pending'`, taskID, kind, note)
 	return err
 }
 

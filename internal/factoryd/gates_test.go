@@ -329,6 +329,11 @@ func TestMergeRefusal(t *testing.T) {
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "was refused: forgejo POST") || store.approvals[0].Status != "pending" {
 		t.Fatalf("comments = %q, approval = %+v", fj.comments, store.approvals[0])
 	}
+	// the console's card says why the approve did not merge
+	if note := store.approvals[0].DecisionNote; !strings.HasPrefix(note, "waiting: Forgejo refused the merge after sebastian's approval: ") ||
+		!strings.Contains(note, "405") {
+		t.Fatalf("approval note = %q", note)
+	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
 		t.Fatal("no merge_refused step")
 	}

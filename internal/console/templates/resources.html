@@ -17,16 +17,18 @@
 <td>{{eur4 .PricePerHourEUR}}</td>
 <td>{{eur4 .AccruedEUR}}</td>
 <td>{{.State}}</td>
-<td>{{if .Actions}}{{if not .Promoted}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" aria-describedby="promote-{{.ID}}">Promote</button> <span id="promote-{{.ID}}" class="meta">{{.PromoteNote}}</span></form>{{end}}
-<form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny">Release</button></form>{{end}}</td>
+<td>{{if .Actions}}{{if and $.Approver .Promotable}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" aria-label="Promote {{.Size}} {{.Kind}} {{.ID}} of {{.OwnerRef}}" aria-describedby="promote-{{.ID}}">Promote</button> <span id="promote-{{.ID}}" class="meta">{{.PromoteNote}}</span></form>{{end}}
+<form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny" aria-label="Release {{.Size}} {{.Kind}} {{.ID}} of {{.OwnerRef}}">Release</button></form>{{end}}</td>
 </tr>
 {{else}}<tr><td colspan="9">No resources.</td></tr>{{end}}
 </tbody>
 </table>
-<form method="post" action="/envelopes" class="envelope">
+{{if $.Approver}}<form method="post" action="/envelopes" class="envelope">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <input type="hidden" name="project" value="{{.Project}}">
-<fieldset>
+{{else}}<div class="envelope">
+<p class="meta">Only the policy's approvers may change the envelope.</p>{{end}}
+<fieldset{{if not $.Approver}} disabled{{end}}>
 <legend>Envelope: what tasks may commission without a human</legend>
 <p class="meta">{{if .HasEnvelope}}Set by {{.Envelope.SetBy}} at {{utc .Envelope.SetAt}}. This month: {{eur4 .Envelope.Use.MonthEUR}} EUR used or reserved, {{.Envelope.Use.OpenServers}} servers open.{{else}}Not set yet: the policy's default below applies on the first request unless you save one.{{end}}</p>
 <label for="monthly-{{.Project}}">Monthly EUR</label>
@@ -40,8 +42,8 @@
 <label for="volume-{{.Project}}">Max volume, GB (0 = none)</label>
 <input id="volume-{{.Project}}" name="volume_max_gb" type="number" min="0" step="1" value="{{.Envelope.VolumeMaxGB}}" required>
 </fieldset>
-<button type="submit">Save the envelope</button>
-</form>
+{{if $.Approver}}<button type="submit">Save the envelope</button>
+</form>{{else}}</div>{{end}}
 </section>
 {{end}}
 {{template "foot"}}

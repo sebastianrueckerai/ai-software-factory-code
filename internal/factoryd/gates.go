@@ -531,7 +531,15 @@ func (r *Runner) ReportMergeRetriesExhausted(ctx context.Context, taskID string,
 func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, reason string) {
 	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
 		commit, approver, reason, mergeRetryAfter))
+	r.note(ctx, t, "waiting: the merge after "+approver+"'s approval failed and is retried: "+reason)
 	r.record(ctx, t.ID, "merge_failed", map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason})
+}
+
+// note tells the console's merge card why the approval has not merged.
+func (r *Runner) note(ctx context.Context, t Task, note string) {
+	if err := r.store.NoteApproval(ctx, t.ID, "merge", note); err != nil {
+		log.Printf("task %s: note the approval request: %v", t.ID, err)
+	}
 }
 
 // lastAttempt reports whether this activity attempt is the last its retry
@@ -598,6 +606,7 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
 		commit, approver, res.Refusal))
+	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal})
 	return res
 }

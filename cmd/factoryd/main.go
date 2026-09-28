@@ -301,6 +301,9 @@ func main() {
 		Addr:              *consoleAddr,
 		Handler:           consoleHandler,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
 	}
 	go func() {

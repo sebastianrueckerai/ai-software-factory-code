@@ -586,8 +586,9 @@ func (a AgentStore) Approval(ctx context.Context, id int64, taskID string) (Appr
 
 // Promote makes the open commission of row id project-owned: no lease, no
 // end with its task, its reservation dropped; its accruing cost counts
-// against the project's month from then on. For the console; by is the
-// human.
+// against the project's month from then on. A released commission, or one
+// whose lease has ended, is refused (ErrLeaseEnded): the collector is
+// about to delete it. For the console; by is the human.
 func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -595,13 +596,17 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var hold int64
-	err = tx.QueryRowContext(ctx, `SELECT hold_id FROM cloud_resources
-		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state IN `+openStates, id).Scan(&hold)
+	var ended bool
+	err = tx.QueryRowContext(ctx, `SELECT hold_id, (released_by <> '' OR (NOT promoted AND lease_expires <= now())) FROM cloud_resources
+		WHERE id = $1 AND project = 'agent' AND hold_id IS NOT NULL AND state IN `+openStates+` FOR UPDATE`, id).Scan(&hold, &ended)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("resource %d is not an open agent resource", id)
+		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
 	}
 	if err != nil {
 		return err
+	}
+	if ended {
+		return fmt.Errorf("resource %d: %w", id, ErrLeaseEnded)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE cloud_resources SET promoted = true, promoted_by = $2 WHERE hold_id = $1 AND state IN `+openStates, hold, by); err != nil {
 		return err
@@ -620,10 +625,16 @@ func (a AgentStore) EndLease(ctx context.Context, id int64, by string) error {
 	res, err := a.DB.ExecContext(ctx, `UPDATE cloud_resources SET lease_expires = now(), promoted = false, released_by = $2
 		WHERE state IN `+openStates+` AND hold_id = (SELECT hold_id FROM cloud_resources WHERE id = $1 AND project = 'agent')`, id, by)
 	if n, _ := affected(res, err); !n && err == nil {
-		return fmt.Errorf("resource %d is not an open agent resource", id)
+		return fmt.Errorf("resource %d: %w", id, ErrNotOpen)
 	}
 	return err
 }
+
+// Promote's and EndLease's refusals, for the console's messages.
+var (
+	ErrNotOpen    = errors.New("not an open agent resource")
+	ErrLeaseEnded = errors.New("its lease has ended or it was released; the collector deletes it")
+)
 
 // Commissions lists the agent rows open now or closed after since, by
 // project, task and commission: the console's resources page.

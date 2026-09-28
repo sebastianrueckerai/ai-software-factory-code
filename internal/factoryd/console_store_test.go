@@ -38,15 +38,34 @@ func TestPGStoreBoardTasks(t *testing.T) {
 		UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id = 'old'`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
-	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour))
+	// the board reads an escalation's reason from the row the escalation
+	// wrote, the latest one, not from the timeline object
+	for _, body := range []string{"old reason", "cannot reach the database"} {
+		if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "high", Kind: IntakeEscalation, Author: "factoryd", Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "low", Kind: "comment", Author: "sebastian", Body: "not an escalation"}); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 10)
 	if err != nil {
 		t.Fatalf("BoardTasks: %v", err)
 	}
-	var ids []string
+	var ids, reasons []string
 	for _, tk := range tasks {
 		ids = append(ids, tk.ID)
+		reasons = append(reasons, tk.Escalation)
 	}
 	if want := []string{"high", "low", "recent"}; !slices.Equal(ids, want) {
 		t.Fatalf("BoardTasks = %v, want %v", ids, want)
+	}
+	if want := []string{"cannot reach the database", "", ""}; !slices.Equal(reasons, want) {
+		t.Fatalf("reasons = %q, want %q", reasons, want)
+	}
+	// bounded, open tasks first
+	tasks, err = s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 2)
+	if err != nil || len(tasks) != 2 || tasks[0].ID != "high" || tasks[1].ID != "low" {
+		t.Fatalf("BoardTasks limit 2 = %+v, %v", tasks, err)
 	}
 }

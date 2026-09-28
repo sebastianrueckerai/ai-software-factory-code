@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
@@ -42,15 +44,17 @@ const (
 	sessionTTL    = 12 * time.Hour
 	loginTTL      = 10 * time.Minute
 	writersTTL    = time.Minute
+	writersStale  = 5 * time.Minute // a failed refresh serves the last list this long
 	finishedSince = 7 * 24 * time.Hour
 )
 
 // Tasks is the task state the board reads.
 type Tasks interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
-	// BoardTasks lists every task not done or failed, and those finished
-	// after since.
-	BoardTasks(ctx context.Context, since time.Time) ([]factoryd.Task, error)
+	// BoardTasks lists at most limit tasks: those not done or failed
+	// first, then those finished after since, each with its latest
+	// escalation's reason.
+	BoardTasks(ctx context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error)
 }
 
 // Writers is the trust gate's writer list (factoryd.Forgejo.RepoWriters):
@@ -95,6 +99,7 @@ type Console struct {
 	sessions map[string]*session
 	writers  []string
 	writersT time.Time
+	flight   singleflight.Group
 }
 
 type session struct {
@@ -138,12 +143,12 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.costs))
 	c.mux.Handle("GET /policy", c.auth(c.policy))
-	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
+	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.spend("approve", c.approve)))
 	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
 	c.mux.Handle("GET /resources", c.auth(c.resources))
-	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.promote))
+	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.spend("promote", c.promote)))
 	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
-	c.mux.Handle("POST /envelopes", c.auth(c.setEnvelope))
+	c.mux.Handle("POST /envelopes", c.auth(c.spend("envelope edit", c.setEnvelope)))
 	return c, nil
 }
 
@@ -152,6 +157,7 @@ func (c *Console) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "+
 		"form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	h.Set("Referrer-Policy", "same-origin")
 	c.mux.ServeHTTP(w, r)
 }
@@ -228,21 +234,55 @@ func (c *Console) drop(r *http.Request) {
 }
 
 // writer reports whether user is on the repository's writer list, read at
-// most once a minute.
+// most once a minute by one request while the others wait for it; when
+// Forgejo fails, the last list serves for up to five minutes.
 func (c *Console) writer(ctx context.Context, user string) (bool, error) {
 	c.mu.Lock()
-	writers, fresh := c.writers, time.Since(c.writersT) < writersTTL
+	writers, at := c.writers, c.writersT
 	c.mu.Unlock()
-	if !fresh {
-		var err error
-		if writers, err = c.cfg.Writers.RepoWriters(ctx, c.cfg.Repo.Owner, c.cfg.Repo.Name); err != nil {
+	if time.Since(at) >= writersTTL {
+		v, err, _ := c.flight.Do("writers", func() (any, error) {
+			list, err := c.cfg.Writers.RepoWriters(context.WithoutCancel(ctx), c.cfg.Repo.Owner, c.cfg.Repo.Name)
+			if err == nil {
+				c.mu.Lock()
+				c.writers, c.writersT = list, time.Now()
+				c.mu.Unlock()
+			}
+			return list, err
+		})
+		switch {
+		case err == nil:
+			writers = v.([]string)
+		case writers != nil && time.Since(at) < writersStale:
+			log.Printf("console: writers of %s: %v; serving the list of %s", c.cfg.Repo, err, at.UTC().Format(time.RFC3339))
+		default:
 			return false, err
 		}
-		c.mu.Lock()
-		c.writers, c.writersT = writers, time.Now()
-		c.mu.Unlock()
 	}
 	return slices.Contains(writers, user), nil
+}
+
+// approver reports whether the session's human may authorize spend: a name
+// on the policy's approvers (ruling 128). Unreadable policy: no.
+func (c *Console) approver(r *http.Request) bool {
+	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
+	if err != nil || !ok {
+		log.Printf("console: current policy for the approvers: loaded %v, %v", ok, err)
+		return false
+	}
+	return slices.Contains(v.Document.Approvers, current(r).user)
+}
+
+// spend refuses a spend action to anyone but the policy's approvers.
+func (c *Console) spend(what string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !c.approver(r) {
+			log.Printf("console: %s is no approver: %s refused", current(r).user, what)
+			http.Error(w, "Only the policy's approvers may authorize spend.", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (c *Console) newSession(w http.ResponseWriter, s *session) {
