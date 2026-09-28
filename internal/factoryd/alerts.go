@@ -8,11 +8,12 @@ import (
 )
 
 // Alert kinds (ruling 140): an activity past its policy bound, a session
-// supervisor trip, a human escalation.
+// supervisor trip, a human escalation, an agent asking the issue author.
 const (
 	AlertGateBound      = "gate_bound"
 	AlertSupervisorTrip = "supervisor_trip"
 	AlertEscalation     = "escalation"
+	AlertInfoRequest    = "info_request"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.

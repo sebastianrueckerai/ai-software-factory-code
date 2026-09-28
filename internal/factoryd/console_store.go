@@ -24,8 +24,8 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 		        WHERE e.task_id = tasks.id AND e.kind = $2 ORDER BY e.id DESC LIMIT 1), ''),
 		        COALESCE((SELECT a.id FROM alerts a
 		        WHERE a.task_id = tasks.id AND a.kind = $4 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0)
-		 FROM tasks WHERE status NOT IN ('done', 'failed') OR finished_at > $1
-		 ORDER BY status IN ('done', 'failed'), priority DESC, finished_at DESC NULLS FIRST, id
+		 FROM tasks WHERE status NOT IN ('done', 'failed', 'closed') OR finished_at > $1
+		 ORDER BY status IN ('done', 'failed', 'closed'), priority DESC, finished_at DESC NULLS FIRST, id
 		 LIMIT $3`, since, IntakeEscalation, limit, AlertEscalation)
 	if err != nil {
 		return nil, err

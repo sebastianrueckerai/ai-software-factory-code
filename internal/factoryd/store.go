@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -54,7 +55,23 @@ type Task struct {
 	// none once it finished, and never for the human lane.
 	Gate      string
 	GateSince *time.Time
+	// Author is who filed the task's issue and AuthorWriter whether they
+	// could write the repository then (ruling 152): the brief and the
+	// model review weigh an outside account's report as untrusted input.
+	Author       string
+	AuthorWriter bool
+	// AgentSummary is the agent's last message of its latest pushed
+	// session: its recommendation, and a not_reproduced line when it
+	// fixed a fault it did not reproduce exactly (ruling 149).
+	AgentSummary string
 }
+
+// FinalStatuses end a task: merged or given up, and closed, an issue
+// closed as not reproducible (ruling 150).
+var FinalStatuses = []string{"done", "failed", "closed"}
+
+// Final reports whether status ends a task.
+func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 
 // TaskUsage is what a task has used of its caps and what a human granted
 // on top; the workflow keeps it on the row so a new run continues the
@@ -119,7 +136,8 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time and leaves the gate.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	// MarkStarted moves a queued, running, in-review or waiting-human task to running.
+	// MarkStarted moves a queued, running, in-review, waiting-human or
+	// waiting-poster task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -154,6 +172,15 @@ type Store interface {
 	SetTaskPR(ctx context.Context, id string, number int64) error
 	// MarkHalfWay records that the task's half-way check-in fired.
 	MarkHalfWay(ctx context.Context, id string) error
+	// SetAgentSummary records the agent's last message of its latest
+	// pushed session.
+	SetAgentSummary(ctx context.Context, id, summary string) error
+	// PromoteSuggested starts a suggested improvement (a writer's agent
+	// label): queued at base sha, in the intake gate from now; false when
+	// the task was not suggested.
+	PromoteSuggested(ctx context.Context, id, sha string) (bool, error)
+	// ProjectByRepository is the project row of repository (owner/name).
+	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
 	// DeliverySeen reports whether a webhook delivery was processed.
@@ -265,11 +292,14 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	// an agent task starts in intake, since the work was asked for
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since)
+		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
+		                    author, author_writer)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
-		         CASE WHEN $11 = 'agent' THEN $16 ELSE '' END, CASE WHEN $11 = 'agent' THEN COALESCE($15, now()) END)`,
+		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN $16 ELSE '' END,
+		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN COALESCE($15, now()) END, $17, $18)`,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake)
+		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
+		t.Author, t.AuthorWriter)
 	return err
 }
 
@@ -282,7 +312,8 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
-	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since`
+	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since,
+	author, author_writer, agent_summary`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -290,7 +321,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand,
-		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince); err != nil {
+		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -391,6 +422,29 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	return oneRow(res, err, "task "+id)
 }
 
+func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_summary = $2 WHERE id = $1`, id, summary)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'queued', sha = $2, gate = $3, gate_since = now()
+		WHERE id = $1 AND status = 'suggested'`, id, sha, GateIntake)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *PGStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
+	ps, err := s.projects(ctx, `SELECT `+projectColumns+` FROM projects WHERE repository = $1`, repository)
+	if err != nil || len(ps) == 0 {
+		return Project{}, false, err
+	}
+	return ps[0], true, nil
+}
+
 func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
 	var seen bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id).Scan(&seen)
@@ -423,9 +477,9 @@ func (s *PGStore) Ping(ctx context.Context) error {
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = $2,
-		        finished_at = CASE WHEN $2 IN ('done', 'failed') THEN now() ELSE finished_at END,
-		        gate = CASE WHEN $2 IN ('done', 'failed') THEN '' ELSE gate END,
-		        gate_since = CASE WHEN $2 IN ('done', 'failed') THEN NULL ELSE gate_since END
+		        finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN now() ELSE finished_at END,
+		        gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
+		        gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END
 		 WHERE id = $1 AND status = ANY($3)`, id, to, from)
 	if err := oneRow(res, err, "task "+id); err != nil {
 		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
@@ -435,14 +489,14 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET gate = $2, gate_since = $3
-		WHERE id = $1 AND status NOT IN ('done', 'failed')`, id, gate, since)
+		WHERE id = $1 AND status NOT IN ('done', 'failed', 'closed', 'suggested')`, id, gate, since)
 	return err
 }
 
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'running'
-		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review', 'waiting-human')`, id)
+		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review', 'waiting-human', 'waiting-poster')`, id)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -466,7 +520,7 @@ func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task,
 
 func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id FROM tasks WHERE status IN ('done', 'failed') AND finished_at > now() - make_interval(secs => $1)
+		`SELECT id FROM tasks WHERE status IN ('done', 'failed', 'closed') AND finished_at > now() - make_interval(secs => $1)
 		 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task_id = tasks.id AND holds.kind = $2)
 		 ORDER BY finished_at`, within.Seconds(), policy.KindModel)
 	if err != nil {

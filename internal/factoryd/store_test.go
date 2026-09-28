@@ -47,6 +47,7 @@ type fakeStore struct {
 	pruned       []time.Duration
 	approvals    []ApprovalRequest
 	gates        []string // "task gate since", in order
+	projects     []Project
 	alertsMu     sync.Mutex
 	alerts       []Alert
 }
@@ -63,7 +64,7 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
 	}
-	if t.Kind == "agent" && t.Gate == "" {
+	if t.Kind == "agent" && t.Status != "suggested" && t.Gate == "" {
 		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
 	s.tasks[t.ID] = t
@@ -142,7 +143,7 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
 	}
 	t.Status = to
-	if to == "done" || to == "failed" {
+	if Final(to) {
 		now := time.Now()
 		s.finished[id] = now
 		t.FinishedAt, t.Gate, t.GateSince = &now, "", nil
@@ -153,7 +154,7 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 
 func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t, ok := s.tasks[id]
-	if !ok || !slices.Contains([]string{"queued", "running", "in-review", "waiting-human"}, t.Status) {
+	if !ok || !slices.Contains([]string{"queued", "running", "in-review", "waiting-human", "waiting-poster"}, t.Status) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
@@ -180,6 +181,36 @@ func (s *fakeStore) MarkHalfWay(ctx context.Context, id string) error {
 	t.HalfWayDone = true
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.AgentSummary = summary
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Status != "suggested" {
+		return false, nil
+	}
+	now := time.Now()
+	t.Status, t.SHA, t.Gate, t.GateSince = "queued", sha, GateIntake, &now
+	s.tasks[id] = t
+	return true, nil
+}
+
+func (s *fakeStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
+	for _, p := range s.projects {
+		if p.Repository == repository {
+			return p, true, nil
+		}
+	}
+	return Project{}, false, nil
 }
 
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
@@ -929,5 +960,75 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
 	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
+	}
+}
+
+// Migration 0025 on a real Postgres: the author and the agent's summary
+// on the row, a suggested task outside every gate until promoted, closed
+// as a final state, the info_request alert kind, projects by repository.
+func TestPGStoreIntakeAuto(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests, alerts`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-sug", Status: "suggested", Objective: "o", Repository: "sf/r", Kind: "agent",
+		IssueNumber: 7, Source: "webhook", Author: "outsider"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.Task(ctx, "t-sug")
+	if err != nil || got.Author != "outsider" || got.AuthorWriter || got.Gate != "" || got.GateSince != nil {
+		t.Fatalf("suggested row = %+v, %v; want author outsider, outside account, no gate", got, err)
+	}
+	if ok, err := s.PromoteSuggested(ctx, "t-sug", "abc"); err != nil || !ok {
+		t.Fatalf("promote: %v %v", ok, err)
+	}
+	if ok, err := s.PromoteSuggested(ctx, "t-sug", "def"); err != nil || ok {
+		t.Fatalf("second promote: %v %v, want false", ok, err)
+	}
+	got, _, _ = s.Task(ctx, "t-sug")
+	if got.Status != "queued" || got.SHA != "abc" || got.Gate != GateIntake || got.GateSince == nil {
+		t.Fatalf("promoted row = %+v; want queued at abc in the intake gate", got)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-w", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent",
+		IssueNumber: 8, Source: "webhook", Author: "sebastian", AuthorWriter: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentSummary(ctx, "t-w", "fixed it\nnot_reproduced: x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionTask(ctx, "t-w", []string{"queued"}, "waiting-poster"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkStarted(ctx, "t-w"); err != nil {
+		t.Fatalf("waiting-poster to running: %v", err)
+	}
+	if err := s.TransitionTask(ctx, "t-w", []string{"running"}, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ = s.Task(ctx, "t-w")
+	if !got.AuthorWriter || got.AgentSummary != "fixed it\nnot_reproduced: x" || got.FinishedAt == nil || got.Gate != "" {
+		t.Fatalf("closed row = %+v; want writer, the summary, finished, no gate", got)
+	}
+	if ids, err := s.RecentlyFinishedTasks(ctx, time.Hour); err != nil || !slices.Contains(ids, "t-w") {
+		t.Fatalf("recently finished = %v, %v; want t-w", ids, err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t-w"}); err != nil {
+		t.Fatalf("info_request alert: %v", err)
+	}
+	p, ok, err := s.ProjectByRepository(ctx, "sf/ai-software-factory-code")
+	if err != nil || !ok || p.Managed || p.MergeRule != "human" {
+		t.Fatalf("code repository's row = %+v %v %v; want unmanaged on human", p, ok, err)
+	}
+	if _, ok, err := s.ProjectByRepository(ctx, "sf/nothing"); err != nil || ok {
+		t.Fatalf("unknown repository: %v %v", ok, err)
 	}
 }
