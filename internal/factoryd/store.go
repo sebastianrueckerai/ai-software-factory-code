@@ -67,9 +67,13 @@ type Task struct {
 	AgentSummary string
 }
 
-// Standing is the issue author's standing (ruling 152).
+// Standing is the issue author's standing (ruling 152); "" for a task
+// from before authors were kept.
 func (t Task) Standing() string {
-	if t.AuthorWriter {
+	switch {
+	case t.Author == "":
+		return ""
+	case t.AuthorWriter:
 		return harness.StandingWriter
 	}
 	return harness.StandingOutside

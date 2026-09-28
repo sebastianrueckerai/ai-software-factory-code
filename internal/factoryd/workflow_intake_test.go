@@ -532,3 +532,20 @@ func TestGateReproductionNotReproducedAtBase(t *testing.T) {
 		t.Fatalf("step = %v", step)
 	}
 }
+
+// A task from before authors were kept has no standing (review M2): the
+// brief and the review name none rather than an outside account.
+func TestStandingOfAnAuthorlessTask(t *testing.T) {
+	for _, tc := range []struct {
+		task Task
+		want string
+	}{
+		{Task{}, ""},
+		{Task{Author: "visitor"}, "outside account"},
+		{Task{Author: "sebastian", AuthorWriter: true}, "writer"},
+	} {
+		if got := tc.task.Standing(); got != tc.want {
+			t.Errorf("%+v: standing %q, want %q", tc.task, got, tc.want)
+		}
+	}
+}
