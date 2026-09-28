@@ -293,12 +293,20 @@ func TestAlertIntakeMapsNamespaceToProject(t *testing.T) {
 	if r.ns.reads != 1 || len(r.fj.issues) != 2 {
 		t.Fatalf("namespace reads %d, issues %d; want 1, 2", r.ns.reads, len(r.fj.issues))
 	}
-	k8s := sigAlert("firing", "fp3", "", firedAt, neverEnds)
-	delete(k8s["labels"].(map[string]string), "namespace")
-	k8s["labels"].(map[string]string)["k8s.namespace.name"] = "demo-prod"
-	r.post(t, "signoz", "hook-pw", k8s)
+	prod := sigAlert("firing", "fp3", "demo-prod", firedAt, neverEnds)
+	r.post(t, "signoz", "hook-pw", prod)
 	if len(r.fj.issues) != 3 || !strings.HasPrefix(r.fj.issues[2], "alert: 5xx rate above 5 % in demo-prod\n") {
-		t.Fatalf("the OTel namespace label: %d issues", len(r.fj.issues))
+		t.Fatalf("demo-prod: %d issues", len(r.fj.issues))
+	}
+	// a label the rule's query produced never names the namespace: only
+	// the job's namespace label does
+	grouped := sigAlert("firing", "fp4", "", firedAt, neverEnds)
+	delete(grouped["labels"].(map[string]string), "namespace")
+	grouped["labels"].(map[string]string)["k8s.namespace.name"] = "demo-prod"
+	grouped["labels"].(map[string]string)["k8s_namespace_name"] = "demo-prod"
+	r.post(t, "signoz", "hook-pw", grouped)
+	if len(r.fj.issues) != 3 {
+		t.Fatalf("an alert without the namespace label filed issue %d", len(r.fj.issues))
 	}
 	for _, ns := range []string{"platform", "stray", "foreign", "legacy", "", "Bad/../ns"} {
 		if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp-"+ns, ns, firedAt, neverEnds)); rr.Code != http.StatusOK {

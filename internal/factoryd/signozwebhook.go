@@ -49,7 +49,8 @@ type AlertBook interface {
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
 // factoryd (basic auth from secret signoz-webhook). An alert's namespace
-// label names the project through the namespace's factory/project label;
+// label, which the signoz-objects job sets on a project's rule, names the
+// project through the namespace's factory/project label;
 // the first firing of a fingerprint files a bug issue on the project's
 // repository as the bot and starts its task, a later firing is a comment
 // on it while the task runs and a new issue once it ended, and a resolve
@@ -104,7 +105,9 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
-	name, ns := a.Labels["alertname"], namespaceOf(a.Labels)
+	// the namespace label the signoz-objects job sets on a project's rule,
+	// never a label the rule's query produced
+	name, ns := a.Labels["alertname"], a.Labels["namespace"]
 	p, ok, err := in.project(ctx, ns)
 	if err != nil {
 		return err

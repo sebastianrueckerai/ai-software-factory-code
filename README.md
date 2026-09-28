@@ -294,7 +294,10 @@ activities, each with a timeline step and a comment on the pull request:
    required".
 3. `GateReproduction`, when the task carries a reproduction
    (`repro_command`: the issue body's first fenced block labelled `repro`,
-   or `repro_command` on `POST /tasks`): a fresh sandbox namespace, a read
+   or `repro_command` on `POST /tasks`; when the issue carries none, a SigNoz
+   alert's for one, the repro block that opens the agent's last message,
+   marked `ByAgent` for the review, which judges whether it tests the
+   reported fault): a fresh sandbox namespace, a read
    token on the task's repository only, and one pod of the worker image
    (no agent, no gateway token, no push token, the agents' egress policy).
    Its init container (`MODE=repro-fetch`), the token's only holder,
@@ -1135,6 +1138,26 @@ updated, no old one left, every updated one available); `[]` when none.
 Cached 30 s per project and namespace; a source it cannot read answers 502,
 never `[]`.
 
+`POST /webhooks/signoz` on 8080 is SigNoz's webhook channel `factoryd`
+(written by the infra's `signoz-objects` job, basic auth user `signoz` with
+the password of secret `signoz-webhook`, env `SIGNOZ_WEBHOOK_PASSWORD`;
+401 otherwise). Each alert's `namespace` label, which the job sets on
+every project rule, names the project through the namespace's
+`factory/project` label (read once per namespace); a registered, managed
+project that lists the namespace, or the alert is logged and dropped. By
+the alert's fingerprint: its first firing files an issue on the project's
+repository as the bot, title `alert: <name> in <namespace>`, the body the
+firing time, the SigNoz link, the value and annotations and the labels
+(fenced, one line each), labels `bug` and `state/queued`, and starts its
+agent task at the default branch's head (source `alert`, no reproduction:
+the agent brings its own); a later firing comments `fired again at <time>`
+while that task runs and files a new issue once it ended; a resend of the
+same firing does nothing; a resolve comments `resolved at <time>` once.
+Each issue is an alerts row of kind `alert` with the fingerprint, judged
+when its task ends: `real` on a merge, `noise` when a human closed the
+issue without one. A notification that fails in part answers 500, and
+SigNoz sends it again.
+
 The CI spawner serves the code repository (registrar token) and every
 project `register-project` has made (the projects token: Forgejo keeps the
 runner API to the repository's owner), pull requests and the project's own
@@ -1467,7 +1490,7 @@ DNS query is the admitted one. A new callee needs a rule here first.
 Ingress (`factoryd-ingress`): the node on 8080 (probes), Forgejo's
 webhooks and the gateway's escalation hand-over on 8080, a project's CI
 runner pods (namespace label `factory.ai/ci-project`) on 8080 for the alerts
-endpoint, and the edge gateway's Envoy (entity `ingress`) on the console
+endpoint, SigNoz (`signoz-0` in `platform`) on 8080 for its webhook, and the edge gateway's Envoy (entity `ingress`) on the console
 port 8090 only.
 
 ## Operating it
