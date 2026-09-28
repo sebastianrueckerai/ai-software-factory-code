@@ -6,15 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
+	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -546,5 +552,59 @@ func TestFencedCannotBeClosedEarly(t *testing.T) {
 	}
 	if got := fenced("x ```` y"); got != "`````\nx ```` y\n`````" {
 		t.Fatalf("fenced = %q", got)
+	}
+}
+
+// The review heartbeats while its model call runs, so the workflow's
+// cancel (a terminal signal during the review) reaches the call; a call
+// cut by the cancel books its hold and leaves none open.
+func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
+	defer func(d time.Duration) { reviewHeartbeatEvery = d }(reviewHeartbeatEvery)
+	reviewHeartbeatEvery = 20 * time.Millisecond
+	fj := &gateForgejo{diff: "d"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`, delay: 300 * time.Millisecond}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	var suite testsuite.WorkflowTestSuite
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	env := suite.NewTestActivityEnvironment()
+	var beats atomic.Int32
+	defer func(f func(context.Context, ...any)) { recordReviewHeartbeat = f }(recordReviewHeartbeat)
+	recordReviewHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
+	r.RegisterActivities(env)
+	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+		t.Fatal(err)
+	}
+	if beats.Load() < 3 {
+		t.Fatalf("%d heartbeats during a 300 ms call at 20 ms, want several", beats.Load())
+	}
+
+	ll.delay = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	env = suite.NewTestActivityEnvironment()
+	env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+	r.RegisterActivities(env)
+	time.AfterFunc(100*time.Millisecond, cancel)
+	began := time.Now()
+	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err == nil {
+		t.Fatal("a cancelled review succeeded")
+	}
+	meter := r.supervisor.Meter.(*memPolicy)
+	if time.Since(began) > 10*time.Second || len(meter.holds) != 2 || len(meter.released) != 2 {
+		t.Fatalf("after %s: holds %d, released %d; want the cut call's hold released", time.Since(began), len(meter.holds), len(meter.released))
+	}
+}
+
+func TestReportMergeFailure(t *testing.T) {
+	fj := &gateForgejo{}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	if _, err := execActivity(t, r, ActivityReportMergeFailure, "t1", int64(9), "c1", "sebastian", "forgejo: not found"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "failed: forgejo: not found") || !strings.Contains(fj.comments[0], "The approval stands") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"merge_failed"`) || !strings.Contains(tl, `"error":"forgejo: not found"`) {
+		t.Fatalf("timeline = %s", tl)
 	}
 }

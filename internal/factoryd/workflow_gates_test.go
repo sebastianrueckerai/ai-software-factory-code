@@ -25,6 +25,8 @@ type gateHarness struct {
 	repro     []ReproResult // in order, the last repeating
 	review    Review
 	merge     []MergeResult // in order, the last repeating
+	mergeErrs []error       // Merge's error per call, in order; nil or short = none
+	reported  []string      // ReportMergeFailure reasons
 	// policyDelay is how long GatePolicy takes; reviewErr fails ModelReview
 	policyDelay   time.Duration
 	reviewErr     error
@@ -80,9 +82,18 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
 			m++
+			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
+				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))
+				return MergeResult{}, g.mergeErrs[m-1]
+			}
 			g.steps = append(g.steps, "merge")
 			g.merges = append(g.merges, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return g.merge[min(m, len(g.merge))-1], nil
+		})
+	g.env.OnActivity(ActivityReportMergeFailure, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error {
+			g.reported = append(g.reported, reason)
+			return nil
 		})
 	return g
 }
@@ -310,5 +321,54 @@ func TestWorkflowMergeFoundDoneByAHuman(t *testing.T) {
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "alice", PR: 9})
 	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged by sebastian" {
 		t.Fatalf("final = %q (%v)", final, g.finals)
+	}
+}
+
+// A Merge that ends in an error (a 404, its last attempt timing out) is
+// reported and tried again after mergeRetryAfter with the same approval
+// (versionMergeFailureReported).
+func TestWorkflowMergeErrorIsReportedAndRetried(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.mergeErrs = []error{terminalError("forgejo: pull request not found")} })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || !slices.Equal(g.merges, []string{"9 c1 sebastian error", "9 c1 sebastian"}) {
+		t.Fatalf("final = %q, merges = %v", final, g.merges)
+	}
+	if len(g.reported) != 1 || !strings.Contains(g.reported[0], "pull request not found") {
+		t.Fatalf("reported = %q", g.reported)
+	}
+}
+
+// Before versionMergeFailureReported a Merge error only waits for the next
+// approval: nothing is reported, no retry is scheduled.
+func TestWorkflowMergeErrorBeforeReportingWaits(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) { g.mergeErrs = []error{terminalError("gone")} })
+	g.env.OnGetVersion("merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported).Return(workflow.DefaultVersion)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.reported) != 0 || g.finishAt.Sub(g.started) < 5*time.Hour {
+		t.Fatalf("final = %q, reported %v, finished after %s", final, g.reported, g.finishAt.Sub(g.started))
+	}
+}
+
+// A newer approval while a retry is pending merges at once and cancels
+// the retry timer, which then never merges again.
+func TestWorkflowNewApprovalReplacesThePendingRetry(t *testing.T) {
+	g := newGateHarness(t)
+	g.merge = []MergeResult{{Failed: "forgejo 502"}, {Merged: true}}
+	var canceled []string
+	g.env.SetOnTimerCanceledListener(func(id string) { canceled = append(canceled, id) })
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(time.Hour+time.Minute, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.merges) != 2 || len(canceled) != 1 {
+		t.Fatalf("final = %q, merges = %v, cancelled timers %v", final, g.merges, canceled)
+	}
+	if d := g.finishAt.Sub(g.started); d > time.Hour+5*time.Minute {
+		t.Fatalf("finished %s after the start, want right after the second approval", d)
 	}
 }

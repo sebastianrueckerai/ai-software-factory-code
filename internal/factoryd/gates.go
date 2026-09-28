@@ -390,10 +390,29 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	// the heartbeats carry the workflow's cancel (a terminal signal during
+	// the review) into the call: it is cut, and its hold booked
+	beatCtx, stopBeats := context.WithCancel(ctx)
+	go func() {
+		tick := time.NewTicker(reviewHeartbeatEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-beatCtx.Done():
+				return
+			case <-tick.C:
+				recordReviewHeartbeat(ctx, "review")
+			}
+		}
+	}()
 	content, err := r.supervisor.Chat(ctx, t.ID, r.cfg.ReviewModel, "review", reviewPrompt, reviewInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA},
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates,
 	})
+	stopBeats()
+	if ctx.Err() != nil {
+		return Review{}, ctx.Err()
+	}
 	var rv Review
 	var refusal *policy.Refusal
 	switch {
@@ -475,12 +494,28 @@ func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, 
 	res, err := r.merge(ctx, t, repo, pr, commit, approver)
 	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
 		res = MergeResult{Failed: truncate(err.Error(), 500)}
-		r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
-			commit, approver, res.Failed, mergeRetryAfter))
-		r.record(ctx, t.ID, "merge_failed", map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": res.Failed})
+		r.reportMergeFailure(ctx, t, repo, pr, commit, approver, res.Failed)
 		return res, nil
 	}
 	return res, err
+}
+
+// ReportMergeFailure tells a merge that failed without Merge reporting it
+// (a 404, a timeout of its last attempt): a PR comment and a merge_failed
+// step, as Merge's own last attempt does; the workflow tries again later.
+func (r *Runner) ReportMergeFailure(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	r.reportMergeFailure(ctx, t, repo, pr, commit, approver, truncate(reason, 500))
+	return nil
+}
+
+func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, reason string) {
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval failed: %s\n\nThe approval stands; factoryd tries again in %s.",
+		commit, approver, reason, mergeRetryAfter))
+	r.record(ctx, t.ID, "merge_failed", map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason})
 }
 
 // lastAttempt reports whether this activity attempt is the last its retry
@@ -575,3 +610,10 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	}
 	return wf.Signal(ctx, taskID, SignalApproved, TaskSignal{Author: approver, PR: pr})
 }
+
+// reviewHeartbeatEvery is how often ModelReview heartbeats during its
+// model call; variables for the tests.
+var (
+	reviewHeartbeatEvery  = heartbeatEvery
+	recordReviewHeartbeat = activity.RecordHeartbeat
+)

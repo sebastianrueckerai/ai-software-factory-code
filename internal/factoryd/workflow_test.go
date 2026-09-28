@@ -71,6 +71,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
 			return MergeResult{}, nil
 		},
+		ActivityReportMergeFailure: func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

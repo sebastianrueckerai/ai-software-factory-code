@@ -277,14 +277,18 @@ a conflict is 409). A refusal is commented and the wait goes on. Merge
 refuses by itself a pull request whose base is not `main`. A merge that
 fails otherwise (Forgejo unreachable) is retried five times, then
 commented and recorded (`merge_failed`); the approval stands and the
-merge is tried again after 10 minutes. A human merging in Forgejo stays
+merge is tried again after 10 minutes. From change id
+`merge-failure-reported` on, a Merge that ends in an error (a 404, its
+last attempt timing out) is reported the same way (`ReportMergeFailure`)
+and retried too; a newer approval replaces a pending retry. A human merging in Forgejo stays
 valid (`pr_merged`, or found by Merge and credited to that human, with
 the head they merged). An approval signalled before the request opened,
 or for another pull request, does nothing. From change id
 `gates-pinned` on, `GatePolicy` and `ModelReview` check that the pull
 request's head is still the gated commit (a moved head fails the policy
 gate and skips the review with a note), and the model review races the
-terminal signals like the checks and the reproduction; a task without a
+terminal signals like the checks and the reproduction (it heartbeats, so
+the cancel cuts its model call, whose hold is booked); a task without a
 reproduction command gets a `gate_reproduction` step saying so. The second pull request merged this way proved the pinned gates.
 
 The first pull request merged this way added this sentence.
