@@ -381,6 +381,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
 		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
 	}
+	if reason == healedReason {
+		return id, nil // the question asked again: its alert is open already
+	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: taskID,
 		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
 		log.Printf("task %s: record the escalation alert: %v", taskID, err)

@@ -39,9 +39,11 @@ type Document struct {
 // BoundDefault is the bounds key for every activity without its own.
 const BoundDefault = "default"
 
-// DefaultBounds are the bounds a policy without them gets (ruling 140).
+// DefaultBounds are the bounds a policy without them gets (rulings 140,
+// 154): a session at the 20 min wall-clock cap is already a supervisor
+// trip, so its bound is for one that outlives the cap by a minute.
 var DefaultBounds = map[string]int{
-	"RunSession": 1200, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, BoundDefault: 120,
+	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 300, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -52,8 +54,9 @@ var BoundActivities = []string{
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted",
 }
 
-// Bound is how long one run of activity may take before it alerts: its own
-// bound, else the policy's default, else DefaultBounds'.
+// Bound is how long one run of activity may take before it alerts: the
+// policy's bound for it, else DefaultBounds' for it, else the policy's
+// default, else DefaultBounds' default.
 func (d Document) Bound(activity string) time.Duration {
 	s, ok := d.Bounds[activity]
 	if !ok {

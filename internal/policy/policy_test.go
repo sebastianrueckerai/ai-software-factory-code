@@ -380,7 +380,7 @@ func TestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]time.Duration{
-		"RunSession": 20 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
+		"RunSession": 21 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
 		"ModelReview": 3 * time.Minute, "Merge": 5 * time.Minute, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
 	} {
 		if got := d.Bound(name); got != want {
@@ -392,7 +392,7 @@ func TestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]time.Duration{
-		"WaitChecks": 15 * time.Minute, "RunSession": 20 * time.Minute, "GatePolicy": time.Minute, "Finish": time.Minute,
+		"WaitChecks": 15 * time.Minute, "RunSession": 21 * time.Minute, "GatePolicy": time.Minute, "Finish": time.Minute,
 	} {
 		if got := d.Bound(name); got != want {
 			t.Errorf("Bound(%s) = %s, want %s", name, got, want)

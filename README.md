@@ -770,7 +770,7 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `GateWatch` worker interceptor; the policy's `bounds` section, seconds
   per activity and `default`), `supervisor_trip` (every detector trip the
   supervisor decided; `continue` is `noise`, any other action `real`) and
-  `escalation` (every Escalate; open until an approver clicks `real
+  `escalation` (every escalation, not a healed run's repeat of it; open until an approver clicks `real
   problem` or `noise`, here or on the escalation's board card).
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake

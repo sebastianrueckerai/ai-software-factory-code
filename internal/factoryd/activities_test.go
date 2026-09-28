@@ -705,7 +705,8 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	if len(e) != 1 || e[0].Kind != IntakeEscalation || e[0].CommentID != 701 || e[0].Trusted || e[0].Body != "The agent asks: Which file?\nWhy: open" {
 		t.Fatalf("intake events = %+v", e)
 	}
-	// and an escalation alert, open until a human judges it
+	// and an escalation alert, open until a human judges it; a healed run
+	// asking the same question again opens none
 	for _, reason := range []string{"supervisor escalated: the check cannot pass", healedReason} {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason); err != nil {
 			t.Fatal(err)
@@ -718,7 +719,7 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 		}
 		got = append(got, fmt.Sprintf("%s %v", a.Source, a.Detail["comment"]))
 	}
-	if want := []string{"agent 701", "supervisor 702", "healed 703"}; !slices.Equal(got, want) {
+	if want := []string{"agent 701", "supervisor 702"}; !slices.Equal(got, want) {
 		t.Fatalf("escalation alerts = %q, want %q", got, want)
 	}
 }

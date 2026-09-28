@@ -26,7 +26,7 @@ const (
 type Alert struct {
 	ID         int64
 	Kind       string
-	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor or healed
+	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent or supervisor
 	TaskID     string
 	RaisedAt   time.Time
 	BoundS     int // gate_bound only
@@ -47,10 +47,7 @@ func tripVerdict(a SupervisorAction) string {
 
 // escalationSource names who asked for the human.
 func escalationSource(reason string) string {
-	switch {
-	case reason == healedReason:
-		return "healed"
-	case strings.HasPrefix(reason, agentAsks):
+	if strings.HasPrefix(reason, agentAsks) {
 		return "agent"
 	}
 	return "supervisor"
