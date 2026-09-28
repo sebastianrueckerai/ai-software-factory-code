@@ -120,8 +120,9 @@ type Store interface {
 	// a call still streaming books its own cost, and settling it too would
 	// book it twice.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
-	// SettleSpend raises spent_eur to at least reported and books the
-	// raise as a settlement row in the ledger, together.
+	// SettleSpend raises the task's booked model spend (its model and
+	// settlement rows) to at least reported, LiteLLM's model spend, and
+	// books the raise onto spent_eur and as a settlement row, together.
 	SettleSpend(ctx context.Context, id string, reported float64) error
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency; false means no task is linked to that
@@ -438,30 +439,37 @@ func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duratio
 	return ids, rows.Err()
 }
 
-// SettleSpend locks the task row, so the delta is taken from the spend the
-// raise replaces even while the gateway books calls.
+// SettleSpend locks the task row, so the delta is taken from the model
+// spend the raise replaces even while the gateway books calls. LiteLLM
+// reports model spend only, so it is weighed against the task's model and
+// settlement rows, never against spent_eur, which carries tool rows too.
 func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	var spent float64
-	err = tx.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = $1 FOR UPDATE`, id).Scan(&spent)
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE`, id).Scan(new(int))
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
 		return err
 	}
-	if reported <= spent {
+	var booked float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1 AND kind IN ($2, $3)`,
+		id, policy.KindModel, policy.KindSettlement).Scan(&booked); err != nil {
+		return err
+	}
+	if reported <= booked {
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = $2 WHERE id = $1`, id, reported); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, id, reported-booked); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, 'litellm', $3)`,
-		id, policy.KindSettlement, reported-spent); err != nil {
+		id, policy.KindSettlement, reported-booked); err != nil {
 		return err
 	}
 	return tx.Commit()

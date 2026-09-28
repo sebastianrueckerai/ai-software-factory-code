@@ -468,6 +468,9 @@ func TestPGStore(t *testing.T) {
 		if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'model', 'coding-cheap', 0.5)`, row.id); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '2 hours' WHERE id = 's-old'`); err != nil {
 		t.Fatal(err)
@@ -502,7 +505,7 @@ func TestPGStore(t *testing.T) {
 	}
 	// each raise is booked as its delta: 0.5 -> 0.75, then 0.75 -> 0.875
 	var settled []string
-	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || kind || ' ' || ref || ' ' || eur::text FROM ledger ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || kind || ' ' || ref || ' ' || eur::text FROM ledger WHERE kind = 'settlement' ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,6 +518,30 @@ func TestPGStore(t *testing.T) {
 	}
 	if want := []string{"s-done settlement litellm 0.25", "s-done settlement litellm 0.125"}; !reflect.DeepEqual(settled, want) {
 		t.Fatalf("ledger = %q, want %q", settled, want)
+	}
+	// settlement weighs LiteLLM's model spend against the booked model spend
+	// only: a task that booked 0.75 of models and 0.25 of tools (spent 1.0)
+	// while LiteLLM reports 1.0 of models under-booked 0.25; LiteLLM's next
+	// 1.125 raises it by another 0.125, 0.9 by nothing
+	if err := s.CreateTask(ctx, Task{ID: "s-tool", BudgetEUR: 2, SpentEUR: 1, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('s-tool', 'model', 'coding-cheap', 0.75), ('s-tool', 'tool', 'web_scrape', 0.25)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		reported, want float64
+	}{{1, 1.25}, {1.125, 1.375}, {0.9, 1.375}} {
+		if err := s.SettleSpend(ctx, "s-tool", step.reported); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != step.want {
+			t.Fatalf("LiteLLM %v: spent = %v, want %v", step.reported, got.SpentEUR, step.want)
+		}
+	}
+	var toolSettled string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(eur::text, ' ' ORDER BY id) FROM ledger WHERE task_id = 's-tool' AND kind = 'settlement'`).Scan(&toolSettled); err != nil || toolSettled != "0.25 0.125" {
+		t.Fatalf("s-tool settlement rows = %q (%v), want 0.25 0.125", toolSettled, err)
 	}
 	if err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
