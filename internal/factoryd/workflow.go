@@ -291,7 +291,8 @@ const (
 	// one exhausted report, no timer; a new approval restarts the count.
 	versionMergeRetryCap workflow.Version = 1
 	// versionGateStarted (change id "gate-started", ruling 140): the
-	// approved signal's timeline step carries when the approval wait
+	// signal that ends the approval wait (an approval, a close, a merge, a
+	// change request) carries in its timeline step when the wait
 	// began: the approval request, or the last refused merge or the
 	// exhausted retries that ask for a new approval.
 	versionGateStarted workflow.Version = 1
@@ -931,9 +932,12 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 	if !counts {
 		detail["ignored"] = "not the task's pull request"
 	}
-	if name == SignalApproved && counts && !t.approvalRequested.IsZero() {
+	// every counted signal but a human comment ends the approval wait
+	// (only an approval wait sets approvalRequested): its step carries
+	// the wait's start, once
+	if counts && name != SignalHumanComment && !t.approvalRequested.IsZero() {
 		detail["started"] = rfc3339(t.approvalRequested)
-		t.approvalRequested = time.Time{} // one approval ends one wait
+		t.approvalRequested = time.Time{}
 	}
 	if name == SignalHumanComment {
 		counts = t.escalation != 0 && sig.Comment > t.escalation

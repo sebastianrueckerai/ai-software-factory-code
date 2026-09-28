@@ -314,7 +314,15 @@ func stepOutcome(step string, m map[string]any) string {
 	case "model_review":
 		return cmp.Or(str("verdict"), "no verdict")
 	case "signal":
-		return "approved by " + str("author")
+		switch str("signal") {
+		case factoryd.SignalApproved:
+			return "approved by " + str("author")
+		case factoryd.SignalChangesRequested:
+			return "changes requested by " + str("author")
+		case factoryd.SignalPRMerged:
+			return "merged by " + str("author")
+		}
+		return "closed"
 	case "merged":
 		return "merged by " + str("merged_by")
 	case "merge_failed":

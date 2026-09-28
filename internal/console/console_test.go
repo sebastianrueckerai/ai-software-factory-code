@@ -1478,3 +1478,26 @@ func TestTimelineOpenSessionShowsItsAttempt(t *testing.T) {
 		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }
+
+// A close, a merge in Forgejo or a change request ends the approval wait
+// as well as an approval, each with its own outcome.
+func TestTimelineApprovalWaitOutcomes(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "failed", Repository: "sf/code", Objective: "work"})
+	var lines []string
+	for _, s := range []string{`"signal":"approved","author":"sebastian"`, `"signal":"changes_requested","author":"alice"`,
+		`"signal":"pr_merged","author":"bob"`, `"signal":"pr_closed","author":"bob"`, `"signal":"issue_closed","author":"sebastian"`} {
+		lines = append(lines, `{"step":"signal","time":"2026-09-28T12:00:00Z","started":"2026-09-28T10:00:00Z",`+s+`}`)
+	}
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(strings.Join(lines, "\n") + "\n")
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	for _, want := range []string{"approved by sebastian", "changes requested by alice", "merged by bob", "closed"} {
+		if !strings.Contains(body, "<td>2 h 0 min</td><td>"+want+"</td>") {
+			t.Errorf("durations lack a 2 h approval wait ending %q", want)
+		}
+	}
+	if n := strings.Count(body, "<td>2 h 0 min</td><td>closed</td>"); n != 2 {
+		t.Errorf("%d closed approval waits, want 2 (the pull request's and the issue's)", n)
+	}
+}

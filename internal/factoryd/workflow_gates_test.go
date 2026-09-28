@@ -524,3 +524,28 @@ func TestWorkflowApprovalDuringAMergeRetryCarriesNoStart(t *testing.T) {
 		t.Fatalf("approvals started %q, want %q", started, want)
 	}
 }
+
+// An issue closed during the approval wait ends the wait: its signal step
+// carries the request's time, two hours before the close.
+func TestWorkflowIssueCloseEndsTheApprovalWait(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+	g.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	var closed []recordedStep
+	for _, r := range g.recorded {
+		if r.step == "signal" && r.detail["signal"] == SignalIssueClosed {
+			closed = append(closed, r)
+		}
+	}
+	if len(closed) != 1 || closed[0].detail["started"] != g.requested[0].UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("issue_closed steps %+v, want one carrying the request's %s", closed, g.requested[0])
+	}
+	if wait := closed[0].at.Sub(g.requested[0]); wait != 2*time.Hour {
+		t.Fatalf("the wait lasted %s, want 2h", wait)
+	}
+}

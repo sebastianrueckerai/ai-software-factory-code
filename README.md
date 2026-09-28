@@ -764,7 +764,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   step that ended a gate (`factoryd.StepGates`, each carrying `started`)
   with its attempt, start, duration, outcome and a `<meter>` against the
   longest gate, the CI jobs of a `checks` step under it, and the row's
-  current gate "open for N min" while no step ended it.
+  current gate "open for N min" while no step ended it. The approval wait
+  ends at the signal that ended it: an approval, a change request, a merge
+  in Forgejo or a close.
 - `/alerts`: the newest 200 alerts (ruling 140): `gate_bound` (an activity
   still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor; the policy's `bounds` section, seconds
