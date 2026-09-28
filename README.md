@@ -285,7 +285,7 @@ or for another pull request, does nothing. From change id
 request's head is still the gated commit (a moved head fails the policy
 gate and skips the review with a note), and the model review races the
 terminal signals like the checks and the reproduction; a task without a
-reproduction command gets a `gate_reproduction` step saying so.
+reproduction command gets a `gate_reproduction` step saying so. The second pull request merged this way proved the pinned gates.
 
 The first pull request merged this way added this sentence.
 
