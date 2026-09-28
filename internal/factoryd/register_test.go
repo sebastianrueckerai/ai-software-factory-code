@@ -30,10 +30,15 @@ type forgejoState struct {
 	labels     []string
 	secrets    map[string]string
 	writes     []string // "METHOD path by <auth>"
+	// projectsAdmin: factory-projects sees and administers the repository
+	projectsAdmin bool
+	tokens        map[int64]string
+	nextToken     int64
+	minted        []string
 }
 
 func newForgejoState() *forgejoState {
-	return &forgejoState{repos: map[string]bool{}, collabs: map[string]string{}, secrets: map[string]string{}}
+	return &forgejoState{repos: map[string]bool{}, collabs: map[string]string{}, secrets: map[string]string{}, tokens: map[int64]string{}}
 }
 
 func (s *forgejoState) server(t *testing.T) *httptest.Server {
@@ -62,7 +67,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		p := r.URL.Path
 		switch {
 		case r.Method == http.MethodGet && p == repo:
-			if !s.repos["sf/demo-app"] {
+			if !s.repos["sf/demo-app"] || (by == "token projects-tok" && !s.projectsAdmin) {
 				http.NotFound(w, r)
 				return
 			}
@@ -72,6 +77,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				t.Errorf("create repo %v", body)
 			}
 			s.repos["sf/demo-app"] = true
+			s.projectsAdmin = true
 			w.WriteHeader(http.StatusCreated)
 		case p == repo+"/hooks" && r.Method == http.MethodGet:
 			list(s.hooks)
@@ -82,13 +88,17 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 		case strings.HasPrefix(p, repo+"/collaborators/") && strings.HasSuffix(p, "/permission"):
 			user := strings.TrimSuffix(strings.TrimPrefix(p, repo+"/collaborators/"), "/permission")
-			if s.collabs[user] == "" {
-				http.NotFound(w, r)
-				return
+			perm := cmpOr(s.collabs[user], "none")
+			if user == "factory-projects" && s.projectsAdmin {
+				perm = "admin"
 			}
-			fmt.Fprintf(w, `{"permission":%q}`, s.collabs[user])
+			fmt.Fprintf(w, `{"permission":%q}`, perm)
 		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodPut:
-			s.collabs[strings.TrimPrefix(p, repo+"/collaborators/")] = body["permission"].(string)
+			user := strings.TrimPrefix(p, repo+"/collaborators/")
+			if user == "factory-projects" {
+				s.projectsAdmin = body["permission"] == "admin"
+			}
+			s.collabs[user] = body["permission"].(string)
 			w.WriteHeader(http.StatusNoContent)
 		case p == repo+"/branch_protections/main" && r.Method == http.MethodGet:
 			if s.protection == nil {
@@ -136,6 +146,26 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut:
 			s.secrets[strings.TrimPrefix(p, repo+"/actions/secrets/")] = body["data"].(string)
 			w.WriteHeader(http.StatusCreated)
+		case by == "basic sebastian" && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/users/factory-ci/tokens"):
+			var out []map[string]any
+			for id, name := range s.tokens {
+				out = append(out, map[string]any{"id": id, "name": name})
+			}
+			list(nonNil(out))
+		case by == "basic sebastian" && r.Method == http.MethodDelete && strings.HasPrefix(p, "/api/v1/users/factory-ci/tokens/"):
+			var id int64
+			fmt.Sscanf(strings.TrimPrefix(p, "/api/v1/users/factory-ci/tokens/"), "%d", &id)
+			delete(s.tokens, id)
+			w.WriteHeader(http.StatusNoContent)
+		case by == "basic sebastian" && r.Method == http.MethodPost && p == "/api/v1/users/factory-ci/tokens":
+			if r.URL.Query().Get("sudo") != "factory-ci" {
+				t.Errorf("mint without sudo: %s", r.URL)
+			}
+			s.nextToken++
+			s.tokens[s.nextToken] = body["name"].(string)
+			s.minted = append(s.minted, fmt.Sprintf("%v %v %v", body["name"], body["scopes"], body["repositories"]))
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d,"sha1":"minted-%d"}`, s.nextToken, s.nextToken)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL)
 			w.WriteHeader(http.StatusTeapot)
@@ -501,5 +531,79 @@ func TestRegistrationNeedsAdminOnAnExistingRepository(t *testing.T) {
 	}
 	if !strings.Contains(rig.logs.String(), "namespace demo-staging: created") {
 		t.Fatal("cluster steps skipped")
+	}
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+var admin = AdminAuth{User: "sebastian", Password: "admin-pw"}
+
+// register-project on a repository a human created (sf/demo-app exists):
+// the admin makes factory-projects its admin and mints the CI and pull
+// tokens; everything is reconciled; a second run changes nothing.
+func TestRegisterExistingRepository(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.fj.repos["sf/demo-app"] = true
+	ctx := context.Background()
+	p, err := rig.reg.Register(ctx, demoProject(), admin, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.CIToken != "minted-1" || p.PullToken != "minted-2" || rig.store.m["demo-app"].CIToken != "minted-1" {
+		t.Fatalf("tokens = %q %q", p.CIToken, p.PullToken)
+	}
+	want := []string{"project-demo-app [write:repository] [map[name:demo-app owner:sf]]", "project-demo-app-pull [read:package] <nil>"}
+	if !reflect.DeepEqual(rig.fj.minted, want) {
+		t.Fatalf("minted %q", rig.fj.minted)
+	}
+	first := rig.logs.String()
+	for _, line := range []string{"row: created", "collaborator factory-projects (admin): created", "repository sf/demo-app: no change",
+		"actions secret FACTORY_READ_TOKEN: created", "demo-prod flux kustomization: created"} {
+		if !strings.Contains(first, line) {
+			t.Errorf("first run lacks %q", line)
+		}
+	}
+	writes := len(rig.fj.writes)
+	rig.logs.Reset()
+	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(rig.fj.writes) != writes {
+		t.Fatalf("second run wrote %v", rig.fj.writes[writes:])
+	}
+	for _, line := range []string{"row: no change", "collaborator factory-projects (admin): no change", "tokens: no change"} {
+		if !strings.Contains(rig.logs.String(), line) {
+			t.Errorf("second run lacks %q", line)
+		}
+	}
+	other := demoProject()
+	other.Namespaces = append(other.Namespaces, "demo-extra")
+	if _, err := rig.reg.Register(ctx, other, admin, false); err == nil || !strings.Contains(err.Error(), "registered with another") {
+		t.Fatalf("a changed registration = %v", err)
+	}
+}
+
+// A new repository: factory-projects creates it (and so administers it),
+// then the admin mints the tokens limited to it.
+func TestRegisterNewRepository(t *testing.T) {
+	rig := newRegisterRig(t)
+	p, err := rig.reg.Register(context.Background(), demoProject(), admin, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := rig.logs.String()
+	if !strings.Contains(logs, "repository sf/demo-app: created") || p.CIToken == "" ||
+		!strings.Contains(logs, "actions secret REGISTRY_USER: created") || strings.Contains(logs, "collaborator factory-projects (admin): created") {
+		t.Fatalf("log:\n%s", logs)
+	}
+	for _, w := range rig.fj.writes {
+		if strings.Contains(w, "/collaborators/factory-projects") {
+			t.Fatalf("the creator was made admin by hand: %s", w)
+		}
 	}
 }

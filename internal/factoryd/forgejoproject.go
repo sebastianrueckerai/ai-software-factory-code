@@ -110,7 +110,17 @@ func (f *Forgejo) SaveProjectHook(ctx context.Context, repo Repo, id int64, hook
 // CollaboratorPermission is user's permission on repo as a collaborator,
 // "" when it is none.
 func (f *Forgejo) CollaboratorPermission(ctx context.Context, repo Repo, user string) (string, error) {
-	body, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String()+"/collaborators/"+url.PathEscape(user)+"/permission", nil, http.StatusOK)
+	return collaboratorPermission(ctx, f.projectsCall, repo, user)
+}
+
+// AdminCollaboratorPermission is CollaboratorPermission read with the site
+// admin's login.
+func (f *Forgejo) AdminCollaboratorPermission(ctx context.Context, a AdminAuth, repo Repo, user string) (string, error) {
+	return collaboratorPermission(ctx, f.adminCall(a), repo, user)
+}
+
+func collaboratorPermission(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo, user string) (string, error) {
+	body, err := call(ctx, http.MethodGet, "/api/v1/repos/"+repo.String()+"/collaborators/"+url.PathEscape(user)+"/permission", nil, http.StatusOK)
 	if errors.Is(err, ErrNotFound) {
 		return "", nil
 	}

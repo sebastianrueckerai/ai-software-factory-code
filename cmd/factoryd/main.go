@@ -35,6 +35,10 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "register-project" {
+		registerMain(os.Args[2:])
+		return
+	}
 	addr := flag.String("addr", ":8080", "listen address")
 	consoleAddr := flag.String("console-addr", ":8090", "console listen address (its own Service and route)")
 	showVersion := flag.Bool("version", false, "print version and exit")
@@ -89,15 +93,7 @@ func main() {
 	}
 	ciQueue := factoryd.NewCIQueue(metrics)
 
-	forgejo := &factoryd.Forgejo{
-		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
-		PublicURL:        env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
-		BotUser:          env("FORGEJO_BOT_USER", "factory-agent"),
-		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
-		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
-		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
-		MergeToken:       mustEnv("FORGEJO_MERGE_TOKEN"),
-	}
+	forgejo := newForgejo()
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
 		Endpoint:  mustEnv("S3_ENDPOINT"),
@@ -195,14 +191,14 @@ func main() {
 	ciCollector.Deleted = buildVMs.Deleted
 	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
 		FactoryNamespace: kube.Namespace(),
-		Owner:            env("CI_REPO_OWNER", "sf"),
-		Repo:             env("CI_REPO_NAME", "ai-software-factory-code"),
-		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
-		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
-		GitBaseURL:       gitBase,
-		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
-		JobTimeout:       ciJobTimeout,
-		Queue:            ciQueue,
+		Repos: factoryd.CIReposOf(factoryd.CIRepo{Repo: factoryd.Repo{Owner: env("CI_REPO_OWNER", "sf"), Name: env("CI_REPO_NAME", "ai-software-factory-code")},
+			Token: forgejo.CIRegistrarToken}, store),
+		RunnerImage:   mustEnv("CI_RUNNER_IMAGE"),
+		PullSecret:    env("PULL_SECRET", "forgejo-registry"),
+		GitBaseURL:    gitBase,
+		MaxConcurrent: envInt("CI_MAX_CONCURRENT", 8),
+		JobTimeout:    ciJobTimeout,
+		Queue:         ciQueue,
 	}, forgejo, kube, buildVMs)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)
@@ -250,6 +246,9 @@ func main() {
 		log.Printf("ensure labels: %v", err)
 	}
 	runner.BootSweep(ctx)
+	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
+	// ruling 156: every project's objects come back from its row at boot
+	go registrar.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
@@ -307,6 +306,11 @@ func main() {
 	}))
 
 	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, recordHandler(store, objects)))
+	// a project's own workflow asks whether anything fires in a namespace
+	// of its, with its FACTORY_READ_TOKEN
+	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, &factoryd.SigNoz{
+		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
+		Email:   mustEnv("SIGNOZ_EMAIL"), Password: mustEnv("SIGNOZ_PASSWORD")}, kube))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{

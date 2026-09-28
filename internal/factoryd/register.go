@@ -186,7 +186,7 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 		return "", err
 	case perm == "write":
 		return Unchanged, nil
-	case perm == "":
+	case perm == "" || perm == "none":
 		return Created, run.r.Forgejo.AddProjectCollaborator(ctx, run.p.Repo(), user, "write")
 	}
 	return Updated, run.r.Forgejo.AddProjectCollaborator(ctx, run.p.Repo(), user, "write")
@@ -448,6 +448,10 @@ func (run *reconcileRun) generatedSecret(ctx context.Context, ns, entry string, 
 	})
 }
 
+// ErrRepoMissing: a repository-limited token needs its repository;
+// reconcile creates it first.
+var ErrRepoMissing = errors.New("the repository does not exist yet")
+
 // Mint gives p the tokens only the Forgejo site admin can make, at
 // registration: factory-projects as an admin collaborator of a repository
 // that exists already, factory-ci's token limited to the repository
@@ -460,15 +464,23 @@ func (r *Registrar) Mint(ctx context.Context, a AdminAuth, p *Project, rotate bo
 		return err
 	}
 	if exists {
-		if err := r.Forgejo.AdminAddCollaborator(ctx, a, repo, r.ProjectsUser, "admin"); err != nil {
-			return fmt.Errorf("%s as admin of %s: %w", r.ProjectsUser, repo, err)
+		perm, err := r.Forgejo.AdminCollaboratorPermission(ctx, a, repo, r.ProjectsUser)
+		if err != nil {
+			return err
 		}
-		log.Printf("project %s: collaborator %s: admin", p.Name, r.ProjectsUser)
+		c := Unchanged
+		if perm != "admin" {
+			c = Created
+			if err := r.Forgejo.AdminAddCollaborator(ctx, a, repo, r.ProjectsUser, "admin"); err != nil {
+				return fmt.Errorf("%s as admin of %s: %w", r.ProjectsUser, repo, err)
+			}
+		}
+		log.Printf("project %s: collaborator %s (admin): %s", p.Name, r.ProjectsUser, c)
 	}
 	var t ProjectTokens
 	if p.CIToken == "" || rotate {
 		if !exists {
-			return fmt.Errorf("%s does not exist yet: reconcile creates it before its CI token", repo)
+			return fmt.Errorf("%s: %w", repo, ErrRepoMissing)
 		}
 		if t.CIToken, err = r.Forgejo.AdminMintToken(ctx, a, r.CIUser, "project-"+p.Name, []string{"write:repository"}, []Repo{repo}); err != nil {
 			return fmt.Errorf("ci token: %w", err)
@@ -490,4 +502,54 @@ func (r *Registrar) Mint(ctx context.Context, a AdminAuth, p *Project, rotate bo
 	}
 	p.CIToken, p.PullToken = cmp.Or(t.CIToken, p.CIToken), cmp.Or(t.PullToken, p.PullToken)
 	return nil
+}
+
+// Register is registration by a human with the Forgejo admin's login
+// (factoryd register-project): it records p, or finds it recorded with the
+// same repository, namespaces, environments and secrets (its settings are
+// the console's), mints what only the admin can, and reconciles. A second
+// run with the same project changes nothing.
+func (r *Registrar) Register(ctx context.Context, p Project, admin AdminAuth, rotate bool) (Project, error) {
+	err := r.Store.CreateProject(ctx, p)
+	switch {
+	case errors.Is(err, ErrProjectExists):
+		have, ok, err := r.Store.Project(ctx, p.Name)
+		if err != nil || !ok {
+			return p, errors.Join(fmt.Errorf("repository %s is registered under another name", p.Repository), err)
+		}
+		if have.Repository != p.Repository || !slices.Equal(have.Namespaces, p.Namespaces) || !have.Managed ||
+			!slices.Equal(have.Environments, p.Environments) || !slices.Equal(have.Secrets, p.Secrets) {
+			return p, fmt.Errorf("project %s is registered with another repository, namespaces, environments or secrets", p.Name)
+		}
+		log.Printf("project %s: row: no change (its settings are the console's)", p.Name)
+	case err != nil:
+		return p, err
+	default:
+		log.Printf("project %s: row: created", p.Name)
+	}
+	if p, err = r.stored(ctx, p.Name); err != nil {
+		return p, err
+	}
+	err = r.Mint(ctx, admin, &p, rotate)
+	if errors.Is(err, ErrRepoMissing) {
+		if err := r.Reconcile(ctx, p); err != nil {
+			return p, err
+		}
+		err = r.Mint(ctx, admin, &p, rotate)
+	}
+	if err != nil {
+		return p, err
+	}
+	if p, err = r.stored(ctx, p.Name); err != nil {
+		return p, err
+	}
+	return p, r.Reconcile(ctx, p)
+}
+
+func (r *Registrar) stored(ctx context.Context, name string) (Project, error) {
+	p, ok, err := r.Store.Project(ctx, name)
+	if err == nil && !ok {
+		err = fmt.Errorf("project %s: %w", name, ErrNotFound)
+	}
+	return p, err
 }
