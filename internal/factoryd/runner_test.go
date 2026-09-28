@@ -126,6 +126,7 @@ func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]
 			names = append(names, name)
 		}
 	}
+	slices.Sort(names) // the API server lists by name
 	return names, nil
 }
 
