@@ -424,6 +424,10 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if tc.poster == "outsider" {
 				labels = append(slices.Clone(labels), "priority/p0")
 			}
+			// Forgejo holds the labels the form posted
+			if err := in.Forgejo.ReplaceIssueLabels(context.Background(), "sf", "ai-software-factory-code", 5, labels); err != nil {
+				t.Fatal(err)
+			}
 			body := issueOpenedBody(5, tc.poster, labels, "It breaks", "body")
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
@@ -444,8 +448,13 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if tc.status == "suggested" && (task.SHA != "" || task.Gate != "") {
 				t.Fatalf("suggested task = %+v, want no base and no gate before it starts", task)
 			}
-			if labels := issueLabels(t, in.Forgejo, 5); !slices.Contains(labels, tc.stateLabel) {
+			labels = issueLabels(t, in.Forgejo, 5)
+			if !slices.Contains(labels, tc.stateLabel) {
 				t.Fatalf("labels = %v, want %s", labels, tc.stateLabel)
+			}
+			// an outside account's writer labels are off the issue (review M1)
+			if tc.poster == "outsider" && slices.ContainsFunc(labels, func(l string) bool { return l == "agent" || l == "human" || l == "priority/p0" }) {
+				t.Fatalf("labels = %v, want the outsider's agent, human and priority dropped", labels)
 			}
 		})
 	}
@@ -468,6 +477,13 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 		b, _ := json.Marshal(p)
 		return b
 	}
+	// a writer's edit that is no label event starts nothing (review M1)
+	edited := labelled("sebastian")
+	var ep map[string]any
+	json.Unmarshal(edited, &ep)
+	ep["action"] = "edited"
+	edited, _ = json.Marshal(ep)
+	postWebhook(in, "issues", edited, sign(webhookSecret, edited))
 	for _, sender := range []string{"outsider", ""} {
 		b := labelled(sender)
 		if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {

@@ -347,7 +347,12 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if p.Action == "closed" {
 		return in.handleIssueClosed(ctx, p)
 	}
-	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue, p.Sender.UserName)
+	// only a label event's sender starts a suggestion (a writer's agent label)
+	sender := ""
+	if eventType == "issue_label" {
+		sender = p.Sender.UserName
+	}
+	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue, sender)
 }
 
 // ResyncIssues takes in the open issues of in.Repositories that no task
@@ -446,9 +451,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if err != nil {
 		return err
 	}
-	if !writer {
-		names = outsiderLabels(names)
-		lane = IssueLane(names)
+	if kept := outsiderLabels(names); !writer && len(kept) != len(names) {
+		// off the issue too, so no later writer's event reads them
+		names, lane = kept, IssueLane(kept)
+		if parts, err := SplitRepo(repo); err != nil {
+			return err
+		} else if err := in.Forgejo.ReplaceIssueLabels(ctx, parts.Owner, parts.Name, issue.Index, kept); err != nil {
+			log.Printf("%s: issue #%d on %s: drop an outside account's writer labels: %v", via, issue.Index, repo, err)
+		}
 	}
 	id := NewTaskID()
 	task := Task{
