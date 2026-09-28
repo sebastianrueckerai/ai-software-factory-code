@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +31,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	go func() {
 		deadline := time.Now().Add(5 * time.Second)
 		for {
-			err := runner.EscalateSession("t2", "Which license applies?", "the issue names none")
+			err := runner.EscalateSession(t.Context(), "t2", "Which license applies?", "the issue names none")
 			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
 				delivered <- err
 				return
@@ -66,7 +67,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 		t.Fatalf("record = %s", record)
 	}
 	// the session is gone (it was on the first escalation): a late one finds none
-	if err := runner.EscalateSession("t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
+	if err := runner.EscalateSession(t.Context(), "t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
 		t.Fatalf("late escalation = %v", err)
 	}
 }
@@ -79,7 +80,7 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	runner.stopWait = 5 * time.Second
-	inFlight := make(chan struct{})
+	inFlight, cut := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -92,8 +93,9 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 			once.Do(func() { close(inFlight) })
 			select {
 			case <-r.Context().Done():
+				close(cut)
 				return
-			case <-time.After(3 * time.Second):
+			case <-time.After(20 * time.Second):
 			}
 			io.WriteString(w, `{"choices":[{"message":{"content":"{\"action\":\"redirect\",\"guidance\":\"try another way\"}"}}]}`)
 		}
@@ -104,11 +106,10 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 	delivered := make(chan error, 1)
 	go func() {
 		<-inFlight
-		delivered <- runner.EscalateSession("t2", "Which license applies?", "the issue names none")
+		delivered <- runner.EscalateSession(t.Context(), "t2", "Which license applies?", "the issue names none")
 	}()
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + cutLogs +
 		pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed at c-wip") + "\n"
-	began := time.Now()
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
@@ -116,8 +117,10 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 	if err := <-delivered; err != nil {
 		t.Fatalf("EscalateSession = %v", err)
 	}
-	if took := time.Since(began); took > 2500*time.Millisecond {
-		t.Fatalf("took %s: the escalation did not cut the supervisor call", took)
+	select {
+	case <-cut:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the escalation did not cut the supervisor call")
 	}
 	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, "The agent asks: Which license applies?") || res.Commit != "c-wip" {
 		t.Fatalf("result = %+v, want the agent's escalation with the work in progress", res)
@@ -133,7 +136,7 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 		t.Fatalf("record = %s", record)
 	}
 	// the stopped session takes no second escalation
-	if err := runner.EscalateSession("t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
+	if err := runner.EscalateSession(t.Context(), "t2", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
 		t.Fatalf("escalation after the stop = %v", err)
 	}
 }
@@ -143,7 +146,7 @@ type fakeSessions struct {
 	calls []string
 }
 
-func (f *fakeSessions) EscalateSession(taskID, question, reason string) error {
+func (f *fakeSessions) EscalateSession(_ context.Context, taskID, question, reason string) error {
 	f.calls = append(f.calls, taskID+"|"+question+"|"+reason)
 	return f.err
 }
@@ -187,5 +190,39 @@ func TestEscalationHandler(t *testing.T) {
 		if rec := post(tc.sessions, tc.body); rec.Code != tc.want {
 			t.Errorf("%s = %d %s, want %d", name, rec.Code, rec.Body, tc.want)
 		}
+	}
+	// only the accepted escalation is recorded
+	if n := len(store.intakeEvents); n != 1 {
+		t.Fatalf("intake events = %d, want 1: %+v", n, store.intakeEvents)
+	}
+}
+
+// An escalation counts as delivered only once the session took it: one the
+// session never reads before it ends is refused, never accepted and lost.
+func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
+	runner := &Runner{}
+	esc, unregister := runner.liveSession("t1")
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		unregister()
+	}()
+	if err := runner.EscalateSession(t.Context(), "t1", "q", "r"); !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("escalation to a session that ended without reading = %v, want ErrNoLiveSession", err)
+	}
+	select {
+	case e := <-esc:
+		t.Fatalf("escalation %+v left behind", e)
+	default:
+	}
+
+	esc, unregister = runner.liveSession("t1")
+	defer unregister()
+	took := make(chan agentEscalation, 1)
+	go func() { took <- <-esc }()
+	if err := runner.EscalateSession(t.Context(), "t1", "Which license?", "none named"); err != nil {
+		t.Fatalf("escalation to a reading session = %v", err)
+	}
+	if e := <-took; e.question != "Which license?" || e.reason != "none named" {
+		t.Fatalf("took %+v", e)
 	}
 }

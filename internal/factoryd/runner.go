@@ -55,7 +55,15 @@ type Runner struct {
 	stopWait   time.Duration
 
 	liveMu sync.Mutex
-	live   map[string]chan agentEscalation // by task: its running session's escalations
+	live   map[string]*liveSession // by task: its running session
+}
+
+// liveSession takes the agent's escalations: ch is unbuffered, so a send
+// completes only when the session reads it; done closes when the session
+// takes no more.
+type liveSession struct {
+	ch   chan agentEscalation
+	done chan struct{}
 }
 
 type agentEscalation struct{ question, reason string }
@@ -64,38 +72,46 @@ type agentEscalation struct{ question, reason string }
 var ErrNoLiveSession = errors.New("the task has no running session")
 
 // EscalateSession hands an agent's escalate_to_human to its task's running
-// session, which stops the way a supervisor's escalate stops it.
-func (r *Runner) EscalateSession(taskID, question, reason string) error {
+// session, which stops the way a supervisor's escalate stops it. It returns
+// nil only once the session took the escalation; a session that ends or
+// stops first answers ErrNoLiveSession.
+func (r *Runner) EscalateSession(ctx context.Context, taskID, question, reason string) error {
 	r.liveMu.Lock()
-	ch, ok := r.live[taskID]
+	ls, ok := r.live[taskID]
 	r.liveMu.Unlock()
 	if !ok {
 		return ErrNoLiveSession
 	}
 	select {
-	case ch <- agentEscalation{question, reason}:
+	case ls.ch <- agentEscalation{question, reason}:
 		return nil
-	default:
-		return errors.New("the session is already ending on an escalation")
+	case <-ls.done:
+		return ErrNoLiveSession
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
 // liveSession registers a running session for EscalateSession until the
-// returned func ends it.
+// returned func (idempotent) ends it.
 func (r *Runner) liveSession(taskID string) (<-chan agentEscalation, func()) {
-	ch := make(chan agentEscalation, 1)
+	ls := &liveSession{ch: make(chan agentEscalation), done: make(chan struct{})}
 	r.liveMu.Lock()
 	if r.live == nil {
-		r.live = map[string]chan agentEscalation{}
+		r.live = map[string]*liveSession{}
 	}
-	r.live[taskID] = ch
+	r.live[taskID] = ls
 	r.liveMu.Unlock()
-	return ch, func() {
-		r.liveMu.Lock()
-		if r.live[taskID] == ch {
-			delete(r.live, taskID)
-		}
-		r.liveMu.Unlock()
+	var once sync.Once
+	return ls.ch, func() {
+		once.Do(func() {
+			r.liveMu.Lock()
+			if r.live[taskID] == ls {
+				delete(r.live, taskID)
+			}
+			r.liveMu.Unlock()
+			close(ls.done)
+		})
 	}
 }
 
@@ -382,37 +398,38 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		defer cancel()
 		var d Decision
 		var called bool
-		answered := make(chan struct{})
-		go func() {
-			defer close(answered)
-			if trip.decided != nil {
-				d = *trip.decided
-				return
-			}
-			d, called = supervision.onTrip(callCtx, trip)
-		}()
-		// the agent was told "escalated": its escalation during the call
-		// wins over whatever the supervisor answers, and cuts the call
+		// the agent was told "escalated" once the session took it: its
+		// escalation during the call wins over whatever the supervisor
+		// answers, and cuts the call
 		var esc *agentEscalation
-		select {
-		case <-answered:
+		if trip.decided != nil {
+			d = *trip.decided
+		} else {
+			answered := make(chan struct{})
+			go func() {
+				defer close(answered)
+				d, called = supervision.onTrip(callCtx, trip)
+			}()
 			select {
+			case <-answered:
+				select {
+				case e := <-escalations:
+					esc = &e
+				default:
+				}
 			case e := <-escalations:
 				esc = &e
-			default:
+				cancel()
+				<-answered
+			case <-workerStop:
+				stopAt = time.Now()
+				cancel()
+				<-answered
+				log.Printf("task %s: factoryd stopping cut the supervisor call for %s", t.ID, trip.Kind)
+				return true, shutdown()
 			}
-		case e := <-escalations:
-			esc = &e
-			cancel()
-			<-answered
-		case <-workerStop:
-			stopAt = time.Now()
-			cancel()
-			<-answered
-			log.Printf("task %s: factoryd stopping cut the supervisor call for %s", t.ID, trip.Kind)
-			return true, shutdown()
 		}
-		if esc != nil && trip.decided == nil {
+		if esc != nil {
 			log.Printf("task %s: the agent escalated during the supervisor call for %s", t.ID, trip.Kind)
 			sup.tripped = nil
 			trip = sup.AgentEscalation(esc.question, esc.reason)

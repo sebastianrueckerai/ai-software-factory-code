@@ -16,9 +16,10 @@ type EscalationStore interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }
 
-// SessionEscalator hands an escalation to a task's running session.
+// SessionEscalator hands an escalation to a task's running session; nil
+// means the session took it.
 type SessionEscalator interface {
-	EscalateSession(taskID, question, reason string) error
+	EscalateSession(ctx context.Context, taskID, question, reason string) error
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate_to_human:
@@ -30,10 +31,10 @@ const maxEscalationText = 4000
 
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
 // of an agent's escalate_to_human (behind the gateway's bearer): the task
-// must be running, the escalation is recorded as an intake event and its
-// running session stops as on a supervisor's escalate: work in progress
-// pushed, waiting-human, the question on the issue, the human's answer
-// resumes it.
+// must be running and its session take the escalation, which is then
+// recorded as an intake event; the session stops as on a supervisor's
+// escalate: work in progress pushed, waiting-human, the question on the
+// issue, the human's answer resumes it.
 func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -63,13 +64,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, "task "+in.TaskID+" is "+t.Status, http.StatusConflict)
 			return
 		}
-		if _, err := store.InsertIntakeEvent(r.Context(), IntakeEvent{
-			TaskID: t.ID, Kind: IntakeAgentEscalation, Author: "agent", Body: q + "\n\nWhy: " + why,
-		}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if err := sessions.EscalateSession(t.ID, q, why); err != nil {
+		if err := sessions.EscalateSession(r.Context(), t.ID, q, why); err != nil {
 			status := http.StatusServiceUnavailable
 			if errors.Is(err, ErrNoLiveSession) {
 				status = http.StatusConflict
@@ -78,6 +73,12 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			return
 		}
 		log.Printf("task %s: the agent escalated: %s", t.ID, truncate(q, 200))
+		// the session already took it: a failed record is logged, not undone
+		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
+			TaskID: t.ID, Kind: IntakeAgentEscalation, Author: "agent", Body: q + "\n\nWhy: " + why,
+		}); err != nil {
+			log.Printf("task %s: record the agent escalation: %v", t.ID, err)
+		}
 		w.WriteHeader(http.StatusAccepted)
 	}
 }

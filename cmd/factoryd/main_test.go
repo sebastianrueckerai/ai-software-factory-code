@@ -49,7 +49,7 @@ func (e *escalationStub) InsertIntakeEvent(context.Context, factoryd.IntakeEvent
 	return 1, nil
 }
 
-func (e *escalationStub) EscalateSession(string, string, string) error {
+func (e *escalationStub) EscalateSession(context.Context, string, string, string) error {
 	e.delivered++
 	return nil
 }
