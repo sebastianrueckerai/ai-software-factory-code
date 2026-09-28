@@ -187,6 +187,11 @@ type Store interface {
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
 	// InsertAlert records an alert and returns its id.
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	// ResolveAlert records the gate supervisor's verdict on an open
+	// gate_bound alert and merges detail into the alert's.
+	ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error
+	// AuditRows are the task's newest limit gateway audit rows, newest first.
+	AuditRows(ctx context.Context, taskID string, limit int) ([]AuditRow, error)
 }
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling

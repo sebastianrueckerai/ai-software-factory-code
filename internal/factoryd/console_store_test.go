@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"testing"
@@ -194,5 +195,69 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 		if b.ID == "api" && b.EscalationAlert != 0 {
 			t.Fatalf("board still offers the judged alert %d", b.EscalationAlert)
 		}
+	}
+}
+
+// The gate supervisor judges an open gate_bound alert once, its action
+// merged into the detail, and reads the task's newest gateway audit rows.
+func TestPGStoreResolveAlertAndAuditRows(t *testing.T) {
+	dsn := os.Getenv("FACTORYD_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts, audit`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	bound, err := s.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 30, Detail: map[string]any{"attempt": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	esc, err := s.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveAlert(ctx, bound, VerdictNoise, "supervisor", map[string]any{"action": "wait", "diagnosis": "checks run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResolveAlert(ctx, bound, VerdictReal, "supervisor", map[string]any{"action": "cancel"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second verdict err = %v, want ErrNotFound", err)
+	}
+	if err := s.ResolveAlert(ctx, esc, VerdictReal, "supervisor", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("verdict on an escalation err = %v, want ErrNotFound: a human judges it", err)
+	}
+	alerts, err := s.Alerts(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := alerts[1]
+	if a.ID != bound || a.Verdict != VerdictNoise || a.ResolvedBy != "supervisor" || a.ResolvedAt == nil ||
+		fmt.Sprint(a.Detail) != "map[action:wait attempt:1 diagnosis:checks run]" {
+		t.Fatalf("alert = %+v", a)
+	}
+
+	for _, row := range []string{
+		`('t1', '2026-09-28T10:00:00Z', 'allow', 'ok', 'coder', '', 0.012)`,
+		`('t2', '2026-09-28T10:01:00Z', 'allow', 'ok', 'coder', '', 0.5)`,
+		`('t1', '2026-09-28T10:02:00Z', 'deny', 'budget exhausted', 'review-frontier', '', NULL)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, ts, decision, reason, model_alias, tool, spend_eur) VALUES `+row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.AuditRows(ctx, "t1", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spend := 0.012
+	want := []AuditRow{{Time: time.Date(2026, 9, 28, 10, 2, 0, 0, time.UTC), Decision: "deny", Reason: "budget exhausted", Model: "review-frontier"},
+		{Time: time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC), Decision: "allow", Reason: "ok", Model: "coder", SpendEUR: &spend}}
+	if jsonOf(rows) != jsonOf(want) {
+		t.Fatalf("audit rows = %s, want %s", jsonOf(rows), jsonOf(want))
 	}
 }

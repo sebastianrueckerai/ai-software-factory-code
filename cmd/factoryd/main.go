@@ -117,6 +117,10 @@ func main() {
 	// its own --url, since Cilium's toFQDNs cannot authorize the public
 	// host's in-cluster DNS answer (see workerEgressSpec).
 	gitBase := env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000")
+	// the Temporal client is dialled after the runner: the gate watch gets
+	// its signal and the runner its failure reader once it is
+	gates := &factoryd.GateWatch{Store: store, Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}
+	var workflows factoryd.TemporalWorkflows
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
@@ -148,6 +152,10 @@ func main() {
 		CIQueue:      ciQueue,
 		Metrics:      metrics,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+		Gates:        gates,
+		LastFailure: func(ctx context.Context, workflowID, activityID string) (string, error) {
+			return workflows.LastFailure(ctx, workflowID, activityID)
+		},
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		BaseURL: litellm.BaseURL,
 		Admin:   litellm,
@@ -209,12 +217,12 @@ func main() {
 		log.Fatalf("temporal client: %v", err)
 	}
 	defer temporal.Close()
-	workflows := factoryd.TemporalWorkflows{Client: temporal}
+	workflows = factoryd.TemporalWorkflows{Client: temporal}
+	gates.Signal = workflows.SignalGate
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
-	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(&factoryd.GateWatch{Store: store,
-		Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}, openActivities,
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})

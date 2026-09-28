@@ -68,13 +68,14 @@ func (r ctxReader) Read([]byte) (int, error) {
 }
 
 type fakePod struct {
-	ns, name  string
-	phase     string
-	logs      string
-	logsReady chan struct{} // closed when scriptPods has assigned the body
-	spec      map[string]any
-	opens     int  // log streams opened
-	deleted   bool // deletion requested, grace period running
+	ns, name   string
+	phase      string
+	logs       string
+	logsReady  chan struct{} // closed when scriptPods has assigned the body
+	spec       map[string]any
+	opens      int  // log streams opened
+	deleted    bool // deletion requested, grace period running
+	conditions []PodCondition
 }
 
 func newFakeKube() *fakeKube {
@@ -254,6 +255,31 @@ func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (strin
 		return "", -1, ErrNotFound
 	}
 	return p.phase, 0, nil
+}
+
+func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok {
+		return PodDiagnosis{}, ErrNotFound
+	}
+	return PodDiagnosis{Phase: p.phase, Conditions: p.conditions}, nil
+}
+
+// PodLogTail serves the scripted body's last lines.
+func (k *fakeKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok {
+		return "", ErrNotFound
+	}
+	all := strings.SplitAfter(p.logs, "\n")
+	if all[len(all)-1] == "" {
+		all = all[:len(all)-1]
+	}
+	return strings.Join(all[max(0, len(all)-lines):], ""), nil
 }
 
 // PodLog serves the scripted body; reading it to the end means the
@@ -465,6 +491,8 @@ func testRunnerConfig() RunnerConfig {
 		Policy:      testPolicyVersion,
 		ReviewModel: "review-frontier",
 		Leases:      &fakeLeases{},
+		Gates:       &GateWatch{},
+		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
 	}
 }
 

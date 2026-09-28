@@ -60,6 +60,12 @@ type RunnerConfig struct {
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
 	// workers send their telemetry (ruling 158); "" = none.
 	OTLPEndpoint string
+	// Gates is the worker's GateWatch: the gate supervisor acts on the
+	// attempts it watches.
+	Gates *GateWatch
+	// LastFailure is the last failure of a workflow's pending activity
+	// run, "" for none (Temporal's pending activity info).
+	LastFailure func(ctx context.Context, workflowID, activityID string) (string, error)
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the
@@ -84,8 +90,9 @@ type Runner struct {
 	supervisor *SupervisorModel
 	stopWait   time.Duration
 
-	liveMu sync.Mutex
-	live   map[string]*liveSession // by task: its running session
+	liveMu  sync.Mutex
+	live    map[string]*liveSession // by task: its running session
+	sandbox map[string][2]string    // by task: namespace and name of its running sandbox pod
 
 }
 
@@ -121,6 +128,31 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID, question, reason s
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// trackPod names the task's running sandbox pod for the gate supervisor
+// until the returned func.
+func (r *Runner) trackPod(taskID, ns, name string) (untrack func()) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if r.sandbox == nil {
+		r.sandbox = map[string][2]string{}
+	}
+	r.sandbox[taskID] = [2]string{ns, name}
+	return func() {
+		r.liveMu.Lock()
+		defer r.liveMu.Unlock()
+		if r.sandbox[taskID] == [2]string{ns, name} {
+			delete(r.sandbox, taskID)
+		}
+	}
+}
+
+func (r *Runner) sandboxPod(taskID string) (ns, name string, ok bool) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	p, ok := r.sandbox[taskID]
+	return p[0], p[1], ok
 }
 
 // liveSession registers a running session for EscalateSession until the
@@ -173,6 +205,9 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	if cfg.Policy == nil || cfg.ReviewModel == "" {
 		return nil, fmt.Errorf("runner: the policy in force and the review model are required")
+	}
+	if cfg.Gates == nil || cfg.LastFailure == nil {
+		return nil, fmt.Errorf("runner: the gate watch and the last failure reader are required")
 	}
 	if cfg.ReproTimeout <= 0 {
 		cfg.ReproTimeout = 10 * time.Minute
@@ -327,6 +362,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
 		return out, fmt.Errorf("create pod: %w", err)
 	}
+	defer r.trackPod(t.ID, ns, podName)()
 	defer func() {
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

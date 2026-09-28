@@ -62,6 +62,26 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	return err
 }
 
+// SignalGate hands a machine gate's trip to the workflow running it.
+func (w TemporalWorkflows) SignalGate(ctx context.Context, workflowID string, trip GateTrip) error {
+	return w.Client.SignalWorkflow(ctx, workflowID, "", SignalGateBound, trip)
+}
+
+// LastFailure is the last failure of the workflow's pending activity run
+// activityID, "" when it has none or is not pending.
+func (w TemporalWorkflows) LastFailure(ctx context.Context, workflowID, activityID string) (string, error) {
+	res, err := w.Client.DescribeWorkflowExecution(ctx, workflowID, "")
+	if err != nil {
+		return "", err
+	}
+	for _, a := range res.GetPendingActivities() {
+		if a.GetActivityId() == activityID {
+			return a.GetLastFailure().GetMessage(), nil
+		}
+	}
+	return "", nil
+}
+
 func startOptions(taskID string) client.StartWorkflowOptions {
 	return client.StartWorkflowOptions{
 		ID:                    WorkflowID(taskID),

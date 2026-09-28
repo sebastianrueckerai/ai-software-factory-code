@@ -36,10 +36,11 @@ type Alert struct {
 	Detail     map[string]any
 }
 
-// tripVerdict is a supervisor decision as an alert verdict: a continue
-// found the trip was noise, every other action acted on a real problem.
+// tripVerdict is a supervisor decision as an alert verdict: a continue or
+// a gate's wait found the trip was noise, every other action acted on a
+// real problem.
 func tripVerdict(a SupervisorAction) string {
-	if a == ActionContinue {
+	if a == ActionContinue || a == ActionWait {
 		return VerdictNoise
 	}
 	return VerdictReal
@@ -102,6 +103,51 @@ func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by str
 		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
 		 WHERE id = $1 AND kind = $4 AND verdict IS NULL`, id, verdict, by, AlertEscalation)
 	return oneRow(res, err, "open escalation alert")
+}
+
+// ResolveAlert is the gate supervisor's verdict on an open gate_bound
+// alert, its action and diagnosis merged into the detail; ErrNotFound when
+// there is none.
+func (s *PGStore) ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $4::jsonb
+		 WHERE id = $1 AND kind = $5 AND verdict IS NULL`, id, verdict, by, b, AlertGateBound)
+	return oneRow(res, err, "open gate_bound alert")
+}
+
+// AuditRow is one of the gateway's audit rows: a model or tool call's
+// decision.
+type AuditRow struct {
+	Time     time.Time `json:"time"`
+	Decision string    `json:"decision"`
+	Reason   string    `json:"reason"`
+	Model    string    `json:"model,omitempty"`
+	Tool     string    `json:"tool,omitempty"`
+	SpendEUR *float64  `json:"spend_eur,omitempty"`
+}
+
+// AuditRows are the task's newest limit gateway audit rows, newest first.
+func (s *PGStore) AuditRows(ctx context.Context, taskID string, limit int) ([]AuditRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ts, decision, reason, model_alias, tool, spend_eur::float8 FROM audit WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditRow
+	for rows.Next() {
+		var a AuditRow
+		if err := rows.Scan(&a.Time, &a.Decision, &a.Reason, &a.Model, &a.Tool, &a.SpendEUR); err != nil {
+			return nil, err
+		}
+		a.Time = a.Time.UTC()
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // AlertCount is the number of alerts of one kind and verdict ("open" for

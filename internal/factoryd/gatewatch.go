@@ -2,12 +2,15 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"log"
 	"math"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
+	"go.temporal.io/sdk/temporal"
 )
 
 // The gates a task passes (stage 8 proposal 2.d); the task row's gate and
@@ -56,14 +59,54 @@ type GateStore interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 }
 
+// SignalGateBound hands a machine gate's bound trip to its task's
+// workflow, which asks the gate supervisor (ruling 141).
+const SignalGateBound = "gate_bound"
+
+// GateTrip is one gate_bound alert of a machine gate's activity run: the
+// run is the activity the workflow scheduled (its id), across attempts.
+type GateTrip struct {
+	Activity   string
+	ActivityID string
+	Attempt    int32
+	AlertID    int64
+	Started    time.Time     // the attempt's start
+	Bound      time.Duration // the bound it passed, a wait's extension included
+}
+
+// gateRetryError is the error type of an attempt the gate supervisor
+// stopped for a retry: retryable, so the activity's retry policy runs it
+// again.
+const gateRetryError = "gate_supervisor_retry"
+
+var errGateRetry = errors.New("the gate supervisor stopped this attempt for a retry")
+
 // GateWatch is the worker interceptor that moves a task's row to the gate
 // an activity opens, since the activity's first schedule, and raises one
-// gate_bound alert for a run still going at its policy bound.
+// gate_bound alert for a run still going at its policy bound. A machine
+// gate's alert is signalled to its task's workflow; the gate supervisor
+// then acts on the attempt running here through Wait and Retry.
 type GateWatch struct {
 	interceptor.WorkerInterceptorBase
 	Store GateStore
 	Bound func(activity string) time.Duration
+	// Signal delivers a trip to the workflow; nil = the alert only.
+	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
+
+	mu   sync.Mutex
+	runs map[string]*watchedRun // the attempts running here, by workflow and activity id
 }
+
+type watchedRun struct {
+	started  time.Time
+	bound    time.Duration
+	timer    *time.Timer
+	extended bool
+	raise    func(bound time.Duration, extended bool)
+	cancel   context.CancelCauseFunc
+}
+
+func runKey(workflowID, activityID string) string { return workflowID + "/" + activityID }
 
 func (g *GateWatch) InterceptActivity(ctx context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
 	return &gateWatchInbound{ActivityInboundInterceptorBase: interceptor.ActivityInboundInterceptorBase{Next: next}, g: g}
@@ -82,19 +125,89 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 			log.Printf("task %s: enter gate %s: %v", taskID, gate, err)
 		}
 	}
-	bound := i.g.Bound(name)
-	started := time.Now()
-	overrun := time.AfterFunc(bound, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		a := Alert{Kind: AlertGateBound, Source: name, TaskID: taskID, BoundS: int(math.Ceil(bound.Seconds())),
-			Detail: map[string]any{"attempt": info.Attempt, "started": started.UTC().Format(time.RFC3339Nano)}}
-		if _, err := i.g.Store.InsertAlert(ctx, a); err != nil {
-			log.Printf("task %s: %s passed its bound of %s; the alert was not stored: %v", taskID, name, bound, err)
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	run := &watchedRun{started: time.Now(), bound: i.g.Bound(name), cancel: cancel}
+	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
+	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
+	i.g.mu.Lock()
+	if i.g.runs == nil {
+		i.g.runs = map[string]*watchedRun{}
+	}
+	i.g.runs[key] = run
+	run.timer = time.AfterFunc(run.bound, func() { run.raise(run.bound, false) })
+	i.g.mu.Unlock()
+	defer func() {
+		i.g.mu.Lock()
+		defer i.g.mu.Unlock()
+		run.timer.Stop()
+		if i.g.runs[key] == run {
+			delete(i.g.runs, key)
 		}
-	})
-	defer overrun.Stop()
-	return i.Next.ExecuteActivity(ctx, in)
+	}()
+	out, err := i.Next.ExecuteActivity(ctx, in)
+	if err != nil && errors.Is(context.Cause(ctx), errGateRetry) {
+		return nil, temporal.NewApplicationError(errGateRetry.Error()+": "+err.Error(), gateRetryError)
+	}
+	return out, err
+}
+
+// raise writes the gate_bound alert and signals a machine gate's trip.
+func (g *GateWatch) raise(info activity.Info, taskID string, started time.Time, bound time.Duration, extended bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	name := info.ActivityType.Name
+	detail := map[string]any{"attempt": info.Attempt, "started": rfc3339(started)}
+	if extended {
+		detail["extended"] = true
+	}
+	id, err := g.Store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: name, TaskID: taskID, BoundS: int(math.Ceil(bound.Seconds())), Detail: detail})
+	if err != nil {
+		log.Printf("task %s: %s passed its bound of %s; the alert was not stored: %v", taskID, name, bound, err)
+		return
+	}
+	if gate, ok := activityGates[name]; !ok || gate == GateHuman || g.Signal == nil || taskID == "" {
+		return
+	}
+	trip := GateTrip{Activity: name, ActivityID: info.ActivityID, Attempt: info.Attempt, AlertID: id, Started: started, Bound: bound}
+	if err := g.Signal(ctx, info.WorkflowExecution.ID, trip); err != nil {
+		log.Printf("task %s: signal the %s trip (alert %d): %v", taskID, name, id, err)
+	}
+}
+
+// Running reports whether the run has an attempt running here.
+func (g *GateWatch) Running(workflowID, activityID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, ok := g.runs[runKey(workflowID, activityID)]
+	return ok
+}
+
+// Wait extends the running attempt's bound once by its own length; false
+// when it runs here no more or was extended already.
+func (g *GateWatch) Wait(workflowID, activityID string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	run, ok := g.runs[runKey(workflowID, activityID)]
+	if !ok || run.extended {
+		return false
+	}
+	run.extended = true
+	run.timer.Stop()
+	run.timer = time.AfterFunc(time.Until(run.started.Add(2*run.bound)), func() { run.raise(2*run.bound, true) })
+	return true
+}
+
+// Retry stops the running attempt with a retryable error; false when it
+// runs here no more.
+func (g *GateWatch) Retry(workflowID, activityID string) bool {
+	g.mu.Lock()
+	run, ok := g.runs[runKey(workflowID, activityID)]
+	g.mu.Unlock()
+	if ok {
+		run.cancel(errGateRetry)
+	}
+	return ok
 }
 
 // activityTask is the task an activity works on: its first argument.

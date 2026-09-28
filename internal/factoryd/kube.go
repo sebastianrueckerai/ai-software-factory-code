@@ -68,6 +68,34 @@ type Kube interface {
 	// PodLog streams the pod's stdout, following until the pod terminates or
 	// ctx is cancelled. The caller closes the stream.
 	PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error)
+	// PodDiagnosis reads the pod's phase, conditions and container states.
+	PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error)
+	// PodLogTail is the pod's last lines of stdout, not followed.
+	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
+}
+
+// PodDiagnosis is what the gate supervisor reads of a sandbox pod.
+type PodDiagnosis struct {
+	Phase      string           `json:"phase"`
+	Conditions []PodCondition   `json:"conditions"`
+	Containers []ContainerState `json:"containers,omitempty"`
+}
+
+type PodCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ContainerState is one container's state: waiting, running or
+// terminated, with its reason.
+type ContainerState struct {
+	Name     string `json:"name"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Restarts int    `json:"restarts"`
 }
 
 // InClusterKube is the raw-REST Kubernetes client. No client-go: the runner
@@ -287,6 +315,48 @@ func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.
 		return nil, err
 	}
 	return res.Body, nil
+}
+
+func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
+	type detail struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	var pod struct {
+		Status struct {
+			Phase             string         `json:"phase"`
+			Conditions        []PodCondition `json:"conditions"`
+			ContainerStatuses []struct {
+				Name         string `json:"name"`
+				RestartCount int    `json:"restartCount"`
+				State        struct {
+					Waiting    *detail   `json:"waiting"`
+					Running    *struct{} `json:"running"`
+					Terminated *detail   `json:"terminated"`
+				} `json:"state"`
+			} `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
+		return PodDiagnosis{}, err
+	}
+	d := PodDiagnosis{Phase: pod.Status.Phase, Conditions: pod.Status.Conditions}
+	for _, c := range pod.Status.ContainerStatuses {
+		cs := ContainerState{Name: c.Name, Restarts: c.RestartCount, State: "running"}
+		switch {
+		case c.State.Waiting != nil:
+			cs.State, cs.Reason, cs.Message = "waiting", c.State.Waiting.Reason, c.State.Waiting.Message
+		case c.State.Terminated != nil:
+			cs.State, cs.Reason, cs.Message = "terminated", c.State.Terminated.Reason, c.State.Terminated.Message
+		}
+		d.Containers = append(d.Containers, cs)
+	}
+	return d, nil
+}
+
+func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
+	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d", namespace, name, lines), nil, nil)
+	return string(b), err
 }
 
 // Deployment reads one Deployment (the factory namespace's roll record).

@@ -13,7 +13,9 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	"go.temporal.io/api/serviceerror"
+	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/mocks"
@@ -200,5 +202,34 @@ func TestHealPassTakesInMissedIssues(t *testing.T) {
 	}
 	if agent == "" || !slices.Contains(workflowsOf(in).started, agent) {
 		t.Fatalf("tasks = %+v, started = %q: want #7's task with its workflow started", store.tasks, workflowsOf(in).started)
+	}
+}
+
+// A gate trip goes to the running workflow only: a completed one has
+// nothing left to supervise, so no signal starts a new run.
+func TestTemporalSignalGateSignalsTheRunningWorkflow(t *testing.T) {
+	c := &mocks.Client{}
+	trip := GateTrip{Activity: ActivityWaitChecks, ActivityID: "7", Attempt: 1, AlertID: 3}
+	c.On("SignalWorkflow", mock.Anything, "task-t1", "", SignalGateBound, trip).Return(nil)
+	if err := (TemporalWorkflows{Client: c}).SignalGate(context.Background(), "task-t1", trip); err != nil {
+		t.Fatal(err)
+	}
+	c.AssertExpectations(t)
+}
+
+// The last failure is the pending activity run's, by its id.
+func TestTemporalLastFailureIsThePendingRunsOwn(t *testing.T) {
+	c := &mocks.Client{}
+	c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(&workflowservice.DescribeWorkflowExecutionResponse{
+		PendingActivities: []*workflowpb.PendingActivityInfo{
+			{ActivityId: "5", LastFailure: &failurepb.Failure{Message: "other"}},
+			{ActivityId: "7", LastFailure: &failurepb.Failure{Message: "poll: connection reset"}},
+			{ActivityId: "9"},
+		}}, nil)
+	w := TemporalWorkflows{Client: c}
+	for id, want := range map[string]string{"7": "poll: connection reset", "9": "", "11": ""} {
+		if got, err := w.LastFailure(context.Background(), "task-t1", id); err != nil || got != want {
+			t.Errorf("LastFailure(%s) = %q, %v; want %q", id, got, err, want)
+		}
 	}
 }

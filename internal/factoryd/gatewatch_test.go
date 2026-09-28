@@ -2,16 +2,19 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
@@ -89,6 +92,150 @@ func TestGateWatchAlertsOncePerOverrun(t *testing.T) {
 	}
 }
 
+// signalled records the trips GateWatch hands to workflows; onTrip, when
+// set, answers each as the gate supervisor would, in process.
+type signalled struct {
+	mu     sync.Mutex
+	trips  []GateTrip
+	wfIDs  []string
+	onTrip func(workflowID string, trip GateTrip)
+}
+
+func (s *signalled) signal(_ context.Context, workflowID string, trip GateTrip) error {
+	s.mu.Lock()
+	s.trips = append(s.trips, trip)
+	s.wfIDs = append(s.wfIDs, workflowID)
+	on := s.onTrip
+	s.mu.Unlock()
+	if on != nil {
+		on(workflowID, trip)
+	}
+	return nil
+}
+
+func (s *signalled) got() ([]GateTrip, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.trips), slices.Clone(s.wfIDs)
+}
+
+func signallingEnv(g *GateWatch) *testsuite.TestActivityEnvironment {
+	var suite testsuite.WorkflowTestSuite
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	env := suite.NewTestActivityEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{g}})
+	return env
+}
+
+// A machine gate's activity past its bound signals its task's workflow
+// with the alert; an activity that opens no gate, or the human gate, only
+// alerts.
+func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	sig := &signalled{}
+	env := signallingEnv(&GateWatch{Store: store, Bound: func(string) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
+	var info activity.Info
+	slow := func(ctx context.Context) {
+		info = activity.GetInfo(ctx)
+		time.Sleep(300 * time.Millisecond)
+	}
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityWaitChecks})
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivitySetState})
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error { slow(ctx); return nil }, activity.RegisterOptions{Name: ActivityEscalate})
+	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	checks := info
+	for _, name := range []string{ActivitySetState, ActivityEscalate} {
+		if _, err := env.ExecuteActivity(name, "t1", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(store.alertRows()); n != 3 {
+		t.Fatalf("alerts = %d, want one per overrun", n)
+	}
+	trips, wfIDs := sig.got()
+	if len(trips) != 1 || wfIDs[0] != checks.WorkflowExecution.ID {
+		t.Fatalf("signals = %+v to %v, want the check wait's only, to its workflow %q", trips, wfIDs, checks.WorkflowExecution.ID)
+	}
+	if tr := trips[0]; tr.Activity != ActivityWaitChecks || tr.ActivityID != checks.ActivityID || tr.Attempt != 1 || tr.AlertID != 1 ||
+		tr.Bound != 50*time.Millisecond || tr.Started.IsZero() {
+		t.Fatalf("trip = %+v", tr)
+	}
+}
+
+// wait extends the run's bound once by its own length: a run past twice
+// its bound trips a second time, and a second wait extends nothing.
+func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	sig := &signalled{}
+	g := &GateWatch{Store: store, Bound: func(string) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
+	var mu sync.Mutex
+	var waits []bool
+	sig.onTrip = func(wf string, tr GateTrip) {
+		w := g.Wait(wf, tr.ActivityID)
+		mu.Lock()
+		defer mu.Unlock()
+		waits = append(waits, w)
+	}
+	env := signallingEnv(g)
+	env.RegisterActivityWithOptions(func(context.Context, string, string) error {
+		time.Sleep(450 * time.Millisecond)
+		return nil
+	}, activity.RegisterOptions{Name: ActivityWaitChecks})
+	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	trips, _ := sig.got()
+	mu.Lock()
+	defer mu.Unlock()
+	if len(trips) != 2 || !slices.Equal(waits, []bool{true, false}) {
+		t.Fatalf("trips = %+v, waits = %v; want two trips (at 100 and 200 ms), the first wait taken, the second refused", trips, waits)
+	}
+	alerts := store.alertRows()
+	if len(alerts) != 2 || alerts[0].BoundS != 1 || alerts[1].Detail["extended"] != true || trips[1].AlertID != 2 || trips[1].Bound != 200*time.Millisecond {
+		t.Fatalf("alerts = %+v, second trip %+v", alerts, trips[1])
+	}
+	if g.Running("any", trips[0].ActivityID) || g.Wait("any", "x") || g.Retry("any", "x") {
+		t.Fatal("an unknown run is running, or took a wait or a retry")
+	}
+}
+
+// retry ends the running attempt with a retryable error, so the
+// activity's retry policy runs it again.
+func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	sig := &signalled{}
+	g := &GateWatch{Store: store, Bound: func(string) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
+	var mu sync.Mutex
+	running := false
+	sig.onTrip = func(wf string, tr GateTrip) {
+		mu.Lock()
+		running = g.Running(wf, tr.ActivityID)
+		mu.Unlock()
+		g.Retry(wf, tr.ActivityID)
+	}
+	env := signallingEnv(g)
+	env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+			return nil
+		}
+	}, activity.RegisterOptions{Name: ActivityWaitChecks})
+	_, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1")
+	var app *temporal.ApplicationError
+	mu.Lock()
+	defer mu.Unlock()
+	if !running || !errors.As(err, &app) || app.Type() != gateRetryError || app.NonRetryable() {
+		t.Fatalf("running = %v, err = %v; want a retryable %s", running, err, gateRetryError)
+	}
+}
+
 // Every activity factoryd registers may carry a policy bound, and the
 // policy knows no other.
 func TestBoundActivitiesAreTheRegisteredOnes(t *testing.T) {
@@ -105,11 +252,12 @@ type nameRecorder func(string)
 
 func (f nameRecorder) RegisterActivityWithOptions(_ any, o activity.RegisterOptions) { f(o.Name) }
 
-// The supervisor's action is its trip's verdict: only a continue found
-// nothing to act on.
+// The supervisor's action is its trip's verdict: only a continue or a
+// gate's wait found nothing to act on.
 func TestTripVerdict(t *testing.T) {
 	for action, want := range map[SupervisorAction]string{
 		ActionContinue: VerdictNoise, ActionRedirect: VerdictReal, ActionRetryStronger: VerdictReal, ActionEscalate: VerdictReal,
+		ActionWait: VerdictNoise, ActionRetry: VerdictReal, ActionCancel: VerdictReal,
 	} {
 		if got := tripVerdict(action); got != want {
 			t.Errorf("tripVerdict(%s) = %s, want %s", action, got, want)

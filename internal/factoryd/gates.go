@@ -221,6 +221,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, pr, commit)); err != nil {
 		return ReproResult{}, fmt.Errorf("create pod: %w", err)
 	}
+	defer r.trackPod(t.ID, ns, podName)()
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
 		return ReproResult{}, err
 	}

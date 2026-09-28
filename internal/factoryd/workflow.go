@@ -68,6 +68,7 @@ const (
 	ActivityMerge                       = "Merge"
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
+	ActivitySuperviseGate               = "SuperviseGate"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails

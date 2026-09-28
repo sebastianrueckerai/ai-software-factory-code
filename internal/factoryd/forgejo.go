@@ -778,15 +778,19 @@ type PullRequestRef struct {
 	Merged   bool
 	Base     string // the branch it merges into
 	MergedBy string // who merged it, when Merged
+	// Mergeable is Forgejo's verdict that the head merges into the base
+	// without conflict.
+	Mergeable bool
 }
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
 type wirePR struct {
-	Number  int64  `json:"number"`
-	HTMLURL string `json:"html_url"`
-	State   string `json:"state"`
-	Merged  bool   `json:"merged"`
-	Base    struct {
+	Number    int64  `json:"number"`
+	HTMLURL   string `json:"html_url"`
+	State     string `json:"state"`
+	Merged    bool   `json:"merged"`
+	Mergeable bool   `json:"mergeable"`
+	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
 	MergedBy *struct {
@@ -803,7 +807,7 @@ type wirePR struct {
 
 func (w wirePR) ref() PullRequestRef {
 	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
-		State: w.State, Merged: w.Merged, Base: w.Base.Ref}
+		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
 	}

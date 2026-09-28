@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -43,21 +44,12 @@ const maxDecisionText = 2000
 // a known action, guidance for redirect, a reason for escalate, no other
 // field. A markdown fence around it is tolerated. Anything else escalates.
 func parseDecision(content string) Decision {
-	s := strings.TrimSpace(content)
-	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
-		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
-	}
 	invalid := func(why string) Decision {
 		return Decision{Action: ActionEscalate, Reason: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300)}
 	}
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.DisallowUnknownFields()
 	var d Decision
-	if err := dec.Decode(&d); err != nil {
+	if err := decodeAnswer(content, &d); err != nil {
 		return invalid(err.Error())
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return invalid("text after the JSON object")
 	}
 	d.Guidance, d.Reason = textutil.Truncate(strings.TrimSpace(d.Guidance), maxDecisionText), textutil.Truncate(strings.TrimSpace(d.Reason), maxDecisionText)
 	switch d.Action {
@@ -74,6 +66,24 @@ func parseDecision(content string) Decision {
 		return invalid(fmt.Sprintf("unknown action %q", d.Action))
 	}
 	return d
+}
+
+// decodeAnswer decodes a model's answer into v: exactly one JSON object
+// with no unknown field, a markdown fence around it tolerated.
+func decodeAnswer(content string, v any) error {
+	s := strings.TrimSpace(content)
+	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
+		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
+	}
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("text after the JSON object")
+	}
+	return nil
 }
 
 // ProgressDigest is what a human reviewer would read to see a circle: the

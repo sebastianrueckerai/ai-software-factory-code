@@ -249,6 +249,28 @@ func (q *CIQueue) Observe(ctx context.Context, label string, jobs []CIJob) {
 	}
 }
 
+// QueuedJob is a job waiting for a runner, as the spawner last saw it.
+type QueuedJob struct {
+	Label    string `json:"label"`
+	Job      string `json:"job"`
+	WaitingS int    `json:"waiting_s"`
+}
+
+// Waiting lists the jobs waiting for a runner now, longest waiting first.
+func (q *CIQueue) Waiting() []QueuedJob {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	now := q.now()
+	out := []QueuedJob{}
+	for _, w := range q.waiting {
+		out = append(out, QueuedJob{Label: w.label, Job: w.name, WaitingS: int(now.Sub(w.since).Seconds())})
+	}
+	slices.SortFunc(out, func(a, b QueuedJob) int {
+		return cmp.Or(cmp.Compare(b.WaitingS, a.WaitingS), cmp.Compare(a.Job, b.Job))
+	})
+	return out
+}
+
 // Seconds is the measured queue time of the job actions/tasks lists as taskID.
 func (q *CIQueue) Seconds(taskID int64) (float64, bool) {
 	q.mu.Lock()

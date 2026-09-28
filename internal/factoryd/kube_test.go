@@ -265,3 +265,45 @@ func TestPodInitFinishedTakesOnlyAReadyFinish(t *testing.T) {
 		}
 	}
 }
+
+// The gate supervisor's pod reads: phase, conditions and container states,
+// and the log's last lines without following.
+func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces/factory-agents-t1/pods/worker-s1":
+			io.WriteString(w, `{"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"True"},`+
+				`{"type":"Ready","status":"False","reason":"ContainersNotReady","message":"containers with unready status: [worker]"}],`+
+				`"containerStatuses":[{"name":"worker","restartCount":2,"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}]}}`)
+		case "/api/v1/namespaces/factory-agents-t1/pods/worker-s1/log":
+			if q := r.URL.Query(); q.Get("tailLines") != "100" || q.Has("follow") {
+				t.Errorf("log query = %v, want tailLines=100 and no follow", q)
+			}
+			io.WriteString(w, "a\nb\n")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	d, err := k.PodDiagnosis(context.Background(), "factory-agents-t1", "worker-s1")
+	want := PodDiagnosis{Phase: "Pending", Conditions: []PodCondition{{Type: "PodScheduled", Status: "True"},
+		{Type: "Ready", Status: "False", Reason: "ContainersNotReady", Message: "containers with unready status: [worker]"}},
+		Containers: []ContainerState{{Name: "worker", State: "waiting", Reason: "ImagePullBackOff", Message: "Back-off pulling image", Restarts: 2}}}
+	if err != nil || fmt.Sprint(d) != fmt.Sprint(want) {
+		t.Fatalf("PodDiagnosis = %+v, %v", d, err)
+	}
+	if tail, err := k.PodLogTail(context.Background(), "factory-agents-t1", "worker-s1", 100); err != nil || tail != "a\nb\n" {
+		t.Fatalf("PodLogTail = %q, %v", tail, err)
+	}
+	if _, err := k.PodLogTail(context.Background(), "factory-agents-t1", "gone", 100); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("gone pod's tail err = %v", err)
+	}
+}

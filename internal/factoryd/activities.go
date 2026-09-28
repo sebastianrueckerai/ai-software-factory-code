@@ -56,6 +56,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityMerge:                       r.Merge,
 		ActivityReportMergeFailure:          r.ReportMergeFailure,
 		ActivityReportMergeRetriesExhausted: r.ReportMergeRetriesExhausted,
+		ActivitySuperviseGate:               r.SuperviseGate,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

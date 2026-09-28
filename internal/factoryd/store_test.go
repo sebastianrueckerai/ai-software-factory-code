@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"reflect"
@@ -48,6 +49,7 @@ type fakeStore struct {
 	gates        []string // "task gate since", in order
 	alertsMu     sync.Mutex
 	alerts       []Alert
+	audit        []AuditRow // what AuditRows returns
 }
 
 func newFakeStore() *fakeStore {
@@ -336,6 +338,29 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	a.ID = int64(len(s.alerts) + 1)
 	s.alerts = append(s.alerts, a)
 	return a.ID, nil
+}
+
+func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.ID == id && a.Kind == AlertGateBound && a.Verdict == "" {
+			now := time.Now()
+			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
+			a.Detail = maps.Clone(a.Detail)
+			if a.Detail == nil {
+				a.Detail = map[string]any{}
+			}
+			maps.Copy(a.Detail, detail)
+			s.alerts[i] = a
+			return nil
+		}
+	}
+	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
+}
+
+func (s *fakeStore) AuditRows(ctx context.Context, taskID string, limit int) ([]AuditRow, error) {
+	return s.audit[:min(limit, len(s.audit))], nil
 }
 
 func (s *fakeStore) alertRows() []Alert {
