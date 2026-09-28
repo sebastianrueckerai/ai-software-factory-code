@@ -29,7 +29,7 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 ARG OPENCODE_VERSION
 ARG GO_VERSION=1.25.9
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
-      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep \
+      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash worker
 # release asset arch is "x64", not "amd64"; remote ADD does not auto-extract

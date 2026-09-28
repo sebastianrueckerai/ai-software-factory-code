@@ -72,6 +72,19 @@ func TestInClusterKubeWire(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusCreated)
 		},
+		"PATCH /apis/cilium.io/v2/namespaces/factory-agents-t1/ciliumnetworkpolicies/worker-egress": func(w http.ResponseWriter, r *http.Request) {
+			if ct := r.Header.Get("Content-Type"); ct != "application/apply-patch+yaml" {
+				t.Errorf("apply content type = %q", ct)
+			}
+			if q := r.URL.Query(); q.Get("fieldManager") != "factoryd" || q.Get("force") != "true" {
+				t.Errorf("apply query = %v", q)
+			}
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			if body["kind"] != "CiliumNetworkPolicy" || body["metadata"].(map[string]any)["name"] != "worker-egress" || body["spec"] == nil {
+				t.Errorf("apply body = %v", body)
+			}
+		},
 		"POST /api/v1/namespaces/factory-agents-t1/pods": func(w http.ResponseWriter, r *http.Request) {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -144,6 +157,9 @@ func TestInClusterKubeWire(t *testing.T) {
 	}
 	if err := k.CreateCiliumNetworkPolicy(ctx, "factory-agents-t1", "worker-egress", map[string]any{"endpointSelector": map[string]any{}}); err != nil {
 		t.Fatalf("CreateCiliumNetworkPolicy: %v", err)
+	}
+	if err := k.ApplyCiliumNetworkPolicy(ctx, "factory-agents-t1", "worker-egress", map[string]any{"endpointSelector": map[string]any{}}); err != nil {
+		t.Fatalf("ApplyCiliumNetworkPolicy: %v", err)
 	}
 	if err := k.Create(ctx, "/api/v1/namespaces/factory-agents-t1/resourcequotas", map[string]any{"kind": "ResourceQuota"}); err != nil {
 		t.Fatalf("Create: %v", err)

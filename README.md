@@ -522,12 +522,106 @@ the tool failed. Every call has an audit row with the decision, the tool
 
 The gateway's egress (`factory-gateway-egress` in `k8s/deployment.yaml`)
 is default-deny plus LiteLLM, the `sf-cluster` Postgres instances,
-factoryd on 8080, the API server (by entity on 6443, the backend port
-behind the Service's 443, dialled at the injected
-`KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
-`api.replicate.com`, `fal.run` and `api.fal.ai` by name on 443, with
-kube-dns for exactly those names (`ndots: 1`, every callee named in
-full). factoryd's ingress admits the gateway on 8080.
+factoryd on 8080, OpenBao on 8200 (the SSH CA), the API server (by
+entity on 6443, the backend port behind the Service's 443, dialled at the
+injected `KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
+`api.replicate.com`, `fal.run`, `api.fal.ai` and `api.hetzner.cloud` by
+name on 443, with kube-dns for exactly those names (`ndots: 1`, every
+callee named in full). factoryd's ingress admits the gateway on 8080.
+
+## Commissioned resources
+
+Agents get servers for a task through gateway tools (architecture 5.5),
+never through a provider key. They live in their own Hetzner project,
+`agent`, whose token only the gateway holds (`HETZNER_AGENT_KEY`, secret
+`hetzner-agent`); factoryd never sees it. Every tool is for running
+`coder` tasks; the project is the task's repository (`owner/name`).
+
+- `cloud_prices`: the project's server types with EUR/h and EUR/month
+  (net, `fsn1`, the server's primary IPv4 included), the volume price,
+  and the envelope with what the month has used. Prices come from
+  `GET /v1/pricing`, cached an hour (a failed refresh keeps the last
+  catalogue).
+- `commission_server` (`server_type`, `purpose`, `lease_minutes`,
+  optional `volume_gb` 10 to 1024 and `ssh_public_key`): a Debian 12
+  server with a public IPv4 only, a firewall admitting SSH only from the
+  cluster nodes' IPv4s (`AGENT_SSH_SOURCES`, ConfigMap `cluster-facts`)
+  and outbound only DNS, HTTP and HTTPS, and an optional ext4 volume
+  mounted at `/mnt/HC_Volume_<id>`. cloud-init installs the OpenBao SSH
+  CA's public key as `TrustedUserCAKeys` with `AuthorizedKeysFile none`
+  and no passwords: only certificates log in, as `root`. The answer
+  carries the resource id, the IPv4 and the lease end, and a certificate
+  when a key was given.
+- `ssh_certificate` (`resource_id`, `public_key`): OpenBao signs the key
+  for principal `root`, for 30 minutes or until the lease ends, whichever
+  is sooner, with key id `task=<id> resource=<id>`.
+- `list_resources`, `release_resource` (`resource_id`: the server, its
+  firewall and volume are deleted now), `resource_request_status`
+  (`request_id`).
+
+**Pricing.** A lease is billed per started hour: hours = ceil(minutes /
+60). The reservation is hours x (server hourly + IPv4 hourly) + hours x
+volume GB x GB-month price / 730. For a cx23 in fsn1 for 90 minutes with
+20 GB: 2 x (0.0088 + 0.0008) + 2 x 20 x 0.0572 / 730 = 0.0192 +
+0.0031342 = 0.0223342 EUR. The monthly figure on approval cards is the
+catalogue's monthly prices (5.49 + 0.50 + 20 x 0.0572 = 7.134 EUR).
+
+**Envelope.** Table `envelopes` (one row per project: `monthly_eur`,
+`server_types`, `max_count`, `max_lease_hours`, `volume_max_gb`,
+`set_by`, `set_at`). A project's first request copies the policy's
+`envelope_default` into its row (`set_by` `default`); the console edits
+it. Under the headroom lock, one transaction checks the envelope: the
+type, the lease, the volume, the count of open servers, and this UTC
+month's resource ledger rows plus open reservations plus this
+reservation against `monthly_eur`. Within it, the reservation is a
+`resource` hold against the task's and the day's headroom (a refusal
+otherwise, as for paid tools) and the registry rows are written in the
+same transaction. Beyond it, the tool files an `approval_requests` row
+(kind `resource`, the spec, the reason, `monthly_eur`) and answers
+`pending human approval <id>`; asking again finds the same request. An
+approval covers one commission of that spec or a smaller one for the
+task (the server row records `approval_id`); a denial is answered with
+the human's note. Widening a project is an envelope edit.
+
+**Registry first.** The rows (table `cloud_resources`, project `agent`,
+owner the task, the session, the repository, the type or size, the
+purpose, the reservation `hold_id` that groups the commission) exist
+before the firewall, the server and the volume are created, in that
+order. Every resource carries the labels `factory=agent`, `task=<id>`,
+`project=<owner--name>` and `resource=<row id>`. A failed create
+releases what was made; a create whose answer was lost is found by its
+label or deleted as unknown.
+
+**Leases and the collector.** The gateway runs the collector on the
+agent project every 2 minutes: it deletes resources whose lease ended
+(unless promoted) or whose task is `done` or `failed`, deletes every
+server, firewall and volume the registry does not know as open and every
+primary IP no server holds, and closes rows whose resource is gone. Then
+it accrues: each resource's started hours not yet booked go to a
+`resource` ledger row (`ref` `resource/<id>`) and the task's spend, and
+come off the reservation; once a commission's rows are closed and fully
+booked, the rest of the reservation returns. A reservation expires 24 h
+after its lease, so factoryd's hold sweep books it whole only if the
+collector stopped for a day. Promotion (`promoted`, set in the console)
+drops the reservation and the lease; the resource then counts against
+the project's month as it accrues.
+
+**Reachability.** factoryd reads the live leases from the registry
+(same database) every 10 s and server-side applies the task namespace's
+`worker-egress` with one rule item per leased server: `toCIDR <ip>/32`
+and `toPorts 22/TCP` together. When the lease ends or the server is
+released, the address leaves the policy. The sandbox image carries
+`openssh-client`.
+
+**The SSH CA.** OpenBao's `ssh-client-signer` engine with role
+`factory-agent` (user certificates, principal `root` only, TTL at most
+30 minutes); the gateway logs in through Kubernetes auth role
+`factory-gateway` (its ServiceAccount only) with a policy that may only
+sign with that role. The infra README has the setup commands.
+
+Buckets are not offered: Hetzner's Cloud API has no Object Storage
+endpoint, and its S3 keys are made in the console and reach every bucket
+of a project.
 
 ## Console (task 54)
 

@@ -47,6 +47,15 @@ spec:
           value: http://factoryd.factory.svc.cluster.local:8080
         - name: FACTORYD_TOKEN
           valueFrom: {secretKeyRef: {name: gateway-factoryd, key: token}}
+        # commissioning: the agent Hetzner project's token (only the gateway
+        # holds it), the nodes' IPv4s the servers' SSH firewall admits, and
+        # OpenBao's SSH CA (Kubernetes auth with this pod's token)
+        - name: HETZNER_AGENT_KEY
+          valueFrom: {secretKeyRef: {name: hetzner-agent, key: token}}
+        - name: AGENT_SSH_SOURCES
+          valueFrom: {configMapKeyRef: {name: cluster-facts, key: node_public_ips}}
+        - name: OPENBAO_URL
+          value: http://openbao.platform.svc.cluster.local:8200
         readinessProbe: {httpGet: {path: /healthz, port: http}}
         livenessProbe: {httpGet: {path: /healthz, port: http}}
         securityContext:
@@ -59,11 +68,12 @@ spec:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
 ---
-# The gateway holds the LiteLLM master key and the tool providers' keys, so
-# its egress is default-deny with exactly its callees: LiteLLM, Postgres
-# (every sf-cluster instance, so a failover keeps working), factoryd's
-# internal endpoint, the API server (JWKS, by the Service address from the
-# pod environment), and the tool providers by name on 443.
+# The gateway holds the LiteLLM master key, the tool providers' keys and
+# the agent Hetzner project's token, so its egress is default-deny with
+# exactly its callees: LiteLLM, Postgres (every sf-cluster instance, so a
+# failover keeps working), factoryd's internal endpoint, OpenBao (the SSH
+# CA), the API server (JWKS, by the Service address from the pod
+# environment), and the providers by name on 443.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -88,6 +98,8 @@ spec:
         - matchName: api.replicate.com
         - matchName: fal.run
         - matchName: api.fal.ai
+        - matchName: api.hetzner.cloud
+        - matchName: openbao.platform.svc.cluster.local
   # the Service's 443 reaches the API servers on 6443 (policy sees the
   # translated backend)
   - toEntities: [kube-apiserver]
@@ -109,10 +121,18 @@ spec:
     - matchLabels: {app: factoryd}
     toPorts:
     - ports: [{port: "8080", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: openbao
+        component: server
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
   - toFQDNs:
     - matchName: api.firecrawl.dev
     - matchName: api.replicate.com
     - matchName: fal.run
     - matchName: api.fal.ai
+    - matchName: api.hetzner.cloud
     toPorts:
     - ports: [{port: "443", protocol: TCP}]

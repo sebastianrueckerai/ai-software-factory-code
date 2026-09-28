@@ -47,6 +47,9 @@ type Kube interface {
 	CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
 	CreateCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error
+	// ApplyCiliumNetworkPolicy creates or replaces the policy (server-side
+	// apply, factoryd as the field manager).
+	ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error
 	// Create POSTs a complete object to a collection path such as
 	// /api/v1/namespaces/<ns>/resourcequotas.
 	Create(ctx context.Context, path string, obj map[string]any) error
@@ -177,6 +180,17 @@ func (k *InClusterKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace
 	return err
 }
 
+func (k *InClusterKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error {
+	body := map[string]any{
+		"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
+		"metadata": map[string]any{"name": name, "namespace": namespace},
+		"spec":     spec,
+	}
+	_, err := k.call(ctx, http.MethodPatch,
+		"/apis/cilium.io/v2/namespaces/"+namespace+"/ciliumnetworkpolicies/"+name+"?fieldManager=factoryd&force=true", body, nil)
+	return err
+}
+
 func (k *InClusterKube) Create(ctx context.Context, path string, obj map[string]any) error {
 	_, err := k.call(ctx, http.MethodPost, path, obj, nil)
 	return err
@@ -289,6 +303,9 @@ func (k *InClusterKube) request(ctx context.Context, method, path string, body a
 	req.Header.Set("Authorization", "Bearer "+string(bytes.TrimSpace(token)))
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+		if method == http.MethodPatch { // the only patch factoryd sends: a server-side apply (JSON is YAML)
+			req.Header.Set("Content-Type", "application/apply-patch+yaml")
+		}
 	}
 	client := k.HTTP
 	if client == nil {

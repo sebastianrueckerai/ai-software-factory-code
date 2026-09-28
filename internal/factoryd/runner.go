@@ -45,6 +45,15 @@ type RunnerConfig struct {
 	ReviewModel string
 	// ReproTimeout bounds one reproduction command run.
 	ReproTimeout time.Duration
+	// Leases reads the commissioned servers each task holds; their IPv4s
+	// join the task's sandbox egress on port 22 while the lease lives.
+	Leases LeaseReader
+}
+
+// LeaseReader is the live leased servers' IPv4s by owning task
+// (cloudres.AgentStore on the shared database).
+type LeaseReader interface {
+	LiveAddresses(ctx context.Context) (map[string][]string, error)
 }
 
 // Runner owns the sandbox side of a task: per-session namespace,
@@ -63,6 +72,11 @@ type Runner struct {
 
 	liveMu sync.Mutex
 	live   map[string]*liveSession // by task: its running session
+
+	// admitted is the leased addresses last applied to each task
+	// namespace's egress policy.
+	admitMu  sync.Mutex
+	admitted map[string]string
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
@@ -126,8 +140,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if supervisor == nil {
 		return nil, fmt.Errorf("runner: a supervisor model is required")
 	}
-	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" {
-		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL are required")
+	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" || cfg.Leases == nil {
+		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL and Leases are required")
 	}
 	if cfg.Models.Start == "" || cfg.Models.Stronger == "" {
 		return nil, fmt.Errorf("runner: both model ladder rungs are required")
@@ -661,7 +675,15 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoT
 			return r.kube.CreateServiceAccount(ctx, ns, "task-"+t.ID)
 		}},
 		{"egress policy", func() error {
-			return r.kube.CreateCiliumNetworkPolicy(ctx, ns, "worker-egress", r.workerEgressSpec())
+			leased, err := r.cfg.Leases.LiveAddresses(ctx)
+			if err != nil {
+				return fmt.Errorf("read leases: %w", err)
+			}
+			if err := r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[t.ID])); err != nil {
+				return err
+			}
+			r.setAdmitted(ns, leased[t.ID])
+			return nil
 		}},
 		{"git token secret", func() error {
 			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret, "PUSH_TOKEN": push.Secret})
@@ -895,7 +917,7 @@ func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool)
 // cannot authorize (the envoy fronting it answers 403), while the service
 // path is identity-scoped. The live gateway pods carry the plain `app`
 // label, not app.kubernetes.io/name.
-func (r *Runner) workerEgressSpec() map[string]any {
+func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 	dnsNames := []any{}
 	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
 		u, _ := url.Parse(raw) // validated in NewRunner
@@ -907,7 +929,7 @@ func (r *Runner) workerEgressSpec() map[string]any {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}
-	return map[string]any{
+	spec := map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": "opencode-worker"},
 		},
@@ -956,6 +978,93 @@ func (r *Runner) workerEgressSpec() map[string]any {
 				}},
 			},
 		},
+	}
+	for _, ip := range leased {
+		spec["egress"] = append(spec["egress"].([]any), leasedServerRule(ip))
+	}
+	return spec
+}
+
+const workerEgress = "worker-egress"
+
+// leasedServerRule admits SSH to one commissioned server: toCIDR and
+// toPorts in one rule item, so the port applies to that address only.
+func leasedServerRule(ipv4 string) map[string]any {
+	return map[string]any{
+		"toCIDR": []string{ipv4 + "/32"},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "22", "protocol": "TCP"}},
+		}},
+	}
+}
+
+func (r *Runner) setAdmitted(ns string, leased []string) {
+	r.admitMu.Lock()
+	defer r.admitMu.Unlock()
+	if r.admitted == nil {
+		r.admitted = map[string]string{}
+	}
+	r.admitted[ns] = strings.Join(leased, ",")
+}
+
+// AdmitLeases brings every agent namespace's egress policy in line with
+// its task's live leases: a new lease's address joins, an ended one
+// leaves. A namespace whose policy this process has not applied yet
+// (after a restart) is applied once.
+func (r *Runner) AdmitLeases(ctx context.Context) error {
+	leased, err := r.cfg.Leases.LiveAddresses(ctx)
+	if err != nil {
+		return fmt.Errorf("read leases: %w", err)
+	}
+	names, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
+	if err != nil {
+		return fmt.Errorf("list agent namespaces: %w", err)
+	}
+	live := map[string]bool{}
+	var errs []error
+	for _, ns := range names {
+		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
+		if id == ns || strings.HasPrefix(id, "ci-") {
+			continue
+		}
+		live[ns] = true
+		r.admitMu.Lock()
+		have, known := r.admitted[ns]
+		r.admitMu.Unlock()
+		if known && have == strings.Join(leased[id], ",") {
+			continue
+		}
+		err := r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[id]))
+		switch {
+		case errors.Is(err, ErrNotFound): // the namespace went meanwhile
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
+		default:
+			log.Printf("task %s: egress admits leased servers %v", id, leased[id])
+			r.setAdmitted(ns, leased[id])
+		}
+	}
+	r.admitMu.Lock()
+	for ns := range r.admitted {
+		if !live[ns] {
+			delete(r.admitted, ns)
+		}
+	}
+	r.admitMu.Unlock()
+	return errors.Join(errs...)
+}
+
+// LeaseLoop runs AdmitLeases every interval until ctx ends.
+func (r *Runner) LeaseLoop(ctx context.Context, every time.Duration) {
+	for {
+		if err := r.AdmitLeases(ctx); err != nil {
+			log.Printf("lease admission: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(every):
+		}
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -48,6 +49,7 @@ type fakeKube struct {
 	statusErr   map[string]error             // ns/name → injected PodStatus failure
 	onDeletePod func()                       // runs on every DeletePod
 	ops         []string                     // namespace deletions and pod creations, in order
+	applies     []string                     // ns/name of every applied CNP, in order
 	onCreatePod func()                       // runs on every CreatePod
 }
 
@@ -161,6 +163,17 @@ func (k *fakeKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace, nam
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.cnps[namespace+"/"+name] = spec
+	return nil
+}
+
+func (k *fakeKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.namespaces[namespace]; !ok {
+		return ErrNotFound
+	}
+	k.cnps[namespace+"/"+name] = spec
+	k.applies = append(k.applies, namespace+"/"+name)
 	return nil
 }
 
@@ -429,6 +442,7 @@ func testRunnerConfig() RunnerConfig {
 		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
 		Policy:      testPolicyVersion,
 		ReviewModel: "review-frontier",
+		Leases:      &fakeLeases{},
 	}
 }
 
@@ -439,6 +453,22 @@ func testPolicyVersion() policy.Version {
 		panic(err)
 	}
 	return policy.Version{ID: 7, Document: d}
+}
+
+// fakeLeases is the registry's live leased addresses by task.
+type fakeLeases struct {
+	mu   sync.Mutex
+	byID map[string][]string
+}
+
+func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string][]string{}
+	for k, v := range f.byID {
+		out[k] = v
+	}
+	return out, nil
 }
 
 // newTestRunner wires a runner against scripted backends and a queued task.
@@ -1446,5 +1476,88 @@ func TestRunSessionEscalationSupersededByAPush(t *testing.T) {
 	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**escalate**") ||
 		!strings.Contains(hub.comments[0], "Superseded: the session finished and pushed c1 during the supervisor call; the task goes to verification.") {
 		t.Fatalf("comments = %q", hub.comments)
+	}
+}
+
+func TestWorkerEgressAdmitsLeasedServersOnSSH(t *testing.T) {
+	r := &Runner{cfg: testRunnerConfig()}
+	plain := r.workerEgressSpec(nil)["egress"].([]any)
+	spec := r.workerEgressSpec([]string{"203.0.113.7", "203.0.113.8"})
+	egress := spec["egress"].([]any)
+	if len(egress) != len(plain)+2 {
+		t.Fatalf("egress rules = %d, want %d", len(egress), len(plain)+2)
+	}
+	for i, ip := range []string{"203.0.113.7", "203.0.113.8"} {
+		want := map[string]any{
+			"toCIDR":  []string{ip + "/32"},
+			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "22", "protocol": "TCP"}}}},
+		}
+		if got := egress[len(plain)+i]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("leased rule %d = %v, want %v", i, got, want)
+		}
+	}
+	for _, rule := range plain {
+		if _, ok := rule.(map[string]any)["toCIDR"]; ok {
+			t.Fatalf("a CIDR allow without a lease: %v", rule)
+		}
+	}
+}
+
+func TestAdmitLeasesFollowsTheRegistry(t *testing.T) {
+	kube := newFakeKube()
+	for _, ns := range []string{"factory-agents-t1", "factory-agents-t2", "factory-agents-ci-5"} {
+		kube.namespaces[ns] = map[string]string{"factory.ai/task": strings.TrimPrefix(ns, "factory-agents-")}
+	}
+	leases := &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "gone": {"203.0.113.9"}}}
+	cfg := testRunnerConfig()
+	cfg.Leases = leases
+	r := &Runner{cfg: cfg, kube: kube}
+	ctx := context.Background()
+	rules := func(ns string) string {
+		kube.mu.Lock()
+		defer kube.mu.Unlock()
+		return fmt.Sprint(kube.cnps[ns+"/worker-egress"]["egress"])
+	}
+	if err := r.AdmitLeases(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// after a restart every agent namespace is applied once; CI ones never
+	if got := strings.Join(kube.applies, ","); got != "factory-agents-t1/worker-egress,factory-agents-t2/worker-egress" {
+		t.Fatalf("applies = %s", got)
+	}
+	if !strings.Contains(rules("factory-agents-t1"), "203.0.113.7/32") || strings.Contains(rules("factory-agents-t2"), "/32") {
+		t.Fatalf("t1 %s\nt2 %s", rules("factory-agents-t1"), rules("factory-agents-t2"))
+	}
+	if err := r.AdmitLeases(ctx); err != nil || len(kube.applies) != 2 {
+		t.Fatalf("unchanged pass applied again: %v, %v", kube.applies, err)
+	}
+	// the lease ends: its address leaves the policy
+	leases.mu.Lock()
+	delete(leases.byID, "t1")
+	leases.mu.Unlock()
+	if err := r.AdmitLeases(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(kube.applies) != 3 || strings.Contains(rules("factory-agents-t1"), "203.0.113.7") {
+		t.Fatalf("applies %v, t1 %s", kube.applies, rules("factory-agents-t1"))
+	}
+}
+
+func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
+	kube := newFakeKube()
+	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
+	cfg := testRunnerConfig()
+	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
+	r := &Runner{cfg: cfg, kube: kube}
+	if err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}, ForgejoToken{}); err != nil {
+		t.Fatal(err)
+	}
+	egress := fmt.Sprint(kube.cnps["factory-agents-t1/worker-egress"]["egress"])
+	if !strings.Contains(egress, "203.0.113.7/32") || strings.Contains(egress, "203.0.113.8") {
+		t.Fatalf("egress = %s", egress)
+	}
+	// the loop sees it applied already
+	if err := r.AdmitLeases(context.Background()); err != nil || len(kube.applies) != 1 {
+		t.Fatalf("applies = %v, %v", kube.applies, err)
 	}
 }

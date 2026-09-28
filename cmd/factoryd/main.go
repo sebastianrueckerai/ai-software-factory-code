@@ -133,6 +133,9 @@ func main() {
 		Policy:       policyLoader.Current,
 		ReviewModel:  env("REVIEW_MODEL", "review-frontier"),
 		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
+		// the gateway commissions servers into the registry; factoryd only
+		// admits their addresses into the task's egress
+		Leases: cloudres.AgentStore(store.CloudResources()),
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		BaseURL: litellm.BaseURL,
 		Admin:   litellm,
@@ -237,6 +240,7 @@ func main() {
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	go ciSpawner.Run(ctx)
 	go ciCollector.Run(ctx)
+	go runner.LeaseLoop(ctx, 10*time.Second)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
