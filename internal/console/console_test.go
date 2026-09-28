@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -281,6 +283,27 @@ func (f *fakeResources) EndLease(_ context.Context, id int64, by string) error {
 	return nil
 }
 
+// fakeAlerts is the alerts table.
+type fakeAlerts struct {
+	rows     []factoryd.Alert
+	verdicts []string // "id verdict by"
+}
+
+func (a *fakeAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, error) {
+	return a.rows[:min(limit, len(a.rows))], nil
+}
+
+func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by string) error {
+	for i, r := range a.rows {
+		if r.ID == id && r.Kind == factoryd.AlertEscalation && r.Verdict == "" {
+			a.rows[i].Verdict, a.rows[i].ResolvedBy = verdict, by
+			a.verdicts = append(a.verdicts, fmt.Sprintf("%d %s %s", id, verdict, by))
+			return nil
+		}
+	}
+	return factoryd.ErrNotFound
+}
+
 type fakeLedger struct {
 	from, to time.Time
 	costs    policy.Costs
@@ -309,6 +332,7 @@ type rig struct {
 	ledger    *fakeLedger
 	approvals *fakeApprovals
 	resources *fakeResources
+	alerts    *fakeAlerts
 	signalErr error
 }
 
@@ -327,13 +351,13 @@ func newRig(t *testing.T) *rig {
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123"}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
-		resources: &fakeResources{set: map[string]policy.Envelope{}}}
+		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), Repo: factoryd.Repo{Owner: "sf", Name: "code"},
 		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
-		Approvals: r.approvals, Resources: r.resources,
+		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
@@ -1245,5 +1269,166 @@ func TestResponsesCarryHSTS(t *testing.T) {
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/login", nil))
 	if got := rec.Header().Get("Strict-Transport-Security"); got != "max-age=31536000; includeSubDomains" {
 		t.Fatalf("Strict-Transport-Security = %q", got)
+	}
+}
+
+// The board card shows how long the task has taken in all and the gate
+// it is in with the gate's age; a finished task its total only.
+func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	asked, since := now.Add(-(2*time.Hour + 5*time.Minute + 30*time.Second)), now.Add(-(25*time.Minute + 30*time.Second))
+	finished := asked.Add(47*time.Minute + 10*time.Second)
+	r.tasks.set("", factoryd.Task{ID: "t-c", Kind: "agent", Status: "in-review", Objective: "checking work", Repository: "sf/code",
+		CreatedAt: asked, Gate: factoryd.GateChecks, GateSince: &since},
+		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code",
+			CreatedAt: asked, FinishedAt: &finished})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{"2 h 5 min in all", `<span class="gate">checks</span> for 25 min`, "47 min in all"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("board lacks %q", want)
+		}
+	}
+	if strings.Count(body, `class="gate"`) != 1 {
+		t.Error("a finished task shows a gate")
+	}
+}
+
+// The timeline page opens with a table of the gates: each step that ended
+// a gate is a row from its start, the task's open gate a row "open for N
+// min", CI jobs rows under their checks, and every bar is scaled to the
+// longest gate.
+func TestTimelineDurationsTable(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	since := time.Now().Add(-(12*time.Minute + 20*time.Second))
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "work",
+		Gate: factoryd.GateApproval, GateSince: &since})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(strings.Join([]string{
+		`{"step":"intake","time":"2026-09-28T10:00:30Z","started":"2026-09-28T10:00:00Z","source":"webhook"}`,
+		`{"step":"session_start","time":"2026-09-28T10:01:00Z","attempt":1}`,
+		`{"step":"session_end","time":"2026-09-28T10:21:00Z","started":"2026-09-28T10:01:00Z","attempt":1,"outcome":"no_push"}`,
+		`{"step":"session_end","time":"2026-09-28T10:30:00Z","started":"2026-09-28T10:22:00Z","attempt":2,"outcome":"pushed"}`,
+		`{"step":"pushed","time":"2026-09-28T10:30:01Z","commit":"c1"}`,
+		`{"step":"checks","time":"2026-09-28T10:37:00Z","started":"2026-09-28T10:30:05Z","state":"success",` +
+			`"jobs":[{"name":"test","status":"success","queue_s":30,"run_s":258},{"name":"vet","status":"success","run_s":146}]}`,
+		`{"step":"gate_reproduction","time":"2026-09-28T10:39:00Z","started":"2026-09-28T10:37:10Z","exit":1,"command":"make x"}`,
+		`{"step":"signal","time":"2026-09-28T10:40:00Z","signal":"pr_merged","author":"x"}`,
+		`{"step":"approval_requested","time":"2026-09-28T10:41:00Z","approval":3}`,
+	}, "\n") + "\n")
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	table := body[strings.Index(body, "<caption>Gates"):]
+	table = table[:strings.Index(table, "</table>")]
+	var rows []string
+	for _, tr := range strings.Split(table, "<tr>")[2:] {
+		cells := regexp.MustCompile(`<t[dh][^>]*>(.*?)</t[dh]>`).FindAllStringSubmatch(tr, -1)
+		var row []string
+		for _, c := range cells {
+			row = append(row, c[1])
+		}
+		rows = append(rows, strings.Join(row, " | "))
+	}
+	// the longest is the first session: 20 min, 1200 s
+	want := []string{
+		`intake |  | 2026-09-28 10:00:00 | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
+		`session | 1 | 2026-09-28 10:01:00 | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
+		`session | 2 | 2026-09-28 10:22:00 | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
+		`checks | 2 | 2026-09-28 10:30:05 | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
+		`job test | 2 |  | 4 min 18 s | success, queued 30 s | <meter min="0" max="1200" value="258">4 min 18 s</meter>`,
+		`job vet | 2 |  | 2 min 26 s | success | <meter min="0" max="1200" value="146">2 min 26 s</meter>`,
+		`reproduction | 2 | 2026-09-28 10:37:10 | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
+		`approval | 2 | ` + since.UTC().Format("2006-01-02 15:04:05") + ` | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
+	}
+	if !slices.Equal(rows, want) {
+		t.Fatalf("gate rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(body, "approval_requested") || strings.Contains(body, "style=") {
+		t.Fatal("the raw steps are gone, or an inline style crept in")
+	}
+}
+
+// A gate that closed after the task's row entered it is not open.
+func TestTimelineClosedGateIsNotOpen(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	since := time.Date(2026, 9, 28, 10, 30, 5, 0, time.UTC)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "work",
+		Gate: factoryd.GateChecks, GateSince: &since})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"checks","time":"2026-09-28T10:37:00Z","started":"2026-09-28T10:30:05Z","state":"failure"}` + "\n")
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	if strings.Contains(body, "open for") || !strings.Contains(body, "<td>failure</td>") {
+		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
+	}
+}
+
+// /alerts lists the alerts newest first; an open human alert takes a
+// verdict from an approver, on the page and on the escalation's card.
+func TestAlertsPageAndVerdicts(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
+	resolved := raised.Add(time.Minute)
+	r.alerts.rows = []factoryd.Alert{
+		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
+		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
+			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
+	}
+	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
+	r.tasks.tasks[0].EscalationAlert = 3
+	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
+	i3, i2, i1 := strings.Index(page, "<td>escalation</td>"), strings.Index(page, "<td>supervisor_trip</td>"), strings.Index(page, "<td>gate_bound</td>")
+	if i3 < 0 || i2 < i3 || i1 < i2 {
+		t.Fatalf("alerts not newest first: %d %d %d", i3, i2, i1)
+	}
+	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts">Alerts</a>`,
+		`action="/alerts/3/verdict"`, `value="real"`, "real problem", `value="noise"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("/alerts lacks %q", want)
+		}
+	}
+	if strings.Count(page, `/verdict"`) != 2 {
+		t.Errorf("verdict forms on /alerts = %d, want the open human alert's two", strings.Count(page, `/verdict"`))
+	}
+	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Count(board, `action="/alerts/3/verdict"`) != 2 {
+		t.Error("the escalation card lacks the two verdict buttons")
+	}
+	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"maybe"}}), ck); rec.Code != http.StatusBadRequest {
+		t.Fatalf("an unknown verdict = %d, want 400", rec.Code)
+	}
+	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {"/"}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Fatalf("verdict = %d to %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("a second verdict = %d, want 409", rec.Code)
+	}
+	if rec := r.do(post("/alerts/1/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
+		t.Fatalf("a verdict on a machine alert = %d, want 409", rec.Code)
+	}
+	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
+		t.Fatalf("verdicts = %q", r.alerts.verdicts)
+	}
+}
+
+// Only the policy's approvers judge alerts: no buttons, and a 403.
+func TestAlertVerdictNeedsAnApprover(t *testing.T) {
+	r := newRig(t)
+	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
+	ck, s := r.loggedIn(t)
+	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
+	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
+	r.tasks.tasks[0].EscalationAlert = 3
+	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
+	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(page, "/verdict") || strings.Contains(board, "/verdict") || !strings.Contains(page, "Only the policy's approvers may judge an alert.") {
+		t.Fatal("a non-approver is offered the verdict buttons")
+	}
+	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck); rec.Code != http.StatusForbidden {
+		t.Fatalf("verdict by a non-approver = %d, want 403", rec.Code)
+	}
+	if len(r.alerts.verdicts) != 0 {
+		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
 }

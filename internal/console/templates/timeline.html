@@ -1,6 +1,14 @@
 {{template "head" .}}
 <h2>Timeline of {{.Card.ID}}</h2>
 {{template "card" .Card}}
+<table class="gates">
+<caption>Gates, oldest first</caption>
+<thead><tr><th scope="col">Gate</th><th scope="col">Attempt</th><th scope="col">Start, UTC</th><th scope="col">Duration</th><th scope="col">Outcome</th><th scope="col">Against the longest gate</th></tr></thead>
+<tbody>
+{{range .Gates}}<tr><td>{{.Gate}}</td><td>{{.Attempt}}</td><td>{{.Start}}</td><td>{{.Duration}}</td><td>{{.Outcome}}</td><td><meter min="0" max="{{$.Longest}}" value="{{.Seconds}}">{{.Duration}}</meter></td></tr>
+{{else}}<tr><td colspan="6">No gate recorded yet.</td></tr>{{end}}
+</tbody>
+</table>
 <table>
 <caption class="visually-hidden">Timeline steps, oldest first</caption>
 <thead><tr><th scope="col">Time</th><th scope="col">Step</th><th scope="col">Detail</th></tr></thead>

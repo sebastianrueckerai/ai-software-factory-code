@@ -12,7 +12,7 @@
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
 <header>
 <a class="home" href="/">Factory console</a>
-{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a></nav>
+{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a></nav>
 <form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
 </header>
 <main>
@@ -25,6 +25,9 @@
 
 {{define "card"}}<article class="card">
 <h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
-<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR</p>
+<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .Gate}} · <span class="gate">{{.Gate}}</span> for {{.GateAge}}{{end}}</p>
 <p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
 </article>{{end}}
+
+{{define "verdict"}}<form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="real"><button type="submit" aria-label="Alert {{.ID}}: a real problem">real problem</button></form>
+<form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="noise"><button type="submit" class="deny" aria-label="Alert {{.ID}}: noise">noise</button></form>{{end}}

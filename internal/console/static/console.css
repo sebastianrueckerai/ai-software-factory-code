@@ -43,3 +43,5 @@ form.inline button { margin: 0 .25rem .25rem 0; }
 .approval form { margin-top: .4rem; }
 .approval fieldset, .envelope fieldset { border: 1px solid var(--line); border-radius: 4px; margin: .4rem 0; }
 .project { margin-bottom: 2rem; }
+.gate { font-weight: 600; }
+.gates meter { width: 12rem; }

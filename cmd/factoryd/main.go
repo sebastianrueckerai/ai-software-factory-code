@@ -289,6 +289,7 @@ func main() {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
 		Resources: cloudres.AgentStore(store.CloudResources()),
+		Alerts:    store,
 		PolicyURL: env("CONSOLE_POLICY_URL",
 			"https://git.aisoftwarefactory.world/sf/ai-software-factory-infra/src/branch/main/k8s/platform/policy/policy.yaml"),
 	})

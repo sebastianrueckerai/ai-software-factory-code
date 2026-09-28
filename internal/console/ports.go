@@ -45,3 +45,13 @@ type Policies interface {
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 }
+
+// Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
+// the machine, human escalations judged by an approver.
+type Alerts interface {
+	// Alerts lists the newest limit alerts, newest first.
+	Alerts(ctx context.Context, limit int) ([]factoryd.Alert, error)
+	// SetAlertVerdict judges an open escalation alert as by;
+	// factoryd.ErrNotFound when there is none.
+	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
+}

@@ -16,6 +16,8 @@
 <textarea id="answer-{{.ID}}" name="answer" rows="3" required></textarea>
 <button type="submit">Answer</button>
 </form>
+{{if and $.Approver .EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
+{{template "verdict" (verdictForm .EscalationAlert $.CSRF "/")}}{{end}}
 </article>{{end}}
 </section>
 <section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>

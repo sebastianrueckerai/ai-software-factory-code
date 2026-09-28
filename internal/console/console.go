@@ -86,6 +86,7 @@ type Config struct {
 	Approvals    Approvals
 	ApproveMerge MergeApprover
 	Resources    Resources
+	Alerts       Alerts
 	HTTP         *http.Client // nil = 15 s timeout
 }
 
@@ -149,6 +150,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.spend("promote", c.promote)))
 	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
 	c.mux.Handle("POST /envelopes", c.auth(c.spend("envelope edit", c.setEnvelope)))
+	c.mux.Handle("GET /alerts", c.auth(c.alerts))
+	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil
 }
 

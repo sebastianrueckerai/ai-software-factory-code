@@ -3,11 +3,13 @@ package console
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -28,7 +30,14 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%d min", minutes)
 	},
-	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"utc":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"verdictForm": func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
+}
+
+// verdictForm is the "verdict" template's data: an alert's two buttons.
+type verdictForm struct {
+	ID         int64
+	CSRF, Back string
 }
 
 // columns are the agent lane, in board order; closing counts as running.
@@ -42,6 +51,10 @@ type card struct {
 	IssueURL string
 	PRURL    string
 	Reason   string // an escalation's reason
+	// Total is the task's time so far, or in all once it finished; GateAge
+	// how long it has been in its gate.
+	Total, GateAge  string
+	EscalationAlert int64 // the escalation's open alert
 }
 
 type column struct {
@@ -73,7 +86,40 @@ func (c *Console) card(t factoryd.Task) card {
 	if t.PRNumber > 0 {
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, t.PRNumber)
 	}
+	end := time.Now()
+	if t.FinishedAt != nil {
+		end = *t.FinishedAt
+	}
+	if !t.CreatedAt.IsZero() {
+		k.Total = minutes(end.Sub(t.CreatedAt))
+	}
+	if t.Gate != "" && t.GateSince != nil {
+		k.GateAge = minutes(time.Since(*t.GateSince))
+	}
 	return k
+}
+
+// minutes is a duration in whole minutes, or hours and minutes.
+func minutes(d time.Duration) string {
+	m := int(d.Minutes())
+	if m < 60 {
+		return fmt.Sprintf("%d min", m)
+	}
+	return fmt.Sprintf("%d h %d min", m/60, m%60)
+}
+
+// span is a gate's duration to the second under an hour.
+func span(d time.Duration) string {
+	sec := int(d.Seconds())
+	switch {
+	case sec < 60:
+		return fmt.Sprintf("%d s", sec)
+	case sec < 3600 && sec%60 == 0:
+		return fmt.Sprintf("%d min", sec/60)
+	case sec < 3600:
+		return fmt.Sprintf("%d min %d s", sec/60, sec%60)
+	}
+	return minutes(d)
 }
 
 // board renders the whole page, or only the board for htmx's poll.
@@ -110,7 +156,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 		}
 		if t.Status == "waiting-human" {
-			k.Reason = bt.Escalation
+			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
 			d.Escalations = append(d.Escalations, k)
 		}
 	}
@@ -136,32 +182,152 @@ type timelineEntry struct {
 	Reason string
 }
 
-func (c *Console) readTimeline(r *http.Request, taskID string) ([]timelineEntry, error) {
+// readTimeline reads the task's timeline steps, oldest first.
+func (c *Console) readTimeline(r *http.Request, taskID string) ([]map[string]any, error) {
 	body, err := c.cfg.Timelines.Get(r.Context(), "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
 		return nil, err
 	}
-	var out []timelineEntry
+	var out []map[string]any
 	sc := bufio.NewScanner(bytes.NewReader(body))
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
 		var m map[string]any
-		if json.Unmarshal(sc.Bytes(), &m) != nil {
-			continue
+		if json.Unmarshal(sc.Bytes(), &m) == nil {
+			out = append(out, m)
 		}
-		e := timelineEntry{}
-		e.Time, _ = m["time"].(string)
-		e.Step, _ = m["step"].(string)
-		e.Reason, _ = m["reason"].(string)
-		delete(m, "time")
-		delete(m, "step")
-		if len(m) > 0 {
-			b, _ := json.Marshal(m) // #nosec G104 -- re-encoding decoded JSON cannot fail
-			e.Detail = string(b)
-		}
-		out = append(out, e)
 	}
 	return out, sc.Err()
+}
+
+func entry(m map[string]any) timelineEntry {
+	e := timelineEntry{}
+	e.Time, _ = m["time"].(string)
+	e.Step, _ = m["step"].(string)
+	e.Reason, _ = m["reason"].(string)
+	rest := maps.Clone(m)
+	delete(rest, "time")
+	delete(rest, "step")
+	if len(rest) > 0 {
+		b, _ := json.Marshal(rest) // #nosec G104 -- re-encoding decoded JSON cannot fail
+		e.Detail = string(b)
+	}
+	return e
+}
+
+// gateRow is one row of the timeline page's durations table.
+type gateRow struct {
+	Gate, Attempt, Start, Duration, Outcome string
+	Seconds                                 int
+}
+
+// stepGates are the timeline steps that end a gate, when they carry
+// started.
+var stepGates = map[string]string{
+	"intake": factoryd.GateIntake, "session_end": factoryd.GateSession, "checks": factoryd.GateChecks,
+	"gate_policy": factoryd.GatePolicy, "gate_migration": factoryd.GateMigration, "gate_reproduction": factoryd.GateReproduction,
+	"model_review": factoryd.GateReview, "signal": factoryd.GateApproval, "merged": factoryd.GateMerge,
+	"merge_failed": factoryd.GateMerge, "merge_refused": factoryd.GateMerge, "commissioned": factoryd.GateCommissioning,
+}
+
+// gateRows are the task's gates from its timeline, each from its start to
+// the step that ended it, the CI jobs under their checks, and the gate the
+// task's row is in when no step ended it yet; longest scales the bars.
+func gateRows(steps []map[string]any, t factoryd.Task, now time.Time) (rows []gateRow, longest int) {
+	attempt := ""
+	open := t.Gate != "" && t.GateSince != nil && t.Status != "done" && t.Status != "failed"
+	for _, m := range steps {
+		step, _ := m["step"].(string)
+		if step == "session_end" {
+			attempt = fmt.Sprint(m["attempt"])
+		}
+		gate, ok := stepGates[step]
+		startS, _ := m["started"].(string)
+		start, err := time.Parse(time.RFC3339, startS)
+		if !ok || err != nil {
+			continue
+		}
+		end, _ := time.Parse(time.RFC3339, fmt.Sprint(m["time"]))
+		if open && gate == t.Gate && !end.Before(*t.GateSince) {
+			open = false
+		}
+		row := gateRow{Gate: gate, Start: start.UTC().Format("2006-01-02 15:04:05"), Outcome: stepOutcome(step, m),
+			Seconds: int(end.Sub(start).Seconds())}
+		if gate != factoryd.GateIntake {
+			row.Attempt = attempt
+		}
+		row.Duration = span(end.Sub(start))
+		rows = append(rows, row)
+		if step == "checks" {
+			rows = append(rows, jobRows(m["jobs"], attempt)...)
+		}
+	}
+	if open {
+		d := now.Sub(*t.GateSince)
+		rows = append(rows, gateRow{Gate: t.Gate, Attempt: attempt, Start: t.GateSince.UTC().Format("2006-01-02 15:04:05"),
+			Duration: "open for " + minutes(d), Outcome: "open", Seconds: int(d.Seconds())})
+	}
+	for _, r := range rows {
+		longest = max(longest, r.Seconds)
+	}
+	return rows, max(longest, 1)
+}
+
+// jobRows are the CI jobs of a checks step (name, status, run_s, queue_s).
+func jobRows(jobs any, attempt string) []gateRow {
+	list, _ := jobs.([]any)
+	var rows []gateRow
+	for _, j := range list {
+		job, _ := j.(map[string]any)
+		run, _ := job["run_s"].(float64)
+		outcome := fmt.Sprint(job["status"])
+		if q, ok := job["queue_s"].(float64); ok {
+			outcome += ", queued " + span(time.Duration(q)*time.Second)
+		}
+		d := time.Duration(run) * time.Second
+		rows = append(rows, gateRow{Gate: "job " + fmt.Sprint(job["name"]), Attempt: attempt, Duration: span(d),
+			Outcome: outcome, Seconds: int(run)})
+	}
+	return rows
+}
+
+// stepOutcome is how the step ended its gate.
+func stepOutcome(step string, m map[string]any) string {
+	str := func(k string) string { s, _ := m[k].(string); return s }
+	switch step {
+	case "intake":
+		return str("source")
+	case "session_end":
+		return str("outcome")
+	case "checks":
+		return str("state")
+	case "gate_policy":
+		return str("class")
+	case "gate_migration":
+		return "flagged for review"
+	case "gate_reproduction":
+		switch exit, _ := m["exit"].(float64); {
+		case str("skipped") != "":
+			return "skipped"
+		case exit == 0:
+			return "passed"
+		default:
+			return fmt.Sprintf("failed (exit %d)", int(exit))
+		}
+	case "model_review":
+		return cmp.Or(str("verdict"), "no verdict")
+	case "signal":
+		return "approved by " + str("author")
+	case "merged":
+		return "merged by " + str("merged_by")
+	case "merge_failed":
+		return "failed"
+	case "merge_refused":
+		return "refused"
+	case "commissioned":
+		return str("server_type")
+	}
+	return ""
 }
 
 func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
@@ -174,14 +340,19 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	entries, err := c.readTimeline(r, t.ID)
+	steps, err := c.readTimeline(r, t.ID)
 	if err != nil {
 		log.Printf("console: timeline of %s: %v", t.ID, err)
 		http.Error(w, "cannot read the timeline", http.StatusBadGateway)
 		return
 	}
+	var entries []timelineEntry
+	for _, m := range steps {
+		entries = append(entries, entry(m))
+	}
+	gates, longest := gateRows(steps, t, time.Now())
 	c.render(w, "timeline.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf,
-		"Card": c.card(t), "Entries": entries})
+		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
 }
 
 // labels lists the repository's labels as the human, all pages.
