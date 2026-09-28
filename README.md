@@ -275,6 +275,8 @@ a conflict is 409). A refusal is commented and the wait goes on. A human
 merging in Forgejo stays valid (`pr_merged`). An approval signalled before
 the request opened, or for another pull request, does nothing.
 
+The first pull request merged this way added this sentence.
+
 ## Supervision
 
 `internal/factoryd/supervise.go` watches every session's event stream.
