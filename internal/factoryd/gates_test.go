@@ -417,6 +417,45 @@ func TestGateReproductionWithoutACommand(t *testing.T) {
 	}
 }
 
+// The reproduction heartbeats from its start: a slow namespace setup (a
+// previous namespace still terminating) never runs into the heartbeat
+// timeout before the pod exists.
+func TestGateReproductionHeartbeatsThroughASlowNamespace(t *testing.T) {
+	defer func(d time.Duration) { gateHeartbeatEvery = d }(gateHeartbeatEvery)
+	gateHeartbeatEvery = 20 * time.Millisecond
+	defer func(f func(context.Context, ...any)) { recordGateHeartbeat = f }(recordGateHeartbeat)
+	var beats atomic.Int32
+	recordGateHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
+	task := gateTask
+	task.ReproCommand = "true"
+	kube := newFakeKube()
+	kube.nsDelay = 300 * time.Millisecond
+	var atPod atomic.Int32
+	kube.onCreatePod = func() { atPod.Store(beats.Load()) }
+	r, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+		done <- err
+	}()
+	for {
+		kube.mu.Lock()
+		n := len(kube.podOrder)
+		kube.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	kube.scriptPods(0, reproLine(0, "ok"))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if n := atPod.Load(); n < 5 {
+		t.Fatalf("%d heartbeats before the pod after a 300 ms namespace setup at 20 ms, want several", n)
+	}
+}
+
 func reproLine(exit int, output string) string {
 	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "repro", Repro: &harness.Repro{Exit: exit, Output: output}})
 	return string(b)
@@ -566,8 +605,8 @@ func TestFencedCannotBeClosedEarly(t *testing.T) {
 // cancel (a terminal signal during the review) reaches the call; a call
 // cut by the cancel books its hold and leaves none open.
 func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
-	defer func(d time.Duration) { reviewHeartbeatEvery = d }(reviewHeartbeatEvery)
-	reviewHeartbeatEvery = 20 * time.Millisecond
+	defer func(d time.Duration) { gateHeartbeatEvery = d }(gateHeartbeatEvery)
+	gateHeartbeatEvery = 20 * time.Millisecond
 	fj := &gateForgejo{diff: "d"}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`, delay: 300 * time.Millisecond}
@@ -576,8 +615,8 @@ func TestModelReviewHeartbeatsAndACancelCutsTheCall(t *testing.T) {
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
 	var beats atomic.Int32
-	defer func(f func(context.Context, ...any)) { recordReviewHeartbeat = f }(recordReviewHeartbeat)
-	recordReviewHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
+	defer func(f func(context.Context, ...any)) { recordGateHeartbeat = f }(recordGateHeartbeat)
+	recordGateHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
 	r.RegisterActivities(env)
 	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
 		t.Fatal(err)
@@ -623,11 +662,11 @@ func TestReportMergeFailure(t *testing.T) {
 // The heartbeats start with the activity: a slow diff fetch before the
 // model call heartbeats too, so it never runs into the heartbeat timeout.
 func TestModelReviewHeartbeatsThroughASlowDiffFetch(t *testing.T) {
-	defer func(d time.Duration) { reviewHeartbeatEvery = d }(reviewHeartbeatEvery)
-	reviewHeartbeatEvery = 20 * time.Millisecond
-	defer func(f func(context.Context, ...any)) { recordReviewHeartbeat = f }(recordReviewHeartbeat)
+	defer func(d time.Duration) { gateHeartbeatEvery = d }(gateHeartbeatEvery)
+	gateHeartbeatEvery = 20 * time.Millisecond
+	defer func(f func(context.Context, ...any)) { recordGateHeartbeat = f }(recordGateHeartbeat)
 	var beats atomic.Int32
-	recordReviewHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
+	recordGateHeartbeat = func(ctx context.Context, d ...any) { beats.Add(1); activity.RecordHeartbeat(ctx, d...) }
 	fj := &gateForgejo{diff: "d", diffDelay: 300 * time.Millisecond}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s"}`}

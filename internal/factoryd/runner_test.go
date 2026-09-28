@@ -51,6 +51,7 @@ type fakeKube struct {
 	ops         []string                     // namespace deletions and pod creations, in order
 	applies     []string                     // ns/name of every applied CNP, in order
 	onCreatePod func()                       // runs on every CreatePod
+	nsDelay     time.Duration                // every CreateNamespace takes this long
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -88,6 +89,7 @@ func newFakeKube() *fakeKube {
 }
 
 func (k *fakeKube) CreateNamespace(ctx context.Context, name string, labels map[string]string) error {
+	time.Sleep(k.nsDelay)
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	if _, ok := k.namespaces[name]; ok {

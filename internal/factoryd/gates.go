@@ -188,6 +188,8 @@ const reproOutputTail = 4 << 10
 // and runs the command under the agents' egress policy. No command: not
 // run. The namespace and the token go when it ends, however it ends.
 func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
+	// the namespace wait, the image pull and the command take minutes
+	defer beatUntilDone(ctx, "reproduction")()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return ReproResult{}, err
@@ -217,7 +219,6 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, pr, commit)); err != nil {
 		return ReproResult{}, fmt.Errorf("create pod: %w", err)
 	}
-	activity.RecordHeartbeat(ctx, podName)
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
 		return ReproResult{}, err
 	}
@@ -238,19 +239,15 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	return res, nil
 }
 
-// readRepro follows the repro pod's log to its report, heartbeating.
+// readRepro follows the repro pod's log to its report.
 func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (harness.Repro, error) {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	lines := followPodLog(logCtx, r.kube, ns, podName, taskID)
-	beat := time.NewTicker(heartbeatEvery)
-	defer beat.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return harness.Repro{}, ctx.Err()
-		case <-beat.C:
-			activity.RecordHeartbeat(ctx, podName)
 		case line, ok := <-lines.lines:
 			if !ok {
 				if err := lines.err(); err != nil {
@@ -376,20 +373,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	// the heartbeats, from the start to the answer, carry the workflow's
 	// cancel (a terminal signal during the review) into the Forgejo reads
 	// and the model call: the call is cut, and its hold booked
-	beatCtx, stopBeats := context.WithCancel(ctx)
+	stopBeats := beatUntilDone(ctx, "review")
 	defer stopBeats()
-	go func() {
-		tick := time.NewTicker(reviewHeartbeatEvery)
-		defer tick.Stop()
-		for {
-			select {
-			case <-beatCtx.Done():
-				return
-			case <-tick.C:
-				recordReviewHeartbeat(ctx, "review")
-			}
-		}
-	}()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return Review{}, err
@@ -637,9 +622,34 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	return wf.Signal(ctx, taskID, SignalApproved, TaskSignal{Author: approver, PR: pr})
 }
 
-// reviewHeartbeatEvery is how often ModelReview heartbeats during its
-// model call; variables for the tests.
+// gateHeartbeatEvery is how often a gate activity heartbeats; variables
+// for the tests.
 var (
-	reviewHeartbeatEvery  = heartbeatEvery
-	recordReviewHeartbeat = activity.RecordHeartbeat
+	gateHeartbeatEvery  = heartbeatEvery
+	recordGateHeartbeat = activity.RecordHeartbeat
 )
+
+// beatUntilDone heartbeats every gateHeartbeatEvery until the returned stop
+// is called; stop returns once the heartbeats have.
+func beatUntilDone(ctx context.Context, detail string) func() {
+	every, record := gateHeartbeatEvery, recordGateHeartbeat
+	beatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(every)
+		defer tick.Stop()
+		for {
+			select {
+			case <-beatCtx.Done():
+				return
+			case <-tick.C:
+				record(ctx, detail)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+	}
+}
