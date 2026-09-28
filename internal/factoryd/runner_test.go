@@ -595,7 +595,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("DNS allowlist lacks %s: %s", name, cnpStr)
 		}
 	}
-	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org"} {
+	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:storage.googleapis.com"} {
 		if !strings.Contains(cnpStr, name) {
 			t.Fatalf("DNS allowlist lacks %s (ruling 99: the sandbox carries the Go toolchain): %s", name, cnpStr)
 		}
@@ -606,7 +606,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			fqdn = r
 		}
 	}
-	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
+	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org] map[matchName:storage.googleapis.com]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
 		t.Fatalf("toFQDNs rule = %v, want exactly the Go module proxy and checksum DB on 443", fqdn)
 	}
 	gw := cnp["egress"].([]any)[0].(map[string]any)

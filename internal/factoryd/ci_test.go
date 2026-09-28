@@ -422,10 +422,27 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	for _, host := range []string{
 		"proxy.golang.org", "sum.golang.org", "data.forgejo.org",
 		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com",
+		"storage.googleapis.com",
 	} {
 		if !strings.Contains(cnpStr, host) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)
 		}
+	}
+	var fqdnRule, dnsRule map[string]any
+	for _, rule := range cnp["egress"].([]any) {
+		r := rule.(map[string]any)
+		switch {
+		case r["toFQDNs"] != nil:
+			fqdnRule = r
+		case strings.Contains(fmt.Sprint(r["toEndpoints"]), "kube-dns"):
+			dnsRule = r
+		}
+	}
+	if fqdnRule == nil || !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "storage.googleapis.com") {
+		t.Fatalf("443 toFQDNs rule missing storage.googleapis.com (proxy.golang.org redirects zip downloads there): %v", fqdnRule)
+	}
+	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "storage.googleapis.com") {
+		t.Fatalf("DNS rule missing storage.googleapis.com: %v", dnsRule)
 	}
 	if !strings.Contains(cnpStr, "k8s:app.kubernetes.io/name:forgejo") || !strings.Contains(cnpStr, "port:3000") {
 		t.Fatal("egress missing the in-cluster forgejo allow")
@@ -636,10 +653,26 @@ func TestCISpawnerBuildJobCreatesBuildkitdPodAndService(t *testing.T) {
 		t.Fatal("buildkitd egress CNP missing")
 	}
 	cnpStr := fmt.Sprint(buildCNP)
-	for _, want := range []string{"169.254.169.254/32", "deb.debian.org", "registry-1.docker.io", "code.forgejo.org", "go.dev", "release-assets.githubusercontent.com", "registry.npmjs.org"} {
+	for _, want := range []string{"169.254.169.254/32", "deb.debian.org", "registry-1.docker.io", "code.forgejo.org", "go.dev", "release-assets.githubusercontent.com", "registry.npmjs.org", "storage.googleapis.com"} {
 		if !strings.Contains(cnpStr, want) {
 			t.Fatalf("buildkitd egress = %s, missing %q", cnpStr, want)
 		}
+	}
+	var buildFQDNRule443, buildDNSRule map[string]any
+	for _, rule := range buildCNP["egress"].([]any) {
+		r := rule.(map[string]any)
+		switch {
+		case r["toFQDNs"] != nil && strings.Contains(fmt.Sprint(r["toPorts"]), "port:443"):
+			buildFQDNRule443 = r
+		case strings.Contains(fmt.Sprint(r["toEndpoints"]), "kube-dns"):
+			buildDNSRule = r
+		}
+	}
+	if buildFQDNRule443 == nil || !strings.Contains(fmt.Sprint(buildFQDNRule443["toFQDNs"]), "storage.googleapis.com") {
+		t.Fatalf("buildkitd 443 toFQDNs rule missing storage.googleapis.com (proxy.golang.org redirects zip downloads there): %v", buildFQDNRule443)
+	}
+	if buildDNSRule == nil || !strings.Contains(fmt.Sprint(buildDNSRule), "storage.googleapis.com") {
+		t.Fatalf("buildkitd DNS rule missing storage.googleapis.com: %v", buildDNSRule)
 	}
 	if !strings.Contains(cnpStr, "ci-runner") {
 		t.Fatal("buildkitd ingress must be scoped to the ci-runner pod")

@@ -854,7 +854,8 @@ func (r *Runner) workerEgressSpec() map[string]any {
 		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
 	}
 	toFQDNs := []any{}
-	for _, host := range []string{"proxy.golang.org", "sum.golang.org"} {
+	// storage.googleapis.com: proxy.golang.org redirects zip downloads there.
+	for _, host := range []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"} {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}

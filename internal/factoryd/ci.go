@@ -664,6 +664,7 @@ func (s *CISpawner) ciEgressSpec(ns string, kind ciJobKind) map[string]any {
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
+		"storage.googleapis.com",                                                     // proxy.golang.org redirects zip downloads there
 		"data.forgejo.org",                                                           // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
 		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub, for the repo's Dockerfile base images
 	}
@@ -759,6 +760,7 @@ func (s *CISpawner) buildEgressSpec() map[string]any {
 	httpsHosts := []string{
 		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com", // Docker Hub base images
 		"proxy.golang.org", "sum.golang.org", // go mod download
+		"storage.googleapis.com",                                                              // proxy.golang.org redirects zip downloads there
 		"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", // buildkit, runc, gosec, opencode release downloads
 		"registry.npmjs.org",      // opencode-plugin stage's npm ci bake (Dockerfile.sandbox)
 		"code.forgejo.org",        // forgejo-runner release download

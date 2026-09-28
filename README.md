@@ -63,8 +63,9 @@ the agents work on.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep
   and the Go 1.25 toolchain (ruling 99, the same pin as the runner
   image); its egress (`workerEgressSpec`) is default-deny plus the
-  gateway, the in-cluster Forgejo, the Go module proxy and checksum DB
-  by name on 443, and kube-dns for exactly those names; the cloud
+  gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
+  and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
+  there) by name on 443, and kube-dns for exactly those names; the cloud
   metadata address is denied outright. The module proxy is a covert
   channel: a `go get` of a made-up module path carries that path to
   proxy.golang.org, so an agent can leak a few hundred bytes per request
@@ -491,7 +492,8 @@ queue for a later tick) holding one
 `runtimeClassName: gvisor` pod running `forgejo-runner one-job --wait` —
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
-module proxy and checksum DB, `data.forgejo.org`, Docker Hub; nothing
+module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
+redirects zip downloads there), `data.forgejo.org`, Docker Hub; nothing
 else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
