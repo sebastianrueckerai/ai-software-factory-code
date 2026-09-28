@@ -35,22 +35,14 @@ func sign(secret string, body []byte) string {
 // hit, so tests can assert a lookup was — or was not — made; a test can read
 // back the labels the stub now holds for an issue via the same *Forgejo's
 // IssueLabels.
-// openIssues are the open issues intakeForgejoStub lists, by label.
-var openIssues = map[string][]string{
-	"agent": {
-		`{"number":7,"title":"Add the runner","body":"objective body","user":{"login":"sebastian"},"labels":[{"name":"agent"},{"name":"priority/p1"}]}`,
-		`{"number":8,"title":"Filed by the bot","user":{"login":"factory-agent"},"labels":[{"name":"agent"}]}`,
-		`{"number":10,"title":"Already a task","user":{"login":"sebastian"},"labels":[{"name":"agent"}]}`,
-	},
-	"human": {
-		`{"number":9,"title":"Needs a decision","user":{"login":"sebastian"},"labels":[{"name":"human"}]}`,
-	},
-	// Forgejo drops a label filter naming a label the repository lacks
-	// and lists every open issue
-	"missing": {
-		`{"number":11,"title":"Unlabelled","user":{"login":"sebastian"},"labels":[]}`,
-		`{"number":12,"title":"Other label","user":{"login":"sebastian"},"labels":[{"name":"bug"}]}`,
-	},
+// openIssues are the open issues intakeForgejoStub lists.
+var openIssues = []string{
+	`{"number":7,"title":"Add the runner","body":"objective body","user":{"login":"sebastian"},"labels":[{"name":"agent"},{"name":"priority/p1"}]}`,
+	`{"number":8,"title":"Filed by the bot","user":{"login":"factory-agent"},"labels":[{"name":"agent"}]}`,
+	`{"number":10,"title":"Already a task","user":{"login":"sebastian"},"labels":[{"name":"agent"}]}`,
+	`{"number":9,"title":"Needs a decision","user":{"login":"sebastian"},"labels":[{"name":"human"}]}`,
+	`{"number":11,"title":"Unlabelled","user":{"login":"outsider"},"labels":[]}`,
+	`{"number":12,"title":"A wish","user":{"login":"outsider"},"labels":[{"name":"improvement"}]}`,
 }
 
 func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
@@ -85,10 +77,10 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/issues/") && strings.Count(r.URL.Path, "/") == 7:
 			io.WriteString(w, `{"state":"open"}`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues" && r.Method == http.MethodGet:
-			if q := r.URL.Query(); q.Get("state") != "open" || q.Get("type") != "issues" {
-				t.Errorf("issue list query %q, want open issues only", r.URL.RawQuery)
+			if q := r.URL.Query(); q.Get("state") != "open" || q.Get("type") != "issues" || q.Has("labels") {
+				t.Errorf("issue list query %q, want every open issue", r.URL.RawQuery)
 			}
-			servePage(w, r, 1, openIssues[r.URL.Query().Get("labels")]...)
+			servePage(w, r, 50, openIssues...)
 		case strings.Count(r.URL.Path, "/") == 4: // /api/v1/repos/{owner}/{repo}
 			io.WriteString(w, `{"default_branch":"main"}`)
 		default:
@@ -326,6 +318,8 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case isWriterRead(r.URL.Path):
+			serveWriters(t, w, r)
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
 		case strings.HasSuffix(r.URL.Path, "/labels"):
@@ -335,7 +329,7 @@ func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}
 	store := newFakeStore()
 	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
 	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
@@ -371,15 +365,120 @@ func TestIntakeIssueBotAuthoredIsIgnored(t *testing.T) {
 	}
 }
 
-func TestIntakeIssueWithoutAgentOrHumanLabelIgnored(t *testing.T) {
+// Ruling 148's label matrix, whoever filed the issue: human wins, then
+// agent or bug start an agent task, improvement is suggested, and an
+// issue with none of the four counts as a bug.
+func TestIssueLane(t *testing.T) {
+	for _, tc := range []struct {
+		labels []string
+		want   string
+	}{
+		{nil, LaneAgent},
+		{[]string{"question"}, LaneAgent},
+		{[]string{"priority/p1"}, LaneAgent},
+		{[]string{"bug"}, LaneAgent},
+		{[]string{"agent"}, LaneAgent},
+		{[]string{"improvement"}, LaneSuggested},
+		{[]string{"improvement", "question"}, LaneSuggested},
+		{[]string{"improvement", "bug"}, LaneAgent},
+		{[]string{"improvement", "agent"}, LaneAgent},
+		{[]string{"human"}, LaneHuman},
+		{[]string{"human", "agent"}, LaneHuman},
+		{[]string{"human", "bug"}, LaneHuman},
+		{[]string{"human", "improvement"}, LaneHuman},
+		{[]string{"bug", "agent"}, LaneAgent},
+	} {
+		if got := IssueLane(tc.labels); got != tc.want {
+			t.Errorf("IssueLane(%q) = %s, want %s", tc.labels, got, tc.want)
+		}
+	}
+}
+
+// Each lane end to end through the webhook, from an outside account and a
+// writer: the row's status, kind, author standing and whether its
+// workflow starts.
+func TestIntakeIssueLanes(t *testing.T) {
+	for _, tc := range []struct {
+		poster     string
+		labels     []string
+		status     string
+		kind       string
+		writer     bool
+		started    bool
+		stateLabel string
+	}{
+		{"outsider", nil, "queued", "agent", false, true, "state/queued"},
+		{"outsider", []string{"bug"}, "queued", "agent", false, true, "state/queued"},
+		{"outsider", []string{"improvement"}, "suggested", "agent", false, false, "state/suggested"},
+		{"sebastian", []string{"question"}, "queued", "agent", true, true, "state/queued"},
+		{"sebastian", []string{"improvement"}, "suggested", "agent", true, false, "state/suggested"},
+		{"sebastian", []string{"human"}, "waiting-human", "human", true, false, "state/waiting-human"},
+	} {
+		t.Run(fmt.Sprintf("%s %v", tc.poster, tc.labels), func(t *testing.T) {
+			in, store, _ := newTestIntake(t)
+			body := issueOpenedBody(5, tc.poster, tc.labels, "It breaks", "body")
+			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+			}
+			if len(store.tasks) != 1 {
+				t.Fatalf("tasks = %d, want 1", len(store.tasks))
+			}
+			var task Task
+			for _, tk := range store.tasks {
+				task = tk
+			}
+			if task.Status != tc.status || task.Kind != tc.kind || task.Author != tc.poster || task.AuthorWriter != tc.writer {
+				t.Fatalf("task = %+v, want status %s kind %s author %s writer %v", task, tc.status, tc.kind, tc.poster, tc.writer)
+			}
+			if started := slices.Contains(workflowsOf(in).started, task.ID); started != tc.started {
+				t.Fatalf("started = %v, want %v", started, tc.started)
+			}
+			if tc.status == "suggested" && (task.SHA != "" || task.Gate != "") {
+				t.Fatalf("suggested task = %+v, want no base and no gate before it starts", task)
+			}
+			if labels := issueLabels(t, in.Forgejo, 5); !slices.Contains(labels, tc.stateLabel) {
+				t.Fatalf("labels = %v, want %s", labels, tc.stateLabel)
+			}
+		})
+	}
+}
+
+// A suggested improvement starts on a writer's agent label, never on an
+// outside account's, and the heal pass (no sender) leaves it be.
+func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	body := issueOpenedBody(5, "sebastian", []string{"question"}, "just asking", "body")
-	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
-	if rr.Code != http.StatusOK {
+	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
+	postWebhook(in, "issues", opened, sign(webhookSecret, opened))
+	var id string
+	for _, tk := range store.tasks {
+		id = tk.ID
+	}
+	labelled := func(sender string) []byte {
+		var p map[string]any
+		json.Unmarshal(issueOpenedBody(12, "outsider", []string{"improvement", "agent"}, "A wish", "body"), &p)
+		p["action"], p["sender"] = "label_updated", map[string]string{"login": sender}
+		b, _ := json.Marshal(p)
+		return b
+	}
+	for _, sender := range []string{"outsider", ""} {
+		b := labelled(sender)
+		if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+	}
+	if store.tasks[id].Status != "suggested" || len(workflowsOf(in).started) != 0 {
+		t.Fatalf("task = %+v, started %q: an outside account's or no sender's label starts nothing", store.tasks[id], workflowsOf(in).started)
+	}
+	b := labelled("sebastian")
+	if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
-	if len(store.tasks) != 0 {
-		t.Fatalf("an unlabelled issue spawned a task")
+	got := store.tasks[id]
+	if got.Status != "queued" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{id}) {
+		t.Fatalf("task = %+v, started %q: want queued at the branch head with its workflow started", got, workflowsOf(in).started)
+	}
+	if labels := issueLabels(t, in.Forgejo, 12); !slices.Contains(labels, "state/queued") {
+		t.Fatalf("labels = %v, want state/queued", labels)
 	}
 }
 
@@ -899,7 +998,7 @@ func TestIntakeResyncReadsCommentsPastAnUnknownCloser(t *testing.T) {
 // or the next.
 func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	in.Repositories = []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}
+	in.Repositories = codeRepoOnly
 	store.tasks["t-10"] = Task{ID: "t-10", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 10}
 	for range 2 {
 		if err := in.ResyncIssues(context.Background()); err != nil {
@@ -910,46 +1009,16 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	for _, tk := range store.tasks {
 		byIssue[tk.IssueNumber] = tk
 	}
-	agent, human := byIssue[7], byIssue[9]
-	if len(store.tasks) != 3 || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
-		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" {
-		t.Fatalf("tasks = %+v, want #10's plus an agent task for #7 and a human one for #9", store.tasks)
+	agent, human, bug, wish := byIssue[7], byIssue[9], byIssue[11], byIssue[12]
+	if len(store.tasks) != 5 || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
+		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" ||
+		bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter || wish.Status != "suggested" {
+		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 suggested", store.tasks)
 	}
-	// the second pass starts #7's still-queued workflow again, as the
+	// the second pass starts the still-queued workflows again, as the
 	// webhook's redelivery would (Temporal refuses a running one)
-	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, agent.ID}) {
-		t.Fatalf("started = %q, want #7's workflow once a pass", got)
-	}
-}
-
-// countingStore counts task-by-issue lookups.
-type countingStore struct {
-	*fakeStore
-	byIssue int
-}
-
-func (s *countingStore) TaskByIssue(ctx context.Context, repository string, n int64) (Task, bool, error) {
-	s.byIssue++
-	return s.fakeStore.TaskByIssue(ctx, repository, n)
-}
-
-// An issue without the agent or human label costs no store query: were
-// a label missing from the repository, Forgejo would list every open
-// issue, every minute.
-func TestIntakeResyncIssuesSkipsUnlabelledIssuesUnread(t *testing.T) {
-	in, fake, _ := newTestIntake(t)
-	store := &countingStore{fakeStore: fake}
-	in.Store = store
-	in.Repositories = []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}
-	defer func(agent []string) { openIssues["agent"] = agent }(openIssues["agent"])
-	openIssues["agent"] = openIssues["missing"]
-	defer func(human []string) { openIssues["human"] = human }(openIssues["human"])
-	openIssues["human"] = nil
-	if err := in.ResyncIssues(context.Background()); err != nil {
-		t.Fatalf("ResyncIssues: %v", err)
-	}
-	if store.byIssue != 0 || len(fake.tasks) != 0 {
-		t.Fatalf("task-by-issue reads = %d, tasks = %d; want none for issues without the label", store.byIssue, len(fake.tasks))
+	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, bug.ID, agent.ID, bug.ID}) {
+		t.Fatalf("started = %q, want #7's and #11's workflows once a pass", got)
 	}
 }
 
@@ -1250,5 +1319,43 @@ func TestIntakePushToMain(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"demo-app/demo-app", "demo-app/demo-app"}) {
 		t.Fatalf("MainPushed got %v", got)
+	}
+}
+
+// codeRepoOnly is a heal pass over the code repository alone.
+func codeRepoOnly(context.Context) ([]Repo, error) {
+	return []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}, nil
+}
+
+// A managed project's trust gate reads its writers with the project's own
+// factory-merge token (ruling 164): collaborators on the assignee list,
+// no org or team read; without the token it fails closed.
+func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "token demo-merge-tok" {
+			t.Errorf("%s read with %q, want the project's token", r.URL.Path, got)
+		}
+		switch r.URL.Path {
+		case "/api/v1/repos/demo-app/demo-app/collaborators":
+			servePage(w, r, 50, `{"login":"sebastian"}`, `{"login":"reader"}`, `{"login":"factory-merge"}`)
+		case "/api/v1/repos/demo-app/demo-app/assignees":
+			io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-merge"}]`)
+		default:
+			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	store := newFakeStore()
+	store.projects = []Project{{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Managed: true, GitToken: "g", MergeToken: "demo-merge-tok"}}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}}
+	for user, want := range map[string]bool{"sebastian": true, "reader": false, "outsider": false} {
+		if got, err := in.trusted(context.Background(), "demo-app/demo-app", user); err != nil || got != want {
+			t.Errorf("trusted(%s) = %v, %v; want %v", user, got, err, want)
+		}
+	}
+	store.projects[0].MergeToken = ""
+	if _, err := in.trusted(context.Background(), "demo-app/demo-app", "someone"); err == nil || !strings.Contains(err.Error(), "no factory-merge token") {
+		t.Fatalf("unminted project: err = %v, want it to fail closed", err)
 	}
 }

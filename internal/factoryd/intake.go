@@ -21,11 +21,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// Intake is the Forgejo webhook endpoint: every issue labelled agent or
-// human becomes a task row (an agent task also starts its workflow), every
-// PR/issue comment or review becomes an intake event, and the events a task
-// workflow waits on (merge, changes requested, issue closed) are signalled
-// to it. It implements http.Handler directly; main wires it at POST
+// Intake is the Forgejo webhook endpoint: every issue becomes a task row
+// by its lane label (ruling 148: an agent task, which starts its workflow,
+// a human-lane task, or a suggested improvement), every PR/issue comment
+// or review becomes an intake event, and the events a task workflow waits
+// on (merge, changes requested, issue closed, an answer) are signalled to
+// it. It implements http.Handler directly; main wires it at POST
 // /webhooks/forgejo.
 type Intake struct {
 	Store     Store
@@ -35,9 +36,10 @@ type Intake struct {
 	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	// Budget is the policy in force's budget section: a new task's budget.
 	Budget func() policy.Budget
-	// Repositories are where the heal pass looks for agent and human
-	// issues no webhook turned into a task.
-	Repositories []Repo
+	// Repositories are where the heal pass looks for open issues no
+	// webhook turned into a task: the code repository and every managed
+	// project.
+	Repositories func(ctx context.Context) ([]Repo, error)
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
 
@@ -50,8 +52,10 @@ type Intake struct {
 const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
-// reviews: code write on the repository (RepoWriters). A comment by anyone
-// else is recorded, never signalled.
+// reviews: code write on the repository (RepoWriters; a managed project's
+// ProjectWriters with its own factory-merge token). A comment by anyone
+// else is recorded, never signalled, unless it is the issue author's
+// answer to an information request.
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
 	key := repository + "\x00" + user
 	in.trustMu.Lock()
@@ -64,7 +68,14 @@ func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, e
 	if err != nil {
 		return false, err
 	}
-	writers, err := in.Forgejo.RepoWriters(ctx, repo.Owner, repo.Name)
+	var writers []string
+	if p, ok, perr := managedProject(ctx, in.Store, repository); perr != nil {
+		err = perr
+	} else if ok {
+		writers, err = in.Forgejo.ProjectWriters(ctx, repo, p.MergeToken)
+	} else {
+		writers, err = in.Forgejo.RepoWriters(ctx, repo.Owner, repo.Name)
+	}
 	if err != nil {
 		return false, fmt.Errorf("writers of %s: %w", repository, err)
 	}
@@ -241,27 +252,32 @@ var priorityLabelWeight = map[string]int{
 }
 
 // BootLabels are the labels factoryd creates on the issue-tracked
-// repository at boot, before anything files an issue or mirrors state onto
-// one (Forgejo drops an unknown label name silently): the lanes, the task
-// states, and the priority and severity labels intake reads (colours are
-// #RRGGBB).
+// repository at boot and on every managed project, before anything files
+// an issue or mirrors state onto one (Forgejo drops an unknown label name
+// silently, an issue template's too): the lanes, the task states, and the
+// priority and severity labels intake reads (colours are #RRGGBB).
 var BootLabels = map[string]string{
-	"agent":               "#ededed",
-	"human":               "#c2e0c6",
-	"state/queued":        "#ededed",
-	"state/running":       "#1f6feb",
-	"state/waiting-human": "#d4a72c",
-	"state/in-review":     "#8250df",
-	"state/done":          "#2da44e",
-	"state/failed":        "#cf222e",
-	"priority/p0":         "#b60205",
-	"priority/p1":         "#d93f0b",
-	"priority/p2":         "#fbca04",
-	"priority/p3":         "#c5def5",
-	"severity/critical":   "#b60205",
-	"severity/high":       "#d93f0b",
-	"severity/medium":     "#fbca04",
-	"severity/low":        "#c5def5",
+	"agent":                "#ededed",
+	"human":                "#c2e0c6",
+	"bug":                  "#cf222e",
+	"improvement":          "#0e8a16",
+	"state/suggested":      "#c5def5",
+	"state/queued":         "#ededed",
+	"state/running":        "#1f6feb",
+	"state/waiting-human":  "#d4a72c",
+	"state/waiting-poster": "#fbca04",
+	"state/in-review":      "#8250df",
+	"state/done":           "#2da44e",
+	"state/failed":         "#cf222e",
+	"state/closed":         "#6e7781",
+	"priority/p0":          "#b60205",
+	"priority/p1":          "#d93f0b",
+	"priority/p2":          "#fbca04",
+	"priority/p3":          "#c5def5",
+	"severity/critical":    "#b60205",
+	"severity/high":        "#d93f0b",
+	"severity/medium":      "#fbca04",
+	"severity/low":         "#c5def5",
 }
 
 func priorityFromLabels(names []string) int {
@@ -331,63 +347,87 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if p.Action == "closed" {
 		return in.handleIssueClosed(ctx, p)
 	}
-	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue)
+	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue, p.Sender.UserName)
 }
 
-// ResyncIssues takes in the open agent and human issues of in.Repositories
-// that no task is linked to yet: Forgejo never retries a failed delivery,
-// so an issue filed or labelled while factoryd was down is otherwise never
-// seen. Each goes through the webhook's own intake, which checks the
-// poster and the labels before it looks for a linked task.
+// ResyncIssues takes in the open issues of in.Repositories that no task
+// is linked to yet: Forgejo never retries a failed delivery, so an issue
+// filed or labelled while factoryd was down is otherwise never seen. Each
+// goes through the webhook's own intake, which checks the poster and the
+// labels before it looks for a linked task.
 func (in *Intake) ResyncIssues(ctx context.Context) error {
+	if in.Repositories == nil {
+		return nil
+	}
+	repos, err := in.Repositories(ctx)
+	if err != nil {
+		return fmt.Errorf("repositories: %w", err)
+	}
 	var errs []error
-	for _, repo := range in.Repositories {
-		for _, label := range []string{"agent", "human"} {
-			issues, err := in.Forgejo.OpenIssuesLabelled(ctx, repo.Owner, repo.Name, label)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("%s issues of %s: %w", label, repo, err))
-				continue
-			}
-			for _, issue := range issues {
-				if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue); err != nil {
-					errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
-				}
+	for _, repo := range repos {
+		issues, err := in.Forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("issues of %s: %w", repo, err))
+			continue
+		}
+		for _, issue := range issues {
+			if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue, ""); err != nil {
+				errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
 			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// intakeIssue turns an issue of repo carrying the agent or human label
-// into a task row, idempotent per (repository, issue number): a
-// redelivery, a later label event or a heal pass finds the task already
-// linked and no-ops. defaultBranch is the repository's when the caller
-// knows it (a webhook payload), else read. via names the path in the log.
-func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch string, issue webhookIssue) error {
+// Issue lanes (ruling 148): what an issue's labels make of it.
+const (
+	LaneAgent     = "agent"     // an agent task, started at once
+	LaneHuman     = "human"     // the human lane: no agent run
+	LaneSuggested = "suggested" // an improvement: a row, no run until a writer's agent label
+)
+
+// IssueLane is the lane of an issue with labels names: human wins, then
+// agent or bug (a bug from anyone is fixed), then improvement; an issue
+// with none of the four counts as a bug.
+func IssueLane(names []string) string {
+	switch {
+	case slices.Contains(names, "human"):
+		return LaneHuman
+	case slices.Contains(names, "agent") || slices.Contains(names, "bug"):
+		return LaneAgent
+	case slices.Contains(names, "improvement"):
+		return LaneSuggested
+	}
+	return LaneAgent
+}
+
+// intakeIssue turns an issue of repo into a task row of its lane,
+// idempotent per (repository, issue number): a redelivery, a later label
+// event or a heal pass finds the task already linked and no-ops, except
+// that a suggested improvement labelled agent (or bug) by a writer
+// (sender) starts. defaultBranch is the repository's when the caller knows
+// it (a webhook payload), else read. via names the path in the log.
+func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch string, issue webhookIssue, sender string) error {
 	if issue.Poster.UserName == in.BotUser {
 		return nil // the bot's own issues never spawn a second task
 	}
 	names := labelNames(issue.Labels)
-	hasAgent := slices.Contains(names, "agent")
-	hasHuman := slices.Contains(names, "human")
-	if !hasAgent && !hasHuman {
-		return nil
-	}
+	lane := IssueLane(names)
 	if t, ok, err := in.Store.TaskByIssue(ctx, repo, issue.Index); err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	} else if ok {
+		switch {
 		// a redelivery retries a workflow start that failed the first time
-		if t.Kind == "agent" && t.Status == "queued" {
+		case t.Kind == "agent" && t.Status == "queued":
 			return in.Workflows.Start(ctx, t.ID)
+		case t.Status == "suggested" && lane == LaneAgent:
+			return in.promote(ctx, via, t, defaultBranch, sender)
 		}
 		return nil
 	}
 
-	kind := "agent"
-	if hasHuman {
-		kind = "human"
-	}
 	id := NewTaskID()
+	poster := issue.Poster.UserName
 	task := Task{
 		ID:          id,
 		Priority:    priorityFromLabels(names),
@@ -396,36 +436,77 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Status:      "queued",
 		Objective:   objectiveFromIssue(issue),
 		Repository:  repo,
-		Kind:        kind,
+		Kind:        "agent",
 		IssueNumber: issue.Index,
 		Source:      "webhook",
 		CreatedAt:   issue.CreatedAt,
+		Author:      poster,
 	}
-	if kind == "agent" {
+	writer, err := in.trusted(ctx, repo, poster)
+	if err != nil {
+		return err
+	}
+	task.AuthorWriter = writer
+	switch lane {
+	case LaneAgent:
 		task.RequiredCapabilities = AgentCapabilities
 		task.ReproCommand = ReproCommand(issue.Body)
-		repoParts, err := SplitRepo(repo)
-		if err != nil {
+		if task.SHA, err = in.baseSHA(ctx, repo, defaultBranch); err != nil {
 			return err
 		}
-		if task.SHA, err = in.Forgejo.DefaultBranchHeadSHA(ctx, repoParts.Owner, repoParts.Name, defaultBranch); err != nil {
-			return fmt.Errorf("base sha: %w", err)
-		}
-	} else {
+	case LaneSuggested:
+		// an agent task without a run: its base is read when it starts
+		task.RequiredCapabilities = AgentCapabilities
+		task.ReproCommand = ReproCommand(issue.Body)
+		task.Status = "suggested"
+	default:
 		// no runner ever claims the human lane: it waits on a human from
 		// the start (architecture 5.6's board column) and closing its
 		// issue finishes it
-		task.Status = "waiting-human"
+		task.Kind, task.Status = "human", "waiting-human"
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
-	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, issue.Poster.UserName, kind, id)
+	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, lane, id)
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
-	if kind == "agent" {
+	if task.Status == "queued" {
 		return in.Workflows.Start(ctx, id)
 	}
 	return nil
+}
+
+func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {
+	parts, err := SplitRepo(repo)
+	if err != nil {
+		return "", err
+	}
+	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, parts.Owner, parts.Name, defaultBranch)
+	if err != nil {
+		return "", fmt.Errorf("base sha: %w", err)
+	}
+	return sha, nil
+}
+
+// promote starts suggested task t on a writer's agent label (ruling 148).
+// The heal pass knows no sender and leaves it to the label's webhook.
+func (in *Intake) promote(ctx context.Context, via string, t Task, defaultBranch, sender string) error {
+	if sender == "" {
+		return nil
+	}
+	if ok, err := in.trusted(ctx, t.Repository, sender); err != nil || !ok {
+		return err
+	}
+	sha, err := in.baseSHA(ctx, t.Repository, defaultBranch)
+	if err != nil {
+		return err
+	}
+	if ok, err := in.Store.PromoteSuggested(ctx, t.ID, sha); err != nil || !ok {
+		return err
+	}
+	log.Printf("%s: issue #%d on %s: %s started suggested task %s", via, t.IssueNumber, t.Repository, sender, t.ID)
+	mirrorTaskState(ctx, in.Forgejo, t, "queued")
+	return in.Workflows.Start(ctx, t.ID)
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {

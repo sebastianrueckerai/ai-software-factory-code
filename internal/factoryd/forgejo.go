@@ -56,8 +56,9 @@ type Forgejo struct {
 	// MergeToken is the dedicated user factory-merge's token,
 	// write:repository on the code repository only (ruling 109): main's
 	// merge whitelist holds it, its push whitelist does not, and Forgejo
-	// merges only after an approval by a whitelisted human. The workflow's
-	// Merge activity is its one user.
+	// merges only after an approval by a whitelisted human. The Merge
+	// activity uses it on the factory's own repositories; a managed
+	// project has its own (Project.MergeToken, ruling 164).
 	MergeToken string
 	// ProjectsToken is the dedicated user factory-projects' token,
 	// [write:repository, write:organization] on no fixed repository list
@@ -174,12 +175,6 @@ func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []by
 	})
 }
 
-func (f *Forgejo) mergeCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
-	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
-		r.Header.Set("Authorization", "token "+f.MergeToken)
-	})
-}
-
 func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
 	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
 		r.Header.Set("Authorization", "token "+f.CIRegistrarToken)
@@ -293,25 +288,57 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 		}
 		maps.Copy(into, logins(members))
 	}
-	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/assignees", full), nil, http.StatusOK)
+	collaborators, err := assignedCollaborators(ctx, f.ciCall, full)
 	if err != nil {
 		return fail(err)
 	}
-	var assignees []user
-	if err := json.Unmarshal(body, &assignees); err != nil {
-		return fail(err)
-	}
-	collaborators, err := GetPages[user](ctx, f.ciCall, fmt.Sprintf("/api/v1/repos/%s/collaborators?", full))
-	if err != nil {
-		return fail(err)
-	}
-	assigned := logins(assignees)
-	for login := range logins(collaborators) {
-		if assigned[login] && !others[login] {
+	for _, login := range collaborators {
+		if !others[login] {
 			writers[login] = true
 		}
 	}
 	return slices.Sorted(maps.Keys(writers)), nil
+}
+
+// ProjectWriters lists the writers of a managed project's repository
+// (ruling 164) with the project's own factory-merge token, which reads
+// the repository and nothing else: its collaborators with write or more
+// (on the assignee list). The project's organisation holds only
+// factory-projects as owner and its CI user in a team without code, so
+// its teams add no writer.
+func (f *Forgejo) ProjectWriters(ctx context.Context, repo Repo, token string) ([]string, error) {
+	writers, err := assignedCollaborators(ctx, f.tokenCall(token), repo.String())
+	if err != nil {
+		return nil, fmt.Errorf("forgejo writers of %s: %w", repo, err)
+	}
+	return writers, nil
+}
+
+// assignedCollaborators are the collaborators of repository full who are
+// also assignees: write or more, or a team's pull request read.
+func assignedCollaborators(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), full string) ([]string, error) {
+	type user struct {
+		Login string `json:"login"`
+	}
+	body, err := call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/assignees", full), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var assignees []user
+	if err := json.Unmarshal(body, &assignees); err != nil {
+		return nil, err
+	}
+	collaborators, err := GetPages[user](ctx, call, fmt.Sprintf("/api/v1/repos/%s/collaborators?", full))
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, c := range collaborators {
+		if slices.ContainsFunc(assignees, func(a user) bool { return a.Login == c.Login }) {
+			out = append(out, c.Login)
+		}
+	}
+	return out, nil
 }
 
 // codeWrite is a Forgejo access mode of write or more.
@@ -1092,10 +1119,9 @@ func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number 
 	return closer, nil
 }
 
-// OpenIssuesLabelled lists owner/repo's open issues, not pull requests,
-// carrying label.
-func (f *Forgejo) OpenIssuesLabelled(ctx context.Context, owner, repo, label string) ([]webhookIssue, error) {
-	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&labels=%s&", owner, repo, url.QueryEscape(label)))
+// OpenIssues lists owner/repo's open issues, not pull requests.
+func (f *Forgejo) OpenIssues(ctx context.Context, owner, repo string) ([]webhookIssue, error) {
+	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&", owner, repo))
 }
 
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
@@ -1164,16 +1190,17 @@ func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, numbe
 	return string(body), nil
 }
 
-// MergePullRequest merges pull request number as factory-merge, only while
-// its head is still head: a head that moved after the gates is refused.
-// Forgejo refuses the merge (ErrRefused, 405) without the approval of a
-// human on main's approvals whitelist.
-func (f *Forgejo) MergePullRequest(ctx context.Context, owner, repo string, number int64, head, message string) error {
+// MergePullRequest merges pull request number as factory-merge with token,
+// only while its head is still head: a head that moved after the gates is
+// refused. Forgejo refuses the merge (ErrRefused, 405) without the
+// approval of a human on main's approvals whitelist, where main requires
+// one (every repository on the merge rule human).
+func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo string, number int64, head, message string) error {
 	payload, err := json.Marshal(map[string]any{"Do": "merge", "head_commit_id": head, "MergeMessageField": message})
 	if err != nil {
 		return err
 	}
-	_, err = f.mergeCall(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", owner, repo, number), payload, http.StatusOK)
+	_, err = f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", owner, repo, number), payload, http.StatusOK)
 	// do retries a 409 as transient; on merge it is a conflict or a head
 	// that moved, which no retry fixes
 	if err != nil && !errors.Is(err, ErrRefused) && strings.Contains(err.Error(), ": status 409: ") {

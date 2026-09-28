@@ -98,6 +98,10 @@ type MergeResult struct {
 // (ruling 109).
 const MergeUser = "factory-merge"
 
+// AutoApprover stands for the approver of a merge the project's merge rule
+// auto decided (ruling 149): no human approved it.
+const AutoApprover = "merge rule auto"
+
 // maxListed bounds the paths one gate comment lists.
 const maxListed = 50
 
@@ -553,8 +557,17 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
 	}
+	token := r.forgejo.MergeToken
+	if p, ok, err := managedProject(ctx, r.store, t.Repository); err != nil {
+		return MergeResult{}, err
+	} else if ok {
+		token = p.MergeToken
+	}
 	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by %s", t.ID, t.IssueNumber, approver, MergeUser)
-	err = r.forgejo.MergePullRequest(ctx, repo.Owner, repo.Name, pr, commit, msg)
+	if approver == AutoApprover {
+		msg = fmt.Sprintf("factoryd task %s (issue #%d): merged by %s on the project's merge rule auto", t.ID, t.IssueNumber, MergeUser)
+	}
+	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, msg)
 	if errors.Is(err, ErrRefused) {
 		if st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr); serr == nil && st.Merged {
 			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil

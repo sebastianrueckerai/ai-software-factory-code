@@ -188,6 +188,25 @@ func (p Project) NotifyOrApprovers(approvers []string) []string {
 	return approvers
 }
 
+// projectLookup finds a repository's project row.
+type projectLookup interface {
+	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
+}
+
+// managedProject is repository's row when it is a managed project (ruling
+// 164), whose own factory-merge token merges and reads its writers; false
+// for the factory's own repositories and any repository without a row.
+func managedProject(ctx context.Context, store projectLookup, repository string) (Project, bool, error) {
+	p, ok, err := store.ProjectByRepository(ctx, repository)
+	if err != nil || !ok || !p.Managed {
+		return Project{}, false, err
+	}
+	if p.MergeToken == "" {
+		return Project{}, false, fmt.Errorf("project %s has no factory-merge token yet: run factoryd register-project", p.Name)
+	}
+	return p, true, nil
+}
+
 // NewReadToken is a fresh FACTORY_READ_TOKEN and the hash the row keeps.
 func NewReadToken() (token, hash string) {
 	b := make([]byte, 32)

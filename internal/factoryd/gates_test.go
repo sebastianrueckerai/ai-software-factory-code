@@ -34,11 +34,12 @@ type gateForgejo struct {
 	diff        string
 	mergeStatus []int // answers in order, the last repeating
 	merges      []map[string]any
-	merged      bool   // GET /pulls/9 reports merged
-	mergedBy    string // and by whom; "" = factory-merge
-	head        string // GET /pulls/9's head sha; "" = c1
-	base        string // and its base; "" = main
-	stateFail   int    // GET /pulls/9 answers 502 this many times first
+	mergeAuth   []string // each merge's Authorization header
+	merged      bool     // GET /pulls/9 reports merged
+	mergedBy    string   // and by whom; "" = factory-merge
+	head        string   // GET /pulls/9's head sha; "" = c1
+	base        string   // and its base; "" = main
+	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
 	comments    []string
 }
@@ -58,6 +59,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
 			f.merges = append(f.merges, body)
+			f.mergeAuth = append(f.mergeAuth, r.Header.Get("Authorization"))
 			status := f.mergeStatus[min(len(f.merges), len(f.mergeStatus))-1]
 			if status == http.StatusOK {
 				f.merged = true
@@ -352,6 +354,39 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 		t.Fatal("no merged step")
 	}
 	startedWithin(t, objects, "merged", from)
+}
+
+// A managed project's merge goes out with its own factory-merge token
+// (ruling 164), the factory's repositories' with forgejo-merge's; a
+// managed project without one fails closed, no merge tried.
+func TestMergeTokenPerProject(t *testing.T) {
+	for name, tc := range map[string]struct {
+		project *Project
+		auth    string
+	}{
+		"no row":            {nil, "token merge-tok"},
+		"factory's own row": {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "human"}, "token merge-tok"},
+		"managed project":   {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Managed: true, GitToken: "g", MergeToken: "project-tok"}, "token project-tok"},
+		"managed, unminted": {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Managed: true}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+			r, store, _ := newGateRunner(t, gateTask, fj)
+			if tc.project != nil {
+				store.projects = []Project{*tc.project}
+			}
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+			if tc.auth == "" {
+				if err == nil || !strings.Contains(err.Error(), "has no factory-merge token yet") || len(fj.merges) != 0 {
+					t.Fatalf("merge err = %v, merges %d; want refused before any merge", err, len(fj.merges))
+				}
+				return
+			}
+			if res := getInto[MergeResult](t, val, err); !res.Merged || !slices.Equal(fj.mergeAuth, []string{tc.auth}) {
+				t.Fatalf("result %+v, merge auth %q, want merged with %q", res, fj.mergeAuth, tc.auth)
+			}
+		})
+	}
 }
 
 // Forgejo's refusal (no whitelisted approval) is a result with a comment,

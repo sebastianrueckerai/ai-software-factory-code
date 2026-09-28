@@ -231,7 +231,19 @@ func main() {
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget,
-		Repositories: []factoryd.Repo{upstream},
+		Repositories: func(ctx context.Context) ([]factoryd.Repo, error) {
+			ps, err := store.Projects(ctx)
+			if err != nil {
+				return nil, err
+			}
+			repos := []factoryd.Repo{upstream}
+			for _, p := range ps {
+				if p.Managed && p.Minted() {
+					repos = append(repos, p.Repo())
+				}
+			}
+			return repos, nil
+		},
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

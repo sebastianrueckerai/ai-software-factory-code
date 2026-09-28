@@ -213,8 +213,8 @@ func TestBootLabelsCoverPriorityAndSeverityAcrossPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(created)
-	want := []string{"human", "priority/p1", "priority/p2", "priority/p3", "severity/critical", "severity/high", "severity/low", "severity/medium",
-		"state/done", "state/failed", "state/in-review", "state/queued", "state/running", "state/waiting-human"}
+	want := []string{"bug", "human", "improvement", "priority/p1", "priority/p2", "priority/p3", "severity/critical", "severity/high", "severity/low", "severity/medium",
+		"state/closed", "state/done", "state/failed", "state/in-review", "state/queued", "state/running", "state/suggested", "state/waiting-human", "state/waiting-poster"}
 	if !slices.Equal(created, want) {
 		t.Fatalf("created %v, want %v", created, want)
 	}
@@ -921,7 +921,7 @@ func TestForgejoPullRequestDiffIsCapped(t *testing.T) {
 	}
 }
 
-// The merge goes out as factory-merge's token with the gated head; a 405
+// The merge goes out as the given factory-merge token with the gated head; a 405
 // (no whitelisted approval) and a 409 (conflict, head moved) are refusals.
 func TestForgejoMergePullRequest(t *testing.T) {
 	status := http.StatusOK
@@ -934,8 +934,8 @@ func TestForgejoMergePullRequest(t *testing.T) {
 		w.WriteHeader(status)
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw", MergeToken: "merge-tok"}
-	if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); err != nil {
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); err != nil {
 		t.Fatal(err)
 	}
 	if body["Do"] != "merge" || body["head_commit_id"] != "c1" || body["MergeMessageField"] != "msg" {
@@ -943,12 +943,12 @@ func TestForgejoMergePullRequest(t *testing.T) {
 	}
 	for _, s := range []int{http.StatusMethodNotAllowed, http.StatusConflict} {
 		status = s
-		if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); !errors.Is(err, ErrRefused) {
+		if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); !errors.Is(err, ErrRefused) {
 			t.Fatalf("merge answered %d = %v, want a refusal", s, err)
 		}
 	}
 	status = http.StatusBadGateway
-	if err := f.MergePullRequest(context.Background(), "sf", "repo", 7, "c1", "msg"); err == nil || errors.Is(err, ErrRefused) {
+	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); err == nil || errors.Is(err, ErrRefused) {
 		t.Fatalf("merge answered 502 = %v, want a transient error", err)
 	}
 }
