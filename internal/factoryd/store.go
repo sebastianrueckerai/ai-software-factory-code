@@ -13,6 +13,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -372,6 +373,9 @@ func (s *PGStore) PruneDeliveries(ctx context.Context, age time.Duration) error 
 	_, err := s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE received_at < now() - make_interval(secs => $1)`, age.Seconds())
 	return err
 }
+
+// CloudResources is the cloud resource registry on the same database.
+func (s *PGStore) CloudResources() cloudres.PG { return cloudres.PG{DB: s.db} }
 
 // Close releases the database connection pool.
 func (s *PGStore) Close() error {

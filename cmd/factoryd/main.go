@@ -23,8 +23,10 @@ import (
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -142,6 +144,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
+	// build VMs live in the Hetzner CI project, which holds nothing else:
+	// the collector deletes whatever there the registry does not know
+	hetznerCI := hcloud.New(mustEnv("HETZNER_CI_KEY"))
+	cloudRegistry := store.CloudResources()
+	ciCollector := &cloudres.Collector{Project: "ci", Registry: cloudRegistry, Provider: hetznerCI, OwnerDone: factoryd.CIOwnerDone(kube)}
+	const ciJobTimeout = 45 * time.Minute
+	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
+		Max:            envInt("CI_BUILD_VMS_MAX", 2),
+		AllowedSources: strings.Split(mustEnv("CI_BUILD_VM_SOURCES"), ","),
+		Lease:          ciJobTimeout + 15*time.Minute,
+	}, hetznerCI, cloudRegistry, ciCollector)
+	if err != nil {
+		log.Fatalf("build vms: %v", err)
+	}
 	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
 		FactoryNamespace: kube.Namespace(),
 		Owner:            env("CI_REPO_OWNER", "sf"),
@@ -150,7 +166,8 @@ func main() {
 		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
 		GitBaseURL:       gitBase,
 		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
-	}, forgejo, kube)
+		JobTimeout:       ciJobTimeout,
+	}, forgejo, kube, buildVMs)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)
 	}
@@ -215,6 +232,7 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	go ciSpawner.Run(ctx)
+	go ciCollector.Run(ctx)
 
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))

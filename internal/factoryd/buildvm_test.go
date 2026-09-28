@@ -300,6 +300,14 @@ func TestNewBuildVMsValidatesSources(t *testing.T) {
 	if _, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{"198.51.100.1"}}, nil, nil, nil); err == nil {
 		t.Error("a zero lease was accepted")
 	}
+	// CI_BUILD_VM_SOURCES is a comma-separated list, spaces allowed
+	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: strings.Split("198.51.100.1, 198.51.100.2/32", ","), Lease: time.Hour}, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"198.51.100.1/32", "198.51.100.2/32"}; !reflect.DeepEqual(b.cfg.AllowedSources, want) {
+		t.Fatalf("sources = %q, want %q", b.cfg.AllowedSources, want)
+	}
 }
 
 func TestProvisionRegistersBeforeCreating(t *testing.T) {
@@ -434,7 +442,7 @@ func TestReleaseFindsUnrecordedResourceByLabel(t *testing.T) {
 func TestCIOwnerDone(t *testing.T) {
 	kube := newFakeKube()
 	kube.namespaces["factory-agents-ci-7"] = map[string]string{"factory.ai/task": "ci-7"}
-	done := ciOwnerDone(kube)
+	done := CIOwnerDone(kube)
 	if d, err := done(context.Background(), "7"); err != nil || d {
 		t.Fatalf("job 7 = %v, %v, want live", d, err)
 	}

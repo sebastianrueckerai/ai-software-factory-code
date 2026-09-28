@@ -2,16 +2,23 @@ package factoryd
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 )
 
 // ciHub scripts the Forgejo Actions runner-registrar API (task 41): the
@@ -112,7 +119,9 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 	srv := hub.srv(t)
 	forgejo := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
-	spawner, err := NewCISpawner(testCIConfig(), forgejo, kube)
+	builds, _, _ := newTestBuildVMs(t, 2)
+	builds.collector.OwnerDone = CIOwnerDone(kube)
+	spawner, err := NewCISpawner(testCIConfig(), forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +133,15 @@ func TestNewCISpawnerRequiresConfig(t *testing.T) {
 	forgejo := &Forgejo{BaseURL: "http://x", CIRegistrarToken: "t"}
 	cfg := testCIConfig()
 	cfg.Owner = ""
-	if _, err := NewCISpawner(cfg, forgejo, kube); err == nil {
+	builds, _, _ := newTestBuildVMs(t, 2)
+	if _, err := NewCISpawner(cfg, forgejo, kube, builds); err == nil {
 		t.Fatal("want an error for a missing Owner")
 	}
-	if _, err := NewCISpawner(testCIConfig(), &Forgejo{BaseURL: "http://x"}, kube); err == nil {
+	if _, err := NewCISpawner(testCIConfig(), &Forgejo{BaseURL: "http://x"}, kube, builds); err == nil {
 		t.Fatal("want an error for a missing CIRegistrarToken")
+	}
+	if _, err := NewCISpawner(testCIConfig(), forgejo, kube, nil); err == nil {
+		t.Fatal("want an error for missing build VMs")
 	}
 }
 
@@ -229,8 +242,9 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	forgejo := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	cfg := testCIConfig()
+	builds, _, _ := newTestBuildVMs(t, 2)
 
-	first, err := NewCISpawner(cfg, forgejo, kube)
+	first, err := NewCISpawner(cfg, forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +253,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	// A restarted factoryd builds a brand new CISpawner against the same
 	// cluster and registrar state; the namespace label, not process memory,
 	// is what must stop a second registration.
-	restarted, err := NewCISpawner(cfg, forgejo, kube)
+	restarted, err := NewCISpawner(cfg, forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,12 +435,15 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	for _, host := range []string{
 		"proxy.golang.org", "sum.golang.org", "data.forgejo.org",
-		"registry-1.docker.io", "auth.docker.io", "production.cloudfront.docker.com",
 		"storage.googleapis.com",
 	} {
 		if !strings.Contains(cnpStr, host) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)
 		}
+	}
+	// base images are the build VM's to pull, never the runner's
+	if strings.Contains(cnpStr, "docker.io") || strings.Contains(cnpStr, "docker.com") {
+		t.Fatalf("runner egress reaches Docker Hub: %s", cnpStr)
 	}
 	var fqdnRule, dnsRule map[string]any
 	for _, rule := range cnp["egress"].([]any) {
@@ -557,209 +574,241 @@ func TestCISpawnerReconcileIgnoresForeignRunnerNames(t *testing.T) {
 	}
 }
 
-// A pr-untrusted-build job (ruling 91) gets the usual restricted runner pod
-// plus a second, sandbox-root buildkitd pod in the same namespace, whose
-// namespace is baseline (not restricted, which forbids runAsUser: 0
-// unconditionally) and whose resource quota is doubled for the extra pod.
-func TestCISpawnerBuildJobCreatesBuildkitdPodAndService(t *testing.T) {
+func ciBuildFakes(s *CISpawner) (*fakeHetzner, *cloudres.Memory) {
+	return s.builds.provider.(*fakeHetzner), s.builds.registry.(*cloudres.Memory)
+}
+
+func podContainer(t *testing.T, kube *fakeKube, ns string) (spec, container map[string]any) {
+	t.Helper()
+	pod, ok := kube.pods[ns+"/"+ciPodName]
+	if !ok {
+		t.Fatalf("runner pod in %s not created", ns)
+	}
+	spec = pod.spec["spec"].(map[string]any)
+	return spec, spec["containers"].([]any)[0].(map[string]any)
+}
+
+// A pr-untrusted-build job (ruling 110) gets a throwaway VM: the runner
+// pod, in a restricted namespace like every CI job, carries the VM's
+// address and a mounted client pair, and its egress admits exactly that
+// VM on the buildkitd port.
+func TestCISpawnerBuildJobGetsBuildVM(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 50, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
 	spawner := newTestCISpawner(t, kube, hub)
+	hz, reg := ciBuildFakes(spawner)
 
 	spawner.poll(context.Background())
 
 	ns := "factory-agents-ci-50"
-	labels, ok := kube.namespaces[ns]
-	if !ok {
-		t.Fatalf("namespace %s not created", ns)
+	if enforce := kube.namespaces[ns]["pod-security.kubernetes.io/enforce"]; enforce != "restricted" {
+		t.Fatalf("enforce = %q, want restricted", enforce)
 	}
-	if labels["pod-security.kubernetes.io/enforce"] != "baseline" {
-		t.Fatalf("namespace enforce = %q, want baseline for a build job", labels["pod-security.kubernetes.io/enforce"])
+	if strings.Join(hz.calls, ",") != "create firewall/101,create server/102" {
+		t.Fatalf("hetzner calls = %v", hz.calls)
 	}
+	rows, _ := reg.OpenByOwner(context.Background(), "ci", "50")
+	if len(rows) != 2 {
+		t.Fatalf("registry rows for job 50 = %+v", rows)
+	}
+	const ip = "203.0.113.102"
 
-	quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any)
-	if quota["pods"] != "2" {
-		t.Fatalf("resource quota pods = %v, want 2 (runner + buildkitd)", quota["pods"])
+	spec, container := podContainer(t, kube, ns)
+	if len(spec["containers"].([]any)) != 1 || len(kube.pods) != 1 {
+		t.Fatalf("pods = %v, want the runner pod only", kube.pods)
 	}
-
-	runnerPod, ok := kube.pods[ns+"/"+ciPodName]
-	if !ok {
-		t.Fatal("runner pod not created")
-	}
-	runnerArgs := fmt.Sprint(runnerPod.spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"])
-	if !strings.Contains(runnerArgs, "pr-untrusted-build:host") {
-		t.Fatalf("runner args = %s, want the build label", runnerArgs)
-	}
-	runnerEnv := fmt.Sprint(runnerPod.spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"])
-	wantHost := "tcp://buildkitd." + ns + ".svc.cluster.local:1234"
-	if !strings.Contains(runnerEnv, wantHost) {
-		t.Fatalf("runner env = %s, missing BUILDKIT_HOST %s", runnerEnv, wantHost)
-	}
-
-	buildPod, ok := kube.pods[ns+"/"+buildPodName]
-	if !ok {
-		t.Fatal("buildkitd pod not created")
-	}
-	bspec := buildPod.spec["spec"].(map[string]any)
-	if bspec["runtimeClassName"] != "gvisor" || bspec["automountServiceAccountToken"] != false {
-		t.Fatalf("buildkitd pod hardening: runtimeClassName=%v automount=%v", bspec["runtimeClassName"], bspec["automountServiceAccountToken"])
-	}
-	podSC := bspec["securityContext"].(map[string]any)
-	if podSC["runAsUser"] != int64(0) {
-		t.Fatalf("buildkitd pod runAsUser = %v, want 0", podSC["runAsUser"])
-	}
-	bcontainer := bspec["containers"].([]any)[0].(map[string]any)
-	csc := bcontainer["securityContext"].(map[string]any)
-	if csc["allowPrivilegeEscalation"] != true {
-		t.Fatalf("buildkitd container allowPrivilegeEscalation = %v, want true", csc["allowPrivilegeEscalation"])
-	}
-	// The container process starts long before buildkitd is actually
-	// listening (nested unshare + uid/gid map writes first); without a
-	// readiness gate the Service would route to it before it can accept a
-	// connection, and the runner's first buildctl call would race it.
-	probe, ok := bcontainer["readinessProbe"].(map[string]any)
-	if !ok {
-		t.Fatal("buildkitd container missing a readinessProbe")
-	}
-	tcp, ok := probe["tcpSocket"].(map[string]any)
-	if !ok || tcp["port"] != int64(buildPodPort) {
-		t.Fatalf("buildkitd readinessProbe tcpSocket = %v, want port %d", probe["tcpSocket"], buildPodPort)
-	}
-	if _, privileged := csc["privileged"]; privileged {
-		t.Fatal("buildkitd container must not set privileged")
-	}
-	if _, caps := csc["capabilities"]; caps {
-		t.Fatal("buildkitd container must not add capabilities")
-	}
-	volumes := fmt.Sprint(bspec["volumes"])
-	if !strings.Contains(volumes, "20Gi") {
-		t.Fatalf("buildkitd volumes = %s, want a 20Gi scratch emptyDir", volumes)
-	}
-	if buildPod.spec["metadata"].(map[string]any)["labels"].(map[string]string)[buildPodLabelKey] != "true" {
-		t.Fatal("buildkitd pod missing the factory.ai/build-pod label the VAP carve-out keys on")
-	}
-
-	svc := kube.objects["/api/v1/namespaces/"+ns+"/services"]
-	if svc == nil {
-		t.Fatal("buildkitd Service not created")
-	}
-	svcSpec := svc["spec"].(map[string]any)
-	if fmt.Sprint(svcSpec["selector"]) != "map[app.kubernetes.io/name:buildkitd]" {
-		t.Fatalf("buildkitd service selector = %v", svcSpec["selector"])
-	}
-
-	buildCNP := kube.cnps[ns+"/buildkitd-policy"]
-	if buildCNP == nil {
-		t.Fatal("buildkitd egress CNP missing")
-	}
-	cnpStr := fmt.Sprint(buildCNP)
-	for _, want := range []string{"169.254.169.254/32", "deb.debian.org", "registry-1.docker.io", "code.forgejo.org", "go.dev", "release-assets.githubusercontent.com", "registry.npmjs.org", "storage.googleapis.com"} {
-		if !strings.Contains(cnpStr, want) {
-			t.Fatalf("buildkitd egress = %s, missing %q", cnpStr, want)
+	env := map[string]string{}
+	for _, e := range container["env"].([]any) {
+		m := e.(map[string]any)
+		if v, ok := m["value"].(string); ok {
+			env[m["name"].(string)] = v
 		}
 	}
-	var buildFQDNRule443, buildDNSRule map[string]any
-	for _, rule := range buildCNP["egress"].([]any) {
-		r := rule.(map[string]any)
-		switch {
-		case r["toFQDNs"] != nil && strings.Contains(fmt.Sprint(r["toPorts"]), "port:443"):
-			buildFQDNRule443 = r
-		case strings.Contains(fmt.Sprint(r["toEndpoints"]), "kube-dns"):
-			buildDNSRule = r
+	if env["BUILDKIT_HOST"] != "tcp://"+ip+":1234" || env["BUILDKIT_TLS_DIR"] != "/var/run/secrets/buildkit" || env["BUILDKIT_TLS_SERVERNAME"] != "buildkitd" {
+		t.Fatalf("runner env = %v", env)
+	}
+	mounted := false
+	for _, m := range container["volumeMounts"].([]any) {
+		mm := m.(map[string]any)
+		if mm["mountPath"] == "/var/run/secrets/buildkit" {
+			mounted = mm["readOnly"] == true && mm["name"] == "buildkit-client"
 		}
 	}
-	if buildFQDNRule443 == nil || !strings.Contains(fmt.Sprint(buildFQDNRule443["toFQDNs"]), "storage.googleapis.com") {
-		t.Fatalf("buildkitd 443 toFQDNs rule missing storage.googleapis.com (proxy.golang.org redirects zip downloads there): %v", buildFQDNRule443)
+	if !mounted {
+		t.Fatalf("volumeMounts = %v, want buildkit-client read-only at /var/run/secrets/buildkit", container["volumeMounts"])
 	}
-	if buildDNSRule == nil || !strings.Contains(fmt.Sprint(buildDNSRule), "storage.googleapis.com") {
-		t.Fatalf("buildkitd DNS rule missing storage.googleapis.com: %v", buildDNSRule)
-	}
-	if !strings.Contains(cnpStr, "ci-runner") {
-		t.Fatal("buildkitd ingress must be scoped to the ci-runner pod")
+	if !strings.Contains(fmt.Sprint(spec["volumes"]), "map[name:buildkit-client secret:map[secretName:buildkit-client]]") {
+		t.Fatalf("volumes = %v", spec["volumes"])
 	}
 
-	runnerCNP := fmt.Sprint(kube.cnps[ns+"/ci-egress"])
-	if !strings.Contains(runnerCNP, "buildkitd") {
-		t.Fatal("runner's own egress policy must additionally reach buildkitd for a build job")
+	tlsData := kube.secrets[ns+"/buildkit-client"]
+	if len(tlsData) != 3 || tlsData["ca.pem"] == "" || tlsData["cert.pem"] == "" || tlsData["key.pem"] == "" {
+		t.Fatalf("buildkit-client secret keys = %v", slices.Sorted(maps.Keys(tlsData)))
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM([]byte(tlsData["ca.pem"]))
+	pair, err := tls.X509KeyPair([]byte(tlsData["cert.pem"]), []byte(tlsData["key.pem"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, _ := x509.ParseCertificate(pair.Certificate[0])
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, CurrentTime: buildVMNow, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Fatalf("client cert does not chain to the secret's CA: %v", err)
+	}
+	if !strings.Contains(hz.serverReqs[0].UserData, strings.TrimSpace(tlsData["ca.pem"])) {
+		t.Fatal("the VM does not trust the CA the runner's client cert chains to")
+	}
+
+	var vmRule map[string]any
+	for _, r := range kube.cnps[ns+"/ci-egress"]["egress"].([]any) {
+		if m := r.(map[string]any); m["toCIDR"] != nil {
+			if vmRule != nil {
+				t.Fatal("more than one toCIDR egress rule")
+			}
+			vmRule = m
+		}
+	}
+	want := map[string]any{
+		"toCIDR":  []string{ip + "/32"},
+		"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "1234", "protocol": "TCP"}}}},
+	}
+	if !reflect.DeepEqual(vmRule, want) {
+		t.Fatalf("VM egress rule = %v, want %v (CIDR and port in one item)", vmRule, want)
+	}
+	if quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any); quota["pods"] != "1" {
+		t.Fatalf("resource quota pods = %v, want 1", quota["pods"])
+	}
+	if kube.objects["/api/v1/namespaces/"+ns+"/services"] != nil {
+		t.Fatal("a build job must not create a Service")
 	}
 }
 
-// Live under gVisor, writing the nested child's uid_map/gid_map right after
-// backgrounding it raced the child's own unshare(2)+exec and failed with
-// "printf: I/O error" every time (reproduced on 5/5 live pods); waiting for
-// an ack the child can only send after it is already running (and therefore
-// already unshared, since unshare(1) syscalls before it execs) fixed it on
-// 5/5. This pins that ordering in the generated script text so it can't
-// regress back to the unsynchronized write.
-func TestBuildkitdScriptWaitsForChildAckBeforeWritingMaps(t *testing.T) {
-	script := buildkitdScript()
-
-	childBlock := script[strings.Index(script, "unshare"):strings.Index(script, "' &")]
-	ackIdx := strings.Index(childBlock, "echo ready > /tmp/ready.fifo")
-	childGoReadIdx := strings.Index(childBlock, "read x < /tmp/go.fifo")
-	if ackIdx < 0 || childGoReadIdx < 0 || ackIdx > childGoReadIdx {
-		t.Fatalf("child must ack ready.fifo before blocking on go.fifo, got: %s", childBlock)
-	}
-
-	cpidIdx := strings.Index(script, "CPID=$!")
-	parentAckReadIdx := strings.Index(script, "read x < /tmp/ready.fifo")
-	uidMapIdx := strings.Index(script, "/proc/$CPID/uid_map")
-	gidMapIdx := strings.Index(script, "/proc/$CPID/gid_map")
-	releaseIdx := strings.Index(script, "echo go > /tmp/go.fifo")
-	if cpidIdx < 0 || parentAckReadIdx < 0 || uidMapIdx < 0 || gidMapIdx < 0 || releaseIdx < 0 {
-		t.Fatalf("script missing an expected step: %s", script)
-	}
-	if !(cpidIdx < parentAckReadIdx && parentAckReadIdx < uidMapIdx && uidMapIdx < gidMapIdx && gidMapIdx < releaseIdx) {
-		t.Fatalf("parent must wait for the child's ack before writing uid_map/gid_map and only then release it, got order cpid=%d ack=%d uid=%d gid=%d release=%d",
-			cpidIdx, parentAckReadIdx, uidMapIdx, gidMapIdx, releaseIdx)
-	}
-}
-
-// An ordinary (non-build) job must never get a buildkitd pod, Service, or
-// policy: those are ruling 91's build-label carve-out, not the default.
-func TestCISpawnerOrdinaryJobGetsNoBuildkitdPod(t *testing.T) {
+// An ordinary job gets no VM, no client pair and no CIDR egress.
+func TestCISpawnerOrdinaryJobGetsNoBuildVM(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 51, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
 	spawner := newTestCISpawner(t, kube, hub)
+	hz, _ := ciBuildFakes(spawner)
 
 	spawner.poll(context.Background())
 
 	ns := "factory-agents-ci-51"
-	if _, ok := kube.pods[ns+"/"+buildPodName]; ok {
-		t.Fatal("ordinary job must not get a buildkitd pod")
+	if len(hz.calls) != 0 || hz.pricingCalled != 0 {
+		t.Fatalf("hetzner calls = %v", hz.calls)
 	}
-	if kube.objects["/api/v1/namespaces/"+ns+"/services"] != nil {
-		t.Fatal("ordinary job must not get a buildkitd Service")
+	if _, ok := kube.secrets[ns+"/buildkit-client"]; ok {
+		t.Fatal("ordinary job got a buildkit client secret")
 	}
-	if kube.cnps[ns+"/buildkitd-policy"] != nil {
-		t.Fatal("ordinary job must not get a buildkitd egress policy")
+	_, container := podContainer(t, kube, ns)
+	if s := fmt.Sprint(container["env"], container["volumeMounts"]); strings.Contains(s, "BUILDKIT") || strings.Contains(s, "buildkit") {
+		t.Fatalf("ordinary runner carries build wiring: %s", s)
 	}
-	if labels := kube.namespaces[ns]; labels["pod-security.kubernetes.io/enforce"] != "restricted" {
-		t.Fatalf("enforce = %q, want restricted for an ordinary job", labels["pod-security.kubernetes.io/enforce"])
-	}
-	quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any)
-	if quota["pods"] != "1" {
-		t.Fatalf("resource quota pods = %v, want 1 for a single-pod namespace", quota["pods"])
+	if strings.Contains(fmt.Sprint(kube.cnps[ns+"/ci-egress"]["egress"]), "toCIDR:") {
+		t.Fatal("ordinary job egress has a CIDR rule")
 	}
 }
 
-// reconcile must reap a finished build namespace too: its
-// pod-security.kubernetes.io/enforce is baseline, not restricted, and the
-// listing that drives reconcile must query both.
-func TestCISpawnerReconcileTearsDownFinishedBuildNamespace(t *testing.T) {
+// At most CI_BUILD_VMS_MAX VMs live at once: a further build job is not
+// claimed (it stays queued in Forgejo) while ordinary jobs still spawn,
+// and it is claimed once a finished job's VM is released.
+func TestCISpawnerBuildJobsWaitForAVMSlot(t *testing.T) {
 	kube := newFakeKube()
-	hub := &ciHub{jobs: []CIJob{{ID: 52, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	hub := &ciHub{jobs: []CIJob{
+		{ID: 1, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"},
+		{ID: 2, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"},
+		{ID: 3, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+	}}
 	spawner := newTestCISpawner(t, kube, hub)
-	spawner.poll(context.Background())
-	ns := "factory-agents-ci-52"
-	kube.pods[ns+"/"+ciPodName].phase = "Succeeded"
+	spawner.builds.cfg.Max = 1
+	hz, _ := ciBuildFakes(spawner)
+	ctx := context.Background()
 
-	spawner.reconcile(context.Background())
+	spawner.poll(ctx)
+	spawner.poll(ctx)
 
-	if _, ok := kube.namespaces[ns]; ok {
-		t.Fatal("finished build namespace survived reconcile")
+	for ns, want := range map[string]bool{"factory-agents-ci-1": true, "factory-agents-ci-2": false, "factory-agents-ci-3": true} {
+		if _, ok := kube.namespaces[ns]; ok != want {
+			t.Fatalf("namespace %s present = %v, want %v with one VM slot", ns, ok, want)
+		}
+	}
+	if len(hub.registered) != 2 || len(hz.servers) != 1 {
+		t.Fatalf("registered = %v, servers = %d: the queued build job must not be claimed", hub.registered, len(hz.servers))
+	}
+
+	kube.pods["factory-agents-ci-1/"+ciPodName].phase = "Succeeded"
+	hub.jobs[0].Status = "success"
+	spawner.poll(ctx)
+
+	if _, ok := kube.namespaces["factory-agents-ci-2"]; !ok {
+		t.Fatal("build job 2 not claimed once job 1's VM was released")
+	}
+	if len(hz.servers) != 1 {
+		t.Fatalf("servers = %d, want job 2's only", len(hz.servers))
+	}
+}
+
+// Teardown releases the job's VM and firewall and closes their rows before
+// it deletes the namespace, whatever ended the job.
+func TestCISpawnerTeardownReleasesBuildVM(t *testing.T) {
+	for _, phase := range []string{"Succeeded", "Failed"} {
+		t.Run(phase, func(t *testing.T) {
+			kube := newFakeKube()
+			hub := &ciHub{jobs: []CIJob{{ID: 52, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+			spawner := newTestCISpawner(t, kube, hub)
+			hz, reg := ciBuildFakes(spawner)
+			ctx := context.Background()
+			spawner.poll(ctx)
+			ns := "factory-agents-ci-52"
+			kube.pods[ns+"/"+ciPodName].phase = phase
+			hz.calls = nil
+
+			spawner.reconcile(ctx)
+
+			if _, ok := kube.namespaces[ns]; ok {
+				t.Fatal("finished build namespace survived reconcile")
+			}
+			if strings.Join(hz.calls, ",") != "delete server/102,delete firewall/101" || len(hz.servers)+len(hz.firewalls) != 0 {
+				t.Fatalf("hetzner calls = %v", hz.calls)
+			}
+			for id := int64(1); id <= 2; id++ {
+				if r, _ := reg.Get(id); r.State != cloudres.StateDeleted {
+					t.Fatalf("row %d = %s, want deleted", id, r.State)
+				}
+			}
+			if len(hub.deleted) != 1 {
+				t.Fatalf("deleted registrations = %v", hub.deleted)
+			}
+		})
+	}
+}
+
+// A VM that cannot be created fails the setup: the registration is rolled
+// back and the next reconcile removes the half-built namespace, so the job
+// is claimed again later.
+func TestCISpawnerBuildVMFailureRollsBack(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 53, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	hz, reg := ciBuildFakes(spawner)
+	hz.serverErr = &hcloud.APIError{Status: 403, Code: "resource_limit_exceeded"}
+	ctx := context.Background()
+
+	spawner.poll(ctx)
+
+	ns := "factory-agents-ci-53"
+	if _, ok := kube.pods[ns+"/"+ciPodName]; ok {
+		t.Fatal("runner pod created without a VM")
 	}
 	if len(hub.deleted) != 1 {
-		t.Fatalf("deleted registrations = %v, want the runner removed", hub.deleted)
+		t.Fatalf("deleted registrations = %v, want the rollback", hub.deleted)
+	}
+	if rows, _ := reg.Open(ctx, "ci"); len(rows) != 0 || len(hz.firewalls) != 0 {
+		t.Fatalf("open rows = %+v, firewalls = %v", rows, hz.firewalls)
+	}
+	hz.serverErr = nil
+	spawner.poll(ctx)
+	spawner.poll(ctx)
+	if _, ok := kube.pods[ns+"/"+ciPodName]; !ok {
+		t.Fatal("job not claimed again once VMs could be created")
 	}
 }

@@ -270,6 +270,7 @@ func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.
 		return nil, errors.New("build vms: AllowedSources is required")
 	}
 	for i, src := range cfg.AllowedSources {
+		src = strings.TrimSpace(src)
 		if !strings.Contains(src, "/") {
 			src += "/32"
 		}
@@ -465,11 +466,11 @@ func (b *BuildVMs) providerID(ctx context.Context, row cloudres.Resource) (int64
 	return 0, false, fmt.Errorf("unsupported kind %s", row.Kind)
 }
 
-// ciOwnerDone is the CI collector's owner check: a build VM's job is
+// CIOwnerDone is the CI collector's owner check: a build VM's job is
 // finished once its CI namespace is gone (the spawner releases the VM
 // before it deletes the namespace; this catches a factoryd that died
 // between the two).
-func ciOwnerDone(kube Kube) func(ctx context.Context, owner string) (bool, error) {
+func CIOwnerDone(kube Kube) func(ctx context.Context, owner string) (bool, error) {
 	return func(ctx context.Context, owner string) (bool, error) {
 		jobID, err := strconv.ParseInt(owner, 10, 64)
 		if err != nil {
