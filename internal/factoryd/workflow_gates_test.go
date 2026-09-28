@@ -35,6 +35,7 @@ type gateHarness struct {
 	mergeDelay    time.Duration
 	policyCommits []string
 	started       time.Time
+	requested     []time.Time // when each approval was requested, on the workflow's clock
 }
 
 // newGateHarness registers the gate mocks after setup adjusted the
@@ -76,6 +77,7 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 		})
 	g.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			g.requested = append(g.requested, g.env.Now())
 			g.steps = append(g.steps, "approval "+in.Commit)
 			g.approvals = append(g.approvals, in)
 			return nil
@@ -147,6 +149,52 @@ func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	}
 	if !strings.Contains(g.finals[0][1], "factory-merge after sebastian's approval") {
 		t.Fatalf("reason = %q", g.finals[0][1])
+	}
+}
+
+// The approval wait runs from the request to the approval: the approved
+// signal's step carries the request's time. A signal before the request
+// is ignored and carries none.
+func TestWorkflowApprovalCarriesTheRequestsTime(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	var approved []recordedStep
+	for _, r := range g.recorded {
+		if r.step == "signal" && r.detail["signal"] == SignalApproved {
+			approved = append(approved, r)
+		}
+	}
+	if len(approved) != 1 || len(g.requested) != 1 {
+		t.Fatalf("approved steps %+v, requests %v", approved, g.requested)
+	}
+	if got, want := approved[0].detail["started"], g.requested[0].UTC().Format(time.RFC3339Nano); got != want {
+		t.Fatalf("approved started = %v, want the request's %s", got, want)
+	}
+	if wait := approved[0].at.Sub(g.requested[0]); wait != time.Hour {
+		t.Fatalf("the approval came %s after the request, want the signal's hour", wait)
+	}
+}
+
+// Workflows started before versionGateStarted record the approval as
+// before, without started.
+func TestWorkflowBeforeGateStartedRecordsNoStart(t *testing.T) {
+	g := newGateHarness(t)
+	g.env.OnGetVersion("gate-started", workflow.DefaultVersion, versionGateStarted).Return(workflow.DefaultVersion)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	for _, r := range g.recorded {
+		if _, ok := r.detail["started"]; ok {
+			t.Fatalf("step %s carries started: %v", r.step, r.detail)
+		}
 	}
 }
 

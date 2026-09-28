@@ -210,7 +210,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v7:  workflow.GetVersion(ctx, "answers", workflow.DefaultVersion, versionAnswers),
 		v8:  workflow.GetVersion(ctx, "gates-pinned", workflow.DefaultVersion, versionGatesPinned),
 		v9:  workflow.GetVersion(ctx, "merge-failure-reported", workflow.DefaultVersion, versionMergeFailureReported),
-		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap)}
+		v10: workflow.GetVersion(ctx, "merge-retry-cap", workflow.DefaultVersion, versionMergeRetryCap),
+		v11: workflow.GetVersion(ctx, "gate-started", workflow.DefaultVersion, versionGateStarted)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -289,6 +290,10 @@ const (
 	// retries of one approval's merge stop after maxMergeRetries (an hour):
 	// one exhausted report, no timer; a new approval restarts the count.
 	versionMergeRetryCap workflow.Version = 1
+	// versionGateStarted (change id "gate-started", ruling 140): the
+	// approved signal's timeline step carries when the approval was
+	// requested, the start of the approval wait.
+	versionGateStarted workflow.Version = 1
 )
 
 type taskRun struct {
@@ -297,10 +302,11 @@ type taskRun struct {
 	taskID            string
 	v, v2, v3, v4, v5 workflow.Version
 	v6, v7, v8, v9    workflow.Version
-	v10               workflow.Version
+	v10, v11          workflow.Version
 	pr                PullRequest
-	answers           []string // the human's answers, newest first (versionAnswers)
-	escalation        int64    // the escalation comment human answers must be newer than
+	approvalRequested time.Time // the current approval request's time (versionGateStarted)
+	answers           []string  // the human's answers, newest first (versionAnswers)
+	escalation        int64     // the escalation comment human answers must be newer than
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -584,6 +590,9 @@ func (t *taskRun) gate(commit string) verdict {
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
 		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review}).Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
+	}
+	if t.v11 >= versionGateStarted {
+		t.approvalRequested = workflow.Now(t.ctx)
 	}
 	return t.awaitApproval(commit)
 }
@@ -913,6 +922,9 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 	detail := map[string]any{"signal": name, "author": sig.Author, "pr": sig.PR}
 	if !counts {
 		detail["ignored"] = "not the task's pull request"
+	}
+	if name == SignalApproved && counts && !t.approvalRequested.IsZero() {
+		detail["started"] = rfc3339(t.approvalRequested)
 	}
 	if name == SignalHumanComment {
 		counts = t.escalation != 0 && sig.Comment > t.escalation

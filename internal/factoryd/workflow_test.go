@@ -41,6 +41,14 @@ type workflowHarness struct {
 	escalated []string // Escalate reasons, in order
 	usage     []TaskUsage
 	logs      *lockedBuffer // the workflow's log
+	recorded  []recordedStep
+}
+
+// recordedStep is a RecordStep call and when on the workflow's clock.
+type recordedStep struct {
+	step   string
+	detail map[string]any
+	at     time.Time
 }
 
 type lockedBuffer struct {
@@ -102,7 +110,11 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })
-	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(nil)
+	h.env.OnActivity(ActivityRecordStep, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, step string, detail map[string]any) error {
+			h.recorded = append(h.recorded, recordedStep{step, detail, h.env.Now()})
+			return nil
+		})
 	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything).Return(

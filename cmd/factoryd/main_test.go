@@ -400,7 +400,7 @@ func TestCreateTaskHandlerReproCommand(t *testing.T) {
 // default, unless the worker caps it lower: the cap and the activities'
 // heartbeat interval bound the cancel at 10 s.
 func TestACancelReachesARunningActivityWithinTenSeconds(t *testing.T) {
-	if got := workerOptions().MaxHeartbeatThrottleInterval; got != 10*time.Second {
+	if got := workerOptions(&factoryd.GateWatch{}).MaxHeartbeatThrottleInterval; got != 10*time.Second {
 		t.Fatalf("heartbeat throttle cap = %s, want 10s", got)
 	}
 	if factoryd.HeartbeatEvery > 10*time.Second {
