@@ -12,6 +12,8 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The gates a task passes (stage 8 proposal 2.d); the task row's gate and
@@ -97,7 +99,9 @@ var errGateRetry = errors.New("the gate supervisor stopped this attempt for a re
 type GateWatch struct {
 	interceptor.WorkerInterceptorBase
 	Store GateStore
-	Bound func(activity string) time.Duration
+	// Bound is activity's bound under the policy version pin, the one its
+	// task started under (0: the version in force).
+	Bound func(ctx context.Context, activity string, pin int64) time.Duration
 	// Signal delivers a trip to the workflow; nil = the alert only.
 	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
 
@@ -136,7 +140,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	run := &watchedRun{attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(name), cancel: cancel}
+	run := &watchedRun{attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, activityPin(in.Args)), cancel: cancel}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
 	i.g.mu.Lock()
@@ -238,6 +242,38 @@ func activityTask(args []any) string {
 		return a.TaskID
 	}
 	return ""
+}
+
+// activityPin is the policy version an activity's input carries: a
+// session's, a gate supervisor call's, a model review's; 0 for the rest.
+func activityPin(args []any) int64 {
+	for _, a := range args {
+		switch a := a.(type) {
+		case SessionInput:
+			return a.PolicyVersion
+		case GateSupervision:
+			return a.PolicyVersion
+		case GateResults:
+			return a.Pin
+		}
+	}
+	return 0
+}
+
+// PinnedBound is GateWatch.Bound: the bound of the version pin (read with
+// read), the current version for 0 or a version it cannot read, since a
+// bound only decides when to alert.
+func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64) time.Duration {
+	return func(ctx context.Context, activity string, pin int64) time.Duration {
+		if pin != 0 {
+			v, ok, err := read(ctx, pin)
+			if err == nil && ok {
+				return v.Document.Bound(activity)
+			}
+			log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
+		}
+		return current().Document.Bound(activity)
+	}
 }
 
 // gateEnd is the detail of a step that ends gate, with the gate's start

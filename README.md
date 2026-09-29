@@ -575,13 +575,15 @@ A task's workflow pins, at its start, the version in force
 session cap, the agent time and the stronger rung (captured by the
 workflow), and in every session, gate-supervisor call and model review
 the agent time, `supervisor_calls`, `supervisor_timeout` and the
-`no_write` detector (`SessionInput`, `GateSupervision` and `GateResults`
-carry the pin; 0, a workflow from before the pin, reads the version in
-force). Read live, from the version in force when used: the risk rules
-(`GatePolicy`), the factoryd model aliases (`review_model`,
-`supervisor_model`), everything the gateway enforces (classes, tool
-caps, prices, the day cap), the budget at intake, the approvers, the
-activity bounds, `envelope_default` and `project_default`.
+`no_write` detector, and the activity bounds of a session, a
+gate-supervisor call and a model review (`SessionInput`,
+`GateSupervision` and `GateResults` carry the pin; 0, a workflow from
+before the pin, reads the version in force). Read live, from the version
+in force when used: the risk rules (`GatePolicy`), the factoryd model
+aliases (`review_model`, `supervisor_model`), everything the gateway
+enforces (classes, tool caps, prices, the day cap), the budget at
+intake, the approvers, the bounds of the other activities,
+`envelope_default` and `project_default`.
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
 (20m, the wall-clock cap across a task's sessions), `supervisor_calls`

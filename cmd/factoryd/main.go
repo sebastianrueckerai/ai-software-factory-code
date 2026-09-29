@@ -131,7 +131,7 @@ func main() {
 	gitBase := env("WORKER_GIT_BASE", "http://forgejo-http.forgejo.svc.cluster.local:3000")
 	// the Temporal client is dialled after the runner: the gate watch gets
 	// its signal and the runner its failure reader once it is
-	gates := &factoryd.GateWatch{Store: store, Bound: func(activity string) time.Duration { return policyLoader.Current().Document.Bound(activity) }}
+	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(policyLoader.Current, store.PolicyVersion)}
 	var workflows factoryd.TemporalWorkflows
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),

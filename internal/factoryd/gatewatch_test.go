@@ -26,7 +26,7 @@ func watchedEnv(store *fakeStore, bound time.Duration) *testsuite.TestActivityEn
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
 	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{
-		&GateWatch{Store: store, Bound: func(string) time.Duration { return bound }}}})
+		&GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return bound }}}})
 	return env
 }
 
@@ -134,7 +134,7 @@ func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	env := signallingEnv(&GateWatch{Store: store, Bound: func(string) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
+	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
 	var info activity.Info
 	slow := func(ctx context.Context) {
 		info = activity.GetInfo(ctx)
@@ -172,7 +172,7 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	g := &GateWatch{Store: store, Bound: func(string) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
+	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex
 	var waits []bool
 	sig.onTrip = func(wf string, tr GateTrip) {
@@ -210,7 +210,7 @@ func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	g := &GateWatch{Store: store, Bound: func(string) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
+	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex
 	running := false
 	sig.onTrip = func(wf string, tr GateTrip) {
@@ -263,6 +263,52 @@ func TestTripVerdict(t *testing.T) {
 	} {
 		if got := tripVerdict(action); got != want {
 			t.Errorf("tripVerdict(%s) = %s, want %s", action, got, want)
+		}
+	}
+}
+
+// A session's bound follows the agent time of the version its task
+// started under, not the current one (ruling 183); pin 0 reads the
+// current version.
+func TestPinnedBound(t *testing.T) {
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	pinned.Document.Limits.AgentTime, pinned.Document.Limits.SupervisorTimeout = 30*time.Minute, 10*time.Minute
+	current.ID, current.Document.Limits.AgentTime = 8, 20*time.Minute
+	bound := PinnedBound(func() policy.Version { return current },
+		func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil })
+	ctx := context.Background()
+	for _, tc := range []struct {
+		activity string
+		pin      int64
+		want     time.Duration
+	}{
+		{ActivityRunSession, 7, 31 * time.Minute},
+		{ActivitySuperviseGate, 7, 12 * time.Minute},
+		{ActivityRunSession, 0, 21 * time.Minute},
+		// an unreadable pin falls back to the current version: a bound is
+		// an alert threshold, never a reason to fail the activity
+		{ActivityRunSession, 99, 21 * time.Minute},
+	} {
+		if got := bound(ctx, tc.activity, tc.pin); got != tc.want {
+			t.Errorf("bound(%s, pin %d) = %s, want %s", tc.activity, tc.pin, got, tc.want)
+		}
+	}
+}
+
+// The watch hands the bound the pin of the activity's input.
+func TestActivityPin(t *testing.T) {
+	for _, tc := range []struct {
+		args []any
+		want int64
+	}{
+		{[]any{SessionInput{TaskID: "t1", PolicyVersion: 7}}, 7},
+		{[]any{"t1", GateSupervision{PolicyVersion: 5}}, 5},
+		{[]any{"t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 4}}, 4},
+		{[]any{"t1", int64(9), "c1"}, 0},
+		{nil, 0},
+	} {
+		if got := activityPin(tc.args); got != tc.want {
+			t.Errorf("activityPin(%v) = %d, want %d", tc.args, got, tc.want)
 		}
 	}
 }
