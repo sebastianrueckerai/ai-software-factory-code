@@ -253,8 +253,13 @@ var priorityLabelWeight = map[string]int{
 	"severity/critical": 3, "severity/high": 2, "severity/medium": 1, "severity/low": 0,
 }
 
-// LabelNoise on a human-lane alert issue closes it as not a problem.
-const LabelNoise = "noise"
+// LabelNoise on a human-lane alert issue closes it as not a problem;
+// LabelReal on an agent-lane one closed without a merge (a duplicate of a
+// real alert) judges its alert real.
+const (
+	LabelNoise = "noise"
+	LabelReal  = "real"
+)
 
 // BootLabels are the labels factoryd creates on every project's repository
 // at each reconcile (boot included), before anything files
@@ -267,6 +272,7 @@ var BootLabels = map[string]string{
 	"bug":                  "#cf222e",
 	"improvement":          "#0e8a16",
 	LabelNoise:             "#bfbfbf",
+	LabelReal:              "#d93f0b",
 	"state/suggested":      "#c5def5",
 	"state/queued":         "#ededed",
 	"state/running":        "#1f6feb",
