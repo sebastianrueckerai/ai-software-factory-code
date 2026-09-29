@@ -1253,8 +1253,8 @@ infra repository's (agents none); the infra repository labels them, with
 admission policy. By
 the alert's fingerprint: its first firing files an issue on the project's
 repository as the bot, title `alert: <name> in <namespace>` (`alert: <name>
-on <service> in <namespace>` when the alert carries a `service` or
-`service.name` label), the body the
+on <service> in <namespace>` when the alert carries a `service`,
+`service.name`, `k8s.deployment.name` or `deployment` label), the body the
 firing time, the SigNoz link, the value and annotations and the labels
 (fenced, one line each), labels `bug` and `state/queued`, and starts its
 agent task at the default branch's head (source `alert`, standing
@@ -1275,7 +1275,8 @@ in namespace `factory`: 5xx rate above 5 % per service (factoryd, its
 console and the gateway trace every request but the probes), factoryd and
 the gateway each started 3 times in 10 minutes (the kubelet's `Started`
 events: a crash restart and a replaced pod both count), the CI queue's p95
-above 5 minutes, and a roll not live within 10 minutes of its merge.
+above 5 minutes, and a roll not live within 10 minutes of its merge
+(`factory.roll.pending` above 600 s).
 
 The CI spawner serves every active project on `agents: coder`, each with
 its Actions token (Forgejo keeps the runner API to the repository's owner):

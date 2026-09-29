@@ -490,3 +490,24 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 		t.Fatalf("alert rows %+v", rows)
 	}
 }
+
+// The service an issue names: a rule's own service label, else the
+// group-by's service.name, k8s.deployment.name or deployment.
+func TestAlertIssueNamesTheService(t *testing.T) {
+	for labels, want := range map[string]string{
+		"service=clickhouse,service.name=x": "alert: r on clickhouse in platform",
+		"service.name=factory-gateway":      "alert: r on factory-gateway in platform",
+		"k8s.deployment.name=forgejo":       "alert: r on forgejo in platform",
+		"deployment=factoryd":               "alert: r on factoryd in platform",
+		"k8s.pod.name=sf-cluster-1":         "alert: r in platform",
+	} {
+		a := SigNozAlert{Labels: map[string]string{"alertname": "r"}}
+		for _, kv := range strings.Split(labels, ",") {
+			k, v, _ := strings.Cut(kv, "=")
+			a.Labels[k] = v
+		}
+		if title, _ := alertIssue(a, "p", "platform"); title != want {
+			t.Errorf("%s: %q, want %q", labels, title, want)
+		}
+	}
+}

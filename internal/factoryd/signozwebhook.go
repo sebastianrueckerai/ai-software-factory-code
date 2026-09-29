@@ -241,7 +241,7 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 // the values one line each inside fences.
 func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
 	name, on := oneLine(a.Labels["alertname"]), ""
-	if s := oneLine(cmp.Or(a.Labels["service"], a.Labels["service.name"])); s != "" {
+	if s := oneLine(cmp.Or(a.Labels["service"], a.Labels["service.name"], a.Labels["k8s.deployment.name"], a.Labels["deployment"])); s != "" {
 		on = " on service " + s
 		title = "alert: " + name + " on " + s + " in " + ns
 	} else {
