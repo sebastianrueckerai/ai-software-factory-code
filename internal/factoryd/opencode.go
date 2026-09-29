@@ -318,6 +318,7 @@ const workGuide = "How to work: reproduce the reported fault before you change c
 	"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
 	"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. If you cannot reproduce it and find no fault, " +
 	"call request_info with what you tried and what you need instead of guessing. If only a human can decide, call escalate_to_human with your recommendation. " +
+	"You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the module proxy. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
 
 // mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP
