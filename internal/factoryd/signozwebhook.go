@@ -103,8 +103,9 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := errors.Join(errs...); err != nil {
 		// SigNoz sends the notification again on a 5xx. The alerts row, the
-		// dedupe key, is written last: a failure after the issue was filed
-		// files a second issue and task on the retry
+		// dedupe key, is written first with its task's id, so the retry files
+		// that one task; a failure between the issue and the task row leaves
+		// the first issue without a task
 		log.Printf("signoz webhook: %v", err) // #nosec G706 -- strconv.Quote escapes the alert's text
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -128,13 +129,17 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	if err != nil {
 		return err
 	}
+	t, filed, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil {
+		return err
+	}
 	repo := p.Repo()
 	if a.Status == "resolved" {
 		at := stamp(a.EndsAt)
-		if !seen || row.Detail["resolved_at"] == at {
+		if !filed || row.Detail["resolved_at"] == at {
 			return nil
 		}
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issueOf(row), "factoryd: resolved at "+at); err != nil {
+		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 			return err
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at})
@@ -143,22 +148,23 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	if !seen {
 		return in.file(ctx, a, p, ns, at, false)
 	}
-	t, ok, err := in.Store.Task(ctx, row.TaskID)
-	if err != nil {
-		return err
+	if !filed {
+		// an earlier delivery wrote the row and failed before its task
+		// was filed: file it now, under the row's task id
+		return in.fileTask(ctx, a, p, ns, row)
 	}
 	if row.Detail["starts_at"] == at {
 		// the same firing again (Alertmanager resends a group's every
 		// alert): nothing, unless the task's fix merged a while ago and it
 		// still fires, filed once more; a human's close is their answer
-		if ok && t.Status == "done" && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
+		if t.Status == "done" && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
 			return in.file(ctx, a, p, ns, at, true)
 		}
 		return nil
 	}
-	if ok && !Final(t.Status) {
+	if !Final(t.Status) {
 		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced("value="+oneLine(a.Annotations["value"]))
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issueOf(row), msg); err != nil {
+		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
@@ -166,17 +172,36 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	return in.file(ctx, a, p, ns, at, false)
 }
 
-// file files the alert's bug issue and task (a human-lane task on a
-// project on agents none), then its alerts row; refiled when the same
-// firing outlived the task of the last one.
+// file writes the alert's row, the dedupe key, with the id of the task it
+// files, then files that task; refiled when the same firing outlived the
+// task of the last one. A delivery that fails after the row is written is
+// finished by SigNoz's retry under the same task id (take).
 func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
+	link := ""
+	if safeLink(a.GeneratorURL) {
+		link = a.GeneratorURL
+	}
+	row := Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: NewTaskID(), Fingerprint: a.Fingerprint,
+		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": p.Repo().String(),
+			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled}}
+	var err error
+	if row.ID, err = in.Store.InsertAlert(ctx, row); err != nil {
+		return err
+	}
+	return in.fileTask(ctx, a, p, ns, row)
+}
+
+// fileTask files the issue and task of the alert a on project p whose row,
+// written first, names the task's id: a delivery that fails here leaves the
+// row, so SigNoz's retry files the same one task (take).
+func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, ns string, row Alert) error {
 	repo := p.Repo()
 	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
 	if err != nil {
 		return fmt.Errorf("base sha: %w", err)
 	}
 	title, body := alertIssue(a, p.Name, ns)
-	if refiled {
+	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	labels, kind := []string{"bug"}, "agent"
@@ -184,7 +209,7 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 		labels, kind = []string{"bug", "human"}, "human"
 	}
 	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, labels, Task{
-		ID: NewTaskID(), Kind: kind, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
+		ID: row.TaskID, Kind: kind, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser,
@@ -192,14 +217,8 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	if err != nil {
 		return err
 	}
-	link := ""
-	if safeLink(a.GeneratorURL) {
-		link = a.GeneratorURL
-	}
-	if _, err := in.Store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: t.ID, Fingerprint: a.Fingerprint,
-		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": repo.String(), "issue": ref.Number,
-			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled}}); err != nil {
-		return err
+	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": ref.Number}); err != nil {
+		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, ref.Number, err)
 	}
 	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
@@ -296,16 +315,6 @@ func namespaceOf(labels map[string]string) string {
 		}
 	}
 	return ""
-}
-
-func issueOf(a Alert) int64 {
-	switch n := a.Detail["issue"].(type) {
-	case float64:
-		return int64(n)
-	case int64:
-		return n
-	}
-	return 0
 }
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
