@@ -924,6 +924,30 @@ func TestFinishJudgesTheTasksSigNozAlert(t *testing.T) {
 	}
 }
 
+// A human who closes an alert's issue without a merge but labels it real
+// (a duplicate of a real alert, #210) judges the alert real, not noise.
+func TestFinishJudgesAnAlertClosedAsRealReal(t *testing.T) {
+	for _, c := range []struct {
+		labels []string
+		want   string
+	}{
+		{[]string{"agent", "bug", LabelReal}, VerdictReal},
+		{[]string{"agent", "bug"}, VerdictNoise},
+	} {
+		fj := &prForgejo{labels: map[int64][]string{4: c.labels}}
+		task := prTask
+		task.Status, task.Source = "in-review", SourceAlert
+		r, store, _ := newActivityRunner(t, task, fj)
+		store.InsertAlert(context.Background(), Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t1", Fingerprint: "fp1"})
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "issue closed without merge"); err != nil {
+			t.Fatal(err)
+		}
+		if a := store.alertRows()[0]; a.Verdict != c.want || a.ResolvedBy != "factoryd" {
+			t.Fatalf("labels %v: verdict %q by %q, want %q by factoryd", c.labels, a.Verdict, a.ResolvedBy, c.want)
+		}
+	}
+}
+
 func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
 	task := prTask

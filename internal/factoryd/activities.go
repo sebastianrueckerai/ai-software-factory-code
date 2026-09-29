@@ -905,6 +905,15 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return err
 	}
 	if v := alertVerdict(final, reason); v != "" {
+		if v == VerdictNoise && t.Source == SourceAlert && repoErr == nil {
+			labels, err := r.forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+			if err := cleanup(taskID, "read its issue's labels", err); err != nil {
+				return err
+			}
+			if slices.Contains(labels, LabelReal) {
+				v = VerdictReal
+			}
+		}
 		if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
 			return err
 		}
