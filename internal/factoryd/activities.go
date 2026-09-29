@@ -46,6 +46,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunSession:                  r.RunSession,
 		ActivityOpenPullRequest:             r.OpenPullRequest,
 		ActivityWaitChecks:                  r.WaitChecks,
+		ActivityRerunChecks:                 r.RerunChecks,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
 		ActivityFinish:                      r.Finish,
@@ -832,6 +833,30 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		case <-time.After(min(r.cfg.ChecksPoll, time.Until(deadline))):
 		}
 	}
+}
+
+// RerunChecks runs the checks of sha, the head of the task's branch, once
+// more: an empty commit on top of it, which Forgejo's pull_request
+// synchronize runs the workflows on (Forgejo 15 has no API to re-run a
+// job). A branch that moved on (this activity's own earlier attempt; no
+// session runs meanwhile) answers its head.
+func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	fork := r.forgejo.Fork(repo)
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
+	if err != nil {
+		return "", fmt.Errorf("branch head: %w", err)
+	}
+	if head == sha {
+		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, r.branch(t), "", "factoryd: run the checks of "+sha+" again", nil); err != nil {
+			return "", fmt.Errorf("empty commit: %w", err)
+		}
+	}
+	r.record(ctx, taskID, "checks_rerun", map[string]any{"commit": sha, "head": head})
+	return head, nil
 }
 
 // checksResult maps a combined status onto a verdict; empty means still

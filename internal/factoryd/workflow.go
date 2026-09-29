@@ -85,6 +85,7 @@ const (
 	ActivityJudgeScreening              = "JudgeScreening"
 	ActivityRunReport                   = "RunReport"
 	ActivityRollCommit                  = "RollCommit"
+	ActivityRerunChecks                 = "RerunChecks"
 	ActivityGateAudit                   = "GateAudit"
 )
 

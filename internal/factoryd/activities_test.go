@@ -51,6 +51,8 @@ type prForgejo struct {
 	created    []map[string]any   // POST /pulls bodies
 	comments   []string           // issue comment bodies
 	labels     map[int64][]string // issue → labels
+	head       string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
+	contents   []map[string]any   // POST /contents bodies
 	calls      []string
 }
 
@@ -129,7 +131,14 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			io.WriteString(w, `{}`)
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": f.head}})
+		case r.Method == "POST" && p == "/contents":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			f.contents = append(f.contents, body)
+			f.head += "e"
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": f.head}})
 		case r.Method == "DELETE" && strings.HasPrefix(p, "/branches/"):
 			if f.refuse {
 				http.Error(w, "forbidden", http.StatusForbidden)
@@ -852,6 +861,24 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 	if want := []string{"agent 701", "supervisor 702", "cap 703"}; !slices.Equal(got, want) {
 		t.Fatalf("escalation alerts = %q, want %q", got, want)
+	}
+}
+
+// RerunChecks puts an empty commit on the task's branch, once: a retried
+// attempt finds the branch moved on and answers its head.
+func TestRerunChecksPushesOneEmptyCommit(t *testing.T) {
+	fj := &prForgejo{head: "c1"}
+	r, _, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
+	for range 2 {
+		var head string
+		val, err := execActivity(t, r, ActivityRerunChecks, "t1", "c1")
+		if err != nil || val.Get(&head) != nil || head != "c1e" {
+			t.Fatalf("RerunChecks = %q, %v; want c1e", head, err)
+		}
+	}
+	if len(fj.contents) != 1 || fj.contents[0]["branch"] != "factory/t1" || fmt.Sprint(fj.contents[0]["files"]) != "[]" ||
+		fj.contents[0]["message"] != "factoryd: run the checks of c1 again" {
+		t.Fatalf("commits = %v, want one empty commit on factory/t1", fj.contents)
 	}
 }
 
