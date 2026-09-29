@@ -88,6 +88,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
+	if err := metrics.Tasks(otelProviders.Analytics.Meter("factoryd")); err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
 	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics}
 	// a ladder model outside the coder class would be refused mid-task
 	policyLoader := &factoryd.PolicyLoader{

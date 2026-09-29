@@ -27,6 +27,7 @@ import (
 	logcol "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	metriccol "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	tracecol "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	metricpb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"
 )
@@ -222,5 +223,64 @@ func TestHandlerTracesEveryRequestButTheProbes(t *testing.T) {
 	}
 	if want := []string{"GET /tasks/{id} " + trace.SpanKindServer.String() + " 500", "GET / server 200"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("spans %q, want %q", got, want)
+	}
+}
+
+// The task analytics go out as deltas, so SigNoz counts a series' first
+// increment and a restart's; the older instruments stay cumulative.
+func TestTaskAnalyticsExportAsDeltas(t *testing.T) {
+	var mu sync.Mutex
+	got := map[string]metricpb.AggregationTemporality{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req metriccol.ExportMetricsServiceRequest
+		if r.URL.Path == "/v1/metrics" && proto.Unmarshal(body, &req) == nil {
+			mu.Lock()
+			for _, rm := range req.ResourceMetrics {
+				for _, sm := range rm.ScopeMetrics {
+					for _, m := range sm.Metrics {
+						switch d := m.Data.(type) {
+						case *metricpb.Metric_Sum:
+							got[m.Name] = d.Sum.AggregationTemporality
+						case *metricpb.Metric_Histogram:
+							got[m.Name] = d.Histogram.AggregationTemporality
+						}
+					}
+				}
+			}
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
+	p, err := Setup(context.Background(), "factoryd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(p.Meter.Meter("factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Tasks(p.Analytics.Meter("factoryd")); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	m.TaskOutcome.Add(ctx, 1)
+	m.TaskCost.Record(ctx, 0.2)
+	m.Intervened(ctx, "approve")
+	m.BuildVMCost.Add(ctx, 0.01)
+	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := p.Shutdown(sctx); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	delta, cumulative := metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA, metricpb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE
+	want := map[string]metricpb.AggregationTemporality{"factory.task.outcome": delta, "factory.task.cost": delta,
+		"factory.human.intervention": delta, "factory.ci.buildvm.cost": cumulative}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("temporality = %v, want %v", got, want)
 	}
 }

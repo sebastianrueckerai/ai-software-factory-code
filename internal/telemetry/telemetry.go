@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -47,16 +48,20 @@ const TaskID = attribute.Key("task.id")
 
 // Providers are a binary's three signal providers and their joint shutdown.
 type Providers struct {
-	Meter    metric.MeterProvider
-	Tracer   trace.TracerProvider
-	Logger   otellog.LoggerProvider
-	Shutdown func(context.Context) error
+	Meter metric.MeterProvider
+	// Analytics exports counters and histograms as deltas: SigNoz sums a
+	// delta series, so it counts a series' first increment and the counts
+	// before a restart, which an increase over a cumulative series drops.
+	Analytics metric.MeterProvider
+	Tracer    trace.TracerProvider
+	Logger    otellog.LoggerProvider
+	Shutdown  func(context.Context) error
 }
 
 // Setup returns the providers for the binary named service.
 func Setup(ctx context.Context, service string) (Providers, error) {
 	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
-		return Providers{Meter: noop.NewMeterProvider(), Tracer: tracenoop.NewTracerProvider(), Logger: lognoop.NewLoggerProvider(),
+		return Providers{Meter: noop.NewMeterProvider(), Analytics: noop.NewMeterProvider(), Tracer: tracenoop.NewTracerProvider(), Logger: lognoop.NewLoggerProvider(),
 			Shutdown: func(context.Context) error { return nil }}, nil
 	}
 	res, err := resource.Merge(resource.Default(), resource.NewSchemaless(attribute.String("service.name", service)))
@@ -64,6 +69,11 @@ func Setup(ctx context.Context, service string) (Providers, error) {
 		return Providers{}, err
 	}
 	metrics, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}))
+	if err != nil {
+		return Providers{}, err
+	}
+	deltas, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithRetry(otlpmetrichttp.RetryConfig{Enabled: false}),
+		otlpmetrichttp.WithTemporalitySelector(deltaCounters))
 	if err != nil {
 		return Providers{}, err
 	}
@@ -78,11 +88,23 @@ func Setup(ctx context.Context, service string) (Providers, error) {
 	otel.SetErrorHandler(&throttledHandler{log: log.Default(), now: time.Now})
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metrics, sdkmetric.WithInterval(exportInterval))))
+	ap := sdkmetric.NewMeterProvider(sdkmetric.WithResource(res),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(deltas, sdkmetric.WithInterval(exportInterval))))
 	tp := sdktrace.NewTracerProvider(sdktrace.WithResource(res), sdktrace.WithBatcher(traces))
 	lp := sdklog.NewLoggerProvider(sdklog.WithResource(res), sdklog.WithProcessor(sdklog.NewBatchProcessor(logs)))
-	return Providers{Meter: mp, Tracer: tp, Logger: lp, Shutdown: func(ctx context.Context) error {
-		return errors.Join(tp.Shutdown(ctx), lp.Shutdown(ctx), mp.Shutdown(ctx))
+	return Providers{Meter: mp, Analytics: ap, Tracer: tp, Logger: lp, Shutdown: func(ctx context.Context) error {
+		return errors.Join(tp.Shutdown(ctx), lp.Shutdown(ctx), mp.Shutdown(ctx), ap.Shutdown(ctx))
 	}}, nil
+}
+
+// deltaCounters is delta for counters and histograms, cumulative for the
+// up-down counters and gauges, whose value is a level.
+func deltaCounters(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+	switch kind {
+	case sdkmetric.InstrumentKindCounter, sdkmetric.InstrumentKindHistogram, sdkmetric.InstrumentKindObservableCounter:
+		return metricdata.DeltaTemporality
+	}
+	return metricdata.CumulativeTemporality
 }
 
 // throttledHandler logs an export error at most once a minute.
@@ -138,6 +160,32 @@ func (m *Metrics) Intervened(ctx context.Context, kind string) {
 	}
 }
 
+// Tasks (re)creates the task analytics instruments on meter: factoryd
+// passes Providers.Analytics' meter, so they go out as deltas.
+func (m *Metrics) Tasks(meter metric.Meter) error {
+	var err error
+	if m.TaskCost, err = meter.Float64Histogram("factory.task.cost", metric.WithUnit("EUR"),
+		metric.WithDescription("a finished task's spend by the alias of its last session and its outcome"),
+		metric.WithExplicitBucketBoundaries(CostBuckets...)); err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		to   *metric.Int64Counter
+		name string
+		desc string
+	}{
+		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts and merge rule"},
+		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks the daily pass marked reverted"},
+		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement and round"},
+		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind"},
+	} {
+		if *c.to, err = meter.Int64Counter(c.name, metric.WithDescription(c.desc)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Noop is Metrics on the no-op meter, for tests and callers without one.
 func Noop() *Metrics {
 	m, _ := New(noop.NewMeterProvider().Meter("")) // #nosec G104 -- the no-op meter never fails
@@ -178,24 +226,8 @@ func New(meter metric.Meter) (*Metrics, error) {
 	if err != nil {
 		return nil, err
 	}
-	if m.TaskCost, err = meter.Float64Histogram("factory.task.cost", metric.WithUnit("EUR"),
-		metric.WithDescription("a finished task's spend by the alias of its last session and its outcome"),
-		metric.WithExplicitBucketBoundaries(CostBuckets...)); err != nil {
+	if err := m.Tasks(meter); err != nil {
 		return nil, err
-	}
-	for _, c := range []struct {
-		to   *metric.Int64Counter
-		name string
-		desc string
-	}{
-		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts and merge rule"},
-		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks the daily pass marked reverted"},
-		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement and round"},
-		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind"},
-	} {
-		if *c.to, err = meter.Int64Counter(c.name, metric.WithDescription(c.desc)); err != nil {
-			return nil, err
-		}
 	}
 	return m, nil
 }

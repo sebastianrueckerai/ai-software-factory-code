@@ -1523,8 +1523,11 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
   `open` for no verdict yet.
 
-Task analytics (ruling 185), counted where they happen, so a panel sums
-them over the factoryd pods:
+Task analytics (ruling 185), counted where they happen and exported as
+deltas (`Providers.Analytics`): SigNoz sums a delta series, so a series'
+first count and the counts before a restart are in a day's bar, which an
+increase over a cumulative series drops. A panel sums them over the
+factoryd pods:
 
 - `factory.task.outcome{project,state,model_alias,attempts,merge_rule}`:
   once per task on every path that ends it (`Complete`, which `Finish`
