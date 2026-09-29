@@ -42,7 +42,7 @@ const (
 func (t Tree) Validate() error {
 	errs := []error{t.Document.Validate(), t.Workflow.Validate()}
 	for name, p := range t.Projects {
-		errs = append(errs, p.Validate(name))
+		errs = append(errs, p.Validate(name), t.Document.checkBounds(name, p))
 	}
 	return errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...)
 }
@@ -71,6 +71,7 @@ func (t Tree) checkAudit() error {
 func ParseTree(files map[string][]byte) (Tree, error) {
 	t := Tree{Projects: map[string]ProjectConfig{}}
 	var errs []error
+	policyOK, projectsOK := false, []string{}
 	for _, name := range []string{FilePolicy, FileWorkflow} {
 		if _, ok := files[name]; !ok {
 			errs = append(errs, fmt.Errorf("%s is missing", name))
@@ -84,16 +85,26 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 			continue
 		case name == FilePolicy:
 			t.Document, err = parseFile(b, FilePolicy, kindPolicy, Document.Validate)
+			policyOK = err == nil
 		case name == FileWorkflow:
 			t.Workflow, err = parseFile(b, FileWorkflow, kindWorkflow, Workflow.Validate)
 		case path.Dir(name) == DirProjects && path.Ext(name) == ".yaml":
 			project := strings.TrimSuffix(path.Base(name), ".yaml")
-			t.Projects[project], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(project) })
+			if t.Projects[project], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(project) }); err == nil {
+				projectsOK = append(projectsOK, project)
+			}
 		default:
 			err = fmt.Errorf("unknown file %q: the tree holds %s, %s, %s/<name>.yaml and %s/", name, FilePolicy, FileWorkflow, DirProjects, DirSchema)
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+		}
+	}
+	if policyOK {
+		for _, name := range projectsOK {
+			if err := t.Document.checkBounds(name, t.Projects[name]); err != nil {
+				errs = append(errs, fmt.Errorf("%s/%s.yaml: %w", DirProjects, name, err))
+			}
 		}
 	}
 	if err := errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...); err != nil {

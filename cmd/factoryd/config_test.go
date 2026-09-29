@@ -85,6 +85,10 @@ func TestConfigCheck(t *testing.T) {
 			b, _ := os.ReadFile(filepath.Join(dir, "policy.yaml"))
 			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [coding-cheap, coding-frontier]", "models: [coding-cheap]", 1))
 		}, []string{`policy.yaml: capability classes ["coder"] do not allow the ladder model "coding-frontier"`}},
+		"a looser project file": {func(dir string) {
+			b, _ := os.ReadFile(filepath.Join(dir, "projects/demo-app.yaml"))
+			write(t, filepath.Join(dir, "projects/demo-app.yaml"), strings.Replace(string(b), "max_lease_hours: 2", "max_lease_hours: 48", 1))
+		}, []string{"projects/demo-app.yaml: project demo-app: envelope.max_lease_hours 48 is looser than policy.yaml's envelope_default.max_lease_hours 4"}},
 		"schema drift": {func(dir string) {
 			write(t, filepath.Join(dir, "schema/policy.schema.json"), "{}\n")
 		}, []string{"schema/policy.schema.json differs from factoryd schema"}},

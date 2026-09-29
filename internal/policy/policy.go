@@ -31,7 +31,7 @@ type Document struct {
 	// Risk classifies a pull request by the paths it changes.
 	Risk Risk `yaml:"risk" json:"risk"`
 	// EnvelopeDefault is the resource envelope of a project whose file
-	// sets none.
+	// sets none, and the most any project file's envelope may set.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
 	// Approvers are the Forgejo users who may authorize spend in the
 	// console (ruling 128): approve a resource request or a merge, promote
@@ -45,8 +45,8 @@ type Document struct {
 	// many seconds without the progress each names before it trips;
 	// absent keys take DefaultDetectors (ruling 161: no_write only).
 	Supervisor map[string]int `yaml:"supervisor,omitempty" json:"supervisor"`
-	// ProjectDefault is what a project file leaves out takes; absent:
-	// DefaultProject.
+	// ProjectDefault is what a project file leaves out takes, and the most
+	// its quota and standing may set; absent: DefaultProject.
 	ProjectDefault *ProjectDefault `yaml:"project_default,omitempty" json:"project_default,omitempty"`
 }
 

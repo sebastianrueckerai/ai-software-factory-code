@@ -6,6 +6,7 @@ import (
 	"maps"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -181,15 +182,22 @@ type ProjectConfig struct {
 	// Kustomization each.
 	Environments []Environment `yaml:"environments,omitempty" json:"environments"`
 	// Quota is each namespace's ResourceQuota; absent: project_default's.
+	// Stricter wins: bounded by policy.yaml's project_default.quota, each
+	// value at most the policy's; a looser file is rejected.
 	Quota *Quota `yaml:"quota,omitempty" json:"quota,omitempty"`
 	// Secrets are secret/key entries: each namespace gets the secret with
 	// a random value for the key when it is missing.
 	Secrets []string `yaml:"secrets,omitempty" json:"secrets"`
 	// Envelope bounds what the project's tasks commission in the agent
-	// cloud project without a human; absent: envelope_default.
+	// cloud project without a human; absent: envelope_default. Stricter
+	// wins: bounded by policy.yaml's envelope_default, each number at most
+	// the policy's, each server type one it lists; a looser file is
+	// rejected.
 	Envelope *Envelope `yaml:"envelope,omitempty" json:"envelope,omitempty"`
 	// Standing bounds the project's standing resources; absent:
-	// project_default's.
+	// project_default's. Stricter wins: bounded by policy.yaml's
+	// project_default.standing, each number at most the policy's, each
+	// server type one it lists; a looser file is rejected.
 	Standing *Standing `yaml:"standing,omitempty" json:"standing,omitempty"`
 	// Tokens name the seeded secrets factoryd reaches a seed project's
 	// repository with; a factory project's are registration's own.
@@ -382,6 +390,64 @@ func (p ProjectConfig) Validate(name string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// checkBounds: a project file may only tighten what policy.yaml bounds
+// (stricter wins): each quota, envelope and standing value at most the
+// policy's, each server type one the policy lists.
+func (d Document) checkBounds(name string, p ProjectConfig) error {
+	var errs []error
+	looser := func(field string, v, bound any, policyField string) {
+		errs = append(errs, fmt.Errorf("project %s: %s %v is looser than policy.yaml's %s %v", name, field, v, policyField, bound))
+	}
+	number := func(field string, v, bound float64, policyField string) {
+		if v > bound {
+			looser(field, v, bound, policyField)
+		}
+	}
+	types := func(field string, v, bound []string, policyField string) {
+		for _, t := range v {
+			if !slices.Contains(bound, t) {
+				errs = append(errs, fmt.Errorf("project %s: %s lists %s, which policy.yaml's %s does not", name, field, t, policyField))
+			}
+		}
+	}
+	if q := p.Quota; q != nil {
+		b := d.Project().Quota
+		for _, f := range []struct{ key, v, bound string }{{"cpu", q.CPU, b.CPU}, {"memory", q.Memory, b.Memory}, {"storage", q.Storage, b.Storage}} {
+			if quantityValue(f.v) > quantityValue(f.bound) {
+				looser("quota."+f.key, strconv.Quote(f.v), strconv.Quote(f.bound), "project_default.quota."+f.key)
+			}
+		}
+	}
+	if e := p.Envelope; e != nil {
+		b := d.EnvelopeDefault
+		number("envelope.monthly_eur", e.MonthlyEUR, b.MonthlyEUR, "envelope_default.monthly_eur")
+		types("envelope.server_types", e.ServerTypes, b.ServerTypes, "envelope_default.server_types")
+		number("envelope.max_count", float64(e.MaxCount), float64(b.MaxCount), "envelope_default.max_count")
+		number("envelope.max_lease_hours", float64(e.MaxLeaseHours), float64(b.MaxLeaseHours), "envelope_default.max_lease_hours")
+		number("envelope.volume_max_gb", float64(e.VolumeMaxGB), float64(b.VolumeMaxGB), "envelope_default.volume_max_gb")
+	}
+	if s := p.Standing; s != nil {
+		b := d.Project().Standing
+		number("standing.monthly_eur", s.MonthlyEUR, b.MonthlyEUR, "project_default.standing.monthly_eur")
+		types("standing.server_types", s.ServerTypes, b.ServerTypes, "project_default.standing.server_types")
+		number("standing.max_count", float64(s.MaxCount), float64(b.MaxCount), "project_default.standing.max_count")
+	}
+	return errors.Join(errs...)
+}
+
+var quantityUnits = map[string]float64{"": 1, "m": 1e-3, "k": 1e3, "M": 1e6, "G": 1e9, "T": 1e12,
+	"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40}
+
+// quantityValue is a Quantity's value in base units; 0 for none.
+func quantityValue(q string) float64 {
+	m := quantity.FindStringSubmatch(q)
+	if m == nil {
+		return 0
+	}
+	n, _ := strconv.ParseFloat(strings.TrimSuffix(q, m[2]), 64)
+	return n * quantityUnits[m[2]]
 }
 
 // checkProjects: a repository and a namespace belong to one project each.

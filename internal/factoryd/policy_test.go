@@ -252,6 +252,29 @@ func TestPolicyLoader(t *testing.T) {
 	}
 }
 
+// Stricter wins: a project file looser than policy.yaml's bound is
+// rejected like any invalid tree and the version in force stays.
+func TestPolicyLoaderRejectsALooserProjectFile(t *testing.T) {
+	ctx := context.Background()
+	src := &memSource{}
+	rej := &rejections{}
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, Rejected: rej.raise}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	looser := testFiles(testPolicyYAML)
+	looser["projects/demo.yaml"] = []byte(policy.Header("projects/demo.yaml") +
+		"\nrepository: demo/demo\nmerge_rule: human\nobjects: factory\nagents: coder\nnamespaces: [demo]\nquota: {cpu: \"3\", memory: 4Gi, storage: 10Gi}\n")
+	src.push("c2", looser)
+	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), `project demo: quota.cpu "3" is looser than policy.yaml's project_default.quota.cpu "2"`) {
+		t.Fatalf("looser project = %v, want the quota refused", err)
+	}
+	if cur := l.Current(); cur.Commit != "c1" || !slices.Equal(rej.calls, []string{"c2 1 true"}) {
+		t.Fatalf("current = %s, rejections %v, want c1 kept and c2 raised", cur.Commit, rej.calls)
+	}
+}
+
 // Each valid head, once loaded, is settled (Loaded: the open rejections
 // close); a refused head settles nothing, and a failed settling is tried
 // again at the next poll.

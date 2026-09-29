@@ -84,7 +84,7 @@ func TestEnvelopeAndQuotaOf(t *testing.T) {
 		t.Fatalf("demo-app's envelope = %+v, want %+v", got, demo)
 	}
 	def := Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20,
-		Standing: Standing{ServerTypes: []string{}}}
+		Standing: Standing{MonthlyEUR: 5, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2}}
 	for _, repo := range []string{"sf/code", "nobody/else"} {
 		if got := tree.EnvelopeOf(repo); !reflect.DeepEqual(got, def) {
 			t.Fatalf("%s's envelope = %+v, want the default %+v", repo, got, def)
@@ -98,7 +98,7 @@ func TestEnvelopeAndQuotaOf(t *testing.T) {
 	if got := d.QuotaOf(tree.Projects["demo-app"]); got != (Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}) {
 		t.Fatalf("demo-app's quota = %+v", got)
 	}
-	if got := d.QuotaOf(tree.Projects["code"]); got != DefaultProject.Quota {
+	if got := d.QuotaOf(tree.Projects["code"]); got != (Quota{CPU: "4", Memory: "8Gi", Storage: "20Gi"}) {
 		t.Fatalf("code's quota = %+v", got)
 	}
 	if name, p, ok := tree.ProjectOf("sf/infra"); !ok || name != "infra" || p.Agents != AgentsNone {

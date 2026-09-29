@@ -167,6 +167,75 @@ func TestParseTreeRejects(t *testing.T) {
 	}
 }
 
+// A project file may only tighten what policy.yaml bounds (stricter
+// wins): each quota, envelope and standing value at most the policy's,
+// each server type one the policy lists; an equal value in other units
+// passes. The fixture's policy: project_default quota 4, 8Gi, 20Gi and
+// standing 5 EUR, cx23 and cx33, 2; envelope_default 10 EUR, cx23, 2
+// servers, 4 hours, 20 GB.
+func TestParseTreeStricterWins(t *testing.T) {
+	for name, tc := range map[string]struct{ old, new, want string }{
+		"quota cpu":            {`cpu: "2"`, `cpu: "8"`, `project demo-app: quota.cpu "8" is looser than policy.yaml's project_default.quota.cpu "4"`},
+		"quota cpu in milli":   {`cpu: "2"`, `cpu: 4001m`, `project demo-app: quota.cpu "4001m" is looser than policy.yaml's project_default.quota.cpu "4"`},
+		"quota memory":         {`memory: 4Gi`, `memory: 9Gi`, `project demo-app: quota.memory "9Gi" is looser than policy.yaml's project_default.quota.memory "8Gi"`},
+		"quota storage":        {`storage: 10Gi`, `storage: 21Gi`, `project demo-app: quota.storage "21Gi" is looser than policy.yaml's project_default.quota.storage "20Gi"`},
+		"envelope monthly":     {`envelope: {monthly_eur: 5`, `envelope: {monthly_eur: 11`, "project demo-app: envelope.monthly_eur 11 is looser than policy.yaml's envelope_default.monthly_eur 10"},
+		"envelope server type": {`server_types: [cx23], max_count: 1`, `server_types: [cx23, cx53], max_count: 1`, "project demo-app: envelope.server_types lists cx53, which policy.yaml's envelope_default.server_types does not"},
+		"envelope count":       {`max_count: 1, max_lease_hours`, `max_count: 3, max_lease_hours`, "project demo-app: envelope.max_count 3 is looser than policy.yaml's envelope_default.max_count 2"},
+		"envelope lease":       {`max_lease_hours: 2`, `max_lease_hours: 5`, "project demo-app: envelope.max_lease_hours 5 is looser than policy.yaml's envelope_default.max_lease_hours 4"},
+		"envelope volume":      {`volume_max_gb: 0`, `volume_max_gb: 30`, "project demo-app: envelope.volume_max_gb 30 is looser than policy.yaml's envelope_default.volume_max_gb 20"},
+		"standing monthly":     {`standing: {monthly_eur: 3`, `standing: {monthly_eur: 6`, "project demo-app: standing.monthly_eur 6 is looser than policy.yaml's project_default.standing.monthly_eur 5"},
+		"standing server type": {`server_types: [cx33]`, `server_types: [cx33, cpx51]`, "project demo-app: standing.server_types lists cpx51, which policy.yaml's project_default.standing.server_types does not"},
+		"standing count":       {`server_types: [cx33], max_count: 1`, `server_types: [cx33], max_count: 3`, "project demo-app: standing.max_count 3 is looser than policy.yaml's project_default.standing.max_count 2"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := fixtureTree(t)
+			f := string(files["projects/demo-app.yaml"])
+			if !strings.Contains(f, tc.old) {
+				t.Fatalf("demo-app.yaml lacks %s", tc.old)
+			}
+			files["projects/demo-app.yaml"] = []byte(strings.Replace(f, tc.old, tc.new, 1))
+			if _, err := ParseTree(files); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	for name, tc := range map[string]struct{ old, new string }{
+		"equal values":         {`quota: {cpu: "2", memory: 4Gi, storage: 10Gi}`, `quota: {cpu: "4", memory: 8Gi, storage: 20Gi}`},
+		"equal in other units": {`quota: {cpu: "2", memory: 4Gi, storage: 10Gi}`, `quota: {cpu: 4000m, memory: 8192Mi, storage: 20480Mi}`},
+		"the whole envelope":   {`envelope: {monthly_eur: 5, server_types: [cx23], max_count: 1, max_lease_hours: 2, volume_max_gb: 0}`, `envelope: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}`},
+		"the whole standing":   {`standing: {monthly_eur: 3, server_types: [cx33], max_count: 1}`, `standing: {monthly_eur: 5, server_types: [cx23, cx33], max_count: 2}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			files := fixtureTree(t)
+			f := string(files["projects/demo-app.yaml"])
+			if !strings.Contains(f, tc.old) {
+				t.Fatalf("demo-app.yaml lacks %s", tc.old)
+			}
+			files["projects/demo-app.yaml"] = []byte(strings.Replace(f, tc.old, tc.new, 1))
+			tree, err := ParseTree(files)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tree.Validate(); err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+		})
+	}
+	// a tree read back from Postgres is held to the same bound
+	files := fixtureTree(t)
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := tree.Projects["demo-app"]
+	p.Quota = &Quota{CPU: "5", Memory: "1Gi", Storage: "1Gi"}
+	tree.Projects["demo-app"] = p
+	if err := tree.Validate(); err == nil || !strings.Contains(err.Error(), `quota.cpu "5" is looser`) {
+		t.Fatalf("Validate = %v, want the looser quota refused", err)
+	}
+}
+
 // Limits' durations are strings in JSON, as in YAML: the stored tree, GET
 // /policy and the console show 20m0s, not nanoseconds.
 func TestLimitsJSON(t *testing.T) {
@@ -358,6 +427,11 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	}
 	if got := pol.Properties["limits"].Properties["agent_time"]; got.Type != "string" || got.Pattern == "" {
 		t.Errorf("agent_time = type %q pattern %q, want a duration string", got.Type, got.Pattern)
+	}
+	for key, bound := range map[string]string{"quota": "project_default.quota", "envelope": "envelope_default", "standing": "project_default.standing"} {
+		if d := project.Properties[key].Description; !strings.Contains(d, "Stricter wins: bounded by policy.yaml's "+bound) {
+			t.Errorf("project %s description = %q, want its bound marked", key, d)
+		}
 	}
 	if !strings.Contains(pol.Properties["limits"].Properties["sessions"].Description, "round cap") {
 		t.Errorf("sessions description = %q, want the field comment", pol.Properties["limits"].Properties["sessions"].Description)
