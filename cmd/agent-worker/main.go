@@ -617,7 +617,9 @@ var botIdentity = []string{
 }
 
 // stageWorkTree indexes the agent's work tree, starting from the agent's
-// HEAD tree, in the worker's repo and returns the tree ID.
+// HEAD tree, in the worker's repo and returns the tree ID. Scratch
+// reproduction tests stay out of the index, and a tree that holds nothing
+// else writes the agent's HEAD tree, so the caller pushes nothing.
 func stageWorkTree(own, agentRepo string, e workerEnv) (string, error) {
 	env := []string{"GIT_DIR=" + filepath.Join(own, ".git"), "GIT_WORK_TREE=" + agentRepo}
 	for _, args := range [][]string{{"read-tree", "refs/heads/agent"}, {"add", "-A"}} {
@@ -625,7 +627,32 @@ func stageWorkTree(own, agentRepo string, e workerEnv) (string, error) {
 			return "", err
 		}
 	}
+	if err := dropScratchReproTests(own, env, e); err != nil {
+		return "", err
+	}
 	return e.runGit(own, env, "write-tree")
+}
+
+// dropScratchReproTests removes every scratch reproduction test from the
+// staging index. The work guide asks an agent to write its reproduction as
+// zz_repro_*_test.go; that file is the agent's evidence, not the change, and
+// committing it copies a duplicate of a real test into the diff, as
+// internal/factoryd/zz_repro_unjudged_test.go did. The index, not the work
+// tree, is the commit's source, so the removal never touches the checkout.
+func dropScratchReproTests(own string, env []string, e workerEnv) error {
+	paths, err := e.runGit(own, env, "ls-files", "--", "*zz_repro_*_test.go", ":(glob)**/zz_repro_*_test.go")
+	if err != nil {
+		return err
+	}
+	for _, path := range strings.Split(paths, "\n") {
+		if path == "" {
+			continue
+		}
+		if _, err := e.runGit(own, env, "rm", "--cached", "-q", "--", path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func commitMessage(e workerEnv) string {
