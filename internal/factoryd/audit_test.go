@@ -41,6 +41,24 @@ const secretTestDiff = "diff --git a/internal/x/x_test.go b/internal/x/x_test.go
 	"+\t_ = password\n" +
 	" }\n"
 
+// Checklist item 4 names configuration files by path and leaves source code
+// that merely names policy or workflow types to the model review (#259's
+// audit flagged internal/policy/policy.go and internal/factoryd/workflow.go).
+func TestAuditPromptItemFourIsConfigurationFiles(t *testing.T) {
+	var item string
+	for _, line := range strings.Split(auditPrompt, "\n") {
+		if strings.HasPrefix(line, "4. ") {
+			item = line
+		}
+	}
+	for _, want := range []string{"factory/**", ".forgejo/**", ".github/**", "CODEOWNERS", "opencode.json", "AGENTS.md",
+		"Source code is not this item"} {
+		if !strings.Contains(item, want) {
+			t.Errorf("item 4 lacks %q: %q", want, item)
+		}
+	}
+}
+
 func TestParseAudit(t *testing.T) {
 	for name, tc := range map[string]struct {
 		in   string
