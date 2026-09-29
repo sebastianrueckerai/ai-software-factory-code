@@ -154,10 +154,11 @@ func historyLine(stage string, round, attempt int, finding string) string {
 }
 
 // sessionReturn keeps a session's findings in the stage memory under stage
-// "supervisor:<trip>", "session" for none (versionSessionCap): to the card
-// on the last attempt, else to the agent, where a redirect or no push
-// counts as the stage's return. stronger: the next session takes the
-// stronger rung.
+// "supervisor:<trip>", "session" for none (versionSessionCap): a
+// retry_stronger's to the stronger rung, on the last attempt too, so a new
+// run starts there (Reconcile's Climbed); else to the card on the last
+// attempt, else to the agent, where a redirect or no push counts as the
+// stage's return. stronger: the next session takes the stronger rung.
 func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stronger bool) {
 	stage := "session"
 	if res.Trip != "" {
@@ -165,10 +166,10 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 	}
 	to := "agent"
 	switch {
-	case last:
-		to = "card"
 	case res.Outcome == OutcomeRetryStronger:
 		to = "stronger"
+	case last:
+		to = "card"
 	}
 	t.remember(stage, attempt, res.Findings)
 	t.recordFindings(stage, to, attempt, res.Findings)

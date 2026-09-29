@@ -384,7 +384,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 			to = append(to, fmt.Sprintf("%s>%s", r.detail["stage"], r.detail["to"]))
 		}
 	}
-	if want := []string{"supervisor:repetition>agent", "session>agent", "supervisor:half_way>card"}; !slices.Equal(to, want) {
+	if want := []string{"supervisor:repetition>agent", "session>agent", "supervisor:half_way>stronger"}; !slices.Equal(to, want) {
 		t.Fatalf("stage_findings = %v, want %v", to, want)
 	}
 	if last := h.usage[len(h.usage)-1]; last != (TaskUsage{Attempts: 4, ExtraAttempts: 1}) {
@@ -512,6 +512,28 @@ func TestWorkflowNewRunKeepsTheRung(t *testing.T) {
 		if final := h.run(t); final != "done" || h.sessions[0].Model != c.want {
 			t.Fatalf("%s: final %q on %s, want done on %s", c.name, final, h.sessions[0].Model, c.want)
 		}
+	}
+}
+
+// A retry_stronger on the last attempt is recorded "stronger", so a new
+// run after a restart at the card starts on the rung it climbed to.
+func TestWorkflowRetryStrongerOnTheLastAttemptIsRecordedStronger(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Trip: "half_way", Findings: []string{"f3"}})
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	var to []string
+	for _, r := range h.recorded {
+		if r.step == "stage_findings" {
+			to = append(to, fmt.Sprintf("%s>%s", r.detail["stage"], r.detail["to"]))
+		}
+	}
+	if want := []string{"supervisor:half_way>stronger"}; !slices.Equal(to, want) {
+		t.Fatalf("stage_findings = %v, want %v", to, want)
 	}
 }
 
