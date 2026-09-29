@@ -892,6 +892,53 @@ func TestMainPushedMakesDeploy(t *testing.T) {
 	}
 }
 
+// Item 69: a Forgejo rebuilt without its git storage keeps deploy's
+// protection but not the branch, and Forgejo refuses to create a branch
+// its protection covers. That is no failure: roll.sh starts deploy on the
+// next roll, and the steps after the branch (fork, labels, deploy key,
+// FACTORY_READ_TOKEN, FACTORY_SSH_HOST_KEY) still run.
+func TestReconcileGoesOnWhenDeployProtectionRefusesTheBranch(t *testing.T) {
+	rig := newRegisterRig(t)
+	key := "ssh-ed25519 AAAAone"
+	rig.reg.HostKey = func(context.Context) (string, error) { return key, nil }
+	rig.fj.branches["main"] = "c0ffee"
+	ctx := context.Background()
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rig.fj.protection["deploy"] == nil {
+		t.Fatal("no deploy protection after the first run")
+	}
+	delete(rig.fj.branches, "deploy")
+	key = "ssh-ed25519 AAAAtwo"
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
+		t.Fatalf("Reconcile = %v\n%s", err, rig.logs)
+	}
+	got := rig.logs.String()
+	for _, want := range []string{
+		"project demo-app: branch deploy: missing: its protection refuses the create; the next roll starts it\n",
+		"project demo-app: protection deploy: no change\n",
+		"project demo-app: fork factory-agent/demo-app: ready\n",
+		"project demo-app: labels: no change\n",
+		"project demo-app: deploy key: no change\n",
+		"project demo-app: actions secret FACTORY_READ_TOKEN: no change\n",
+		"project demo-app: actions secret FACTORY_SSH_HOST_KEY: updated\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("log lacks %q:\n%s", want, got)
+		}
+	}
+	if rig.fj.secrets["FACTORY_SSH_HOST_KEY"] != key {
+		t.Fatalf("FACTORY_SSH_HOST_KEY = %q, want %q", rig.fj.secrets["FACTORY_SSH_HOST_KEY"], key)
+	}
+	// the protection step ran on deploy: the NoMain skip would log waiting
+	if strings.Contains(got, "project demo-app: protection deploy: "+string(NoMain)+"\n") {
+		t.Errorf("the protection step skipped deploy as NoMain:\n%s", got)
+	}
+}
+
 // Ruling 179: a seed project's reconcile keeps the labels and (agents
 // coder) the bot's fork as the bot, reads the webhook with the project's
 // read token and each namespace's factory/project label, reports them, and

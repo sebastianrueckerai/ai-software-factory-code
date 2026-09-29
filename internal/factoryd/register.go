@@ -292,12 +292,19 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 		{"protection main", func() (Change, error) {
 			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser))
 		}},
+		// Forgejo refuses to create a branch its protection covers, even from
+		// the API; roll.sh starts a missing deploy with the deploy key
 		{"branch " + DeployBranch, func() (Change, error) {
 			c, err := f.EnsureBranchFrom(ctx, repo, DeployBranch, "main")
 			deploy = c != NoMain
+			if err != nil {
+				if _, covered, perr := f.ProjectBranchProtection(ctx, repo, DeployBranch); perr == nil && covered {
+					deploy = true // the protection stays and must be kept; roll.sh starts the branch
+					return "missing: its protection refuses the create; the next roll starts it", nil
+				}
+			}
 			return c, err
 		}},
-		// Forgejo refuses to create a branch its protection covers, even from the API
 		{"protection " + DeployBranch, func() (Change, error) {
 			if !deploy {
 				return NoMain, nil
