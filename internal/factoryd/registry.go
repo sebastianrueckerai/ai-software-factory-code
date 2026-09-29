@@ -110,9 +110,12 @@ func (r *Registry) get(ctx context.Context, path string, auth func(*http.Request
 		return nil, fmt.Errorf("registry GET %s: %w", path, err)
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxForgejoAnswer+1))
 	if err != nil {
 		return nil, fmt.Errorf("registry GET %s: %w", path, err)
+	}
+	if len(body) > maxForgejoAnswer {
+		return nil, fmt.Errorf("registry GET %s: the answer is longer than 1 MiB", path)
 	}
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("registry GET %s: status %d", path, res.StatusCode)

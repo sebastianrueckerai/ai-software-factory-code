@@ -182,6 +182,9 @@ func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byt
 	})
 }
 
+// maxForgejoAnswer bounds a Forgejo answer factoryd reads.
+const maxForgejoAnswer = 1 << 20
+
 // anySuccess as do's wantStatus admits every 2xx answer.
 const anySuccess = 0
 
@@ -208,9 +211,12 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxForgejoAnswer+1))
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
+	}
+	if len(body) > maxForgejoAnswer {
+		return nil, fmt.Errorf("forgejo %s %s: the answer is longer than 1 MiB", method, path)
 	}
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
@@ -443,8 +449,13 @@ type ActionRun struct {
 func (r ActionRun) Finished() bool { return doneStatus(r.Status) }
 
 // ActionRuns reads owner/repo's actions/runs, newest first, filtered by
-// query (page, limit, event, head_sha, ...).
+// query (page, limit, event, head_sha, ...). Forgejo 15 honours limit only
+// with a page, so page 1 is asked when query names none.
 func (f *Forgejo) ActionRuns(ctx context.Context, owner, repo string, query url.Values) ([]ActionRun, error) {
+	if query.Get("page") == "" {
+		query = maps.Clone(query)
+		query.Set("page", "1")
+	}
 	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs?%s", owner, repo, query.Encode()), nil, http.StatusOK)
 	if err != nil {
 		return nil, err

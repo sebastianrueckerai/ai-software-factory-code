@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"sort"
 	"strconv"
@@ -950,5 +951,39 @@ func TestForgejoMergePullRequest(t *testing.T) {
 	status = http.StatusBadGateway
 	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); err == nil || errors.Is(err, ErrRefused) {
 		t.Fatalf("merge answered 502 = %v, want a transient error", err)
+	}
+}
+
+// Forgejo 15 ignores actions/runs' limit without a page and answers every
+// run with its event payload (live: 247 runs, 2.7 MB, which cut at the
+// 1 MiB read broke the roller's JSON): ActionRuns always asks for a page.
+func TestActionRunsAlwaysAsksForAPage(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.URL.Query().Encode())
+		io.WriteString(w, `{"workflow_runs":[]}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
+	for _, q := range []url.Values{{"event": {"push"}, "limit": {"20"}}, {"limit": {"50"}, "page": {"3"}}} {
+		if _, err := f.ActionRuns(context.Background(), "sf", "r", q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"event=push&limit=20&page=1", "limit=50&page=3"}; !slices.Equal(got, want) {
+		t.Fatalf("queries %q, want %q", got, want)
+	}
+}
+
+// An answer longer than the read limit is an error that says so, not a
+// cut body a decoder fails on.
+func TestForgejoRefusesAnAnswerPastItsReadLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"workflow_runs":[`+strings.Repeat(" ", 1<<20)+`]}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
+	if _, err := f.ActionRuns(context.Background(), "sf", "r", url.Values{"page": {"1"}}); err == nil || !strings.Contains(err.Error(), "longer than 1 MiB") {
+		t.Fatalf("err %v", err)
 	}
 }
