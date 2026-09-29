@@ -1461,6 +1461,20 @@ func objGet(s *fakeObjectStore, key string) []byte {
 	return b
 }
 
+func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T) {
+	done := &harness.Result{Success: true, Summary: "no changes to push"}
+	// resumed from the work in progress a stop pushed: that work is the result
+	res := sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main"}, sessionOutcome{result: done})
+	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push; the branch already held wip" {
+		t.Fatalf("resumed session without new changes: %+v", res)
+	}
+	// started at the base and changed nothing: no push
+	res = sessionResult(sessionSpec{id: "s1", startRef: "main", base: "main"}, sessionOutcome{result: done})
+	if res.Outcome != OutcomeNoPush || res.Commit != "" {
+		t.Fatalf("first session without changes: %+v", res)
+	}
+}
+
 func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
 	s := sessionSpec{id: "s1"}
 	trip := &Trip{Kind: TripSameFailure, Detail: "x", Findings: []string{"ran y"}}

@@ -293,7 +293,10 @@ type sessionSpec struct {
 	posterInfo []string
 	model      string
 	startRef   string
-	repo       Repo
+	// base is the task's base commit: a session resumed from pushed work in
+	// progress starts past it
+	base string
+	repo Repo
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
 	// report is a report session's guide (ruling 185); "" for a coding

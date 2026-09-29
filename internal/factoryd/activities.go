@@ -250,7 +250,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, base: t.SHA}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, err
 	}
@@ -352,6 +352,13 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	// stop raced its finish
 	if out.result != nil && out.result.Success && out.commit != "" {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, out.commit, out.result.Summary
+		res.Findings = out.findings
+		return res
+	}
+	// a session that finished with nothing new on top of the work in
+	// progress an earlier stop pushed: that work is its result
+	if out.result != nil && out.result.Success && out.commit == "" && s.startRef != "" && s.startRef != s.base {
+		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
 		res.Findings = out.findings
 		return res
 	}
