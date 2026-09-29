@@ -1,12 +1,15 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -21,6 +24,7 @@ budget:
   task_default_eur: 2
   task_max_eur: 5
   day_eur: 20
+limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 classes:
   coder:
     models: [coding-cheap, coding-frontier]
@@ -41,7 +45,35 @@ risk:
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
-// memPolicy is the in-memory PolicyStore: versions keyed by sha, in order.
+const testWorkflowYAML = `stages:
+  - {name: checks, on_findings: agent, enabled: true}
+  - {name: policy, on_findings: fail, enabled: true}
+  - {name: review, on_findings: agent, enabled: true}
+  - {name: approval, on_findings: human, enabled: true}
+  - {name: merge, on_findings: human, enabled: true}
+`
+
+// testFiles is a configuration tree with policyYAML as its policy.yaml.
+func testFiles(policyYAML string) map[string][]byte {
+	return map[string][]byte{
+		"policy.yaml":   []byte(policy.Header("policy.yaml") + "\n" + policyYAML),
+		"workflow.yaml": []byte(policy.Header("workflow.yaml") + "\n" + testWorkflowYAML),
+		"projects/ai-software-factory-infra.yaml": []byte(policy.Header("projects/ai-software-factory-infra.yaml") +
+			"\nrepository: sf/ai-software-factory-infra\nmerge_rule: human\nobjects: seed\nagents: none\n"),
+	}
+}
+
+// testTree is testFiles(policyYAML) parsed; it panics on an invalid one.
+func testTree(policyYAML string) policy.Tree {
+	t, err := policy.ParseTree(testFiles(policyYAML))
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+// memPolicy is the in-memory PolicyStore: versions keyed by commit, in
+// order.
 type memPolicy struct {
 	mu       sync.Mutex
 	versions []policy.Version
@@ -58,17 +90,17 @@ func (m *memPolicy) SweepHolds(context.Context) (int, error) {
 	return 0, nil
 }
 
-func (m *memPolicy) RecordPolicy(_ context.Context, sha string, doc policy.Document) (policy.Version, bool, error) {
+func (m *memPolicy) RecordPolicy(_ context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.records++
 	for _, v := range m.versions {
-		if v.SHA256 == sha {
+		if v.Commit == commit {
 			m.current = v.ID
 			return v, false, nil
 		}
 	}
-	v := policy.Version{ID: int64(len(m.versions) + 1), SHA256: sha, Document: doc, LoadedAt: time.Now()}
+	v := policy.Version{ID: int64(len(m.versions) + 1), Commit: commit, Tree: tree, LoadedAt: time.Now()}
 	m.versions = append(m.versions, v)
 	m.current = v.ID
 	return v, true, nil
@@ -83,6 +115,15 @@ func (m *memPolicy) CurrentPolicy(context.Context) (policy.Version, bool, error)
 	return m.versions[m.current-1], true, nil
 }
 
+func (m *memPolicy) PolicyVersion(_ context.Context, id int64) (policy.Version, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id < 1 || id > int64(len(m.versions)) {
+		return policy.Version{}, false, nil
+	}
+	return m.versions[id-1], true, nil
+}
+
 func (m *memPolicy) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -90,70 +131,145 @@ func (m *memPolicy) Costs(_ context.Context, from, to time.Time) (policy.Costs, 
 	return policy.Costs{From: from.Format(policy.DateLayout), To: to.Format(policy.DateLayout)}, nil
 }
 
-func writePolicy(t *testing.T, path, content string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
+// memSource is a branch of commits of the configuration tree; failing
+// makes every read fail, as an unreachable Forgejo would.
+type memSource struct {
+	mu      sync.Mutex
+	head    string
+	commits map[string]map[string][]byte
+	failing bool
+	reads   int
+}
+
+func (s *memSource) push(commit string, files map[string][]byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.commits == nil {
+		s.commits = map[string]map[string][]byte{}
 	}
+	s.head, s.commits[commit] = commit, files
+}
+
+func (s *memSource) Head(context.Context) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failing || s.head == "" {
+		return "", errors.New("forgejo unreachable")
+	}
+	return s.head, nil
+}
+
+func (s *memSource) Files(_ context.Context, commit string) (map[string][]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reads++
+	if s.failing {
+		return nil, errors.New("forgejo unreachable")
+	}
+	return maps.Clone(s.commits[commit]), nil
+}
+
+// rejections records PolicyLoader.Rejected's calls; fail makes them fail.
+type rejections struct {
+	calls []string // "commit current-id"
+	fail  error
+}
+
+func (r *rejections) raise(_ context.Context, commit string, reason error, current policy.Version, loaded bool) error {
+	r.calls = append(r.calls, fmt.Sprintf("%s %d %v", commit, current.ID, loaded))
+	return r.fail
 }
 
 func TestPolicyLoader(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "policy.yaml")
+	src := &memSource{}
 	store := &memPolicy{}
-	l := &PolicyLoader{Path: path, Store: store}
+	rej := &rejections{}
+	l := &PolicyLoader{Source: src, Store: store, Rejected: rej.raise}
 
-	writePolicy(t, path, testPolicyYAML)
+	src.push("c1", testFiles(testPolicyYAML))
 	if err := l.Boot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 1 || cur.Document.Budget.DayEUR != 20 {
-		t.Fatalf("after boot current = %+v, want version 1", cur)
+	if cur := l.Current(); cur.ID != 1 || cur.Commit != "c1" || cur.Document.Budget.DayEUR != 20 || cur.Projects["ai-software-factory-infra"].Agents != policy.AgentsNone {
+		t.Fatalf("after boot current = %+v, want version 1 of commit c1", cur)
 	}
 
-	// same content: no-op, the store is not even asked
-	if err := l.Load(ctx); err != nil || store.records != 1 {
-		t.Fatalf("reload of the same content = %v with %d records, want nil with 1", err, store.records)
+	// the same head: no-op, the files are not even read
+	if err := l.Load(ctx); err != nil || store.records != 1 || src.reads != 1 {
+		t.Fatalf("reload of the same head = %v with %d records after %d reads, want nil with 1 after 1", err, store.records, src.reads)
 	}
 
-	// new content: a new version, current
-	writePolicy(t, path, strings.Replace(testPolicyYAML, "day_eur: 20", "day_eur: 7", 1))
+	// a new commit: a new version, current
+	src.push("c2", testFiles(strings.Replace(testPolicyYAML, "day_eur: 20", "day_eur: 7", 1)))
 	if err := l.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 2 || cur.Document.Budget.DayEUR != 7 {
-		t.Fatalf("after edit current = %+v, want version 2 with day_eur 7", cur)
+	if cur := l.Current(); cur.ID != 2 || cur.Commit != "c2" || cur.Document.Budget.DayEUR != 7 {
+		t.Fatalf("after a push current = %+v, want version 2 with day_eur 7", cur)
 	}
 
-	// invalid content: rejected, version 2 stays current, and not retried
-	writePolicy(t, path, testPolicyYAML+"surprise: true\n")
-	if err := l.Load(ctx); err == nil {
-		t.Fatal("invalid policy loaded")
+	// Forgejo unreachable: nothing changes, nothing is raised
+	src.failing = true
+	if err := l.Load(ctx); err == nil || l.Current().ID != 2 || len(rej.calls) != 0 {
+		t.Fatalf("unreachable source = %v, current %d, %d rejections", err, l.Current().ID, len(rej.calls))
 	}
-	if cur := l.Current(); cur.ID != 2 {
-		t.Fatalf("after invalid edit current = %d, want 2", cur.ID)
+	src.failing = false
+
+	// an invalid tree: rejected and raised, version 2 stays current
+	bad := testFiles(testPolicyYAML)
+	bad["workflow.yaml"] = []byte(strings.Replace(string(bad["workflow.yaml"]), "on_findings: fail", "on_findings: maybe", 1))
+	src.push("c3", bad)
+	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), `on_findings "maybe"`) {
+		t.Fatalf("invalid tree = %v, want the on_findings reason", err)
 	}
-	if err := l.Load(ctx); err != nil || store.records != 2 {
-		t.Fatalf("second look at the same invalid content = %v with %d records, want nil with 2", err, store.records)
+	if cur := l.Current(); cur.ID != 2 || !slices.Equal(rej.calls, []string{"c3 2 true"}) {
+		t.Fatalf("after a bad push current = %d, rejections %v, want 2 and [c3 2 true]", cur.ID, rej.calls)
+	}
+	// the same bad head again: neither read nor raised twice
+	reads := src.reads
+	if err := l.Load(ctx); err != nil || src.reads != reads || len(rej.calls) != 1 || store.records != 2 {
+		t.Fatalf("second look at the bad head = %v, %d reads, %d rejections, %d records", err, src.reads-reads, len(rej.calls), store.records)
 	}
 
-	// revert: the known version is current again, no new row
-	writePolicy(t, path, testPolicyYAML)
+	// the fix loads
+	src.push("c4", testFiles(testPolicyYAML))
 	if err := l.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 1 || len(store.versions) != 2 {
-		t.Fatalf("after revert current = %d with %d versions, want 1 with 2", cur.ID, len(store.versions))
+	if cur := l.Current(); cur.ID != 3 || cur.Commit != "c4" {
+		t.Fatalf("after the fix current = %+v, want version 3 of c4", cur)
 	}
 
-	// a restart with an invalid file keeps the stored current version
-	writePolicy(t, path, "version: 2\n")
-	restarted := &PolicyLoader{Path: path, Store: store}
+	// a restart on a bad head keeps the stored current version
+	src.push("c5", bad)
+	restarted := &PolicyLoader{Source: src, Store: store, Rejected: rej.raise}
 	if err := restarted.Boot(ctx); err != nil {
-		t.Fatalf("boot with a stored version and an invalid file = %v, want nil", err)
+		t.Fatalf("boot with a stored version and a bad head = %v, want nil", err)
 	}
-	if cur := restarted.Current(); cur.ID != 1 {
-		t.Fatalf("restarted current = %d, want 1", cur.ID)
+	if cur := restarted.Current(); cur.ID != 3 || rej.calls[len(rej.calls)-1] != "c5 3 true" {
+		t.Fatalf("restarted current = %d, rejections %v", cur.ID, rej.calls)
+	}
+}
+
+// A rejection that cannot be raised is raised again at the next poll.
+func TestPolicyLoaderRaisesUntilItSucceeds(t *testing.T) {
+	ctx := context.Background()
+	src := &memSource{}
+	rej := &rejections{fail: errors.New("forgejo down")}
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, Rejected: rej.raise}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	src.push("c2", testFiles("version: 1\n"))
+	l.Load(ctx) // #nosec G104 -- the rejection is the point
+	l.Load(ctx) // #nosec G104
+	rej.fail = nil
+	l.Load(ctx) // #nosec G104
+	l.Load(ctx) // #nosec G104
+	if !slices.Equal(rej.calls, []string{"c2 1 true", "c2 1 true", "c2 1 true"}) {
+		t.Fatalf("rejections = %v, want three tries until one succeeds", rej.calls)
 	}
 }
 
@@ -161,71 +277,71 @@ func TestPolicyLoader(t *testing.T) {
 // ladder's next rung would be refused mid-task.
 func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "policy.yaml")
+	src := &memSource{}
 	store := &memPolicy{}
 	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}
 	if got := ladder.Aliases(); !slices.Equal(got, []string{"coding-cheap", "coding-frontier"}) {
 		t.Fatalf("aliases = %v", got)
 	}
-	l := &PolicyLoader{Path: path, Store: store, LadderModels: ladder.Aliases()}
+	l := &PolicyLoader{Source: src, Store: store, LadderModels: ladder.Aliases()}
 	narrow := strings.Replace(testPolicyYAML, "[coding-cheap, coding-frontier]", "[coding-cheap]", 1)
 
 	// the only valid version leaves out a rung: no boot
-	writePolicy(t, path, narrow)
+	src.push("narrow", testFiles(narrow))
 	if err := l.Boot(ctx); err == nil || store.records != 0 {
 		t.Fatalf("boot with a policy that drops coding-frontier = %v after %d records, want a refusal", err, store.records)
 	}
-	writePolicy(t, path, testPolicyYAML)
+	src.push("wide", testFiles(testPolicyYAML))
+	l = &PolicyLoader{Source: src, Store: store, LadderModels: ladder.Aliases()}
 	if err := l.Boot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// a later edit that drops a rung is rejected, version 1 stays
-	writePolicy(t, path, narrow)
+	// a later push that drops a rung is rejected, version 1 stays
+	src.push("narrow-2", testFiles(narrow))
 	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), "coding-frontier") || l.Current().ID != 1 {
-		t.Fatalf("edit dropping a rung = %v with version %d current, want a rejection with 1", err, l.Current().ID)
+		t.Fatalf("push dropping a rung = %v with version %d current, want a rejection with 1", err, l.Current().ID)
 	}
 	// a stored version that drops a rung does not count as valid at boot
-	store.RecordPolicy(ctx, "narrow", func() policy.Document { d, _ := policy.Parse([]byte(narrow)); return d }()) // #nosec G104 -- the fake never fails
-	restarted := &PolicyLoader{Path: path, Store: store, LadderModels: ladder.Aliases()}
+	store.RecordPolicy(ctx, "narrow-stored", testTree(narrow)) // #nosec G104 -- the fake never fails
+	restarted := &PolicyLoader{Source: src, Store: store, LadderModels: ladder.Aliases()}
 	if err := restarted.Boot(ctx); err == nil {
-		t.Fatal("boot with only a stored narrow version and a narrow file succeeded")
+		t.Fatal("boot with only a stored narrow version and a narrow head succeeded")
 	}
 }
 
-// A stored version from before the risk section is no valid version: the
-// file's version replaces it at boot, and without a valid file the boot
-// is refused.
+// A stored version from before the tree (a policy file's document) is no
+// valid version: the head's tree replaces it at boot, and without a valid
+// head the boot is refused.
 func TestPolicyLoaderBootRevalidatesTheStoredVersion(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "policy.yaml")
+	src := &memSource{}
 	store := &memPolicy{}
-	old, _ := policy.Parse([]byte(testPolicyYAML))
-	old.Risk = policy.Risk{}
-	store.RecordPolicy(ctx, "before-risk", old) // #nosec G104 -- the fake never fails
-	writePolicy(t, path, "version: 2\n")
-	if err := (&PolicyLoader{Path: path, Store: store}).Boot(ctx); err == nil {
-		t.Fatal("boot with only a stored version without risk rules succeeded")
+	old := testTree(testPolicyYAML)
+	old.Workflow = policy.Workflow{}
+	store.RecordPolicy(ctx, "before-the-tree", old) // #nosec G104 -- the fake never fails
+	src.push("bad", testFiles("version: 2\n"))
+	if err := (&PolicyLoader{Source: src, Store: store}).Boot(ctx); err == nil {
+		t.Fatal("boot with only a stored version without a workflow succeeded")
 	}
-	writePolicy(t, path, testPolicyYAML)
-	l := &PolicyLoader{Path: path, Store: store}
+	src.push("good", testFiles(testPolicyYAML))
+	l := &PolicyLoader{Source: src, Store: store}
 	if err := l.Boot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 2 || cur.Document.Risk.Default != "normal" {
-		t.Fatalf("current = %d with risk %+v, want version 2 with the file's risk rules", cur.ID, cur.Document.Risk)
+	if cur := l.Current(); cur.ID != 2 || len(cur.Workflow.Stages) != 5 {
+		t.Fatalf("current = %d with %d stages, want version 2 with the head's workflow", cur.ID, len(cur.Workflow.Stages))
 	}
 }
 
 func TestPolicyLoaderBootNeedsAValidVersion(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "policy.yaml")
-	if err := (&PolicyLoader{Path: path, Store: &memPolicy{}}).Boot(ctx); err == nil {
-		t.Fatal("boot without a file and without a stored version succeeded")
+	if err := (&PolicyLoader{Source: &memSource{}, Store: &memPolicy{}}).Boot(ctx); err == nil {
+		t.Fatal("boot without a readable head and without a stored version succeeded")
 	}
-	writePolicy(t, path, "version: 1\n")
-	if err := (&PolicyLoader{Path: path, Store: &memPolicy{}}).Boot(ctx); err == nil {
-		t.Fatal("boot with an invalid file and without a stored version succeeded")
+	src := &memSource{}
+	src.push("c1", testFiles("version: 1\n"))
+	if err := (&PolicyLoader{Source: src, Store: &memPolicy{}}).Boot(ctx); err == nil {
+		t.Fatal("boot with an invalid head and without a stored version succeeded")
 	}
 }
 
@@ -236,18 +352,17 @@ func TestPolicyHandler(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("without a version = %d, want 503", rr.Code)
 	}
-	doc, _ := policy.Parse([]byte(testPolicyYAML))
-	store.RecordPolicy(context.Background(), "abc", doc) // #nosec G104 -- the fake never fails
+	store.RecordPolicy(context.Background(), "abc", testTree(testPolicyYAML)) // #nosec G104 -- the fake never fails
 	rr = httptest.NewRecorder()
 	PolicyHandler(store)(rr, httptest.NewRequest("GET", "/policy", nil))
 	var got policy.Version
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || rr.Code != http.StatusOK {
 		t.Fatalf("GET /policy = %d %s", rr.Code, rr.Body.String())
 	}
-	if got.ID != 1 || got.SHA256 != "abc" || got.Document.Budget.TaskMaxEUR != 5 || got.LoadedAt.IsZero() {
+	if got.ID != 1 || got.Commit != "abc" || got.Document.Budget.TaskMaxEUR != 5 || len(got.Workflow.Stages) != 5 || got.LoadedAt.IsZero() {
 		t.Fatalf("GET /policy = %+v", got)
 	}
-	for _, key := range []string{`"id"`, `"sha256"`, `"loaded_at"`, `"activated_at"`, `"document"`, `"task_default_eur"`, `"coder"`} {
+	for _, key := range []string{`"id"`, `"commit"`, `"loaded_at"`, `"activated_at"`, `"policy"`, `"projects"`, `"workflow"`, `"task_default_eur"`, `"coder"`} {
 		if !strings.Contains(rr.Body.String(), key) {
 			t.Fatalf("GET /policy body lacks %s: %s", key, rr.Body.String())
 		}
@@ -284,5 +399,135 @@ func TestCostsHandler(t *testing.T) {
 		if len(store.costs) != 1 || store.costs[0][0].Format(policy.DateLayout) != tc.wantFrom || store.costs[0][1].Format(policy.DateLayout) != tc.wantTo {
 			t.Fatalf("GET /costs%s asked the store for %v, want %s..%s", tc.query, store.costs, tc.wantFrom, tc.wantTo)
 		}
+	}
+}
+
+// infraForgejo is sf/ai-software-factory-infra: main at commit c9 with
+// factory/ (policy.yaml, workflow.yaml, projects/, schema/) next to k8s/,
+// readable with the config token only; issues filed by the bot.
+func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgejo) {
+	t.Helper()
+	fj := &alertForgejo{labels: map[int64][]string{}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fj.mu.Lock()
+		defer fj.mu.Unlock()
+		const repo = "/api/v1/repos/sf/ai-software-factory-infra"
+		path := strings.TrimPrefix(r.URL.Path, repo+"/")
+		if r.Method == http.MethodGet {
+			if r.Header.Get("Authorization") != "token cfg-tok" {
+				t.Errorf("GET %s without the config token", r.URL.Path)
+			}
+			switch {
+			case path == "branches/main":
+				io.WriteString(w, `{"commit":{"id":"c9"}}`)
+			case path == "git/trees/c9" && r.URL.Query().Get("recursive") == "false":
+				io.WriteString(w, `{"total_count":3,"tree":[{"path":"README.md","type":"blob","sha":"r"},{"path":"factory","type":"tree","sha":"f1"},{"path":"k8s","type":"tree","sha":"k"}]}`)
+			case path == "git/trees/f1" && r.URL.Query().Get("recursive") == "true":
+				var entries []string
+				for _, name := range []string{"policy.yaml", "projects", "projects/ai-software-factory-infra.yaml", "schema", "schema/policy.schema.json", "workflow.yaml"} {
+					typ := "blob"
+					if !strings.Contains(name, ".") {
+						typ = "tree"
+					}
+					entries = append(entries, fmt.Sprintf(`{"path":%q,"type":%q,"sha":"x"}`, name, typ))
+				}
+				fmt.Fprintf(w, `{"total_count":%d,"tree":[%s]}`, len(entries), strings.Join(entries, ","))
+			case strings.HasPrefix(path, "raw/factory/") && r.URL.Query().Get("ref") == "c9":
+				b, ok := files[strings.TrimPrefix(path, "raw/factory/")]
+				if !ok {
+					t.Errorf("read of %s", path)
+					http.NotFound(w, r)
+				}
+				w.Write(b)
+			default:
+				t.Errorf("unexpected GET %s", r.URL)
+				http.NotFound(w, r)
+			}
+			return
+		}
+		if u, p, ok := r.BasicAuth(); !ok || u != "factory-agent" || p != "bot-pw" {
+			t.Errorf("%s %s not as the bot", r.Method, r.URL.Path)
+		}
+		var n int64
+		switch {
+		case r.Method == http.MethodPost && path == "issues":
+			var in struct{ Title, Body string }
+			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			fj.issues = append(fj.issues, in.Title+"\n\n"+in.Body)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"number":%d}`, 40+len(fj.issues))
+		case r.Method == http.MethodPut && fmtScan(path, "issues/%d/labels", &n):
+			var in struct{ Labels []string }
+			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			fj.labels[n] = in.Labels
+			io.WriteString(w, `[]`)
+		default:
+			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusTeapot)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, PublicURL: "https://git.example", BotUser: "factory-agent", BotPassword: "bot-pw"}, fj
+}
+
+// The source reads the head of main and factory/'s files at it with the
+// config token, the schema directory left out.
+func TestForgejoConfigSource(t *testing.T) {
+	want := testFiles(testPolicyYAML)
+	forgejo, _ := infraForgejo(t, want)
+	src := &ForgejoConfig{Forgejo: forgejo, Token: "cfg-tok", Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Branch: "main", Dir: "factory"}
+	ctx := context.Background()
+	head, err := src.Head(ctx)
+	if err != nil || head != "c9" {
+		t.Fatalf("Head = %q, %v", head, err)
+	}
+	got, err := src.Files(ctx, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.EqualFunc(got, want, bytes.Equal) {
+		t.Fatalf("Files = %v, want %v", slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
+	}
+}
+
+// A refused commit files one human-lane issue on the infra repository and
+// one alerts row, however often it is raised.
+func TestConfigAlarm(t *testing.T) {
+	forgejo, fj := infraForgejo(t, nil)
+	store := newFakeStore()
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory"}
+	ctx := context.Background()
+	reason := errors.New("workflow.yaml: workflow: stage policy: on_findings \"maybe\", want one of [agent human fail]")
+	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
+	for range 2 {
+		if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", reason, current, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("issues = %d, want 1", len(fj.issues))
+	}
+	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected\n\n", "commit c9c9c9c9c9c9c9c9 (https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory)",
+		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
+		if !strings.Contains(fj.issues[0], want) {
+			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
+		}
+	}
+	if got := fj.labels[41]; !slices.Equal(got, []string{"human", "state/waiting-human"}) {
+		t.Errorf("labels = %v", got)
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(store.tasks))
+	}
+	var task Task
+	for _, task = range store.tasks {
+	}
+	if task.Kind != "human" || task.Status != "waiting-human" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 ||
+		task.Source != SourceConfig || len(task.RequiredCapabilities) != 0 {
+		t.Fatalf("task = %+v", task)
+	}
+	a, ok, _ := store.AlertByFingerprint(ctx, AlertConfigRejected, "c9c9c9c9c9c9c9c9")
+	if !ok || a.TaskID != task.ID || a.Verdict != VerdictReal || a.Detail["issue"] != int64(41) || a.Detail["current"] != int64(12) {
+		t.Fatalf("alert = %+v, %v", a, ok)
 	}
 }

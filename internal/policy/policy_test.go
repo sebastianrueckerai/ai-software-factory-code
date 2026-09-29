@@ -15,6 +15,7 @@ import (
 
 const valid = `
 version: 1
+limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 budget:
   task_default_eur: 2
   task_max_eur: 5
@@ -79,7 +80,7 @@ func TestParseRejects(t *testing.T) {
 		"negative day cap":    {strings.Replace(valid, "day_eur: 20", "day_eur: -1", 1), "must not be negative"},
 		"zero task max":       {strings.Replace(valid, "task_max_eur: 5", "task_max_eur: 0", 1), "must be positive"},
 		"default above max":   {strings.Replace(valid, "task_default_eur: 2", "task_default_eur: 6", 1), "exceeds task_max_eur"},
-		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\n", "no capability classes"},
+		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\nlimits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}\n", "no capability classes"},
 		"class no models":     {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
 		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
@@ -109,6 +110,7 @@ func TestParseRejects(t *testing.T) {
 
 const withTools = `
 version: 1
+limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
 classes:
   coder:
@@ -365,6 +367,7 @@ func TestAllowsModel(t *testing.T) {
 
 const withFactoryModels = `
 version: 1
+limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
 classes:
   coder:
@@ -432,11 +435,20 @@ func TestBounds(t *testing.T) {
 	for name, want := range map[string]time.Duration{
 		"RunSession": 21 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
 		"ModelReview": 3 * time.Minute, "Merge": 90 * time.Second, "GatePolicy": 2 * time.Minute, "Finish": 2 * time.Minute,
-		"SuperviseGate": 6 * time.Minute,
+		"SuperviseGate": 8 * time.Minute,
 	} {
 		if got := d.Bound(name); got != want {
 			t.Errorf("default Bound(%s) = %s, want %s", name, got, want)
 		}
+	}
+	// a session outlives the agent time by a minute, the gate supervisor
+	// its call's timeout by two
+	d.Limits.AgentTime, d.Limits.SupervisorTimeout = 30*time.Minute, 10*time.Minute
+	if got := d.Bound("RunSession"); got != 31*time.Minute {
+		t.Errorf("Bound(RunSession) under agent_time 30m = %s, want 31m", got)
+	}
+	if got := d.Bound("SuperviseGate"); got != 12*time.Minute {
+		t.Errorf("Bound(SuperviseGate) under supervisor_timeout 10m = %s, want 12m", got)
 	}
 	d, err = Parse([]byte(valid + "bounds: {WaitChecks: 900, default: 60}\n"))
 	if err != nil {

@@ -5,42 +5,88 @@
 package policy
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"slices"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
-// Document is schema version 1 of the policy file.
+// Document is policy.yaml, schema version 1: budgets, limits, capability
+// classes, prices, risk rules, the default envelope, approvers, activity
+// bounds and the supervisor's detectors.
 type Document struct {
-	Version int              `yaml:"version" json:"version"`
-	Budget  Budget           `yaml:"budget" json:"budget"`
+	// Version is the file's schema version.
+	Version int `yaml:"version" json:"version"`
+	// Budget caps spend in EUR per task and per UTC day.
+	Budget Budget `yaml:"budget" json:"budget"`
+	// Limits bound every task's work: sessions, agent time, supervisor
+	// calls.
+	Limits Limits `yaml:"limits" json:"limits"`
+	// Classes are the capability classes a task can hold, by name.
 	Classes map[string]Class `yaml:"classes" json:"classes"`
-	Prices  ToolPrices       `yaml:"prices" json:"prices"`
-	Risk    Risk             `yaml:"risk" json:"risk"`
+	// Prices are the tool prices no provider API reports.
+	Prices ToolPrices `yaml:"prices,omitempty" json:"prices"`
+	// Risk classifies a pull request by the paths it changes.
+	Risk Risk `yaml:"risk" json:"risk"`
 	// EnvelopeDefault is the resource envelope a project's first
 	// commissioning request copies into its envelopes row.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
 	// Approvers are the Forgejo users who may authorize spend in the
 	// console (ruling 128): approve a resource request or a merge, edit an
 	// envelope, promote a resource. Empty: nobody.
-	Approvers []string `yaml:"approvers" json:"approvers"`
+	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
 	// Bounds are how many seconds one run of an activity may take before
 	// it raises a gate_bound alert, per activity name and a default for the
 	// rest; absent keys take DefaultBounds.
-	Bounds map[string]int `yaml:"bounds" json:"bounds"`
+	Bounds map[string]int `yaml:"bounds,omitempty" json:"bounds"`
 	// Supervisor holds the session supervisor's progress detectors: how
 	// many seconds without the progress each names before it trips;
 	// absent keys take DefaultDetectors (ruling 161: no_write only).
-	Supervisor map[string]int `yaml:"supervisor" json:"supervisor"`
+	Supervisor map[string]int `yaml:"supervisor,omitempty" json:"supervisor"`
 	// ProjectDefault is what a registered project starts with; absent:
 	// DefaultProject.
-	ProjectDefault *ProjectDefault `yaml:"project_default" json:"project_default,omitempty"`
+	ProjectDefault *ProjectDefault `yaml:"project_default,omitempty" json:"project_default,omitempty"`
+}
+
+// Limits bound a task's work; a task keeps the limits of the version it
+// started under.
+type Limits struct {
+	// Sessions is how many agent sessions a task gets before it goes to a
+	// human with every finding so far (the round cap); a human may grant
+	// more.
+	Sessions int `yaml:"sessions" json:"sessions"`
+	// AgentTime is the agent's working time across all sessions of a task,
+	// such as 20m; waiting on checks or on a reviewer does not count.
+	AgentTime time.Duration `yaml:"agent_time" json:"agent_time"`
+	// SupervisorCalls is how many supervisor model calls one session may
+	// make; the next trip escalates without one.
+	SupervisorCalls int `yaml:"supervisor_calls" json:"supervisor_calls"`
+	// SupervisorTimeout bounds one supervisor or review model call, such as
+	// 6m.
+	SupervisorTimeout time.Duration `yaml:"supervisor_timeout" json:"supervisor_timeout"`
+	// StrongerAfter is how many returns from the same stage a task takes
+	// on its model; the next return takes the stronger rung.
+	StrongerAfter int `yaml:"stronger_after" json:"stronger_after"`
+}
+
+// MaxSupervisorTimeout is the longest supervisor_timeout a policy may set.
+const MaxSupervisorTimeout = 15 * time.Minute
+
+func (l Limits) validate() error {
+	switch {
+	case l.Sessions <= 0:
+		return fmt.Errorf("policy: limits.sessions must be positive, is %d", l.Sessions)
+	case l.AgentTime < time.Minute:
+		return fmt.Errorf("policy: limits.agent_time must be at least 1m, is %s", l.AgentTime)
+	case l.SupervisorCalls <= 0:
+		return fmt.Errorf("policy: limits.supervisor_calls must be positive, is %d", l.SupervisorCalls)
+	case l.SupervisorTimeout < 30*time.Second || l.SupervisorTimeout > MaxSupervisorTimeout:
+		return fmt.Errorf("policy: limits.supervisor_timeout must lie between 30s and %s, is %s", MaxSupervisorTimeout, l.SupervisorTimeout)
+	case l.StrongerAfter < 0:
+		return fmt.Errorf("policy: limits.stronger_after must not be negative, is %d", l.StrongerAfter)
+	}
+	return nil
 }
 
 // DetectorNoWrite is the progress detector (rulings 141, 161): agent
@@ -63,13 +109,11 @@ func (d Document) Detector(name string) time.Duration {
 const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
-// 154): a session at the 20 min wall-clock cap is stopped by the cap
-// already, so its bound is for one that outlives the cap by a minute; a
-// merge attempt is one API call under a 2-minute timeout, its retries on
-// workflow timers (ruling 163); the gate supervisor gets its model call's
-// whole start-to-close.
+// 154): a merge attempt is one API call under a 2-minute timeout, its
+// retries on workflow timers (ruling 163). RunSession and SuperviseGate
+// follow the limits (Bound).
 var DefaultBounds = map[string]int{
-	"RunSession": 1260, "WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 90, "SuperviseGate": 360, BoundDefault: 120,
+	"WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 90, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -82,10 +126,19 @@ var BoundActivities = []string{
 }
 
 // Bound is how long one run of activity may take before it alerts: the
-// policy's bound for it, else DefaultBounds' for it, else the policy's
-// default, else DefaultBounds' default.
+// policy's bound for it; else for a session the agent time plus a minute
+// (a session at the cap is stopped by the cap already) and for the gate
+// supervisor its call's timeout plus two; else DefaultBounds' for it, else
+// the policy's default, else DefaultBounds' default.
 func (d Document) Bound(activity string) time.Duration {
 	s, ok := d.Bounds[activity]
+	switch {
+	case ok:
+	case activity == "RunSession":
+		return d.Limits.AgentTime + time.Minute
+	case activity == "SuperviseGate":
+		return d.Limits.SupervisorTimeout + 2*time.Minute
+	}
 	if !ok {
 		s, ok = DefaultBounds[activity]
 	}
@@ -103,11 +156,18 @@ func (d Document) Bound(activity string) time.Duration {
 // accrued cost together), the server types, how many servers at once, the
 // longest lease and the largest volume.
 type Envelope struct {
-	MonthlyEUR    float64  `yaml:"monthly_eur" json:"monthly_eur"`
-	ServerTypes   []string `yaml:"server_types" json:"server_types"`
-	MaxCount      int      `yaml:"max_count" json:"max_count"`
-	MaxLeaseHours int      `yaml:"max_lease_hours" json:"max_lease_hours"`
-	VolumeMaxGB   int      `yaml:"volume_max_gb" json:"volume_max_gb"`
+	// MonthlyEUR caps a calendar month (UTC), reservations and accrued
+	// cost together, in net EUR.
+	MonthlyEUR float64 `yaml:"monthly_eur" json:"monthly_eur"`
+	// ServerTypes are the Hetzner server types a task may commission.
+	ServerTypes []string `yaml:"server_types" json:"server_types"`
+	// MaxCount is how many servers may run at once.
+	MaxCount int `yaml:"max_count" json:"max_count"`
+	// MaxLeaseHours is the longest lease.
+	MaxLeaseHours int `yaml:"max_lease_hours" json:"max_lease_hours"`
+	// VolumeMaxGB is the largest volume per server: 0 for none, else at
+	// least 10.
+	VolumeMaxGB int `yaml:"volume_max_gb" json:"volume_max_gb"`
 	// Standing is the second block, for standing resources; the policy
 	// sets its default in project_default, not in envelope_default.
 	Standing Standing `yaml:"-" json:"-"`
@@ -138,19 +198,29 @@ func (e Envelope) validate() error {
 // Budget caps spend in EUR: per task (default and maximum at intake) and
 // per UTC day over all tasks together; a day cap of 0 stops all spend.
 type Budget struct {
+	// TaskDefaultEUR is a task's budget when its intake asks for none.
 	TaskDefaultEUR float64 `yaml:"task_default_eur" json:"task_default_eur"`
-	TaskMaxEUR     float64 `yaml:"task_max_eur" json:"task_max_eur"`
-	DayEUR         float64 `yaml:"day_eur" json:"day_eur"`
+	// TaskMaxEUR is the most a task may be given.
+	TaskMaxEUR float64 `yaml:"task_max_eur" json:"task_max_eur"`
+	// DayEUR caps all tasks together per UTC day; 0 stops all spend.
+	DayEUR float64 `yaml:"day_eur" json:"day_eur"`
 }
 
 // Class is a capability class a task can hold: the model aliases it may
 // call through the gateway and its tools with per-task caps, and the
 // aliases factoryd calls on the task's account, which the agent may not.
 type Class struct {
-	Models          []string           `yaml:"models" json:"models"`
-	Tools           map[string]ToolCap `yaml:"tools" json:"tools"`
-	ReviewModel     string             `yaml:"review_model" json:"review_model,omitempty"`
-	SupervisorModel string             `yaml:"supervisor_model" json:"supervisor_model,omitempty"`
+	// Models are the aliases the agent may call through the gateway.
+	Models []string `yaml:"models" json:"models"`
+	// Tools are the gateway tools the class may call: a paid tool with its
+	// per-task caps, a free tool as {}.
+	Tools map[string]ToolCap `yaml:"tools,omitempty" json:"tools"`
+	// ReviewModel is the alias factoryd's model review calls on the task's
+	// account.
+	ReviewModel string `yaml:"review_model,omitempty" json:"review_model,omitempty"`
+	// SupervisorModel is the alias the session and gate supervisors call
+	// on the task's account.
+	SupervisorModel string `yaml:"supervisor_model,omitempty" json:"supervisor_model,omitempty"`
 }
 
 // The purposes factoryd calls a model for on a task's account.
@@ -163,9 +233,12 @@ const (
 // Purposes are the factoryd purposes the gateway admits.
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor}
 
+// ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
-	MaxRequests int     `yaml:"max_requests" json:"max_requests"`
-	MaxEUR      float64 `yaml:"max_eur" json:"max_eur"`
+	// MaxRequests is how many calls of the tool a task may make.
+	MaxRequests int `yaml:"max_requests,omitempty" json:"max_requests"`
+	// MaxEUR is how much a task may spend on the tool.
+	MaxEUR float64 `yaml:"max_eur,omitempty" json:"max_eur"`
 }
 
 // ClassCoder is the class intake gives agent tasks.
@@ -202,17 +275,23 @@ var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolCloudPrices, ToolCom
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
-	Firecrawl FirecrawlPrices `yaml:"firecrawl" json:"firecrawl"`
-	Replicate ReplicatePrices `yaml:"replicate" json:"replicate"`
-	Fal       FalPrices       `yaml:"fal" json:"fal"`
+	// Firecrawl prices web_scrape and web_search.
+	Firecrawl FirecrawlPrices `yaml:"firecrawl,omitempty" json:"firecrawl"`
+	// Replicate prices replicate_predict.
+	Replicate ReplicatePrices `yaml:"replicate,omitempty" json:"replicate"`
+	// Fal bounds fal_run.
+	Fal FalPrices `yaml:"fal,omitempty" json:"fal"`
 }
 
 // FirecrawlPrices: a call costs its creditsUsed at EURPerCredit; the
 // credit figures are the worst case a call is held at.
 type FirecrawlPrices struct {
-	EURPerCredit  float64 `yaml:"eur_per_credit" json:"eur_per_credit"`
-	ScrapeCredits int     `yaml:"scrape_credits" json:"scrape_credits"`
-	SearchCredits int     `yaml:"search_credits" json:"search_credits"`
+	// EURPerCredit is what one Firecrawl credit costs.
+	EURPerCredit float64 `yaml:"eur_per_credit" json:"eur_per_credit"`
+	// ScrapeCredits is the most credits one scrape is held at.
+	ScrapeCredits int `yaml:"scrape_credits" json:"scrape_credits"`
+	// SearchCredits is the most credits one search is held at.
+	SearchCredits int `yaml:"search_credits" json:"search_credits"`
 }
 
 // ReplicatePrices: a prediction costs its predict_time at its hardware's
@@ -222,9 +301,14 @@ type FirecrawlPrices struct {
 // Replicate cancels it ReplicateCancelMargin seconds before that
 // (Cancel-After), so it can never bill more than its hold.
 type ReplicatePrices struct {
+	// EURPerSecond is the price of a second of predict_time by hardware
+	// SKU.
 	EURPerSecond map[string]float64 `yaml:"eur_per_second" json:"eur_per_second"`
-	Models       map[string]string  `yaml:"models" json:"models"`
-	MaxSeconds   float64            `yaml:"max_seconds" json:"max_seconds"`
+	// Models maps each usable model (owner/name) to its hardware SKU.
+	Models map[string]string `yaml:"models" json:"models"`
+	// MaxSeconds is how many seconds of its hardware a prediction is held
+	// at, whole seconds, at least 10.
+	MaxSeconds float64 `yaml:"max_seconds" json:"max_seconds"`
 }
 
 // ReplicateCancelMargin (seconds) covers a cancelled prediction's wind-down;
@@ -237,26 +321,9 @@ const (
 // FalPrices: fal's pricing API prices each endpoint per unit; a call
 // priced per megapixel is held at MaxMegapixels.
 type FalPrices struct {
+	// MaxMegapixels is how many megapixels a call priced per megapixel is
+	// held at.
 	MaxMegapixels float64 `yaml:"max_megapixels" json:"max_megapixels"`
-}
-
-// Parse decodes and validates a policy file. Unknown keys are an error, so
-// a typo never silently drops a rule.
-func Parse(b []byte) (Document, error) {
-	var d Document
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	if err := dec.Decode(&d); err != nil {
-		if errors.Is(err, io.EOF) {
-			return Document{}, errors.New("policy: empty document")
-		}
-		return Document{}, fmt.Errorf("policy: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return Document{}, errors.New("policy: more than one YAML document")
-	}
-	return d, d.Validate()
 }
 
 func (d Document) Validate() error {
@@ -272,6 +339,9 @@ func (d Document) Validate() error {
 	}
 	if b.TaskDefaultEUR > b.TaskMaxEUR {
 		return fmt.Errorf("policy: budget.task_default_eur %g exceeds task_max_eur %g", b.TaskDefaultEUR, b.TaskMaxEUR)
+	}
+	if err := d.Limits.validate(); err != nil {
+		return err
 	}
 	if len(d.Classes) == 0 {
 		return errors.New("policy: no capability classes")

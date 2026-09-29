@@ -50,22 +50,25 @@ func TestPolicyVersions(t *testing.T) {
 	if _, ok, err := Current(ctx, db); err != nil || ok {
 		t.Fatalf("Current on empty = (%v, %v), want (false, nil)", ok, err)
 	}
-	d1, _ := Parse([]byte(valid))
+	d1, err := ParseTree(fixtureTree(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	d2 := d1
-	d2.Budget.DayEUR = 7
+	d2.Document.Budget.DayEUR = 7
 
-	v1, inserted, err := Record(ctx, db, "sha1", d1)
+	v1, inserted, err := Record(ctx, db, "c1", d1)
 	if err != nil || !inserted {
 		t.Fatalf("Record new = (%v, %v)", inserted, err)
 	}
-	if !reflect.DeepEqual(v1.Document, d1) || v1.SHA256 != "sha1" || v1.LoadedAt.IsZero() || v1.ActivatedAt.Before(v1.LoadedAt) {
+	if !reflect.DeepEqual(v1.Tree, d1) || v1.Commit != "c1" || v1.LoadedAt.IsZero() || v1.ActivatedAt.Before(v1.LoadedAt) {
 		t.Fatalf("recorded version = %+v", v1)
 	}
 	// the content in force again: no new activation
-	if again, _, err := Record(ctx, db, "sha1", d1); err != nil || again.ID != v1.ID || !again.ActivatedAt.Equal(v1.ActivatedAt) {
+	if again, _, err := Record(ctx, db, "c1", d1); err != nil || again.ID != v1.ID || !again.ActivatedAt.Equal(v1.ActivatedAt) {
 		t.Fatalf("Record of the current content = (%+v, %v), want version %d activated at %s", again, err, v1.ID, v1.ActivatedAt)
 	}
-	v2, inserted, err := Record(ctx, db, "sha2", d2)
+	v2, inserted, err := Record(ctx, db, "c2", d2)
 	if err != nil || !inserted || v2.ID == v1.ID {
 		t.Fatalf("Record second = (%+v, %v, %v)", v2, inserted, err)
 	}
@@ -73,9 +76,17 @@ func TestPolicyVersions(t *testing.T) {
 	if err != nil || !ok || cur.ID != v2.ID || cur.Document.Budget.DayEUR != 7 {
 		t.Fatalf("Current = (%+v, %v, %v), want version %d", cur, ok, err, v2.ID)
 	}
-	back, inserted, err := Record(ctx, db, "sha1", d1)
+	back, inserted, err := Record(ctx, db, "c1", d1)
 	if err != nil || inserted || back.ID != v1.ID || !back.LoadedAt.Equal(v1.LoadedAt) || !back.ActivatedAt.After(v1.ActivatedAt) {
 		t.Fatalf("Record revert = (%+v, %v, %v), want version %d, not inserted, activated anew", back, inserted, err, v1.ID)
+	}
+	// a task's pinned version, whatever is current
+	pinned, ok, err := VersionByID(ctx, db, v2.ID)
+	if err != nil || !ok || pinned.Commit != "c2" || pinned.Document.Budget.DayEUR != 7 || !reflect.DeepEqual(pinned.Projects, d1.Projects) {
+		t.Fatalf("VersionByID(%d) = (%+v, %v, %v)", v2.ID, pinned, ok, err)
+	}
+	if _, ok, err := VersionByID(ctx, db, v2.ID+100); err != nil || ok {
+		t.Fatalf("VersionByID of no version = (%v, %v), want (false, nil)", ok, err)
 	}
 	var activations []int64
 	rows, err := db.QueryContext(ctx, `SELECT version_id FROM policy_activations ORDER BY id`)
@@ -106,8 +117,8 @@ func TestPolicyVersions(t *testing.T) {
 func TestMigrateFromPolicyCurrent(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	d1, _ := Parse([]byte(valid))
-	v1, _, err := Record(ctx, db, "sha1", d1)
+	d1, _ := ParseTree(fixtureTree(t))
+	v1, _, err := Record(ctx, db, "c1", d1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,6 +137,28 @@ func TestMigrateFromPolicyCurrent(t *testing.T) {
 	var gone bool
 	if err := db.QueryRowContext(ctx, `SELECT to_regclass('policy_current') IS NULL`).Scan(&gone); err != nil || !gone {
 		t.Fatalf("policy_current still exists (%v)", err)
+	}
+}
+
+// A database from before the tree keeps its rows under commit_sha; their
+// policy-file documents decode to no valid tree.
+func TestMigrateFromFileVersions(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `ALTER TABLE policy_versions RENAME COLUMN commit_sha TO sha256;
+		INSERT INTO policy_versions (sha256, document) VALUES ('e3b0c442', '{"version": 1, "budget": {"day_eur": 20}}');
+		INSERT INTO policy_activations (version_id) SELECT id FROM policy_versions`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	cur, ok, err := Current(ctx, db)
+	if err != nil || !ok || cur.Commit != "e3b0c442" {
+		t.Fatalf("Current after the migration = (%+v, %v, %v), want the old row", cur, ok, err)
+	}
+	if err := cur.Validate(); err == nil {
+		t.Fatal("a policy-file document validates as a tree")
 	}
 }
 

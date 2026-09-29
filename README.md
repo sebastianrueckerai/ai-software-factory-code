@@ -196,7 +196,7 @@ failed does nothing; a merged PR finishes it done; an interrupted
 completion (`closing`), a closed issue or a PR closed without merge
 finish it failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Then: up to
-`MAX_SESSIONS` (default 3) attempts, each `SetState running` then
+`limits.sessions` (3) attempts, each `SetState running` then
 `RunSession`, the first on `MODEL` (default `factory/coding-cheap`);
 every session starts from the task branch's head on the fork when the
 branch exists, else from the base SHA. After a pushed commit
@@ -412,7 +412,7 @@ hide a failure), same call (the same tool with the same arguments
 `SUPERVISE_SAME_CALL` times in a session, 4), flip-flop (a file returns
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
-half way (half the wall-clock cap `WALL_CLOCK_CAP` or half the budget;
+half way (half the agent time `limits.agent_time` or half the budget;
 once per task, recorded on the task row), and no write (rulings 141,
 161): an agent event, a tool call, command or model call, arriving
 `no_write` seconds after the last write, edit or patch tool call or the
@@ -430,7 +430,8 @@ tail, and answers one of `continue` (the detector resets, the session
 runs on), `redirect` (new session, same rung, its guidance as findings),
 `retry_stronger` (the next rung; at the top rung a redirect) or
 `escalate`; an invalid answer or a failed call escalates. At most
-`SUPERVISOR_MAX_CALLS` (3) calls per session; the next trip escalates
+`limits.supervisor_calls` (3) calls per session, each bounded by
+`limits.supervisor_timeout` (6 min); the next trip escalates
 without one. Nothing it answers changes a cap, a budget or the ladder. A
 stopping session's pod is deleted with a 60 s grace period (a log stream
 that breaks meanwhile, or at any time while the pod runs, is reopened
@@ -453,7 +454,7 @@ answers the agent must not escalate again; the `session_start` timeline
 step records them. The
 human is the one party allowed to raise a limit: the answer buys the
 extra attempt, and if less than `ESCALATION_ANSWER_SLICE` (10 min, never
-more than `WALL_CLOCK_CAP`) of agent time is left under the cap, the
+more than `limits.agent_time`) of agent time is left under the cap, the
 answer also grants the difference, so every answer gets at least that
 slice of working time. Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
@@ -521,34 +522,69 @@ issues is gated with `workflow.GetVersion` (see the version constants in
 replays histories recorded on the cluster (`internal/factoryd/testdata`).
 `GET /tasks/{id}/timeline` serves `sessions/<id>/timeline.jsonl`.
 
-## Policy and costs
+## Configuration, policy and costs
 
-The capability policy is a YAML document in the infra repository
-(`k8s/platform/policy/policy.yaml`, ConfigMap `factory-policy`, applied
-by Flux; its README says how to change it), schema v1 in
-`internal/policy`: `budget` (`task_default_eur`, `task_max_eur`,
+factoryd's configuration is the directory `factory/` of the infra
+repository's `main` (ruling 183): `policy.yaml`, `workflow.yaml` (the
+stages a task passes, each with its `on_findings` rule, ruling 177) and
+`projects/<name>.yaml` (one per project: repository, merge rule,
+`objects: factory|seed`, `agents: coder|none`, notify, namespaces,
+environments, quota, secrets). The Go types in `internal/policy` are the
+schema: `factoryd schema --out <dir>` writes one JSON Schema per file
+kind (draft-07; every enumerated field lists its values, every key its
+doc comment, a key is required unless its yaml tag says `omitempty`),
+committed as `factory/schema/`, and each file's first line references
+its schema (`# yaml-language-server: $schema=schema/policy.schema.json`,
+`../schema/project.schema.json` under `projects/`) for completion and
+linting in an editor. `factoryd config check <dir>` decodes a tree as
+the loader does and compares its `schema/` with the generated one: exit
+0 ok, 1 refused with every reason, 2 usage; the infra repository's CI
+runs it on every push to `main`.
+
+factoryd polls the head of `main` every 30 s through the Forgejo API
+with `FORGEJO_CONFIG_TOKEN` (user `factory-config`, a read collaborator
+on the infra repository only, `read:repository` limited to it; secret
+`forgejo-config`), reads `factory/` at that commit (`schema/` left out)
+and decodes each file strictly: one YAML document, the schema header on
+its first line, no unknown key, the Go rules, then the schema (required
+keys, enumerations). A valid tree becomes an immutable `policy_versions`
+row keyed by the commit (`commit_sha`, the whole tree as one JSON
+document, `loaded_at`); the version in force is the latest row of the
+append-only `policy_activations`; a commit seen before activates its
+earlier row again. A refused commit, or one whose `coder` class leaves
+out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
+REJECTED`, keeps the previous version current and files, once per
+commit, a human-lane issue on the infra repository (a `human` task,
+source `config`) and an alerts row of kind `config_rejected`, judged
+real; a failed read (Forgejo unreachable) is tried again at the next
+poll. factoryd refuses to boot only when no valid version exists at all.
+A task's workflow captures, at its start, the limits of the version in
+force and the version's id (`WorkflowConfig.PolicyVersion`), so a later
+commit never changes a running task's session cap, agent time or
+stronger rung; `GET /policy` and the console's configuration page show
+the version in force, read-only, each file linked at its commit.
+
+`limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
+(20m, the wall-clock cap across a task's sessions), `supervisor_calls`
+(3 per session), `supervisor_timeout` (6m per supervisor or review call,
+at most 15m) and `stronger_after` (1: the second return from the same
+stage takes the stronger rung). The session supervisor reads the agent
+time and the call count of the version in force at each session start.
+The activity bound of `RunSession` is the agent time plus a minute, of
+`SuperviseGate` the supervisor timeout plus two, unless `bounds` names
+them.
+
+The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day over all tasks) and `classes` (per capability
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
 session and gate supervisor; a class without one gets no such call).
-Unknown keys are rejected. factoryd mounts it read-only at
-`/etc/factory-policy/policy.yaml` (`POLICY_FILE`), reads it on boot and
-every 30 s, and records each new valid content as an immutable
-`policy_versions` row (sha256 of the file, the document as JSON,
-`loaded_at`). The version in force is the latest row of the append-only
-`policy_activations`; known content (a revert) activates its earlier row
-again. An invalid file, or one whose `coder` class leaves out a model of
-the ladder (`MODEL`, `STRONGER_MODEL`), logs `POLICY REJECTED` and the
-previous version stays in force; factoryd refuses to boot only when no
-valid version exists at all. The gateway never reads the file, only the
-version in force in Postgres. `day_eur: 0` stops all spend. Because the
-decoder is strict, a new key lands in infra BEFORE the factoryd that
-reads it, never after: the running factoryd logs `POLICY REJECTED` and
-keeps its version, harmless, and the new factoryd loads it at boot. A
-factoryd rolled before its keys would run on a policy without them (for
-`review_model` and `supervisor_model`: every review a note, every
-supervisor trip an escalation).
+The gateway never reads the files, only the version in force in
+Postgres. `day_eur: 0` stops all spend. Because the decoder is strict,
+a new key lands in infra first and the factoryd that reads it rolls
+right after: the running factoryd refuses the commit, keeps its version
+and files the issue, and the new one loads the head at boot.
 
 The gateway checks a model call in this order: the caller (a sandbox's
 JWT, or factoryd's `gateway-factoryd` token with its `X-Factory-*`

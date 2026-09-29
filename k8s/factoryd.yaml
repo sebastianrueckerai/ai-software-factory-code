@@ -440,6 +440,11 @@ spec:
         # deploy key, Actions secrets and runners; write:repository only
         - name: FORGEJO_PROJECTS_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-projects, key: token}}
+        # factory-config: read collaborator on the infra repository only,
+        # read:repository limited to it; factoryd reads the configuration
+        # tree factory/ of its main with it every 30 s (ruling 183)
+        - name: FORGEJO_CONFIG_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-config, key: token}}
         # a SigNoz user with the viewer role: the alerts endpoint reads the
         # firing alerts with it and can change nothing
         - name: SIGNOZ_EMAIL
@@ -497,12 +502,6 @@ spec:
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
-        # the capability policy (infra repo, Flux); factoryd rereads it every 30 s
-        volumeMounts:
-        - {name: policy, mountPath: /etc/factory-policy, readOnly: true}
-      volumes:
-      - name: policy
-        configMap: {name: factory-policy}
 ---
 apiVersion: v1
 kind: Service

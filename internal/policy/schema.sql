@@ -1,11 +1,22 @@
 SELECT pg_advisory_xact_lock(hashtext('factory-policy-schema'));
 
+-- one row per commit of the infra repository's main whose factory/ tree
+-- loaded: the whole tree as one document (ruling 183)
 CREATE TABLE IF NOT EXISTS policy_versions (
     id bigserial PRIMARY KEY,
-    sha256 text NOT NULL UNIQUE,
+    commit_sha text NOT NULL UNIQUE,
     document jsonb NOT NULL,
     loaded_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- rows from before the tree keep their file's sha256 in commit_sha; their
+-- documents are no tree, so no binary takes them for a valid version
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'policy_versions' AND column_name = 'sha256' AND table_schema = current_schema()) THEN
+        ALTER TABLE policy_versions RENAME COLUMN sha256 TO commit_sha;
+    END IF;
+END $$;
 
 -- append-only: the latest row is the version in force
 CREATE TABLE IF NOT EXISTS policy_activations (

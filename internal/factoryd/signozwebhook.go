@@ -50,7 +50,7 @@ type AlertBook interface {
 	CreateTask(ctx context.Context, t Task) error
 	Task(ctx context.Context, id string) (Task, bool, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
-	AlertByFingerprint(ctx context.Context, fingerprint string) (Alert, bool, error)
+	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 }
 
@@ -124,7 +124,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		log.Printf("signoz webhook: alert %s in namespace %s: no project owns it, dropped", strconv.Quote(name), strconv.Quote(ns)) // #nosec G706 -- quoted
 		return nil
 	}
-	row, seen, err := in.Store.AlertByFingerprint(ctx, a.Fingerprint)
+	row, seen, err := in.Store.AlertByFingerprint(ctx, AlertSigNoz, a.Fingerprint)
 	if err != nil {
 		return err
 	}

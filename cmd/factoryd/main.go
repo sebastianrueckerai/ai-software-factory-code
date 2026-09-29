@@ -34,10 +34,18 @@ import (
 
 var version = "dev"
 
+// configDir is the configuration tree's directory in the config repository.
+const configDir = "factory"
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "register-project" {
-		registerMain(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "register-project":
+			registerMain(os.Args[2:])
+			return
+		case "schema", "config":
+			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+		}
 	}
 	addr := flag.String("addr", ":8080", "listen address")
 	consoleAddr := flag.String("console-addr", ":8090", "console listen address (its own Service and route)")
@@ -57,19 +65,27 @@ func main() {
 		log.Fatalf("open task store (boot migrations): %v", err)
 	}
 	defer store.Close()
-	// no valid policy version at all is the one policy failure that stops
-	// the boot; later invalid edits are logged and the last valid one holds
+	// no valid configuration version at all is the one configuration
+	// failure that stops the boot; a later refused commit is raised and
+	// the last valid version holds
 	ladder := factoryd.ModelLadder{
 		Start:    env("MODEL", "factory/coding-cheap"),
 		Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
 	}
-	// a ladder model outside the coder class would be refused mid-task
-	policyLoader := &factoryd.PolicyLoader{Path: env("POLICY_FILE", "/etc/factory-policy/policy.yaml"), Store: store,
-		LadderModels: ladder.Aliases()}
-	if err := policyLoader.Boot(context.Background()); err != nil {
-		log.Fatalf("policy: %v", err)
+	forgejo := newForgejo()
+	configRepo, err := factoryd.SplitRepo(env("CONFIG_REPO", "sf/ai-software-factory-infra"))
+	if err != nil {
+		log.Fatalf("CONFIG_REPO: %v", err)
 	}
-	log.Printf("policy: version %d current", policyLoader.Current().ID)
+	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir}
+	// a ladder model outside the coder class would be refused mid-task
+	policyLoader := &factoryd.PolicyLoader{
+		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: mustEnv("FORGEJO_CONFIG_TOKEN"), Repo: configRepo, Branch: "main", Dir: configDir},
+		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise}
+	if err := policyLoader.Boot(context.Background()); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
 
 	otelProviders, err := telemetry.Setup(context.Background(), "factoryd")
 	if err != nil {
@@ -93,7 +109,6 @@ func main() {
 	}
 	ciQueue := factoryd.NewCIQueue(metrics)
 
-	forgejo := newForgejo()
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
 		Endpoint:  mustEnv("S3_ENDPOINT"),
@@ -130,17 +145,14 @@ func main() {
 		Models:               ladder,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
-		MaxSessions:          envInt("MAX_SESSIONS", 3),
 		AnswerSlice:          envDuration("ESCALATION_ANSWER_SLICE", 10*time.Minute),
 		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
-			WallClockCap:     envDuration("WALL_CLOCK_CAP", 20*time.Minute),
 			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
 			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),
 			SameCall:         envInt("SUPERVISE_SAME_CALL", factoryd.DefaultSameCall),
 			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),
-			MaxCalls:         envInt("SUPERVISOR_MAX_CALLS", factoryd.DefaultMaxCalls),
 		},
 		Policy:       policyLoader.Current,
 		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
@@ -161,6 +173,7 @@ func main() {
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
 			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
+		Timeout: func() time.Duration { return policyLoader.Current().Document.Limits.SupervisorTimeout },
 	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)
@@ -218,7 +231,7 @@ func main() {
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
-	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig()}.Run,
+	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
 
@@ -365,12 +378,12 @@ func main() {
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
-		Resources: cloudres.AgentStore(store.CloudResources()),
-		Alerts:    store,
-		Projects:  store,
-		Reconcile: registrar.Reconcile,
-		PolicyURL: env("CONSOLE_POLICY_URL",
-			"https://git.aisoftwarefactory.world/sf/ai-software-factory-infra/src/branch/main/k8s/platform/policy/policy.yaml"),
+		Resources:  cloudres.AgentStore(store.CloudResources()),
+		Alerts:     store,
+		Projects:   store,
+		Reconcile:  registrar.Reconcile,
+		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
+		ConfigDir:  configDir,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

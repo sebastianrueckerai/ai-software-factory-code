@@ -389,11 +389,11 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, verdict, by stri
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
 }
 
-func (s *fakeStore) AlertByFingerprint(ctx context.Context, fingerprint string) (Alert, bool, error) {
+func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
 	for i := len(s.alerts) - 1; i >= 0; i-- {
-		if a := s.alerts[i]; a.Kind == AlertSigNoz && a.Fingerprint == fingerprint {
+		if a := s.alerts[i]; a.Kind == kind && a.Fingerprint == fingerprint {
 			a.Detail = maps.Clone(a.Detail)
 			return a, true, nil
 		}
@@ -1066,6 +1066,34 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 // Migration 0027 on a real Postgres: a SigNoz alert row found again by its
 // fingerprint (the newest one), its detail merged, and the verdict set once
 // on a task's open alert rows only.
+func TestPGStoreConfigRejectedAlert(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t-alert", Fingerprint: "c1"}); err != nil {
+		t.Fatal(err)
+	}
+	// a refused configuration commit is its own kind, keyed by the commit
+	if _, ok, err := s.AlertByFingerprint(ctx, AlertConfigRejected, "c1"); err != nil || ok {
+		t.Fatalf("config_rejected before any row: %v %v", ok, err)
+	}
+	rejected, err := s.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", TaskID: "t-cfg", Fingerprint: "c1", Verdict: VerdictReal, ResolvedBy: "factoryd"})
+	if err != nil {
+		t.Fatalf("insert config_rejected: %v", err)
+	}
+	a, ok, err := s.AlertByFingerprint(ctx, AlertConfigRejected, "c1")
+	if err != nil || !ok || a.ID != rejected || a.Verdict != VerdictReal || a.ResolvedAt == nil || a.TaskID != "t-cfg" {
+		t.Fatalf("config_rejected by fingerprint: %+v %v %v, want row %d judged real", a, ok, err, rejected)
+	}
+}
+
 func TestPGStoreSigNozAlerts(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -1077,7 +1105,7 @@ func TestPGStoreSigNozAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.AlertByFingerprint(ctx, "fp1"); err != nil || ok {
+	if _, ok, err := s.AlertByFingerprint(ctx, AlertSigNoz, "fp1"); err != nil || ok {
 		t.Fatalf("before any row: %v %v", ok, err)
 	}
 	old, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t-old", Fingerprint: "fp1", Detail: map[string]any{"issue": 3}})
@@ -1091,14 +1119,14 @@ func TestPGStoreSigNozAlerts(t *testing.T) {
 	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "p95", TaskID: "t-new", Fingerprint: "fp2"}); err != nil {
 		t.Fatal(err)
 	}
-	a, ok, err := s.AlertByFingerprint(ctx, "fp1")
+	a, ok, err := s.AlertByFingerprint(ctx, AlertSigNoz, "fp1")
 	if err != nil || !ok || a.ID != newest || a.TaskID != "t-new" || a.Fingerprint != "fp1" || a.Detail["issue"] != float64(9) {
 		t.Fatalf("by fingerprint: %+v %v %v, want row %d", a, ok, err, newest)
 	}
 	if err := s.MergeAlertDetail(ctx, newest, map[string]any{"resolved_at": "2026-09-28T20:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	a, _, _ = s.AlertByFingerprint(ctx, "fp1")
+	a, _, _ = s.AlertByFingerprint(ctx, AlertSigNoz, "fp1")
 	if a.Detail["issue"] != float64(9) || a.Detail["resolved_at"] != "2026-09-28T20:00:00Z" {
 		t.Fatalf("merged detail %v", a.Detail)
 	}

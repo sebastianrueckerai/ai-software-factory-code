@@ -15,24 +15,33 @@ import (
 // merges without a human, and only where the project's merge rule is auto
 // and the reproduction and the model review say so (ruling 149).
 type Risk struct {
+	// Classes are the risk classes, most severe first.
 	Classes []RiskClass `yaml:"classes" json:"classes"`
-	Rules   []RiskRule  `yaml:"rules" json:"rules"`
-	Default string      `yaml:"default" json:"default"`
+	// Rules map path globs to a class; a path takes the first match.
+	Rules []RiskRule `yaml:"rules,omitempty" json:"rules"`
+	// Default is the class of a path no rule matches.
+	Default string `yaml:"default" json:"default"`
 }
 
+// RiskClass is a named class and what it means for the pull request.
 type RiskClass struct {
-	Name    string `yaml:"name" json:"name"`
+	// Name is the class's name; auto is allowed on class normal only.
+	Name string `yaml:"name" json:"name"`
+	// Outcome: forbidden fails the task, requires_approval waits for a
+	// human, auto merges without one where the merge rule allows it.
 	Outcome string `yaml:"outcome" json:"outcome"`
 	// Migration marks paths whose change needs the human's schema review.
-	Migration bool `yaml:"migration" json:"migration"`
+	Migration bool `yaml:"migration,omitempty" json:"migration"`
 }
 
 // RiskRule: Paths are globs anchored at the repository root, "/"
 // separated; "**" matches any number of whole segments, other segments
 // match as path.Match.
 type RiskRule struct {
+	// Paths are the rule's globs.
 	Paths []string `yaml:"paths" json:"paths"`
-	Class string   `yaml:"class" json:"class"`
+	// Class is the risk class of a matching path.
+	Class string `yaml:"class" json:"class"`
 }
 
 // Risk outcomes.

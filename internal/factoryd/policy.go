@@ -2,13 +2,11 @@ package factoryd
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"os"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,49 +14,63 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// PolicyStore holds the loaded policy versions, the holds and the cost
-// ledger.
+// PolicyStore holds the loaded configuration versions, the holds and the
+// cost ledger.
 type PolicyStore interface {
-	// RecordPolicy stores doc under sha unless known and activates it.
-	RecordPolicy(ctx context.Context, sha string, doc policy.Document) (policy.Version, bool, error)
+	// RecordPolicy stores tree under commit unless known and activates it.
+	RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error)
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
+	// PolicyVersion is version id, the one a task pinned.
+	PolicyVersion(ctx context.Context, id int64) (policy.Version, bool, error)
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 	// SweepHolds books the holds whose caller never released them.
 	SweepHolds(ctx context.Context) (int, error)
 }
 
-// PolicyLoader turns the mounted policy file into policy versions: each new
-// valid content becomes an immutable row and the version in force; invalid
-// content is logged and the previous version stays in force. A version must
-// let the agent capability classes call every model of the ladder
-// (LadderModels), else a task would be refused mid-run.
+// ConfigSource reads the configuration tree (ruling 183): the head commit
+// of its branch, and the tree's files at a commit keyed by their path
+// relative to the tree's directory, schema/ left out.
+type ConfigSource interface {
+	Head(ctx context.Context) (string, error)
+	Files(ctx context.Context, commit string) (map[string][]byte, error)
+}
+
+// PolicyLoader turns commits of the configuration tree into versions: each
+// new valid tree becomes an immutable row and the version in force; an
+// invalid one is logged and raised (Rejected), and the previous version
+// stays in force. A version must let the agent capability classes call
+// every model of the ladder (LadderModels), else a task would be refused
+// mid-run.
 type PolicyLoader struct {
-	Path         string
+	Source       ConfigSource
 	Store        PolicyStore
 	LadderModels []string
+	// Rejected raises a refused commit, once per commit: the loader asks
+	// again at the next poll while it fails. nil: logged only.
+	Rejected func(ctx context.Context, commit string, reason error, current policy.Version, loaded bool) error
 
 	mu      sync.Mutex
 	current policy.Version
 	loaded  bool
-	seen    string // sha256 of the content last handled, valid or not
+	seen    string // the commit last handled, valid or not
 }
 
-// Boot makes the stored current version current, then loads the file. It
+// Boot makes the stored current version current, then loads the head. It
 // fails only when no valid version exists at all. The stored version is
-// validated again: one written under an older schema (no risk rules) is
-// not a valid version for this binary.
+// validated again: one written under an older schema is not a valid
+// version for this binary.
 func (l *PolicyLoader) Boot(ctx context.Context) error {
 	v, ok, err := l.Store.CurrentPolicy(ctx)
 	if err != nil {
 		return fmt.Errorf("read current policy: %w", err)
 	}
 	if ok {
-		err := v.Document.Validate()
+		err := v.Validate()
 		if err == nil {
 			err = l.fitsLadder(v.Document)
 		}
 		if err != nil {
-			log.Printf("POLICY REJECTED: stored version %d: %v", v.ID, err)
+			log.Printf("CONFIG REJECTED: stored version %d (commit %s): %v", v.ID, v.Commit, err)
 			ok = false
 		} else {
 			l.mu.Lock()
@@ -67,66 +79,69 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 		}
 	}
 	if err := l.Load(ctx); err != nil && !ok {
-		return fmt.Errorf("no valid policy version: %w", err)
+		return fmt.Errorf("no valid configuration version: %w", err)
 	}
 	return nil
 }
 
-// Load reads the file and records it if its content changed since the last
-// call. It logs every failure itself.
+// Load reads the head commit and records its tree if the commit changed
+// since the last call. It logs every failure itself; a failure to read is
+// tried again at the next call, a refused tree is not.
 func (l *PolicyLoader) Load(ctx context.Context) error {
-	b, err := os.ReadFile(l.Path)
+	head, err := l.Source.Head(ctx)
 	if err != nil {
-		return l.reject("unreadable", err)
+		log.Printf("config: read the head: %v", err)
+		return err
 	}
-	sum := sha256.Sum256(b)
-	sha := hex.EncodeToString(sum[:])
 	l.mu.Lock()
-	seen := l.seen
+	seen, cur, loaded := l.seen, l.current, l.loaded
 	l.mu.Unlock()
-	if sha == seen {
+	if head == seen {
 		return nil
 	}
-	doc, err := policy.Parse(b)
+	files, err := l.Source.Files(ctx, head)
+	if err != nil {
+		log.Printf("config: read commit %s: %v", head, err)
+		return err
+	}
+	tree, err := policy.ParseTree(files)
 	if err == nil {
-		err = l.fitsLadder(doc)
+		err = l.fitsLadder(tree.Document)
 	}
 	if err != nil {
+		stays := "no version is current"
+		if loaded {
+			stays = fmt.Sprintf("version %d (commit %s) stays current", cur.ID, cur.Commit)
+		}
+		log.Printf("CONFIG REJECTED: commit %s: %v; %s", head, err, stays)
+		if l.Rejected != nil {
+			if rerr := l.Rejected(ctx, head, err, cur, loaded); rerr != nil {
+				log.Printf("config: raise the rejection of commit %s: %v", head, rerr)
+				return err
+			}
+		}
 		l.mu.Lock()
-		l.seen = sha
+		l.seen = head
 		l.mu.Unlock()
-		return l.reject("invalid (sha256 "+sha+")", err)
+		return err
 	}
-	v, inserted, err := l.Store.RecordPolicy(ctx, sha, doc)
+	v, inserted, err := l.Store.RecordPolicy(ctx, head, tree)
 	if err != nil {
-		log.Printf("policy: record sha256 %s: %v", sha, err)
+		log.Printf("config: record commit %s: %v", head, err)
 		return fmt.Errorf("record policy: %w", err)
 	}
 	l.mu.Lock()
-	l.current, l.loaded, l.seen = v, true, sha
+	l.current, l.loaded, l.seen = v, true, head
 	l.mu.Unlock()
 	how := "loaded"
 	if !inserted {
-		how = "current (content known)"
+		how = "current (commit known)"
 	}
-	log.Printf("policy: version %d %s, sha256 %s", v.ID, how, v.SHA256)
+	log.Printf("config: version %d %s, commit %s", v.ID, how, v.Commit)
 	return nil
 }
 
-func (l *PolicyLoader) reject(what string, err error) error {
-	l.mu.Lock()
-	cur, ok := l.current, l.loaded
-	l.mu.Unlock()
-	stays := "no version is current"
-	if ok {
-		stays = fmt.Sprintf("version %d stays current", cur.ID)
-	}
-	log.Printf("POLICY REJECTED: %s %s: %v; %s", l.Path, what, err, stays)
-	return err
-}
-
-// Watch reloads the file every interval; kubelet updates a mounted
-// ConfigMap in place.
+// Watch loads the head every interval.
 func (l *PolicyLoader) Watch(ctx context.Context, every time.Duration) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
@@ -158,6 +173,102 @@ func (l *PolicyLoader) fitsLadder(d policy.Document) error {
 	return nil
 }
 
+// ForgejoConfig is the configuration tree in Forgejo: directory Dir of
+// Repo's Branch, read with Token, a read-only token that reaches Repo only.
+type ForgejoConfig struct {
+	Forgejo *Forgejo
+	Token   string
+	Repo    Repo
+	Branch  string
+	Dir     string
+}
+
+func (c *ForgejoConfig) call(ctx context.Context, path string) ([]byte, error) {
+	return c.Forgejo.tokenCall(c.Token)(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/%s", c.Repo.Owner, c.Repo.Name, path), nil, http.StatusOK)
+}
+
+func (c *ForgejoConfig) Head(ctx context.Context) (string, error) {
+	body, err := c.call(ctx, "branches/"+url.PathEscape(c.Branch))
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Commit.ID == "" {
+		return "", fmt.Errorf("forgejo branch %s of %s: no head commit (%v)", c.Branch, c.Repo, err)
+	}
+	return res.Commit.ID, nil
+}
+
+// Files lists Dir's tree at commit and reads each file below it, schema/
+// left out.
+func (c *ForgejoConfig) Files(ctx context.Context, commit string) (map[string][]byte, error) {
+	dir, err := c.tree(ctx, commit, false)
+	if err != nil {
+		return nil, err
+	}
+	sha := ""
+	for _, e := range dir {
+		if e.Path == c.Dir && e.Type == "tree" {
+			sha = e.SHA
+		}
+	}
+	if sha == "" {
+		return nil, fmt.Errorf("commit %s of %s has no directory %s/", commit, c.Repo, c.Dir)
+	}
+	entries, err := c.tree(ctx, sha, true)
+	if err != nil {
+		return nil, err
+	}
+	files := map[string][]byte{}
+	for _, e := range entries {
+		if e.Type != "blob" || strings.HasPrefix(e.Path, policy.DirSchema+"/") {
+			continue
+		}
+		var segs []string
+		for _, seg := range strings.Split(c.Dir+"/"+e.Path, "/") {
+			segs = append(segs, url.PathEscape(seg))
+		}
+		b, err := c.call(ctx, "raw/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(commit))
+		if err != nil {
+			return nil, err
+		}
+		files[e.Path] = b
+	}
+	return files, nil
+}
+
+type treeEntry struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+	SHA  string `json:"sha"`
+}
+
+// tree is one page of up to 1000 entries of tree sha; a bigger tree is an
+// error, the configuration is a handful of files.
+func (c *ForgejoConfig) tree(ctx context.Context, sha string, recursive bool) ([]treeEntry, error) {
+	q := url.Values{"per_page": {"1000"}, "recursive": {fmt.Sprint(recursive)}}
+	body, err := c.call(ctx, "git/trees/"+url.PathEscape(sha)+"?"+q.Encode())
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		TotalCount int         `json:"total_count"`
+		Truncated  bool        `json:"truncated"`
+		Tree       []treeEntry `json:"tree"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo tree %s of %s: %w", sha, c.Repo, err)
+	}
+	if res.Truncated || res.TotalCount > len(res.Tree) {
+		return nil, fmt.Errorf("forgejo tree %s of %s: %d entries, more than one page", sha, c.Repo, res.TotalCount)
+	}
+	return res.Tree, nil
+}
+
 // SweepLoop books expired holds every interval until ctx ends.
 func SweepLoop(ctx context.Context, store PolicyStore, every time.Duration) {
 	tick := time.NewTicker(every)
@@ -178,7 +289,7 @@ func SweepLoop(ctx context.Context, store PolicyStore, every time.Duration) {
 	}
 }
 
-// PolicyHandler serves GET /policy: the version in force.
+// PolicyHandler serves GET /policy: the version in force, its whole tree.
 func PolicyHandler(store PolicyStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		v, ok, err := store.CurrentPolicy(r.Context())
@@ -244,8 +355,12 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // the PGStore side of PolicyStore
 
-func (s *PGStore) RecordPolicy(ctx context.Context, sha string, doc policy.Document) (policy.Version, bool, error) {
-	return policy.Record(ctx, s.db, sha, doc)
+func (s *PGStore) RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
+	return policy.Record(ctx, s.db, commit, tree)
+}
+
+func (s *PGStore) PolicyVersion(ctx context.Context, id int64) (policy.Version, bool, error) {
+	return policy.VersionByID(ctx, s.db, id)
 }
 
 func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {
@@ -273,4 +388,55 @@ func (l ModelLadder) Aliases() []string {
 		out = append(out, m)
 	}
 	return out
+}
+
+// SourceConfig is the source of a task filed for a refused configuration
+// commit.
+const SourceConfig = "config"
+
+// ConfigBook is what the configuration alarm keeps: the human task and
+// one alerts row per refused commit.
+type ConfigBook interface {
+	CreateTask(ctx context.Context, t Task) error
+	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+}
+
+// ConfigAlarm raises a refused commit of the configuration tree (ruling
+// 183): a human-lane issue on the tree's repository and an alerts row of
+// kind config_rejected, once per commit.
+type ConfigAlarm struct {
+	Store   ConfigBook
+	Forgejo *Forgejo
+	// Repo holds the tree in directory Dir.
+	Repo Repo
+	Dir  string
+}
+
+// Raise is PolicyLoader.Rejected.
+func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, current policy.Version, loaded bool) error {
+	if _, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, commit); err != nil || ok {
+		return err
+	}
+	short := commit[:min(10, len(commit))]
+	stays := "No version is current: factoryd cannot run tasks until a valid commit lands."
+	if loaded {
+		stays = fmt.Sprintf("Version %d (commit %s) stays current.", current.ID, current.Commit)
+	}
+	link := fmt.Sprintf("%s/%s/src/commit/%s/%s", a.Forgejo.PublicURL, a.Repo, commit, a.Dir)
+	title := fmt.Sprintf("config: %s/ at %s rejected", a.Dir, short)
+	body := fmt.Sprintf("factoryd refused the configuration tree %s/ at commit %s (%s). %s\n\nReasons (`factoryd config check %s` shows the same):\n\n%s\n\n"+
+		"Fix the files and push; the next valid commit on main becomes current within 30 s.\n\nfiled by factoryd",
+		a.Dir, commit, link, stays, a.Dir, fenced(reason.Error()))
+	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, Task{
+		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
+		Source: SourceConfig, Author: a.Forgejo.BotUser,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", TaskID: t.ID, Fingerprint: commit,
+		Verdict: VerdictReal, ResolvedBy: "factoryd",
+		Detail: map[string]any{"commit": commit, "repository": a.Repo.String(), "issue": ref.Number, "reason": reason.Error(), "current": current.ID}})
+	return err
 }

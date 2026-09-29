@@ -63,14 +63,8 @@ func (p Project) Minted() bool { return p.GitToken != "" }
 // with package write (ruling 164).
 func (p Project) CIUser() string { return "ci-" + p.Name }
 
-// Environment is one Flux Kustomization: path of the repository applied
-// into namespace (ruling 157), and the public hostname, if any, the infra
-// commit gives it (ruling 155).
-type Environment struct {
-	Namespace string `json:"namespace"`
-	Path      string `json:"path"`
-	Hostname  string `json:"hostname,omitempty"`
-}
+// Environment is one Flux Kustomization of a project.
+type Environment = policy.Environment
 
 // Repo is the project's repository.
 func (p Project) Repo() Repo {

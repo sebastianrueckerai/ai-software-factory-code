@@ -279,7 +279,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err := r.setupNamespace(ctx, t, base, push); err != nil {
 		return SessionResult{}, err
 	}
-	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.cfg.Supervisor.WallClockCap))
+	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(r.supervisorConfig().WallClockCap))
 	began := rfc3339(time.Now())
 	r.record(ctx, t.ID, "session_start", map[string]any{
 		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,

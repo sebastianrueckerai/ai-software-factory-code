@@ -318,12 +318,21 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 }
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
-	return policy.Version{ID: 4, SHA256: "c9d98bb0aa", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
+	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
-		Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
+		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
 			Approvers:       []string{"sebastian"},
-			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}}}, true, nil
+			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
+			Projects: map[string]policy.ProjectConfig{
+				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"}},
+				"infra":    {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
+			},
+			Workflow: policy.Workflow{Stages: []policy.Stage{
+				{Name: "screening", OnFindings: "human", When: "outsider"},
+				{Name: "checks", OnFindings: "agent", Enabled: true},
+				{Name: "merge", OnFindings: "human", Enabled: true},
+			}}}}, true, nil
 }
 
 type rig struct {
@@ -361,7 +370,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), Repo: factoryd.Repo{Owner: "sf", Name: "code"},
 		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
-		PolicyURL: "https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml",
+		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		Projects: r.projects, Reconcile: r.projects.reconcile,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
@@ -855,15 +864,31 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 }
 
+// The configuration page shows the version in force read-only: its
+// commit, the policy, the projects and the workflow, each linked to its
+// file at that commit.
 func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
-	for _, want := range []string{"<dd>4</dd>", "c9d98bb0aa", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
-		`href="https://git.example/sf/infra/src/branch/main/k8s/platform/policy/policy.yaml"`} {
+	at := "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"
+	for _, want := range []string{"<dd>4</dd>", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
+		`<a href="` + at + `"><code>c9d98bb0aa11</code></a>`,
+		`<a href="` + at + `/policy.yaml">policy.yaml</a>`,
+		`<a href="` + at + `/workflow.yaml">workflow.yaml</a>`,
+		`<a href="` + at + `/projects/demo-app.yaml">demo-app</a>`,
+		`<a href="` + at + `/projects/infra.yaml">infra</a>`,
+		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
+		"<td>demo-app/demo-app</td><td>auto</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
+		"<td>screening</td><td>human</td><td>no</td><td>outsider</td>",
+		"<td>checks</td><td>agent</td><td>yes</td><td></td>",
+		`<a href="https://git.example/sf/infra/src/branch/main/factory">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/policy lacks %q", want)
 		}
+	}
+	if strings.Contains(body, "<form") && strings.Contains(body[strings.Index(body, "<h2>"):], "<form") {
+		t.Error("/policy has a form: the configuration is read-only")
 	}
 }
 

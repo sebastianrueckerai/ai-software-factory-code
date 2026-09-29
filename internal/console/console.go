@@ -80,9 +80,11 @@ type Config struct {
 	Timelines factoryd.ObjectStore
 	Policies  Policies
 	Costs     Costs
-	// PolicyURL is the policy file in the infra repository, where every
-	// change is made (ruling 107).
-	PolicyURL    string
+	// ConfigRepo is the infra repository's web URL and ConfigDir the
+	// configuration tree's directory in it, where every change is made
+	// (ruling 183).
+	ConfigRepo   string
+	ConfigDir    string
 	Approvals    Approvals
 	ApproveMerge MergeApprover
 	Resources    Resources

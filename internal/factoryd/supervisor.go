@@ -251,11 +251,11 @@ type SupervisorModel struct {
 	GatewayURL string
 	Token      string // the gateway-factoryd token
 	Budget     TokenBudget
-	HTTP       *http.Client // nil = supervisorTimeout
+	// Timeout bounds one call (limits.supervisor_timeout): GLM reasons
+	// before it answers.
+	Timeout func() time.Duration
+	HTTP    *http.Client // nil = http.DefaultClient
 }
-
-// supervisorTimeout bounds one call: GLM reasons before it answers.
-const supervisorTimeout = 4 * time.Minute
 
 // Decide never fails: a failed or invalid answer, or a call the gateway
 // refuses, is an escalation.
@@ -300,6 +300,8 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 	if err != nil {
 		return "", err
 	}
+	ctx, cancel := context.WithTimeout(ctx, m.Timeout())
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return "", err
@@ -310,7 +312,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
 	client := m.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: supervisorTimeout}
+		client = http.DefaultClient
 	}
 	res, err := client.Do(req)
 	if err != nil {

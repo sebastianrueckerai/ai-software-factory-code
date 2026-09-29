@@ -74,7 +74,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("CurrentPolicy before any load = (%v, %v), want (false, nil)", ok, err)
 	}
 	doc := testPolicy(0, 20).Document
-	v, _, err := policy.Record(ctx, s.db, "abc", doc)
+	v, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: doc})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -108,6 +108,12 @@ type WorkflowConfig struct {
 	// much per answer, never more than the cap.
 	AnswerSlice   time.Duration
 	ChecksTimeout time.Duration
+	// StrongerAfter is how many returns from the same stage keep the
+	// model; the next takes the stronger rung (limits.stronger_after).
+	StrongerAfter int
+	// PolicyVersion is the configuration version the task started under,
+	// whose tree its stages read.
+	PolicyVersion int64
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -211,12 +217,13 @@ const sessionGrace = 2 * time.Minute
 // TaskWorkflow is a task's whole lifecycle (architecture 5.1, 6.5, 6.6):
 // attempts, pull request, checks, review signals, final state.
 type TaskWorkflow struct {
-	Config WorkflowConfig
+	// Config is read once, at the start, into the history.
+	Config func() WorkflowConfig
 }
 
 func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	var cfg WorkflowConfig
-	if err := workflow.SideEffect(ctx, func(workflow.Context) any { return w.Config }).Get(&cfg); err != nil {
+	if err := workflow.SideEffect(ctx, func(workflow.Context) any { return w.Config() }).Get(&cfg); err != nil {
 		return "", err
 	}
 	// short activities (Reconcile, SetState, OpenPullRequest, Escalate,
@@ -894,13 +901,14 @@ const reproActivityTimeout = 2 * (MaxReproTimeout + 10*time.Minute)
 // MaxReproTimeout is the longest reproduction command run.
 const MaxReproTimeout = 15 * time.Minute
 
-// reviewOptions: one review call is bounded by supervisorTimeout; it
-// heartbeats, so a cancel reaches the call.
+// reviewOptions: one review call is bounded by the policy's
+// supervisor_timeout, at most policy.MaxSupervisorTimeout; it heartbeats,
+// so a cancel reaches the call and a lost worker is noticed.
 func reviewOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
-		StartToCloseTimeout:    supervisorTimeout + 2*time.Minute,
-		ScheduleToCloseTimeout: 3*supervisorTimeout + 10*time.Minute,
+		StartToCloseTimeout:    policy.MaxSupervisorTimeout + 2*time.Minute,
+		ScheduleToCloseTimeout: 3*policy.MaxSupervisorTimeout + 10*time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,

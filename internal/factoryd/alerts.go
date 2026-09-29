@@ -19,6 +19,9 @@ const (
 	// AlertSigNoz is a SigNoz alert in a project's namespace, filed as a
 	// bug issue (Task 70).
 	AlertSigNoz = "alert"
+	// AlertConfigRejected is a commit of the configuration tree factoryd
+	// refused, filed as a human-lane issue on the tree's repository.
+	AlertConfigRejected = "config_rejected"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.
@@ -39,7 +42,8 @@ type Alert struct {
 	ResolvedAt *time.Time
 	Verdict    string // "" while open
 	ResolvedBy string
-	// Fingerprint is the SigNoz alert's (kind alert only).
+	// Fingerprint is the SigNoz alert's (kind alert), the refused commit
+	// (kind config_rejected).
 	Fingerprint string
 	Detail      map[string]any
 }
@@ -110,9 +114,9 @@ func (s *PGStore) Alerts(ctx context.Context, limit int) ([]Alert, error) {
 }
 
 // AlertByFingerprint is the newest SigNoz alert row of fingerprint.
-func (s *PGStore) AlertByFingerprint(ctx context.Context, fingerprint string) (Alert, bool, error) {
+func (s *PGStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	a, err := scanAlert(s.db.QueryRowContext(ctx,
-		`SELECT `+alertColumns+` FROM alerts WHERE fingerprint = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, fingerprint, AlertSigNoz))
+		`SELECT `+alertColumns+` FROM alerts WHERE fingerprint = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, fingerprint, kind))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Alert{}, false, nil
 	}

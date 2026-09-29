@@ -1,0 +1,5 @@
+# yaml-language-server: $schema=../schema/project.schema.json
+repository: sf/infra
+merge_rule: human
+objects: seed
+agents: none

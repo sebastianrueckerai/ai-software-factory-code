@@ -1,11 +1,26 @@
 {{template "head" .}}
-<h2>Policy</h2>
+<h2>Configuration</h2>
 <dl>
 <dt>Version</dt><dd>{{.Version.ID}}</dd>
-<dt>sha256</dt><dd><code>{{.Version.SHA256}}</code></dd>
+<dt>Commit</dt><dd><a href="{{.At}}"><code>{{.Version.Commit}}</code></a></dd>
 <dt>Loaded</dt><dd>{{.LoadedAt}}</dd>
 <dt>In force since</dt><dd>{{.ActivatedAt}}</dd>
 </dl>
-<p>The policy is a file in Git; every change is a commit there. <a href="{{.URL}}">Edit it in the infra repository</a>.</p>
+<p>The configuration is the directory {{.Dir}}/ of the infra repository; every change is a commit there. <a href="{{.Main}}">Edit it on main</a>.</p>
+<h3>Workflow (<a href="{{.At}}/workflow.yaml">workflow.yaml</a>)</h3>
+<table>
+<thead><tr><th scope="col">Stage</th><th scope="col">Findings go to</th><th scope="col">Enabled</th><th scope="col">When</th></tr></thead>
+<tbody>
+{{range .Version.Workflow.Stages}}<tr><td>{{.Name}}</td><td>{{.OnFindings}}</td><td>{{if .Enabled}}yes{{else}}no{{end}}</td><td>{{.When}}</td></tr>
+{{end}}</tbody>
+</table>
+<h3>Projects</h3>
+<table>
+<thead><tr><th scope="col">Project</th><th scope="col">Repository</th><th scope="col">Merge rule</th><th scope="col">Objects</th><th scope="col">Agents</th><th scope="col">Namespaces</th></tr></thead>
+<tbody>
+{{range .Projects}}<tr><td><a href="{{$.At}}/projects/{{.Name}}.yaml">{{.Name}}</a></td><td>{{.Repository}}</td><td>{{.MergeRule}}</td><td>{{.Objects}}</td><td>{{.Agents}}</td><td>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
+{{end}}</tbody>
+</table>
+<h3>Policy (<a href="{{.At}}/policy.yaml">policy.yaml</a>)</h3>
 <pre><code>{{.Document}}</code></pre>
 {{template "foot"}}

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=schema/policy.schema.json
+version: 1
+budget:
+  task_default_eur: 2
+  task_max_eur: 5
+  day_eur: 20
+limits:
+  sessions: 3
+  agent_time: 20m
+  supervisor_calls: 3
+  supervisor_timeout: 6m
+  stronger_after: 1
+classes:
+  coder:
+    models: [coding-cheap, coding-frontier]
+    review_model: review-frontier
+    supervisor_model: supervisor
+    tools:
+      web_scrape: {max_requests: 30, max_eur: 0.20}
+      escalate_to_human: {}
+prices:
+  firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}
+risk:
+  classes:
+    - {name: forbidden, outcome: forbidden}
+    - {name: high, outcome: requires_approval}
+    - {name: normal, outcome: auto}
+  rules:
+    - {class: forbidden, paths: [".forgejo/**"]}
+    - {class: high, paths: ["k8s/**"]}
+  default: normal
+envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
+approvers: [sebastian]
+bounds: {GateReproduction: 1800}

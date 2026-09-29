@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=../schema/project.schema.json
+repository: demo-app/demo-app
+merge_rule: auto
+objects: factory
+agents: coder
+namespaces: [demo-staging, demo-prod]
+environments:
+  - {namespace: demo-staging, path: deploy/staging, hostname: demo-staging.example.org}
+  - {namespace: demo-prod, path: deploy/prod}
+quota: {cpu: "2", memory: 4Gi, storage: 10Gi}
+secrets: [demo-write-token/token]

@@ -652,12 +652,28 @@ func TestNoWriteRejectsANegativeWait(t *testing.T) {
 
 // A session's progress detectors wait what the policy in force says.
 func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
-	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24},
+	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy: func() policy.Version {
-			return policy.Version{Document: policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60}}}
+			return policy.Version{Tree: policy.Tree{Document: policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
+				Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}}}}
 		}}}
 	c := r.supervisorConfig()
-	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 {
-		t.Fatalf("config = %+v, want no_write 1m from the policy, the rest as configured", c)
+	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute || c.MaxCalls != 2 {
+		t.Fatalf("config = %+v, want no_write 1m, agent time 45m and 2 calls from the policy, the rest as configured", c)
+	}
+}
+
+// The limits of the version in force when a task's workflow starts are
+// the task's: its session cap, agent time and stronger rung, and the
+// version it pinned.
+func TestWorkflowConfigTakesTheLimits(t *testing.T) {
+	v := policy.Version{ID: 9, Tree: policy.Tree{Document: policy.Document{
+		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}}}}
+	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, AnswerSlice: time.Minute, ChecksTimeout: time.Hour,
+		Policy: func() policy.Version { return v }}}
+	want := WorkflowConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, MaxSessions: 5, WallClockCap: 30 * time.Minute,
+		AnswerSlice: time.Minute, ChecksTimeout: time.Hour, StrongerAfter: 2, PolicyVersion: 9}
+	if got := r.WorkflowConfig(); got != want {
+		t.Fatalf("WorkflowConfig = %+v, want %+v", got, want)
 	}
 }

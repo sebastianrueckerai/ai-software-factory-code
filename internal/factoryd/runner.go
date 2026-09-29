@@ -38,12 +38,14 @@ type RunnerConfig struct {
 	Models               ModelLadder
 	AnswerTokens         int
 	HeadroomTokens       int
-	MaxSessions          int
 	AnswerSlice          time.Duration // agent time a human answer guarantees the attempt it buys
 	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
-	Supervisor           SupervisorConfig
-	// Policy is the policy version in force (GatePolicy's risk rules).
+	// Supervisor is the session supervisor's configuration; its agent
+	// time, call count and progress detector come from the policy.
+	Supervisor SupervisorConfig
+	// Policy is the configuration version in force: the risk rules, the
+	// limits a workflow captures at its start, the supervisor's.
 	Policy func() policy.Version
 	// ReproTimeout bounds one reproduction command run.
 	ReproTimeout time.Duration
@@ -196,11 +198,11 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
-	if err := cfg.Supervisor.validate(); err != nil {
-		return nil, fmt.Errorf("runner: %w", err)
-	}
 	if cfg.Policy == nil {
 		return nil, fmt.Errorf("runner: the policy in force is required")
+	}
+	if err := (&Runner{cfg: cfg}).supervisorConfig().validate(); err != nil {
+		return nil, fmt.Errorf("runner: %w", err)
 	}
 	if cfg.Gates == nil || cfg.LastFailure == nil {
 		return nil, fmt.Errorf("runner: the gate watch and the last failure reader are required")
@@ -210,9 +212,6 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	if cfg.ReproTimeout > MaxReproTimeout {
 		return nil, fmt.Errorf("runner: a reproduction timeout of %s exceeds %s", cfg.ReproTimeout, MaxReproTimeout)
-	}
-	if cfg.MaxSessions <= 0 {
-		cfg.MaxSessions = 3
 	}
 	if cfg.ChecksTimeout <= 0 {
 		cfg.ChecksTimeout = 45 * time.Minute
@@ -232,14 +231,19 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
 }
 
-// WorkflowConfig is the task policy TaskWorkflow captures at start.
+// WorkflowConfig is what TaskWorkflow captures at its start: the limits of
+// the version in force and the version itself, which the task keeps.
 func (r *Runner) WorkflowConfig() WorkflowConfig {
+	v := r.cfg.Policy()
+	l := v.Document.Limits
 	return WorkflowConfig{
 		Models:        r.cfg.Models,
-		MaxSessions:   r.cfg.MaxSessions,
-		WallClockCap:  r.cfg.Supervisor.WallClockCap,
+		MaxSessions:   l.Sessions,
+		WallClockCap:  l.AgentTime,
 		AnswerSlice:   r.cfg.AnswerSlice,
 		ChecksTimeout: r.cfg.ChecksTimeout,
+		StrongerAfter: l.StrongerAfter,
+		PolicyVersion: v.ID,
 	}
 }
 
@@ -342,7 +346,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	sup, err := NewSupervisor(r.supervisorConfig(), deadline.Add(-r.cfg.Supervisor.WallClockCap), time.Now())
+	supCfg := r.supervisorConfig()
+	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
 	}
@@ -601,10 +606,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 }
 
 // supervisorConfig is the session supervisor's configuration with the
-// progress detectors of the policy in force.
+// agent time, the call count and the progress detectors of the policy in
+// force.
 func (r *Runner) supervisorConfig() SupervisorConfig {
 	c, d := r.cfg.Supervisor, r.cfg.Policy().Document
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
+	c.WallClockCap, c.MaxCalls = d.Limits.AgentTime, d.Limits.SupervisorCalls
 	return c
 }
 

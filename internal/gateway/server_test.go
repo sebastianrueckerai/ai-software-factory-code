@@ -23,14 +23,14 @@ var coder = []string{"coder"}
 
 // testPolicy is the shape of the deployed v1 policy.
 func testPolicy(id int64, dayEUR float64) policy.Version {
-	return policy.Version{ID: id, SHA256: fmt.Sprintf("sha-%d", id), Document: policy.Document{
+	return policy.Version{ID: id, Commit: fmt.Sprintf("c-%d", id), Tree: policy.Tree{Document: policy.Document{
 		Version: 1,
 		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR},
 		Classes: map[string]policy.Class{
 			"coder": {Models: []string{"coding-cheap", "coding-frontier"}},
 			"odd":   {Models: []string{"unpriced"}},
 		},
-	}}
+	}}}
 }
 
 type ledgerRow struct {

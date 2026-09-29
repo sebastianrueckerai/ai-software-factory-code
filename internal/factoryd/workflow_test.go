@@ -77,7 +77,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
-	h.env.RegisterWorkflowWithOptions(TaskWorkflow{Config: testWorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+	h.env.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:       func(ctx context.Context, taskID string) error { return nil },
 		ActivitySetState:          func(ctx context.Context, taskID, state string) error { return nil },
@@ -470,7 +470,7 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	for _, f := range files {
 		replayer := worker.NewWorkflowReplayer()
-		replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: testWorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+		replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 		if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}

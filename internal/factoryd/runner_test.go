@@ -483,11 +483,11 @@ func testRunnerConfig() RunnerConfig {
 		Models:               ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
-		MaxSessions:          3,
 		ChecksPoll:           time.Millisecond,
-		// the test activity environment's deadline is 10 minutes out, so a
-		// 10 minute cap puts the half-way point 3 minutes into each session
-		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: 10 * time.Minute, RepetitionEvents: 24},
+		// the test activity environment's deadline is 10 minutes out, so
+		// testPolicyYAML's agent time of 10 minutes puts the half-way point
+		// 3 minutes into each session
+		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy:      testPolicyVersion,
 		Leases:      &fakeLeases{},
 		Gates:       &GateWatch{},
@@ -495,13 +495,16 @@ func testRunnerConfig() RunnerConfig {
 	}
 }
 
+// setLimits changes the limits of the runner's policy version.
+func setLimits(r *Runner, change func(*policy.Limits)) {
+	v := r.cfg.Policy()
+	change(&v.Document.Limits)
+	r.cfg.Policy = func() policy.Version { return v }
+}
+
 // testPolicyVersion is version 7 of testPolicyYAML.
 func testPolicyVersion() policy.Version {
-	d, err := policy.Parse([]byte(testPolicyYAML))
-	if err != nil {
-		panic(err)
-	}
-	return policy.Version{ID: 7, Document: d}
+	return policy.Version{ID: 7, Commit: "c7", Tree: testTree(testPolicyYAML)}
 }
 
 // fakeLeases is the registry's live leased addresses by task.
@@ -1062,7 +1065,7 @@ func TestRunSessionFourthTripEscalatesWithoutACall(t *testing.T) {
 // the cap ends the session.
 func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	runner.cfg.Supervisor.WallClockCap = time.Second
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = time.Second })
 	f := &fakeLiteLLM{content: `{"action":"continue"}`, delay: time.Minute}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 
@@ -1099,7 +1102,7 @@ func TestRunSessionHalfWayIsOncePerTask(t *testing.T) {
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	// the test activity deadline is 10 minutes out: with a 20 minute cap the
 	// session starts past half way
-	runner.cfg.Supervisor.WallClockCap = 20 * time.Minute
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 20 * time.Minute })
 	f := &fakeLiteLLM{content: `{"action":"continue"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 
@@ -1217,7 +1220,8 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, WallClockCap: 300 * time.Millisecond, RepetitionEvents: 24}
+	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m"}, nil, hangLogs)
 	if err != nil || res.Outcome != OutcomeWallClock {

@@ -27,12 +27,13 @@ const (
 	KindStanding = "standing"
 )
 
-// Version is one loaded policy document, immutable once written.
-// ActivatedAt is when it last became the version in force.
+// Version is the configuration tree at one commit of the infra
+// repository's main, immutable once written. ActivatedAt is when it last
+// became the version in force.
 type Version struct {
-	ID          int64     `json:"id"`
-	SHA256      string    `json:"sha256"`
-	Document    Document  `json:"document"`
+	ID     int64  `json:"id"`
+	Commit string `json:"commit"`
+	Tree
 	LoadedAt    time.Time `json:"loaded_at"`
 	ActivatedAt time.Time `json:"activated_at"`
 }
@@ -47,12 +48,11 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// Record stores doc under its file's sha256 unless that content is known
-// already, and activates it unless it is in force already. inserted is
-// false when the content was loaded before (a revert activates the earlier
-// row again).
-func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Version, inserted bool, err error) {
-	body, err := json.Marshal(doc)
+// Record stores tree under its commit unless that commit is known already,
+// and activates it unless it is in force already. inserted is false when
+// the commit was loaded before.
+func Record(ctx context.Context, db *sql.DB, commit string, tree Tree) (v Version, inserted bool, err error) {
+	body, err := json.Marshal(tree)
 	if err != nil {
 		return Version{}, false, err
 	}
@@ -65,11 +65,11 @@ func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Versio
 		return Version{}, false, err
 	}
 	err = tx.QueryRowContext(ctx,
-		`INSERT INTO policy_versions (sha256, document) VALUES ($1, $2::jsonb)
-		 ON CONFLICT (sha256) DO NOTHING RETURNING id`, sha, body).Scan(&v.ID)
+		`INSERT INTO policy_versions (commit_sha, document) VALUES ($1, $2::jsonb)
+		 ON CONFLICT (commit_sha) DO NOTHING RETURNING id`, commit, body).Scan(&v.ID)
 	inserted = err == nil
 	if errors.Is(err, sql.ErrNoRows) {
-		err = tx.QueryRowContext(ctx, `SELECT id FROM policy_versions WHERE sha256 = $1`, sha).Scan(&v.ID)
+		err = tx.QueryRowContext(ctx, `SELECT id FROM policy_versions WHERE commit_sha = $1`, commit).Scan(&v.ID)
 	}
 	if err != nil {
 		return Version{}, false, err
@@ -90,20 +90,32 @@ func Record(ctx context.Context, db *sql.DB, sha string, doc Document) (v Versio
 // Current is the version in force, the latest activation; false when none
 // was loaded yet.
 func Current(ctx context.Context, db *sql.DB) (Version, bool, error) {
+	return scanVersion(db.QueryRowContext(ctx,
+		`SELECT v.id, v.commit_sha, v.document, v.loaded_at, a.activated_at
+		 FROM policy_activations a JOIN policy_versions v ON v.id = a.version_id
+		 ORDER BY a.id DESC LIMIT 1`))
+}
+
+// VersionByID is version id, the one a task pinned; ActivatedAt is its
+// latest activation. false when there is none.
+func VersionByID(ctx context.Context, db *sql.DB, id int64) (Version, bool, error) {
+	return scanVersion(db.QueryRowContext(ctx,
+		`SELECT v.id, v.commit_sha, v.document, v.loaded_at, COALESCE(max(a.activated_at), v.loaded_at)
+		 FROM policy_versions v LEFT JOIN policy_activations a ON a.version_id = v.id
+		 WHERE v.id = $1 GROUP BY v.id`, id))
+}
+
+func scanVersion(row *sql.Row) (Version, bool, error) {
 	var v Version
 	var body []byte
-	err := db.QueryRowContext(ctx,
-		`SELECT v.id, v.sha256, v.document, v.loaded_at, a.activated_at
-		 FROM policy_activations a JOIN policy_versions v ON v.id = a.version_id
-		 ORDER BY a.id DESC LIMIT 1`,
-	).Scan(&v.ID, &v.SHA256, &body, &v.LoadedAt, &v.ActivatedAt)
+	err := row.Scan(&v.ID, &v.Commit, &body, &v.LoadedAt, &v.ActivatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Version{}, false, nil
 	}
 	if err != nil {
 		return Version{}, false, err
 	}
-	if err := json.Unmarshal(body, &v.Document); err != nil {
+	if err := json.Unmarshal(body, &v.Tree); err != nil {
 		return Version{}, false, fmt.Errorf("policy version %d: %w", v.ID, err)
 	}
 	return v, true, nil

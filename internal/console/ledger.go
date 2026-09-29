@@ -3,7 +3,10 @@ package console
 import (
 	"encoding/json"
 	"log"
+	"maps"
 	"net/http"
+	"net/url"
+	"slices"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -74,8 +77,18 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot render the policy", http.StatusInternalServerError)
 		return
 	}
+	type project struct {
+		Name string
+		policy.ProjectConfig
+	}
+	var projects []project
+	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
+		projects = append(projects, project{name, v.Projects[name]})
+	}
 	s := current(r)
-	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Version": v,
+	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Version": v, "Projects": projects,
 		"LoadedAt":    v.LoadedAt.UTC().Format(time.RFC3339),
-		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "URL": c.cfg.PolicyURL})
+		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "Dir": c.cfg.ConfigDir,
+		"At":   c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(v.Commit) + "/" + c.cfg.ConfigDir,
+		"Main": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir})
 }

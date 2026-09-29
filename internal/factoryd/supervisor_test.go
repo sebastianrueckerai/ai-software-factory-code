@@ -172,6 +172,23 @@ func testSupervisorModel(url string) *SupervisorModel {
 		GatewayURL: url,
 		Token:      "gw-token",
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
+		Timeout:    func() time.Duration { return time.Minute },
+	}
+}
+
+// One call is bounded by the policy's supervisor_timeout.
+func TestSupervisorModelTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body) // #nosec G104 -- read, so the client's close ends the request's context
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+	m := testSupervisorModel(srv.URL)
+	m.Timeout = func() time.Duration { return 50 * time.Millisecond }
+	start := time.Now()
+	_, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, "system", testInput())
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
+		t.Fatalf("Chat = %v after %s, want the deadline after 50ms", err, time.Since(start))
 	}
 }
 
