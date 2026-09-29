@@ -134,6 +134,27 @@ func addCollaborator(ctx context.Context, call func(context.Context, string, str
 	return err
 }
 
+// ProjectCollaborators are repo's direct collaborators' logins.
+func (f *Forgejo) ProjectCollaborators(ctx context.Context, repo Repo) ([]string, error) {
+	users, err := GetPages[struct {
+		Login string `json:"login"`
+	}](ctx, f.projectsCall, "/api/v1/repos/"+repo.String()+"/collaborators?")
+	if err != nil {
+		return nil, err
+	}
+	logins := make([]string, len(users))
+	for i, u := range users {
+		logins[i] = u.Login
+	}
+	return logins, nil
+}
+
+// RemoveProjectCollaborator takes user off repo's collaborators.
+func (f *Forgejo) RemoveProjectCollaborator(ctx context.Context, repo Repo, user string) error {
+	_, err := f.projectsCall(ctx, http.MethodDelete, "/api/v1/repos/"+repo.String()+"/collaborators/"+url.PathEscape(user), nil, http.StatusNoContent)
+	return err
+}
+
 func (f *Forgejo) AddProjectCollaborator(ctx context.Context, repo Repo, user, permission string) error {
 	return addCollaborator(ctx, f.projectsCall, repo, user, permission)
 }

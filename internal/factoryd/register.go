@@ -309,6 +309,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 		object string
 		do     func() (Change, error)
 	}{
+		{"collaborators", func() (Change, error) { return run.pruneCollaborators(ctx) }},
 		{"protection main", func() (Change, error) {
 			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser))
 		}},
@@ -411,6 +412,32 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 		return Unchanged, nil
 	}
 	return Updated, f.AddProjectCollaborator(ctx, repo, user, "write")
+}
+
+// pruneCollaborators removes every direct collaborator but the bot, the
+// merge user and the approvers: factoryd owns a factory project's list
+// (ruling 203), so an approver dropped from the policy leaves.
+func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error) {
+	f, repo := run.r.Forgejo, run.p.Repo()
+	keep := append([]string{f.BotUser, run.r.MergeUser}, run.approvers()...)
+	users, err := f.ProjectCollaborators(ctx, repo)
+	if err != nil {
+		return "", err
+	}
+	var gone []string
+	for _, u := range users {
+		if slices.ContainsFunc(keep, func(k string) bool { return strings.EqualFold(k, u) }) {
+			continue
+		}
+		if err := f.RemoveProjectCollaborator(ctx, repo, u); err != nil {
+			return "", err
+		}
+		gone = append(gone, u)
+	}
+	if len(gone) == 0 {
+		return Unchanged, nil
+	}
+	return Change("removed " + strings.Join(gone, ", ")), nil
 }
 
 // Protection is main's protection for a project: the code repository's
