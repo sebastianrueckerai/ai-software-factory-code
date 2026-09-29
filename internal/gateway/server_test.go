@@ -360,6 +360,7 @@ func TestChatCompletions(t *testing.T) {
 		wantDecision    string
 		wantReason      string // "" = don't check
 		wantOverHold    string // the last audit row's over-hold flag
+		wantDeployment  string // the last audit row's deployment
 		wantErrType     string // "" = no error body expected
 		wantBody        string // "" = don't check
 		wantUpstreamReq string // "" = the client body forwarded verbatim
@@ -582,6 +583,18 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			name:    "a failed call names the deployment LiteLLM tried",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp: stubResp{status: http.StatusServiceUnavailable, body: `{"error":"down"}`,
+				headers: map[string]string{"x-litellm-model-name": "dashscope/qwen3.8-flash"}},
+			wantStatus:      http.StatusServiceUnavailable,
+			wantDecision:    "error_upstream",
+			wantDeployment:  "dashscope/qwen3.8-flash",
+			wantBody:        `{"error":"down"}`,
+			wantUpstreamHit: 1,
+		},
+		{
 			name:         "litellm unreachable refuses 502",
 			task:         &runningTask,
 			reqBody:      chatBody("coding-cheap"),
@@ -601,9 +614,11 @@ func TestChatCompletions(t *testing.T) {
 			resp: stubResp{status: http.StatusOK, body: `{"choices":[{"message":{"role":"assistant"}}]}`, headers: map[string]string{
 				"x-litellm-response-cost": "0.1",
 				"x-litellm-key-spend":     "7", // stale cache read: never booked
+				"x-litellm-model-name":    "deepseek/deepseek-flash",
 			}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
+			wantDeployment:  "deepseek/deepseek-flash",
 			wantBody:        `{"choices":[{"message":{"role":"assistant"}}]}`,
 			wantSpent:       ptr(2.1),
 			wantMintBudget:  ptr(8.0),
@@ -630,9 +645,11 @@ func TestChatCompletions(t *testing.T) {
 				"Content-Type":            "text/event-stream",
 				"x-litellm-response-cost": "0.0",
 				"x-litellm-key-spend":     "0.0",
+				"x-litellm-model-name":    "zai/glm-5.3",
 			}},
 			wantStatus:      http.StatusOK,
 			wantDecision:    "allowed",
+			wantDeployment:  "zai/glm-5.3",
 			wantBody:        sseBody,
 			wantUpstreamReq: `{"messages":[{"role":"user","content":"hi"}],"model":"coding-frontier","stream":true,"stream_options":{"include_usage":true}}`,
 			wantSpent:       ptr(2.125),
@@ -923,6 +940,9 @@ func TestChatCompletions(t *testing.T) {
 			}
 			if last.OverHold != tt.wantOverHold {
 				t.Fatalf("over hold = %q, want %q", last.OverHold, tt.wantOverHold)
+			}
+			if last.Deployment != tt.wantDeployment {
+				t.Fatalf("deployment = %q, want %q", last.Deployment, tt.wantDeployment)
 			}
 
 			if tt.wantErrType != "" {

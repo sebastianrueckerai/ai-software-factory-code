@@ -48,6 +48,9 @@ type AuditRow struct {
 	// OverHold is the booking's COST OVER HOLD flag (policy.OverHold), ""
 	// within the hold or without a booking.
 	OverHold string
+	// Deployment is the LiteLLM deployment that answered a model call, as
+	// LiteLLM names it (provider/model); "" when LiteLLM named none.
+	Deployment string
 }
 
 func (row AuditRow) kind() string { return cmp.Or(row.Kind, AuditKindAgent) }
@@ -109,9 +112,9 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind())
+		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind, deployment)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment)
 	return err
 }
 

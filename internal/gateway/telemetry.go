@@ -97,6 +97,8 @@ type upstreamCall struct {
 	hold   float64
 	cost   float64
 	over   bool
+	// deployment is the LiteLLM deployment that answered a model call
+	deployment string
 }
 
 func (t *Telemetry) startCall(ctx context.Context, task Task, kind, name string, hold float64) (context.Context, *upstreamCall) {
@@ -114,6 +116,9 @@ func (c *upstreamCall) end() {
 	c.span.SetAttributes(telemetry.TaskID.String(c.task.ID), attribute.String("project", c.task.Repository),
 		attribute.String("kind", c.kind), attribute.String("name", c.name), attribute.String("upstream.status", c.status),
 		attribute.Float64("hold_eur", c.hold), attribute.Float64("cost_eur", c.cost), attribute.Bool("over_hold", c.over))
+	if c.deployment != "" {
+		c.span.SetAttributes(attribute.String("deployment", c.deployment))
+	}
 	if c.status != "ok" && !strings.HasPrefix(c.status, "2") {
 		c.span.SetStatus(codes.Error, "upstream "+c.status)
 	}
@@ -193,6 +198,7 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	}
 	num("audit.hold_eur", row.HoldEUR)
 	str("audit.over_hold", row.OverHold)
+	str("audit.deployment", row.Deployment)
 	return r
 }
 

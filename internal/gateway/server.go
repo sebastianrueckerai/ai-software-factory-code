@@ -569,15 +569,16 @@ func (s *Server) block(slot string, k *liveKey) {
 
 // modelCall is one admitted call: its hold is released exactly once.
 type modelCall struct {
-	pid      *int64
-	task     Task
-	hold     policy.Hold
-	alias    string
-	kind     string // the factoryd purpose, "" for an agent's call
-	slot     string // the key slot: the task, or the task's factoryd slot
-	key      *liveKey
-	overHold string        // the booking's flag, on every audit row after it
-	up       *upstreamCall // nil until the call goes upstream
+	pid        *int64
+	task       Task
+	hold       policy.Hold
+	alias      string
+	kind       string // the factoryd purpose, "" for an agent's call
+	slot       string // the key slot: the task, or the task's factoryd slot
+	key        *liveKey
+	overHold   string        // the booking's flag, on every audit row after it
+	deployment string        // the LiteLLM deployment that answered
+	up         *upstreamCall // nil until the call goes upstream
 }
 
 var zero = 0.0
@@ -634,6 +635,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 	}
 	defer res.Body.Close()
 	up.status = strconv.Itoa(res.StatusCode)
+	c.deployment = res.Header.Get(headerDeployment)
+	up.deployment = c.deployment
 
 	if res.StatusCode/100 != 2 {
 		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
@@ -687,6 +690,11 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key
 	}
 	s.finish(c, cost, "allowed")
 }
+
+// headerDeployment names the deployment that answered (its litellm_params
+// model, e.g. zai/glm-5.3). LiteLLM rewrites the body's model to the alias
+// the client asked for, so the header is the only place it shows.
+const headerDeployment = "x-litellm-model-name"
 
 // maxSSELine bounds what usageScanner buffers of one line. The usage chunk
 // is small; a longer line is content, passed through but not inspected.
@@ -792,7 +800,7 @@ func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, kind, decisio
 func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
 		TaskID: c.task.ID, Kind: c.kind, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
-		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold,
+		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold, Deployment: c.deployment,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, decision %s): %v", c.task.ID, decision, err)
 	}

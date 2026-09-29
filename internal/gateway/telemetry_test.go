@@ -145,7 +145,7 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 		{TaskID: "t1", Decision: "error_tool", Tool: policy.ToolReplicate, PolicyVersion: &three, SpendEUR: &spend, HoldEUR: &hold,
 			Reason: `provider answered 401: {"detail":"Invalid token r8_0123456789abcdefghijABCDEFGHIJ"}`},
 		{TaskID: "t1", Decision: "allowed", ModelAlias: "sk-sneaky-alias-0123", PolicyVersion: &three, SpendEUR: &spend,
-			OutputLimit: &limit, HoldEUR: &hold, OverHold: "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full"},
+			OutputLimit: &limit, HoldEUR: &hold, OverHold: "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full", Deployment: "deepseek/deepseek-flash"},
 		{TaskID: "t1", Decision: "refused_budget", Reason: "task headroom 0.000000 EUR", ModelAlias: "coding-cheap", PolicyVersion: &three},
 		// a task id as long as a key stays whole: it is the join key
 		{TaskID: "t-0123456789abcdef0123456789abcdef01", Decision: "escalated", Tool: policy.ToolEscalate},
@@ -165,7 +165,7 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 			"audit.reason": "provider answered 401: [body dropped]", "audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.hold_eur": "0.5"},
 		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.kind": "agent", "audit.model_alias": "[redacted]",
 			"audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.output_limit": "2250", "audit.hold_eur": "0.5",
-			"audit.over_hold": "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full"},
+			"audit.over_hold": "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full", "audit.deployment": "deepseek/deepseek-flash"},
 		{"body": "audit refused_budget", "task.id": "t1", "audit.decision": "refused_budget", "audit.kind": "agent", "audit.reason": "task headroom 0.000000 EUR",
 			"audit.model_alias": "coding-cheap", "audit.policy_version": "3"},
 		{"body": "audit escalated", "task.id": "t-0123456789abcdef0123456789abcdef01", "audit.decision": "escalated", "audit.kind": "agent", "audit.tool": policy.ToolEscalate},
@@ -210,7 +210,7 @@ func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	store.setPolicy(testPolicy(3, 1))
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "u"}}, Store: rig.tel.Audited(store),
 		Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices, Telemetry: rig.tel})
-	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0125"}})
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0125", "x-litellm-model-name": "zai/glm-5.3"}})
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
 		t.Fatalf("call = %d %s", rr.Code, rr.Body.String())
 	}
@@ -225,7 +225,7 @@ func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	}
 	for i, want := range []map[string]string{
 		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "coding-cheap", "upstream.status": "200",
-			"hold_eur": "0.131204", "cost_eur": "0.0125", "over_hold": "false"},
+			"hold_eur": "0.131204", "cost_eur": "0.0125", "over_hold": "false", "deployment": "zai/glm-5.3"},
 		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "coding-cheap", "upstream.status": "500",
 			"hold_eur": "0.131204", "cost_eur": "0", "over_hold": "false"},
 	} {
