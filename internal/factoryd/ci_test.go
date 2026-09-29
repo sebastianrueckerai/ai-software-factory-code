@@ -1084,6 +1084,43 @@ func TestCISpawnerBuildRunnerWaitsForBuildkitdAndReportsReady(t *testing.T) {
 	}
 }
 
+// A build VM whose buildkitd never answers fails its pod in the init
+// container, before the runner takes the job (#209, 2.28.143.173): the job
+// gets a second VM at once, whose init container lets the runner start
+// and pr.yml fail loudly if it stays silent too; no third VM.
+func TestCISpawnerReplacesASilentBuildVMOnce(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 56, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	ctx := context.Background()
+	ns := "factory-agents-ci-56"
+	lastTry := func() bool {
+		spec, _ := podContainer(t, kube, ns)
+		init := spec["initContainers"].([]any)[0].(map[string]any)
+		return strings.Contains(fmt.Sprint(init["env"]), "BUILDKITD_LAST_TRY")
+	}
+	fail := func() {
+		kube.mu.Lock()
+		kube.pods[ns+"/"+ciPodName].phase = "Failed"
+		kube.mu.Unlock()
+	}
+
+	spawner.poll(ctx)
+	if lastTry() {
+		t.Fatal("the first VM's init container is its last try")
+	}
+	fail()
+	spawner.poll(ctx) // tears the silent VM down and spawns the second at once
+	if len(hub.registered) != 2 || !lastTry() {
+		t.Fatalf("registered %v, last try %v: want a second runner at once, on its last try", hub.registered, lastTry())
+	}
+	fail()
+	spawner.poll(ctx)
+	if len(hub.registered) != 2 {
+		t.Fatalf("registered %v: a second silent VM gets no third", hub.registered)
+	}
+}
+
 func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 52, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
