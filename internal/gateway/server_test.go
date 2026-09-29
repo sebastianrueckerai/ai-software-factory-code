@@ -26,6 +26,10 @@ func testPolicy(id int64, dayEUR float64) policy.Version {
 	return policy.Version{ID: id, Commit: fmt.Sprintf("c-%d", id), Tree: policy.Tree{Document: policy.Document{
 		Version: 1,
 		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR},
+		Limits: policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute,
+			StrongerAfter: 1},
+		Risk:            policy.Risk{Classes: []policy.RiskClass{{Name: "normal", Outcome: policy.OutcomeRequiresApproval}}, Default: "normal"},
+		EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4},
 		Classes: map[string]policy.Class{
 			"coder": {Models: []string{"coding-cheap", "coding-frontier"}},
 			"odd":   {Models: []string{"unpriced"}},
@@ -349,6 +353,7 @@ func TestChatCompletions(t *testing.T) {
 		upstreamURL string // "" = stub URL; "closed" = unreachable port
 		resp        stubResp
 		noPolicy    bool    // no policy version loaded yet
+		oldPolicy   bool    // the version in force is a row from before the tree
 		dayTotal    float64 // today's ledger total before the call (policy day cap 20)
 
 		wantStatus      int
@@ -396,6 +401,18 @@ func TestChatCompletions(t *testing.T) {
 			name:         "no policy version loaded refuses 503",
 			wantNoMint:   true,
 			noPolicy:     true,
+			task:         &runningTask,
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusServiceUnavailable,
+			wantDecision: "error_policy",
+			wantErrType:  "server_error",
+		},
+		{
+			// the stored row of a policy file decodes to a zero tree; it is
+			// no policy, not an empty one
+			name:         "a version in force that does not validate refuses 503",
+			wantNoMint:   true,
+			oldPolicy:    true,
 			task:         &runningTask,
 			reqBody:      chatBody("coding-cheap"),
 			wantStatus:   http.StatusServiceUnavailable,
@@ -864,6 +881,9 @@ func TestChatCompletions(t *testing.T) {
 			if tt.noPolicy {
 				store.pol = nil
 			}
+			if tt.oldPolicy {
+				store.pol = &policy.Version{ID: 1, Commit: "e3b0c442"}
+			}
 			store.day = tt.dayTotal
 			minter := &fakeMinter{err: tt.mintErr}
 
@@ -889,7 +909,8 @@ func TestChatCompletions(t *testing.T) {
 				t.Fatal("no audit row written")
 			}
 			for _, a := range audits {
-				if tt.noPolicy && a.PolicyVersion != nil || !tt.noPolicy && (a.PolicyVersion == nil || *a.PolicyVersion != 1) {
+				unset := tt.noPolicy || tt.oldPolicy
+				if unset && a.PolicyVersion != nil || !unset && (a.PolicyVersion == nil || *a.PolicyVersion != 1) {
 					t.Fatalf("audit row %+v names policy version %v, want 1 (nil without a policy)", a, a.PolicyVersion)
 				}
 			}

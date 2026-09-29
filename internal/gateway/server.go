@@ -149,6 +149,11 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 	if !ok {
 		return nil, errors.New("no policy version loaded")
 	}
+	// a row this binary cannot read as a policy (one from before the
+	// configuration tree) is no policy, not an empty one
+	if err := v.Document.Validate(); err != nil {
+		return nil, fmt.Errorf("policy version %d: %w", v.ID, err)
+	}
 	s.pol, s.polAt = v, s.now()
 	return &v, nil
 }
