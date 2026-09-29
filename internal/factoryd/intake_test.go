@@ -1600,8 +1600,9 @@ func TestResyncIssuesOverTheProjectRows(t *testing.T) {
 			t.Fatalf("read %s", p)
 		}
 	}
-	if len(store.tasks) != 5 {
-		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's", len(store.tasks))
+	// five issues (all but the bot's) and the improvement's presort (ruling 185)
+	if len(store.tasks) != 6 {
+		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's, and a presort", len(store.tasks))
 	}
 }
 

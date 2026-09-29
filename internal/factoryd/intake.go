@@ -650,7 +650,7 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		if err != nil {
 			return err
 		}
-		if !slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber }) {
+		if !botCloseRecorded(events, t) {
 			log.Printf("intake: issue #%d on %s closed by %s, which factoryd did not record as its own: task %s left as it is", t.IssueNumber, t.Repository, closer, t.ID)
 			return nil
 		}

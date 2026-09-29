@@ -646,14 +646,23 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			st.Findings = append(st.Findings, changeRequested(e.Author, e.Body))
 		}
 	}
-	if t.IssueNumber != 0 {
-		if st.IssueClosed, err = r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
-			return RunState{}, err
-		}
-	}
 	events, err := r.store.IntakeEvents(ctx, taskID)
 	if err != nil {
 		return RunState{}, err
+	}
+	if t.IssueNumber != 0 {
+		closer, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if errors.Is(err, errNoCloser) {
+			log.Printf("task %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
+		} else if err != nil {
+			return RunState{}, err
+		}
+		// the bot account's close counts only where factoryd recorded it,
+		// as on the webhook (review-task73 m8, m9)
+		st.IssueClosed = closer != "" && (closer != r.forgejo.BotUser || botCloseRecorded(events, t))
+		if closer == r.forgejo.BotUser && !st.IssueClosed {
+			log.Printf("task %s: issue #%d closed by %s, which factoryd did not record as its own: not counted", t.ID, t.IssueNumber, closer)
+		}
 	}
 	st.Answers, st.Question = answersFrom(events)
 	st.Screening = waitsOnScreening(events)

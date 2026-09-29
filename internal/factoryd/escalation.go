@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -102,6 +103,12 @@ const IntakePosterComment = "poster_comment"
 // bot (CommentID the issue number), that the close is its own: only such a
 // bot close ends a task (review-task73 m8).
 const IntakeFactoryClosed = "factory_closed"
+
+// botCloseRecorded reports whether events hold factoryd's record of
+// closing t's issue itself.
+func botCloseRecorded(events []IntakeEvent, t Task) bool {
+	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber })
+}
 
 // recordFactoryClose writes t's IntakeFactoryClosed; an existing one is
 // kept.

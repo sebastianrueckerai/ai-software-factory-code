@@ -41,6 +41,7 @@ type prForgejo struct {
 	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
 	pulls      map[int64]string  // GET /pulls/{n} bodies
 	issueOff   bool              // GET /issues/{n} reports closed
+	closer     string            // the close on GET /issues/{n}/timeline; "" = sebastian
 	open       []map[string]any  // open pull requests
 	byHead     map[string]string // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
 	statuses   []string          // combined-status bodies, served in order, the last repeating
@@ -98,6 +99,8 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			} else {
 				http.NotFound(w, r)
 			}
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/timeline"):
+			fmt.Fprintf(w, `[{"type":"close","user":{"login":%q}}]`, cmp.Or(f.closer, "sebastian"))
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && !strings.HasSuffix(p, "/labels") && !strings.HasSuffix(p, "/comments"):
 			state := "open"
 			if f.issueOff {
@@ -722,6 +725,27 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		val, err := execActivity(t, r, ActivityReconcile, "t1")
 		if err != nil || val.Get(&got) != nil || !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: Reconcile = (%+v, %v), want %+v", name, got, err, tc.want)
+		}
+	}
+}
+
+// Review m9: a fresh workflow's Reconcile counts a close of the issue by
+// the bot account only where factoryd recorded it as its own, as the
+// webhook does.
+func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
+	for _, tc := range []struct {
+		closer   string
+		recorded bool
+		want     bool
+	}{{"sebastian", false, true}, {"factory-agent", false, false}, {"factory-agent", true, true}} {
+		r, store, _ := newActivityRunner(t, prTask, &prForgejo{issueOff: true, closer: tc.closer})
+		if tc.recorded {
+			recordFactoryClose(context.Background(), store, prTask)
+		}
+		var got RunState
+		val, err := execActivity(t, r, ActivityReconcile, "t1")
+		if err != nil || val.Get(&got) != nil || got.IssueClosed != tc.want {
+			t.Fatalf("closed by %s, recorded %v: Reconcile = (%+v, %v), want IssueClosed %v", tc.closer, tc.recorded, got, err, tc.want)
 		}
 	}
 }
