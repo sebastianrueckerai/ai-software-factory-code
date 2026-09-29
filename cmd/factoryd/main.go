@@ -253,23 +253,7 @@ func main() {
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
 	webhookIntake.MainPushed = registrar.MainPushed
-	// ruling 156: every project's objects come back from its file at boot,
-	// and again when a new policy version may change the approvers in the
-	// projects' protection
-	go func() {
-		seen := int64(0)
-		for {
-			if v := policyLoader.Current().ID; v != seen {
-				seen = v
-				registrar.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Minute):
-			}
-		}
-	}()
+	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
