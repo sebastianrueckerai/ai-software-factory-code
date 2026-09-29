@@ -219,6 +219,8 @@ func (run *reconcileRun) seed(ctx context.Context) {
 		case run.fail(object, err):
 		case label == run.p.Name:
 			run.line(object, "present")
+		case label == "":
+			run.line(object, "missing: the infra repository sets it")
 		default:
 			run.line(object, Change(fmt.Sprintf("wrong: %q, want %q; the infra repository sets it", label, run.p.Name)))
 		}
@@ -227,14 +229,15 @@ func (run *reconcileRun) seed(ctx context.Context) {
 
 // seedWebhook reports whether the repository's webhook reaches factoryd,
 // never making one: the seed does. A read token whose user does not
-// administer the repository cannot list its hooks: not checkable.
+// administer the repository is refused the hooks (403): not checkable. A
+// token that no longer works (401) is an error.
 func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
 	token := run.r.Forgejo.Access(run.p).Read
 	if token == "" {
 		return "", fmt.Errorf("the file's tokens.read %q is no secret factoryd holds", run.p.Tokens.Read)
 	}
 	hooks, err := run.r.Forgejo.Hooks(ctx, run.p.Repo(), token)
-	if errors.Is(err, ErrRefused) {
+	if errors.Is(err, errForgejoForbidden) {
 		return Change("not checkable, no admin credential on " + run.p.Repository), nil
 	}
 	if err != nil {

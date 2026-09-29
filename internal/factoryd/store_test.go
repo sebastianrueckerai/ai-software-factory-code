@@ -211,6 +211,16 @@ func (s *fakeStore) SetAgentSummary(ctx context.Context, id, summary string) err
 	return nil
 }
 
+func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Kind != "agent" || t.Status != "queued" {
+		return false, nil
+	}
+	t.Kind, t.Status, t.Gate, t.GateSince = "human", "waiting-human", "", nil
+	s.tasks[id] = t
+	return true, nil
+}
+
 func (s *fakeStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {
 	t, ok := s.tasks[id]
 	if !ok || t.Status != "suggested" {

@@ -137,6 +137,14 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				}
 				continue
 			}
+			if status == "queued" {
+				if moved, err := in.humanLaneWithoutAgents(ctx, t); err != nil || moved {
+					if err != nil {
+						log.Printf("heal pass: task %s: %v", t.ID, err)
+					}
+					continue
+				}
+			}
 			if err := wf.Start(ctx, t.ID); err != nil {
 				log.Printf("start open workflows: task %s: %v", t.ID, err)
 				continue

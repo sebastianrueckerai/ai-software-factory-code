@@ -48,13 +48,12 @@ type Forgejo struct {
 	// their repositories and members with it.
 	CIOrgToken string
 	// ProjectsToken is the dedicated user factory-projects' token,
-	// [write:repository, write:organization] on no fixed repository list
-	// (Task 65): a member of org sf's team projects, which may create org
-	// repositories and holds none, so it reaches exactly the repositories
-	// it created or a human made it an admin collaborator on. It creates
-	// a project's repository and keeps its webhook, collaborators and
-	// branch protection; Forgejo keeps Actions secrets and runners to the
-	// org owners, which it is not.
+	// write:repository on no fixed repository list (ruling 164): the owner
+	// of every project organisation and no member of sf, so it reaches the
+	// project repositories and nothing of the factory's own. It keeps a
+	// project's webhook, collaborators, branch protection, deploy key,
+	// Actions secrets and runners; the organisation and the repository
+	// come from register-project with the site admin's login.
 	ProjectsToken string
 	// Seeded are the tokens the seed makes, by their secret's name
 	// (policy.SeedSecrets), which a seed project's file names (ruling 179):
@@ -258,7 +257,11 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
 		default:
 			if res.StatusCode >= 400 && res.StatusCode < 500 {
-				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, ErrRefused, res.StatusCode, body)
+				refused := ErrRefused
+				if res.StatusCode == http.StatusForbidden {
+					refused = errForgejoForbidden
+				}
+				return nil, fmt.Errorf("forgejo %s %s: %w: status %d: %s", method, path, refused, res.StatusCode, body)
 			}
 		}
 		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)

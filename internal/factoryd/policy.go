@@ -474,6 +474,7 @@ type ConfigBook interface {
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }
 
 // ConfigAlarm raises a refused commit of the configuration tree (ruling
@@ -543,6 +544,9 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		}
 		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
 		if _, err := a.Forgejo.CreateIssueComment(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber, msg); err != nil {
+			return err
+		}
+		if err := recordFactoryClose(ctx, a.Store, t); err != nil {
 			return err
 		}
 		if err := a.Forgejo.CloseIssue(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber); err != nil {

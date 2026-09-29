@@ -34,8 +34,8 @@ type Document struct {
 	// sets none.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
 	// Approvers are the Forgejo users who may authorize spend in the
-	// console (ruling 128): approve a resource request or a merge, edit an
-	// envelope, promote a resource. Empty: nobody.
+	// console (ruling 128): approve a resource request or a merge, promote
+	// a resource. Empty: nobody.
 	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
 	// Bounds are how many seconds one run of an activity may take before
 	// it raises a gate_bound alert, per activity name and a default for the

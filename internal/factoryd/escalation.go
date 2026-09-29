@@ -98,6 +98,20 @@ const (
 // information request, never an escalation's answer (ruling 150).
 const IntakePosterComment = "poster_comment"
 
+// IntakeFactoryClosed records, before factoryd closes a task's issue as the
+// bot (CommentID the issue number), that the close is its own: only such a
+// bot close ends a task (review-task73 m8).
+const IntakeFactoryClosed = "factory_closed"
+
+// recordFactoryClose writes t's IntakeFactoryClosed; an existing one is
+// kept.
+func recordFactoryClose(ctx context.Context, store interface {
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+}, t Task) error {
+	_, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber})
+	return err
+}
+
 // maxEscalationText bounds the question, the reason and an information
 // request's fields, maxRecommendation the recommendation, as the gateway
 // does.

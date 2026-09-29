@@ -27,7 +27,7 @@ func TestNoSourceNamesTheFactorysRepositories(t *testing.T) {
 		}
 		for i, line := range strings.Split(string(b), "\n") {
 			if named.MatchString(strings.ReplaceAll(line, module, "")) {
-				hits = append(hits, path+":"+itoa(i+1)+": "+strings.TrimSpace(line))
+				hits = append(hits, path+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(line))
 			}
 		}
 		return nil
@@ -39,5 +39,3 @@ func TestNoSourceNamesTheFactorysRepositories(t *testing.T) {
 		t.Fatalf("sources naming a factory repository:\n%s", strings.Join(hits, "\n"))
 	}
 }
-
-func itoa(n int) string { return strconv.Itoa(n) }

@@ -452,10 +452,13 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		switch {
 		// a redelivery retries a workflow start that failed the first time
 		case t.Kind == "agent" && t.Status == "queued":
+			if moved, err := in.humanLaneWithoutAgents(ctx, t); err != nil || moved {
+				return err
+			}
 			return in.Workflows.Start(ctx, t.ID)
 		case t.Status == "suggested" && lane == LaneAgent:
 			return in.promote(ctx, via, t, defaultBranch, sender)
-		case t.Status == "suggested":
+		case t.Status == "suggested" && p.Agents == policy.AgentsCoder:
 			// a presort a crash kept from opening opens now
 			return in.presort(ctx, t, defaultBranch)
 		}
@@ -539,6 +542,23 @@ func (in *Intake) presort(ctx context.Context, t Task, defaultBranch string) err
 	return err
 }
 
+// humanLaneWithoutAgents moves queued agent task t to the human lane when
+// its project no longer lets agents work (agents none): nothing restarts
+// it. moved reports whether it did.
+func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved bool, err error) {
+	p, ok, err := in.Store.ProjectByRepository(ctx, t.Repository)
+	if err != nil || !ok || p.Agents != policy.AgentsNone {
+		return false, err
+	}
+	if moved, err = in.Store.ToHumanLane(ctx, t.ID); err != nil || !moved {
+		return moved, err
+	}
+	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
+	t.Kind = "human"
+	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
+	return true, nil
+}
+
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {
 	parts, err := SplitRepo(repo)
 	if err != nil {
@@ -620,10 +640,21 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done. An issue's
-// author can close it without any repository access, so only the bot
-// (closing what factoryd filed) and a user trusted to steer count.
+// author can close it without any repository access, so only a user
+// trusted to steer counts, and the bot account only where factoryd recorded
+// the close as its own (IntakeFactoryClosed): a leaked bot login ends no
+// task.
 func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
-	if closer != in.BotUser {
+	if closer == in.BotUser {
+		events, err := in.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber }) {
+			log.Printf("intake: issue #%d on %s closed by %s, which factoryd did not record as its own: task %s left as it is", t.IssueNumber, t.Repository, closer, t.ID)
+			return nil
+		}
+	} else {
 		if ok, err := in.trusted(ctx, t.Repository, closer); err != nil || !ok {
 			return err
 		}

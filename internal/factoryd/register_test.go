@@ -187,6 +187,10 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"permissions":{"admin":true}}`)
 		case p == repo+"/hooks" && r.Method == http.MethodGet:
 			s.hookReads = append(s.hookReads, by)
+			if by == "token revoked-tok" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
 			if by != "token projects-tok" && by != "token registrar-tok" { // an admin's token only
 				w.WriteHeader(http.StatusForbidden)
 				return
@@ -897,9 +901,9 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.reg.Forgejo.Seeded = testSeeded
 	rig.fj.repo = true
-	rig.kube.labels = map[string]map[string]string{"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "other"}}
+	rig.kube.labels = map[string]map[string]string{"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "other"}, "demo-bare": {}}
 	p := Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "human", Objects: "seed", Agents: "coder", File: true,
-		Namespaces: []string{"demo-staging", "demo-prod", "demo-qa"},
+		Namespaces: []string{"demo-staging", "demo-prod", "demo-qa", "demo-bare"},
 		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}
 	ctx := context.Background()
 	if err := rig.reg.Reconcile(ctx, p); err != nil {
@@ -913,6 +917,7 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 		"project demo-app: namespace demo-staging label factory/project: present\n",
 		`project demo-app: namespace demo-prod label factory/project: wrong: "other", want "demo-app"; the infra repository sets it` + "\n",
 		"project demo-app: namespace demo-qa label factory/project: missing: no namespace demo-qa; the infra repository makes it\n",
+		"project demo-app: namespace demo-bare label factory/project: missing: the infra repository sets it\n",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log lacks %q:\n%s", want, logs)
@@ -954,6 +959,11 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 	}
 	if rig.fj.hookReads[len(rig.fj.hookReads)-1] != "token config-tok" {
 		t.Fatalf("hooks read with %v", rig.fj.hookReads)
+	}
+	// m1: only a 403 is "not checkable"; a revoked token (401) is an error
+	rig.reg.Forgejo.Seeded = map[string]string{policy.SecretConfig: "revoked-tok"}
+	if err := rig.reg.Reconcile(ctx, p); err == nil || !strings.Contains(err.Error(), "webhook: cannot read the hooks with forgejo-config") {
+		t.Fatalf("a revoked read token: %v", err)
 	}
 }
 

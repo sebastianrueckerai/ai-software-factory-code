@@ -799,6 +799,9 @@ func TestForgejoClientErrorsAreRefusals(t *testing.T) {
 		if got := errors.Is(err, errForgejoNotFound); got != (want == ErrNotFound) {
 			t.Fatalf("%d: forgejo not found = %v: %v", code, got, err)
 		}
+		if got := errors.Is(err, errForgejoForbidden); got != (code == 403) {
+			t.Fatalf("%d: forbidden = %v: %v", code, got, err)
+		}
 		if want == ErrRefused && !strings.Contains(err.Error(), "no") {
 			t.Fatalf("%d: body not surfaced: %v", code, err)
 		}

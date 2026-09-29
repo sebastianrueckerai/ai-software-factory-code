@@ -489,6 +489,9 @@ func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 		". Closing this issue; a new issue with more detail starts a new task."); err != nil {
 		return err
 	}
+	if err := recordFactoryClose(ctx, r.store, t); err != nil {
+		return err
+	}
 	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err
 	}

@@ -982,6 +982,9 @@ func TestIntakeResyncTrustsTheIssueCloser(t *testing.T) {
 		agent := Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 30}
 		human := Task{ID: "t-human", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "human", IssueNumber: 30}
 		store.tasks["t1"], store.tasks["t-human"] = agent, human
+		// factoryd's own closes of both issues (m8)
+		recordFactoryClose(context.Background(), store, agent)
+		recordFactoryClose(context.Background(), store, human)
 		for _, task := range []Task{agent, human} {
 			if err := in.Resync(context.Background(), task); err != nil {
 				t.Fatalf("%s: Resync %s: %v", closer, task.ID, err)
@@ -1281,11 +1284,13 @@ func TestIntakeSignalsOnlyTrustedCommenters(t *testing.T) {
 }
 
 // Closing the issue fails the task, so only people with write access,
-// or factoryd's bot, can do it through the webhook.
+// or factoryd's bot where factoryd recorded the close, can do it through
+// the webhook.
 func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 	for closer, want := range map[string]int{"mallory": 0, "reader": 0, "sebastian": 1, "factory-agent": 1} {
 		in, store, _ := newTestIntake(t)
 		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 4}
+		recordFactoryClose(context.Background(), store, store.tasks["t1"])
 		body, _ := json.Marshal(map[string]any{
 			"action":     "closed",
 			"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "mallory"}},
@@ -1597,5 +1602,67 @@ func TestResyncIssuesOverTheProjectRows(t *testing.T) {
 	}
 	if len(store.tasks) != 5 {
 		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's", len(store.tasks))
+	}
+}
+
+// Review m8: a close by the bot account counts only where factoryd
+// recorded that it closed the issue itself (IntakeFactoryClosed); any other
+// bot close, from the webhook or the heal pass, leaves the task as it was.
+func TestIntakeBotCloseCountsOnlyWhenFactorydRecordedIt(t *testing.T) {
+	for _, recorded := range []bool{false, true} {
+		in, store, _ := newTestIntake(t)
+		store.tasks["t-human"] = Task{ID: "t-human", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "human", IssueNumber: 9}
+		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 4}
+		if recorded {
+			for _, e := range []IntakeEvent{{TaskID: "t-human", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 9},
+				{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4}} {
+				if _, err := store.InsertIntakeEvent(context.Background(), e); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		for _, n := range []int64{9, 4} {
+			body, _ := json.Marshal(map[string]any{
+				"action":     "closed",
+				"issue":      map[string]any{"number": n, "user": map[string]string{"login": "sebastian"}},
+				"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+				"sender":     map[string]string{"login": "factory-agent"},
+			})
+			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+				t.Fatalf("status = %d", rr.Code)
+			}
+		}
+		human, signals := store.tasks["t-human"].Status, workflowsOf(in).signals
+		if recorded && (human != "done" || len(signals) != 1 || !strings.HasPrefix(signals[0], "t1 issue_closed factory-agent ")) {
+			t.Fatalf("recorded bot close: human task %s, signals %q", human, signals)
+		}
+		if !recorded && (human != "waiting-human" || len(signals) != 0) {
+			t.Fatalf("unrecorded bot close acted: human task %s, signals %q", human, signals)
+		}
+	}
+}
+
+// Review m3: a project switched to agents none restarts none of its queued
+// agent tasks, not on a redelivery and not in the heal pass: they move to
+// the human lane.
+func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
+	none := seedProject("sf/ai-software-factory-code")
+	none.Agents = "none"
+	for _, via := range []string{"redelivery", "heal pass"} {
+		in, store, _ := newTestIntake(t)
+		store.projects = []Project{none}
+		store.tasks["t-q"] = Task{ID: "t-q", Repository: "sf/ai-software-factory-code", Status: "queued", Kind: "agent", IssueNumber: 7}
+		if via == "redelivery" {
+			body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add the runner", "objective body")
+			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+				t.Fatalf("status %d", rr.Code)
+			}
+		} else {
+			in.Projects = projectList{none}
+			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
+		}
+		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
+			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
+		}
 	}
 }

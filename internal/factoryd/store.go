@@ -201,6 +201,9 @@ type Store interface {
 	// label): queued at base sha, in the intake gate from now; false when
 	// the task was not suggested.
 	PromoteSuggested(ctx context.Context, id, sha string) (bool, error)
+	// ToHumanLane makes queued agent task id a human-lane task waiting on
+	// a human; false when it was not a queued agent task.
+	ToHumanLane(ctx context.Context, id string) (bool, error)
 	// ProjectByRepository is the project row of repository (owner/name).
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
@@ -490,6 +493,16 @@ func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_summary = $2 WHERE id = $1`, id, summary)
 	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL
+		WHERE id = $1 AND kind = 'agent' AND status = 'queued'`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *PGStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {

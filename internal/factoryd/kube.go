@@ -28,6 +28,9 @@ var (
 	// ErrRefused is a Forgejo 4xx no retry can fix: everything but a 404
 	// (errForgejoNotFound) and the transient 408, 409 and 429.
 	ErrRefused = errors.New("forgejo: refused")
+	// errForgejoForbidden is Forgejo's 403, one of ErrRefused: the
+	// credential works but lacks the right (a reader listing hooks).
+	errForgejoForbidden = fmt.Errorf("%w (forbidden)", ErrRefused)
 	// errForgejoNotFound is Forgejo's 404. It is also ErrNotFound, so a
 	// caller tolerating an absent object needs no second check, but only
 	// it, not a kube, S3 or store not-found, ends an activity's retries.
