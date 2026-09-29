@@ -9,7 +9,8 @@ import (
 
 // Scrubber replaces PEM blocks, the configured secrets, URL userinfo,
 // bearer and basic credentials, JWTs, sk- keys and any run of 32 or more
-// key characters with a marker.
+// key characters that is not a commit id, a sha256 digest or a lowercase path
+// with a marker.
 type Scrubber struct {
 	secrets []string
 }
@@ -21,7 +22,12 @@ var (
 	// shortWord is a credential position holding a word ("missing bearer
 	// token"), not a credential
 	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
-	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|[\w+/=-]{32,}`)
+	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|(?:sha256:)?[\w+/=-]{32,}`)
+	// gitSHA and digest are what the 32-character rule keeps: a commit id,
+	// an image or blob digest
+	gitSHA    = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	digest    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	lowerPath = regexp.MustCompile(`^[a-z0-9/_-]+$`)
 )
 
 // minSecret keeps a short configured value from redacting common words.
@@ -53,5 +59,24 @@ func (s *Scrubber) String(v string) string {
 		}
 		return p[1] + " [redacted]"
 	})
-	return keyLike.ReplaceAllString(v, "[redacted]")
+	return keyLike.ReplaceAllStringFunc(v, func(m string) string {
+		if gitSHA.MatchString(m) || digest.MatchString(m) || repoPath(m) {
+			return m
+		}
+		return "[redacted]"
+	})
+}
+
+// repoPath is a run that is a lowercase path, every long segment of it
+// words joined by - or _: a repository, file or URL path, not a key.
+func repoPath(run string) bool {
+	if !strings.Contains(run, "/") || !lowerPath.MatchString(run) {
+		return false
+	}
+	for _, seg := range strings.Split(run, "/") {
+		if len(seg) >= 32 && !strings.ContainsAny(seg, "-_") {
+			return false
+		}
+	}
+	return true
 }
