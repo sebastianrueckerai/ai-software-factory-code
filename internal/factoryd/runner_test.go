@@ -487,8 +487,11 @@ func testRunnerConfig() RunnerConfig {
 		// the test activity environment's deadline is 10 minutes out, so
 		// testPolicyYAML's agent time of 10 minutes puts the half-way point
 		// 3 minutes into each session
-		Supervisor:  SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
-		Policy:      testPolicyVersion,
+		Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Policy:     testPolicyVersion,
+		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
+			return testPolicyVersion(), id == testPolicyVersion().ID, nil
+		},
 		Leases:      &fakeLeases{},
 		Gates:       &GateWatch{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
@@ -1213,6 +1216,35 @@ func TestRunSessionPodDeathIsNoPush(t *testing.T) {
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
 	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "pod exited without a result" {
 		t.Fatalf("result = (%+v, %v)", res, err)
+	}
+}
+
+// A session reads its limits from the version its workflow started under,
+// whatever is current now; a workflow from before the pin (version 0)
+// reads the current one.
+func TestRunSessionTakesThePinnedVersion(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pin             int64
+		pinned, current time.Duration
+	}{
+		"pinned":         {pin: 7, pinned: 300 * time.Millisecond, current: time.Hour},
+		"before the pin": {pin: 0, pinned: time.Hour, current: 300 * time.Millisecond},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+			runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+			pinned, current := testPolicyVersion(), testPolicyVersion()
+			pinned.Document.Limits.AgentTime = tc.pinned
+			current.ID, current.Document.Limits.AgentTime = 8, tc.current
+			runner.cfg.Policy = func() policy.Version { return current }
+			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			began := time.Now()
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m", PolicyVersion: tc.pin}, nil, hangLogs)
+			if err != nil || res.Outcome != OutcomeWallClock || time.Since(began) > 10*time.Second {
+				t.Fatalf("result = (%+v, %v) after %s, want wall_clock at 300ms", res, err, time.Since(began))
+			}
+		})
 	}
 }
 

@@ -154,8 +154,9 @@ func main() {
 			SameCall:         envInt("SUPERVISE_SAME_CALL", factoryd.DefaultSameCall),
 			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),
 		},
-		Policy:       policyLoader.Current,
-		ReproTimeout: envDuration("REPRO_TIMEOUT", 10*time.Minute),
+		Policy:        policyLoader.Current,
+		PolicyVersion: store.PolicyVersion,
+		ReproTimeout:  envDuration("REPRO_TIMEOUT", 10*time.Minute),
 		// the gateway commissions servers into the registry; factoryd only
 		// admits their addresses into the task's egress
 		Leases:       cloudres.AgentStore(store.CloudResources()),
@@ -173,7 +174,6 @@ func main() {
 			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
 			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
 		},
-		Timeout: func() time.Duration { return policyLoader.Current().Document.Limits.SupervisorTimeout },
 	})
 	if err != nil {
 		log.Fatalf("runner: %v", err)

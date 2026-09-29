@@ -47,6 +47,9 @@ type RunnerConfig struct {
 	// Policy is the configuration version in force: the risk rules, the
 	// limits a workflow captures at its start, the supervisor's.
 	Policy func() policy.Version
+	// PolicyVersion reads version id, the one a task's workflow started
+	// under (PolicyStore.PolicyVersion).
+	PolicyVersion func(ctx context.Context, id int64) (policy.Version, bool, error)
 	// ReproTimeout bounds one reproduction command run.
 	ReproTimeout time.Duration
 	// Leases reads the commissioned servers each task holds; their IPv4s
@@ -198,10 +201,10 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
-	if cfg.Policy == nil {
-		return nil, fmt.Errorf("runner: the policy in force is required")
+	if cfg.Policy == nil || cfg.PolicyVersion == nil {
+		return nil, fmt.Errorf("runner: the policy in force and the version reader are required")
 	}
-	if err := (&Runner{cfg: cfg}).supervisorConfig().validate(); err != nil {
+	if err := (&Runner{cfg: cfg}).supervisorConfig(cfg.Policy().Document).validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
 	if cfg.Gates == nil || cfg.LastFailure == nil {
@@ -287,6 +290,8 @@ type sessionSpec struct {
 	model      string
 	startRef   string
 	repo       Repo
+	// policy is the task's pinned version's: its limits and detectors
+	policy policy.Document
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -346,7 +351,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	supCfg := r.supervisorConfig()
+	supCfg := r.supervisorConfig(s.policy)
 	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
@@ -606,13 +611,29 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 }
 
 // supervisorConfig is the session supervisor's configuration with the
-// agent time, the call count and the progress detectors of the policy in
-// force.
-func (r *Runner) supervisorConfig() SupervisorConfig {
-	c, d := r.cfg.Supervisor, r.cfg.Policy().Document
+// agent time, the call count and the progress detectors of d, the task's
+// pinned policy.
+func (r *Runner) supervisorConfig(d policy.Document) SupervisorConfig {
+	c := r.cfg.Supervisor
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
 	c.WallClockCap, c.MaxCalls = d.Limits.AgentTime, d.Limits.SupervisorCalls
 	return c
+}
+
+// pinned is policy version id, the one a task's workflow started under;
+// the version in force for id 0 (a workflow from before the pin).
+func (r *Runner) pinned(ctx context.Context, id int64) (policy.Document, error) {
+	if id == 0 {
+		return r.cfg.Policy().Document, nil
+	}
+	v, ok, err := r.cfg.PolicyVersion(ctx, id)
+	if err != nil {
+		return policy.Document{}, fmt.Errorf("read policy version %d: %w", id, err)
+	}
+	if !ok {
+		return policy.Document{}, terminalError("policy version %d, which the task started under, does not exist", id)
+	}
+	return v.Document, nil
 }
 
 // factoryModel is the alias the policy in force names for purpose on t's
@@ -624,7 +645,7 @@ func (r *Runner) factoryModel(t Task, purpose string) string {
 // askSupervisor builds the supervisor's input and calls it through the
 // gateway on the task's account.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
-	return r.supervisor.Decide(ctx, t.ID, r.factoryModel(t, policy.PurposeSupervisor), SupervisorInput{
+	return r.supervisor.Decide(ctx, t.ID, r.factoryModel(t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
 			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
 		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},

@@ -172,7 +172,6 @@ func testSupervisorModel(url string) *SupervisorModel {
 		GatewayURL: url,
 		Token:      "gw-token",
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
-		Timeout:    func() time.Duration { return time.Minute },
 	}
 }
 
@@ -184,9 +183,8 @@ func TestSupervisorModelTimesOut(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	m := testSupervisorModel(srv.URL)
-	m.Timeout = func() time.Duration { return 50 * time.Millisecond }
 	start := time.Now()
-	_, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, "system", testInput())
+	_, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, 50*time.Millisecond, "system", testInput())
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 		t.Fatalf("Chat = %v after %s, want the deadline after 50ms", err, time.Since(start))
 	}
@@ -210,7 +208,7 @@ func testInput() SupervisorInput {
 func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
 	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read the script first"}`}
 	m := testSupervisorModel(f.srv(t).URL)
-	d := m.Decide(context.Background(), "t1", "supervisor", testInput())
+	d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput())
 	if d != (Decision{Action: ActionRedirect, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
@@ -237,22 +235,22 @@ func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
 func TestSupervisorModelFailureEscalates(t *testing.T) {
 	f := &fakeLiteLLM{status: http.StatusInternalServerError}
 	m := testSupervisorModel(f.srv(t).URL)
-	if d := m.Decide(context.Background(), "t1", "supervisor", testInput()); d.Action != ActionEscalate || !strings.Contains(d.Reason, "500") {
+	if d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput()); d.Action != ActionEscalate || !strings.Contains(d.Reason, "500") {
 		t.Fatalf("decision = %+v, want escalate naming the failure", d)
 	}
 	f2 := &fakeLiteLLM{content: "sure, continue"}
-	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", "supervisor", testInput()); d.Action != ActionEscalate {
+	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", "supervisor", time.Minute, testInput()); d.Action != ActionEscalate {
 		t.Fatalf("prose answer: %+v, want escalate", d)
 	}
 	f3 := &fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}
-	_, err := testSupervisorModel(f3.srv(t).URL).Chat(context.Background(), "t1", "supervisor", "supervisor", "sys", testInput())
+	_, err := testSupervisorModel(f3.srv(t).URL).Chat(context.Background(), "t1", "supervisor", "supervisor", time.Minute, "sys", testInput())
 	var refusal *policy.Refusal
 	if !errors.As(err, &refusal) || *refusal != (policy.Refusal{Decision: "refused_budget", Reason: "task headroom 0.000000 EUR"}) {
 		t.Fatalf("refused call: %v, want the gateway's refusal", err)
 	}
 	// no alias in the policy: no call
 	f4 := &fakeLiteLLM{content: "{}"}
-	if _, err := testSupervisorModel(f4.srv(t).URL).Chat(context.Background(), "t1", "", "review", "sys", testInput()); err == nil ||
+	if _, err := testSupervisorModel(f4.srv(t).URL).Chat(context.Background(), "t1", "", "review", time.Minute, "sys", testInput()); err == nil ||
 		!strings.Contains(err.Error(), "names no review model") || len(f4.chats) != 0 {
 		t.Fatalf("no alias: %v, calls %d; want an error without a call", err, len(f4.chats))
 	}

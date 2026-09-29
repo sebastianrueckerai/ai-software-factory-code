@@ -66,6 +66,9 @@ func (r ReproResult) Reproduced() bool { return r.Ran && r.BaseExit > 0 && r.Exi
 type GateResults struct {
 	Policy       PolicyGate
 	Reproduction ReproResult
+	// Pin is the version the task started under, whose
+	// supervisor_timeout bounds the review call; 0 reads the current one.
+	Pin int64
 }
 
 // Review is the model review's verdict; Note says why there is none (no
@@ -583,7 +586,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	content, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, reviewPrompt, reviewInput{
+	pinned, err := r.pinned(ctx, gates.Pin)
+	if err != nil {
+		return Review{}, err
+	}
+	content, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, reviewPrompt, reviewInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()},
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates,
 	})

@@ -147,6 +147,10 @@ type SessionInput struct {
 	PosterInfo      []string
 	StartRef        string
 	ParentSessionID string
+	// PolicyVersion is WorkflowConfig.PolicyVersion: the session reads
+	// its limits from it; 0 (a workflow from before the pin) reads the
+	// version in force.
+	PolicyVersion int64
 }
 
 type SessionResult struct {
@@ -499,6 +503,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
 			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
+			PolicyVersion: t.cfg.PolicyVersion,
 		})
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
@@ -677,6 +682,7 @@ func (t *taskRun) gate(commit string) verdict {
 			g.Reproduction.Exit, commit, g.Reproduction.Command, g.Reproduction.Output)}}
 	}
 	var review Review
+	g.Pin = t.cfg.PolicyVersion
 	if t.v8 >= versionGatesPinned {
 		v, decided, err := t.gateActivity(true, reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
 		if decided {
@@ -1047,7 +1053,7 @@ func (t *taskRun) askGate(trip GateTrip, opts workflow.ActivityOptions, args []a
 	// retry on the last attempt would fail the activity
 	maxAttempts := opts.RetryPolicy.MaximumAttempts
 	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession,
-		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts)}
+		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts), PolicyVersion: t.cfg.PolicyVersion}
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
 

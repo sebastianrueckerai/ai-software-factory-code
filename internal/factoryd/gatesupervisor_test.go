@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // testWorkflowID is the workflow id of every activity the test activity
@@ -102,6 +104,29 @@ func (c *gateCase) supervise(t *testing.T, activity string, input []any, canWait
 		t.Fatal(err)
 	}
 	return d, bundle
+}
+
+// The gate supervisor's call waits the supervisor_timeout of the version
+// the task started under.
+func TestSuperviseGateTakesThePinnedTimeout(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
+	c.model.delay = time.Minute
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	pinned.Document.Limits.SupervisorTimeout = 50 * time.Millisecond
+	current.ID, current.Document.Limits.SupervisorTimeout = 8, time.Hour
+	c.runner.cfg.Policy = func() policy.Version { return current }
+	c.runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
+	began := time.Now()
+	val, err := execActivity(t, c.runner, ActivitySuperviseGate, "t1", GateSupervision{PolicyVersion: 7,
+		Trip:  GateTrip{Activity: ActivityWaitChecks, ActivityID: "7", Attempt: 1, AlertID: c.alert, Started: time.Now().Add(-45 * time.Second), Bound: 30 * time.Second},
+		Input: []any{"t1", "c1"}, CanWait: true, CanRetry: true})
+	d := getInto[GateDecision](t, val, err)
+	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis+d.Recommendation, "deadline exceeded") || time.Since(began) > 10*time.Second {
+		t.Fatalf("decision = %+v after %s, want an escalation at 50ms", d, time.Since(began))
+	}
 }
 
 func (c *gateCase) alertRow(t *testing.T) Alert {

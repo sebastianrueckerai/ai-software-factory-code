@@ -291,6 +291,25 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	startedWithin(t, objects, "model_review", from)
 }
 
+// The review call waits the supervisor_timeout of the version the task
+// started under, not the current one.
+func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`, delay: time.Minute}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	pinned.Document.Limits.SupervisorTimeout = 50 * time.Millisecond
+	current.ID, current.Document.Limits.SupervisorTimeout = 8, time.Hour
+	r.cfg.Policy = func() policy.Version { return current }
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	began := time.Now()
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7, Policy: PolicyGate{Class: "normal"}})
+	rv := getInto[Review](t, val, err)
+	if !strings.Contains(rv.Note, "deadline exceeded") || time.Since(began) > 10*time.Second {
+		t.Fatalf("review = %+v after %s, want the call cut at 50ms", rv, time.Since(began))
+	}
+}
+
 // A task at its budget cap: the gateway refuses the review with
 // refused_budget, which becomes the review's note on the pull request and
 // the card; an upstream error and an invalid answer are notes too. None

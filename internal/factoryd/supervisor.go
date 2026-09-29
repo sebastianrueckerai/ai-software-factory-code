@@ -251,16 +251,13 @@ type SupervisorModel struct {
 	GatewayURL string
 	Token      string // the gateway-factoryd token
 	Budget     TokenBudget
-	// Timeout bounds one call (limits.supervisor_timeout): GLM reasons
-	// before it answers.
-	Timeout func() time.Duration
-	HTTP    *http.Client // nil = http.DefaultClient
+	HTTP       *http.Client // nil = http.DefaultClient
 }
 
 // Decide never fails: a failed or invalid answer, or a call the gateway
 // refuses, is an escalation.
-func (m *SupervisorModel) Decide(ctx context.Context, taskID, alias string, in SupervisorInput) Decision {
-	content, err := m.Chat(ctx, taskID, alias, policy.PurposeSupervisor, supervisorPrompt, in)
+func (m *SupervisorModel) Decide(ctx context.Context, taskID, alias string, timeout time.Duration, in SupervisorInput) Decision {
+	content, err := m.Chat(ctx, taskID, alias, policy.PurposeSupervisor, timeout, supervisorPrompt, in)
 	if err != nil {
 		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + textutil.Truncate(err.Error(), 500)}
 	}
@@ -281,10 +278,11 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 
 // Chat is one JSON-mode call of alias through the gateway on the task's
 // account for purpose, with system as the system prompt and input,
-// indented JSON, as the user message. A gateway refusal is a
-// *policy.Refusal in the chain; alias "" (the policy names none) makes no
-// call.
-func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, system string, input any) (string, error) {
+// indented JSON, as the user message, cut after timeout (the task's
+// limits.supervisor_timeout: GLM reasons before it answers). A gateway
+// refusal is a *policy.Refusal in the chain; alias "" (the policy names
+// none) makes no call.
+func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (string, error) {
 	if alias == "" {
 		return "", fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)
 	}
@@ -300,7 +298,10 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose, syst
 	if err != nil {
 		return "", err
 	}
-	ctx, cancel := context.WithTimeout(ctx, m.Timeout())
+	if timeout <= 0 {
+		return "", fmt.Errorf("no timeout for the %s call", purpose)
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {

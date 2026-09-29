@@ -27,6 +27,7 @@ var testWorkflowConfig = WorkflowConfig{
 	WallClockCap:  20 * time.Minute,
 	AnswerSlice:   10 * time.Minute,
 	ChecksTimeout: 45 * time.Minute,
+	PolicyVersion: 7,
 }
 
 // workflowHarness drives TaskWorkflow with every activity stubbed: the
@@ -221,6 +222,27 @@ func TestWorkflowHappyPathToMerged(t *testing.T) {
 	}
 	if !slices.Equal(h.states, []string{"running", "in-review"}) {
 		t.Fatalf("states = %v, want [running in-review]", h.states)
+	}
+}
+
+// The version the workflow started under reaches every session and the
+// model review, which read their limits from it (ruling 183).
+func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	var reviewed []int64
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (Review, error) {
+			reviewed = append(reviewed, g.Pin)
+			return Review{}, nil
+		})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].PolicyVersion != 7 || !slices.Equal(reviewed, []int64{7}) {
+		t.Fatalf("sessions %+v, reviews pinned to %v; want version 7 in both", h.sessions, reviewed)
 	}
 }
 

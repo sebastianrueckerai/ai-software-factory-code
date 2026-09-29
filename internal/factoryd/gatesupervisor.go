@@ -35,6 +35,9 @@ type GateSupervision struct {
 	Input    []any
 	CanWait  bool
 	CanRetry bool
+	// PolicyVersion is the version the task started under, whose
+	// supervisor_timeout bounds the call; 0 reads the current one.
+	PolicyVersion int64
 }
 
 func (g GateSupervision) allowed() []SupervisorAction {
@@ -106,10 +109,15 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	if !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt) {
 		d = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
 	} else {
+		pinned, err := r.pinned(ctx, in.PolicyVersion)
+		if err != nil {
+			return GateDecision{}, err
+		}
 		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
 		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in)
 		cancel()
-		content, err := r.supervisor.Chat(ctx, t.ID, r.factoryModel(t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
+		content, err := r.supervisor.Chat(ctx, t.ID, r.factoryModel(t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
+			pinned.Limits.SupervisorTimeout, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
 				Recommendation: fmt.Sprintf("look at %s of task %s yourself", in.Trip.Activity, t.ID)}

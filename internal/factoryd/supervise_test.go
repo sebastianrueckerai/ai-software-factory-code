@@ -650,14 +650,11 @@ func TestNoWriteRejectsANegativeWait(t *testing.T) {
 	}
 }
 
-// A session's progress detectors wait what the policy in force says.
+// A session's progress detectors, agent time and calls are its policy's.
 func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
-	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
-		Policy: func() policy.Version {
-			return policy.Version{Tree: policy.Tree{Document: policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
-				Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}}}}
-		}}}
-	c := r.supervisorConfig()
+	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24}}}
+	c := r.supervisorConfig(policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
+		Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}})
 	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute || c.MaxCalls != 2 {
 		t.Fatalf("config = %+v, want no_write 1m, agent time 45m and 2 calls from the policy, the rest as configured", c)
 	}
