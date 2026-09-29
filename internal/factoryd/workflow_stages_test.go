@@ -742,3 +742,45 @@ func TestStagesDisabledReviewIsNoFinding(t *testing.T) {
 		}
 	}
 }
+
+// Red checks on a head a session left as it was (the agent could not act
+// on them: a build VM's i/o timeout, #207) run once more on an empty commit
+// before their findings go back to the agent; a head that is red after its
+// re-run is not re-run again.
+func TestWorkflowSameRedHeadRerunsTheChecksOnce(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		red      map[string]bool
+		sessions []SessionResult
+		end      string
+		want     []string // the heads WaitChecks waited on
+	}{
+		{"green after the re-run", map[string]bool{"c1": true},
+			[]SessionResult{pushed("s1", "c1"), pushed("s2", "c1")}, SignalPRMerged, []string{"c1", "c1", "c1r"}},
+		{"red after the re-run", map[string]bool{"c1": true, "c1r": true},
+			[]SessionResult{pushed("s1", "c1"), pushed("s2", "c1"), pushed("s3", "c1r")}, SignalIssueClosed, []string{"c1", "c1", "c1r", "c1r"}},
+	} {
+		h := newWorkflowHarness(t)
+		h.onSessions(c.sessions...)
+		h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		var waited, reran []string
+		h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+				waited = append(waited, sha)
+				if c.red[sha] {
+					return ChecksResult{State: ChecksFailure, Findings: []string{"image-build: i/o timeout"}}, nil
+				}
+				return ChecksResult{State: ChecksSuccess}, nil
+			})
+		h.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (string, error) {
+				reran = append(reran, sha)
+				return sha + "r", nil
+			})
+		h.signalAfter(5*time.Hour, c.end, TaskSignal{Author: "sebastian", PR: 9})
+		h.run(t)
+		if !slices.Equal(waited, c.want) || !slices.Equal(reran, []string{"c1"}) {
+			t.Fatalf("%s: waited on %v, re-ran %v; want %v and [c1]", c.name, waited, reran, c.want)
+		}
+	}
+}

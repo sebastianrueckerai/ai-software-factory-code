@@ -229,9 +229,14 @@ Forgejo refuses (a 4xx, which no retry fixes) is logged and the task
 completes anyway.
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
 `factory/coding-frontier`) with the failures as findings; supervision
-(below) can redirect, climb or escalate. Signals from the webhook intake
-are delivered with signal-with-start, so a signal to a task whose run
-died starts a new one (which reconciles first). `pr_merged` (done),
+(below) can redirect, climb or escalate. Red checks on a head that a
+session left as it was (the agent could not act on them) run once more
+before their findings go back to the agent: `RerunChecks` puts an empty
+commit on the branch (Forgejo 15 has no API to re-run a job); a head red
+after its re-run is not re-run again (change id `checks-rerun`). Signals
+from the webhook intake are delivered with signal-with-start, so a signal
+to a task whose run died starts a new one (which reconciles first).
+`pr_merged` (done),
 `pr_closed` (closed without merge: failed) and `issue_closed` (done if
 the PR merged, else failed) decide the task wherever they land: a
 running session or check wait is cancelled within about 10 s (the
