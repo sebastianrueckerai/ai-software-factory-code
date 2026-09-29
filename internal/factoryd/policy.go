@@ -104,10 +104,7 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 		log.Printf("config: read commit %s: %v", head, err)
 		return err
 	}
-	tree, err := policy.ParseTree(files)
-	if err == nil {
-		err = l.fitsLadder(tree.Document)
-	}
+	tree, err := CheckTree(files, l.LadderModels)
 	if err != nil {
 		stays := "no version is current"
 		if loaded {
@@ -164,8 +161,25 @@ func (l *PolicyLoader) Current() policy.Version {
 
 func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budget }
 
-func (l *PolicyLoader) fitsLadder(d policy.Document) error {
-	for _, m := range l.LadderModels {
+func (l *PolicyLoader) fitsLadder(d policy.Document) error { return fitsLadder(d, l.LadderModels) }
+
+// CheckTree is the loader's whole judgement of a tree's files, which
+// `factoryd config check` runs too: policy.ParseTree, and the coder class
+// must allow every model of the ladder, else a task would be refused
+// mid-run.
+func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		return policy.Tree{}, err
+	}
+	if err := fitsLadder(tree.Document, ladder); err != nil {
+		return policy.Tree{}, fmt.Errorf("%s: %w", policy.FilePolicy, err)
+	}
+	return tree, nil
+}
+
+func fitsLadder(d policy.Document, ladder []string) error {
+	for _, m := range ladder {
 		if !d.AllowsModel(AgentCapabilities, m) {
 			return fmt.Errorf("capability classes %q do not allow the ladder model %q", AgentCapabilities, m)
 		}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -15,8 +16,10 @@ import (
 // refused, 2 usage.
 //
 //	factoryd schema --out <dir>    writes one JSON Schema per file kind
-//	factoryd config check <dir>    decodes a tree as the loader does and
-//	                               compares its schema/ with the generated
+//	factoryd config check <dir>    judges a tree as the loader does
+//	                               (CheckTree, the ladder from MODEL and
+//	                               STRONGER_MODEL) and compares its schema/
+//	                               with the generated
 func run(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) >= 1 && args[0] == "schema":
@@ -67,6 +70,15 @@ func checkTree(dir string) (policy.Tree, error) {
 	if err != nil {
 		return policy.Tree{}, err
 	}
-	tree, err := policy.ParseTree(files)
+	tree, err := factoryd.CheckTree(files, ladder().Aliases())
 	return tree, errors.Join(err, policy.CheckSchemas(files))
+}
+
+// ladder is factoryd's model ladder, which the loader and the check hold a
+// tree against.
+func ladder() factoryd.ModelLadder {
+	return factoryd.ModelLadder{
+		Start:    env("MODEL", "factory/coding-cheap"),
+		Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
+	}
 }

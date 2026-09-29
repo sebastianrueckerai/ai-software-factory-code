@@ -81,6 +81,10 @@ func TestConfigCheck(t *testing.T) {
 			b, _ := os.ReadFile(filepath.Join(dir, "workflow.yaml"))
 			write(t, filepath.Join(dir, "workflow.yaml"), strings.Replace(string(b), "enabled: true}", "enabled: true, retries: 2}", 1))
 		}, []string{`projects/infra.yaml: project infra: objects "flux"`, "workflow.yaml: yaml: unmarshal errors:"}},
+		"ladder model left out": {func(dir string) {
+			b, _ := os.ReadFile(filepath.Join(dir, "policy.yaml"))
+			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [coding-cheap, coding-frontier]", "models: [coding-cheap]", 1))
+		}, []string{`policy.yaml: capability classes ["coder"] do not allow the ladder model "coding-frontier"`}},
 		"schema drift": {func(dir string) {
 			write(t, filepath.Join(dir, "schema/policy.schema.json"), "{}\n")
 		}, []string{"schema/policy.schema.json differs from factoryd schema"}},

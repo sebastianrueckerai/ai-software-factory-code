@@ -68,10 +68,7 @@ func main() {
 	// no valid configuration version at all is the one configuration
 	// failure that stops the boot; a later refused commit is raised and
 	// the last valid version holds
-	ladder := factoryd.ModelLadder{
-		Start:    env("MODEL", "factory/coding-cheap"),
-		Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
-	}
+	ladder := ladder()
 	forgejo := newForgejo()
 	configRepo, err := factoryd.SplitRepo(env("CONFIG_REPO", "sf/ai-software-factory-infra"))
 	if err != nil {
