@@ -1,0 +1,1 @@
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS poster_attempts integer NOT NULL DEFAULT 0;
