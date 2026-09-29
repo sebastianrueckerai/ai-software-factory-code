@@ -11,6 +11,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The screening verdicts (ruling 182).
@@ -42,9 +43,12 @@ const screeningAsks = "The screening finds this issue suspect: "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
-// sessionCapReached heads the card of a task whose sessions reached the
-// cap without a pushed commit (versionSessionCap).
-const sessionCapReached = "the session cap is reached without a pushed commit: every finding sent to the agent so far goes to a human"
+// The session cap's card (versionSessionCap) holds at most maxCard bytes of
+// findings, the newest, each at most maxCardLine.
+const (
+	maxCard     = 8000
+	maxCardLine = maxReviewFinding
+)
 
 // stages takes a pushed commit, its pull request open, through the pinned
 // workflow's stages after the session (versionStages): each stage's
@@ -94,7 +98,7 @@ func (t *taskRun) stages(commit string) verdict {
 				// fold moved the head
 				return verdict{findings: findings, reason: s.Name + " failed"}
 			}
-			t.remember(s.Name, findings)
+			t.remember(s.Name, 0, findings)
 			limit := ""
 			switch {
 			case t.lastRound:
@@ -104,10 +108,10 @@ func (t *taskRun) stages(commit string) verdict {
 			}
 			if limit != "" {
 				capped = appendNew(capped, limit)
-				t.recordFindings(s.Name, "card", findings)
+				t.recordFindings(s.Name, "card", 0, findings)
 				continue
 			}
-			t.recordFindings(s.Name, "agent", findings)
+			t.recordFindings(s.Name, "agent", 0, findings)
 			t.returns[s.Name]++
 			return verdict{findings: findings, stronger: t.returns[s.Name] > t.cfg.StrongerAfter,
 				reason: s.Name + " findings went back to the agent"}
@@ -122,27 +126,43 @@ func (t *taskRun) stages(commit string) verdict {
 
 // recordFindings keeps findings meant for the agent on the timeline, sent
 // to it or to the card at a cap: a new run rebuilds its stage memory from
-// them (Reconcile).
-func (t *taskRun) recordFindings(stage, to string, findings []string) {
+// them (Reconcile). attempt: a session's findings (versionSessionCap).
+func (t *taskRun) recordFindings(stage, to string, attempt int, findings []string) {
 	detail := map[string]any{"stage": stage, "round": t.round, "to": to, "findings": findings}
+	if attempt > 0 {
+		detail["attempt"] = attempt
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "stage_findings", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record stage findings", "error", err)
 	}
 }
 
 // remember adds findings from stage to the history the card shows.
-func (t *taskRun) remember(stage string, findings []string) {
+func (t *taskRun) remember(stage string, attempt int, findings []string) {
 	for _, f := range findings {
-		t.history = append(t.history, fmt.Sprintf("%s, round %d: %s", stage, t.round, f))
+		t.history = append(t.history, historyLine(stage, t.round, attempt, f))
 	}
 }
 
+// historyLine is a finding as the card shows it: a session's (attempt >
+// 0) by its attempt, a stage's by its round.
+func historyLine(stage string, round, attempt int, finding string) string {
+	if attempt > 0 {
+		return fmt.Sprintf("%s, attempt %d: %s", stage, attempt, finding)
+	}
+	return fmt.Sprintf("%s, round %d: %s", stage, round, finding)
+}
+
 // sessionReturn keeps a session's findings in the stage memory under stage
-// "supervisor:<trip>" (versionSessionCap): to the card on the last
-// attempt, else to the agent, where a redirect or no push counts as the
-// stage's return. stronger: the next session takes the stronger rung.
-func (t *taskRun) sessionReturn(res SessionResult, last bool) (stronger bool) {
-	stage := "supervisor:" + res.Trip
+// "supervisor:<trip>", "session" for none (versionSessionCap): to the card
+// on the last attempt, else to the agent, where a redirect or no push
+// counts as the stage's return. stronger: the next session takes the
+// stronger rung.
+func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stronger bool) {
+	stage := "session"
+	if res.Trip != "" {
+		stage = "supervisor:" + res.Trip
+	}
 	to := "agent"
 	switch {
 	case last:
@@ -150,8 +170,8 @@ func (t *taskRun) sessionReturn(res SessionResult, last bool) (stronger bool) {
 	case res.Outcome == OutcomeRetryStronger:
 		to = "stronger"
 	}
-	t.remember(stage, res.Findings)
-	t.recordFindings(stage, to, res.Findings)
+	t.remember(stage, attempt, res.Findings)
+	t.recordFindings(stage, to, attempt, res.Findings)
 	if to != "agent" {
 		return false
 	}
@@ -163,15 +183,28 @@ func (t *taskRun) sessionReturn(res SessionResult, last bool) (stronger bool) {
 }
 
 // sessionCapCard is the escalation of sessions at the cap: last is how
-// the last round ended, pending its findings not in the history (a change
-// request).
-func (t *taskRun) sessionCapCard(last string, pending []string) string {
-	var b strings.Builder
-	b.WriteString(sessionCapReached + "\nlast: " + last)
-	for _, h := range append(slices.Clone(t.history), pending...) {
-		b.WriteString("\n- " + h)
+// the last round ended, findings those the next session would get; the
+// history, then each of them no history line holds, newest kept.
+func (t *taskRun) sessionCapCard(last string, findings []string) string {
+	lines := slices.Clone(t.history)
+	for _, f := range findings {
+		if !slices.ContainsFunc(t.history, func(h string) bool { return strings.HasSuffix(h, ": "+f) }) {
+			lines = append(lines, f)
+		}
 	}
-	return b.String()
+	for i, l := range lines {
+		lines[i] = "\n- " + textutil.Truncate(l, maxCardLine)
+	}
+	from, size := len(lines), 0
+	for from > 0 && size+len(lines[from-1]) <= maxCard {
+		from--
+		size += len(lines[from])
+	}
+	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
+	if from > 0 {
+		head += fmt.Sprintf("\n- (%d earlier findings left out)", from)
+	}
+	return head + strings.Join(lines[from:], "")
 }
 
 func appendNew(list []string, s string) []string {

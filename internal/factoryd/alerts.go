@@ -38,7 +38,7 @@ const (
 type Alert struct {
 	ID         int64
 	Kind       string
-	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent or supervisor
+	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor or cap (the session cap's card)
 	TaskID     string
 	RaisedAt   time.Time
 	BoundS     int // gate_bound only
@@ -66,7 +66,7 @@ func escalationSource(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, agentAsks):
 		return "agent"
-	case strings.HasPrefix(reason, sessionCapReached):
+	case strings.HasPrefix(reason, capReached):
 		return "cap"
 	}
 	return "supervisor"

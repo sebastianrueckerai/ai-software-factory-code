@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -361,10 +362,10 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	wantCard := sessionCapReached + "\nlast: supervisor: retry_stronger after half_way" +
-		"\n- supervisor:repetition, round 0: f1" +
-		"\n- supervisor:, round 0: f2" +
-		"\n- supervisor:half_way, round 0: f3"
+	wantCard := capReached + "\nlast: supervisor: retry_stronger after half_way" +
+		"\n- supervisor:repetition, attempt 1: f1" +
+		"\n- session, attempt 2: f2" +
+		"\n- supervisor:half_way, attempt 3: f3"
 	if !slices.Equal(h.escalated, []string{wantCard}) {
 		t.Fatalf("escalations = %q, want the card %q", h.escalated, wantCard)
 	}
@@ -374,7 +375,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	fourth := h.sessions[3]
 	if fourth.Attempt != 4 || fourth.Model != "factory/coding-frontier" || fourth.ParentSessionID != "s3" ||
 		!slices.Equal(fourth.Findings, []string{"f3"}) ||
-		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + sessionCapReached + `": the key is blocked, use the other one`}) {
+		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReached + `": the key is blocked, use the other one`}) {
 		t.Fatalf("fourth attempt = %+v", fourth)
 	}
 	var to []string
@@ -383,7 +384,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 			to = append(to, fmt.Sprintf("%s>%s", r.detail["stage"], r.detail["to"]))
 		}
 	}
-	if want := []string{"supervisor:repetition>agent", "supervisor:>agent", "supervisor:half_way>card"}; !slices.Equal(to, want) {
+	if want := []string{"supervisor:repetition>agent", "session>agent", "supervisor:half_way>card"}; !slices.Equal(to, want) {
 		t.Fatalf("stage_findings = %v, want %v", to, want)
 	}
 	if last := h.usage[len(h.usage)-1]; last != (TaskUsage{Attempts: 4, ExtraAttempts: 1}) {
@@ -406,12 +407,12 @@ func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
 	change := "reviewer sebastian requested changes: keep the old flag"
-	if want := []string{sessionCapReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 4 || h.sessions[1].StartRef != "c3" ||
 		!slices.Equal(h.sessions[1].Findings, []string{change}) ||
-		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + sessionCapReached + `": alias it`}) {
+		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + capReached + `": alias it`}) {
 		t.Fatalf("sessions = %+v, want the fourth from c3 with the change request and the answer", h.sessions)
 	}
 }
@@ -429,7 +430,7 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	if want := []string{sessionCapReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 {
@@ -437,6 +438,80 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	}
 	if h.usage[0] != (TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3, ExtraTime: 2 * time.Minute, ExtraAttempts: 1}) {
 		t.Fatalf("usage = %+v, want the answer's grant first: an attempt, and 2m to a 10m slice", h.usage)
+	}
+}
+
+// The card lists every finding once: stage findings already in the history
+// are not repeated, and a change request drained before a session that
+// failed is on it.
+func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			// Temporal retries a failed session: record each attempt once
+			if len(h.sessions) < in.Attempt {
+				h.sessions = append(h.sessions, in)
+			}
+			if in.Attempt == 1 {
+				return pushed("s1", "c1"), nil
+			}
+			return SessionResult{}, errors.New("pod lost")
+		})
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}})
+	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	change := "reviewer sebastian requested changes: rename it"
+	want := capReached + "\nlast: session failed: pod lost\n- checks, round 1: red\n- " + change
+	if !slices.Equal(h.escalated, []string{want}) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 3 || !slices.Equal(h.sessions[2].Findings, []string{"red", change}) {
+		t.Fatalf("sessions = %+v, want the third with the red checks and the change request", h.sessions)
+	}
+}
+
+// The card keeps the newest findings within maxCard, each cut at
+// maxCardLine, and says how many earlier ones it left out.
+func TestSessionCapCardIsBounded(t *testing.T) {
+	var run taskRun
+	for i := range 20 {
+		run.history = append(run.history, fmt.Sprintf("%02d", i)+strings.Repeat("x", 1498))
+	}
+	card := run.sessionCapCard(strings.Repeat("y", 1500), []string{"new"})
+	lines := strings.Split(card, "\n")
+	// each history line is "- " + 1000 bytes + "…": 1006 bytes with its
+	// newline, "- new" 6; 7 history lines and "new" fit 8000, 8 do not
+	if len(lines) != 11 || lines[1] != "last: "+strings.Repeat("y", 1000)+"…" || lines[2] != "- (13 earlier findings left out)" ||
+		!strings.HasPrefix(lines[3], "- 13x") || lines[9] != "- 19"+strings.Repeat("x", 998)+"…" || lines[10] != "- new" {
+		t.Fatalf("card has %d lines: %.120q", len(lines), lines)
+	}
+}
+
+// A new run starts on the stronger rung when the last one left the task
+// there: a return past StrongerAfter or a retry_stronger.
+func TestWorkflowNewRunKeepsTheRung(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		st   RunState
+		want string
+	}{
+		{"repeat trip", RunState{Returns: map[string]int{"supervisor:repetition": 2}}, "factory/coding-frontier"},
+		{"retry_stronger", RunState{Climbed: true}, "factory/coding-frontier"},
+		{"one return", RunState{Returns: map[string]int{"supervisor:repetition": 1, "checks": 1}}, "factory/coding-cheap"},
+	} {
+		h := newWorkflowHarness(t)
+		h.state = c.st
+		h.state.Status, h.state.Usage = "running", TaskUsage{Attempts: 1}
+		h.onSessions(pushed("s2", "c2"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		if final := h.run(t); final != "done" || h.sessions[0].Model != c.want {
+			t.Fatalf("%s: final %q on %s, want done on %s", c.name, final, h.sessions[0].Model, c.want)
+		}
 	}
 }
 
@@ -902,7 +977,7 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], sessionCapReached) {
+	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
 		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {

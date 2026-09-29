@@ -234,6 +234,9 @@ type RunState struct {
 	Round   int
 	// Roll: a roll task (ruling 178), whose commit RollCommit writes.
 	Roll bool
+	// Climbed: a session's findings went to the agent with the stronger
+	// rung (retry_stronger).
+	Climbed bool
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -428,9 +431,10 @@ const (
 	// loop out of attempts, however its last round ended and a run that
 	// starts at the cap too, opens the card with every finding so far, and
 	// a human answer buys one more session; a redirect or no push
-	// counts as a return from stage "supervisor:<trip>", recorded like a
-	// stage's findings, and a repeat past StrongerAfter takes the
-	// stronger rung.
+	// counts as a return from stage "supervisor:<trip>" ("session" for no
+	// trip), recorded like a stage's findings with its attempt, and a
+	// repeat past StrongerAfter takes the stronger rung; a new run starts
+	// on the rung the last one left.
 	versionSessionCap workflow.Version = 1
 )
 
@@ -483,12 +487,11 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
-	remembered := false // findings are in t.history (versionSessionCap)
 	apply := func(v verdict) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
-		findings, reason, remembered = v.findings, v.reason, false
+		findings, reason = v.findings, v.reason
 	}
 	if t.v2 >= versionReconcileRace {
 		var st RunState
@@ -507,6 +510,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.standing = st.Standing
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
+		}
+		if t.v18 >= versionSessionCap && t.climbed(st.Climbed) {
+			model = t.cfg.Models.Stronger
 		}
 		switch {
 		case st.Skip:
@@ -590,11 +596,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v18 < versionSessionCap {
 				break
 			}
-			pending := findings
-			if remembered {
-				pending = nil
-			}
-			final, why, answer := t.awaitHuman(t.sessionCapCard(reason, pending), sessionCapReached)
+			final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -661,17 +663,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			// at the top rung this is a redirect: Stronger stays Stronger
 			model, findings = t.cfg.Models.Stronger, res.Findings
 			if t.v18 >= versionSessionCap {
-				t.sessionReturn(res, last)
-				remembered = true
+				t.sessionReturn(res, attempt, last)
 			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect:
 			findings = res.Findings
 			if t.v18 >= versionSessionCap {
-				if t.sessionReturn(res, last) {
+				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
 				}
-				remembered = true
 			}
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
@@ -754,6 +754,17 @@ func (t *taskRun) drainFolds() bool {
 		folded = true
 	}
 	return folded
+}
+
+// climbed: an earlier run left the task on the stronger rung, by a
+// retry_stronger (stronger) or a return past StrongerAfter.
+func (t *taskRun) climbed(stronger bool) bool {
+	for _, n := range t.returns {
+		if n > t.cfg.StrongerAfter {
+			return true
+		}
+	}
+	return stronger
 }
 
 // grant is what a human answer buys; only a human raises a limit. One

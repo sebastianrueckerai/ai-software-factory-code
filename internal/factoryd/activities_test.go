@@ -795,7 +795,8 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
-// at the cap, the model reviews oldest first, and the last round.
+// at the cap, the model reviews oldest first, the last round, and
+// whether a retry_stronger climbed (sessions by attempt).
 func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
 	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
@@ -803,16 +804,19 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 			`{"step":"stage_findings","stage":"review","round":1,"to":"agent","findings":["a.go: x"]}`+"\n"+
 			`{"step":"stage_findings","stage":"checks","round":2,"to":"agent","findings":["red"]}`+"\n"+
 			`{"step":"model_review","note":"model review failed: timeout","round":2}`+"\n"+
-			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"))
+			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"+
+			`{"step":"stage_findings","stage":"supervisor:repetition","round":3,"attempt":4,"to":"agent","findings":["loop"]}`+"\n"+
+			`{"step":"stage_findings","stage":"session","round":3,"attempt":5,"to":"stronger","findings":["none"]}`+"\n"))
 	val, err := execActivity(t, r, ActivityReconcile, "t1")
 	var st RunState
 	if err != nil || val.Get(&st) != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if st.Returns["review"] != 1 || st.Returns["checks"] != 1 || len(st.Returns) != 2 || st.Round != 3 {
-		t.Fatalf("returns %v, round %d", st.Returns, st.Round)
+	if st.Returns["review"] != 1 || st.Returns["checks"] != 1 || st.Returns["supervisor:repetition"] != 1 || len(st.Returns) != 3 || st.Round != 3 || !st.Climbed {
+		t.Fatalf("returns %v, round %d, climbed %v", st.Returns, st.Round, st.Climbed)
 	}
-	if want := []string{"review, round 1: a.go: x", "checks, round 2: red", "checks, round 3: red again"}; !slices.Equal(st.History, want) {
+	if want := []string{"review, round 1: a.go: x", "checks, round 2: red", "checks, round 3: red again",
+		"supervisor:repetition, attempt 4: loop", "session, attempt 5: none"}; !slices.Equal(st.History, want) {
 		t.Fatalf("history = %q", st.History)
 	}
 	if len(st.Reviews) != 2 || st.Reviews[0].Verdict != "concerns" || st.Reviews[0].Findings[0] != "a.go: x" || st.Reviews[1].Note != "model review failed: timeout" {
@@ -833,8 +837,8 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 	// and an escalation alert, open until a human judges it; a healed run
 	// asking the same question again opens none; the session cap's card
-	// is the cap's
-	for _, reason := range []string{"supervisor escalated: the check cannot pass", sessionCapReached + "\nlast: no push", healedReason} {
+	// is tagged cap
+	for _, reason := range []string{"supervisor escalated: the check cannot pass", capReached + "\nlast: no push", healedReason} {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason); err != nil {
 			t.Fatal(err)
 		}

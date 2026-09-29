@@ -695,7 +695,7 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 	for line := range strings.SplitSeq(string(b), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note string
-			Round                                   int
+			Round, Attempt                          int
 			Findings                                []string
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -704,8 +704,9 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 		switch step.Step {
 		case "stage_findings":
 			for _, f := range step.Findings {
-				st.History = append(st.History, fmt.Sprintf("%s, round %d: %s", step.Stage, step.Round, f))
+				st.History = append(st.History, historyLine(step.Stage, step.Round, step.Attempt, f))
 			}
+			st.Climbed = st.Climbed || step.To == "stronger"
 			if step.To == "agent" {
 				if st.Returns == nil {
 					st.Returns = map[string]int{}
