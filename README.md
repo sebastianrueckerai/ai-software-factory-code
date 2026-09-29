@@ -1426,9 +1426,12 @@ Image builds run outside the cluster instead (ruling 110,
   starts, the pod's init container `buildkitd-ready` (same image, same
   mount and egress) waits up to three minutes for `buildctl debug
   workers` and, once it answers, writes `ready` as its termination
-  message; it exits 0 either way, so a VM that never answers fails the
-  job loudly in `image-build`'s own wait (one more minute), not
-  in a loop of fresh VMs. `image-build` then builds the changed
+   message. A job's first VM that never answers fails the pod there,
+   before the runner takes the job, and the spawner replaces the VM at
+   once; on that second VM (`BUILDKITD_LAST_TRY`) the init container exits
+   0 either way, so a VM that never answers fails the job loudly in
+   `image-build`'s own wait (one more minute), not in a loop of fresh VMs.
+   `image-build` then builds the changed
   Dockerfiles in parallel, output to `/dev/null`; nothing is pushed.
 - **The cache.** Before each build the runner pod copies the image's
   cache, which main CI wrote, from the in-cluster build cache into a local

@@ -125,6 +125,9 @@ type CISpawner struct {
 	// Forgejo still lists as waiting gets no second VM within
 	// ciReclaimWindow; the poll loop is the only user.
 	tornDown map[int64]time.Time
+	// vmTries counts the build VMs each live build job got: a job whose
+	// first VM never answered gets one more, its last try.
+	vmTries map[int64]int
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -148,7 +151,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -338,6 +341,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return fmt.Errorf("build vm: %w", err)
 		}
 		vm = &provisioned
+		s.vmTries[jobID]++
 	}
 	core := "/api/v1/namespaces/" + ns
 	steps := []ciSetupStep{
@@ -393,7 +397,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
-	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(kind, vm))
+	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(kind, vm, s.vmTries[jobID] > 1))
 }
 
 // reconcile tears down CI namespaces whose pod has finished — successfully,
@@ -428,10 +432,18 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 			live++
 			continue
 		}
-		if err == nil { // a runner ran: its job may still be listed waiting
+		if err == nil {
 			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns, s.cfg.NamespacePrefix), 10, 64); perr == nil {
-				s.tornDown[id] = s.now()
-				s.recordReady(ctx, ns, id)
+				if _, ready, _ := s.kube.PodInitFinished(ctx, ns, ciPodName); phase == "Failed" && !ready && s.vmTries[id] == 1 {
+					// its first VM never answered and the init container
+					// failed the pod before the runner took the job: the
+					// job is still waiting, for a second VM at once
+					log.Printf("ci spawner: %s: build vm never answered buildkitd, replaced once", ns)
+				} else { // a runner ran: its job may still be listed waiting
+					delete(s.vmTries, id)
+					s.tornDown[id] = s.now()
+					s.recordReady(ctx, ns, id)
+				}
 			}
 		}
 		s.teardown(ctx, ns, repos)
@@ -566,7 +578,7 @@ var (
 	}
 )
 
-func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
+func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM, lastTry bool) map[string]any {
 	pullSecrets := []any{}
 	if s.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": s.cfg.PullSecret})
@@ -604,15 +616,20 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 		volumes = append(volumes, map[string]any{"name": buildTLSSecret, "secret": map[string]any{"secretName": buildTLSSecret}})
 		// trusted code waits for buildkitd before the job's own steps run;
 		// its finish, written by the kubelet, is the VM's ready time when
-		// it reports ready. It always exits 0, a refused termination-log
-		// write included (that loses only the sample): a VM that never answers
-		// fails the job in pr.yml's own wait, loudly, instead of failing
-		// the pod and having the job claimed again with a fresh VM
+		// it reports ready (a refused termination-log write loses only the
+		// sample). A first VM that never answers fails the pod before the
+		// runner takes the job, which reconcile then gives a second VM; on
+		// that last try the runner starts anyway and pr.yml's own wait
+		// fails the job, loudly
+		initEnv := buildVMEnv(vm.IPv4)
+		if lastTry {
+			initEnv = append(initEnv, map[string]any{"name": "BUILDKITD_LAST_TRY", "value": "1"})
+		}
 		initContainers = append(initContainers, map[string]any{
 			"name":    buildReadyContainer,
 			"image":   s.cfg.RunnerImage,
 			"command": []any{"sh", "-c", buildReadyScript},
-			"env":     buildVMEnv(vm.IPv4),
+			"env":     initEnv,
 			"volumeMounts": []any{
 				map[string]any{"name": "tmp", "mountPath": "/tmp"},
 				map[string]any{"name": buildTLSSecret, "mountPath": buildTLSDir, "readOnly": true},
@@ -666,7 +683,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM) map[string]any {
 const (
 	buildReadyContainer = "buildkitd-ready"
 	buildReadyMessage   = "ready"
-	buildReadyScript    = `if timeout 180 sh -c 'until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers >/dev/null; do sleep 2; done'; then echo ` + buildReadyMessage + ` > /dev/termination-log; fi; exit 0`
+	buildReadyScript    = `if timeout 180 sh -c 'until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers >/dev/null; do sleep 2; done'; then echo ` + buildReadyMessage + ` > /dev/termination-log; exit 0; fi; test -n "${BUILDKITD_LAST_TRY:-}"`
 )
 
 // buildCacheHost is the in-cluster registry pr.yml's image-build reads
