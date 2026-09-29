@@ -24,7 +24,8 @@ type Stage struct {
 	// Enabled false skips the stage; the timeline records it skipped.
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// When limits the stage to some tasks: outsider runs it only on issues
-	// whose author is an outside account. Absent: every task.
+	// whose author is an outside account. Absent: every task. The review
+	// takes no when (enabled: false is its only off switch).
 	When string `yaml:"when,omitempty" json:"when,omitempty"`
 	// MaxReturns caps how often the stage sends its findings back to the
 	// agent; its next findings go to the human card. Absent: no cap of its

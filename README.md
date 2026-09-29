@@ -1758,8 +1758,8 @@ would roll `main` back), it skips a commit that changes nothing outside
 the build cache made of them), and otherwise reads the images main CI tagged with the commit's short sha
 from the registry (in-cluster Forgejo, `/v2`, as user `factory-registry-read`
 with its `read:package` token from secret `forgejo-registry-read`, which
-cannot overwrite a tag; the `forgejo-registry` pull secret serves image
-pulls only) and compares each with the one `k8s/` pins by the
+cannot overwrite a tag, read once at boot, so a rotation restarts
+factoryd; the `forgejo-registry` pull secret serves image pulls only) and compares each with the one `k8s/` pins by the
 linux/amd64 image manifest inside the index: main CI's indexes carry a
 provenance attestation with build timestamps, so a rebuild of unchanged
 inputs pushes a new index digest around the same image. No changed image:
