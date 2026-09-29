@@ -51,12 +51,39 @@ type PolicyLoader struct {
 	// Loaded settles a loaded head once (the open rejections close): the
 	// loader asks again at the next poll while it fails. nil: nothing.
 	Loaded func(ctx context.Context, v policy.Version) error
+	// ReadFailing raises readFailureStreak failed reads in a row, once a
+	// streak. nil: logged only.
+	ReadFailing func(ctx context.Context, err error) error
 
 	mu      sync.Mutex
 	current policy.Version
 	loaded  bool
 	seen    string // the commit last handled, valid or not
 	settled string // the loaded commit Loaded last succeeded for
+	failed  int    // failed reads in a row
+}
+
+// readFailureStreak is how many failed reads in a row, polled every 30 s,
+// raise an alert: about five minutes of a factory deaf to its
+// configuration.
+const readFailureStreak = 10
+
+// readFailed counts a failed read and raises the streak once.
+func (l *PolicyLoader) readFailed(ctx context.Context, what string, err error) error {
+	log.Printf("config: %s: %v", what, err)
+	l.mu.Lock()
+	l.failed++
+	raise := l.failed == readFailureStreak
+	l.mu.Unlock()
+	if raise && l.ReadFailing != nil {
+		if rerr := l.ReadFailing(ctx, err); rerr != nil {
+			log.Printf("config: raise %d failed reads: %v", readFailureStreak, rerr)
+			l.mu.Lock()
+			l.failed--
+			l.mu.Unlock()
+		}
+	}
+	return err
 }
 
 // Boot makes the stored current version current, then loads the head. It
@@ -94,19 +121,18 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 func (l *PolicyLoader) Load(ctx context.Context) error {
 	head, err := l.Source.Head(ctx)
 	if err != nil {
-		log.Printf("config: read the head: %v", err)
-		return err
+		return l.readFailed(ctx, "read the head", err)
 	}
 	l.mu.Lock()
 	seen, cur, loaded := l.seen, l.current, l.loaded
+	l.failed = 0
 	l.mu.Unlock()
 	if head == seen {
 		return l.settle(ctx, head)
 	}
 	files, err := l.Source.Files(ctx, head)
 	if err != nil {
-		log.Printf("config: read commit %s: %v", head, err)
-		return err
+		return l.readFailed(ctx, "read commit "+head, err)
 	}
 	tree, err := CheckTree(files, l.LadderModels)
 	if err != nil {
@@ -485,6 +511,14 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 		return err
 	}
 	return a.Store.SetAlertTask(ctx, row.ID, t.ID, map[string]any{"issue": ref.Number})
+}
+
+// ReadFailing is PolicyLoader.ReadFailing: an alerts row, judged real,
+// without an issue, since what fails may be the way to Forgejo.
+func (a *ConfigAlarm) ReadFailing(ctx context.Context, err error) error {
+	_, ierr := a.Store.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "read", Verdict: VerdictReal, ResolvedBy: "factoryd",
+		Detail: map[string]any{"repository": a.Repo.String(), "error": err.Error(), "failed_reads": readFailureStreak}})
+	return ierr
 }
 
 // Resolve is PolicyLoader.Loaded: a valid commit loaded, so every open

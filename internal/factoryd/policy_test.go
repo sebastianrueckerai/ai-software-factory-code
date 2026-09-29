@@ -283,6 +283,54 @@ func TestPolicyLoaderSettlesEachLoadedHead(t *testing.T) {
 	}
 }
 
+// Ten reads in a row that fail (a revoked token, Forgejo down: about five
+// minutes) raise one alert; a read that works starts the count again.
+func TestPolicyLoaderRaisesAStreakOfReadFailures(t *testing.T) {
+	ctx := context.Background()
+	src := &memSource{}
+	var raised []string
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, ReadFailing: func(_ context.Context, err error) error {
+		raised = append(raised, err.Error())
+		return nil
+	}}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	src.failing = true
+	for i := range 25 {
+		l.Load(ctx) // #nosec G104 -- the failures are the point
+		if want := min(1, (i+1)/10); len(raised) != want {
+			t.Fatalf("after %d failures %d alerts, want %d", i+1, len(raised), want)
+		}
+	}
+	src.failing = false
+	l.Load(ctx) // #nosec G104
+	src.failing = true
+	for range 10 {
+		l.Load(ctx) // #nosec G104
+	}
+	if !slices.Equal(raised, []string{"forgejo unreachable", "forgejo unreachable"}) {
+		t.Fatalf("raised = %v, want one per streak", raised)
+	}
+}
+
+// A read failure streak is an alerts row of kind config_rejected, source
+// read, judged real, with no issue: the reason may be that nothing can
+// reach Forgejo.
+func TestConfigAlarmReadFailing(t *testing.T) {
+	store := newFakeStore()
+	alarm := &ConfigAlarm{Store: store, Forgejo: &Forgejo{}, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory"}
+	if err := alarm.ReadFailing(context.Background(), errors.New("GET branches/main: forgejo not found")); err != nil {
+		t.Fatal(err)
+	}
+	rows := store.alertRows()
+	if len(rows) != 1 || rows[0].Kind != AlertConfigRejected || rows[0].Source != "read" || rows[0].Verdict != VerdictReal ||
+		rows[0].Detail["error"] != "GET branches/main: forgejo not found" || len(store.tasks) != 0 {
+		t.Fatalf("alerts = %+v, tasks %d", rows, len(store.tasks))
+	}
+}
+
 // A rejection that cannot be raised is raised again at the next poll.
 func TestPolicyLoaderRaisesUntilItSucceeds(t *testing.T) {
 	ctx := context.Background()

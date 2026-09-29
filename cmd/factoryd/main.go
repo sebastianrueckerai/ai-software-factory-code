@@ -78,7 +78,8 @@ func main() {
 	// a ladder model outside the coder class would be refused mid-task
 	policyLoader := &factoryd.PolicyLoader{
 		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: mustEnv("FORGEJO_CONFIG_TOKEN"), Repo: configRepo, Branch: "main", Dir: configDir},
-		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve}
+		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve,
+		ReadFailing: configAlarm.ReadFailing}
 	if err := policyLoader.Boot(context.Background()); err != nil {
 		log.Fatalf("config: %v", err)
 	}
