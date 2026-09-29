@@ -3,7 +3,8 @@ package textutil
 import "unicode/utf8"
 
 // Truncate keeps at most s's first n bytes, cut on a character boundary and
-// marked "…" when cut.
+// marked "…" when cut. With n == 0 a non-empty s yields just "…", and a
+// negative n panics.
 func Truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
