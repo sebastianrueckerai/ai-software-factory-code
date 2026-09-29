@@ -933,6 +933,10 @@ func TestReconcileGoesOnWhenDeployProtectionRefusesTheBranch(t *testing.T) {
 	if rig.fj.secrets["FACTORY_SSH_HOST_KEY"] != key {
 		t.Fatalf("FACTORY_SSH_HOST_KEY = %q, want %q", rig.fj.secrets["FACTORY_SSH_HOST_KEY"], key)
 	}
+	// the protection step ran on deploy: the NoMain skip would log waiting
+	if strings.Contains(got, "project demo-app: protection deploy: "+string(NoMain)+"\n") {
+		t.Errorf("the protection step skipped deploy as NoMain:\n%s", got)
+	}
 }
 
 // Ruling 179: a seed project's reconcile keeps the labels and (agents
