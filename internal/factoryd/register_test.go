@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -222,6 +223,15 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
+			w.WriteHeader(http.StatusNoContent)
+		case p == repo+"/collaborators" && r.Method == http.MethodGet:
+			var out []map[string]string
+			for _, u := range slices.Sorted(maps.Keys(s.collabs)) {
+				out = append(out, map[string]string{"login": u})
+			}
+			list(nonNil(out))
+		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodDelete:
+			delete(s.collabs, strings.TrimPrefix(p, repo+"/collaborators/"))
 			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(p, repo+"/collaborators/") && r.Method == http.MethodPut:
 			s.collabs[strings.TrimPrefix(p, repo+"/collaborators/")] = body["permission"].(string)
@@ -743,6 +753,45 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 	}
 	if rig.store.m[p.Name].HookSecretHash != HashToken("re-seeded") {
 		t.Error("the new hook secret's hash was not stored")
+	}
+}
+
+// Backlog 24 (ruling 203): factoryd owns a factory project's
+// collaborator list. An approver dropped from the policy and a
+// collaborator added by hand leave; the bot, the merge user and the
+// approvers stay.
+func TestReconcileRemovesCollaboratorsItDoesNotKeep(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	rig.fj.users["alice"] = true
+	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian", "alice"}} }
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rig.fj.collabs["alice"] != "write" {
+		t.Fatalf("collaborators after Register = %v", rig.fj.collabs)
+	}
+	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian"}} }
+	rig.fj.collabs["mallory"] = "read"
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"factory-agent": "write", "factory-merge": "write", "sebastian": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
+		t.Fatalf("collaborators = %v, want %v", rig.fj.collabs, want)
+	}
+	for _, want := range []string{"project demo-app: collaborators: removed alice, mallory\n", "project demo-app: protection main: updated\n"} {
+		if !strings.Contains(rig.logs.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, rig.logs)
+		}
+	}
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rig.logs.String(), "project demo-app: collaborators: no change\n") {
+		t.Fatalf("second pass:\n%s", rig.logs)
 	}
 }
 
