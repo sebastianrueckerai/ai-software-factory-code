@@ -265,13 +265,19 @@ func TestParseModelInfo(t *testing.T) {
 	                     {"range":[32000,256000],"input_cost_per_token":8e-7,"output_cost_per_token":9e-6,"cache_read_input_token_cost":1e-8}]}},
 	 {"model_name":"cache-write","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"cache_creation_input_token_cost":1.25e-6}},
 	 {"model_name":"per-query","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"input_cost_per_query":0.01}},
-	 {"model_name":"web-search","model_info":{"input_cost_per_token":7.5e-8,"output_cost_per_token":3e-7,"cache_read_input_token_cost":3.75e-8,
+	 {"model_name":"web-search","model_info":{"litellm_provider":"groq","input_cost_per_token":7.5e-8,"output_cost_per_token":3e-7,"cache_read_input_token_cost":3.75e-8,
 	   "search_context_cost_per_query":{"search_context_size_high":0.005,"search_context_size_low":0.005,"search_context_size_medium":0.005}}},
 	 {"model_name":"off-peak","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":1.2e-6,"cache_read_input_token_cost":6e-9,"max_output_tokens":393216,
 	   "off_peak_pricing":{"cache_read_input_token_cost":3e-9,"input_cost_per_token":1.5e-7,"output_cost_per_token":6e-7,
 	     "windows":[{"hours_utc":["00:00-01:00","04:00-06:00","10:00-00:00"],"weekdays":[1,2,3,4,5]},{"hours_utc":"00:00-00:00","weekdays":[6,7]}]}}},
 	 {"model_name":"off-peak-dearer","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":2e-7,
 	   "off_peak_pricing":{"input_cost_per_token":4e-7,"output_cost_per_token":5e-7,"windows":[]}}},
+	 {"model_name":"sonar","model_info":{"litellm_provider":"perplexity","input_cost_per_token":1e-6,"output_cost_per_token":1e-6,
+	   "search_context_cost_per_query":{"search_context_size_low":0.005,"search_context_size_medium":0.008,"search_context_size_high":0.012}}},
+	 {"model_name":"regional","model_info":{"litellm_provider":"vertex_ai","input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"regional_endpoint_uplift_multiplier":1.1}},
+	 {"model_name":"residency","model_info":{"litellm_provider":"openai","input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"regional_processing_uplift_multiplier_eu":1.1}},
+	 {"model_name":"off-peak-flat","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":1.2e-6,
+	   "off_peak_pricing":{"input_cost_per_token":5e-7,"output_cost_per_token":6e-7,"hours_utc":"16:30-00:30","weekday_timezone":"Asia/Shanghai"}}},
 	 {"model_name":"off-peak-odd","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"off_peak_pricing":{"output_cost_per_second":1,"windows":[]}}},
 	 {"model_name":"odd-tier","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"tiered_pricing":[{"output_cost_per_second":1}]}},
 	 {"model_name":"half-priced","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":1e-7}},
@@ -291,11 +297,12 @@ func TestParseModelInfo(t *testing.T) {
 		"web-search":      {In: 7.5e-8, Out: 3e-7},
 		"off-peak":        {In: 3e-7, Out: 1.2e-6, MaxOutput: 393216},
 		"off-peak-dearer": {In: 4e-7, Out: 5e-7},
+		"off-peak-flat":   {In: 5e-7, Out: 1.2e-6},
 	}
 	if !reflect.DeepEqual(prices, want) {
 		t.Fatalf("prices = %+v, want %+v", prices, want)
 	}
-	for _, alias := range []string{"per-query", "odd-tier", "off-peak-odd", "half-priced", "free", "negative"} {
+	for _, alias := range []string{"per-query", "odd-tier", "off-peak-odd", "sonar", "regional", "residency", "half-priced", "free", "negative"} {
 		if !unpriced[alias] {
 			t.Errorf("%s priced, want unpriced", alias)
 		}

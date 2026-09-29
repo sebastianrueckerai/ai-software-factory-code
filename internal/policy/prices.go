@@ -142,7 +142,8 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 // off_peak_pricing rates.
 // Cache reads are cheaper than input and left out. Any other cost field
 // carrying a value (per query, second, image, character, ...) is a charge
-// the hold cannot bound, so the deployment counts as unpriced.
+// the hold cannot bound, and so is any cost multiplier (regional uplifts):
+// the deployment counts as unpriced.
 func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 	var p Price
 	for k, raw := range mi {
@@ -177,16 +178,19 @@ func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 				return Price{}, fmt.Errorf("%s: %w", k, err)
 			}
 			for rate, oraw := range offPeak {
-				if rate == "windows" || string(oraw) == "null" {
+				if rate == "windows" || rate == "hours_utc" || rate == "weekday_timezone" || string(oraw) == "null" {
 					continue
 				}
 				if err := p.addRate(rate, oraw); err != nil {
 					return Price{}, fmt.Errorf("off_peak_pricing: %w", err)
 				}
 			}
-		case k == "search_context_cost_per_query":
-			// billed only for a provider-side web search, which the gateway
-			// refuses (web_search_options and non-function tools)
+		case k == "search_context_cost_per_query" && string(mi["litellm_provider"]) == `"groq"`:
+			// Groq bills it only for its browser_search tool, which the
+			// gateway refuses; other providers (Perplexity's sonar) search on
+			// every call
+		case strings.Contains(k, "multiplier"):
+			return Price{}, fmt.Errorf("unbounded multiplier %s", k)
 		case strings.Contains(k, "cost") || strings.Contains(k, "pric"):
 			if err := p.addRate(k, raw); err != nil {
 				return Price{}, err
