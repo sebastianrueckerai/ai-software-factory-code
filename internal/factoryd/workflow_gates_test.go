@@ -26,6 +26,9 @@ type gateHarness struct {
 	review    Review
 	reviews   []Review      // in order, the last repeating; empty: review
 	earlier   [][]Review    // the earlier reviews each ModelReview call was given
+	audits    []AuditResult // in order, the last repeating; empty: clear
+	auditErr  error
+	auditPins []int64
 	screened  int           // Screen calls
 	judged    []string      // JudgeScreening verdicts
 	merge     []MergeResult // in order, the last repeating
@@ -90,6 +93,17 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 				return g.reviews[min(len(g.earlier), len(g.reviews))-1], g.reviewErr
 			}
 			return g.review, g.reviewErr
+		})
+	a := 0
+	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
+			a++
+			g.steps = append(g.steps, "audit "+commit)
+			g.auditPins = append(g.auditPins, pin)
+			if len(g.audits) == 0 {
+				return AuditResult{Verdict: AuditClear}, g.auditErr
+			}
+			return g.audits[min(a, len(g.audits))-1], g.auditErr
 		})
 	g.env.OnActivity(ActivityJudgeScreening, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, verdict string) error {

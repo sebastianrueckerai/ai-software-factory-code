@@ -272,6 +272,20 @@ func TestSuperviseGateModelReviewEscalates(t *testing.T) {
 	}
 }
 
+// An audit past its bound: the model reads the audit's last result; the
+// policy here names no audit model.
+func TestSuperviseGateAuditReadsItsLastResult(t *testing.T) {
+	c := newGateCase(t, ActivityGateAudit, `{"action":"wait","diagnosis":"the frontier model is slow today"}`, nil)
+	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"audit","time":"2026-09-28T10:00:00Z","commit":"c0","verdict":"clear"}`+"\n"))
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+
+	_, bundle := c.supervise(t, ActivityGateAudit, nil, true, true)
+	want := `{"audit":{"last_result":{"commit":"c0","step":"audit","time":"2026-09-28T10:00:00Z","verdict":"clear"},"model":""}}`
+	if got := jsonOf(bundle["state"]); got != want {
+		t.Fatalf("state = %s\nwant    %s", got, want)
+	}
+}
+
 // A malformed answer is an escalation that says so.
 func TestSuperviseGateMalformedAnswerEscalates(t *testing.T) {
 	c := newGateCase(t, ActivityMerge, `sure, let it wait`, map[string]string{

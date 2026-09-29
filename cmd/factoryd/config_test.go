@@ -68,7 +68,7 @@ func TestConfigCheck(t *testing.T) {
 	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
 		t.Fatalf("valid tree: exit %d: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "3 projects, 8 stages") {
+	if !strings.Contains(stdout.String(), "3 projects, 9 stages") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 

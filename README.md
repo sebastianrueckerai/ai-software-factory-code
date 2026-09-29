@@ -52,12 +52,12 @@ the agents work on.
   was capped at (`refused_budget` or `refused_day_cap`). Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
   output limit and hold. factoryd's own model calls (the session
-  supervisor, the gate supervisor, the model review) take the same route:
+  supervisor, the gate supervisor, the model review, the audit) take the same route:
   the `gateway-factoryd` token (the gateway's `FACTORYD_TOKEN`) with the
   task in `X-Factory-Task` and the purpose (`supervisor`,
-  `gate-supervisor`, `review`) in `X-Factory-Purpose`. Such a call may use
+  `gate-supervisor`, `review`, `audit`) in `X-Factory-Purpose`. Such a call may use
   only the alias the task's class names for the purpose
-  (`supervisor_model`, `review_model`; 403 `refused_capability` else),
+  (`supervisor_model`, `review_model`, `audit_model`; 403 `refused_capability` else),
   runs while the task is running or in review, is held and booked like an
   agent's under the ref `<purpose>/<alias>` (e.g. `review/review-frontier`),
   and its audit row has the purpose as `kind` (`agent` for an agent's
@@ -340,6 +340,21 @@ activities, each with a timeline step and a comment on the pull request:
    gateway (refused_budget): ..."), a failed call, an invalid answer or a
    class without a review model is a note on the pull request and the
    approval card; nothing it says skips a gate.
+   From change id `audit` on (ruling 188), the workflow's `audit` stage
+   (between review and approval, `on_findings: human` only) runs
+   `GateAudit` for a project whose file sets `audit: true`, else records
+   it skipped: `redact.ScanDiff` checks the added lines for secret shapes
+   (private keys, credentialed URLs, bearer tokens, JWTs, `sk-`, `ghp_`,
+   `glpat-`, `AKIA`, a password or token assigned a literal), each hit a
+   finding with file and line, never the value; then one call of the
+   class's `audit_model` (purpose `audit`, bound `GateAudit`) over the
+   diff (cut at 48 KiB; a cut is a finding) with a fixed checklist:
+   secrets, network egress, RBAC and ServiceAccounts, policy and workflow
+   files, migrations that drop or widen, the sandbox contract. An answer
+   without a verdict is a finding. The findings go to the card's
+   "Security audit" section and the timeline step `audit` (verdict,
+   model, deployment), never to the pull request; on the merge rule auto
+   they send the merge to the card. A roll task skips the stage.
 5. From change id `auto-merge` on (ruling 149), `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
@@ -607,7 +622,7 @@ The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
-session and gate supervisor; a class without one gets no such call).
+session and gate supervisor, `audit_model` for the audit; a class without one gets no such call).
 The gateway never reads the files, only the version in force in
 Postgres. `day_eur: 0` stops all spend. Because the decoder is strict,
 a new key lands in infra first and the factoryd that reads it rolls

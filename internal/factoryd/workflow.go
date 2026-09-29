@@ -85,6 +85,7 @@ const (
 	ActivityJudgeScreening              = "JudgeScreening"
 	ActivityRunReport                   = "RunReport"
 	ActivityRollCommit                  = "RollCommit"
+	ActivityGateAudit                   = "GateAudit"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -291,7 +292,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace),
 		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages),
 		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll),
-		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap)}
+		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap),
+		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -436,6 +438,11 @@ const (
 	// repeat past StrongerAfter takes the stronger rung; a new run starts
 	// on the rung the last one left.
 	versionSessionCap workflow.Version = 1
+	// versionAudit (change id "audit", ruling 188): the audit stage runs
+	// GateAudit on the reviewed head; its findings, or its failure, go to
+	// the card beside the review, never to the agent; a roll task skips
+	// it (ruling 178).
+	versionAudit workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -451,6 +458,7 @@ type taskRun struct {
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
 	v16, v17, v18     workflow.Version
+	v19               workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

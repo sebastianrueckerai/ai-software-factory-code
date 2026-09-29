@@ -3,5 +3,6 @@ repository: sf/code
 merge_rule: human
 objects: seed
 agents: coder
+audit: true
 namespaces: [factory]
 tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}

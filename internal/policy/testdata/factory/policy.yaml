@@ -15,6 +15,7 @@ classes:
   coder:
     models: [coding-cheap, coding-frontier]
     review_model: review-frontier
+    audit_model: coding-frontier
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}

@@ -31,6 +31,7 @@ const (
 	GateHuman         = "human"
 	GateCommissioning = "commissioning"
 	GateScreening     = "screening"
+	GateAudit         = "audit"
 )
 
 // StepGates are the timeline steps that end a gate, each carrying the
@@ -41,6 +42,7 @@ var StepGates = map[string]string{
 	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
 	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
+	"audit": GateAudit,
 }
 
 // activityGates are the gates the activities open: the task's row is in
@@ -57,6 +59,7 @@ var activityGates = map[string]string{
 	ActivityEscalate:         GateHuman,
 	ActivityScreen:           GateScreening,
 	ActivityRunReport:        GateSession,
+	ActivityGateAudit:        GateAudit,
 }
 
 // GateStore is what GateWatch writes.
@@ -72,7 +75,7 @@ const SignalGateBound = "gate_bound"
 // supervisedGates are the long gates (ruling 162): a short gate's attempt
 // times out before any supervisor answer could arrive, so its gate_bound
 // alert is its record.
-var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityMerge}
+var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge}
 
 // GateTrip is one gate_bound alert of a machine gate's activity run: the
 // run is the activity the workflow scheduled (its id), across attempts.

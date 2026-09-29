@@ -171,7 +171,7 @@ const BoundDefault = "default"
 // retries on workflow timers (ruling 163). RunSession, RunReport, Screen and SuperviseGate
 // follow the limits (Bound).
 var DefaultBounds = map[string]int{
-	"WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 90, BoundDefault: 120,
+	"WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "GateAudit": 360, "Merge": 90, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -180,7 +180,7 @@ var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
 	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
-	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit",
+	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "GateAudit",
 }
 
 // Bound is how long one run of activity may take before it alerts: the
@@ -282,6 +282,9 @@ type Class struct {
 	// SupervisorModel is the alias the session and gate supervisors call
 	// on the task's account.
 	SupervisorModel string `yaml:"supervisor_model,omitempty" json:"supervisor_model,omitempty"`
+	// AuditModel is the alias factoryd's security audit calls on the
+	// task's account (ruling 188).
+	AuditModel string `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
 }
 
 // The purposes factoryd calls a model for on a task's account.
@@ -289,10 +292,11 @@ const (
 	PurposeReview         = "review"
 	PurposeSupervisor     = "supervisor"
 	PurposeGateSupervisor = "gate-supervisor"
+	PurposeAudit          = "audit"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit}
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -544,6 +548,8 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 			alias = cl.ReviewModel
 		case PurposeSupervisor, PurposeGateSupervisor:
 			alias = cl.SupervisorModel
+		case PurposeAudit:
+			alias = cl.AuditModel
 		}
 		if alias != "" {
 			return alias

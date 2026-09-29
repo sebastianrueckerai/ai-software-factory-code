@@ -124,6 +124,8 @@ type fakeLiteLLM struct {
 	content  string
 	delay    time.Duration
 	keys     string // /key/list body; empty = no keys
+	// deployment is the gateway's deployment header on an answer
+	deployment string
 }
 
 func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
@@ -157,6 +159,9 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 				io.WriteString(w, `{"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`)
 				return
 			}
+			if f.deployment != "" {
+				w.Header().Set(gateway.HeaderDeployment, f.deployment)
+			}
 			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": f.content}}}})
 			w.Write(out)
 		default:
@@ -184,7 +189,7 @@ func TestSupervisorModelTimesOut(t *testing.T) {
 	t.Cleanup(srv.Close)
 	m := testSupervisorModel(srv.URL)
 	start := time.Now()
-	_, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, 50*time.Millisecond, "system", testInput())
+	_, _, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, 50*time.Millisecond, "system", testInput())
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 		t.Fatalf("Chat = %v after %s, want the deadline after 50ms", err, time.Since(start))
 	}
@@ -243,14 +248,14 @@ func TestSupervisorModelFailureEscalates(t *testing.T) {
 		t.Fatalf("prose answer: %+v, want escalate", d)
 	}
 	f3 := &fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}
-	_, err := testSupervisorModel(f3.srv(t).URL).Chat(context.Background(), "t1", "supervisor", "supervisor", time.Minute, "sys", testInput())
+	_, _, err := testSupervisorModel(f3.srv(t).URL).Chat(context.Background(), "t1", "supervisor", "supervisor", time.Minute, "sys", testInput())
 	var refusal *policy.Refusal
 	if !errors.As(err, &refusal) || *refusal != (policy.Refusal{Decision: "refused_budget", Reason: "task headroom 0.000000 EUR"}) {
 		t.Fatalf("refused call: %v, want the gateway's refusal", err)
 	}
 	// no alias in the policy: no call
 	f4 := &fakeLiteLLM{content: "{}"}
-	if _, err := testSupervisorModel(f4.srv(t).URL).Chat(context.Background(), "t1", "", "review", time.Minute, "sys", testInput()); err == nil ||
+	if _, _, err := testSupervisorModel(f4.srv(t).URL).Chat(context.Background(), "t1", "", "review", time.Minute, "sys", testInput()); err == nil ||
 		!strings.Contains(err.Error(), "names no review model") || len(f4.chats) != 0 {
 		t.Fatalf("no alias: %v, calls %d; want an error without a call", err, len(f4.chats))
 	}

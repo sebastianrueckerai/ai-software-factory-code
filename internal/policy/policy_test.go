@@ -395,6 +395,7 @@ classes:
     models: [coding-cheap]
     review_model: review-frontier
     supervisor_model: supervisor
+    audit_model: coding-frontier
   researcher:
     models: [coding-cheap]
     review_model: review-cheap
@@ -419,6 +420,8 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{"coder"}, PurposeReview, "review-frontier"},
 		{[]string{"coder"}, PurposeSupervisor, "supervisor"},
 		{[]string{"coder"}, PurposeGateSupervisor, "supervisor"},
+		{[]string{"coder"}, PurposeAudit, "coding-frontier"},
+		{[]string{"researcher"}, PurposeAudit, ""},
 		{[]string{"researcher", "coder"}, PurposeReview, "review-cheap"},
 		{[]string{"researcher", "coder"}, PurposeSupervisor, "supervisor"},
 		{[]string{"plain"}, PurposeReview, ""},
@@ -432,7 +435,7 @@ func TestFactoryModel(t *testing.T) {
 	if d.AllowsModel([]string{"coder"}, "review-frontier") || d.AllowsModel([]string{"coder"}, "supervisor") {
 		t.Fatal("a factory model is not an agent model")
 	}
-	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"review-cheap", "supervisor"}) {
+	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"coding-frontier", "review-cheap", "supervisor"}) {
 		t.Fatalf("FactoryModels = %v", got)
 	}
 }

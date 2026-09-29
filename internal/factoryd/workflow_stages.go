@@ -67,6 +67,10 @@ func (t *taskRun) stages(commit string) verdict {
 		switch s.Name {
 		case policy.StageScreening:
 			continue
+		case policy.StageAudit:
+			if t.v19 < versionAudit {
+				continue
+			}
 		case policy.StageApproval:
 			earlier := t.reviews
 			if reviewed {
@@ -222,6 +226,8 @@ func (t *taskRun) skipReason(s policy.Stage) string {
 		return "disabled"
 	case s.When == policy.WhenOutsider && t.standing != harness.StandingOutside:
 		return "the issue's author is not an outside account"
+	case s.Name == policy.StageAudit && t.rolling:
+		return "a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"
 	}
 	return ""
 }
@@ -319,8 +325,43 @@ func (t *taskRun) runStage(name, commit string, g *GateResults, review *Review) 
 			}
 			return review.Findings, verdict{}, false
 		}
+	case policy.StageAudit:
+		return t.audit(commit, g)
 	}
 	return nil, verdict{}, false
+}
+
+// audit is the audit stage (versionAudit): the findings line that sends
+// the card, which shows the audit, to a human. An audit that failed for
+// good is a finding too.
+func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v verdict, stop bool) {
+	var a AuditResult
+	v, decided, err := t.gateActivity(true, reviewOptions(), &a, ActivityGateAudit, t.taskID, t.pr, commit, g.Pin)
+	if decided {
+		return nil, v, true
+	}
+	if err != nil {
+		a = AuditResult{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit failed: " + errMessage(err)}}}
+		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "verdict": a.Verdict, "findings": a.Findings}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "audit", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record the failed audit", "error", err)
+		}
+	}
+	if final, why, ok := t.decided(); ok {
+		return nil, verdict{final: final, reason: why}, true
+	}
+	if a.Skipped != "" {
+		return nil, verdict{}, false
+	}
+	g.Audit = &a
+	switch n := len(a.Findings); n {
+	case 0:
+		return nil, verdict{}, false
+	case 1:
+		return []string{"the security audit reports 1 finding for a human"}, verdict{}, false
+	default:
+		return []string{fmt.Sprintf("the security audit reports %d findings for a human", n)}, verdict{}, false
+	}
 }
 
 // approve is the approval stage: the merge rule auto when no stage left

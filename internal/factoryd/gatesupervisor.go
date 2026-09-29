@@ -120,7 +120,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
 		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in, pinned)
 		cancel()
-		content, err := r.supervisor.Chat(ctx, t.ID, factoryModel(pinned, t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
+		content, _, err := r.supervisor.Chat(ctx, t.ID, factoryModel(pinned, t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
 			pinned.Limits.SupervisorTimeout, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
@@ -219,6 +219,12 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 			review["last_result"] = step
 		}
 		b.State = map[string]any{"review": review}
+	case ActivityGateAudit:
+		audit := map[string]any{"model": factoryModel(pinned, t, policy.PurposeAudit), "last_result": "none on this task's timeline"}
+		if step := lastStep(tl, "audit"); step != nil {
+			audit["last_result"] = step
+		}
+		b.State = map[string]any{"audit": audit}
 	}
 	return b, secrets
 }

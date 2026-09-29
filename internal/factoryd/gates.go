@@ -72,6 +72,8 @@ type GateResults struct {
 	// ChecksPassed: the checks stage ran and was green; the auto merge
 	// needs it.
 	ChecksPassed bool `json:",omitempty"`
+	// Audit is the audit stage's verdict (ruling 188); nil: not run.
+	Audit *AuditResult `json:",omitempty"`
 }
 
 // Review is the model review's verdict; Note says why there is none (no
@@ -147,6 +149,9 @@ type MergeSpec struct {
 	// EarlierReviews are the model reviews of the task's earlier heads,
 	// oldest first (ruling 177).
 	EarlierReviews []Review `json:"earlier_reviews,omitempty"`
+	// Audit is the security audit's verdict, its own section (ruling
+	// 188).
+	Audit *AuditResult `json:"audit,omitempty"`
 }
 
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
@@ -612,7 +617,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	content, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, reviewPrompt, reviewInput{
+	content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, reviewPrompt, reviewInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()},
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates, EarlierReviews: earlier,
 	})
@@ -669,7 +674,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
 		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
-		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews,
+		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
 	})
 	if err != nil {
 		return err

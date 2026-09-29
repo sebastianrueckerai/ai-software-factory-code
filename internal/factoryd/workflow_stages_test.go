@@ -523,3 +523,122 @@ func TestStagesScreeningReportEndsWithoutAComment(t *testing.T) {
 		t.Fatalf("reason = %q", g.finals[0][1])
 	}
 }
+
+// withAudit lists the audit stage (ruling 188) between review and
+// approval.
+func withAudit(w *policy.Workflow) {
+	i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageReview })
+	w.Stages = slices.Insert(w.Stages, i+1, policy.Stage{Name: policy.StageAudit, OnFindings: policy.FindingsHuman, Enabled: true})
+}
+
+var plantedFinding = AuditFinding{Item: "secret in the diff: password, secret or token assigned a literal", File: "internal/x/x_test.go", Line: 4,
+	Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"}
+
+// A clear audit passes to the approval as before: on auto, the merge
+// needs no card.
+func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "audit c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	if len(g.approvals) != 0 || len(g.autoNotes) != 1 || !slices.Equal(g.auditPins, []int64{7}) {
+		t.Fatalf("approvals %d, auto notes %v, audit pins %v", len(g.approvals), g.autoNotes, g.auditPins)
+	}
+}
+
+// Audit findings go to the card beside the review, never to the agent:
+// one session, the card with the audit's section and why a human.
+func TestStagesAuditFindingsGoToTheCardWithTheReview(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) {
+		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding}, Model: "coding-frontier"}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.sessions) != 1 {
+		t.Fatalf("final = %q, sessions %d", final, len(g.sessions))
+	}
+	in := g.approvals[0]
+	if in.Review.Verdict != "approve" || in.Gates.Audit == nil || !slices.Equal(in.Gates.Audit.Findings, []AuditFinding{plantedFinding}) {
+		t.Fatalf("approval input = %+v", in)
+	}
+	if !slices.Equal(in.WhyHuman, []string{"audit: the security audit reports 1 finding for a human"}) {
+		t.Fatalf("why human = %v", in.WhyHuman)
+	}
+}
+
+// On the merge rule auto, audit findings turn the merge into the card.
+func TestStagesAuditFindingsStopTheAutoMerge(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding, {Item: auditNoVerdict, Why: "the answer is not one JSON object: EOF"}}}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.autoNotes) != 0 || len(g.approvals) != 1 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) ||
+		!slices.Equal(g.approvals[0].WhyHuman, []string{"audit: the security audit reports 2 findings for a human"}) {
+		t.Fatalf("auto notes %v, approvals %+v, merges %v", g.autoNotes, g.approvals, g.merges)
+	}
+}
+
+// An audit that fails for good is a finding on the card, never a pass,
+// and the timeline records it.
+func TestStagesFailedAuditIsAFinding(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+		g.auditErr = temporal.NewNonRetryableApplicationError("forgejo gone", "terminal", nil)
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.autoNotes) != 0 || len(g.approvals) != 1 {
+		t.Fatalf("final = %q, auto notes %v, approvals %d", final, g.autoNotes, len(g.approvals))
+	}
+	a := g.approvals[0].Gates.Audit
+	if a == nil || a.Verdict != AuditFindings || len(a.Findings) != 1 || a.Findings[0].Item != auditNoVerdict || !strings.Contains(a.Findings[0].Why, "forgejo gone") {
+		t.Fatalf("audit on the card = %+v", a)
+	}
+	var steps []map[string]any
+	for _, r := range g.recorded {
+		if r.step == "audit" {
+			steps = append(steps, r.detail)
+		}
+	}
+	if len(steps) != 1 || steps[0]["verdict"] != AuditFindings {
+		t.Fatalf("audit steps = %v", steps)
+	}
+}
+
+// A project the audit skips: no finding, the auto merge goes on; a
+// disabled audit stage is skipped on the timeline without a call.
+func TestStagesAuditSkipped(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
+		g.audits = []AuditResult{{Skipped: auditNotSwitchedOn}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" || len(g.autoNotes) != 1 || len(g.approvals) != 0 {
+		t.Fatalf("final = %q, auto notes %v, approvals %d", final, g.autoNotes, len(g.approvals))
+	}
+
+	g = newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+		withAudit(w)
+		setStage(w, "audit", func(s *policy.Stage) { s.Enabled = false })
+	}), autoGates)
+	g.state.Standing = harness.StandingWriter
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "done" || slices.Contains(g.steps, "audit c1") {
+		t.Fatalf("final = %q, steps %v", final, g.steps)
+	}
+	if got := g.skipped(); !slices.Contains(got, "audit: disabled") {
+		t.Fatalf("skipped = %v", got)
+	}
+}

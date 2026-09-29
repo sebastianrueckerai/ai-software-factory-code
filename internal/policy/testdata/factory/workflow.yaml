@@ -6,5 +6,6 @@ stages:
   - {name: migration, on_findings: human, enabled: true}
   - {name: reproduction, on_findings: agent, enabled: true}
   - {name: review, on_findings: agent, enabled: true}
+  - {name: audit, on_findings: human, enabled: true}
   - {name: approval, on_findings: human, enabled: true}
   - {name: merge, on_findings: human, enabled: true}

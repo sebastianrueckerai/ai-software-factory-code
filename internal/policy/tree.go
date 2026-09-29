@@ -44,7 +44,22 @@ func (t Tree) Validate() error {
 	for name, p := range t.Projects {
 		errs = append(errs, p.Validate(name))
 	}
-	return errors.Join(append(errs, checkProjects(t.Projects))...)
+	return errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...)
+}
+
+// checkAudit refuses a project that switches on an audit stage the
+// workflow does not list.
+func (t Tree) checkAudit() error {
+	if _, ok := t.Workflow.Stage(StageAudit); ok {
+		return nil
+	}
+	var errs []error
+	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
+		if t.Projects[name].Audit {
+			errs = append(errs, fmt.Errorf("project %s: audit: the workflow lists no audit stage", name))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ParseTree decodes and validates a tree's files, keyed by their slash
@@ -81,7 +96,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 		}
 	}
-	if err := errors.Join(append(errs, checkProjects(t.Projects))...); err != nil {
+	if err := errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...); err != nil {
 		return Tree{}, err
 	}
 	return t, nil

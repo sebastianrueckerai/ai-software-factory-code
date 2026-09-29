@@ -169,6 +169,9 @@ type ProjectConfig struct {
 	// Agents: coder lets agent tasks run, none sends every issue to the
 	// human lane and refuses tasks.
 	Agents string `yaml:"agents" json:"agents"`
+	// Audit runs the workflow's audit stage on the project's pull
+	// requests (ruling 188); absent: it does not.
+	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`
 	// Notify are the Forgejo users told about the project's cards; empty:
 	// the policy's approvers.
 	Notify []string `yaml:"notify,omitempty" json:"notify"`

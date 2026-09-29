@@ -65,6 +65,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityJudgeScreening:              r.JudgeScreening,
 		ActivityRunReport:                   r.RunReport,
 		ActivityRollCommit:                  r.RollCommit,
+		ActivityGateAudit:                   r.GateAudit,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

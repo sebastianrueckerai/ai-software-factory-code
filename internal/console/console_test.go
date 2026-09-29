@@ -367,7 +367,10 @@ func newRig(t *testing.T) *rig {
 				Spec: json.RawMessage(`{"risk_class":"high","migration":true,"migrations":["internal/factoryd/migrations/0018_x.sql"],` +
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123",` +
 					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
-					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}]}`)},
+					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}],` +
+					`"audit":{"verdict":"findings","model":"coding-frontier","deployment":"zai/glm-5.3","findings":[` +
+					`{"item":"secret in the diff: private key","file":"internal/x/x_test.go","line":14,"why":"an added line has the shape of a private key (pre-check)"},` +
+					`{"item":"the audit gave no verdict","why":"the answer is not one JSON object: EOF"}]}}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader}
@@ -928,6 +931,9 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		"<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>",
 		// ruling 177: the reviews of earlier heads, oldest first, with their findings
 		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default</dd>",
+		// ruling 188: the security audit's own section, beside the review
+		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>: an added line has the shape of a private key (pre-check)" +
+			"<br>- the audit gave no verdict: the answer is not one JSON object: EOF</dd>",
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
 	} {

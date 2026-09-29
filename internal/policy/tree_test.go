@@ -63,14 +63,17 @@ func TestParseTreeAccepts(t *testing.T) {
 		*infra.Tokens != (SeedTokens{Read: SecretConfig}) {
 		t.Fatalf("infra = %+v", infra)
 	}
-	if code := tree.Projects["code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) {
-		t.Fatalf("code tokens = %+v", code.Tokens)
+	if code := tree.Projects["code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
+		t.Fatalf("code = %+v", code)
+	}
+	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "coding-frontier" || tree.Document.Bound("GateAudit") != 6*time.Minute {
+		t.Fatalf("demo-app audit %v, audit model %q, bound %s", demo.Audit, tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit), tree.Document.Bound("GateAudit"))
 	}
 	var names []string
 	for _, s := range tree.Workflow.Stages {
 		names = append(names, s.Name)
 	}
-	if !slices.Equal(names, []string{"screening", "checks", "policy", "migration", "reproduction", "review", "approval", "merge"}) {
+	if !slices.Equal(names, []string{"screening", "checks", "policy", "migration", "reproduction", "review", "audit", "approval", "merge"}) {
 		t.Fatalf("stages = %v", names)
 	}
 	if s := tree.Workflow.Stages[0]; s.Enabled || s.When != WhenOutsider || s.OnFindings != FindingsHuman {
@@ -139,15 +142,16 @@ func TestParseTreeRejects(t *testing.T) {
 			f["projects/sf.yaml"] = []byte(strings.ReplaceAll(string(f["projects/demo-app.yaml"]), "demo-app", "sf"))
 			delete(f, "projects/demo-app.yaml")
 		}, "project sf: objects factory: the name is its Forgejo organisation's"},
-		"bad deploy path":           {edit("projects/demo-app.yaml", "path: deploy/prod", "path: ../prod"), `environment demo-prod: path "../prod"`},
-		"environment elsewhere":     {edit("projects/demo-app.yaml", "{namespace: demo-prod, path", "{namespace: demo-qa, path"), `environment "demo-qa": not one of the project's namespaces`},
-		"bad hostname":              {edit("projects/demo-app.yaml", "hostname: demo-staging.example.org", "hostname: Demo_Staging"), `hostname "Demo_Staging"`},
-		"bad secret":                {edit("projects/demo-app.yaml", "secrets: [demo-write-token/token]", "secrets: [token]"), `secret "token": want secret-name/key`},
-		"bad notify":                {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\nnotify: [a b]\n"), `notify "a b": not a Forgejo user name`},
-		"bad envelope":              {edit("projects/demo-app.yaml", "envelope: {monthly_eur: 5", "envelope: {monthly_eur: 0"), "project demo-app: envelope.monthly_eur must be positive"},
-		"bad standing":              {edit("projects/demo-app.yaml", "standing: {monthly_eur: 3", "standing: {monthly_eur: -3"), "project demo-app: standing.monthly_eur must not be negative"},
-		"one repository, two files": {func(f map[string][]byte) { f["projects/infra2.yaml"] = f["projects/infra.yaml"] }, "project infra2: repository sf/infra is project infra's"},
-		"one namespace, two files":  {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [demo-prod]\n"), "project infra: namespace demo-prod is project demo-app's"},
+		"bad deploy path":               {edit("projects/demo-app.yaml", "path: deploy/prod", "path: ../prod"), `environment demo-prod: path "../prod"`},
+		"environment elsewhere":         {edit("projects/demo-app.yaml", "{namespace: demo-prod, path", "{namespace: demo-qa, path"), `environment "demo-qa": not one of the project's namespaces`},
+		"bad hostname":                  {edit("projects/demo-app.yaml", "hostname: demo-staging.example.org", "hostname: Demo_Staging"), `hostname "Demo_Staging"`},
+		"bad secret":                    {edit("projects/demo-app.yaml", "secrets: [demo-write-token/token]", "secrets: [token]"), `secret "token": want secret-name/key`},
+		"bad notify":                    {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\nnotify: [a b]\n"), `notify "a b": not a Forgejo user name`},
+		"bad envelope":                  {edit("projects/demo-app.yaml", "envelope: {monthly_eur: 5", "envelope: {monthly_eur: 0"), "project demo-app: envelope.monthly_eur must be positive"},
+		"bad standing":                  {edit("projects/demo-app.yaml", "standing: {monthly_eur: 3", "standing: {monthly_eur: -3"), "project demo-app: standing.monthly_eur must not be negative"},
+		"one repository, two files":     {func(f map[string][]byte) { f["projects/infra2.yaml"] = f["projects/infra.yaml"] }, "project infra2: repository sf/infra is project infra's"},
+		"one namespace, two files":      {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [demo-prod]\n"), "project infra: namespace demo-prod is project demo-app's"},
+		"audit switched on, not listed": {edit("workflow.yaml", "  - {name: audit, on_findings: human, enabled: true}\n", ""), "project code: audit: the workflow lists no audit stage"},
 		"empty project": {func(f map[string][]byte) {
 			f["projects/infra.yaml"] = []byte("# yaml-language-server: $schema=../schema/project.schema.json\n")
 		}, "projects/infra.yaml: empty document"},
@@ -334,7 +338,7 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if got := stage.Properties["on_findings"].Enum; !reflect.DeepEqual(got, []any{"agent", "human", "fail"}) {
 		t.Errorf("on_findings enum = %v", got)
 	}
-	if got := stage.Properties["name"].Enum; len(got) != 8 {
+	if got := stage.Properties["name"].Enum; len(got) != 9 {
 		t.Errorf("stage name enum = %v", got)
 	}
 	if !slices.Equal(stage.Required, []string{"name", "on_findings", "enabled"}) {

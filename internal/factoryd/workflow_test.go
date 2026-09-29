@@ -148,6 +148,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityRequestInfo:        func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
 		ActivityCloseNotReproduced: func(ctx context.Context, taskID string) error { return nil },
 		ActivityRollCommit:         func(ctx context.Context, taskID string) (string, error) { return "", nil },
+		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
+			return AuditResult{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

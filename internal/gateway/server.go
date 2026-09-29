@@ -661,7 +661,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			return
 		}
 		up.status = strconv.Itoa(res.StatusCode)
-		c.deployment = res.Header.Get(headerDeployment)
+		c.deployment = res.Header.Get(HeaderDeployment)
 		up.deployment = c.deployment
 
 		if res.StatusCode/100 != 2 {
@@ -706,6 +706,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		defer res.Body.Close()
 
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
+		if c.kind != "" && c.deployment != "" {
+			w.Header().Set(HeaderDeployment, c.deployment)
+		}
 		w.WriteHeader(res.StatusCode)
 
 		// Each call's own cost is booked onto the task. x-litellm-key-spend is
@@ -753,10 +756,11 @@ func (s *Server) rekey(ctx context.Context, c *modelCall) error {
 	return nil
 }
 
-// headerDeployment names the deployment that answered (its litellm_params
+// HeaderDeployment names the deployment that answered (its litellm_params
 // model, e.g. zai/glm-5.3). LiteLLM rewrites the body's model to the alias
-// the client asked for, so the header is the only place it shows.
-const headerDeployment = "x-litellm-model-name"
+// the client asked for, so the header is the only place it shows; the
+// gateway passes it on to factoryd's calls.
+const HeaderDeployment = "x-litellm-model-name"
 
 // maxSSELine bounds what usageScanner buffers of one line. The usage chunk
 // is small; a longer line is content, passed through but not inspected.

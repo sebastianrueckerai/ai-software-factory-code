@@ -1236,16 +1236,19 @@ func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, numb
 
 // PullRequestDiff is pull request number's unified diff, at most max bytes
 // (the rest cut, and said so).
+// diffCut opens the note PullRequestDiff appends to a diff it cut.
+const diffCut = "\n… (diff cut at "
+
 func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, number int64, max int) (string, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK)
 	if errors.Is(err, ErrAnswerTooLong) && len(body) > max {
-		return string(body[:max]) + fmt.Sprintf("\n… (diff cut at %d bytes of more than 1 MiB)", max), nil
+		return string(body[:max]) + diffCut + fmt.Sprintf("%d bytes of more than 1 MiB)", max), nil
 	}
 	if err != nil {
 		return "", err
 	}
 	if len(body) > max {
-		return string(body[:max]) + fmt.Sprintf("\n… (diff cut at %d of %d bytes)", max, len(body)), nil
+		return string(body[:max]) + diffCut + fmt.Sprintf("%d of %d bytes)", max, len(body)), nil
 	}
 	return string(body), nil
 }

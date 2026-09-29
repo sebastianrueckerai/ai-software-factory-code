@@ -944,6 +944,10 @@ func TestChatCompletions(t *testing.T) {
 			if last.Deployment != tt.wantDeployment {
 				t.Fatalf("deployment = %q, want %q", last.Deployment, tt.wantDeployment)
 			}
+			// an agent never learns the deployment behind its alias
+			if d := rr.Header().Get(HeaderDeployment); d != "" {
+				t.Fatalf("an agent's answer names deployment %q", d)
+			}
 
 			if tt.wantErrType != "" {
 				var eb struct {
@@ -1564,7 +1568,7 @@ func doFactorydChat(t *testing.T, h http.Handler, token, task, purpose, body str
 func factoryPolicy() policy.Version {
 	v := testPolicy(1, 20)
 	v.Document.Classes["coder"] = policy.Class{Models: []string{"coding-cheap", "coding-frontier"},
-		ReviewModel: "review-frontier", SupervisorModel: "supervisor"}
+		ReviewModel: "review-frontier", SupervisorModel: "supervisor", AuditModel: "coding-frontier"}
 	return v
 }
 
@@ -1573,7 +1577,7 @@ func factoryPolicy() policy.Version {
 // to the task under ref review/review-frontier, an audit row of kind
 // review; the agent's JWT path never reaches the alias.
 func TestFactorydReviewCall(t *testing.T) {
-	prices := fakePrices{"coding-cheap": testPrice, "review-frontier": testPrice, "supervisor": testPrice}
+	prices := fakePrices{"coding-cheap": testPrice, "coding-frontier": testPrice, "review-frontier": testPrice, "supervisor": testPrice}
 	type want struct {
 		status   int
 		decision string
@@ -1581,6 +1585,8 @@ func TestFactorydReviewCall(t *testing.T) {
 		upstream int
 		ledger   []ledgerRow
 		spent    float64
+		// deployment is the answer's deployment header
+		deployment string
 	}
 	for name, tc := range map[string]struct {
 		task    Task
@@ -1601,6 +1607,19 @@ func TestFactorydReviewCall(t *testing.T) {
 			want: want{status: 200, decision: "allowed", upstream: 1,
 				ledger: []ledgerRow{{"42", "review/review-frontier", 0.125, policy.KindModel}}, spent: 2.125},
 		},
+		// the audit (ruling 188) learns the deployment that answered
+		"audit": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "audit", model: "coding-frontier",
+			resp: stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125", "x-litellm-model-name": "zai/glm-5.3"}},
+			want: want{status: 200, decision: "allowed", upstream: 1, deployment: "zai/glm-5.3",
+				ledger: []ledgerRow{{"42", "audit/coding-frontier", 0.125, policy.KindModel}}, spent: 2.125},
+		},
+		"the audit model for the review": {
+			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			purpose: "review", model: "coding-frontier",
+			want: want{status: 403, decision: "refused_capability", header: "refused_capability", spent: 2},
+		},
 		"at the budget cap": {
 			task: Task{Classes: coder, ID: "42", BudgetEUR: 2, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier",
@@ -1614,7 +1633,7 @@ func TestFactorydReviewCall(t *testing.T) {
 		},
 		"not the review alias": {
 			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
-			purpose: "review", model: "coding-frontier",
+			purpose: "review", model: "supervisor",
 			want: want{status: 403, decision: "refused_capability", header: "refused_capability", spent: 2},
 		},
 		"a finished task": {
@@ -1653,6 +1672,9 @@ func TestFactorydReviewCall(t *testing.T) {
 			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
 				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: token})
 			rr := doFactorydChat(t, s.Routes("test"), tc.token, "42", tc.purpose, chatBody(tc.model))
+			if rr.Header().Get(HeaderDeployment) != tc.want.deployment {
+				t.Fatalf("deployment header %q, want %q", rr.Header().Get(HeaderDeployment), tc.want.deployment)
+			}
 			if rr.Code != tc.want.status || rr.Header().Get(HeaderDecision) != tc.want.header {
 				t.Fatalf("status %d decision header %q, want %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), tc.want.status, tc.want.header, rr.Body)
 			}
@@ -1683,7 +1705,7 @@ func TestFactorydReviewCall(t *testing.T) {
 				t.Fatalf("upstream calls = %d, want %d", len(auths), tc.want.upstream)
 			}
 			if tc.want.upstream > 0 {
-				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "review-frontier,supervisor" || calls[0].taskID != "42" {
+				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "coding-frontier,review-frontier,supervisor" || calls[0].taskID != "42" {
 					t.Fatalf("mints = %+v, want one key for task 42 on the factory aliases only", calls)
 				}
 			}
@@ -1732,7 +1754,7 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 		t.Fatalf("agent call = %d", rr.Code)
 	}
 	calls := minter.mintCalls()
-	if len(calls) != 2 || calls[0].models != "coding-cheap,coding-frontier" || calls[1].models != "review-frontier,supervisor" {
+	if len(calls) != 2 || calls[0].models != "coding-cheap,coding-frontier" || calls[1].models != "coding-frontier,review-frontier,supervisor" {
 		t.Fatalf("mints = %+v, want the session's key and factoryd's", calls)
 	}
 	if b := minter.blockedKeys(); len(b) != 0 {

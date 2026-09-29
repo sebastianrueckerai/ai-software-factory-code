@@ -50,12 +50,13 @@ const (
 	StagePolicy       = "policy"
 	StageMigration    = "migration"
 	StageReview       = "review"
+	StageAudit        = "audit"
 	StageApproval     = "approval"
 	StageMerge        = "merge"
 )
 
 // StageNames are the stage implementations.
-var StageNames = []string{StageChecks, StageScreening, StageReproduction, StagePolicy, StageMigration, StageReview, StageApproval, StageMerge}
+var StageNames = []string{StageChecks, StageScreening, StageReproduction, StagePolicy, StageMigration, StageReview, StageAudit, StageApproval, StageMerge}
 
 // What a stage's findings do.
 const (
@@ -76,10 +77,12 @@ var StagePredicates = []string{WhenOutsider}
 // Validate checks the stage list: known names, each once, known rules and
 // predicates; policy, approval and merge present, approval and merge the
 // last two; checks, policy, approval and merge enabled for every task (no
-// when); approval, merge and screening with findings for a human (ruling
-// 182: a suspect issue never reaches the agent unread); screening first
-// (it runs before the first session); migration after policy (policy
-// finds the migrations); max_returns at least 1, on agent stages only.
+// when); approval, merge, screening and audit with findings for a human
+// (ruling 182: a suspect issue never reaches the agent unread; ruling
+// 188); screening first (it runs before the first session); migration
+// after policy (policy finds the migrations); audit between review and
+// approval (it reads the reviewed head); max_returns at least 1, on agent
+// stages only.
 func (w Workflow) Validate() error {
 	var errs []error
 	var seen []string
@@ -100,7 +103,7 @@ func (w Workflow) Validate() error {
 		if slices.Contains([]string{StageChecks, StagePolicy, StageApproval, StageMerge}, s.Name) && (!s.Enabled || s.When != "") {
 			errs = append(errs, fmt.Errorf("workflow: stage %s must run for every task (enabled, no when)", s.Name))
 		}
-		if slices.Contains([]string{StageApproval, StageMerge, StageScreening}, s.Name) && s.OnFindings != FindingsHuman {
+		if slices.Contains([]string{StageApproval, StageMerge, StageScreening, StageAudit}, s.Name) && s.OnFindings != FindingsHuman {
 			errs = append(errs, fmt.Errorf("workflow: stage %s: on_findings must be human", s.Name))
 		}
 		if s.MaxReturns != nil && *s.MaxReturns < 1 {
@@ -119,6 +122,9 @@ func (w Workflow) Validate() error {
 	}
 	if i, p := at(StageMigration), at(StagePolicy); i >= 0 && p >= 0 && i < p {
 		errs = append(errs, errors.New("workflow: stage migration must come after policy, which finds the migrations"))
+	}
+	if a := at(StageAudit); a >= 0 && (a < at(StageReview) || at(StageReview) < 0 || a > at(StageApproval)) {
+		errs = append(errs, errors.New("workflow: stage audit must come between review and approval: it reads the reviewed head"))
 	}
 	for _, name := range []string{StagePolicy, StageApproval, StageMerge} {
 		if !slices.Contains(seen, name) {

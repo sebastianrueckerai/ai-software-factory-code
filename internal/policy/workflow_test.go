@@ -36,6 +36,11 @@ func TestWorkflowValidateRefuses(t *testing.T) {
 		"migration first":      {"stages:\n  - {name: migration, on_findings: human, enabled: true}\n" + tail, "migration must come after policy"},
 		"max_returns 0":        {"stages:\n  - {name: review, on_findings: agent, enabled: true, max_returns: 0}\n" + tail, "max_returns must be at least 1"},
 		"max_returns on fail":  {"stages:\n  - {name: review, on_findings: fail, enabled: true, max_returns: 2}\n" + tail, "max_returns needs on_findings agent"},
+		"audit to agent":       {"stages:\n  - {name: review, on_findings: agent, enabled: true}\n  - {name: audit, on_findings: agent, enabled: true}\n" + tail, "stage audit: on_findings must be human"},
+		"audit fails":          {"stages:\n  - {name: review, on_findings: agent, enabled: true}\n  - {name: audit, on_findings: fail, enabled: true}\n" + tail, "stage audit: on_findings must be human"},
+		"audit before review":  {"stages:\n  - {name: audit, on_findings: human, enabled: true}\n  - {name: review, on_findings: agent, enabled: true}\n" + tail, "stage audit must come between review and approval"},
+		"audit without review": {"stages:\n  - {name: audit, on_findings: human, enabled: true}\n" + tail, "stage audit must come between review and approval"},
+		"audit after approval": {"stages:\n  - {name: review, on_findings: agent, enabled: true}\n  - {name: policy, on_findings: fail, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n  - {name: audit, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n", "stage audit must come between review and approval"},
 	} {
 		err := workflowOf(t, c.doc).Validate()
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -61,5 +66,19 @@ func TestWorkflowValidateAcceptsADisabledStageMaxReturnsAndAnyOrderInBetween(t *
 	}
 	if _, ok := w.Stage("migration"); ok {
 		t.Fatal("migration listed")
+	}
+}
+
+// The audit (ruling 188) reads the reviewed head before the approval,
+// its findings for a human only; disabled, it may stand anywhere the
+// rules put it.
+func TestWorkflowValidateAcceptsTheAuditBetweenReviewAndApproval(t *testing.T) {
+	for _, doc := range []string{
+		"stages:\n  - {name: policy, on_findings: fail, enabled: true}\n  - {name: review, on_findings: agent, enabled: true}\n  - {name: audit, on_findings: human, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n",
+		"stages:\n  - {name: review, on_findings: agent, enabled: true}\n  - {name: policy, on_findings: fail, enabled: true}\n  - {name: audit, on_findings: human, enabled: false}\n  - {name: approval, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n",
+	} {
+		if err := workflowOf(t, doc).Validate(); err != nil {
+			t.Errorf("%s: %v", doc, err)
+		}
 	}
 }
