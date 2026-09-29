@@ -14,7 +14,7 @@
       "panelType": "graph",
       "queries": [
         {"type": "builder_query", "spec": {"name": "A", "signal": "metrics", "stepInterval": 60,
-          "aggregations": [{"metricName": "factory.ci.job.queue", "timeAggregation": "", "spaceAggregation": "p95"}],
+          "aggregations": [{"metricName": "factory.ci.job.queue.bucket", "timeAggregation": "", "spaceAggregation": "p95"}],
           "filter": {"expression": "service.name = 'factoryd'"}}}
       ]
     },

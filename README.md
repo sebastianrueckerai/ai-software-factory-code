@@ -1275,8 +1275,14 @@ in namespace `factory`: 5xx rate above 5 % per service (factoryd, its
 console and the gateway trace every request but the probes), factoryd and
 the gateway each started 3 times in 10 minutes (the kubelet's `Started`
 events: a crash restart and a replaced pod both count), the CI queue's p95
-above 5 minutes, and a roll not live within 10 minutes of its merge
-(`factory.roll.pending` above 600 s).
+above 5 minutes (`factory.ci.job.queue.bucket`: SigNoz stores a histogram
+under its bucket series), and factoryd's or the gateway's roll not live for
+10 minutes (a ReplicaSet with fewer available replicas than desired, from
+the cluster collector: factoryd's Recreate leaves no old pod to report its
+own stuck roll, and the gateway's rolling update keeps the Deployment's
+counts whole). Both Deployments set `OTEL_RESOURCE_ATTRIBUTES=
+k8s.namespace.name=factory`, the namespace the rules are bound to; server
+spans are named by route pattern (`GET /tasks/{id}`), never by path.
 
 The CI spawner serves every active project on `agents: coder`, each with
 its Actions token (Forgejo keeps the runner API to the repository's owner):

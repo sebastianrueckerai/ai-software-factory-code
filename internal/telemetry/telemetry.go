@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -199,12 +200,25 @@ func New(meter metric.Meter) (*Metrics, error) {
 	return m, nil
 }
 
-// Handler wraps h in a server span per request named by method and path,
+// Handler wraps h in a server span per request named by its route pattern
+// (otelhttp names it again after the mux routed it), else its method,
 // the probes /healthz and /readyz untraced. The global propagator is the
 // no-op one, so a caller's trace headers are ignored.
 func Handler(tp trace.TracerProvider, service string, h http.Handler) http.Handler {
 	return otelhttp.NewHandler(h, service,
 		otelhttp.WithTracerProvider(tp),
 		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" && r.URL.Path != "/readyz" }),
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }))
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return spanName(r) }))
+}
+
+// spanName is "<method> <pattern>" ("POST /mcp" for pattern "/mcp",
+// "GET /tasks/{id}" for itself), the method alone before routing.
+func spanName(r *http.Request) string {
+	switch {
+	case r.Pattern == "":
+		return r.Method
+	case strings.HasPrefix(r.Pattern, "/"):
+		return r.Method + " " + r.Pattern
+	}
+	return r.Pattern
 }

@@ -84,9 +84,9 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 			}
 		}
 		for _, kv := range res.GetAttributes() {
-			if kv.Key == "service.name" {
+			if kv.Key == "service.name" || kv.Key == "k8s.namespace.name" {
 				mu.Lock()
-				got[r.URL.Path] = kv.Value.GetStringValue()
+				got[r.URL.Path+" "+kv.Key] = kv.Value.GetStringValue()
 				mu.Unlock()
 			}
 		}
@@ -95,6 +95,8 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
 	t.Setenv("OTEL_SERVICE_NAME", "someone-else")
+	// the Deployments' env: the namespace SigNoz's alert rules are bound to
+	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "k8s.namespace.name=factory")
 	p, err := Setup(context.Background(), "factory-gateway")
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +119,10 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := map[string]string{"/v1/traces": "factory-gateway", "/v1/logs": "factory-gateway", "/v1/metrics": "factory-gateway"}
+	want := map[string]string{}
+	for _, path := range []string{"/v1/traces", "/v1/logs", "/v1/metrics"} {
+		want[path+" service.name"], want[path+" k8s.namespace.name"] = "factory-gateway", "factory"
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service.name per path = %v, want %v", got, want)
 	}
@@ -192,16 +197,17 @@ func TestExportErrorsLogAtMostOncePerMinute(t *testing.T) {
 	}
 }
 
-// Every request but the probes is a server span named by method and path
-// with its status code: what a service's 5xx-rate alert rule counts.
+// Every request but the probes is a server span named by its route
+// pattern (no task id, no scanner's path) with its status code: what a service's 5xx-rate alert rule counts.
 func TestHandlerTracesEveryRequestButTheProbes(t *testing.T) {
 	spans := tracetest.NewSpanRecorder()
-	h := Handler(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)), "factoryd", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/tasks/t-1" {
-			http.Error(w, "store down", http.StatusInternalServerError)
-		}
-	}))
-	for _, path := range []string{"/tasks/t-1", "/healthz", "/readyz", "/"} {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "store down", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/", func(http.ResponseWriter, *http.Request) {})
+	h := Handler(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)), "factoryd", mux)
+	for _, path := range []string{"/tasks/t-1", "/healthz", "/readyz", "/a/scanner/path"} {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
 	}
 	var got []string
@@ -214,7 +220,7 @@ func TestHandlerTracesEveryRequestButTheProbes(t *testing.T) {
 		}
 		got = append(got, s.Name()+" "+s.SpanKind().String()+" "+code)
 	}
-	if want := []string{"GET /tasks/t-1 " + trace.SpanKindServer.String() + " 500", "GET / server 200"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"GET /tasks/{id} " + trace.SpanKindServer.String() + " 500", "GET / server 200"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("spans %q, want %q", got, want)
 	}
 }
