@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -866,6 +867,85 @@ func TestCISpawnerBuildVMFailureRollsBack(t *testing.T) {
 	spawner.poll(ctx)
 	if _, ok := kube.pods[ns+"/"+ciPodName]; !ok {
 		t.Fatal("job not claimed again after the back-off")
+	}
+}
+
+// rbacKube answers reads in a namespace Forbidden until factoryd's
+// RoleBinding exists there, as the API server does; bindingErr fails the
+// binding's creation.
+type rbacKube struct {
+	*fakeKube
+	bindingErr error
+}
+
+func rbacBindingPath(ns string) string {
+	return "/apis/rbac.authorization.k8s.io/v1/namespaces/" + ns + "/rolebindings"
+}
+
+func (k rbacKube) bound(ns string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_, ok := k.objects[rbacBindingPath(ns)]
+	return ok
+}
+
+func (k rbacKube) Create(ctx context.Context, path string, obj map[string]any) error {
+	if k.bindingErr != nil && strings.HasSuffix(path, "/rolebindings") {
+		return k.bindingErr
+	}
+	return k.fakeKube.Create(ctx, path, obj)
+}
+
+func (k rbacKube) PodStatus(ctx context.Context, namespace, name string) (string, int32, error) {
+	if !k.bound(namespace) {
+		return "", -1, fmt.Errorf("%w: GET pods/%s", ErrForbidden, name)
+	}
+	return k.fakeKube.PodStatus(ctx, namespace, name)
+}
+
+func (k rbacKube) GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error) {
+	if namespace != "factory" && !k.bound(namespace) {
+		return nil, fmt.Errorf("%w: GET secrets/%s", ErrForbidden, name)
+	}
+	return k.fakeKube.GetSecretData(ctx, namespace, name)
+}
+
+// A build VM that fails to provision (hcloud "Primary IP limit exceeded",
+// job 1889) leaves a namespace the next reconcile can read and tear down,
+// so a later poll spawns the job again.
+func TestCISpawnerFailedBuildVMLeavesNoShellNamespace(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 54, RunsOn: []string{"pr-untrusted-build"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.kube = rbacKube{fakeKube: kube}
+	hz, _ := ciBuildFakes(spawner)
+	hz.serverErr = &hcloud.APIError{Status: 403, Code: "resource_limit_exceeded", Message: "Primary IP limit exceeded"}
+	ctx := context.Background()
+
+	spawner.poll(ctx)
+	if live := spawner.reconcile(ctx, codeCIRepos); live != 0 {
+		t.Fatalf("live = %d after the failed spawn, want 0", live)
+	}
+	if _, ok := kube.namespaces["factory-agents-ci-54"]; ok {
+		t.Fatal("the failed spawn's namespace survived a reconcile")
+	}
+}
+
+// A RoleBinding that cannot be created takes its namespace with it: no
+// reconcile could read one without it.
+func TestCISpawnerFailedBindingRemovesTheNamespace(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 55, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.kube = rbacKube{fakeKube: kube, bindingErr: errors.New("apiserver says no")}
+
+	spawner.poll(context.Background())
+
+	if _, ok := kube.namespaces["factory-agents-ci-55"]; ok {
+		t.Fatal("namespace without its RoleBinding left behind")
+	}
+	if len(hub.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the registration rolled back", hub.deleted)
 	}
 }
 
