@@ -721,7 +721,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) er
 		if slices.Contains(labels, LabelNoise) {
 			verdict = VerdictNoise
 		}
-		if err := in.Store.JudgeTaskAlerts(ctx, t.ID, verdict, closer); err != nil {
+		if err := in.Store.JudgeTaskAlerts(ctx, t.ID, AlertSigNoz, verdict, closer); err != nil {
 			return err
 		}
 	}
