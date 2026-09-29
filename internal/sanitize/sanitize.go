@@ -22,20 +22,18 @@ var (
 	link    = regexp.MustCompile(`(?i)\b(?:https?|ftp)://[^\s<>"'` + "`" + `)\]]+|\bwww\.[^\s<>"'` + "`" + `)\]]+|(?:^|[\s(<\["'])//[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>"'` + "`" + `)\]]*`)
 )
 
-// Inbound is issue text or a comment as an agent's brief carries it: HTML
-// and Markdown comments, which Forgejo renders as nothing, removed;
-// mentions and closing keywords neutralised.
+// Inbound is issue text or a comment as an agent's brief carries it: hidden
+// comments removed, mentions and closing keywords neutralised.
 func Inbound(s string) string {
-	s = htmlComment.ReplaceAllString(s, "")
-	s = markdownComment.ReplaceAllString(s, "")
-	return neutralise(s)
+	return neutralise(unhide(s))
 }
 
-// Outbound is agent-written text as factoryd posts it on Forgejo: mentions
-// and closing keywords neutralised, and every link whose host is not one of
-// hosts or under one defanged (hxxps://evil[.]example).
+// Outbound is agent-written text as factoryd posts it on Forgejo: hidden
+// comments removed, mentions and closing keywords neutralised, and every
+// link whose host is not one of hosts or under one defanged
+// (hxxps://evil[.]example).
 func Outbound(s string, hosts []string) string {
-	s = neutralise(s)
+	s = neutralise(unhide(s))
 	return link.ReplaceAllStringFunc(s, func(m string) string {
 		lead := ""
 		if strings.HasPrefix(strings.TrimLeft(m, " \t\n(<[\"'"), "//") {
@@ -46,6 +44,11 @@ func Outbound(s string, hosts []string) string {
 		}
 		return lead + defang(m)
 	})
+}
+
+// unhide removes the HTML and Markdown comments Forgejo renders as nothing.
+func unhide(s string) string {
+	return markdownComment.ReplaceAllString(htmlComment.ReplaceAllString(s, ""), "")
 }
 
 // neutralise breaks mentions (＠name) and closing keywords ("(fixes) #12")
