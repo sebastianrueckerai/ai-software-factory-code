@@ -1178,6 +1178,11 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 		}
 		want := r.workerEgressSpec(leased[id])
 		have, err := r.kube.CiliumNetworkPolicySpec(ctx, ns, workerEgress)
+		if errors.Is(err, ErrForbidden) {
+			// no RoleBinding yet or any more: setupNamespace applies the
+			// policy itself, and a torn-down namespace needs none
+			continue
+		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
 			continue

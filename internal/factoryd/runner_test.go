@@ -1750,6 +1750,38 @@ func TestAdmitLeasesFollowsTheRegistry(t *testing.T) {
 	}
 }
 
+// forbiddenPolicy answers a GET of the egress policy in ns as the API does
+// once the namespace's RoleBinding is gone (teardown) or not yet made.
+type forbiddenPolicy struct {
+	*fakeKube
+	ns string
+}
+
+func (k forbiddenPolicy) CiliumNetworkPolicySpec(ctx context.Context, namespace, name string) (map[string]any, error) {
+	if namespace == k.ns {
+		return nil, fmt.Errorf("%w: GET /apis/cilium.io/v2/namespaces/%s/ciliumnetworkpolicies/%s", ErrForbidden, namespace, name)
+	}
+	return k.fakeKube.CiliumNetworkPolicySpec(ctx, namespace, name)
+}
+
+// A namespace without factoryd's RoleBinding is being set up or torn
+// down: the pass skips it without an error and admits the others.
+func TestAdmitLeasesSkipsANamespaceWithoutItsBinding(t *testing.T) {
+	kube := newFakeKube()
+	for _, id := range []string{"t1", "t2"} {
+		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
+	}
+	cfg := testRunnerConfig()
+	cfg.Leases = &fakeLeases{byID: map[string][]string{}}
+	r := &Runner{cfg: cfg, kube: forbiddenPolicy{fakeKube: kube, ns: "factory-agents-t1"}}
+	if err := r.AdmitLeases(context.Background()); err != nil {
+		t.Fatalf("AdmitLeases = %v, want nil", err)
+	}
+	if got := strings.Join(kube.applies, ","); got != "factory-agents-t2/worker-egress" {
+		t.Fatalf("applies = %s, want t2's only", got)
+	}
+}
+
 func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	kube := newFakeKube()
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
