@@ -138,7 +138,8 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 
 // deploymentPrice is one deployment's worst case over every per-token rate
 // LiteLLM can bill a text call with: the base, long-context
-// (*_above_*_tokens), service-tier, cache-write and tiered_pricing rates.
+// (*_above_*_tokens), service-tier, cache-write, tiered_pricing and
+// off_peak_pricing rates.
 // Cache reads are cheaper than input and left out. Any other cost field
 // carrying a value (per query, second, image, character, ...) is a charge
 // the hold cannot bound, so the deployment counts as unpriced.
@@ -170,6 +171,22 @@ func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 					}
 				}
 			}
+		case k == "off_peak_pricing":
+			var offPeak map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &offPeak); err != nil {
+				return Price{}, fmt.Errorf("%s: %w", k, err)
+			}
+			for rate, oraw := range offPeak {
+				if rate == "windows" || string(oraw) == "null" {
+					continue
+				}
+				if err := p.addRate(rate, oraw); err != nil {
+					return Price{}, fmt.Errorf("off_peak_pricing: %w", err)
+				}
+			}
+		case k == "search_context_cost_per_query":
+			// billed only for a provider-side web search, which the gateway
+			// refuses (web_search_options and non-function tools)
 		case strings.Contains(k, "cost") || strings.Contains(k, "pric"):
 			if err := p.addRate(k, raw); err != nil {
 				return Price{}, err
