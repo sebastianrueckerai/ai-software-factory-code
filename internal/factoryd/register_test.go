@@ -901,9 +901,10 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.reg.Forgejo.Seeded = testSeeded
 	rig.fj.repo = true
-	rig.kube.labels = map[string]map[string]string{"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "other"}, "demo-bare": {}}
+	rig.kube.labels = map[string]map[string]string{"demo-staging": {ProjectLabel: "demo-app", ObjectsLabel: "seed"},
+		"demo-prod": {ProjectLabel: "other", ObjectsLabel: "seed"}, "demo-dev": {ProjectLabel: "demo-app"}, "demo-bare": {}}
 	p := Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "human", Objects: "seed", Agents: "coder", File: true,
-		Namespaces: []string{"demo-staging", "demo-prod", "demo-qa", "demo-bare"},
+		Namespaces: []string{"demo-staging", "demo-prod", "demo-dev", "demo-qa", "demo-bare"},
 		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}
 	ctx := context.Background()
 	if err := rig.reg.Reconcile(ctx, p); err != nil {
@@ -911,13 +912,14 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 	}
 	logs := rig.logs.String()
 	for _, want := range []string{
-		"project demo-app: labels: created agent, bug, human, improvement, priority/p0,",
+		"project demo-app: labels: created agent, bug, human, improvement, noise, priority/p0,",
 		"project demo-app: fork factory-agent/demo-app: ready\n",
 		"project demo-app: webhook: missing: the seed makes it, factoryd never does\n",
-		"project demo-app: namespace demo-staging label factory/project: present\n",
-		`project demo-app: namespace demo-prod label factory/project: wrong: "other", want "demo-app"; the infra repository sets it` + "\n",
-		"project demo-app: namespace demo-qa label factory/project: missing: no namespace demo-qa; the infra repository makes it\n",
-		"project demo-app: namespace demo-bare label factory/project: missing: the infra repository sets it\n",
+		"project demo-app: namespace demo-staging labels factory/project, factory/objects: present\n",
+		`project demo-app: namespace demo-prod labels factory/project, factory/objects: wrong: "other", "seed", want "demo-app", "seed"; the infra repository sets them` + "\n",
+		`project demo-app: namespace demo-dev labels factory/project, factory/objects: wrong: "demo-app", "", want "demo-app", "seed"; the infra repository sets them` + "\n",
+		"project demo-app: namespace demo-qa labels factory/project, factory/objects: missing: no namespace demo-qa; the infra repository makes it\n",
+		"project demo-app: namespace demo-bare labels factory/project, factory/objects: missing: the infra repository sets them\n",
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("log lacks %q:\n%s", want, logs)

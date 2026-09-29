@@ -138,6 +138,32 @@ func TestRegistrationClusterOnAnAPIServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// a seed project's namespace (ruling 180): the infra repository labels
+	// it factory/project and factory/objects=seed; factoryd acts in it as
+	// in any namespace not its own, not at all, even were it restricted
+	seedLabels := map[string]string{ProjectLabel: "ai-software-factory-infra", ObjectsLabel: "seed", "pod-security.kubernetes.io/enforce": "restricted"}
+	{
+		b, _ := json.Marshal(ns("seed-ns", seedLabels))
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPost, kube.Host+"/api/v1/namespaces", strings.NewReader(string(b)))
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := kube.HTTP.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusConflict {
+			t.Fatalf("admin creates seed-ns: %d", res.StatusCode)
+		}
+	}
+	refused("bind factoryd-project in a seed namespace", http.MethodPost, "/apis/rbac.authorization.k8s.io/v1/namespaces/seed-ns/rolebindings",
+		roleBinding("seed-ns", "factoryd", ProjectReaderRole, nil, map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": "factory"}))
+	refused("a secret in a seed namespace", http.MethodPost, "/api/v1/namespaces/seed-ns/secrets",
+		map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "x"}})
+	refused("take the seed mark off", http.MethodPatch, apply("/api/v1/namespaces/seed-ns"),
+		ns("seed-ns", map[string]string{ProjectLabel: "ai-software-factory-infra", "pod-security.kubernetes.io/enforce": "restricted"}))
+	refused("create a namespace with the seed mark", http.MethodPost, "/api/v1/namespaces", ns("seed-2", seedLabels))
 	can := func(ns, group, resource, verb string) bool {
 		t.Helper()
 		body := map[string]any{"apiVersion": "authorization.k8s.io/v1", "kind": "SubjectAccessReview", "spec": map[string]any{

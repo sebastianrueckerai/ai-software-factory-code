@@ -1,0 +1,28 @@
+{
+  "alert": "factoryd restarted 3 times in 10 minutes",
+  "alertType": "LOGS_BASED_ALERT",
+  "description": "The factoryd container started 3 times or more within the last 10 minutes: the kubelet's Started event of a pod of the Deployment factoryd (a crash restart and a replaced pod each start the container once). It clears by itself 10 minutes after the last start.",
+  "ruleType": "threshold_rule",
+  "schemaVersion": "v2alpha1",
+  "version": "v5",
+  "disabled": false,
+  "labels": {"severity": "critical", "service": "factoryd"},
+  "annotations": {"summary": "container starts in the last 10 minutes"},
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {"type": "builder_query", "spec": {"name": "A", "signal": "logs", "stepInterval": 60,
+          "aggregations": [{"expression": "count()"}],
+          "filter": {"expression": "attribute.k8s.event.reason = 'Started' AND resource.k8s.object.kind = 'Pod' AND resource.k8s.object.name LIKE 'factoryd-%' AND resource.k8s.object.fieldpath = 'spec.containers{factoryd}'"}}}
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {"kind": "basic", "spec": [
+      {"name": "critical", "target": 3, "targetUnit": "", "recoveryTarget": null, "matchType": "4", "op": "5", "channels": []}
+    ]}
+  },
+  "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
+  "notificationSettings": {"usePolicy": false}
+}

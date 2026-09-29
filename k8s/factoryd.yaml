@@ -237,22 +237,28 @@ spec:
     expression: variables.target.startsWith('factory-agents-')
   # a project's namespace (Task 65): created with factory/project and the
   # restricted pod security level, or updated keeping the label it had; a
-  # namespace without the label (the cluster's, the factory's) never gets it
+  # namespace without the label (the cluster's) never gets it. A namespace
+  # the infra repository labels for a seed project (factory, platform,
+  # forgejo: ruling 180) carries factory/objects=seed and is never
+  # factoryd's: it cannot update it, add the mark or take it off.
   - name: projectNamespace
     expression: >-
       variables.kind == 'Namespace' && !variables.task && request.operation != 'DELETE' &&
       has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
+      !('factory/objects' in object.metadata.labels) &&
       'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
       object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted' &&
       (request.operation == 'CREATE' ||
        (has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+        !('factory/objects' in oldObject.metadata.labels) &&
         oldObject.metadata.labels['factory/project'] == object.metadata.labels['factory/project']))
-  # inside a namespace carrying factory/project
+  # inside a namespace carrying factory/project, not a seed project's
   - name: inProject
     expression: >-
       variables.kind != 'Namespace' && !variables.task && request.operation != 'DELETE' &&
       namespaceObject != null && has(namespaceObject.metadata.labels) &&
-      'factory/project' in namespaceObject.metadata.labels
+      'factory/project' in namespaceObject.metadata.labels &&
+      !('factory/objects' in namespaceObject.metadata.labels)
   # a project's Flux source: labelled, named after its project, its
   # repository <project>/<project> on the factory's Forgejo read with the
   # project's own credential, nothing included from elsewhere, no proxy

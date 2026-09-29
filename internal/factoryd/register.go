@@ -68,7 +68,10 @@ type Registrar struct {
 
 // Project objects' fixed names.
 const (
-	ProjectLabel      = "factory/project"
+	ProjectLabel = "factory/project"
+	// ObjectsLabel=seed marks a seed project's namespace: the infra
+	// repository's, never factoryd's to act in (k8s/factoryd.yaml).
+	ObjectsLabel      = "factory/objects"
 	FluxAccount       = "flux"
 	DeployerRole      = "factory-project-deployer"
 	ProjectReaderRole = "factoryd-project"
@@ -211,18 +214,22 @@ func (run *reconcileRun) seed(ctx context.Context) {
 		run.line("webhook", c)
 	}
 	for _, ns := range run.p.Namespaces {
-		object := "namespace " + ns + " label " + ProjectLabel
+		object := "namespace " + ns + " labels " + ProjectLabel + ", " + ObjectsLabel
 		label, err := run.r.Kube.NamespaceLabel(ctx, ns, ProjectLabel)
+		var objects string
+		if err == nil {
+			objects, err = run.r.Kube.NamespaceLabel(ctx, ns, ObjectsLabel)
+		}
 		switch {
 		case errors.Is(err, ErrNotFound):
 			run.line(object, Change("missing: no namespace "+ns+"; the infra repository makes it"))
 		case run.fail(object, err):
-		case label == run.p.Name:
+		case label == run.p.Name && objects == policy.ObjectsSeed:
 			run.line(object, "present")
-		case label == "":
-			run.line(object, "missing: the infra repository sets it")
+		case label == "" && objects == "":
+			run.line(object, "missing: the infra repository sets them")
 		default:
-			run.line(object, Change(fmt.Sprintf("wrong: %q, want %q; the infra repository sets it", label, run.p.Name)))
+			run.line(object, Change(fmt.Sprintf("wrong: %q, %q, want %q, %q; the infra repository sets them", label, objects, run.p.Name, policy.ObjectsSeed)))
 		}
 	}
 }

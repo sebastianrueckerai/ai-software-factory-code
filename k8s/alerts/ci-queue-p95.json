@@ -1,0 +1,28 @@
+{
+  "alert": "CI queue p95 above 5 minutes",
+  "alertType": "METRIC_BASED_ALERT",
+  "description": "The 95th percentile of a CI job's wait from first seen waiting to picked up by a runner (factoryd's factory.ci.job.queue) was above 5 minutes at least once in the last 15 minutes.",
+  "ruleType": "threshold_rule",
+  "schemaVersion": "v2alpha1",
+  "version": "v5",
+  "disabled": false,
+  "labels": {"severity": "warning", "service": "factoryd"},
+  "annotations": {"summary": "p95 of the CI jobs' queue time, in seconds"},
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {"type": "builder_query", "spec": {"name": "A", "signal": "metrics", "stepInterval": 60,
+          "aggregations": [{"metricName": "factory.ci.job.queue", "timeAggregation": "", "spaceAggregation": "p95"}],
+          "filter": {"expression": "service.name = 'factoryd'"}}}
+      ]
+    },
+    "selectedQueryName": "A",
+    "thresholds": {"kind": "basic", "spec": [
+      {"name": "warning", "target": 300, "targetUnit": "", "recoveryTarget": null, "matchType": "1", "op": "1", "channels": []}
+    ]}
+  },
+  "evaluation": {"kind": "rolling", "spec": {"evalWindow": "15m", "frequency": "1m"}},
+  "notificationSettings": {"usePolicy": false}
+}

@@ -1246,9 +1246,15 @@ every project rule, names the project through the namespace's
 `factory/project` label (read once per namespace); an active project that
 lists the namespace, or the alert is logged and dropped. On a project on
 `agents: none` the issue is the human lane's (labels `bug`, `human`), and no
-task runs. By
+task runs. The factory's own namespaces route the same way (ruling 180):
+`factory` names the code repository's project, `platform` and `forgejo` the
+infra repository's (agents none); the infra repository labels them, with
+`factory/objects=seed` besides, which keeps factoryd out of them in the
+admission policy. By
 the alert's fingerprint: its first firing files an issue on the project's
-repository as the bot, title `alert: <name> in <namespace>`, the body the
+repository as the bot, title `alert: <name> in <namespace>` (`alert: <name>
+on <service> in <namespace>` when the alert carries a `service` or
+`service.name` label), the body the
 firing time, the SigNoz link, the value and annotations and the labels
 (fenced, one line each), labels `bug` and `state/queued`, and starts its
 agent task at the default branch's head (source `alert`, standing
@@ -1259,8 +1265,17 @@ while that task runs and files a new issue once it ended; a resend of the
 same firing does nothing; a resolve comments `resolved at <time>` once.
 Each issue is an alerts row of kind `alert` with the fingerprint, judged
 when its task ends: `real` on a merge, `noise` when a human closed the
-issue without one. A notification that fails in part answers 500, and
+issue without one. A human-lane alert issue is judged by its close: `noise`
+when it carries the label `noise`, `real` otherwise (the closer is
+`resolved_by`). A notification that fails in part answers 500, and
 SigNoz sends it again.
+
+The factory's own rules are `k8s/alerts/*.json`, ConfigMap `signoz-rules`
+in namespace `factory`: 5xx rate above 5 % per service (factoryd, its
+console and the gateway trace every request but the probes), factoryd and
+the gateway each started 3 times in 10 minutes (the kubelet's `Started`
+events: a crash restart and a replaced pod both count), the CI queue's p95
+above 5 minutes, and a roll not live within 10 minutes of its merge.
 
 The CI spawner serves every active project on `agents: coder`, each with
 its Actions token (Forgejo keeps the runner API to the repository's owner):

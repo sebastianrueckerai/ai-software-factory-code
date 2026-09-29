@@ -1,0 +1,34 @@
+{
+  "alert": "5xx rate above 5 %",
+  "alertType": "TRACES_BASED_ALERT",
+  "description": "More than 5 % of a service's requests answered 5xx, on average over the last 5 minutes (the server spans of factoryd, its console included, and of the gateway, by service; the probes are not traced).",
+  "ruleType": "threshold_rule",
+  "schemaVersion": "v2alpha1",
+  "version": "v5",
+  "disabled": false,
+  "labels": {"severity": "critical"},
+  "annotations": {"summary": "share of the service's requests that answered 5xx, in %"},
+  "condition": {
+    "compositeQuery": {
+      "queryType": "builder",
+      "panelType": "graph",
+      "queries": [
+        {"type": "builder_query", "spec": {"name": "A", "signal": "traces", "stepInterval": 60,
+          "aggregations": [{"expression": "count()"}],
+          "groupBy": [{"name": "service.name", "fieldContext": "resource", "fieldDataType": "string"}],
+          "filter": {"expression": "service.name IN ('factoryd', 'factory-gateway') AND kind_string = 'Server' AND http.response.status_code >= 500"}}},
+        {"type": "builder_query", "spec": {"name": "B", "signal": "traces", "stepInterval": 60,
+          "aggregations": [{"expression": "count()"}],
+          "groupBy": [{"name": "service.name", "fieldContext": "resource", "fieldDataType": "string"}],
+          "filter": {"expression": "service.name IN ('factoryd', 'factory-gateway') AND kind_string = 'Server'"}}},
+        {"type": "builder_formula", "spec": {"name": "F1", "expression": "A * 100 / B"}}
+      ]
+    },
+    "selectedQueryName": "F1",
+    "thresholds": {"kind": "basic", "spec": [
+      {"name": "critical", "target": 5, "targetUnit": "", "recoveryTarget": null, "matchType": "3", "op": "1", "channels": []}
+    ]}
+  },
+  "evaluation": {"kind": "rolling", "spec": {"evalWindow": "5m", "frequency": "1m"}},
+  "notificationSettings": {"usePolicy": false}
+}
