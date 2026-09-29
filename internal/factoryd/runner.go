@@ -865,16 +865,18 @@ func retryForbidden(ctx context.Context, do func() error) error {
 
 // Sandbox resources: the worker container's requests and limits, and the
 // namespace ceiling (two pods: a finished session pod can still be
-// terminating when the resumed one starts).
+// terminating when the resumed one starts). 4Gi: a go test of two large
+// packages beside the harness passed 2Gi, and a cgroup OOM kills the whole
+// container with the session's unpushed work.
 var (
 	sandboxRequests = map[string]any{"cpu": "250m", "memory": "512Mi"}
-	sandboxLimits   = map[string]any{"cpu": "2", "memory": "2Gi"}
+	sandboxLimits   = map[string]any{"cpu": "2", "memory": "4Gi"}
 	sandboxQuota    = map[string]any{
 		"pods":            "2",
 		"requests.cpu":    "1",
 		"requests.memory": "2Gi",
 		"limits.cpu":      "4",
-		"limits.memory":   "4Gi",
+		"limits.memory":   "8Gi",
 	}
 )
 

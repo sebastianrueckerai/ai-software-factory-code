@@ -736,7 +736,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("task role binding = %v", rb)
 	}
 	quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]
-	if hard := quota["spec"].(map[string]any)["hard"].(map[string]any); hard["pods"] != "2" || hard["limits.memory"] != "4Gi" {
+	if hard := quota["spec"].(map[string]any)["hard"].(map[string]any); hard["pods"] != "2" || hard["limits.memory"] != "8Gi" {
 		t.Fatalf("resource quota = %v", quota)
 	}
 	if kube.objects["/api/v1/namespaces/"+ns+"/limitranges"] == nil {
@@ -768,7 +768,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
 	}
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:2Gi] requests:map[cpu:250m memory:512Mi]]" {
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
