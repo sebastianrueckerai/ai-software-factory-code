@@ -33,7 +33,10 @@ var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
 const HeartbeatEvery = 10 * time.Second
 
 // RegisterActivities registers the runner's activities under the names the
-// workflow calls, on a worker or a test environment.
+// workflow calls, on a worker or a test environment. No argument or result
+// carries a credential: each activity mints or reads the tokens it uses
+// itself, so none reaches the workflow's history
+// (TestTaskHistoryCarriesNoCredential).
 func (r *Runner) RegisterActivities(w interface {
 	RegisterActivityWithOptions(a any, options activity.RegisterOptions)
 }) {
