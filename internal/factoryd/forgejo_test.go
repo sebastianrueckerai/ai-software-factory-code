@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func TestForgejoMintRepoScopedToken(t *testing.T) {
@@ -170,7 +172,7 @@ func TestForgejoEnsureLabelsCreatesOnlyMissing(t *testing.T) {
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	wanted := map[string]string{"agent": "#ededed", "state/queued": "#ededed", "human": "#c2e0c6"}
-	if err := f.EnsureLabels(context.Background(), "sf", "r", wanted); err != nil {
+	if _, err := f.EnsureLabels(context.Background(), "sf", "r", wanted); err != nil {
 		t.Fatalf("EnsureLabels: %v", err)
 	}
 	if len(created) != 1 || created[0] != "human" {
@@ -210,7 +212,7 @@ func TestBootLabelsCoverPriorityAndSeverityAcrossPages(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	if err := f.EnsureLabels(context.Background(), "sf", "r", BootLabels); err != nil {
+	if _, err := f.EnsureLabels(context.Background(), "sf", "r", BootLabels); err != nil {
 		t.Fatal(err)
 	}
 	sort.Strings(created)
@@ -232,7 +234,7 @@ func TestForgejoEnsureLabelsJoinsCreateErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
-	err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#ededed", "human": "#c2e0c6"})
+	_, err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#ededed", "human": "#c2e0c6"})
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err = %v, want the two 403s surfaced", err)
 	}
@@ -828,7 +830,7 @@ func TestForgejoClosePullRequest(t *testing.T) {
 // them there (Forgejo lists a read-only team's members as assignees
 // through its pull request read): then they fail closed. Team reads carry
 // the org-read token (ruling 108: a repository-limited token cannot hold
-// read:organization), repository reads the registrar token.
+// read:organization), repository reads the project's read token.
 func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		want := "token registrar"
@@ -869,8 +871,8 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar", CIOrgToken: "org-read"}
-	got, err := f.RepoWriters(context.Background(), "sf", "r")
+	f := &Forgejo{BaseURL: srv.URL, CIOrgToken: "org-read"}
+	got, err := f.RepoWriters(context.Background(), Repo{"sf", "r"}, "registrar")
 	// rita: a read-only team's member; carol: a collaborator who is one too;
 	// erin: a read collaborator, no assignee; ivan: a code writer elsewhere;
 	// judy: in a team with issue write and no code, whose aggregate
@@ -878,7 +880,7 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	if want := []string{"dave", "factory-agent", "factory-ci", "sebastian"}; err != nil || !slices.Equal(got, want) {
 		t.Fatalf("writers = %q, %v; want %q", got, err, want)
 	}
-	if _, err := f.RepoWriters(context.Background(), "nobody", "r"); !errors.Is(err, ErrNotFound) {
+	if _, err := f.RepoWriters(context.Background(), Repo{"nobody", "r"}, "registrar"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("owner that is no org: %v, want ErrNotFound", err)
 	}
 }
@@ -964,9 +966,9 @@ func TestActionRunsAlwaysAsksForAPage(t *testing.T) {
 		io.WriteString(w, `{"workflow_runs":[]}`)
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
+	f := &Forgejo{BaseURL: srv.URL}
 	for _, q := range []url.Values{{"event": {"push"}, "limit": {"20"}}, {"limit": {"50"}, "page": {"3"}}} {
-		if _, err := f.ActionRuns(context.Background(), "sf", "r", q); err != nil {
+		if _, err := f.ActionRuns(context.Background(), "tok", "sf", "r", q); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -982,8 +984,8 @@ func TestForgejoRefusesAnAnswerPastItsReadLimit(t *testing.T) {
 		io.WriteString(w, `{"workflow_runs":[`+strings.Repeat(" ", 1<<20)+`]}`)
 	}))
 	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "tok"}
-	if _, err := f.ActionRuns(context.Background(), "sf", "r", url.Values{"page": {"1"}}); err == nil || !strings.Contains(err.Error(), "longer than 1 MiB") {
+	f := &Forgejo{BaseURL: srv.URL}
+	if _, err := f.ActionRuns(context.Background(), "tok", "sf", "r", url.Values{"page": {"1"}}); err == nil || !strings.Contains(err.Error(), "longer than 1 MiB") {
 		t.Fatalf("err %v", err)
 	}
 }
@@ -1000,7 +1002,46 @@ func TestPullRequestDiffPastTheReadLimitIsCut(t *testing.T) {
 	if want := strings.Repeat("d", 48<<10) + "\n… (diff cut at 49152 bytes of more than 1 MiB)"; err != nil || got != want {
 		t.Fatalf("diff of %d bytes ending %q, err %v", len(got), got[max(0, len(got)-60):], err)
 	}
-	if _, err := f.ActionRuns(context.Background(), "sf", "repo", url.Values{}); !errors.Is(err, ErrAnswerTooLong) {
+	if _, err := f.ActionRuns(context.Background(), "tok", "sf", "repo", url.Values{}); !errors.Is(err, ErrAnswerTooLong) {
 		t.Fatalf("another long answer: %v", err)
+	}
+}
+
+// Ruling 179's one mapping from a project to factoryd's tokens: a factory
+// project's registration tokens, a seed project's seeded secrets as its
+// file names them; ruling 164's bound: no seed project ever gets
+// factory-projects' token, whatever its file says.
+func TestAccess(t *testing.T) {
+	f := &Forgejo{ProjectsToken: "projects-tok", Seeded: testSeeded}
+	for name, tc := range map[string]struct {
+		p    Project
+		want ProjectAccess
+	}{
+		"factory":            {Project{Objects: "factory", MergeToken: "own-merge"}, ProjectAccess{Read: "own-merge", Actions: "projects-tok", Merge: "own-merge"}},
+		"code":               {seedProject("sf/code"), ProjectAccess{Read: "registrar-tok", Actions: "registrar-tok", Merge: "merge-tok"}},
+		"infra":              {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: policy.SecretConfig}}, ProjectAccess{Read: "config-tok"}},
+		"names what is none": {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: "forgejo-projects", Actions: "projects-tok", Merge: "ProjectsToken"}}, ProjectAccess{}},
+	} {
+		if got := f.Access(tc.p); got != tc.want {
+			t.Errorf("%s: Access = %+v, want %+v", name, got, tc.want)
+		}
+	}
+}
+
+func TestEnsureLabelsReportsWhatItCreated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			servePage(w, r, 50, `{"id":1,"name":"agent"}`)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if c, err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#1", "human": "#2", "bug": "#3"}); c != "created bug, human" || err != nil {
+		t.Fatalf("= %q, %v", c, err)
+	}
+	if c, err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#1"}); c != Unchanged || err != nil {
+		t.Fatalf("all present = %q, %v", c, err)
 	}
 }

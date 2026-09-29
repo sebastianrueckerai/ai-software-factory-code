@@ -24,10 +24,14 @@ type ProjectKube interface {
 	Apply(ctx context.Context, path string, obj map[string]any) (Change, error)
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
 	Deployments(ctx context.Context, namespace string) ([]DeploymentState, error)
+	NamespaceLabel(ctx context.Context, name, key string) (string, error)
 }
 
-// Registrar keeps a managed project's objects (rulings 156, 164). A
-// project is its own Forgejo organisation <name>, owned by
+// Registrar keeps every project's objects (rulings 156, 164, 179). A
+// seed project's are the infra repository's and the seed's: the Registrar
+// keeps only its labels and the bot's fork, as the bot, and reports its
+// webhook and its namespaces' factory/project label. A factory project is
+// its own Forgejo organisation <name>, owned by
 // factory-projects, with the repository <name>/<name>, the team ci holding
 // the user ci-<name> with package write, and nothing else. What only the
 // Forgejo site admin can do (the organisation, the repository, the CI
@@ -117,13 +121,27 @@ func (run *reconcileRun) fail(object string, err error) bool {
 	return true
 }
 
-// ReconcileAll reconciles every project row: at boot, and when the
-// policy's approvers may have changed.
+// ReconcileAll gives every project file its row, then reconciles every
+// project: at boot, and at every new configuration version.
 func (r *Registrar) ReconcileAll(ctx context.Context) error {
 	ps, err := r.Store.Projects(ctx)
 	if err != nil {
 		log.Printf("projects: %v", err)
 		return err
+	}
+	var names []string
+	for _, p := range ps {
+		if p.File {
+			names = append(names, p.Name)
+		}
+	}
+	created, err := r.Store.EnsureProjectRows(ctx, names)
+	if err != nil {
+		log.Printf("projects: rows: %v", err)
+		return err
+	}
+	for _, name := range created {
+		log.Printf("project %s: row: created from projects/%s.yaml", name, name)
 	}
 	var errs []error
 	for _, p := range ps {
@@ -132,8 +150,8 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// MainPushed reconciles the project whose repository this is when its
-// main was pushed and DeployBranch does not exist yet: a new project's
+// MainPushed reconciles the factory project whose repository this is when
+// its main was pushed and DeployBranch does not exist yet: a new project's
 // first push (ruling 166). Any other repository or push is nothing to do.
 func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 	repo, err := SplitRepo(strings.ToLower(repository))
@@ -141,7 +159,7 @@ func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 		return err
 	}
 	p, ok, err := r.Store.Project(ctx, repo.Owner)
-	if err != nil || !ok || !p.Managed || p.Repository != repo.String() {
+	if err != nil || !ok || !p.File || p.Objects != policy.ObjectsFactory || p.Repository != repo.String() {
 		return err
 	}
 	exists, err := r.Forgejo.ProjectBranchExists(ctx, repo, DeployBranch)
@@ -152,20 +170,76 @@ func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 	return r.Reconcile(ctx, p)
 }
 
-// Reconcile brings p's objects to its row. An unmanaged row has none of
-// factoryd's. A failed Forgejo step skips the Forgejo steps after it; the
-// cluster steps run regardless.
+// Reconcile brings p's objects to its file. A row without a file is left
+// alone. A seed project's objects are read and reported (seed); a factory
+// project's are kept: a failed Forgejo step skips the Forgejo steps after
+// it, the cluster steps run regardless.
 func (r *Registrar) Reconcile(ctx context.Context, p Project) error {
-	if !p.Managed {
-		log.Printf("project %s: unmanaged: its objects are the infra repository's", p.Name)
+	if !p.File {
+		log.Printf("project %s: no file projects/%s.yaml in the configuration: nothing reconciled, its row keeps its tokens", p.Name, p.Name)
 		return nil
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	run := &reconcileRun{r: r, p: p}
+	if p.Objects == policy.ObjectsSeed {
+		run.seed(ctx)
+		return errors.Join(run.errs...)
+	}
 	run.forgejo(ctx)
 	run.cluster(ctx)
 	return errors.Join(run.errs...)
+}
+
+// seed keeps what factoryd keeps on a seed project with its own tokens,
+// the labels and (agents coder) the bot's fork, and reports what the seed
+// owns: the webhook to factoryd, read with the project's read token, and
+// each namespace's factory/project label. It creates nothing that needs
+// factory-projects and nothing in the cluster.
+func (run *reconcileRun) seed(ctx context.Context) {
+	f, repo := run.r.Forgejo, run.p.Repo()
+	if c, err := f.EnsureLabels(ctx, repo.Owner, repo.Name, BootLabels); !run.fail("labels", err) {
+		run.line("labels", c)
+	}
+	fork := "fork " + f.Fork(repo).String()
+	if run.p.Agents != policy.AgentsCoder {
+		run.line(fork, "none: agents none")
+	} else if !run.fail(fork, f.EnsureFork(ctx, repo)) {
+		run.line(fork, "ready")
+	}
+	if c, err := run.seedWebhook(ctx); !run.fail("webhook", err) {
+		run.line("webhook", c)
+	}
+	for _, ns := range run.p.Namespaces {
+		object := "namespace " + ns + " label " + ProjectLabel
+		label, err := run.r.Kube.NamespaceLabel(ctx, ns, ProjectLabel)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			run.line(object, Change("missing: no namespace "+ns+"; the infra repository makes it"))
+		case run.fail(object, err):
+		case label == run.p.Name:
+			run.line(object, "present")
+		default:
+			run.line(object, Change(fmt.Sprintf("wrong: %q, want %q; the infra repository sets it", label, run.p.Name)))
+		}
+	}
+}
+
+// seedWebhook reports whether the repository's webhook reaches factoryd,
+// never making one: the seed does.
+func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
+	token := run.r.Forgejo.Access(run.p).Read
+	if token == "" {
+		return "", fmt.Errorf("the file's tokens.read %q is no secret factoryd holds", run.p.Tokens.Read)
+	}
+	hooks, err := run.r.Forgejo.Hooks(ctx, run.p.Repo(), token)
+	if err != nil {
+		return "", fmt.Errorf("cannot read the hooks with %s: %w", run.p.Tokens.Read, err)
+	}
+	if slices.ContainsFunc(hooks, func(h Hook) bool { return h.Active && h.Config.URL == run.r.WebhookURL }) {
+		return "present", nil
+	}
+	return "missing: the seed makes it, factoryd never does", nil
 }
 
 func (run *reconcileRun) approvers() []string { return run.r.Policy().Approvers }
@@ -217,7 +291,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 			return run.protection(ctx, DeployBranch, DeployProtection())
 		}},
 		{"fork " + f.Fork(repo).String(), func() (Change, error) { return "ready", f.EnsureFork(ctx, repo) }},
-		{"labels", func() (Change, error) { return "ensured", f.EnsureLabels(ctx, repo.Owner, repo.Name, BootLabels) }},
+		{"labels", func() (Change, error) { return f.EnsureLabels(ctx, repo.Owner, repo.Name, BootLabels) }},
 	}...)
 	for _, step := range steps {
 		c, err := step.do()
@@ -653,35 +727,29 @@ func (run *reconcileRun) generatedSecret(ctx context.Context, ns, entry string, 
 }
 
 // Register is registration by a human with the Forgejo admin's login
-// (factoryd register-project): it records p, or finds it recorded with the
-// same namespaces, environments and secrets (its settings are the
-// console's), makes what only the admin can (ruling 164), and reconciles.
-// A second run with the same project changes nothing.
-func (r *Registrar) Register(ctx context.Context, p Project, a AdminAuth, rotate bool) (Project, error) {
-	err := r.Store.CreateProject(ctx, p)
-	switch {
-	case errors.Is(err, ErrProjectExists):
-		have, ok, err := r.Store.Project(ctx, p.Name)
-		if err != nil || !ok {
-			return p, errors.Join(fmt.Errorf("repository %s or one of the namespaces %v is another project's", p.Repository, p.Namespaces), err)
-		}
-		if have.Repository != p.Repository || !slices.Equal(have.Namespaces, p.Namespaces) || !have.Managed ||
-			!slices.Equal(have.Environments, p.Environments) || !slices.Equal(have.Secrets, p.Secrets) {
-			return p, fmt.Errorf("project %s is registered with other namespaces, environments or secrets", p.Name)
-		}
-		log.Printf("project %s: row: no change (its settings are the console's)", p.Name)
-	case err != nil:
+// (factoryd register-project) of the factory project name, whose file the
+// configuration holds: it gives the project its row, makes what only the
+// admin can (ruling 164), and reconciles. A second run changes nothing.
+func (r *Registrar) Register(ctx context.Context, name string, a AdminAuth, rotate bool) (Project, error) {
+	p, err := r.stored(ctx, name)
+	if err != nil {
 		return p, err
-	default:
-		log.Printf("project %s: row: created", p.Name)
 	}
-	if p, err = r.stored(ctx, p.Name); err != nil {
+	if !p.File || p.Objects != policy.ObjectsFactory {
+		return p, fmt.Errorf("project %s: registration makes a factory project's objects; the configuration's projects/%s.yaml says objects %q", name, name, p.Objects)
+	}
+	created, err := r.Store.EnsureProjectRows(ctx, []string{name})
+	if err != nil {
+		return p, err
+	}
+	log.Printf("project %s: row: %s", name, map[bool]string{true: "created", false: "no change"}[len(created) == 1])
+	if p, err = r.stored(ctx, name); err != nil {
 		return p, err
 	}
 	if err := r.admin(ctx, a, &p, rotate); err != nil {
 		return p, err
 	}
-	if p, err = r.stored(ctx, p.Name); err != nil {
+	if p, err = r.stored(ctx, name); err != nil {
 		return p, err
 	}
 	return p, r.Reconcile(ctx, p)

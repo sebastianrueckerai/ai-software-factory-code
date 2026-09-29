@@ -398,15 +398,15 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
 }
 
-// labels lists the repository's labels as the human, all pages.
-func (c *Console) labels(r *http.Request) (map[string]int64, error) {
+// labels lists repo's labels as the human, all pages.
+func (c *Console) labels(r *http.Request, repo factoryd.Repo) (map[string]int64, error) {
 	asUser := func(_ context.Context, method, path string, _ []byte, want int) ([]byte, error) {
 		var raw json.RawMessage
 		err := c.asUser(r, method, path, nil, want, &raw)
 		return raw, err
 	}
 	ls, err := factoryd.GetPages[factoryd.RepoLabel](r.Context(), asUser,
-		fmt.Sprintf("/api/v1/repos/%s/%s/labels?", url.PathEscape(c.cfg.Repo.Owner), url.PathEscape(c.cfg.Repo.Name)))
+		fmt.Sprintf("/api/v1/repos/%s/%s/labels?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)))
 	if err != nil {
 		return nil, err
 	}
@@ -419,8 +419,25 @@ func (c *Console) labels(r *http.Request) (map[string]int64, error) {
 
 var priorities = []string{"priority/p0", "priority/p1", "priority/p2", "priority/p3"}
 
+// coderProjects are the projects agents work on, by name: the new-task
+// form's choices, the first its default.
+func (c *Console) coderProjects(r *http.Request) ([]factoryd.Project, error) {
+	ps, err := c.cfg.Projects.Projects(r.Context())
+	return slices.DeleteFunc(ps, func(p factoryd.Project) bool { return !p.Coder() }), err
+}
+
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
-	labels, err := c.labels(r)
+	ps, err := c.coderProjects(r)
+	if err != nil {
+		log.Printf("console: projects: %v", err)
+		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
+		return
+	}
+	if len(ps) == 0 {
+		http.Error(w, "no project takes agent tasks", http.StatusServiceUnavailable)
+		return
+	}
+	labels, err := c.labels(r, ps[0].Repo())
 	if err != nil {
 		c.forgejoFailed(w, r, "read the labels", err)
 		return
@@ -432,7 +449,7 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	c.render(w, "new.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf,
-		"Repo": c.cfg.Repo.String(), "Priorities": offered})
+		"Projects": ps, "Priorities": offered})
 }
 
 // createTask files the issue as the human, labelled with the lane (and the
@@ -456,7 +473,19 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown priority", http.StatusBadRequest)
 		return
 	}
-	labels, err := c.labels(r)
+	ps, err := c.coderProjects(r)
+	if err != nil {
+		log.Printf("console: projects: %v", err)
+		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
+		return
+	}
+	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == r.PostFormValue("project") })
+	if i < 0 {
+		http.Error(w, "choose a project agents work on", http.StatusBadRequest)
+		return
+	}
+	repo := ps[i].Repo()
+	labels, err := c.labels(r, repo)
 	if err != nil {
 		c.forgejoFailed(w, r, "read the labels", err)
 		return
@@ -468,7 +497,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 		}
 		id, ok := labels[name]
 		if !ok {
-			http.Error(w, "label "+name+" does not exist on "+c.cfg.Repo.String(), http.StatusConflict)
+			http.Error(w, "label "+name+" does not exist on "+repo.String(), http.StatusConflict)
 			return
 		}
 		ids = append(ids, id)
@@ -476,13 +505,13 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 	var issue struct {
 		Number int64 `json:"number"`
 	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(c.cfg.Repo.Owner), url.PathEscape(c.cfg.Repo.Name))
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 	if err := c.asUser(r, http.MethodPost, path, map[string]any{"title": title, "body": body, "labels": ids},
 		http.StatusCreated, &issue); err != nil {
 		c.forgejoFailed(w, r, "file the issue", err)
 		return
 	}
-	log.Printf("console: %s filed %s#%d (%s)", current(r).user, c.cfg.Repo, issue.Number, lane)
+	log.Printf("console: %s filed %s#%d (%s)", current(r).user, repo, issue.Number, lane)
 	http.Redirect(w, r, "/?filed="+strconv.FormatInt(issue.Number, 10), http.StatusSeeOther)
 }
 

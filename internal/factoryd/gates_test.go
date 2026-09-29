@@ -105,7 +105,7 @@ var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
 	r, store, objects := newActivityRunner(t, task, &prForgejo{})
-	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", MergeToken: "merge-tok"}
+	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	return r, store, objects
 }
 
@@ -417,18 +417,20 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	startedWithin(t, objects, "merged", from)
 }
 
-// A managed project's merge goes out with its own factory-merge token
-// (ruling 164), the factory's repositories' with forgejo-merge's; a
-// managed project without one fails closed, no merge tried.
+// A factory project's merge goes out with its own factory-merge token
+// (ruling 164), a seed project's with the seeded token its file names; a
+// project without one, and a repository no file names, is refused before
+// any merge.
 func TestMergeTokenPerProject(t *testing.T) {
 	for name, tc := range map[string]struct {
 		project *Project
 		auth    string
 	}{
-		"no row":            {nil, "token merge-tok"},
-		"factory's own row": {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "human"}, "token merge-tok"},
-		"managed project":   {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Managed: true, GitToken: "g", MergeToken: "project-tok"}, "token project-tok"},
-		"managed, unminted": {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Managed: true}, ""},
+		"no project":        {&Project{Name: "other", Repository: "sf/other", File: true}, ""},
+		"seed project":      {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "human", Objects: "seed", Agents: "coder", File: true, Tokens: policy.SeedTokens{Merge: policy.SecretMerge}}, "token merge-tok"},
+		"seed, no merge":    {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "human", Objects: "seed", Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}}, ""},
+		"factory project":   {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Objects: "factory", File: true, GitToken: "g", MergeToken: "project-tok"}, "token project-tok"},
+		"factory, unminted": {&Project{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Objects: "factory", File: true}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
@@ -438,8 +440,8 @@ func TestMergeTokenPerProject(t *testing.T) {
 			}
 			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
 			if tc.auth == "" {
-				if err == nil || !strings.Contains(err.Error(), "has no factory-merge token yet") || len(fj.merges) != 0 {
-					t.Fatalf("merge err = %v, merges %d; want refused before any merge", err, len(fj.merges))
+				if res := getInto[MergeResult](t, val, err); res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "factoryd holds no merge token for sf/repo") {
+					t.Fatalf("merge %+v, merges %d; want refused before any merge", res, len(fj.merges))
 				}
 				return
 			}

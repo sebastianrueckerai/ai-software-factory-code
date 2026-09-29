@@ -166,8 +166,9 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	return in.file(ctx, a, p, ns, at, false)
 }
 
-// file files the alert's bug issue and task, then its alerts row; refiled
-// when the same firing outlived the task of the last one.
+// file files the alert's bug issue and task (a human-lane task on a
+// project on agents none), then its alerts row; refiled when the same
+// firing outlived the task of the last one.
 func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
 	repo := p.Repo()
 	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
@@ -178,8 +179,12 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	if refiled {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
-	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, []string{"bug"}, Task{
-		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
+	labels, kind := []string{"bug"}, "agent"
+	if p.Agents == policy.AgentsNone {
+		labels, kind = []string{"bug", "human"}, "human"
+	}
+	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, labels, Task{
+		ID: NewTaskID(), Kind: kind, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser,
@@ -201,7 +206,7 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 }
 
 // project is the project owning namespace ns: its factory/project label,
-// read once, naming a managed, registered project that lists ns.
+// read once, naming an active project that lists ns.
 func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, error) {
 	if !dnsLabel.MatchString(ns) {
 		return Project{}, false, nil
@@ -227,7 +232,7 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 	if err != nil || !ok {
 		return Project{}, false, err
 	}
-	return p, p.Managed && p.Minted() && slices.Contains(p.Namespaces, ns), nil
+	return p, p.Active() && slices.Contains(p.Namespaces, ns), nil
 }
 
 // alertIssue is the bug issue of alert a: title "alert: <name> in <ns>"

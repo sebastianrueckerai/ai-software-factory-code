@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"slices"
 	"strconv"
@@ -180,7 +179,7 @@ type CommissionRequest struct {
 	VolumeGB     int
 	Location     string
 	Quote        Quote
-	Default      policy.Envelope // the policy's envelope_default
+	Envelope     policy.Envelope // the project's: its file's, else the policy's default
 	DayEUR       float64
 	Now          time.Time
 }
@@ -222,30 +221,6 @@ type ResourceSpec struct {
 	BeyondKinds    []string `json:"beyond_kinds"`
 }
 
-// readEnvelope is project's envelope row; sql.ErrNoRows when it has none.
-func readEnvelope(ctx context.Context, q rowQuerier, project string) (policy.Envelope, error) {
-	var env policy.Envelope
-	var types []byte
-	var standingTypes []byte
-	if err := q.QueryRowContext(ctx,
-		`SELECT monthly_eur::float8, server_types, max_count, max_lease_hours, volume_max_gb,
-		        standing_monthly_eur::float8, standing_server_types, standing_max_count FROM envelopes WHERE project = $1`, project,
-	).Scan(&env.MonthlyEUR, &types, &env.MaxCount, &env.MaxLeaseHours, &env.VolumeMaxGB,
-		&env.Standing.MonthlyEUR, &standingTypes, &env.Standing.MaxCount); err != nil {
-		return policy.Envelope{}, err
-	}
-	return env, errors.Join(json.Unmarshal(types, &env.ServerTypes), json.Unmarshal(standingTypes, &env.Standing.ServerTypes))
-}
-
-// Envelope is repo's envelope row; false when the project has none yet.
-func (a AgentStore) Envelope(ctx context.Context, repo string) (policy.Envelope, bool, error) {
-	env, err := readEnvelope(ctx, a.DB, repo)
-	if errors.Is(err, sql.ErrNoRows) {
-		return policy.Envelope{}, false, nil
-	}
-	return env, err == nil, err
-}
-
 // Use is what repo holds against its envelope now.
 func (a AgentStore) Use(ctx context.Context, repo string) (EnvelopeUse, error) {
 	return envelopeUse(ctx, a.DB, repo)
@@ -270,8 +245,7 @@ func envelopeUse(ctx context.Context, q rowQuerier, repo string) (EnvelopeUse, e
 }
 
 // Reserve decides a commission in one transaction under the headroom lock:
-// the project's envelope (copied from the default on its first request),
-// then, beyond it, an approved request of the task for the same or a
+// the project's envelope, then, beyond it, an approved request of the task for the same or a
 // larger spec, else the pending or denied one, else a new approval
 // request; within it (or approved), the reservation against the task's
 // and the day's headroom (a *policy.Refusal when it does not fit) and the
@@ -285,23 +259,7 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 	if err := policy.LockHeadroom(ctx, tx); err != nil {
 		return Commission{}, err
 	}
-	types, err := json.Marshal(r.Default.ServerTypes)
-	if err != nil {
-		return Commission{}, err
-	}
-	d := r.Default
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb,
-		   standing_monthly_eur, standing_server_types, standing_max_count, set_by)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, 'default') ON CONFLICT (project) DO NOTHING`,
-		r.Repo, d.MonthlyEUR, types, d.MaxCount, d.MaxLeaseHours, d.VolumeMaxGB,
-		d.Standing.MonthlyEUR, jsonList(d.Standing.ServerTypes), d.Standing.MaxCount); err != nil {
-		return Commission{}, err
-	}
-	env, err := readEnvelope(ctx, tx, r.Repo)
-	if err != nil {
-		return Commission{}, err
-	}
+	env := r.Envelope
 	use, err := envelopeUse(ctx, tx, r.Repo)
 	if err != nil {
 		return Commission{}, err
@@ -676,8 +634,9 @@ func (a AgentStore) Approval(ctx context.Context, id int64, taskID string) (Appr
 // standing ones), else ErrBeyondStanding: a human raises the block first.
 // A released commission, or one whose lease has ended, is refused
 // (ErrLeaseEnded): the collector is about to delete it. For the console;
-// by is the human.
-func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
+// by is the human; standing is the standing block of a repository's
+// project.
+func (a AgentStore) Promote(ctx context.Context, id int64, by string, standing func(repo string) policy.Standing) error {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -697,10 +656,7 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	if ended {
 		return fmt.Errorf("resource %d: %w", id, ErrLeaseEnded)
 	}
-	env, err := readEnvelope(ctx, tx, repo)
-	if err != nil {
-		return fmt.Errorf("envelope of %s: %w", repo, err)
-	}
+	block := standing(repo)
 	use, err := standingUse(ctx, tx, repo)
 	if err != nil {
 		return err
@@ -715,15 +671,15 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 	}
 	var beyond []string
 	for _, t := range types {
-		if !slices.Contains(env.Standing.ServerTypes, t) {
-			beyond = append(beyond, fmt.Sprintf("server type %s is not in the standing types %v", t, env.Standing.ServerTypes))
+		if !slices.Contains(block.ServerTypes, t) {
+			beyond = append(beyond, fmt.Sprintf("server type %s is not in the standing types %v", t, block.ServerTypes))
 		}
 	}
-	if use.Count+servers > env.Standing.MaxCount {
-		beyond = append(beyond, fmt.Sprintf("%d standing servers on top of %d exceed the standing count %d", servers, use.Count, env.Standing.MaxCount))
+	if use.Count+servers > block.MaxCount {
+		beyond = append(beyond, fmt.Sprintf("%d standing servers on top of %d exceed the standing count %d", servers, use.Count, block.MaxCount))
 	}
-	if use.MonthlyEUR+monthly > env.Standing.MonthlyEUR+1e-9 {
-		beyond = append(beyond, fmt.Sprintf("%.4f EUR a month on top of %.4f EUR exceeds the standing %.2f EUR", monthly, use.MonthlyEUR, env.Standing.MonthlyEUR))
+	if use.MonthlyEUR+monthly > block.MonthlyEUR+1e-9 {
+		beyond = append(beyond, fmt.Sprintf("%.4f EUR a month on top of %.4f EUR exceeds the standing %.2f EUR", monthly, use.MonthlyEUR, block.MonthlyEUR))
 	}
 	if len(beyond) > 0 {
 		return fmt.Errorf("resource %d: %w: %s", id, ErrBeyondStanding, strings.Join(beyond, "; "))
@@ -743,6 +699,11 @@ func (a AgentStore) Promote(ctx context.Context, id int64, by string) error {
 type StandingUse struct {
 	Count      int
 	MonthlyEUR float64
+}
+
+// Standing is what repo's project holds against its standing block now.
+func (a AgentStore) Standing(ctx context.Context, repo string) (StandingUse, error) {
+	return standingUse(ctx, a.DB, repo)
 }
 
 func standingUse(ctx context.Context, q rowQuerier, repo string) (StandingUse, error) {
@@ -778,145 +739,4 @@ func (a AgentStore) Commissions(ctx context.Context, since time.Time) ([]Resourc
 	return PG(a).query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
 		WHERE project = 'agent' AND (state = ANY($2) OR deleted_at > $1)
 		ORDER BY repo, owner_ref, COALESCE(hold_id, 0), id`, since, OpenStates)
-}
-
-// EnvelopeRecord is a project's envelope row, who set it last, and what
-// the project holds against its task and standing blocks now.
-type EnvelopeRecord struct {
-	Project string
-	policy.Envelope
-	SetBy       string
-	SetAt       time.Time
-	Use         EnvelopeUse
-	StandingUse StandingUse
-}
-
-// Envelopes lists every project's envelope with its use.
-func (a AgentStore) Envelopes(ctx context.Context) ([]EnvelopeRecord, error) {
-	rows, err := a.DB.QueryContext(ctx, `SELECT project, set_by, set_at FROM envelopes ORDER BY project`)
-	if err != nil {
-		return nil, err
-	}
-	var out []EnvelopeRecord
-	for rows.Next() {
-		var e EnvelopeRecord
-		if err := rows.Scan(&e.Project, &e.SetBy, &e.SetAt); err != nil {
-			rows.Close() // #nosec G104 -- already returning the scan error
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, err
-	}
-	for i := range out {
-		p := out[i].Project
-		if out[i].Envelope, err = readEnvelope(ctx, a.DB, p); err != nil {
-			return nil, err
-		}
-		if out[i].Use, err = envelopeUse(ctx, a.DB, p); err != nil {
-			return nil, err
-		}
-		if out[i].StandingUse, err = standingUse(ctx, a.DB, p); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-// SetEnvelope writes project's envelope as by (the console's edit),
-// creating the row when the project has none yet.
-func (a AgentStore) SetEnvelope(ctx context.Context, project string, env policy.Envelope, by string) error {
-	types, err := json.Marshal(env.ServerTypes)
-	if err != nil {
-		return err
-	}
-	_, err = a.DB.ExecContext(ctx,
-		`INSERT INTO envelopes (project, monthly_eur, server_types, max_count, max_lease_hours, volume_max_gb,
-		   standing_monthly_eur, standing_server_types, standing_max_count, set_by)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, $10)
-		 ON CONFLICT (project) DO UPDATE SET monthly_eur = $2, server_types = $3::jsonb, max_count = $4,
-		   max_lease_hours = $5, volume_max_gb = $6, standing_monthly_eur = $7, standing_server_types = $8::jsonb,
-		   standing_max_count = $9, set_by = $10, set_at = now()`,
-		project, env.MonthlyEUR, types, env.MaxCount, env.MaxLeaseHours, env.VolumeMaxGB,
-		env.Standing.MonthlyEUR, jsonList(env.Standing.ServerTypes), env.Standing.MaxCount, by)
-	return err
-}
-
-// Widen is env grown just enough that the request fits beside use: its
-// server type, its lease, its volume, one more server, and its
-// reservation on top of the month (rounded up to the cent).
-func Widen(env policy.Envelope, use EnvelopeUse, serverType string, leaseMinutes, volumeGB int, reservation float64) policy.Envelope {
-	out := env
-	out.ServerTypes = slices.Clone(env.ServerTypes)
-	if !slices.Contains(out.ServerTypes, serverType) {
-		out.ServerTypes = append(out.ServerTypes, serverType)
-	}
-	out.MaxLeaseHours = max(env.MaxLeaseHours, (leaseMinutes+59)/60)
-	out.VolumeMaxGB = max(env.VolumeMaxGB, volumeGB)
-	out.MaxCount = max(env.MaxCount, use.OpenServers+1)
-	out.MonthlyEUR = max(env.MonthlyEUR, math.Ceil((use.MonthEUR+reservation)*100-1e-9)/100)
-	return out
-}
-
-// ApproveForProject is a human's project-wide approve of resource request
-// id: under the headroom lock, the project's envelope widens to fit the
-// request (Widen) and the request is approved, both as by, and spent on
-// the widening (consumed): it admits no commission beyond the envelope
-// itself. It returns the widened envelope.
-func (a AgentStore) ApproveForProject(ctx context.Context, id int64, by string) (policy.Envelope, error) {
-	tx, err := a.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return policy.Envelope{}, err
-	}
-	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	if err := policy.LockHeadroom(ctx, tx); err != nil {
-		return policy.Envelope{}, err
-	}
-	var project string
-	var raw []byte
-	err = tx.QueryRowContext(ctx, `SELECT project, spec FROM approval_requests
-		WHERE id = $1 AND kind = 'resource' AND status = 'pending' FOR UPDATE`, id).Scan(&project, &raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return policy.Envelope{}, fmt.Errorf("no pending resource request %d", id)
-	}
-	if err != nil {
-		return policy.Envelope{}, err
-	}
-	var spec ResourceSpec
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		return policy.Envelope{}, fmt.Errorf("resource request %d: %w", id, err)
-	}
-	env, err := readEnvelope(ctx, tx, project)
-	if err != nil {
-		return policy.Envelope{}, fmt.Errorf("envelope of %s: %w", project, err)
-	}
-	use, err := envelopeUse(ctx, tx, project)
-	if err != nil {
-		return policy.Envelope{}, err
-	}
-	wide := Widen(env, use, spec.ServerType, spec.LeaseMinutes, spec.VolumeGB, spec.ReservationEUR)
-	types, err := json.Marshal(wide.ServerTypes)
-	if err != nil {
-		return policy.Envelope{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE envelopes SET monthly_eur = $2, server_types = $3::jsonb, max_count = $4,
-		max_lease_hours = $5, volume_max_gb = $6, set_by = $7, set_at = now() WHERE project = $1`,
-		project, wide.MonthlyEUR, types, wide.MaxCount, wide.MaxLeaseHours, wide.VolumeMaxGB, by); err != nil {
-		return policy.Envelope{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', consumed = true, decided_by = $2, decided_at = now(),
-		decision_note = 'approved for the project: its envelope was widened to fit' WHERE id = $1`, id, by); err != nil {
-		return policy.Envelope{}, err
-	}
-	return wide, tx.Commit()
-}
-
-// jsonList is a JSON array, [] for nil.
-func jsonList(v []string) []byte {
-	if v == nil {
-		v = []string{}
-	}
-	b, _ := json.Marshal(v) // #nosec G104 -- a []string always marshals
-	return b
 }

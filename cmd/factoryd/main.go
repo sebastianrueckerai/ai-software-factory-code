@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -70,14 +71,14 @@ func main() {
 	// the last valid version holds
 	ladder := ladder()
 	forgejo := newForgejo()
-	configRepo, err := factoryd.SplitRepo(env("CONFIG_REPO", "sf/ai-software-factory-infra"))
+	configRepo, err := factoryd.SplitRepo(mustEnv("CONFIG_REPO"))
 	if err != nil {
 		log.Fatalf("CONFIG_REPO: %v", err)
 	}
 	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir}
 	// a ladder model outside the coder class would be refused mid-task
 	policyLoader := &factoryd.PolicyLoader{
-		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: mustEnv("FORGEJO_CONFIG_TOKEN"), Repo: configRepo, Branch: "main", Dir: configDir},
+		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir},
 		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve,
 		ReadFailing: configAlarm.ReadFailing}
 	if err := policyLoader.Boot(context.Background()); err != nil {
@@ -201,14 +202,13 @@ func main() {
 	ciCollector.Deleted = buildVMs.Deleted
 	ciSpawner, err := factoryd.NewCISpawner(factoryd.CIConfig{
 		FactoryNamespace: kube.Namespace(),
-		Repos: factoryd.CIReposOf(factoryd.CIRepo{Repo: factoryd.Repo{Owner: env("CI_REPO_OWNER", "sf"), Name: env("CI_REPO_NAME", "ai-software-factory-code")},
-			Token: forgejo.CIRegistrarToken}, forgejo.ProjectsToken, store),
-		RunnerImage:   mustEnv("CI_RUNNER_IMAGE"),
-		PullSecret:    env("PULL_SECRET", "forgejo-registry"),
-		GitBaseURL:    gitBase,
-		MaxConcurrent: envInt("CI_MAX_CONCURRENT", 8),
-		JobTimeout:    ciJobTimeout,
-		Queue:         ciQueue,
+		Repos:            factoryd.CIReposOf(forgejo, store),
+		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
+		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
+		GitBaseURL:       gitBase,
+		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
+		JobTimeout:       ciJobTimeout,
+		Queue:            ciQueue,
 	}, forgejo, kube, buildVMs)
 	if err != nil {
 		log.Fatalf("ci spawner: %v", err)
@@ -235,37 +235,19 @@ func main() {
 	runner.RegisterActivities(taskWorker)
 
 	intakeToken := mustEnv("INTAKE_TOKEN")
-	issueOwner, issueRepo := env("CI_REPO_OWNER", "sf"), env("CI_REPO_NAME", "ai-software-factory-code")
-	upstream := factoryd.Repo{Owner: issueOwner, Name: issueRepo}
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget,
-		Repositories: func(ctx context.Context) ([]factoryd.Repo, error) {
-			ps, err := store.Projects(ctx)
-			if err != nil {
-				return nil, err
-			}
-			repos := []factoryd.Repo{upstream}
-			for _, p := range ps {
-				if p.Managed && p.Minted() {
-					repos = append(repos, p.Repo())
-				}
-			}
-			return repos, nil
-		},
+		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget, Projects: store,
+	}
+	// the factory's own project deploys into factoryd's namespace: its CI
+	// runs and its rolls are watched, its writers log into the console
+	own, ok, err := factoryd.OwnProject(context.Background(), store, kube.Namespace())
+	if err != nil || !ok {
+		log.Fatalf("no project file lists factoryd's namespace %s (%v)", kube.Namespace(), err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// the bot's private fork holds every task branch (ruling 97)
-	if err := forgejo.EnsureFork(ctx, upstream); err != nil {
-		log.Printf("ensure fork of %s: %v", upstream, err)
-	} else {
-		log.Printf("fork %s ready: private, Actions off", forgejo.Fork(upstream))
-	}
-	if err := forgejo.EnsureLabels(ctx, issueOwner, issueRepo, factoryd.BootLabels); err != nil {
-		log.Printf("ensure labels: %v", err)
-	}
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
 	webhookIntake.MainPushed = registrar.MainPushed
@@ -303,14 +285,14 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	go ciSpawner.Run(ctx)
-	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Metrics: metrics}
+	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics}
 	go ciRuns.Run(ctx)
-	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Branch: "main",
+	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
 		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics, Poll: 15 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)
 	// the roll as a factory task (ruling 178): main CI's images of a green
 	// commit, read with the factory's pull secret, open the roll's pull request
-	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: upstream, Budget: policyLoader.Budget, Poll: time.Minute,
+	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
 		Registry: &factoryd.Registry{BaseURL: forgejo.BaseURL,
 			Credential: factoryd.PullSecretCredential(kube, kube.Namespace(), env("PULL_SECRET", "forgejo-registry"), env("REGISTRY_HOST", "git.aisoftwarefactory.world"))}}
 	go roller.Run(ctx)
@@ -371,20 +353,24 @@ func main() {
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
 		ClientSecret:     mustEnv("CONSOLE_CLIENT_SECRET"),
 		SessionKey:       []byte(mustEnv("CONSOLE_SESSION_KEY")),
-		Repo:             upstream,
 		Tasks:            store,
-		Writers:          forgejo,
-		Timelines:        objects,
-		Policies:         store,
-		Costs:            store,
-		Approvals:        store,
+		Writers: func(ctx context.Context) ([]string, error) {
+			p, ok, err := factoryd.OwnProject(ctx, store, kube.Namespace())
+			if err != nil || !ok {
+				return nil, errors.Join(fmt.Errorf("no project file lists namespace %s", kube.Namespace()), err)
+			}
+			return forgejo.Writers(ctx, p)
+		},
+		Timelines: objects,
+		Policies:  store,
+		Costs:     store,
+		Approvals: store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
 		Alerts:     store,
 		Projects:   store,
-		Reconcile:  registrar.Reconcile,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,
 	})
@@ -429,6 +415,7 @@ func main() {
 // interface.
 type taskCreator interface {
 	CreateTask(ctx context.Context, t factoryd.Task) error
+	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 
 // createTaskHandler is the API task-filing path (task 42 brief item 3):
@@ -436,7 +423,8 @@ type taskCreator interface {
 // issue — as the bot, title from the objective's first line, body the
 // objective plus "filed by factoryd intake" — and labels it agent and
 // state/queued before the task row ever exists; a row is created only once
-// the issue exists to back it. The base is always the default branch's
+// the issue exists to back it. A repository no active project names, and a
+// project on agents none, are refused with 422. The base is always the default branch's
 // head: neither the branch nor the sha is a caller's choice.
 func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, budget func() policy.Budget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -460,6 +448,19 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		repoParts, err := factoryd.SplitRepo(in.Repository)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		p, ok, err := store.ProjectByRepository(r.Context(), in.Repository)
+		switch {
+		case err != nil:
+			http.Error(w, "project: "+err.Error(), http.StatusInternalServerError)
+			return
+		case !ok || !p.Active():
+			http.Error(w, "no active project has the repository "+in.Repository, http.StatusUnprocessableEntity)
+			return
+		case p.Agents != policy.AgentsCoder:
+			http.Error(w, "project "+p.Name+" takes no agent tasks (agents: "+p.Agents+" in projects/"+p.Name+".yaml): file an issue for a human",
+				http.StatusUnprocessableEntity)
 			return
 		}
 		in.ReproCommand = strings.TrimSpace(in.ReproCommand)

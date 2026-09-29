@@ -236,15 +236,7 @@ type fakeCloudStore struct {
 	accrues   int
 	overruns  []cloudres.Overrun
 	approvals map[int64]cloudres.Approval
-	envelope  *policy.Envelope
 	hold      int64
-}
-
-func (f *fakeCloudStore) Envelope(context.Context, string) (policy.Envelope, bool, error) {
-	if f.envelope == nil {
-		return policy.Envelope{}, false, nil
-	}
-	return *f.envelope, true, nil
 }
 
 func (f *fakeCloudStore) Use(context.Context, string) (cloudres.EnvelopeUse, error) {
@@ -419,7 +411,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	// the request as priced: 2 started hours of cx23 + IPv4 + 20 GB
 	r := e.cs.reqs[0]
 	if r.TaskID != "42" || r.Repo != "sf/app" || r.Session != "s-1" || r.Location != "fsn1" || r.LeaseMinutes != 90 || r.VolumeGB != 20 ||
-		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Default.MaxCount != 2 || r.DayEUR != 20 {
+		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 {
 		t.Fatalf("reserve request = %+v", r)
 	}
 	sr := e.hz.serverReq
@@ -618,14 +610,23 @@ func TestCloudPrices(t *testing.T) {
 			t.Fatalf("prices lack %q:\n%s", want, text)
 		}
 	}
-	e.cs.envelope = &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}
-	text, _ = e.call(t, policy.ToolCloudPrices, map[string]any{})
-	if !strings.Contains(text, "the project's envelope") || strings.Contains(text, "cx33") {
-		t.Fatalf("project envelope prices = %s", text)
-	}
 	// the catalogue is read once an hour
 	if n := strings.Count(strings.Join(e.hz.calls, ","), "pricing"); n != 1 {
 		t.Fatalf("pricing fetched %d times", n)
+	}
+	// ruling 183: the envelope of the project's file
+	v := cloudPolicy()
+	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", MergeRule: "human", Objects: "factory", Agents: "coder",
+		Envelope: &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}}}
+	e = newCloudEnv(t, coderTask(), v)
+	text, _ = e.call(t, policy.ToolCloudPrices, map[string]any{})
+	if !strings.Contains(text, "project app's envelope (projects/app.yaml, policy version 7)") || strings.Contains(text, "cx33") ||
+		!strings.Contains(text, "3.00 EUR a month") {
+		t.Fatalf("project envelope prices = %s", text)
+	}
+	if _, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 60}); isErr ||
+		e.cs.reqs[0].Envelope.MonthlyEUR != 3 {
+		t.Fatalf("the reservation's envelope = %+v", e.cs.reqs[0].Envelope)
 	}
 }
 

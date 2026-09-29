@@ -148,6 +148,7 @@ type RollStore interface {
 type RollWatcher struct {
 	Forgejo             *Forgejo
 	Owner, Repo, Branch string
+	Token               string // reads the repository's Actions
 	Namespace           string
 	Kube                DeploymentReader
 	Store               RollStore
@@ -349,7 +350,7 @@ func (w *RollWatcher) measure(ctx context.Context, dep string, changes []rollCha
 		return false, nil
 	}
 	if w.pushed.IsZero() {
-		runs, err := w.Forgejo.ActionRuns(ctx, w.Owner, w.Repo, url.Values{"event": {"push"}, "head_sha": {w.sha}, "limit": {"1"}})
+		runs, err := w.Forgejo.ActionRuns(ctx, w.Token, w.Owner, w.Repo, url.Values{"event": {"push"}, "head_sha": {w.sha}, "limit": {"1"}})
 		if err != nil {
 			return false, err
 		}

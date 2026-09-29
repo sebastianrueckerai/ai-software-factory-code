@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -44,7 +45,8 @@ type forgejoState struct {
 	nextToken     int64
 	minted        []string
 	writes        []string
-	projectsAdmin bool // factory-projects sees the repository as admin
+	hookReads     []string // the credential of each hooks list
+	projectsAdmin bool     // factory-projects sees the repository as admin
 	emails        map[string]string
 	teamUnits     map[string]string
 }
@@ -184,6 +186,11 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			}
 			io.WriteString(w, `{"permissions":{"admin":true}}`)
 		case p == repo+"/hooks" && r.Method == http.MethodGet:
+			s.hookReads = append(s.hookReads, by)
+			if by != "token projects-tok" && by != "token registrar-tok" { // an admin's token only
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
 			list(s.hooks)
 		case p == repo+"/hooks" && r.Method == http.MethodPost:
 			body["id"] = 1
@@ -309,6 +316,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 // object changes nothing.
 type fakeProjectKube struct {
 	mu      sync.Mutex
+	labels  map[string]map[string]string // a namespace the infra repository made -> its labels
 	objects map[string]string
 	secrets map[string]map[string]string
 	deploys map[string][]DeploymentState
@@ -355,6 +363,16 @@ func (k *fakeProjectKube) GetSecretData(_ context.Context, ns, name string) (map
 	return nil, ErrNotFound
 }
 
+func (k *fakeProjectKube) NamespaceLabel(_ context.Context, name, key string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	labels, ok := k.labels[name]
+	if !ok {
+		return "", ErrNotFound
+	}
+	return labels[key], nil
+}
+
 func (k *fakeProjectKube) Deployments(_ context.Context, ns string) ([]DeploymentState, error) {
 	return k.deploys[ns], nil
 }
@@ -368,9 +386,12 @@ func (k *fakeProjectKube) object(t *testing.T, path string) map[string]any {
 	return out
 }
 
+// memProjects holds the joined projects by name (as their files say) and
+// which of them have a row.
 type memProjects struct {
-	mu sync.Mutex
-	m  map[string]Project
+	mu   sync.Mutex
+	m    map[string]Project
+	rows map[string]bool
 }
 
 func (s *memProjects) Projects(context.Context) ([]Project, error) {
@@ -391,28 +412,21 @@ func (s *memProjects) Project(_ context.Context, name string) (Project, bool, er
 	return p, ok, nil
 }
 
-func (s *memProjects) CreateProject(_ context.Context, p Project) error {
+// EnsureProjectRows gives a row to each name that has none.
+func (s *memProjects) EnsureProjectRows(_ context.Context, names []string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, o := range s.m {
-		if o.Name == p.Name || o.Repository == p.Repository || slices.ContainsFunc(o.Namespaces, func(ns string) bool { return slices.Contains(p.Namespaces, ns) }) {
-			return ErrProjectExists
+	if s.rows == nil {
+		s.rows = map[string]bool{}
+	}
+	var created []string
+	for _, n := range names {
+		if !s.rows[n] {
+			s.rows[n] = true
+			created = append(created, n)
 		}
 	}
-	s.m[p.Name] = p
-	return nil
-}
-
-func (s *memProjects) SetProjectSettings(_ context.Context, name, rule string, notify []string, q policy.Quota) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p, ok := s.m[name]
-	if !ok {
-		return ErrNotFound
-	}
-	p.MergeRule, p.Notify, p.Quota = rule, notify, q
-	s.m[name] = p
-	return nil
+	return created, nil
 }
 
 func (s *memProjects) SetProjectTokens(_ context.Context, name string, t ProjectTokens) error {
@@ -463,7 +477,7 @@ func newRegisterRig(t *testing.T) *registerRig {
 	fj := newForgejoState()
 	srv := fj.server(t)
 	kube := newFakeProjectKube()
-	store := &memProjects{m: map[string]Project{}}
+	store := &memProjects{m: map[string]Project{"demo-app": demoProject()}}
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
 	reg := &Registrar{Forgejo: f, Kube: kube, Store: store,
 		Policy:     func() policy.Document { return policy.Document{Approvers: []string{"sebastian"}} },
@@ -482,7 +496,7 @@ var admin = AdminAuth{User: "sebastian", Password: "admin-pw"}
 func TestRegisterIsIdempotent(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, demoProject(), admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +529,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 
 	rig.fj.branches["main"] = "c0ffee"
 	rig.logs.Reset()
-	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(rig.logs.String(), "project demo-app: branch deploy: created\n") || rig.fj.branches["deploy"] != "c0ffee" ||
@@ -526,12 +540,11 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	stored := rig.store.m["demo-app"]
 
 	rig.logs.Reset()
-	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(rig.logs.String()), "\n") {
-		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") && !strings.HasSuffix(line, ": ensured") &&
-			!strings.HasSuffix(line, ": no change (its settings are the console's)") {
+		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") {
 			t.Errorf("second run: %s", line)
 		}
 	}
@@ -541,10 +554,15 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	if !reflect.DeepEqual(rig.store.m["demo-app"], stored) {
 		t.Fatal("second run changed the row")
 	}
-	other := demoProject()
-	other.Namespaces = append(other.Namespaces, "demo-extra")
-	if _, err := rig.reg.Register(ctx, other, admin, false); err == nil || !strings.Contains(err.Error(), "registered with other") {
-		t.Fatalf("a changed registration = %v", err)
+	for name, p := range map[string]Project{"infra": {Name: "infra", Repository: "sf/infra", Objects: "seed", File: true},
+		"gone": {Name: "gone", Repository: "gone/gone", Objects: "factory"}} {
+		rig.store.m[name] = p
+		if _, err := rig.reg.Register(ctx, name, admin, false); err == nil || !strings.Contains(err.Error(), "registration makes a factory project's objects") {
+			t.Fatalf("registering %s = %v", name, err)
+		}
+	}
+	if _, err := rig.reg.Register(ctx, "nothing", admin, false); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("registering a project no file names = %v", err)
 	}
 }
 
@@ -552,7 +570,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 func TestRegistrationObjects(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.branches["main"] = "c0ffee"
-	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
 		t.Fatal(err)
 	}
 	fj, k := rig.fj, rig.kube
@@ -663,9 +681,10 @@ func TestRegistrationObjects(t *testing.T) {
 	}
 }
 
-// A project the console recorded waits for register-project in Forgejo;
-// its cluster objects come at once, its Flux source once the tokens exist.
-func TestConsoleRegisteredProjectWaits(t *testing.T) {
+// A factory project's file before register-project: its Forgejo objects
+// wait, its cluster objects come at once, its Flux source once the tokens
+// exist.
+func TestProjectFileWaitsForRegistration(t *testing.T) {
 	rig := newRegisterRig(t)
 	p := demoProject()
 	rig.store.m[p.Name] = p
@@ -690,11 +709,14 @@ func TestConsoleRegisteredProjectWaits(t *testing.T) {
 func TestRegistrationFollowsSettings(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, demoProject(), admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig.store.SetProjectSettings(ctx, p.Name, "human", nil, policy.Quota{CPU: "1", Memory: "2Gi", Storage: "5Gi"})
+	// the file changed: merge rule human, a smaller quota
+	changed := rig.store.m[p.Name]
+	changed.MergeRule, changed.Quota = "human", policy.Quota{CPU: "1", Memory: "2Gi", Storage: "5Gi"}
+	rig.store.m[p.Name] = changed
 	rig.reg.WebhookSecret = "re-seeded"
 	rig.fj.users["alice"] = true
 	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian", "alice"}} }
@@ -723,7 +745,7 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 func TestDeployKeyHeals(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, demoProject(), admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -741,7 +763,7 @@ func TestDeployKeyHeals(t *testing.T) {
 func TestReadTokenRace(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, demoProject(), admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,14 +781,16 @@ func TestReadTokenRace(t *testing.T) {
 	}
 }
 
-func TestRegistrationSkipsUnmanaged(t *testing.T) {
+// A row without a file is left alone.
+func TestReconcileSkipsARowWithoutAFile(t *testing.T) {
 	rig := newRegisterRig(t)
-	p := Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Namespaces: []string{"factory"}}
+	p := Project{Name: "gone", GitToken: "g"}
 	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
 		t.Fatal(err)
 	}
-	if len(rig.fj.writes) != 0 || len(rig.kube.changes) != 0 || !strings.Contains(rig.logs.String(), "unmanaged") {
-		t.Fatalf("unmanaged project touched: %v %v", rig.fj.writes, rig.kube.changes)
+	if len(rig.fj.writes) != 0 || len(rig.kube.changes) != 0 ||
+		!strings.Contains(rig.logs.String(), "project gone: no file projects/gone.yaml in the configuration: nothing reconciled") {
+		t.Fatalf("a row without a file touched: %v %v\n%s", rig.fj.writes, rig.kube.changes, rig.logs)
 	}
 }
 
@@ -775,7 +799,7 @@ func TestRegistrationSkipsUnmanaged(t *testing.T) {
 func TestRegisterRefusesAForeignOrganisation(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.org, rig.fj.orgOwner = true, "mallory"
-	_, err := rig.reg.Register(context.Background(), demoProject(), admin, false)
+	_, err := rig.reg.Register(context.Background(), "demo-app", admin, false)
 	if err == nil || !strings.Contains(err.Error(), "factory-projects does not own it") {
 		t.Fatalf("err = %v", err)
 	}
@@ -788,11 +812,11 @@ func TestRegisterRefusesAForeignOrganisation(t *testing.T) {
 func TestRegisterRotates(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
 		t.Fatal(err)
 	}
 	n := len(rig.fj.minted)
-	if _, err := rig.reg.Register(ctx, demoProject(), admin, true); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, true); err != nil {
 		t.Fatal(err)
 	}
 	if len(rig.fj.minted)-n != 4 || len(rig.fj.tokens) != 4 {
@@ -805,7 +829,7 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.users["ci-demo-app"] = true
 	rig.fj.emails = map[string]string{"ci-demo-app": "mallory@example.com"}
-	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err == nil ||
+	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err == nil ||
 		!strings.Contains(err.Error(), "a user ci-demo-app exists that registration did not make") {
 		t.Fatalf("foreign user = %v", err)
 	}
@@ -816,7 +840,7 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 	rig = newRegisterRig(t)
 	rig.fj.team = []string{}
 	rig.fj.teamUnits = map[string]string{"repo.code": "write", "repo.packages": "write"}
-	if _, err := rig.reg.Register(context.Background(), demoProject(), admin, false); err == nil ||
+	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err == nil ||
 		!strings.Contains(err.Error(), "a team ci exists in demo-app with more than package write") {
 		t.Fatalf("foreign team = %v", err)
 	}
@@ -826,11 +850,12 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 }
 
 // A new project's first push to main makes deploy through the project's
-// reconcile; later pushes, and repositories of no managed project, do nothing.
+// reconcile; later pushes, and repositories of no factory project, do
+// nothing.
 func TestMainPushedMakesDeploy(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, demoProject(), admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(rig.fj.hooks[0]["events"].([]any), any("push")) {
@@ -860,5 +885,94 @@ func TestMainPushedMakesDeploy(t *testing.T) {
 	}
 	if rig.logs.Len() != 0 || len(rig.fj.writes) != writes {
 		t.Fatalf("later pushes: log %q, writes %v", rig.logs, rig.fj.writes[writes:])
+	}
+}
+
+// Ruling 179: a seed project's reconcile keeps the labels and (agents
+// coder) the bot's fork as the bot, reads the webhook with the project's
+// read token and each namespace's factory/project label, reports them, and
+// creates nothing else: no factory-projects call, no hook, no cluster
+// object.
+func TestSeedProjectIsReadAndReported(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.reg.Forgejo.Seeded = testSeeded
+	rig.fj.repo = true
+	rig.kube.labels = map[string]map[string]string{"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "other"}}
+	p := Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "human", Objects: "seed", Agents: "coder", File: true,
+		Namespaces: []string{"demo-staging", "demo-prod", "demo-qa"},
+		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}
+	ctx := context.Background()
+	if err := rig.reg.Reconcile(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	logs := rig.logs.String()
+	for _, want := range []string{
+		"project demo-app: labels: created agent, bug, human, improvement, priority/p0,",
+		"project demo-app: fork factory-agent/demo-app: ready\n",
+		"project demo-app: webhook: missing: the seed makes it, factoryd never does\n",
+		"project demo-app: namespace demo-staging label factory/project: present\n",
+		`project demo-app: namespace demo-prod label factory/project: wrong: "other", want "demo-app"; the infra repository sets it` + "\n",
+		"project demo-app: namespace demo-qa label factory/project: missing: no namespace demo-qa; the infra repository makes it\n",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("log lacks %q:\n%s", want, logs)
+		}
+	}
+	for _, w := range rig.fj.writes {
+		if !strings.HasSuffix(w, " by basic factory-agent") || !strings.Contains(w, "/labels") && !strings.Contains(w, "/forks") {
+			t.Errorf("a seed project's reconcile wrote %s", w)
+		}
+	}
+	if len(rig.fj.labels) != len(BootLabels) || rig.fj.fork == nil || len(rig.fj.hooks) != 0 || len(rig.kube.changes) != 0 {
+		t.Fatalf("labels %d, fork %v, hooks %v, cluster %v", len(rig.fj.labels), rig.fj.fork, rig.fj.hooks, rig.kube.changes)
+	}
+	if !slices.Equal(rig.fj.hookReads, []string{"token registrar-tok"}) {
+		t.Fatalf("hooks read with %v, want the project's read token", rig.fj.hookReads)
+	}
+
+	// the seed made the hook: present; the labels are there
+	rig.fj.hooks = []map[string]any{{"id": 1, "active": true, "config": map[string]any{"url": rig.reg.WebhookURL}}}
+	rig.logs.Reset()
+	writes := len(rig.fj.writes)
+	if err := rig.reg.Reconcile(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if logs := rig.logs.String(); !strings.Contains(logs, "project demo-app: webhook: present\n") || !strings.Contains(logs, "project demo-app: labels: no change\n") ||
+		len(rig.fj.writes) != writes {
+		t.Fatalf("second run wrote %v:\n%s", rig.fj.writes[writes:], logs)
+	}
+
+	// agents none: no fork; a read token without admin cannot see the hooks
+	p.Agents, p.Tokens = "none", policy.SeedTokens{Read: policy.SecretConfig}
+	rig.fj.fork = nil
+	rig.logs.Reset()
+	err := rig.reg.Reconcile(ctx, p)
+	if logs := rig.logs.String(); !strings.Contains(logs, "project demo-app: fork factory-agent/demo-app: none: agents none\n") || rig.fj.fork != nil ||
+		err == nil || !strings.Contains(err.Error(), "webhook: cannot read the hooks with forgejo-config") {
+		t.Fatalf("agents none: err %v, fork %v:\n%s", err, rig.fj.fork, logs)
+	}
+	if rig.fj.hookReads[len(rig.fj.hookReads)-1] != "token config-tok" {
+		t.Fatalf("hooks read with %v", rig.fj.hookReads)
+	}
+}
+
+// ReconcileAll gives each file its row, logs it once, and passes a row
+// without a file by.
+func TestReconcileAllMakesTheRows(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.reg.Forgejo.Seeded = testSeeded
+	rig.fj.repo = true
+	rig.store.m["gone"] = Project{Name: "gone", GitToken: "g"}
+	rig.store.rows = map[string]bool{"gone": true}
+	ctx := context.Background()
+	rig.reg.ReconcileAll(ctx)
+	if !rig.store.rows["demo-app"] || !strings.Contains(rig.logs.String(), "project demo-app: row: created from projects/demo-app.yaml\n") ||
+		!strings.Contains(rig.logs.String(), "project gone: no file projects/gone.yaml") {
+		t.Fatalf("rows %v:\n%s", rig.store.rows, rig.logs)
+	}
+	rig.logs.Reset()
+	rig.reg.ReconcileAll(ctx)
+	if strings.Contains(rig.logs.String(), "row: created") {
+		t.Fatalf("a second pass created a row again:\n%s", rig.logs)
 	}
 }

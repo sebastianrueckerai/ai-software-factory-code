@@ -133,6 +133,17 @@ type fakeTaskCreator struct {
 	events  *[]string
 	err     error
 	created []factoryd.Task
+	// projects by repository; nil: every repository is a seed project
+	// agents work on
+	projects map[string]factoryd.Project
+}
+
+func (s *fakeTaskCreator) ProjectByRepository(_ context.Context, repository string) (factoryd.Project, bool, error) {
+	if s.projects == nil {
+		return factoryd.Project{Name: "p", Repository: repository, Objects: "seed", Agents: "coder", File: true}, true, nil
+	}
+	p, ok := s.projects[repository]
+	return p, ok, nil
 }
 
 func (s *fakeTaskCreator) CreateTask(ctx context.Context, t factoryd.Task) error {
@@ -405,5 +416,30 @@ func TestACancelReachesARunningActivityWithinTenSeconds(t *testing.T) {
 	}
 	if factoryd.HeartbeatEvery > 10*time.Second {
 		t.Fatalf("activities heartbeat every %s, want at most 10s", factoryd.HeartbeatEvery)
+	}
+}
+
+// Ruling 179: POST /tasks on a project on agents none, or on a repository
+// no active project names, answers 422 with the reason and files nothing.
+func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
+	var events []string
+	forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+	store := &fakeTaskCreator{events: &events, projects: map[string]factoryd.Project{
+		"sf/ai-software-factory-infra": {Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none", File: true},
+		"demo-app/demo-app":            {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true},
+	}}
+	h := createTaskHandler(store, forgejo, &fakeStarter{events: &events}, testBudget)
+	for repo, want := range map[string]string{
+		"sf/ai-software-factory-infra": "project ai-software-factory-infra takes no agent tasks (agents: none in projects/ai-software-factory-infra.yaml): file an issue for a human",
+		"sf/elsewhere":                 "no active project has the repository sf/elsewhere",
+		"demo-app/demo-app":            "no active project has the repository demo-app/demo-app", // before register-project
+	} {
+		rec := postCreateTask(h, `{"objective":"Rotate the key","repository":"`+repo+`"}`)
+		if rec.Code != http.StatusUnprocessableEntity || strings.TrimSpace(rec.Body.String()) != want {
+			t.Errorf("%s: %d %q, want 422 %q", repo, rec.Code, rec.Body, want)
+		}
+	}
+	if len(events) != 0 {
+		t.Fatalf("a refused task reached Forgejo or the store: %v", events)
 	}
 }

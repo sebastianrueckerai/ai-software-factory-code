@@ -16,7 +16,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
-// CIRuns turns the code repository's actions/tasks into
+// CIRuns turns the factory's own repository's actions/tasks into
 // factory.ci.job.duration once per finished job, and its actions/runs into
 // factory.ci.run.duration once per finished run. It keeps what it emitted
 // in memory: after a restart it starts from the newest page, and what
@@ -24,6 +24,7 @@ import (
 type CIRuns struct {
 	Forgejo     *Forgejo
 	Owner, Repo string
+	Token       string // reads the repository's Actions
 	Metrics     *telemetry.Metrics
 	lastErr     string // logged once until the next success
 
@@ -132,7 +133,7 @@ func (c *CIRuns) poll(ctx context.Context) {
 func (c *CIRuns) pollJobs(ctx context.Context) error {
 	taskID := func(t ActionTask) int64 { return t.ID }
 	tasks, err := readPages(ctx, &c.jobs, func(ctx context.Context, page int) ([]ActionTask, error) {
-		return c.Forgejo.ActionTasks(ctx, c.Forgejo.CIRegistrarToken, c.Owner, c.Repo, page)
+		return c.Forgejo.ActionTasks(ctx, c.Token, c.Owner, c.Repo, page)
 	}, taskID)
 	if err != nil {
 		return err
@@ -149,7 +150,7 @@ func (c *CIRuns) pollJobs(ctx context.Context) error {
 func (c *CIRuns) pollRuns(ctx context.Context) error {
 	runID := func(r ActionRun) int64 { return r.ID }
 	runs, err := readPages(ctx, &c.runs, func(ctx context.Context, page int) ([]ActionRun, error) {
-		return c.Forgejo.ActionRuns(ctx, c.Owner, c.Repo, url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(actionTasksPage)}})
+		return c.Forgejo.ActionRuns(ctx, c.Token, c.Owner, c.Repo, url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(actionTasksPage)}})
 	}, runID)
 	if err != nil {
 		return err

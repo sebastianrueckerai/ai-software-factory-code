@@ -133,13 +133,14 @@ takes them off an outside account's new issue. The task
 keeps its author and whether they could write the repository then
 (`tasks.author`, `tasks.author_writer`; ruling 152); an API task is the
 bot's, as a writer. The day cap bounds the spend; there is no per-author
-limit. The heal pass reads every open issue of the code repository and of
-every registered project. The issue templates in
+limit. The heal pass reads every open issue of every active project (a project
+file, and for `objects: factory` a registration that has run), the
+factory's own two repositories included. The issue templates in
 `.forgejo/issue_template/` (`bug.yaml`, label `bug`, with a reproduction
 field rendered as the `repro` block; `improvement.yaml`, label
 `improvement`) are what every factory-managed repository carries; their
 labels must exist in the repository, which factoryd ensures (the boot
-labels below) for the code repository and every project. Issues and comments authored by the bot user itself
+labels below) for every project. Issues and comments authored by the bot user itself
 (`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, and so are
 pull requests it closed itself, so the factory's own status updates
 never create a second task or a stray signal. `POST /tasks`
@@ -541,7 +542,8 @@ the loader does and compares its `schema/` with the generated one: exit
 0 ok, 1 refused with every reason, 2 usage; the infra repository's CI
 runs it on every push to `main`.
 
-factoryd polls the head of `main` every 30 s through the Forgejo API
+factoryd polls the head of `main` of `CONFIG_REPO` (the infra
+repository, set in `k8s/factoryd.yaml`) every 30 s through the Forgejo API
 with `FORGEJO_CONFIG_TOKEN` (user `factory-config`, a read collaborator
 on the infra repository only, `read:repository` limited to it; secret
 `forgejo-config`), reads `factory/` at that commit (`schema/` left out)
@@ -852,11 +854,13 @@ volume GB x GB-month price / 730. For a cx23 in fsn1 for 90 minutes with
 0.0031342 = 0.0223342 EUR. The monthly figure on approval cards is the
 catalogue's monthly prices (5.49 + 0.50 + 20 x 0.0572 = 7.134 EUR).
 
-**Envelope.** Table `envelopes` (one row per project: `monthly_eur`,
-`server_types`, `max_count`, `max_lease_hours`, `volume_max_gb`,
-`set_by`, `set_at`). A project's first request copies the policy's
-`envelope_default` into its row (`set_by` `default`); the console edits
-it. Under the headroom lock, one transaction checks the envelope: the
+**Envelope.** A project's envelope is its file's (ruling 183):
+`envelope` (`monthly_eur`, `server_types`, `max_count`,
+`max_lease_hours`, `volume_max_gb`) and `standing` in
+`projects/<name>.yaml`, each absent block the policy's
+`envelope_default` or `project_default.standing`; a repository no file
+names takes the defaults. The gateway reads it from the policy version in
+force; a change is a commit to the infra repository. Under the headroom lock, one transaction checks the envelope: the
 type, the lease, the volume, the count of open servers, and this UTC
 month's resource ledger rows plus open reservations plus this
 reservation against `monthly_eur`. Within it, the reservation is a
@@ -873,12 +877,7 @@ row records `approval_id`, the request is marked `consumed`) and nothing
 that is beyond in another way, and
 a denial is answered with the human's note. A task holds at most 3
 pending resource requests; a fourth is refused (`refused_approvals`). The console approves a request for the task (that one
-commission) or for the project: the envelope widens just enough for it
-(its type, lease, volume, one more server, and the month to the cent
-above use plus its reservation) and the request is approved and consumed
-by the widening, both as the human, in one transaction under the headroom
-lock: it admits nothing beyond the envelope later, even after a human
-narrows the envelope again.
+commission); a wider envelope for the project is a commit to its file.
 
 **Registry first.** The rows (table `cloud_resources`, project `agent`,
 owner the task, the session, the repository, the type or size, the
@@ -992,8 +991,8 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   what failed in a fixed sentence, the details go to the log.
 - Spend is the policy's `approvers` (ruling 128; the policy file's
   `approvers: [...]`): only they approve a resource request or a merge,
-  edit an envelope, or promote. Other writers see the cards and the
-  envelope without those buttons (a POST gets 403) and may still deny,
+  or promote. Other writers see the cards without those buttons (a POST
+  gets 403) and may still deny,
   request changes, reject and release. Forgejo's approvals whitelist on
   main stays the merge authority.
 - `/`: the agent lane by task status (done and failed for 7 days, at most
@@ -1041,31 +1040,74 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   booked so far and state; promote and release per commission (a released
   commission, or one whose lease has ended, cannot be promoted: 409; the
   promote note gives the commission's catalogue monthly price, as the
-  approval cards do, against the standing block); each
-  project's envelope with both blocks, the task block and the standing block
-  with its standing monthly line (the code repository's shows the policy
-  default until saved), with an edit form, saved with `set_by`.
+  approval cards do, against the standing block of the project's file);
+  each project's envelope, read-only, with both blocks and what the month
+  and the standing servers use, linked to the project's file where it is
+  changed (a repository no file names shows the policy's defaults).
 - `/projects`: see Projects below.
-- Boot creates the labels intake reads on the code repository
-  (`factoryd.BootLabels`): `agent`, `human`, `state/*`, `priority/p0..p3`
-  and `severity/critical|high|medium|low`; the new-task form offers the
-  priorities.
+- Every project's reconcile (boot included) creates the labels intake
+  reads (`factoryd.BootLabels`): `agent`, `human`, `bug`, `improvement`,
+  `state/*`, `priority/p0..p3` and `severity/critical|high|medium|low`.
+  The new-task form picks a project among those agents work on (`agents:
+  coder`, the first by name the default) and offers the priorities its
+  repository has; the issue is filed there as the human.
+- Login: the writers of the factory's own project, the one whose file lists
+  factoryd's namespace (`Forgejo.Writers`).
 - `/costs`: the ledger per day and kind and per task for 14 days, each
   task with its lines per kind and ref (a model review is its own line,
   `model review/<alias>`), today against the day cap. `/policy`: the version in force, linked to its file
   in the infra repository for edits.
 
-## Projects (task 65)
+## Projects (task 65, ruling 179)
 
 A project is a repository the factory works on, the namespaces it deploys
-into, and its settings (ruling 146): table `projects` (`name`, `repository`,
-`merge_rule` auto|human, `notify` (empty: the policy's approvers),
-`namespaces` (each one project's), `environments` (namespace, path,
-hostname), `quota_*`, `secrets`, `managed`). The factory's two repositories
-are unmanaged rows on `human`: their objects stay the infra repository's, and
-the console refuses `auto` for them. Defaults come from the policy's optional
-`project_default` section (merge rule, quota, the envelope's standing block;
-built in: human, 2 CPU / 4Gi / 10Gi, a closed standing block).
+into, and its settings (ruling 146). The settings are its file
+`projects/<name>.yaml` in the configuration tree (ruling 183): `repository`,
+`merge_rule` auto|human, `objects` factory|seed, `agents` coder|none,
+`notify` (empty: the policy's approvers), `namespaces` (each one project's),
+`environments` (namespace, path, hostname), `quota`, `secrets`, `envelope`,
+`standing`, and for `objects: seed` the `tokens` it is read with. Absent
+blocks take the policy's `project_default` (quota, the standing block;
+built in: 2 CPU / 4Gi / 10Gi, a closed standing block) and
+`envelope_default`. Table `projects` keeps only what registration minted
+(`name`, the tokens and hashes below, timestamps): every reconcile gives each
+file its row, and a row whose file is gone keeps its tokens while nothing
+acts on it. The console shows the projects read-only with links to their
+files; a change is a commit.
+
+The factory's own repositories are projects like any other (ruling 179): no
+Go source names them (a test greps). Two settings replace the old special
+cases:
+
+- `objects`: `factory` makes the project its own Forgejo organisation whose
+  objects factoryd creates and reconciles (below); `seed` leaves them to the
+  infra repository and the seed. For a seed project factoryd creates nothing
+  that needs `factory-projects` and nothing in the cluster: it keeps the boot
+  labels and (agents coder) the bot's fork as the bot, and reports the
+  webhook to factoryd (read with the project's read token: `present`, or
+  `missing: the seed makes it`, or the refusal when that token's user does
+  not administer the repository) and each namespace's `factory/project`
+  label (`present`, `wrong`, `missing`). A seed file names no environments,
+  quota or secrets.
+- `agents`: `coder` lets agent tasks run; `none` sends every issue, and
+  every alert of its namespaces, to the human lane whatever its labels, and
+  `POST /tasks` on it answers 422 with the reason, as it does for a
+  repository no active project names.
+
+Which of factoryd's tokens reaches a project for what is one mapping,
+`Forgejo.Access`: a factory project's `merge_token` reads its writers and
+merges, the projects token lists its Actions jobs and registers its runners;
+a seed project's file names seeded secrets (`tokens.read`, `.actions`,
+`.merge`; the values `forgejo-ci-registrar`, `forgejo-merge`,
+`forgejo-config`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
+`FORGEJO_MERGE_TOKEN` and `FORGEJO_CONFIG_TOKEN`. `forgejo-projects` is no
+allowed value: a seed project never gets the projects token (ruling 164).
+The code repository names `forgejo-ci-registrar` (read, Actions) and
+`forgejo-merge`; the infra repository `forgejo-config` (read: the trust gate
+and the heal pass's close of a human-lane task; the org-read token adds the
+teams). The factory's own project is the one whose file lists factoryd's
+namespace: its CI runs and rolls are watched (with its Actions token), its
+writers log into the console.
 
 **A project is its own Forgejo organisation** (ruling 164): the organisation
 `<name>`, owned by `factory-projects`, with the one repository
@@ -1086,8 +1128,9 @@ team it made itself (the user's address `ci-<name>@factory.local`, the team
 package write and nothing else on no repository); any other `ci-<name>` or
 `ci` makes it stop with the reason.
 
-`factoryd register-project` (a human, with the Forgejo site admin's login on
-stdin) does what only the admin can: the organisation, the repository
+`factoryd register-project --name <name>` (a human, with the Forgejo site
+admin's login on stdin; the project's file says `objects: factory`) gives
+the project its row and does what only the admin can: the organisation, the repository
 (private, `main`), the user `ci-<name>` (random password, discarded) in the
 team, and the tokens, each minted with `?sudo=`: `ci-<name>`'s
 `write:package` (`registry`) straight into the Actions secrets
@@ -1101,9 +1144,10 @@ kept unless `--rotate`, which revokes and mints them all again. These tokens
 are plaintext in Postgres and so in its backups: the namespaces and Flux need
 them back after a rebuild; each reaches one project only.
 
-factoryd reconciles every managed project at boot, after each console change
-and when a new policy version is in force (the approvers), one log line per
-object (`project <name>: <object>: created|updated|no change|waiting: ...`):
+factoryd reconciles every project at boot and at every new configuration
+version (a file changed, the approvers), one log line per object (`project
+<name>: <object>: created|updated|no change|waiting: ...`); for a factory
+project:
 
 - Forgejo, with the projects token: the webhook to factoryd (every issue and
   pull request event and pushes, JSON, the intake secret; the row keeps the secret's
@@ -1136,8 +1180,8 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   `host_key_hash`, so a rebuild that makes new host keys updates every project
   and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
   2222). As the bot: its private fork
-  `factory-agent/<name>` and the boot labels. A project recorded on the
-  console waits for `register-project` here.
+  `factory-agent/<name>` and the boot labels. A project whose file exists
+  waits for `register-project` here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
   pod security `restricted`; RoleBinding `factoryd` (ClusterRole
   `factoryd-project`); the CiliumNetworkPolicy `project`, a default deny that
@@ -1167,20 +1211,15 @@ object (`project <name>: <object>: created|updated|no change|waiting: ...`):
   `flux-system`.
 
 ```
-kubectl -n factory exec -i deploy/factoryd -- factoryd register-project --name demo-app --merge-rule auto \
-  --environment demo-staging=deploy/staging --environment demo-prod=deploy/prod \
-  --hostname demo-staging=demo-staging.aisoftwarefactory.world --hostname demo-prod=demo.aisoftwarefactory.world \
-  --secret demo-write-token/token
+kubectl -n factory exec -i deploy/factoryd -- factoryd register-project --name demo-app
 ```
 
-with the admin's password on stdin records the project (a second run with the
-same namespaces, environments and secrets changes nothing), makes the above,
-reconciles, and prints the edge gateway listeners and Certificates for the
-infra commit (ruling 155). The console's `/projects` lists every project with
-its settings, both envelope blocks and the standing monthly line; approvers
-register a project there (its Forgejo part then waits for
-`register-project`) and edit its merge rule, notify list and quota,
-reconciled at once.
+with the admin's password on stdin, once `projects/demo-app.yaml` is on the
+infra repository's main and loaded, makes the above (a second run changes
+nothing), reconciles, and prints the edge gateway listeners and Certificates
+for the infra commit (ruling 155). The console's `/projects` lists every
+project read-only with its file's settings, the envelope with its use and
+the standing monthly line, and a link to the file.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
@@ -1200,8 +1239,10 @@ never `[]`.
 the password of secret `signoz-webhook`, env `SIGNOZ_WEBHOOK_PASSWORD`;
 401 otherwise). Each alert's `namespace` label, which the job sets on
 every project rule, names the project through the namespace's
-`factory/project` label (read once per namespace); a registered, managed
-project that lists the namespace, or the alert is logged and dropped. By
+`factory/project` label (read once per namespace); an active project that
+lists the namespace, or the alert is logged and dropped. On a project on
+`agents: none` the issue is the human lane's (labels `bug`, `human`), and no
+task runs. By
 the alert's fingerprint: its first firing files an issue on the project's
 repository as the bot, title `alert: <name> in <namespace>`, the body the
 firing time, the SigNoz link, the value and annotations and the labels
@@ -1217,11 +1258,11 @@ when its task ends: `real` on a merge, `noise` when a human closed the
 issue without one. A notification that fails in part answers 500, and
 SigNoz sends it again.
 
-The CI spawner serves the code repository (registrar token) and every
-project `register-project` has made (the projects token: Forgejo keeps the
-runner API to the repository's owner), pull requests and the project's own
-main workflow alike: a project's CI never touches `sf`'s privileged org
-runner. A project's runs get two more callees: Forgejo's SSH
+The CI spawner serves every active project on `agents: coder`, each with
+its Actions token (Forgejo keeps the runner API to the repository's owner):
+pull requests, and a factory project's own main workflow too, which never
+touches `sf`'s privileged org runner. A factory project's runs get two more
+callees: Forgejo's SSH
 (`forgejo-ssh.forgejo`, the pod's 2222) for the deploy-key push and factoryd
 on 8080 for the alerts endpoint; their namespace carries
 `factory.ai/ci-project=<name>`, which factoryd's ingress admits. The

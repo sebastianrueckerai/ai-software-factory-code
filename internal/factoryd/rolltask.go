@@ -243,6 +243,7 @@ type Roller struct {
 	Store     RollerStore
 	Workflows Workflows
 	Repo      Repo
+	Token     string // reads the repository's Actions
 	Budget    func() policy.Budget
 	Poll      time.Duration
 }
@@ -273,7 +274,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err := r.Store.SettleRollRequests(ctx); err != nil {
 		return err
 	}
-	runs, err := r.Forgejo.ActionRuns(ctx, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
+	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
 		return err
 	}

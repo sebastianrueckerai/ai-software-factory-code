@@ -6,37 +6,43 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
-
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Project is a repository the factory works on, the namespaces it deploys
-// into and its settings (ruling 146). A managed project is its own Forgejo
-// organisation <name> with the repository <name>/<name> (ruling 164) and
-// gets its Forgejo and cluster objects from factoryd (ruling 156); the
-// factory's own repositories are unmanaged rows whose objects the infra
-// repository owns.
+// into and its settings: its file projects/<name>.yaml in the
+// configuration (rulings 146, 179) joined with its row, which keeps what
+// registration minted. objects factory makes the project its own Forgejo
+// organisation <name>/<name> (ruling 164) whose Forgejo and cluster
+// objects factoryd keeps (ruling 156); objects seed leaves them to the
+// infra repository and the seed, and factoryd only reads.
 type Project struct {
 	Name         string
 	Repository   string // owner/name
 	MergeRule    string // auto | human
+	Objects      string // factory | seed
+	Agents       string // coder | none
 	Notify       []string
 	Namespaces   []string
 	Environments []Environment
 	Quota        policy.Quota
 	// Secrets are "secret/key" entries: each namespace gets the secret with
 	// a random value for the key when it is missing.
-	Secrets   []string
-	Managed   bool
+	Secrets []string
+	// Envelope is the file's envelope and standing block, else the policy's.
+	Envelope policy.Envelope
+	// Tokens name a seed project's seeded secrets.
+	Tokens policy.SeedTokens
+	// File is whether the configuration holds projects/<name>.yaml: a row
+	// without one is kept for its tokens and nothing acts on it.
+	File      bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
@@ -59,6 +65,15 @@ type Project struct {
 // repository and the tokens exist.
 func (p Project) Minted() bool { return p.GitToken != "" }
 
+// Active reports whether factoryd works on the project's repository: it
+// has a file, and a factory project's registration has run.
+func (p Project) Active() bool {
+	return p.File && (p.Objects == policy.ObjectsSeed || p.Minted())
+}
+
+// Coder reports whether agent tasks run on the project.
+func (p Project) Coder() bool { return p.Active() && p.Agents == policy.AgentsCoder }
+
 // CIUser is the project's own CI user, member of its organisation only
 // with package write (ruling 164).
 func (p Project) CIUser() string { return "ci-" + p.Name }
@@ -72,105 +87,29 @@ func (p Project) Repo() Repo {
 	return Repo{Owner: owner, Name: name}
 }
 
-var (
-	projectName  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$`)
-	dnsLabel     = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
-	deployPath   = regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$`)
-	hostname     = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	forgejoLogin = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,40}$`)
-	secretEntry  = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?/[A-Za-z0-9_.-]{1,64}$`)
-)
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
-// reservedNamespace: namespaces a project may never name, the cluster's
-// and the factory's own.
-func reservedNamespace(ns string) bool {
-	switch ns {
-	case "default", "factory", "flux-system", "forgejo", "platform", "cnpg-system", "local-path-storage", "cilium-secrets":
-		return true
+// projectsOf joins the rows with version v's project files: a file's
+// settings over its row's tokens (a file without a row has none yet), and
+// a row without a file marked so, by name.
+func projectsOf(rows []Project, v policy.Version) []Project {
+	byName := map[string]Project{}
+	for _, r := range rows {
+		byName[r.Name] = r
 	}
-	return strings.HasPrefix(ns, "kube-") || strings.HasPrefix(ns, "factory-")
-}
-
-// Validate checks a managed project's row before it is stored.
-func (p Project) Validate() error {
-	var errs []error
-	bad := func(format string, a ...any) { errs = append(errs, fmt.Errorf(format, a...)) }
-	if !projectName.MatchString(p.Name) || strings.HasPrefix(p.Name, "factory-") || p.Name == "flux-system" || p.Name == "sf" {
-		bad("name %q: lowercase letters, digits and dashes, at most 37, not factory-*, flux-system or sf", p.Name)
+	for name, c := range v.Projects {
+		p := byName[name]
+		p.Name, p.Repository, p.MergeRule, p.Objects, p.Agents = name, c.Repository, c.MergeRule, c.Objects, c.Agents
+		p.Notify, p.Namespaces, p.Environments, p.Secrets = c.Notify, c.Namespaces, c.Environments, c.Secrets
+		p.Quota, p.Envelope, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), true
+		if c.Tokens != nil {
+			p.Tokens = *c.Tokens
+		}
+		byName[name] = p
 	}
-	if p.Repository != p.Name+"/"+p.Name {
-		bad("repository %q: a project is its own organisation, its repository %s/%s", p.Repository, p.Name, p.Name)
-	}
-	if p.MergeRule != policy.MergeAuto && p.MergeRule != policy.MergeHuman {
-		bad("merge rule %q: want auto or human", p.MergeRule)
-	}
-	for _, u := range p.Notify {
-		if !forgejoLogin.MatchString(u) {
-			bad("notify %q: not a Forgejo user name", u)
-		}
-	}
-	for i, ns := range p.Namespaces {
-		if !dnsLabel.MatchString(ns) || reservedNamespace(ns) || slices.Contains(p.Namespaces[:i], ns) {
-			bad("namespace %q: a distinct DNS label, not a cluster or factory namespace", ns)
-		}
-	}
-	var hosts []string
-	for i, e := range p.Environments {
-		if !slices.Contains(p.Namespaces, e.Namespace) {
-			bad("environment %q: not one of the project's namespaces", e.Namespace)
-		}
-		if slices.ContainsFunc(p.Environments[:i], func(o Environment) bool { return o.Namespace == e.Namespace }) {
-			bad("environment %q: given twice", e.Namespace)
-		}
-		if !deployPath.MatchString(e.Path) {
-			bad("environment %s: path %q: a relative directory such as deploy/staging", e.Namespace, e.Path)
-		}
-		if e.Hostname != "" {
-			if !hostname.MatchString(e.Hostname) || slices.Contains(hosts, e.Hostname) {
-				bad("environment %s: hostname %q: a distinct DNS name", e.Namespace, e.Hostname)
-			}
-			hosts = append(hosts, e.Hostname)
-		}
-	}
-	if len(p.Namespaces) > 0 {
-		if err := p.Quota.Validate(); err != nil {
-			bad("%v", err)
-		}
-	}
-	for i, s := range p.Secrets {
-		if !secretEntry.MatchString(s) || slices.Contains(p.Secrets[:i], s) {
-			bad("secret %q: want secret-name/key, each once", s)
-		}
-	}
-	return errors.Join(errs...)
-}
-
-// ParseEnvironments reads namespace=path pairs; hostnames come from
-// namespace=hostname pairs, each namespace at most once.
-func ParseEnvironments(pairs, hostnames []string) ([]Environment, error) {
-	var envs []Environment
-	for _, p := range pairs {
-		ns, path, ok := strings.Cut(strings.TrimSpace(p), "=")
-		if !ok {
-			return nil, fmt.Errorf("environment %q: want namespace=path", p)
-		}
-		envs = append(envs, Environment{Namespace: ns, Path: strings.Trim(path, "/")})
-	}
-	for _, h := range hostnames {
-		ns, host, ok := strings.Cut(strings.TrimSpace(h), "=")
-		if !ok {
-			return nil, fmt.Errorf("hostname %q: want namespace=hostname", h)
-		}
-		i := slices.IndexFunc(envs, func(e Environment) bool { return e.Namespace == ns })
-		if i < 0 {
-			return nil, fmt.Errorf("hostname %q: %s is no environment", h, ns)
-		}
-		if envs[i].Hostname != "" {
-			return nil, fmt.Errorf("hostname %q: %s has one already", h, ns)
-		}
-		envs[i].Hostname = host
-	}
-	return envs, nil
+	out := slices.Collect(maps.Values(byName))
+	slices.SortFunc(out, func(a, b Project) int { return strings.Compare(a.Name, b.Name) })
+	return out
 }
 
 // NotifyOrApprovers is who the project's pings go to: its notify list,
@@ -180,25 +119,6 @@ func (p Project) NotifyOrApprovers(approvers []string) []string {
 		return p.Notify
 	}
 	return approvers
-}
-
-// projectLookup finds a repository's project row.
-type projectLookup interface {
-	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
-}
-
-// managedProject is repository's row when it is a managed project (ruling
-// 164), whose own factory-merge token merges and reads its writers; false
-// for the factory's own repositories and any repository without a row.
-func managedProject(ctx context.Context, store projectLookup, repository string) (Project, bool, error) {
-	p, ok, err := store.ProjectByRepository(ctx, repository)
-	if err != nil || !ok || !p.Managed {
-		return Project{}, false, err
-	}
-	if p.MergeToken == "" {
-		return Project{}, false, fmt.Errorf("project %s has no factory-merge token yet: run factoryd register-project", p.Name)
-	}
-	return p, true, nil
 }
 
 // NewReadToken is a fresh FACTORY_READ_TOKEN and the hash the row keeps.
@@ -236,15 +156,14 @@ func ResourceQuotaHard(q policy.Quota) map[string]any {
 	}
 }
 
-// ProjectStore is the projects table.
+// ProjectStore is the projects: the configuration's files joined with
+// the projects table.
 type ProjectStore interface {
 	Projects(ctx context.Context) ([]Project, error)
 	Project(ctx context.Context, name string) (Project, bool, error)
-	// CreateProject inserts p; ErrProjectExists when the name or the
-	// repository is registered already.
-	CreateProject(ctx context.Context, p Project) error
-	// SetProjectSettings changes what the console edits.
-	SetProjectSettings(ctx context.Context, name, mergeRule string, notify []string, quota policy.Quota) error
+	// EnsureProjectRows inserts a row for each name that has none and
+	// returns the names it inserted.
+	EnsureProjectRows(ctx context.Context, names []string) ([]string, error)
 	SetProjectTokens(ctx context.Context, name string, t ProjectTokens) error
 	// ClaimReadToken stores hash as the read token's when none is stored
 	// and reports whether it did: of two reconciles racing, only the one
@@ -258,74 +177,73 @@ type ProjectTokens struct {
 	ReadTokenHash, HookSecretHash, HostKeyHash, PullToken, GitToken, MergeToken string
 }
 
-// ErrProjectExists refuses a second registration of a name, a repository
-// or a namespace another project has.
-var ErrProjectExists = errors.New("project, repository or namespace already registered")
+const projectColumns = `name, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at`
 
-const projectColumns = `name, repository, merge_rule, notify, namespaces, environments, quota_cpu, quota_memory, quota_storage,
-	secrets, managed, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at`
-
+// Projects are the current configuration's projects with their rows, and
+// the rows no file names.
 func (s *PGStore) Projects(ctx context.Context) ([]Project, error) {
-	return s.projects(ctx, `SELECT `+projectColumns+` FROM projects ORDER BY name`)
-}
-
-func (s *PGStore) Project(ctx context.Context, name string) (Project, bool, error) {
-	ps, err := s.projects(ctx, `SELECT `+projectColumns+` FROM projects WHERE name = $1`, name)
-	if err != nil || len(ps) == 0 {
-		return Project{}, false, err
+	v, _, err := s.CurrentPolicy(ctx)
+	if err != nil {
+		return nil, err
 	}
-	return ps[0], true, nil
-}
-
-func (s *PGStore) projects(ctx context.Context, q string, args ...any) ([]Project, error) {
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+projectColumns+` FROM projects`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	m := pgtype.NewMap()
-	var out []Project
+	var ps []Project
 	for rows.Next() {
 		var p Project
-		var envs []byte
-		if err := rows.Scan(&p.Name, &p.Repository, &p.MergeRule, m.SQLScanner(&p.Notify), m.SQLScanner(&p.Namespaces), &envs,
-			&p.Quota.CPU, &p.Quota.Memory, &p.Quota.Storage, m.SQLScanner(&p.Secrets), &p.Managed,
-			&p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.PullToken, &p.GitToken, &p.MergeToken, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Name, &p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.PullToken, &p.GitToken, &p.MergeToken,
+			&p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
-		if err := json.Unmarshal(envs, &p.Environments); err != nil {
-			return nil, fmt.Errorf("project %s environments: %w", p.Name, err)
+		ps = append(ps, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return projectsOf(ps, v), nil
+}
+
+func (s *PGStore) Project(ctx context.Context, name string) (Project, bool, error) {
+	return findProject(ctx, s, func(p Project) bool { return p.Name == name })
+}
+
+// ProjectByRepository is the project whose file names repository.
+func (s *PGStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
+	return findProject(ctx, s, func(p Project) bool { return p.File && p.Repository == repository })
+}
+
+func findProject(ctx context.Context, s interface {
+	Projects(ctx context.Context) ([]Project, error)
+}, match func(Project) bool) (Project, bool, error) {
+	ps, err := s.Projects(ctx)
+	if err != nil {
+		return Project{}, false, err
+	}
+	if i := slices.IndexFunc(ps, match); i >= 0 {
+		return ps[i], true, nil
+	}
+	return Project{}, false, nil
+}
+
+func (s *PGStore) EnsureProjectRows(ctx context.Context, names []string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `INSERT INTO projects (name) SELECT unnest($1::text[]) ON CONFLICT DO NOTHING RETURNING name`, nonNil(names))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var created []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
 		}
-		out = append(out, p)
+		created = append(created, n)
 	}
-	return out, rows.Err()
-}
-
-func (s *PGStore) CreateProject(ctx context.Context, p Project) error {
-	envs, err := json.Marshal(nonNil(p.Environments))
-	if err != nil {
-		return err
-	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repository, merge_rule, notify, namespaces, environments,
-		quota_cpu, quota_memory, quota_storage, secrets, managed)
-		SELECT $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11
-		WHERE NOT EXISTS (SELECT 1 FROM projects WHERE namespaces && $5) ON CONFLICT DO NOTHING`,
-		p.Name, p.Repository, p.MergeRule, nonNil(p.Notify), nonNil(p.Namespaces), envs,
-		p.Quota.CPU, p.Quota.Memory, p.Quota.Storage, nonNil(p.Secrets), p.Managed)
-	if err != nil {
-		return err
-	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
-		return errors.Join(err, fmt.Errorf("%s (%s): %w", p.Name, p.Repository, ErrProjectExists))
-	}
-	return nil
-}
-
-func (s *PGStore) SetProjectSettings(ctx context.Context, name, mergeRule string, notify []string, quota policy.Quota) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE projects SET merge_rule = $2, notify = $3, quota_cpu = $4, quota_memory = $5,
-		quota_storage = $6, updated_at = now() WHERE name = $1`,
-		name, mergeRule, nonNil(notify), quota.CPU, quota.Memory, quota.Storage)
-	return oneRow(res, err, "project "+name)
+	slices.Sort(created)
+	return created, rows.Err()
 }
 
 func (s *PGStore) SetProjectTokens(ctx context.Context, name string, t ProjectTokens) error {
@@ -407,4 +325,12 @@ spec:
 	}
 	return "# k8s/platform/gateway-api/edge.yaml: append to edge-gateway's listeners\n" + listeners.String() +
 		"# add to the git-redirect route's hostnames: " + strings.TrimPrefix(hosts.String(), ", ") + "\n" + certs.String()
+}
+
+// OwnProject is the project whose namespaces hold ns, factoryd's own
+// namespace: the factory's own code, found by its file (ruling 179).
+func OwnProject(ctx context.Context, store interface {
+	Projects(ctx context.Context) ([]Project, error)
+}, ns string) (Project, bool, error) {
+	return findProject(ctx, store, func(p Project) bool { return p.File && slices.Contains(p.Namespaces, ns) })
 }

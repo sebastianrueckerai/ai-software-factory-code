@@ -37,17 +37,19 @@ func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 // enums are the enumerated values of fields, keyed Type.Field: a string
 // field's values, a map field's keys, a slice field's items.
 var enums = map[string][]string{
-	"Document.Bounds":          append(slices.Clone(BoundActivities), BoundDefault),
-	"Document.Supervisor":      slices.Sorted(maps.Keys(DefaultDetectors)),
-	"Class.Tools":              append(slices.Clone(PaidTools), FreeTools...),
-	"RiskClass.Outcome":        {OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto},
-	"ProjectDefault.MergeRule": MergeRules,
-	"ProjectConfig.MergeRule":  MergeRules,
-	"ProjectConfig.Objects":    ObjectOwners,
-	"ProjectConfig.Agents":     AgentModes,
-	"Stage.Name":               StageNames,
-	"Stage.OnFindings":         FindingsRules,
-	"Stage.When":               StagePredicates,
+	"Document.Bounds":         append(slices.Clone(BoundActivities), BoundDefault),
+	"Document.Supervisor":     slices.Sorted(maps.Keys(DefaultDetectors)),
+	"Class.Tools":             append(slices.Clone(PaidTools), FreeTools...),
+	"RiskClass.Outcome":       {OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto},
+	"ProjectConfig.MergeRule": MergeRules,
+	"ProjectConfig.Objects":   ObjectOwners,
+	"ProjectConfig.Agents":    AgentModes,
+	"SeedTokens.Read":         SeedSecrets,
+	"SeedTokens.Actions":      SeedSecrets,
+	"SeedTokens.Merge":        SeedSecrets,
+	"Stage.Name":              StageNames,
+	"Stage.OnFindings":        FindingsRules,
+	"Stage.When":              StagePredicates,
 }
 
 // SchemaVersion is Document.Version's one value.

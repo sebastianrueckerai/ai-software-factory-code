@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 )
 
@@ -221,7 +222,23 @@ func (s *fakeStore) PromoteSuggested(ctx context.Context, id, sha string) (bool,
 	return true, nil
 }
 
+// testSeeded are the seeded tokens a test's Forgejo holds.
+var testSeeded = map[string]string{policy.SecretCIRegistrar: "registrar-tok", policy.SecretMerge: "merge-tok", policy.SecretConfig: "config-tok"}
+
+// seedProject is repository as the code repository's project: seed, agents
+// coder, the registrar token reading and running its Actions, the merge
+// token merging.
+func seedProject(repository string) Project {
+	return Project{Name: strings.ReplaceAll(repository, "/", "-"), Repository: repository, MergeRule: "human", Objects: "seed", Agents: "coder",
+		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}
+}
+
+// ProjectByRepository: with no projects set, every repository is a seed
+// project agents work on, as the code repository is.
 func (s *fakeStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
+	if s.projects == nil {
+		return seedProject(repository), true, nil
+	}
 	for _, p := range s.projects {
 		if p.Repository == repository {
 			return p, true, nil
@@ -1101,10 +1118,6 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	}
 	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t-w"}); err != nil {
 		t.Fatalf("info_request alert: %v", err)
-	}
-	p, ok, err := s.ProjectByRepository(ctx, "sf/ai-software-factory-code")
-	if err != nil || !ok || p.Managed || p.MergeRule != "human" {
-		t.Fatalf("code repository's row = %+v %v %v; want unmanaged on human", p, ok, err)
 	}
 	if _, ok, err := s.ProjectByRepository(ctx, "sf/nothing"); err != nil || ok {
 		t.Fatalf("unknown repository: %v %v", ok, err)

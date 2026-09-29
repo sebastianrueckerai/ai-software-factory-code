@@ -1,6 +1,5 @@
 {{template "head" .}}
 <h2>Resources</h2>
-{{if .Saved}}<p class="note" role="status">Saved the envelope of {{.Saved}}.</p>{{end}}
 <p>Servers agents commissioned in the agent cloud project, open now or closed in the last 7 days. Promote makes a commission standing: the project's, with no lease and no agent access, until a human releases it. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
 <h3 id="project-{{.Project}}">{{.Project}}</h3>
@@ -23,37 +22,17 @@
 {{else}}<tr><td colspan="9">No resources.</td></tr>{{end}}
 </tbody>
 </table>
-{{if $.Approver}}<form method="post" action="/envelopes" class="envelope">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<input type="hidden" name="project" value="{{.Project}}">
-{{else}}<div class="envelope">
-<p class="meta">Only the policy's approvers may change the envelope.</p>{{end}}
-<fieldset{{if not $.Approver}} disabled{{end}}>
-<legend>Envelope: what tasks may commission without a human</legend>
-<p class="meta">{{if .HasEnvelope}}Set by {{.Envelope.SetBy}} at {{utc .Envelope.SetAt}}. This month: {{eur4 .Envelope.Use.MonthEUR}} EUR used or reserved, {{.Envelope.Use.OpenServers}} servers open.{{else}}Not set yet: the policy's default below applies on the first request unless you save one.{{end}}</p>
-<label for="monthly-{{.Project}}">Monthly EUR</label>
-<input id="monthly-{{.Project}}" name="monthly_eur" type="number" min="0" step="0.01" value="{{.Envelope.MonthlyEUR}}" required>
-<label for="types-{{.Project}}">Server types, comma separated</label>
-<input id="types-{{.Project}}" name="server_types" type="text" value="{{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}">
-<label for="count-{{.Project}}">Max servers at once</label>
-<input id="count-{{.Project}}" name="max_count" type="number" min="0" step="1" value="{{.Envelope.MaxCount}}" required>
-<label for="lease-{{.Project}}">Max lease, hours</label>
-<input id="lease-{{.Project}}" name="max_lease_hours" type="number" min="0" step="1" value="{{.Envelope.MaxLeaseHours}}" required>
-<label for="volume-{{.Project}}">Max volume, GB (0 = none)</label>
-<input id="volume-{{.Project}}" name="volume_max_gb" type="number" min="0" step="1" value="{{.Envelope.VolumeMaxGB}}" required>
-</fieldset>
-<fieldset{{if not $.Approver}} disabled{{end}}>
-<legend>Standing block: what a human may make standing</legend>
-<p class="meta">Standing now: {{.Envelope.StandingUse.Count}} of {{.Envelope.Standing.MaxCount}} servers, {{eur4 .Envelope.StandingUse.MonthlyEUR}} of {{printf "%.2f" .Envelope.Standing.MonthlyEUR}} EUR a month.</p>
-<label for="standing-monthly-{{.Project}}">Standing monthly EUR</label>
-<input id="standing-monthly-{{.Project}}" name="standing_monthly_eur" type="number" min="0" step="0.01" value="{{.Envelope.Standing.MonthlyEUR}}" required>
-<label for="standing-types-{{.Project}}">Standing server types, comma separated</label>
-<input id="standing-types-{{.Project}}" name="standing_server_types" type="text" value="{{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}">
-<label for="standing-count-{{.Project}}">Max standing servers</label>
-<input id="standing-count-{{.Project}}" name="standing_max_count" type="number" min="0" step="1" value="{{.Envelope.Standing.MaxCount}}" required>
-</fieldset>
-{{if $.Approver}}<button type="submit">Save the envelope</button>
-</form>{{else}}</div>{{end}}
+{{template "envelope" .Envelope}}
 </section>
 {{end}}
 {{template "foot"}}
+{{define "envelope"}}<div class="envelope">
+<h4>Envelope: what tasks may commission without a human</h4>
+<p class="meta">{{if .File}}The project's file sets it: <a href="{{.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
+<ul>
+<li>Task block: {{printf "%.2f" .MonthlyEUR}} EUR a month, types {{range $i, $t := .ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{.MaxCount}} servers at once, leases up to {{.MaxLeaseHours}} h, volumes up to {{.VolumeMaxGB}} GB</li>
+<li>This month: {{eur4 .Use.MonthEUR}} EUR used or reserved, {{.Use.OpenServers}} servers open</li>
+<li>Standing block: {{printf "%.2f" .Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{.Standing.MaxCount}} servers</li>
+<li>Standing now: {{.StandingUse.Count}} servers, {{eur4 .StandingUse.MonthlyEUR}} EUR a month</li>
+</ul>
+</div>{{end}}

@@ -44,7 +44,7 @@ func (t Tree) Validate() error {
 	for name, p := range t.Projects {
 		errs = append(errs, p.Validate(name))
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, checkProjects(t.Projects))...)
 }
 
 // ParseTree decodes and validates a tree's files, keyed by their slash
@@ -81,7 +81,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 		}
 	}
-	if err := errors.Join(errs...); err != nil {
+	if err := errors.Join(append(errs, checkProjects(t.Projects))...); err != nil {
 		return Tree{}, err
 	}
 	return t, nil

@@ -410,7 +410,7 @@ func TestGatesOnAnAutoProject(t *testing.T) {
 	task := gateTask
 	task.AgentSummary = "Tightened the slug check.\nnot_reproduced: the reported URL is gone; the check refused every dash"
 	r, store, objects := newGateRunner(t, task, fj)
-	store.projects = []Project{{Name: "repo", Repository: "sf/repo", MergeRule: policy.MergeAuto, Managed: true, GitToken: "g", MergeToken: "m"}}
+	store.projects = []Project{{Name: "repo", Repository: "sf/repo", MergeRule: policy.MergeAuto, Objects: "factory", Agents: "coder", File: true, GitToken: "g", MergeToken: "m"}}
 	v := testPolicyVersion()
 	v.Document.Risk.Classes[len(v.Document.Risk.Classes)-1].Outcome = policy.OutcomeAuto
 	r.cfg.Policy = func() policy.Version { return v }

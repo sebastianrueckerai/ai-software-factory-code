@@ -59,10 +59,7 @@
 {{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
 {{end}}{{if .Approver}}<form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-{{if eq .Kind "resource"}}<fieldset><legend>Approve for</legend>
-<label><input type="radio" name="scope" value="task" checked> this task, once</label>
-<label><input type="radio" name="scope" value="project"> the project (widens its envelope)</label>
-</fieldset>{{end}}
+{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>{{end}}
 <button type="submit" aria-label="{{if eq .Kind "merge"}}Approve as you: merge PR #{{.PRNumber}}{{else}}Approve resource request {{.ID}}{{end}} of {{.TaskID}}">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
 </form>{{else}}<p class="meta">Only the policy's approvers may approve.</p>{{end}}
 <form method="post" action="/approvals/{{.ID}}/deny">

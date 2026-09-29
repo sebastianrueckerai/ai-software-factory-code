@@ -201,7 +201,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 func newActivityRunner(t *testing.T, task Task, fj *prForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"}
+	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}
 	runner.completion.Forgejo = runner.forgejo
 	return runner, store, runner.objects.(*fakeObjectStore)
 }
@@ -392,22 +392,22 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 }
 
 // When the checks finish, the checks step lists the head's jobs: name,
-// status, queue and run seconds. A managed project's jobs are read with
-// the projects token (its organisation's owner), the code repository's
-// with the registrar's.
+// status, queue and run seconds. A factory project's jobs are read with
+// the projects token (its organisation's owner), a seed project's with
+// the Actions token its file names.
 func TestWaitChecksRecordsTheHeadsJobs(t *testing.T) {
-	for _, managed := range []bool{false, true} {
-		testWaitChecksRecordsTheHeadsJobs(t, managed)
+	for _, factory := range []bool{false, true} {
+		testWaitChecksRecordsTheHeadsJobs(t, factory)
 	}
 }
 
-func testWaitChecksRecordsTheHeadsJobs(t *testing.T, managed bool) {
+func testWaitChecksRecordsTheHeadsJobs(t *testing.T, factory bool) {
 	head := "c62cd2d1ad2dd06b8e73354a0ff07fde47321184"
 	fj := &prForgejo{statuses: []string{statusBody("success", [4]string{"success", "pr / test", "", ""})}, tasks: "actions-tasks-3.json"}
 	r, store, objects := newActivityRunner(t, prTask, fj)
-	if managed {
+	if factory {
 		fj.tasksAuth, r.forgejo.ProjectsToken = "projects-tok", "projects-tok"
-		store.projects = []Project{{Name: "repo", Repository: prTask.Repository, Managed: true, MergeRule: "auto", GitToken: "g", MergeToken: "m"}}
+		store.projects = []Project{{Name: "repo", Repository: prTask.Repository, Objects: "factory", Agents: "coder", File: true, MergeRule: "auto", GitToken: "g", MergeToken: "m"}}
 	}
 	r.cfg.CIQueue = NewCIQueue(telemetry.Noop())
 	r.cfg.CIQueue.byTask[103] = queued{seconds: 40}

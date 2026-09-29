@@ -502,14 +502,6 @@ func (s *PGStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, e
 	return n == 1, err
 }
 
-func (s *PGStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
-	ps, err := s.projects(ctx, `SELECT `+projectColumns+` FROM projects WHERE repository = $1`, repository)
-	if err != nil || len(ps) == 0 {
-		return Project{}, false, err
-	}
-	return ps[0], true, nil
-}
-
 func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
 	var seen bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id).Scan(&seen)

@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
@@ -23,58 +22,27 @@ type listFlag []string
 func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
-// parseRegistration reads register-project's flags into a managed
-// project, its unset settings from the policy's project_default.
-func parseRegistration(args []string, def policy.ProjectDefault) (factoryd.Project, string, bool, error) {
+// parseRegistration reads register-project's flags: the project's name
+// (its settings are its file's), the site admin and --rotate.
+func parseRegistration(args []string) (name, admin string, rotate bool, err error) {
 	fs := flag.NewFlagSet("register-project", flag.ContinueOnError)
-	var namespaces, envs, hosts, secrets listFlag
-	name := fs.String("name", "", "project name, [a-z0-9-]: its Forgejo organisation and repository name/name")
-	rule := fs.String("merge-rule", def.MergeRule, "auto or human")
-	notify := fs.String("notify", "", "comma separated Forgejo users to ping; empty: the policy's approvers")
-	cpu := fs.String("quota-cpu", def.Quota.CPU, "each namespace's CPU quota")
-	memory := fs.String("quota-memory", def.Quota.Memory, "each namespace's memory quota")
-	storage := fs.String("quota-storage", def.Quota.Storage, "each namespace's storage quota")
-	admin := fs.String("admin-user", "sebastian", "the Forgejo site admin; the password is read from stdin")
-	rotate := fs.Bool("rotate", false, "mint the project's tokens again")
-	fs.Var(&namespaces, "namespace", "a namespace the project deploys into (repeatable)")
-	fs.Var(&envs, "environment", "namespace=path: one Flux Kustomization (repeatable)")
-	fs.Var(&hosts, "hostname", "namespace=hostname for the printed gateway YAML (repeatable)")
-	fs.Var(&secrets, "secret", "secret/key: a random value in each namespace when missing (repeatable)")
+	fs.StringVar(&name, "name", "", "the project: its file projects/<name>.yaml says objects factory")
+	fs.StringVar(&admin, "admin-user", "sebastian", "the Forgejo site admin; the password is read from stdin")
+	fs.BoolVar(&rotate, "rotate", false, "mint the project's tokens again")
 	if err := fs.Parse(args); err != nil {
-		return factoryd.Project{}, "", false, err
+		return "", "", false, err
 	}
-	environments, err := factoryd.ParseEnvironments(envs, hosts)
-	if err != nil {
-		return factoryd.Project{}, "", false, err
+	if name == "" || fs.NArg() > 0 {
+		return "", "", false, errors.New("register-project --name <project> [--admin-user <user>] [--rotate]; the settings are projects/<name>.yaml's")
 	}
-	for _, e := range environments {
-		if !slices.Contains(namespaces, e.Namespace) {
-			namespaces = append(namespaces, e.Namespace)
-		}
-	}
-	var notifyList []string
-	for _, u := range strings.Split(*notify, ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			notifyList = append(notifyList, u)
-		}
-	}
-	p := factoryd.Project{Name: *name, Repository: *name + "/" + *name, MergeRule: *rule, Notify: notifyList, Namespaces: namespaces,
-		Environments: environments, Quota: policy.Quota{CPU: *cpu, Memory: *memory, Storage: *storage}, Secrets: secrets, Managed: true}
-	return p, *admin, *rotate, p.Validate()
+	return name, admin, rotate, nil
 }
 
 // registerProject is `factoryd register-project`: Registrar.Register with
 // the Forgejo admin's password from stdin, then the gateway YAML the infra
 // commit adds for the project's hostnames.
-func registerProject(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, store interface {
-	factoryd.ProjectStore
-	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
-}, reg *factoryd.Registrar) error {
-	v, ok, err := store.CurrentPolicy(ctx)
-	if err != nil || !ok {
-		return errors.Join(errors.New("no current policy"), err)
-	}
-	p, adminUser, rotate, err := parseRegistration(args, v.Document.Project())
+func registerProject(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, reg *factoryd.Registrar) error {
+	name, adminUser, rotate, err := parseRegistration(args)
 	if err != nil {
 		return err
 	}
@@ -82,7 +50,7 @@ func registerProject(ctx context.Context, args []string, stdin io.Reader, stdout
 	if password = strings.TrimSpace(password); password == "" {
 		return errors.Join(errors.New("the Forgejo admin's password is read from stdin"), err)
 	}
-	p, err = reg.Register(ctx, p, factoryd.AdminAuth{User: adminUser, Password: password}, rotate)
+	p, err := reg.Register(ctx, name, factoryd.AdminAuth{User: adminUser, Password: password}, rotate)
 	if err != nil {
 		return err
 	}
@@ -110,21 +78,26 @@ func registerMain(args []string) {
 		}
 		return v.Document
 	})
-	if err := registerProject(ctx, args, os.Stdin, os.Stdout, store, reg); err != nil {
+	if err := registerProject(ctx, args, os.Stdin, os.Stdout, reg); err != nil {
 		log.Fatalf("register-project: %v", err)
 	}
 }
 
 func newForgejo() *factoryd.Forgejo {
 	return &factoryd.Forgejo{
-		BaseURL:          env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
-		PublicURL:        env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
-		BotUser:          env("FORGEJO_BOT_USER", "factory-agent"),
-		BotPassword:      mustEnv("FORGEJO_BOT_PASSWORD"),
-		CIRegistrarToken: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
-		CIOrgToken:       mustEnv("FORGEJO_CI_ORG_TOKEN"),
-		MergeToken:       mustEnv("FORGEJO_MERGE_TOKEN"),
-		ProjectsToken:    mustEnv("FORGEJO_PROJECTS_TOKEN"),
+		BaseURL:       env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
+		PublicURL:     env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
+		BotUser:       env("FORGEJO_BOT_USER", "factory-agent"),
+		BotPassword:   mustEnv("FORGEJO_BOT_PASSWORD"),
+		CIOrgToken:    mustEnv("FORGEJO_CI_ORG_TOKEN"),
+		ProjectsToken: mustEnv("FORGEJO_PROJECTS_TOKEN"),
+		// the one place a seed project's secrets are read: its file names
+		// them (policy.SeedTokens)
+		Seeded: map[string]string{
+			policy.SecretCIRegistrar: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
+			policy.SecretMerge:       mustEnv("FORGEJO_MERGE_TOKEN"),
+			policy.SecretConfig:      mustEnv("FORGEJO_CONFIG_TOKEN"),
+		},
 	}
 }
 

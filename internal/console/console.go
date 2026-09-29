@@ -57,12 +57,6 @@ type Tasks interface {
 	BoardTasks(ctx context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error)
 }
 
-// Writers is the trust gate's writer list (factoryd.Forgejo.RepoWriters):
-// only these users may log in.
-type Writers interface {
-	RepoWriters(ctx context.Context, owner, repo string) ([]string, error)
-}
-
 // Config wires the console. ForgejoURL serves the code exchange and API
 // calls (in-cluster); ForgejoPublicURL is what browsers are sent to.
 type Config struct {
@@ -73,10 +67,10 @@ type Config struct {
 	ClientSecret     string
 	// SessionKey signs the login cookie (HMAC-SHA256), at least 32 bytes.
 	SessionKey []byte
-	// Repo is where new tasks are filed and whose writers may log in.
-	Repo      factoryd.Repo
-	Tasks     Tasks
-	Writers   Writers
+	Tasks      Tasks
+	// Writers are the users who may log in: the writers of the factory's
+	// own project, the one deploying into factoryd's namespace.
+	Writers   func(ctx context.Context) ([]string, error)
 	Timelines factoryd.ObjectStore
 	Policies  Policies
 	Costs     Costs
@@ -90,9 +84,7 @@ type Config struct {
 	Resources    Resources
 	Alerts       Alerts
 	Projects     Projects
-	// Reconcile brings a project's objects to its row (factoryd.Registrar).
-	Reconcile func(ctx context.Context, p factoryd.Project) error
-	HTTP      *http.Client // nil = 15 s timeout
+	HTTP         *http.Client // nil = 15 s timeout
 }
 
 // Console is the console's http.Handler.
@@ -154,11 +146,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /resources", c.auth(c.resources))
 	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.spend("promote", c.promote)))
 	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
-	c.mux.Handle("POST /envelopes", c.auth(c.spend("envelope edit", c.setEnvelope)))
 	c.mux.Handle("GET /alerts", c.auth(c.alerts))
 	c.mux.Handle("GET /projects", c.auth(c.projects))
-	c.mux.Handle("POST /projects", c.auth(c.spend("project registration", c.registerProject)))
-	c.mux.Handle("POST /projects/{name}/settings", c.auth(c.spend("project settings", c.projectSettings)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil
 }
@@ -206,7 +195,7 @@ func (c *Console) auth(next http.HandlerFunc) http.Handler {
 		}
 		ok, err := c.writer(r.Context(), s.user)
 		if err != nil {
-			log.Printf("console: writers of %s: %v", c.cfg.Repo, err)
+			log.Printf("console: writers: %v", err)
 			http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
 			return
 		}
@@ -253,7 +242,7 @@ func (c *Console) writer(ctx context.Context, user string) (bool, error) {
 	c.mu.Unlock()
 	if time.Since(at) >= writersTTL {
 		v, err, _ := c.flight.Do("writers", func() (any, error) {
-			list, err := c.cfg.Writers.RepoWriters(context.WithoutCancel(ctx), c.cfg.Repo.Owner, c.cfg.Repo.Name)
+			list, err := c.cfg.Writers(context.WithoutCancel(ctx))
 			if err == nil {
 				c.mu.Lock()
 				c.writers, c.writersT = list, time.Now()
@@ -265,7 +254,7 @@ func (c *Console) writer(ctx context.Context, user string) (bool, error) {
 		case err == nil:
 			writers = v.([]string)
 		case writers != nil && time.Since(at) < writersStale:
-			log.Printf("console: writers of %s: %v; serving the list of %s", c.cfg.Repo, err, at.UTC().Format(time.RFC3339))
+			log.Printf("console: writers: %v; serving the list of %s", err, at.UTC().Format(time.RFC3339))
 		default:
 			return false, err
 		}
@@ -320,7 +309,7 @@ func (c *Console) logout(w http.ResponseWriter, r *http.Request) {
 func (c *Console) forbidden(w http.ResponseWriter, user string) {
 	setCookie(w, sessionCookie, "", -1)
 	w.WriteHeader(http.StatusForbidden)
-	c.render(w, "forbidden.html", map[string]any{"User": user, "Repo": c.cfg.Repo.String()})
+	c.render(w, "forbidden.html", map[string]any{"User": user})
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {

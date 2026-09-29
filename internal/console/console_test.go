@@ -174,16 +174,13 @@ type fakeWriters struct {
 	delay time.Duration
 }
 
-func (w *fakeWriters) RepoWriters(_ context.Context, owner, repo string) ([]string, error) {
+func (w *fakeWriters) list(context.Context) ([]string, error) {
 	time.Sleep(w.delay)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.asked++
 	if w.err != nil {
 		return nil, w.err
-	}
-	if owner+"/"+repo != "sf/code" {
-		return nil, fmt.Errorf("unexpected repo %s/%s", owner, repo)
 	}
 	return w.users, nil
 }
@@ -236,12 +233,10 @@ func (a *fakeApprovals) get(id int64) factoryd.ApprovalRequest {
 
 // fakeResources is cloudres.AgentStore: it records the calls.
 type fakeResources struct {
-	rows  []cloudres.Resource
-	envs  []cloudres.EnvelopeRecord
-	calls []string
-	set   map[string]policy.Envelope
-
-	approveErr error
+	rows     []cloudres.Resource
+	use      map[string]cloudres.EnvelopeUse
+	standing map[string]cloudres.StandingUse
+	calls    []string
 }
 
 func (f *fakeResources) Commissions(_ context.Context, since time.Time) ([]cloudres.Resource, error) {
@@ -249,23 +244,18 @@ func (f *fakeResources) Commissions(_ context.Context, since time.Time) ([]cloud
 	return f.rows, nil
 }
 
-func (f *fakeResources) Envelopes(context.Context) ([]cloudres.EnvelopeRecord, error) {
-	return f.envs, nil
+func (f *fakeResources) Use(_ context.Context, repo string) (cloudres.EnvelopeUse, error) {
+	return f.use[repo], nil
 }
 
-func (f *fakeResources) SetEnvelope(_ context.Context, project string, env policy.Envelope, by string) error {
-	f.calls = append(f.calls, "set "+project+" by "+by)
-	f.set[project] = env
-	return nil
+func (f *fakeResources) Standing(_ context.Context, repo string) (cloudres.StandingUse, error) {
+	return f.standing[repo], nil
 }
 
-func (f *fakeResources) ApproveForProject(_ context.Context, id int64, by string) (policy.Envelope, error) {
-	f.calls = append(f.calls, fmt.Sprintf("project-approve %d by %s", id, by))
-	return policy.Envelope{}, f.approveErr
-}
-
-func (f *fakeResources) Promote(_ context.Context, id int64, by string) error {
-	f.calls = append(f.calls, fmt.Sprintf("promote %d by %s", id, by))
+// Promote records the standing block it was given for sf/code and for
+// demo-app/demo-app.
+func (f *fakeResources) Promote(_ context.Context, id int64, by string, standing func(repo string) policy.Standing) error {
+	f.calls = append(f.calls, fmt.Sprintf("promote %d by %s under %v and %v", id, by, standing("sf/code"), standing("demo-app/demo-app")))
 	if id == 410 {
 		return fmt.Errorf("resource %d: %w", id, cloudres.ErrLeaseEnded)
 	}
@@ -326,8 +316,10 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
 			Projects: map[string]policy.ProjectConfig{
-				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"}},
-				"infra":    {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
+				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
+					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
+					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
+				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
 			Workflow: policy.Workflow{Stages: []policy.Stage{
 				{Name: "screening", OnFindings: "human", When: "outsider"},
@@ -367,14 +359,14 @@ func newRig(t *testing.T) *rig {
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}]}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
-		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}, projects: &fakeProjects{}}
+		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}}
 	c, err := New(Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
-		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"), Repo: factoryd.Repo{Owner: "sf", Name: "code"},
-		Tasks: r.tasks, Writers: r.writers, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
+		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
+		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Reconcile: r.projects.reconcile,
+		Projects: r.projects,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
@@ -566,7 +558,7 @@ func TestNonWriterGets403AndNoSession(t *testing.T) {
 	if cb.Code != http.StatusForbidden || ck == nil || ck.MaxAge >= 0 || len(r.c.sessions) != 0 {
 		t.Fatalf("non-writer: %d, cookie %+v, %d sessions: want 403, cookie deleted, none", cb.Code, ck, len(r.c.sessions))
 	}
-	if !strings.Contains(cb.Body.String(), "mallory cannot write sf/code") {
+	if !strings.Contains(cb.Body.String(), "mallory cannot write the factory's own repository") {
 		t.Fatalf("403 body: %s", cb.Body)
 	}
 }
@@ -610,7 +602,7 @@ func TestPagesRequireASession(t *testing.T) {
 func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	form := url.Values{"title": {"x"}, "lane": {"agent"}}
+	form := url.Values{"title": {"x"}, "lane": {"agent"}, "project": {"ai-software-factory-code"}}
 	for name, tok := range map[string]string{"missing": "", "wrong": "nope"} {
 		f := url.Values{}
 		for k, v := range form {
@@ -696,6 +688,12 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	if !strings.Contains(form, `<option value="priority/p1">`) || strings.Contains(form, "priority/p0") {
 		t.Fatalf("form offers the existing priority labels only: %s", form)
 	}
+	// ruling 179: a picker over the projects agents work on, the first the
+	// default; the infra project (agents none) is none of them
+	picker := `<option value="ai-software-factory-code">ai-software-factory-code (sf/code)</option><option value="demo-app">demo-app (demo-app/demo-app)</option>`
+	if !strings.Contains(form, picker) || strings.Contains(form, "infra") {
+		t.Fatalf("form's projects: %s", form)
+	}
 	for _, tc := range []struct {
 		lane, priority string
 		labels         []any
@@ -704,7 +702,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		{"human", "priority/p1", []any{2.0, 7.0}},
 	} {
 		r.fg.issues, r.fg.calls = nil, nil
-		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "title": {" Fix the cache "}, "body": {"details"},
+		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {" Fix the cache "}, "body": {"details"},
 			"lane": {tc.lane}, "priority": {tc.priority}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=41" {
 			t.Fatalf("%s: POST /tasks = %d to %q: %s", tc.lane, rec.Code, rec.Header().Get("Location"), rec.Body)
@@ -722,7 +720,9 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	for name, f := range map[string]url.Values{
 		"no title":     {"title": {"  "}, "lane": {"agent"}},
 		"bad lane":     {"title": {"x"}, "lane": {"robot"}},
-		"bad priority": {"title": {"x"}, "lane": {"agent"}, "priority": {"urgent"}},
+		"bad priority": {"title": {"x"}, "lane": {"agent"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}},
+		"no project":   {"title": {"x"}, "lane": {"agent"}},
+		"agents none":  {"title": {"x"}, "lane": {"human"}, "project": {"ai-software-factory-infra"}},
 	} {
 		r.fg.issues = nil
 		f.Set("csrf", s.csrf)
@@ -907,7 +907,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// the resource request: type, purpose, lease, monthly cost, project, the task
 		"Resource request", "<dd>cx33</dd>", "<dd>load test</dd>", "<dd>5 h</dd>", "8.9900 EUR per month; this lease 0.0720 EUR",
 		"<dd>sf/code</dd>", "a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
-		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, `name="scope" value="task" checked`, `name="scope" value="project"`,
+		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
 		// the merge request: the PR, the risk class, the migration, the review
 		`Merge <a href="https://git.example/sf/code/pulls/9">PR #9</a>`, "<dd>high</dd>",
 		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>", "<dd>approve: adds the column safely</dd>",
@@ -1018,15 +1018,14 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	}
 }
 
-func TestResourceApproveForTaskOrProjectAndDeny(t *testing.T) {
+// A resource request is approved for its task, once; the project's
+// envelope is its file's (ruling 183), no click widens it.
+func TestResourceApproveForTheTaskAndDeny(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusBadRequest {
-		t.Fatalf("approve without a scope = %d", rec.Code)
-	}
-	rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck)
+	rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}), ck)
 	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("approve for the task = %d: %s", rec.Code, rec.Body)
+		t.Fatalf("approve = %d: %s", rec.Code, rec.Body)
 	}
 	if a := r.approvals.get(3); a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved for the task" {
 		t.Fatalf("request = %+v", a)
@@ -1034,16 +1033,10 @@ func TestResourceApproveForTaskOrProjectAndDeny(t *testing.T) {
 	if len(r.resources.calls) != 0 || len(r.fg.calls) != 1 { // the login's GET /user only
 		t.Fatalf("a task approve touched %q / %q", r.resources.calls, r.fg.calls)
 	}
-	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusConflict {
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusConflict {
 		t.Fatalf("second approve = %d, want 409", rec.Code)
 	}
-
 	r.approvals.rows[0].Status = "pending"
-	rec = r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}), ck)
-	if rec.Code != http.StatusSeeOther || fmt.Sprint(r.resources.calls) != "[project-approve 3 by sebastian]" {
-		t.Fatalf("approve for the project = %d, calls %q", rec.Code, r.resources.calls)
-	}
-
 	rec = r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"use a cx23"}}), ck)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("deny = %d: %s", rec.Code, rec.Body)
@@ -1070,36 +1063,36 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Lifetime: cloudres.LifetimeStanding, PromotedBy: "alice"},
 		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", ReleasedBy: "sebastian"},
 	}
-	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/other", SetBy: "alice", SetAt: lease,
-		Envelope: policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8,
-			Standing: policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
-		Use:         cloudres.EnvelopeUse{OpenServers: 1, MonthEUR: 1.5},
-		StandingUse: cloudres.StandingUse{Count: 1, MonthlyEUR: 5.99}}}
+	r.resources.use = map[string]cloudres.EnvelopeUse{"demo-app/demo-app": {OpenServers: 1, MonthEUR: 1.5}}
+	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /resources = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-sf/other">sf/other</h3>`,
+		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
 		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
 		"none: standing (made standing by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
 		`<span id="promote-11" class="meta">standing, about 10.1340 EUR a month against the standing block&#39;s 0.00 EUR (0.0000 standing now)</span>`,
-		// the code repository has no envelope yet: the policy default
-		"Not set yet", `name="project" value="sf/code"`, `id="monthly-sf/code" name="monthly_eur" type="number" min="0" step="0.01" value="10"`,
-		`name="server_types" type="text" value="cx23"`,
-		"Set by alice at " + at + ". This month: 1.5000 EUR used or reserved, 1 servers open.",
+		// sf/code is in no file of this configuration: the policy's default
+		"No project file names this repository: the policy's envelope_default applies.",
+		"Task block: 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB",
+		// demo-app's file, read-only, linked at the version's commit
+		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml">change it in Git</a>.`,
+		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
+		"This month: 1.5000 EUR used or reserved, 1 servers open",
 		// the standing monthly line (ruling 147)
-		"Standing now: 1 of 2 servers, 5.9900 of 12.00 EUR a month.",
-		`id="standing-monthly-sf/other" name="standing_monthly_eur" type="number" min="0" step="0.01" value="12"`,
-		`name="standing_server_types" type="text" value="cx23"`,
-		`name="server_types" type="text" value="cx23, cx33"`, `<label for="count-sf/other">`,
+		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 servers, 5.9900 EUR a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/resources lacks %q", want)
 		}
+	}
+	if strings.Contains(body, "<form method=\"post\" action=\"/envelopes\"") || strings.Contains(body, "monthly_eur") {
+		t.Error("/resources offers an envelope edit")
 	}
 	// one promote (the unpromoted open commission's server) and a release
 	// per open commission; none for the closed one
@@ -1109,10 +1102,12 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	}
 }
 
-func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
+// Promote and release record who; the promote is judged against the
+// standing block of the project's file in force, the default's for a
+// repository no file names; no envelope edit exists.
+func TestPromoteAndReleaseRecordWho(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	r.resources.envs = []cloudres.EnvelopeRecord{{Project: "sf/other"}}
 	if rec := r.do(post("/resources/11/promote", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/resources" {
 		t.Fatalf("promote = %d", rec.Code)
 	}
@@ -1125,48 +1120,11 @@ func TestPromoteReleaseAndEnvelopeEditRecordWho(t *testing.T) {
 	if rec := r.do(post("/resources/11/promote", url.Values{}), ck); rec.Code != http.StatusForbidden {
 		t.Fatalf("promote without the form token = %d", rec.Code)
 	}
-	if want := "[promote 11 by sebastian release 12 by sebastian release 404 by sebastian]"; fmt.Sprint(r.resources.calls) != want {
+	if want := "[promote 11 by sebastian under {0 [] 0} and {12 [cx23] 2} release 12 by sebastian release 404 by sebastian]"; fmt.Sprint(r.resources.calls) != want {
 		t.Fatalf("calls = %q", r.resources.calls)
 	}
-	form := url.Values{"csrf": {s.csrf}, "project": {"sf/code"}, "monthly_eur": {"25.5"}, "server_types": {"cx23, cx33 cx23"},
-		"max_count": {"3"}, "max_lease_hours": {"12"}, "volume_max_gb": {"0"},
-		"standing_monthly_eur": {"7.5"}, "standing_server_types": {"cx23"}, "standing_max_count": {"1"}}
-	rec := r.do(post("/envelopes", form), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/resources?saved=sf%2Fcode" {
-		t.Fatalf("save = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
-	}
-	want := policy.Envelope{MonthlyEUR: 25.5, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 12, VolumeMaxGB: 0,
-		Standing: policy.Standing{MonthlyEUR: 7.5, ServerTypes: []string{"cx23"}, MaxCount: 1}}
-	if got := r.resources.set["sf/code"]; fmt.Sprint(got) != fmt.Sprint(want) || r.resources.calls[3] != "set sf/code by sebastian" {
-		t.Fatalf("saved %+v, calls %q", got, r.resources.calls)
-	}
-	form.Set("project", "sf/other")
-	form.Set("server_types", "")
-	if rec := r.do(post("/envelopes", form), ck); rec.Code != http.StatusSeeOther || r.resources.set["sf/other"].ServerTypes == nil {
-		t.Fatalf("an envelope with no types (closed to agents) = %d, %+v", rec.Code, r.resources.set["sf/other"])
-	}
-	for name, change := range map[string][2]string{
-		"unknown project":   {"project", "evil/repo"},
-		"negative monthly":  {"monthly_eur", "-1"},
-		"not a number":      {"monthly_eur", "NaN"},
-		"bad type":          {"server_types", "cx23; rm"},
-		"fraction count":    {"max_count", "1.5"},
-		"small volume":      {"volume_max_gb", "5"},
-		"huge lease":        {"max_lease_hours", "100000"},
-		"negative standing": {"standing_monthly_eur", "-1"},
-		"standing count":    {"standing_max_count", "x"},
-		"standing type":     {"standing_server_types", "cx23; rm"},
-	} {
-		f := url.Values{}
-		for k, v := range form {
-			f[k] = v
-		}
-		f.Set("project", "sf/code")
-		f.Set(change[0], change[1])
-		n := len(r.resources.calls)
-		if rec := r.do(post("/envelopes", f), ck); rec.Code != http.StatusBadRequest || len(r.resources.calls) != n {
-			t.Errorf("%s: %d, want 400 and nothing saved", name, rec.Code)
-		}
+	if rec := r.do(post("/envelopes", url.Values{"csrf": {s.csrf}, "project": {"sf/code"}}), ck); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /envelopes = %d, want no such route", rec.Code)
 	}
 }
 
@@ -1200,17 +1158,14 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 			strings.Contains(board, "/deny\""))
 	}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
-	if strings.Contains(page, "/promote\"") || strings.Contains(page, "Save the envelope") || !strings.Contains(page, "/resources/11/release\"") {
-		t.Fatal("resources for a non-approver offer promote or the envelope save, or lack release")
+	if strings.Contains(page, "/promote\"") || !strings.Contains(page, "/resources/11/release\"") {
+		t.Fatal("resources for a non-approver offer promote, or lack release")
 	}
 	r.fg.calls = nil
 	for _, req := range []*http.Request{
-		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}),
-		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}),
+		post("/approvals/3/approve", url.Values{"csrf": {s.csrf}}),
 		post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}),
 		post("/resources/11/promote", url.Values{"csrf": {s.csrf}}),
-		post("/envelopes", url.Values{"csrf": {s.csrf}, "project": {"sf/code"}, "monthly_eur": {"99"}, "server_types": {"cx23"},
-			"max_count": {"9"}, "max_lease_hours": {"9"}, "volume_max_gb": {"0"}}),
 	} {
 		if rec := r.do(req, ck); rec.Code != http.StatusForbidden {
 			t.Errorf("%s by a non-approver = %d, want 403", req.URL.Path, rec.Code)
@@ -1248,17 +1203,12 @@ func TestErrorsShowNoInternals(t *testing.T) {
 	}
 	// beyond the standing block: the human sees which bound and raises it first
 	rec = r.do(post("/resources/420/promote", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]; raise the standing block of the envelope first") {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "server type cx53 is not in the standing types [cx23]; raise the standing block in the project's file first") {
 		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
 		t.Fatalf("a store error = %d: %s", rec.Code, rec.Body)
-	}
-	r.resources.approveErr = errors.New(`pq: could not serialize access due to concurrent update`)
-	rec = r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"project"}}), ck)
-	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
-		t.Fatalf("a project approve error = %d: %s", rec.Code, rec.Body)
 	}
 }
 

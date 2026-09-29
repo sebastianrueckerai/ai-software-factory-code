@@ -20,6 +20,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // ciHub scripts the Forgejo Actions runner-registrar API (task 41): the
@@ -119,7 +120,7 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 	t.Helper()
 	hub.wantToken = "registrar-tok"
 	srv := hub.srv(t)
-	forgejo := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}
+	forgejo := &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	builds.collector.OwnerDone = CIOwnerDone(kube)
@@ -134,7 +135,7 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 
 func TestNewCISpawnerRequiresConfig(t *testing.T) {
 	kube := newFakeKube()
-	forgejo := &Forgejo{BaseURL: "http://x", CIRegistrarToken: "t"}
+	forgejo := &Forgejo{BaseURL: "http://x"}
 	cfg := testCIConfig()
 	cfg.Repos = nil
 	builds, _, _ := newTestBuildVMs(t, 2)
@@ -241,7 +242,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	hub := &ciHub{jobs: []CIJob{{ID: 9, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
 	hub.wantToken = "registrar-tok"
 	srv := hub.srv(t)
-	forgejo := &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}
+	forgejo := &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	cfg := testCIConfig()
 	builds, _, _ := newTestBuildVMs(t, 2)
@@ -1014,9 +1015,12 @@ func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
 	}
 }
 
-// Task 65: the spawner serves every registered project's repository, each
-// with its own CI token; a runner registers in, and is deleted from, the
-// repository whose job it serves.
+// Task 65, ruling 179: the spawner serves every project agents work on,
+// each with its Actions token (the seed project's seeded registrar token,
+// the factory project's factory-projects token); a runner registers in,
+// and is deleted from, the repository whose job it serves. A project on
+// agents none, one before register-project and a row without a file get
+// no runner.
 func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
@@ -1061,13 +1065,17 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	store := &memProjects{m: map[string]Project{
-		"demo-app":                 {Name: "demo-app", Repository: "demo-app/demo-app", Managed: true, GitToken: "g"},
-		"waiting":                  {Name: "waiting", Repository: "waiting/waiting", Managed: true},
-		"ai-software-factory-code": {Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code"},
+		"demo-app":                  {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "g"},
+		"waiting":                   {Name: "waiting", Repository: "waiting/waiting", Objects: "factory", Agents: "coder", File: true},
+		"gone":                      {Name: "gone", Repository: "gone/gone", GitToken: "g"},
+		"ai-software-factory-infra": {Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}},
+		"ai-software-factory-code":  seedProject("sf/ai-software-factory-code"),
 	}}
+	store.m["ai-software-factory-code"] = func(p Project) Project { p.Name = "ai-software-factory-code"; return p }(store.m["ai-software-factory-code"])
 	cfg := testCIConfig()
-	cfg.Repos = CIReposOf(codeCIRepos[0], "projects-tok", store)
-	spawner, err := NewCISpawner(cfg, &Forgejo{BaseURL: srv.URL, HTTP: srv.Client()}, kube, builds)
+	f := &Forgejo{BaseURL: srv.URL, HTTP: srv.Client(), ProjectsToken: "projects-tok", Seeded: testSeeded}
+	cfg.Repos = CIReposOf(f, store)
+	spawner, err := NewCISpawner(cfg, f, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}

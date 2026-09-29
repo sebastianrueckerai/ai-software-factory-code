@@ -59,7 +59,7 @@ func testFiles(policyYAML string) map[string][]byte {
 		"policy.yaml":   []byte(policy.Header("policy.yaml") + "\n" + policyYAML),
 		"workflow.yaml": []byte(policy.Header("workflow.yaml") + "\n" + testWorkflowYAML),
 		"projects/ai-software-factory-infra.yaml": []byte(policy.Header("projects/ai-software-factory-infra.yaml") +
-			"\nrepository: sf/ai-software-factory-infra\nmerge_rule: human\nobjects: seed\nagents: none\n"),
+			"\nrepository: sf/ai-software-factory-infra\nmerge_rule: human\nobjects: seed\nagents: none\ntokens: {read: forgejo-config}\n"),
 	}
 }
 

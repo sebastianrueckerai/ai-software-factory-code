@@ -89,7 +89,7 @@ func (c *Console) decided(w http.ResponseWriter, r *http.Request, a factoryd.App
 }
 
 // approve: a resource request is approved for its task (one commission of
-// that spec) or for its project (the envelope widens to fit it); a merge
+// that spec; the project's envelope is its file's, ruling 183); a merge
 // request gets the human's APPROVED review on the pull request, and only
 // once Forgejo has it is the workflow signalled, which merges as
 // factory-merge.
@@ -101,21 +101,7 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 	user := current(r).user
 	switch a.Kind {
 	case "resource":
-		switch r.PostFormValue("scope") {
-		case "task":
-			if !c.decided(w, r, a, "approved", "approved for the task") {
-				return
-			}
-		case "project":
-			env, err := c.cfg.Resources.ApproveForProject(r.Context(), a.ID, user)
-			if err != nil {
-				log.Printf("console: approve request %d for its project: %v", a.ID, err)
-				http.Error(w, "cannot approve for the project; see the factoryd log", http.StatusInternalServerError)
-				return
-			}
-			log.Printf("console: %s approved resource request %d for %s: envelope now %+v", user, a.ID, a.Project, env)
-		default:
-			http.Error(w, "choose the task or the project", http.StatusBadRequest)
+		if !c.decided(w, r, a, "approved", "approved for the task") {
 			return
 		}
 	case "merge":

@@ -25,14 +25,13 @@ type Approvals interface {
 // request (factoryd.ApproveMerge), after the human's review is on it.
 type MergeApprover func(ctx context.Context, taskID string, pr int64, approver string) error
 
-// Resources is the agent project's registry and the projects' envelopes
-// (cloudres.AgentStore). The gateway's collector acts on what they record.
+// Resources is the agent project's registry and what each project holds
+// against its envelope (cloudres.AgentStore). The gateway's collector acts on what they record.
 type Resources interface {
 	Commissions(ctx context.Context, since time.Time) ([]cloudres.Resource, error)
-	Envelopes(ctx context.Context) ([]cloudres.EnvelopeRecord, error)
-	SetEnvelope(ctx context.Context, project string, env policy.Envelope, by string) error
-	ApproveForProject(ctx context.Context, id int64, by string) (policy.Envelope, error)
-	Promote(ctx context.Context, id int64, by string) error
+	Use(ctx context.Context, repo string) (cloudres.EnvelopeUse, error)
+	Standing(ctx context.Context, repo string) (cloudres.StandingUse, error)
+	Promote(ctx context.Context, id int64, by string, standing func(repo string) policy.Standing) error
 	EndLease(ctx context.Context, id int64, by string) error
 }
 
@@ -56,10 +55,8 @@ type Alerts interface {
 	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
 }
 
-// Projects is the projects table (factoryd.PGStore).
+// Projects are the configuration's project files joined with their rows
+// (factoryd.PGStore).
 type Projects interface {
 	Projects(ctx context.Context) ([]factoryd.Project, error)
-	Project(ctx context.Context, name string) (factoryd.Project, bool, error)
-	CreateProject(ctx context.Context, p factoryd.Project) error
-	SetProjectSettings(ctx context.Context, name, mergeRule string, notify []string, quota policy.Quota) error
 }

@@ -780,12 +780,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		}
 		if res.State != "" {
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
-			// a project's Actions are its owner's to read: factory-projects'
-			token := r.forgejo.CIRegistrarToken
-			if _, ok, err := managedProject(ctx, r.store, t.Repository); err == nil && ok {
-				token = r.forgejo.ProjectsToken
-			}
-			if jobs, err := CIJobsOf(ctx, r.forgejo, token, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {
+			if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil || !ok {
+				log.Printf("task %s: ci jobs of %s: no project for %s (%v)", t.ID, sha, t.Repository, err)
+			} else if jobs, err := CIJobsOf(ctx, r.forgejo, r.forgejo.Access(p).Actions, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {
 				log.Printf("task %s: ci jobs of %s: %v", t.ID, sha, err)
 			} else {
 				detail["jobs"] = jobs

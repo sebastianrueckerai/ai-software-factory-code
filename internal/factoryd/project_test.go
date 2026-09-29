@@ -3,16 +3,18 @@ package factoryd
 import (
 	"context"
 	"errors"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func demoProject() Project {
-	return Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Managed: true,
+	return Project{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", File: true,
 		Namespaces: []string{"demo-staging", "demo-prod"},
 		Environments: []Environment{
 			{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"},
@@ -21,64 +23,83 @@ func demoProject() Project {
 		Secrets: []string{"demo-write-token/token"}}
 }
 
-func TestProjectValidate(t *testing.T) {
-	if err := demoProject().Validate(); err != nil {
-		t.Fatalf("demo project: %v", err)
+// demoFile is demoProject's projects/demo-app.yaml.
+const demoFile = `repository: demo-app/demo-app
+merge_rule: auto
+objects: factory
+agents: coder
+namespaces: [demo-staging, demo-prod]
+environments:
+  - {namespace: demo-staging, path: deploy/staging, hostname: demo-staging.aisoftwarefactory.world}
+  - {namespace: demo-prod, path: deploy/prod, hostname: demo.aisoftwarefactory.world}
+quota: {cpu: "2", memory: 4Gi, storage: 10Gi}
+secrets: [demo-write-token/token]
+envelope: {monthly_eur: 5, server_types: [cx23], max_count: 1, max_lease_hours: 2, volume_max_gb: 0}
+`
+
+// codeFile is the factory's own code as a seed project agents work on.
+const codeFile = `repository: sf/ai-software-factory-code
+merge_rule: human
+objects: seed
+agents: coder
+namespaces: [factory]
+tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}
+`
+
+// projectTree is testTree with the code and demo-app files beside infra's.
+func projectTree(t *testing.T) policy.Tree {
+	t.Helper()
+	files := testFiles(testPolicyYAML)
+	for name, body := range map[string]string{"ai-software-factory-code": codeFile, "demo-app": demoFile} {
+		files["projects/"+name+".yaml"] = []byte(policy.Header("projects/"+name+".yaml") + "\n" + body)
 	}
-	for name, tc := range map[string]struct {
-		change func(*Project)
-		want   string
-	}{
-		"name upper":   {func(p *Project) { p.Name = "Demo" }, "name"},
-		"name factory": {func(p *Project) { p.Name = "factory-x" }, "name"},
-		"name flux":    {func(p *Project) { p.Name = "flux-system" }, "name"},
-		"repository":   {func(p *Project) { p.Repository = "demo-app" }, "repository"},
-		"in sf":        {func(p *Project) { p.Repository = "sf/demo-app" }, "repository"},
-		// review-task65 I2: Forgejo folds case, so this would name the infra repo
-		"folded":            {func(p *Project) { p.Repository = "sf/AI-Software-Factory-Infra" }, "repository"},
-		"other org":         {func(p *Project) { p.Repository = "Demo-App/demo-app" }, "repository"},
-		"name sf":           {func(p *Project) { p.Name, p.Repository = "sf", "sf/sf" }, "name"},
-		"name too long":     {func(p *Project) { p.Name = strings.Repeat("a", 38); p.Repository = p.Name + "/" + p.Name }, "name"},
-		"merge rule":        {func(p *Project) { p.MergeRule = "maybe" }, "merge rule"},
-		"notify":            {func(p *Project) { p.Notify = []string{"a b"} }, "notify"},
-		"kube namespace":    {func(p *Project) { p.Namespaces = []string{"kube-system"} }, "namespace"},
-		"factory namespace": {func(p *Project) { p.Namespaces = []string{"factory"} }, "namespace"},
-		"task namespace":    {func(p *Project) { p.Namespaces = []string{"factory-agents-x"} }, "namespace"},
-		"flux namespace":    {func(p *Project) { p.Namespaces = []string{"flux-system"} }, "namespace"},
-		"twice":             {func(p *Project) { p.Namespaces = []string{"a", "a"} }, "namespace"},
-		"env outside":       {func(p *Project) { p.Environments[0].Namespace = "other" }, "not one of the project's namespaces"},
-		"env path up":       {func(p *Project) { p.Environments[0].Path = "../infra" }, "path"},
-		"env path abs":      {func(p *Project) { p.Environments[0].Path = "/deploy" }, "path"},
-		"host":              {func(p *Project) { p.Environments[0].Hostname = "demo_x.example" }, "hostname"},
-		"host twice":        {func(p *Project) { p.Environments[1].Hostname = p.Environments[0].Hostname }, "hostname"},
-		"quota":             {func(p *Project) { p.Quota.CPU = "two" }, "quota.cpu"},
-		"secret":            {func(p *Project) { p.Secrets = []string{"no-key"} }, "secret"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			p := demoProject()
-			p.Environments = append([]Environment(nil), p.Environments...)
-			tc.change(&p)
-			if err := p.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("err = %v, want one naming %q", err, tc.want)
-			}
-		})
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return tree
 }
 
-func TestParseEnvironments(t *testing.T) {
-	envs, err := ParseEnvironments([]string{"demo-staging=deploy/staging/", "demo-prod=deploy/prod"},
-		[]string{"demo-staging=demo-staging.aisoftwarefactory.world", "demo-prod=demo.aisoftwarefactory.world"})
-	if err != nil || !reflect.DeepEqual(envs, demoProject().Environments) {
-		t.Fatalf("ParseEnvironments = %+v, %v", envs, err)
+// A project is its file's settings over its row's tokens; a file without
+// a row has no tokens yet, a row without a file is marked.
+func TestProjectsOf(t *testing.T) {
+	tree := projectTree(t)
+	v := policy.Version{ID: 4, Tree: tree}
+	rows := []Project{{Name: "demo-app", GitToken: "g", MergeToken: "m"}, {Name: "gone", PullToken: "p"},
+		{Name: "ai-software-factory-code", MergeRule: "auto", Namespaces: []string{"stale"}}}
+	got := projectsOf(rows, v)
+	var names []string
+	for _, p := range got {
+		names = append(names, p.Name)
 	}
-	for _, tc := range [][2][]string{
-		{{"demo-staging"}, nil},
-		{{"a=deploy/a"}, {"b=b.example.com"}},
-		{{"a=deploy/a"}, {"a=x.example.com", "a=y.example.com"}},
-	} {
-		if _, err := ParseEnvironments(tc[0], tc[1]); err == nil {
-			t.Errorf("ParseEnvironments(%v, %v) accepted", tc[0], tc[1])
-		}
+	if !slices.Equal(names, []string{"ai-software-factory-code", "ai-software-factory-infra", "demo-app", "gone"}) {
+		t.Fatalf("projects = %v", names)
+	}
+	demo := demoProject()
+	demo.GitToken, demo.MergeToken = "g", "m"
+	demo.Envelope = policy.Envelope{MonthlyEUR: 5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, Standing: policy.Standing{ServerTypes: []string{}}}
+	if !reflect.DeepEqual(got[2], demo) {
+		t.Fatalf("demo-app = %+v\nwant %+v", got[2], demo)
+	}
+	code := got[0]
+	if code.MergeRule != "human" || !slices.Equal(code.Namespaces, []string{"factory"}) || code.Objects != "seed" || !code.File ||
+		code.Tokens != (policy.SeedTokens{Read: "forgejo-ci-registrar", Actions: "forgejo-ci-registrar", Merge: "forgejo-merge"}) ||
+		code.Quota != policy.DefaultProject.Quota || code.Envelope.MonthlyEUR != 10 {
+		t.Fatalf("code = %+v", code)
+	}
+	if infra := got[1]; !infra.File || infra.Agents != "none" || infra.Tokens.Read != "forgejo-config" {
+		t.Fatalf("infra = %+v", infra)
+	}
+	if gone := got[3]; gone.File || gone.Repository != "" || gone.PullToken != "p" || gone.Active() {
+		t.Fatalf("a row without a file = %+v", gone)
+	}
+	if !code.Coder() || got[1].Coder() || !got[1].Active() || !got[2].Coder() {
+		t.Fatal("Coder: the code and demo-app, Active: infra too")
+	}
+	unminted := got[2]
+	unminted.GitToken = ""
+	if unminted.Active() {
+		t.Fatal("a factory project before register-project is active")
 	}
 }
 
@@ -136,33 +157,36 @@ func TestPGProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	s.db.ExecContext(ctx, `DELETE FROM projects WHERE managed`)
-	ps, err := s.Projects(ctx)
-	if err != nil || len(ps) != 2 {
-		t.Fatalf("seeded projects = %+v, %v", ps, err)
-	}
-	code := ps[0]
-	if code.Name != "ai-software-factory-code" || code.Repository != "sf/ai-software-factory-code" || code.MergeRule != "human" ||
-		code.Managed || !reflect.DeepEqual(code.Namespaces, []string{"factory"}) || len(code.Notify) != 0 || len(code.Environments) != 0 {
-		t.Fatalf("code row = %+v", code)
-	}
-	if infra := ps[1]; infra.Name != "ai-software-factory-infra" || infra.Managed || len(infra.Namespaces) != 0 {
-		t.Fatalf("infra row = %+v", infra)
-	}
-	demo := demoProject()
-	if err := s.CreateProject(ctx, demo); err != nil {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE name NOT IN ('ai-software-factory-code', 'ai-software-factory-infra')`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateProject(ctx, demo); !errors.Is(err, ErrProjectExists) {
-		t.Fatalf("second create = %v", err)
+	var cols []string
+	rows, err := s.db.QueryContext(ctx, `SELECT column_name FROM information_schema.columns WHERE table_name = 'projects' ORDER BY column_name`)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// review-task65 m6: a namespace is one project's
-	other := Project{Name: "other", Repository: "other/other", MergeRule: "human", Managed: true, Namespaces: []string{"other-ns", "demo-prod"}}
-	if err := s.CreateProject(ctx, other); !errors.Is(err, ErrProjectExists) {
-		t.Fatalf("another project's namespace = %v", err)
+	for rows.Next() {
+		var c string
+		rows.Scan(&c)
+		cols = append(cols, c)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO projects (name, repository) VALUES ('upper', 'Upper/upper')`); err == nil {
-		t.Fatal("the table admits a repository in capitals")
+	rows.Close()
+	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "updated_at"}; !slices.Equal(cols, want) {
+		t.Fatalf("projects columns = %v, want %v", cols, want)
+	}
+	var envelopes bool
+	if err := s.db.QueryRowContext(ctx, `SELECT to_regclass('envelopes') IS NOT NULL`).Scan(&envelopes); err != nil || envelopes {
+		t.Fatalf("the envelopes table is still there: %v, %v", envelopes, err)
+	}
+	if _, _, err := s.RecordPolicy(ctx, "projects-from-files", projectTree(t)); err != nil {
+		t.Fatal(err)
+	}
+	created, err := s.EnsureProjectRows(ctx, []string{"ai-software-factory-code", "ai-software-factory-infra", "demo-app"})
+	if err != nil || !slices.Equal(created, []string{"demo-app"}) {
+		t.Fatalf("rows created = %v, %v", created, err)
+	}
+	if created, err := s.EnsureProjectRows(ctx, []string{"demo-app"}); err != nil || len(created) != 0 {
+		t.Fatalf("second EnsureProjectRows = %v, %v", created, err)
 	}
 	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{HookSecretHash: "k1", GitToken: "g1", MergeToken: "m1", HostKeyHash: "s1"}); err != nil {
 		t.Fatal(err)
@@ -179,18 +203,21 @@ func TestPGProjects(t *testing.T) {
 	if err := s.ForgetReadToken(ctx, "demo-app", "h2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetProjectSettings(ctx, "demo-app", "human", []string{"alice"}, policy.Quota{CPU: "1", Memory: "1Gi", Storage: "1Gi"}); err != nil {
-		t.Fatal(err)
-	}
 	got, ok, err := s.Project(ctx, "demo-app")
-	want := demo
-	want.MergeRule, want.Notify, want.Quota = "human", []string{"alice"}, policy.Quota{CPU: "1", Memory: "1Gi", Storage: "1Gi"}
+	want := demoProject()
+	want.Envelope = policy.Envelope{MonthlyEUR: 5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, Standing: policy.Standing{ServerTypes: []string{}}}
 	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken, want.HostKeyHash = "h1", "k1", "p1", "g1", "m1", "s1"
 	want.CreatedAt, want.UpdatedAt = got.CreatedAt, got.UpdatedAt
 	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("project = %+v, %v, %v\nwant %+v", got, ok, err, want)
 	}
-	if err := s.SetProjectSettings(ctx, "nope", "human", nil, policy.Quota{}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("settings of an unknown project = %v", err)
+	if p, ok, err := s.ProjectByRepository(ctx, "sf/ai-software-factory-infra"); err != nil || !ok || p.Name != "ai-software-factory-infra" || p.Agents != "none" {
+		t.Fatalf("by repository = %+v, %v, %v", p, ok, err)
+	}
+	if _, ok, err := s.ProjectByRepository(ctx, "someone/else"); err != nil || ok {
+		t.Fatalf("an unknown repository = %v, %v", ok, err)
+	}
+	if err := s.SetProjectTokens(ctx, "nope", ProjectTokens{GitToken: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tokens of an unknown project = %v", err)
 	}
 }

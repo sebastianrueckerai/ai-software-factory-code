@@ -36,10 +36,11 @@ type Intake struct {
 	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	// Budget is the policy in force's budget section: a new task's budget.
 	Budget func() policy.Budget
-	// Repositories are where the heal pass looks for open issues no
-	// webhook turned into a task: the code repository and every managed
-	// project.
-	Repositories func(ctx context.Context) ([]Repo, error)
+	// Projects are where the heal pass looks for open issues no webhook
+	// turned into a task: every active project's repository.
+	Projects interface {
+		Projects(ctx context.Context) ([]Project, error)
+	}
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
 
@@ -52,10 +53,9 @@ type Intake struct {
 const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
-// reviews: code write on the repository (RepoWriters; a managed project's
-// ProjectWriters with its own factory-merge token). A comment by anyone
-// else is recorded, never signalled, unless it is the issue author's
-// answer to an information request.
+// reviews: code write on the repository of a project (Forgejo.Writers). A
+// comment by anyone else is recorded, never signalled, unless it is the
+// issue author's answer to an information request.
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
 	key := repository + "\x00" + user
 	in.trustMu.Lock()
@@ -64,18 +64,15 @@ func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, e
 	if ok && time.Now().Before(until) {
 		return true, nil
 	}
-	repo, err := SplitRepo(repository)
+	p, ok, err := in.Store.ProjectByRepository(ctx, repository)
 	if err != nil {
 		return false, err
 	}
-	var writers []string
-	if p, ok, perr := managedProject(ctx, in.Store, repository); perr != nil {
-		err = perr
-	} else if ok {
-		writers, err = in.Forgejo.ProjectWriters(ctx, repo, p.MergeToken)
-	} else {
-		writers, err = in.Forgejo.RepoWriters(ctx, repo.Owner, repo.Name)
+	if !ok {
+		log.Printf("intake: %s is no project's repository: %s not trusted to steer a task", repository, user)
+		return false, nil
 	}
+	writers, err := in.Forgejo.Writers(ctx, p)
 	if err != nil {
 		return false, fmt.Errorf("writers of %s: %w", repository, err)
 	}
@@ -251,8 +248,8 @@ var priorityLabelWeight = map[string]int{
 	"severity/critical": 3, "severity/high": 2, "severity/medium": 1, "severity/low": 0,
 }
 
-// BootLabels are the labels factoryd creates on the issue-tracked
-// repository at boot and on every managed project, before anything files
+// BootLabels are the labels factoryd creates on every project's repository
+// at each reconcile (boot included), before anything files
 // an issue or mirrors state onto one (Forgejo drops an unknown label name
 // silently, an issue template's too): the lanes, the task states, and the
 // priority and severity labels intake reads (colours are #RRGGBB).
@@ -355,21 +352,25 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	return in.intakeIssue(ctx, "webhook intake", p.Repository.FullName, p.Repository.DefaultBranch, p.Issue, sender)
 }
 
-// ResyncIssues takes in the open issues of in.Repositories that no task
-// is linked to yet: Forgejo never retries a failed delivery, so an issue
+// ResyncIssues takes in the open issues of every active project that no
+// task is linked to yet: Forgejo never retries a failed delivery, so an issue
 // filed or labelled while factoryd was down is otherwise never seen. Each
 // goes through the webhook's own intake, which checks the poster and the
 // labels before it looks for a linked task.
 func (in *Intake) ResyncIssues(ctx context.Context) error {
-	if in.Repositories == nil {
+	if in.Projects == nil {
 		return nil
 	}
-	repos, err := in.Repositories(ctx)
+	ps, err := in.Projects.Projects(ctx)
 	if err != nil {
-		return fmt.Errorf("repositories: %w", err)
+		return fmt.Errorf("projects: %w", err)
 	}
 	var errs []error
-	for _, repo := range repos {
+	for _, p := range ps {
+		if !p.Active() {
+			continue
+		}
+		repo := p.Repo()
 		issues, err := in.Forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("issues of %s: %w", repo, err))
@@ -421,8 +422,9 @@ func outsiderLabels(names []string) []string {
 	return out
 }
 
-// intakeIssue turns an issue of repo into a task row of its lane,
-// idempotent per (repository, issue number): a redelivery, a later label
+// intakeIssue turns an issue of repo into a task row of its lane (every
+// issue of a project on agents none is the human lane's), idempotent per
+// (repository, issue number): a redelivery, a later label
 // event or a heal pass finds the task already linked and no-ops, except
 // that a suggested improvement labelled agent (or bug) by a writer
 // (sender) starts. defaultBranch is the repository's when the caller knows
@@ -431,8 +433,19 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if issue.Poster.UserName == in.BotUser {
 		return nil // the bot's own issues never spawn a second task
 	}
+	p, ok, err := in.Store.ProjectByRepository(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("project of %s: %w", repo, err)
+	}
+	if !ok || !p.Active() {
+		log.Printf("%s: issue #%d on %s: no active project has this repository: ignored", via, issue.Index, repo)
+		return nil
+	}
 	names := labelNames(issue.Labels)
 	lane := IssueLane(names)
+	if p.Agents == policy.AgentsNone {
+		lane = LaneHuman
+	}
 	if t, ok, err := in.Store.TaskByIssue(ctx, repo, issue.Index); err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	} else if ok {
@@ -454,7 +467,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if err != nil {
 		return err
 	}
-	if kept := outsiderLabels(names); !writer && len(kept) != len(names) {
+	if kept := outsiderLabels(names); !writer && len(kept) != len(names) && p.Agents == policy.AgentsCoder {
 		// off the issue too, so no later writer's event reads them
 		names, lane = kept, IssueLane(kept)
 		if parts, err := SplitRepo(repo); err != nil {

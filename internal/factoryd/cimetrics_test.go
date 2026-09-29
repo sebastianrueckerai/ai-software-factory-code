@@ -65,7 +65,7 @@ func TestCIRunsEmitsEachFinishedJobAndRunOnce(t *testing.T) {
 	m, reader := testMetrics(t)
 	hub := &ciAPIHub{tasksFile: "actions-tasks-boot.json", runsFile: "actions-runs-boot.json"}
 	srv := hub.serve(t)
-	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL, CIRegistrarToken: "registrar-tok"}, Owner: "sf", Repo: "ai-software-factory-code", Metrics: m}
+	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL}, Owner: "sf", Repo: "ai-software-factory-code", Token: "registrar-tok", Metrics: m}
 	ctx := context.Background()
 
 	// boot: what already finished (tasks 100, 102, run 50) is history

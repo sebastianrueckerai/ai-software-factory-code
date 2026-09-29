@@ -25,7 +25,7 @@ func TestRegisterOnForgejo(t *testing.T) {
 	adminUser := os.Getenv("FORGEJO_TEST_ADMIN")
 	f := &Forgejo{BaseURL: base, BotUser: "factory-agent", BotPassword: os.Getenv("FORGEJO_TEST_BOT_PASSWORD"),
 		ProjectsToken: os.Getenv("FORGEJO_TEST_PROJECTS_TOKEN")}
-	store := &memProjects{m: map[string]Project{}}
+	store := &memProjects{m: map[string]Project{"demo-app": demoProject()}}
 	reg := &Registrar{Forgejo: f, Kube: newFakeProjectKube(), Store: store,
 		Policy:     func() policy.Document { return policy.Document{Approvers: []string{adminUser}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
@@ -36,7 +36,7 @@ func TestRegisterOnForgejo(t *testing.T) {
 	a := AdminAuth{User: adminUser, Password: os.Getenv("FORGEJO_TEST_ADMIN_PASSWORD")}
 	ctx := context.Background()
 	p := demoProject()
-	if _, err := reg.Register(ctx, p, a, false); err != nil {
+	if _, err := reg.Register(ctx, p.Name, a, false); err != nil {
 		t.Fatalf("first: %v\n%s", err, logs)
 	}
 	first := logs.String()
@@ -48,19 +48,18 @@ func TestRegisterOnForgejo(t *testing.T) {
 		t.Fatalf("main's first commit: %v", err)
 	}
 	logs.Reset()
-	if _, err := reg.Register(ctx, p, a, false); err != nil {
+	if _, err := reg.Register(ctx, p.Name, a, false); err != nil {
 		t.Fatalf("second: %v\n%s", err, logs)
 	}
 	if !strings.Contains(logs.String(), "branch deploy: created") {
 		t.Fatalf("second run after main's first commit:\n%s", logs)
 	}
 	logs.Reset()
-	if _, err := reg.Register(ctx, p, a, false); err != nil {
+	if _, err := reg.Register(ctx, p.Name, a, false); err != nil {
 		t.Fatalf("third: %v\n%s", err, logs)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") && !strings.HasSuffix(line, ": ensured") &&
-			!strings.HasSuffix(line, "(its settings are the console's)") {
+		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") {
 			t.Errorf("third run: %s", line)
 		}
 	}

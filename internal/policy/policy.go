@@ -30,8 +30,8 @@ type Document struct {
 	Prices ToolPrices `yaml:"prices,omitempty" json:"prices"`
 	// Risk classifies a pull request by the paths it changes.
 	Risk Risk `yaml:"risk" json:"risk"`
-	// EnvelopeDefault is the resource envelope a project's first
-	// commissioning request copies into its envelopes row.
+	// EnvelopeDefault is the resource envelope of a project whose file
+	// sets none.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
 	// Approvers are the Forgejo users who may authorize spend in the
 	// console (ruling 128): approve a resource request or a merge, edit an
@@ -45,7 +45,7 @@ type Document struct {
 	// many seconds without the progress each names before it trips;
 	// absent keys take DefaultDetectors (ruling 161: no_write only).
 	Supervisor map[string]int `yaml:"supervisor,omitempty" json:"supervisor"`
-	// ProjectDefault is what a registered project starts with; absent:
+	// ProjectDefault is what a project file leaves out takes; absent:
 	// DefaultProject.
 	ProjectDefault *ProjectDefault `yaml:"project_default,omitempty" json:"project_default,omitempty"`
 }
@@ -216,21 +216,21 @@ type Envelope struct {
 // MinVolumeGB is the smallest volume Hetzner creates.
 const MinVolumeGB = 10
 
-func (e Envelope) validate() error {
+func (e Envelope) validate(key string) error {
 	if len(e.ServerTypes) == 0 || slices.Contains(e.ServerTypes, "") {
-		return errors.New("envelope_default.server_types must list at least one server type, none empty")
+		return fmt.Errorf("%s.server_types must list at least one server type, none empty", key)
 	}
 	if e.MonthlyEUR <= 0 {
-		return errors.New("envelope_default.monthly_eur must be positive")
+		return fmt.Errorf("%s.monthly_eur must be positive", key)
 	}
 	if e.MaxCount < 1 {
-		return errors.New("envelope_default.max_count must be at least 1")
+		return fmt.Errorf("%s.max_count must be at least 1", key)
 	}
 	if e.MaxLeaseHours < 1 {
-		return errors.New("envelope_default.max_lease_hours must be at least 1")
+		return fmt.Errorf("%s.max_lease_hours must be at least 1", key)
 	}
 	if e.VolumeMaxGB != 0 && e.VolumeMaxGB < MinVolumeGB {
-		return fmt.Errorf("envelope_default.volume_max_gb must be 0 (no volumes) or at least %d", MinVolumeGB)
+		return fmt.Errorf("%s.volume_max_gb must be 0 (no volumes) or at least %d", key, MinVolumeGB)
 	}
 	return nil
 }
@@ -393,7 +393,7 @@ func (d Document) Validate() error {
 	if err := d.Risk.validate(); err != nil {
 		return err
 	}
-	if err := d.EnvelopeDefault.validate(); err != nil {
+	if err := d.EnvelopeDefault.validate("envelope_default"); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if d.ProjectDefault != nil {

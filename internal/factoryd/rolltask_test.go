@@ -320,7 +320,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok"},
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
 		&Registry{BaseURL: srv.URL, Credential: func(context.Context) (string, string, error) { return "puller", "pw", nil }}
 }
 
@@ -346,7 +346,7 @@ func newTestRoller(t *testing.T, f *rollForgejo) (*Roller, *fakeStore, *fakeWork
 	t.Helper()
 	fj, reg := f.srv(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	return &Roller{Forgejo: fj, Registry: reg, Store: store, Workflows: wf, Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"},
+	return &Roller{Forgejo: fj, Registry: reg, Store: store, Workflows: wf, Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok",
 		Budget: testBudget}, store, wf
 }
 

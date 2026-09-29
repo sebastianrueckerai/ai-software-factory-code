@@ -119,12 +119,12 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 	s.user = user.Login
 	ok, err := c.writer(r.Context(), s.user)
 	if err != nil {
-		log.Printf("console: writers of %s: %v", c.cfg.Repo, err)
+		log.Printf("console: writers: %v", err)
 		http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
 		return
 	}
 	if !ok {
-		log.Printf("console: %s is not a writer of %s: login refused", s.user, c.cfg.Repo)
+		log.Printf("console: %s is not a writer of the factory's repository: login refused", s.user)
 		c.forbidden(w, s.user)
 		return
 	}

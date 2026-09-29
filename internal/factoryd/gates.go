@@ -772,11 +772,14 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
 	}
-	token := r.forgejo.MergeToken
-	if p, ok, err := managedProject(ctx, r.store, t.Repository); err != nil {
+	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
+	if err != nil {
 		return MergeResult{}, err
-	} else if ok {
-		token = p.MergeToken
+	}
+	token := r.forgejo.Access(p).Merge
+	if !ok || token == "" {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
+			": its project file names none, or register-project has not run"), nil
 	}
 	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by %s", t.ID, t.IssueNumber, approver, MergeUser)
 	if approver == AutoApprover {

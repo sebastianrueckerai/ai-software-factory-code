@@ -9,3 +9,5 @@ environments:
   - {namespace: demo-prod, path: deploy/prod}
 quota: {cpu: "2", memory: 4Gi, storage: 10Gi}
 secrets: [demo-write-token/token]
+envelope: {monthly_eur: 5, server_types: [cx23], max_count: 1, max_lease_hours: 2, volume_max_gb: 0}
+standing: {monthly_eur: 3, server_types: [cx33], max_count: 1}

@@ -15,6 +15,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // Repo names one repository a per-task Forgejo token is scoped to.
@@ -40,27 +42,11 @@ type Forgejo struct {
 	BotPassword string
 	HTTP        *http.Client // nil = a mint-sized timeout
 
-	// CIRegistrarToken authenticates the Actions runner-registration API
-	// and the writer lookups behind the trust gate (task 41, rulings 78,
-	// 101, 101a): a write:repository token of the dedicated user
-	// factory-ci scoped to the code repository. Forgejo's repository runner API demands the repository
-	// owner (reqOwner), so factory-ci sits in the org's Owners team; main's
-	// push and merge whitelist excludes it with apply_to_admins on, so the
-	// token can neither push nor merge main. Never a registry credential,
-	// never mounted into a runner pod.
-	CIRegistrarToken string
 	// CIOrgToken is factory-ci's second token, read:organization only and
 	// no repository (ruling 108: Forgejo refuses read:organization on a
 	// repository-limited token): the trust gate reads the org's teams,
 	// their repositories and members with it.
 	CIOrgToken string
-	// MergeToken is the dedicated user factory-merge's token,
-	// write:repository on the code repository only (ruling 109): main's
-	// merge whitelist holds it, its push whitelist does not, and Forgejo
-	// merges only after an approval by a whitelisted human. The Merge
-	// activity uses it on the factory's own repositories; a managed
-	// project has its own (Project.MergeToken, ruling 164).
-	MergeToken string
 	// ProjectsToken is the dedicated user factory-projects' token,
 	// [write:repository, write:organization] on no fixed repository list
 	// (Task 65): a member of org sf's team projects, which may create org
@@ -70,6 +56,58 @@ type Forgejo struct {
 	// branch protection; Forgejo keeps Actions secrets and runners to the
 	// org owners, which it is not.
 	ProjectsToken string
+	// Seeded are the tokens the seed makes, by their secret's name
+	// (policy.SeedSecrets), which a seed project's file names (ruling 179):
+	// forgejo-ci-registrar, factory-ci's write:repository on the code
+	// repository (factory-ci sits in org sf's Owners team, which Forgejo's
+	// runner API demands; main's whitelists exclude it, rulings 78, 101,
+	// 101a); forgejo-merge, factory-merge's write:repository on the code
+	// repository (ruling 109: main's merge whitelist holds it, its push
+	// whitelist does not); forgejo-config, factory-config's read:repository
+	// on the infra repository (ruling 183).
+	Seeded map[string]string
+}
+
+// ProjectAccess is what reaches a project's repository for what.
+type ProjectAccess struct {
+	// Read reads the collaborators and assignees (the trust gate) and the
+	// webhooks where its user administers the repository.
+	Read string
+	// Actions lists the Actions jobs and registers runners.
+	Actions string
+	// Merge merges an approved pull request.
+	Merge string
+}
+
+// Access is the one mapping from a project to factoryd's tokens: a
+// factory project's are registration's (ruling 164: its own factory-merge
+// token reads and merges, factory-projects owns its Actions), a seed
+// project's are the seeded secrets its file names, never factory-projects'.
+// An empty field is a token the project has none of.
+func (f *Forgejo) Access(p Project) ProjectAccess {
+	if p.Objects == policy.ObjectsFactory {
+		return ProjectAccess{Read: p.MergeToken, Actions: f.ProjectsToken, Merge: p.MergeToken}
+	}
+	return ProjectAccess{Read: f.Seeded[p.Tokens.Read], Actions: f.Seeded[p.Tokens.Actions], Merge: f.Seeded[p.Tokens.Merge]}
+}
+
+// Writers are the users the trust gate lets steer a task on p: a factory
+// project's write collaborators (its organisation holds only
+// factory-projects and its CI user in a team without code), a seed
+// project's RepoWriters.
+func (f *Forgejo) Writers(ctx context.Context, p Project) ([]string, error) {
+	token := f.Access(p).Read
+	if token == "" {
+		return nil, fmt.Errorf("forgejo writers of %s: project %s has no read token", p.Repository, p.Name)
+	}
+	if p.Objects == policy.ObjectsFactory {
+		writers, err := assignedCollaborators(ctx, f.tokenCall(token), p.Repository)
+		if err != nil {
+			return nil, fmt.Errorf("forgejo writers of %s: %w", p.Repository, err)
+		}
+		return writers, nil
+	}
+	return f.RepoWriters(ctx, p.Repo(), token)
 }
 
 // ForgejoToken is a minted token. Secret is returned once by Forgejo and
@@ -165,20 +203,10 @@ func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte,
 	})
 }
 
-// ciCall authenticates with the runner-registrar token instead of the bot
-// user's basic auth (task 41): the CI Actions API takes a bearer-style
-// `token <T>` header, not basic auth, and the registrar credential carries
-// none of the bot user's repository-write scope.
 // orgCall authenticates with the org-read token.
 func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
 	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
 		r.Header.Set("Authorization", "token "+f.CIOrgToken)
-	})
-}
-
-func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
-	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
-		r.Header.Set("Authorization", "token "+f.CIRegistrarToken)
 	})
 }
 
@@ -247,10 +275,12 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 // counts by being on the assignee list (write or more, or a team's pull
 // request read) and in no team without code write, which could be what
 // put them there: such a collaborator fails closed. The org-read token
-// reads the teams, their repositories and members (ruling 108); the
-// registrar token reads the collaborators and assignees. An owner that is
-// no organization has no team list, and the gate trusts no one.
-func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string, error) {
+// reads the teams, their repositories and members (ruling 108); token,
+// the project's read token, reads the collaborators and assignees. An
+// owner that is no organization has no team list, and the gate trusts no
+// one.
+func (f *Forgejo) RepoWriters(ctx context.Context, r Repo, token string) ([]string, error) {
+	owner, repo := r.Owner, r.Name
 	type user struct {
 		Login string `json:"login"`
 	}
@@ -300,7 +330,7 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 		}
 		maps.Copy(into, logins(members))
 	}
-	collaborators, err := assignedCollaborators(ctx, f.ciCall, full)
+	collaborators, err := assignedCollaborators(ctx, f.tokenCall(token), full)
 	if err != nil {
 		return fail(err)
 	}
@@ -310,20 +340,6 @@ func (f *Forgejo) RepoWriters(ctx context.Context, owner, repo string) ([]string
 		}
 	}
 	return slices.Sorted(maps.Keys(writers)), nil
-}
-
-// ProjectWriters lists the writers of a managed project's repository
-// (ruling 164) with the project's own factory-merge token, which reads
-// the repository and nothing else: its collaborators with write or more
-// (on the assignee list). The project's organisation holds only
-// factory-projects as owner and its CI user in a team without code, so
-// its teams add no writer.
-func (f *Forgejo) ProjectWriters(ctx context.Context, repo Repo, token string) ([]string, error) {
-	writers, err := assignedCollaborators(ctx, f.tokenCall(token), repo.String())
-	if err != nil {
-		return nil, fmt.Errorf("forgejo writers of %s: %w", repo, err)
-	}
-	return writers, nil
 }
 
 // assignedCollaborators are the collaborators of repository full who are
@@ -456,12 +472,12 @@ func (r ActionRun) Finished() bool { return doneStatus(r.Status) }
 // ActionRuns reads owner/repo's actions/runs, newest first, filtered by
 // query (page, limit, event, head_sha, ...). Forgejo 15 honours limit only
 // with a page, so page 1 is asked when query names none.
-func (f *Forgejo) ActionRuns(ctx context.Context, owner, repo string, query url.Values) ([]ActionRun, error) {
+func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, query url.Values) ([]ActionRun, error) {
 	if query.Get("page") == "" {
 		query = maps.Clone(query)
 		query.Set("page", "1")
 	}
-	body, err := f.ciCall(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs?%s", owner, repo, query.Encode()), nil, http.StatusOK)
+	body, err := f.tokenCall(token)(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs?%s", owner, repo, query.Encode()), nil, http.StatusOK)
 	if err != nil {
 		return nil, err
 	}
@@ -641,30 +657,37 @@ func (f *Forgejo) CreateLabel(ctx context.Context, owner, repo, name, color stri
 }
 
 // EnsureLabels creates whichever of wanted (name -> color) does not already
-// exist on owner/repo. It must run at boot, before anything files an issue
-// under one of these names or mirrors state onto one: Forgejo's issue-label
-// endpoints resolve labels by name and silently drop any name that doesn't
-// exist yet, so a label first used mid-mirror would vanish instead of
-// applying.
-func (f *Forgejo) EnsureLabels(ctx context.Context, owner, repo string, wanted map[string]string) error {
+// exist on owner/repo: Unchanged when none was missing. It must run at
+// boot, before anything files an issue under one of these names or
+// mirrors state onto one: Forgejo's issue-label endpoints resolve labels
+// by name and silently drop any name that doesn't exist yet, so a label
+// first used mid-mirror would vanish instead of applying.
+func (f *Forgejo) EnsureLabels(ctx context.Context, owner, repo string, wanted map[string]string) (Change, error) {
 	existing, err := f.ListLabels(ctx, owner, repo)
 	if err != nil {
-		return fmt.Errorf("forgejo ensure labels %s/%s: %w", owner, repo, err)
+		return "", fmt.Errorf("forgejo ensure labels %s/%s: %w", owner, repo, err)
 	}
 	have := make(map[string]bool, len(existing))
 	for _, l := range existing {
 		have[l.Name] = true
 	}
-	var errs []error
-	for name, color := range wanted {
-		if have[name] {
-			continue
+	var missing []string
+	for name := range wanted {
+		if !have[name] {
+			missing = append(missing, name)
 		}
-		if err := f.CreateLabel(ctx, owner, repo, name, color); err != nil {
+	}
+	if len(missing) == 0 {
+		return Unchanged, nil
+	}
+	slices.Sort(missing)
+	var errs []error
+	for _, name := range missing {
+		if err := f.CreateLabel(ctx, owner, repo, name, wanted[name]); err != nil {
 			errs = append(errs, fmt.Errorf("label %s: %w", name, err))
 		}
 	}
-	return errors.Join(errs...)
+	return Change(fmt.Sprintf("created %s", strings.Join(missing, ", "))), errors.Join(errs...)
 }
 
 // IssueLabels lists the names of the labels currently on issue number.

@@ -108,8 +108,9 @@ func newAlertRig(t *testing.T) *alertRig {
 	ns := &fakeNamespaces{labels: map[string]string{"demo-staging": "demo-app", "demo-prod": "demo-app", "stray": "gone",
 		"foreign": "demo-app", "legacy": "old"}}
 	projects := &memProjects{m: map[string]Project{
-		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Managed: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"}},
-		"old":      {Name: "old", Repository: "sf/old", GitToken: "git-tok", Namespaces: []string{"legacy"}},
+		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"}},
+		// a row without a file: its project was removed from the configuration
+		"old": {Name: "old", Repository: "sf/old", GitToken: "git-tok", Namespaces: []string{"legacy"}},
 	}}
 	flows := &fakeWorkflows{}
 	in := &AlertIntake{User: "signoz", Password: "hook-pw", Namespaces: ns, Projects: projects, Store: store,
@@ -289,8 +290,8 @@ func TestAlertIntakeCommentsTheResolve(t *testing.T) {
 
 // The namespace label maps to the project through the namespace's
 // factory/project label, read once per namespace; an alert without a
-// mapped project, of a project that does not list the namespace, or of an
-// unmanaged project, is dropped (200, nothing filed).
+// mapped project, of a project that does not list the namespace, or of a
+// row without a file, is dropped (200, nothing filed).
 func TestAlertIntakeMapsNamespaceToProject(t *testing.T) {
 	r := newAlertRig(t)
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
@@ -397,5 +398,24 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
 	if len(r.fj.issues) != 2 {
 		t.Fatalf("a refiled firing was filed again: %d issues", len(r.fj.issues))
+	}
+}
+
+// Ruling 179: an alert in a namespace of a project on agents none files a
+// human-lane issue and task, and starts nothing.
+func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var task Task
+	for _, task = range r.store.tasks {
+	}
+	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 ||
+		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
+		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
 	}
 }

@@ -192,7 +192,7 @@ func TestTemporalStartIsQuietAgainstARunningWorkflow(t *testing.T) {
 // exists and its workflow runs after one pass.
 func TestHealPassTakesInMissedIssues(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	in.Repositories = codeRepoOnly
+	in.Projects = codeRepoOnly{}
 	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
 	var agent string
 	for _, tk := range store.tasks {

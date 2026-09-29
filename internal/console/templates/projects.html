@@ -1,60 +1,24 @@
 {{template "head" .}}
 <h2>Projects</h2>
-{{if .Saved}}<p class="note" role="status">Saved the settings of {{.Saved}}; its objects were reconciled.</p>{{end}}
-{{if .Registered}}<p class="note" role="status">Registered {{.Registered}}; its cluster objects were reconciled. Its Forgejo organisation, repository, CI user and tokens come from <code>factoryd register-project</code> with the Forgejo admin's login, and its hostnames from one infra commit with the gateway YAML below.</p>{{end}}
-<p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.</p>
+<p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits. The settings are the project's file in the configuration: change them, or add a project, <a href="{{.New}}">in Git</a>. A factory project's Forgejo organisation, repository, CI user and tokens come from <code>factoryd register-project --name</code> with the Forgejo admin's login, its hostnames from one infra commit with the gateway YAML below.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
 <h3 id="project-{{.Name}}">{{.Name}}</h3>
+{{if .File}}<p class="meta">Settings from <a href="{{.File}}">projects/{{.Name}}.yaml</a>.</p>
 <ul>
 <li>Repository: {{.Repository}}</li>
+<li>Objects: {{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</li>
+<li>Agents: {{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</li>
 <li>Merge rule: {{.MergeRule}}</li>
 <li>Notify: {{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the policy's approvers){{end}}</li>
 <li>Namespaces: {{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</li>
-{{if .Managed}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
+{{if eq .Objects "factory"}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
 <li>Environments: {{range $i, $e := .Environments}}{{if $i}}; {{end}}{{$e.Namespace}}: {{$e.Path}}{{if $e.Hostname}} at {{$e.Hostname}}{{end}}{{else}}none{{end}}</li>
 <li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: run factoryd register-project with the Forgejo admin's login{{end}}</li>
-{{else}}<li>Unmanaged: its objects are the infra repository's.</li>{{end}}
-<li>Task block: {{printf "%.2f" .Envelope.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{.Envelope.MaxCount}} servers at once, leases up to {{.Envelope.MaxLeaseHours}} h</li>
-<li>Standing block: {{printf "%.2f" .Envelope.Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{.Envelope.Standing.MaxCount}} servers</li>
-<li>Standing now: {{.Envelope.StandingUse.Count}} servers, {{eur4 .Envelope.StandingUse.MonthlyEUR}} EUR a month.</li>
+{{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
 </ul>
+{{template "envelope" .Envelope}}
 {{if .GatewayYAML}}<details><summary>Gateway listeners and certificates for the infra commit</summary><pre>{{.GatewayYAML}}</pre></details>{{end}}
-{{if $.Approver}}<form method="post" action="/projects/{{.Name}}/settings" class="envelope">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">
-<fieldset>
-<legend>Settings of {{.Name}}</legend>
-<label for="rule-{{.Name}}">Merge rule</label>
-<select id="rule-{{.Name}}" name="merge_rule"><option value="human"{{if eq .MergeRule "human"}} selected{{end}}>human</option>{{if .Managed}}<option value="auto"{{if eq .MergeRule "auto"}} selected{{end}}>auto</option>{{end}}</select>
-<label for="notify-{{.Name}}">Notify, comma separated (empty: the policy's approvers)</label>
-<input id="notify-{{.Name}}" name="notify" type="text" value="{{range $i, $u := .Notify}}{{if $i}}, {{end}}{{$u}}{{end}}">
-<label for="cpu-{{.Name}}">Quota CPU</label>
-<input id="cpu-{{.Name}}" name="quota_cpu" type="text" value="{{.Quota.CPU}}" required>
-<label for="memory-{{.Name}}">Quota memory</label>
-<input id="memory-{{.Name}}" name="quota_memory" type="text" value="{{.Quota.Memory}}" required>
-<label for="storage-{{.Name}}">Quota storage</label>
-<input id="storage-{{.Name}}" name="quota_storage" type="text" value="{{.Quota.Storage}}" required>
-</fieldset>
-<button type="submit">Save the settings</button>
-</form>{{end}}
+{{else}}<p class="meta">No file projects/{{.Name}}.yaml in the configuration: nothing acts on this project; its row keeps its tokens.</p>{{end}}
 </section>
 {{end}}
-{{if .Approver}}<form method="post" action="/projects" class="envelope">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
-<fieldset>
-<legend>Register a project</legend>
-<label for="new-name">Name (lowercase letters, digits, dashes): its organisation and repository name/name</label>
-<input id="new-name" name="name" type="text" required>
-<label for="new-rule">Merge rule</label>
-<select id="new-rule" name="merge_rule"><option value="human"{{if eq .Default.MergeRule "human"}} selected{{end}}>human</option><option value="auto"{{if eq .Default.MergeRule "auto"}} selected{{end}}>auto</option></select>
-<label for="new-ns">Namespaces, comma separated</label>
-<input id="new-ns" name="namespaces" type="text">
-<label for="new-envs">Environments, one namespace=path per line</label>
-<textarea id="new-envs" name="environments" rows="2"></textarea>
-<label for="new-hosts">Hostnames, one namespace=hostname per line</label>
-<textarea id="new-hosts" name="hostnames" rows="2"></textarea>
-<label for="new-secrets">Generated secrets, secret/key, comma separated</label>
-<input id="new-secrets" name="secrets" type="text">
-</fieldset>
-<button type="submit">Register</button>
-</form>{{else}}<p class="meta">Only the policy's approvers may register a project or change its settings.</p>{{end}}
 {{template "foot"}}

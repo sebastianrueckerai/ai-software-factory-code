@@ -3,3 +3,4 @@ repository: sf/infra
 merge_rule: human
 objects: seed
 agents: none
+tokens: {read: forgejo-config}

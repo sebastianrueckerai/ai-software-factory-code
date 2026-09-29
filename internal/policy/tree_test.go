@@ -37,7 +37,7 @@ func fixtureTree(t *testing.T) map[string][]byte {
 
 func TestParseTreeAccepts(t *testing.T) {
 	files := fixtureTree(t)
-	if got := slices.Sorted(maps.Keys(files)); !slices.Equal(got, []string{"policy.yaml", "projects/demo-app.yaml", "projects/infra.yaml", "workflow.yaml"}) {
+	if got := slices.Sorted(maps.Keys(files)); !slices.Equal(got, []string{"policy.yaml", "projects/code.yaml", "projects/demo-app.yaml", "projects/infra.yaml", "workflow.yaml"}) {
 		t.Fatalf("ReadDir keys = %v", got)
 	}
 	tree, err := ParseTree(files)
@@ -51,7 +51,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if tree.Document.Bound("GateReproduction") != 30*time.Minute {
 		t.Fatalf("GateReproduction bound = %s", tree.Document.Bound("GateReproduction"))
 	}
-	if got := slices.Sorted(maps.Keys(tree.Projects)); !slices.Equal(got, []string{"demo-app", "infra"}) {
+	if got := slices.Sorted(maps.Keys(tree.Projects)); !slices.Equal(got, []string{"code", "demo-app", "infra"}) {
 		t.Fatalf("projects = %v", got)
 	}
 	demo := tree.Projects["demo-app"]
@@ -59,8 +59,12 @@ func TestParseTreeAccepts(t *testing.T) {
 		len(demo.Environments) != 2 || demo.Environments[0].Hostname != "demo-staging.example.org" || demo.Quota == nil || demo.Quota.Memory != "4Gi" {
 		t.Fatalf("demo-app = %+v", demo)
 	}
-	if infra := tree.Projects["infra"]; infra.Objects != ObjectsSeed || infra.Agents != AgentsNone || infra.Quota != nil {
+	if infra := tree.Projects["infra"]; infra.Objects != ObjectsSeed || infra.Agents != AgentsNone || infra.Quota != nil ||
+		*infra.Tokens != (SeedTokens{Read: SecretConfig}) {
 		t.Fatalf("infra = %+v", infra)
+	}
+	if code := tree.Projects["code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) {
+		t.Fatalf("code tokens = %+v", code.Tokens)
 	}
 	var names []string
 	for _, s := range tree.Workflow.Stages {
@@ -121,6 +125,29 @@ func TestParseTreeRejects(t *testing.T) {
 		"bad project name":            {func(f map[string][]byte) { f["projects/Infra_2.yaml"] = f["projects/infra.yaml"] }, "project Infra_2: the file name"},
 		"no workflow":                 {func(f map[string][]byte) { delete(f, "workflow.yaml") }, "workflow.yaml is missing"},
 		"no policy":                   {func(f map[string][]byte) { delete(f, "policy.yaml") }, "policy.yaml is missing"},
+		"seed without tokens":         {edit("projects/infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project infra: objects seed: tokens.read names the secret"},
+		"seed coder without merge":    {edit("projects/code.yaml", ", merge: forgejo-merge", ""), "project code: objects seed with agents coder: tokens.actions and tokens.merge"},
+		"seed names the projects token": {edit("projects/infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
+			`project infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
+		"seed with environments": {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [x]\nenvironments: [{namespace: x, path: deploy}]\n"),
+			"project infra: objects seed: environments, quota and secrets are registration's"},
+		"factory with tokens":          {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\ntokens: {read: forgejo-config}\n"), "project demo-app: objects factory: tokens are registration's"},
+		"factory not its organisation": {edit("projects/demo-app.yaml", "repository: demo-app/demo-app", "repository: demo/app"), `project demo-app: objects factory: repository "demo/app": a project is its own organisation`},
+		"factory in a reserved namespace": {edit("projects/demo-app.yaml", "namespaces: [demo-staging, demo-prod]", "namespaces: [demo-staging, demo-prod, platform]"),
+			`project demo-app: objects factory: namespace "platform" is the cluster's or the factory's`},
+		"factory project named sf": {func(f map[string][]byte) {
+			f["projects/sf.yaml"] = []byte(strings.ReplaceAll(string(f["projects/demo-app.yaml"]), "demo-app", "sf"))
+			delete(f, "projects/demo-app.yaml")
+		}, "project sf: objects factory: the name is its Forgejo organisation's"},
+		"bad deploy path":           {edit("projects/demo-app.yaml", "path: deploy/prod", "path: ../prod"), `environment demo-prod: path "../prod"`},
+		"environment elsewhere":     {edit("projects/demo-app.yaml", "{namespace: demo-prod, path", "{namespace: demo-qa, path"), `environment "demo-qa": not one of the project's namespaces`},
+		"bad hostname":              {edit("projects/demo-app.yaml", "hostname: demo-staging.example.org", "hostname: Demo_Staging"), `hostname "Demo_Staging"`},
+		"bad secret":                {edit("projects/demo-app.yaml", "secrets: [demo-write-token/token]", "secrets: [token]"), `secret "token": want secret-name/key`},
+		"bad notify":                {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\nnotify: [a b]\n"), `notify "a b": not a Forgejo user name`},
+		"bad envelope":              {edit("projects/demo-app.yaml", "envelope: {monthly_eur: 5", "envelope: {monthly_eur: 0"), "project demo-app: envelope.monthly_eur must be positive"},
+		"bad standing":              {edit("projects/demo-app.yaml", "standing: {monthly_eur: 3", "standing: {monthly_eur: -3"), "project demo-app: standing.monthly_eur must not be negative"},
+		"one repository, two files": {func(f map[string][]byte) { f["projects/infra2.yaml"] = f["projects/infra.yaml"] }, "project infra2: repository sf/infra is project infra's"},
+		"one namespace, two files":  {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [demo-prod]\n"), "project infra: namespace demo-prod is project demo-app's"},
 		"empty project": {func(f map[string][]byte) {
 			f["projects/infra.yaml"] = []byte("# yaml-language-server: $schema=../schema/project.schema.json\n")
 		}, "projects/infra.yaml: empty document"},

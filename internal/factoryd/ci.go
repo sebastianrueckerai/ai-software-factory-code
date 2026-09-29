@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -72,18 +73,17 @@ func (c *CIConfig) setDefaults() {
 
 // CIRepo is a repository the spawner serves and the token that lists its
 // jobs and registers its runners, which Forgejo keeps to the repository's
-// owner: the registrar token for the code repository, factory-projects'
-// token (it owns every project organisation) for a project, whose main
-// workflow runs here too (ruling 164). Project names a project's.
+// owner (Forgejo.Access's Actions token). Project names a factory
+// project, whose main workflow runs here too (ruling 164) and reaches
+// factoryd and Forgejo's SSH.
 type CIRepo struct {
 	Repo    Repo
 	Token   string
 	Project string
 }
 
-// CIReposOf serves the code repository and every managed project that
-// register-project has made.
-func CIReposOf(code CIRepo, projectsToken string, projects interface {
+// CIReposOf serves every project agents work on.
+func CIReposOf(f *Forgejo, projects interface {
 	Projects(ctx context.Context) ([]Project, error)
 }) func(ctx context.Context) ([]CIRepo, error) {
 	return func(ctx context.Context) ([]CIRepo, error) {
@@ -91,11 +91,16 @@ func CIReposOf(code CIRepo, projectsToken string, projects interface {
 		if err != nil {
 			return nil, err
 		}
-		out := []CIRepo{code}
+		var out []CIRepo
 		for _, p := range ps {
-			if p.Managed && p.Minted() {
-				out = append(out, CIRepo{Repo: p.Repo(), Token: projectsToken, Project: p.Name})
+			if !p.Coder() {
+				continue
 			}
+			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions}
+			if p.Objects == policy.ObjectsFactory {
+				r.Project = p.Name
+			}
+			out = append(out, r)
 		}
 		return out, nil
 	}

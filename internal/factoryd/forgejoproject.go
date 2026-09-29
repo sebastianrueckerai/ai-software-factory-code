@@ -84,7 +84,12 @@ type Hook struct {
 }
 
 func (f *Forgejo) ProjectHooks(ctx context.Context, repo Repo) ([]Hook, error) {
-	return GetPages[Hook](ctx, f.projectsCall, "/api/v1/repos/"+repo.String()+"/hooks?")
+	return f.Hooks(ctx, repo, f.ProjectsToken)
+}
+
+// Hooks lists repo's webhooks with token, whose user must administer it.
+func (f *Forgejo) Hooks(ctx context.Context, repo Repo, token string) ([]Hook, error) {
+	return GetPages[Hook](ctx, f.tokenCall(token), "/api/v1/repos/"+repo.String()+"/hooks?")
 }
 
 // SaveProjectHook creates the webhook (id 0) or edits hook id to it.

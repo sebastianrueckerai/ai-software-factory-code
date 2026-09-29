@@ -88,7 +88,7 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}, &requests
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"}, &requests
 }
 
 // issueLabels reads back the labels a test's Forgejo stub currently holds
@@ -333,7 +333,7 @@ func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}
+	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"}
 	store := newFakeStore()
 	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
 	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
@@ -768,7 +768,7 @@ func resyncForgejoStub(t *testing.T, closer string) (*Forgejo, *[]string) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}, &requests
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"}, &requests
 }
 
 // isWriterRead is one of RepoWriters' reads.
@@ -1024,7 +1024,7 @@ func TestIntakeResyncReadsCommentsPastAnUnknownCloser(t *testing.T) {
 // or the next.
 func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	in.Repositories = codeRepoOnly
+	in.Projects = codeRepoOnly{}
 	store.tasks["t-10"] = Task{ID: "t-10", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 10}
 	for range 2 {
 		if err := in.ResyncIssues(context.Background()); err != nil {
@@ -1351,11 +1351,13 @@ func TestIntakePushToMain(t *testing.T) {
 }
 
 // codeRepoOnly is a heal pass over the code repository alone.
-func codeRepoOnly(context.Context) ([]Repo, error) {
-	return []Repo{{Owner: "sf", Name: "ai-software-factory-code"}}, nil
+type codeRepoOnly struct{}
+
+func (codeRepoOnly) Projects(context.Context) ([]Project, error) {
+	return []Project{seedProject("sf/ai-software-factory-code")}, nil
 }
 
-// A managed project's trust gate reads its writers with the project's own
+// A factory project's trust gate reads its writers with the project's own
 // factory-merge token (ruling 164): collaborators on the assignee list,
 // no org or team read; without the token it fails closed.
 func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
@@ -1375,15 +1377,15 @@ func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	store := newFakeStore()
-	store.projects = []Project{{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Managed: true, GitToken: "g", MergeToken: "demo-merge-tok"}}
-	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", CIRegistrarToken: "registrar-tok", CIOrgToken: "org-read-tok"}}
+	store.projects = []Project{{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", File: true, GitToken: "g", MergeToken: "demo-merge-tok"}}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", Seeded: testSeeded, CIOrgToken: "org-read-tok"}}
 	for user, want := range map[string]bool{"sebastian": true, "reader": false, "outsider": false} {
 		if got, err := in.trusted(context.Background(), "demo-app/demo-app", user); err != nil || got != want {
 			t.Errorf("trusted(%s) = %v, %v; want %v", user, got, err, want)
 		}
 	}
 	store.projects[0].MergeToken = ""
-	if _, err := in.trusted(context.Background(), "demo-app/demo-app", "someone"); err == nil || !strings.Contains(err.Error(), "no factory-merge token") {
+	if _, err := in.trusted(context.Background(), "demo-app/demo-app", "someone"); err == nil || !strings.Contains(err.Error(), "project demo-app has no read token") {
 		t.Fatalf("unminted project: err = %v, want it to fail closed", err)
 	}
 }
@@ -1506,5 +1508,94 @@ func TestIntakeImprovementIsPresorted(t *testing.T) {
 	}
 	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
 		t.Fatalf("started = %v, want the presort's workflow once", started)
+	}
+}
+
+// Ruling 179: every issue of a project on agents none lands in the human
+// lane, whatever its labels, and runs nothing; the heal pass ends it when a
+// writer closes it, the writers read with the project's own read token
+// (the infra repository's factory-config, the addendum to Task 73). An
+// issue of a repository no project names is ignored.
+func TestIntakeAgentsNoneIsTheHumanLane(t *testing.T) {
+	var auth []string
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
+		const infra = "/api/v1/repos/sf/ai-software-factory-infra"
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/api/v1/orgs/") || strings.HasPrefix(p, "/api/v1/teams/"):
+			serveWriters(t, w, r)
+		case p == infra+"/collaborators" || p == infra+"/assignees":
+			auth = append(auth, r.Header.Get("Authorization"))
+			if r.Header.Get("Authorization") != "token config-tok" {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			io.WriteString(w, `[{"login":"factory-agent"}]`)
+		case strings.HasSuffix(p, "/labels"):
+			// the bot reads the infra repository and writes nothing on it
+			w.WriteHeader(http.StatusForbidden)
+		case p == infra+"/issues/21/timeline":
+			io.WriteString(w, `[{"type":"close","user":{"login":"sebastian"}}]`)
+		case p == infra+"/issues/21":
+			io.WriteString(w, `{"state":"closed"}`)
+		default:
+			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	store := newFakeStore()
+	store.projects = []Project{{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", MergeRule: "human", Objects: "seed",
+		Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}}}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"},
+		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+	on := func(repo string, number int64, labels ...string) []byte {
+		return bytes.Replace(issueOpenedBody(number, "sebastian", labels, "Rotate the key", "please"), []byte("sf/ai-software-factory-code"), []byte(repo), 1)
+	}
+	for _, body := range [][]byte{on("sf/ai-software-factory-infra", 21, "agent", "bug"), on("sf/elsewhere", 22, "agent")} {
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %+v, want the infra issue's alone", store.tasks)
+	}
+	var task Task
+	for _, tk := range store.tasks {
+		task = tk
+	}
+	if task.Kind != "human" || task.Status != "waiting-human" || task.IssueNumber != 21 || task.SHA != "" || len(task.RequiredCapabilities) != 0 ||
+		len(workflowsOf(in).started) != 0 || !task.AuthorWriter {
+		t.Fatalf("task = %+v, started %v; want a human-lane task, its writer author, no workflow", task, workflowsOf(in).started)
+	}
+	if err := in.Resync(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks[task.ID].Status; got != "done" || len(auth) == 0 || slices.ContainsFunc(auth, func(a string) bool { return a != "token config-tok" }) {
+		t.Fatalf("after a writer's close: %s, writers read with %v", got, auth)
+	}
+}
+
+// projectList is a heal pass's projects.
+type projectList []Project
+
+func (l projectList) Projects(context.Context) ([]Project, error) { return l, nil }
+
+// The heal pass reads the open issues of every active project row and of
+// nothing else: a factory project before register-project and a row
+// without a file have no repository factoryd works on.
+func TestResyncIssuesOverTheProjectRows(t *testing.T) {
+	in, store, requests := newTestIntake(t)
+	in.Projects = projectList{seedProject("sf/ai-software-factory-code"),
+		{Name: "waiting", Repository: "waiting/waiting", Objects: "factory", Agents: "coder", File: true},
+		{Name: "gone", Repository: "gone/gone", GitToken: "g"}}
+	if err := in.ResyncIssues(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range *requests {
+		if strings.Contains(p, "waiting/waiting") || strings.Contains(p, "gone/gone") {
+			t.Fatalf("read %s", p)
+		}
+	}
+	if len(store.tasks) != 5 {
+		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's", len(store.tasks))
 	}
 }

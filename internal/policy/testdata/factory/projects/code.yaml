@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=../schema/project.schema.json
+repository: sf/code
+merge_rule: human
+objects: seed
+agents: coder
+namespaces: [factory]
+tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}

@@ -126,7 +126,7 @@ func (h *rollHub) forgejo(t *testing.T) *Forgejo {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw", CIRegistrarToken: "registrar-tok"}
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
 }
 
 // deploymentJSON is a Deployment Flux applied at applied, carrying image
@@ -215,7 +215,7 @@ func at(s string) time.Time {
 func newTestRollWatcher(t *testing.T, hub *rollHub, deps *fakeDeployments, rolls *fakeRolls) *RollWatcher {
 	t.Helper()
 	m, _ := testMetrics(t)
-	return &RollWatcher{Forgejo: hub.forgejo(t), Owner: "sf", Repo: "ai-software-factory-code", Branch: "main", Namespace: "factory",
+	return &RollWatcher{Forgejo: hub.forgejo(t), Owner: "sf", Repo: "ai-software-factory-code", Token: "registrar-tok", Branch: "main", Namespace: "factory",
 		Kube: deps, Store: rolls, Metrics: m, Poll: time.Millisecond, Timeout: time.Hour}
 }
 

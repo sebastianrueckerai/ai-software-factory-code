@@ -43,7 +43,6 @@ type CloudProvider interface {
 
 // CloudStore is the commissioning state (cloudres.AgentStore).
 type CloudStore interface {
-	Envelope(ctx context.Context, repo string) (policy.Envelope, bool, error)
 	Use(ctx context.Context, repo string) (cloudres.EnvelopeUse, error)
 	Reserve(ctx context.Context, r cloudres.CommissionRequest) (cloudres.Commission, error)
 	SetAddress(ctx context.Context, id int64, address string) error
@@ -235,14 +234,13 @@ func (s *Server) admitCloud(c *toolCaller, tool string) *mcp.CallToolResult {
 	return nil
 }
 
-// envelope is the project's envelope row, else the policy's default (what
-// its first request will copy).
-func (s *Server) envelope(ctx context.Context, c *toolCaller) (policy.Envelope, string, error) {
-	env, ok, err := s.opts.Cloud.Store.Envelope(ctx, c.task.Repository)
-	if err != nil || ok {
-		return env, "the project's envelope", err
+// envelope is the task's project's envelope in the policy version in
+// force: its file's, else the default.
+func envelope(c *toolCaller) (policy.Envelope, string) {
+	if name, _, ok := c.pv.ProjectOf(c.task.Repository); ok {
+		return c.pv.EnvelopeOf(c.task.Repository), fmt.Sprintf("project %s's envelope (projects/%s.yaml, policy version %d)", name, name, c.pv.ID)
 	}
-	return c.pv.Document.DefaultEnvelope(), fmt.Sprintf("the standard envelope (policy version %d), copied to the project on its first request", c.pv.ID), nil
+	return c.pv.EnvelopeOf(c.task.Repository), fmt.Sprintf("the standard envelope (policy version %d): no project file names %s", c.pv.ID, c.task.Repository)
 }
 
 func (s *Server) cloudPrices(ctx context.Context, c *toolCaller) *mcp.CallToolResult {
@@ -250,10 +248,7 @@ func (s *Server) cloudPrices(ctx context.Context, c *toolCaller) *mcp.CallToolRe
 	if r := s.admitCloud(c, tool); r != nil {
 		return r
 	}
-	env, which, err := s.envelope(ctx, c)
-	if err != nil {
-		return s.cloudError(c, tool, "error_store", err)
-	}
+	env, which := envelope(c)
 	use, err := s.opts.Cloud.Store.Use(ctx, c.task.Repository)
 	if err != nil {
 		return s.cloudError(c, tool, "error_store", err)
@@ -325,9 +320,9 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	if err := in.validate(); err != nil {
 		return s.refuseTool(c, tool, "refused_arguments", err.Error())
 	}
-	def := c.pv.Document.DefaultEnvelope()
-	if len(def.ServerTypes) == 0 {
-		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("policy version %d has no envelope_default", c.pv.ID))
+	env, _ := envelope(c)
+	if len(env.ServerTypes) == 0 {
+		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("policy version %d gives %s no envelope", c.pv.ID, c.task.Repository))
 	}
 	cloud := s.opts.Cloud
 	p, err := cloud.prices(ctx)
@@ -345,7 +340,7 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	com, err := cloud.Store.Reserve(ctx, cloudres.CommissionRequest{
 		TaskID: c.task.ID, Repo: c.task.Repository, Session: session, ServerType: in.ServerType,
 		Purpose: strings.TrimSpace(in.Purpose), LeaseMinutes: in.LeaseMinutes, VolumeGB: in.VolumeGB,
-		Location: cloudLocation, Quote: q, Default: def, DayEUR: c.pv.Document.Budget.DayEUR, Now: cloud.now(),
+		Location: cloudLocation, Quote: q, Envelope: env, DayEUR: c.pv.Document.Budget.DayEUR, Now: cloud.now(),
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {

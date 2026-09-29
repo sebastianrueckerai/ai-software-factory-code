@@ -446,6 +446,10 @@ spec:
         # tree factory/ of its main with it every 30 s (ruling 183)
         - name: FORGEJO_CONFIG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-config, key: token}}
+        # the repository holding the configuration tree factory/; every
+        # other repository factoryd works on is named by a project file
+        - name: CONFIG_REPO
+          value: sf/ai-software-factory-infra
         # a SigNoz user with the viewer role: the alerts endpoint reads the
         # firing alerts with it and can change nothing
         - name: SIGNOZ_EMAIL
