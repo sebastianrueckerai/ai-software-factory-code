@@ -3,7 +3,6 @@ package factoryd
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,12 +13,13 @@ import (
 )
 
 // Registry reads image manifests from Forgejo's container registry. It
-// asks BaseURL, the in-cluster Forgejo, for the bearer token itself and
-// never follows a realm the registry names.
+// asks BaseURL, the in-cluster Forgejo, for the bearer token itself with
+// User and Password (a read:package token) and never follows a realm the
+// registry names.
 type Registry struct {
-	BaseURL    string
-	HTTP       *http.Client // nil = a 15 s timeout
-	Credential func(ctx context.Context) (user, password string, err error)
+	BaseURL        string
+	HTTP           *http.Client // nil = a 15 s timeout
+	User, Password string
 }
 
 // ImageManifest is what an image reference resolves to: Digest, the
@@ -78,11 +78,7 @@ func (r *Registry) Resolve(ctx context.Context, token, repository, reference str
 
 // Token reads a bearer for the registry with the credential.
 func (r *Registry) Token(ctx context.Context) (string, error) {
-	user, password, err := r.Credential(ctx)
-	if err != nil {
-		return "", fmt.Errorf("registry credential: %w", err)
-	}
-	body, err := r.get(ctx, "/v2/token", func(req *http.Request) { req.SetBasicAuth(user, password) })
+	body, err := r.get(ctx, "/v2/token", func(req *http.Request) { req.SetBasicAuth(r.User, r.Password) })
 	if err != nil {
 		return "", err
 	}
@@ -121,39 +117,4 @@ func (r *Registry) get(ctx context.Context, path string, auth func(*http.Request
 		return nil, fmt.Errorf("registry GET %s: status %d", path, res.StatusCode)
 	}
 	return body, nil
-}
-
-// PullSecretCredential reads host's credential from a
-// kubernetes.io/dockerconfigjson secret at each call, so a rotated secret
-// is picked up without a restart.
-func PullSecretCredential(kube interface {
-	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
-}, namespace, name, host string) func(ctx context.Context) (string, string, error) {
-	return func(ctx context.Context) (string, string, error) {
-		data, err := kube.GetSecretData(ctx, namespace, name)
-		if err != nil {
-			return "", "", err
-		}
-		var cfg struct {
-			Auths map[string]struct {
-				Auth string `json:"auth"`
-			} `json:"auths"`
-		}
-		if err := json.Unmarshal([]byte(data[".dockerconfigjson"]), &cfg); err != nil {
-			return "", "", fmt.Errorf("pull secret %s/%s: %w", namespace, name, err)
-		}
-		entry, ok := cfg.Auths[host]
-		if !ok {
-			return "", "", fmt.Errorf("pull secret %s/%s has no entry for %s", namespace, name, host)
-		}
-		raw, err := base64.StdEncoding.DecodeString(entry.Auth)
-		if err != nil {
-			return "", "", fmt.Errorf("pull secret %s/%s: %w", namespace, name, err)
-		}
-		user, password, ok := strings.Cut(string(raw), ":")
-		if !ok {
-			return "", "", fmt.Errorf("pull secret %s/%s: the %s entry is no user:password", namespace, name, host)
-		}
-		return user, password, nil
-	}
 }

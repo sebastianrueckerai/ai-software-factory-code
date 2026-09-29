@@ -321,7 +321,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 	}))
 	t.Cleanup(srv.Close)
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
-		&Registry{BaseURL: srv.URL, Credential: func(context.Context) (string, string, error) { return "puller", "pw", nil }}
+		&Registry{BaseURL: srv.URL, User: "puller", Password: "pw"}
 }
 
 func pushRun(id int64, sha, status string) map[string]any {

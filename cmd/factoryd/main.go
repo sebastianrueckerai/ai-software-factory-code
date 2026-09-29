@@ -294,10 +294,11 @@ func main() {
 		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics, Poll: 15 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)
 	// the roll as a factory task (ruling 178): main CI's images of a green
-	// commit, read with the factory's pull secret, open the roll's pull request
+	// commit, read with a read:package token, open the roll's pull request
+	registry := rollRegistry(forgejo.BaseURL)
+	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
-		Registry: &factoryd.Registry{BaseURL: forgejo.BaseURL,
-			Credential: factoryd.PullSecretCredential(kube, kube.Namespace(), env("PULL_SECRET", "forgejo-registry"), env("REGISTRY_HOST", "git.aisoftwarefactory.world"))}}
+		Registry: registry}
 	go roller.Run(ctx)
 	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
 	go revertPass.Loop(ctx)
@@ -573,6 +574,13 @@ func env(name, def string) string {
 		return v
 	}
 	return def
+}
+
+// rollRegistry is the roller's registry client: user factory-registry-read
+// with its read:package token (secret forgejo-registry-read), which can
+// overwrite no tag.
+func rollRegistry(baseURL string) *factoryd.Registry {
+	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: mustEnv("REGISTRY_READ_TOKEN")}
 }
 
 func mustEnv(name string) string {

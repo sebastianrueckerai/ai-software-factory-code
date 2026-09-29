@@ -3,7 +3,6 @@ package factoryd
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -59,7 +58,7 @@ func testRegistry(t *testing.T, manifests map[string]string) (*Registry, *int) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Registry{BaseURL: srv.URL, Credential: func(context.Context) (string, string, error) { return "puller", "pull-pw", nil }}, &tokens
+	return &Registry{BaseURL: srv.URL, User: "puller", Password: "pull-pw"}, &tokens
 }
 
 // A tag resolves to the index main CI pushed; its platform digest is the
@@ -102,24 +101,8 @@ func TestRegistryResolvesTheIndexAndItsPlatformManifest(t *testing.T) {
 	if *tokens != 1 {
 		t.Fatalf("%d token reads for five manifests, want 1", *tokens)
 	}
-	reg.Credential = func(context.Context) (string, string, error) { return "puller", "wrong", nil }
+	reg.Password = "wrong"
 	if _, err := reg.Token(ctx); err == nil {
 		t.Fatal("a refused token read gave a token")
-	}
-}
-
-// The registry credential is the factory's pull secret, a
-// kubernetes.io/dockerconfigjson, for the registry host.
-func TestPullSecretCredential(t *testing.T) {
-	auth := base64.StdEncoding.EncodeToString([]byte("puller:pull-pw"))
-	kube := newFakeKube()
-	kube.secrets["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": `{"auths":{"other.example":{"auth":"eDp5"},` +
-		`"git.aisoftwarefactory.world":{"auth":"` + auth + `"}}}`}
-	user, password, err := PullSecretCredential(kube, "factory", "forgejo-registry", "git.aisoftwarefactory.world")(context.Background())
-	if err != nil || user != "puller" || password != "pull-pw" {
-		t.Fatalf("credential %q %q %v", user, password, err)
-	}
-	if _, _, err := PullSecretCredential(kube, "factory", "forgejo-registry", "missing.example")(context.Background()); err == nil {
-		t.Fatal("a host without an entry gave a credential")
 	}
 }

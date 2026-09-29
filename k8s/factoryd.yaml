@@ -155,8 +155,7 @@ subjects:
   name: factoryd
   namespace: factory
 ---
-# The registry pull secret factoryd copies into each task namespace, and
-# reads main CI's images with to open a roll (ruling 178).
+# The registry pull secret factoryd copies into each task namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -452,6 +451,13 @@ spec:
         # tree factory/ of its main with it every 30 s (ruling 183)
         - name: FORGEJO_CONFIG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-config, key: token}}
+        # factory-registry-read: a read:package token, member of org sf's
+        # team factory-registry-read (packages read, no repository); the
+        # roller reads main CI's images with it and can overwrite no tag
+        - name: REGISTRY_READ_USER
+          value: factory-registry-read
+        - name: REGISTRY_READ_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-registry-read, key: token}}
         # the repository holding the configuration tree factory/; every
         # other repository factoryd works on is named by a project file
         - name: CONFIG_REPO
