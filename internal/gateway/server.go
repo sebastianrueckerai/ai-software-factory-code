@@ -666,7 +666,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 
 		if res.StatusCode/100 != 2 {
 			respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-			res.Body.Close()
+			_ = res.Body.Close()
 			if res.StatusCode == http.StatusUnauthorized && attempt == 0 && isKeyBlocked(respBody) {
 				if err := s.rekey(ctx, c); err != nil {
 					s.finish(c, zeroCost, "")
