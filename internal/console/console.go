@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 //go:embed templates/*.html
@@ -85,6 +86,9 @@ type Config struct {
 	Alerts       Alerts
 	Projects     Projects
 	HTTP         *http.Client // nil = 15 s timeout
+	// Metrics counts the verdict clicks (factory.human.intervention); nil
+	// counts none.
+	Metrics *telemetry.Metrics
 }
 
 // Console is the console's http.Handler.

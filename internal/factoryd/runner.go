@@ -357,7 +357,7 @@ const workerTerminationGrace = 60
 // is stopping: the worker is stopped gracefully first, so its work in
 // progress is pushed and reported for the retry).
 func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string), workerStop <-chan struct{}) (out sessionOutcome, err error) {
-	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent)
+	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent, s.model)
 	if err != nil {
 		return out, err
 	}

@@ -33,6 +33,9 @@ import (
 // Buckets are every duration histogram's boundaries, in seconds.
 var Buckets = []float64{5, 10, 30, 60, 120, 300, 600, 900, 1200, 1800, 2700, 3600}
 
+// CostBuckets are factory.task.cost's boundaries, in EUR.
+var CostBuckets = []float64{0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10}
+
 const exportInterval = 30 * time.Second
 
 // TaskID is the attribute key that joins a task's spans and log records
@@ -118,6 +121,18 @@ type Metrics struct {
 	RollApply            metric.Float64Histogram
 	RollReady            metric.Float64Histogram
 	GateDuration         metric.Float64Histogram
+	TaskOutcome          metric.Int64Counter
+	TaskCost             metric.Float64Histogram
+	TaskReverted         metric.Int64Counter
+	ReviewVerdict        metric.Int64Counter
+	HumanIntervention    metric.Int64Counter
+}
+
+// Intervened counts one human intervention of kind; a nil m counts none.
+func (m *Metrics) Intervened(ctx context.Context, kind string) {
+	if m != nil {
+		m.HumanIntervention.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", kind)))
+	}
 }
 
 // Noop is Metrics on the no-op meter, for tests and callers without one.
@@ -159,6 +174,25 @@ func New(meter metric.Meter) (*Metrics, error) {
 		metric.WithDescription("started hours times the hourly price of a deleted build VM"))
 	if err != nil {
 		return nil, err
+	}
+	if m.TaskCost, err = meter.Float64Histogram("factory.task.cost", metric.WithUnit("EUR"),
+		metric.WithDescription("a finished task's spend by the alias of its last session and its outcome"),
+		metric.WithExplicitBucketBoundaries(CostBuckets...)); err != nil {
+		return nil, err
+	}
+	for _, c := range []struct {
+		to   *metric.Int64Counter
+		name string
+		desc string
+	}{
+		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts and merge rule"},
+		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks the daily pass marked reverted"},
+		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement and round"},
+		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind"},
+	} {
+		if *c.to, err = meter.Int64Counter(c.name, metric.WithDescription(c.desc)); err != nil {
+			return nil, err
+		}
 	}
 	return m, nil
 }

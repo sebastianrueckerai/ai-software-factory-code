@@ -221,9 +221,20 @@ func (h *heartbeat) snapshot() sessionProgress {
 	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events, Findings: slices.Clone(h.p.Findings)}
 }
 
-// RecordUsage keeps what the task used of its caps on its row.
+// RecordUsage keeps what the task used of its caps on its row; agent time
+// a human's answer granted counts an extra_time intervention.
 func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) error {
-	return r.store.SetTaskUsage(ctx, taskID, u)
+	t, _, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if err := r.store.SetTaskUsage(ctx, taskID, u); err != nil {
+		return err
+	}
+	if u.ExtraTime > t.Usage.ExtraTime {
+		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime)
+	}
+	return nil
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -893,6 +904,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}
+	r.countFinish(ctx, t, final)
 	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			log.Printf("task %s: comment failure reason: %v", taskID, err)

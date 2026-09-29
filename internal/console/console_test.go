@@ -19,9 +19,14 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // htmxSHA256 pins the vendored htmx 2.0.11 (npm htmx.org-2.0.11.tgz,
@@ -340,12 +345,18 @@ type rig struct {
 	alerts    *fakeAlerts
 	projects  *fakeProjects
 	signalErr error
+	metrics   *sdkmetric.ManualReader
 }
 
 var monthly = 8.99
 
 func newRig(t *testing.T) *rig {
 	fg := newFakeForgejo(t)
+	reader := sdkmetric.NewManualReader()
+	metrics, err := telemetry.New(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
@@ -359,8 +370,9 @@ func newRig(t *testing.T) *rig {
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}]}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
-		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}}
+		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader}
 	c, err := New(Config{
+		Metrics:   metrics,
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
@@ -1581,5 +1593,58 @@ func TestBoardShowsARollInTheHumanLaneUntilItsCard(t *testing.T) {
 	}
 	if strings.Contains(human, "roll c2c2c2c") || !strings.Contains(review, "roll c2c2c2c") {
 		t.Errorf("the roll with its card is not in review:\nhuman %s\nreview %s", human, review)
+	}
+}
+
+// interventions reads factory.human.intervention by kind.
+func (r *rig) interventions(t *testing.T) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.metrics.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "factory.human.intervention" {
+				continue
+			}
+			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				kind, _ := dp.Attributes.Value(attribute.Key("kind"))
+				out[kind.AsString()] = dp.Value
+			}
+		}
+	}
+	return out
+}
+
+// The console counts a human's decision on a merge card and a verdict
+// click once each, only when it took effect.
+func TestConsoleCountsInterventions(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.fg.failReview = true
+	r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	r.fg.failReview = false
+	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve = %d", rec.Code)
+	}
+	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split it"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("request changes = %d", rec.Code)
+	}
+	r.approvals.rows[1].Status = "pending"
+	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"reject"}, "note": {"not wanted"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("reject = %d", rec.Code)
+	}
+	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("resource approve = %d", rec.Code)
+	}
+	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
+	for range 2 {
+		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
+	}
+	want := map[string]int64{"approve": 1, "request_changes": 1, "reject": 1, "alert_verdict_click": 1}
+	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
+		t.Fatalf("interventions = %v, want %v", got, want)
 	}
 }

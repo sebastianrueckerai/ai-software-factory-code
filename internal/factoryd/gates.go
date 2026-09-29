@@ -635,6 +635,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": model,
 		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": len(earlier) + 1}))
+	r.countReview(ctx, rv, len(earlier)+1)
 	return rv, nil
 }
 

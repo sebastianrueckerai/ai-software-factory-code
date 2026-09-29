@@ -1423,38 +1423,88 @@ func (f *Forgejo) CommitParents(ctx context.Context, owner, repo, sha string) ([
 	return out, nil
 }
 
-// MergedPullRequest is a merged pull request as the roll's body names it.
+// MergedPullRequest is a merged pull request as the roll's body and the
+// revert pass read it.
 type MergedPullRequest struct {
 	Number      int64
 	Title       string
 	MergeCommit string
 	HeadSHA     string
+	Base        string
+	MergedAt    time.Time
+}
+
+// wireClosedPR is a closed pull request of Forgejo's list.
+type wireClosedPR struct {
+	Number      int64      `json:"number"`
+	Title       string     `json:"title"`
+	Merged      bool       `json:"merged"`
+	MergedAt    *time.Time `json:"merged_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	MergeCommit string     `json:"merge_commit_sha"`
+	Base        struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
+// closedPullRequests is page of repository's closed pull requests, the
+// last updated first.
+func (f *Forgejo) closedPullRequests(ctx context.Context, owner, repo string, page int) ([]wireClosedPR, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=closed&sort=recentupdate&limit=50&page=%d", owner, repo, page), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var prs []wireClosedPR
+	if err := json.Unmarshal(body, &prs); err != nil {
+		return nil, fmt.Errorf("forgejo pulls of %s/%s: %w", owner, repo, err)
+	}
+	return prs, nil
+}
+
+func (p wireClosedPR) merged() MergedPullRequest {
+	m := MergedPullRequest{Number: p.Number, Title: p.Title, MergeCommit: p.MergeCommit, HeadSHA: p.Head.SHA, Base: p.Base.Ref}
+	if p.MergedAt != nil {
+		m.MergedAt = *p.MergedAt
+	}
+	return m
 }
 
 // RecentMergedPullRequests lists the merged ones of the closed pull
 // requests updated last.
 func (f *Forgejo) RecentMergedPullRequests(ctx context.Context, owner, repo string) ([]MergedPullRequest, error) {
-	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=closed&sort=recentupdate&limit=50", owner, repo), nil, http.StatusOK)
+	prs, err := f.closedPullRequests(ctx, owner, repo, 1)
 	if err != nil {
 		return nil, err
-	}
-	var prs []struct {
-		Number      int64  `json:"number"`
-		Title       string `json:"title"`
-		Merged      bool   `json:"merged"`
-		MergeCommit string `json:"merge_commit_sha"`
-		Head        struct {
-			SHA string `json:"sha"`
-		} `json:"head"`
-	}
-	if err := json.Unmarshal(body, &prs); err != nil {
-		return nil, fmt.Errorf("forgejo pulls of %s/%s: %w", owner, repo, err)
 	}
 	var out []MergedPullRequest
 	for _, p := range prs {
 		if p.Merged {
-			out = append(out, MergedPullRequest{Number: p.Number, Title: p.Title, MergeCommit: p.MergeCommit, HeadSHA: p.Head.SHA})
+			out = append(out, p.merged())
 		}
 	}
 	return out, nil
+}
+
+// MergedPullRequestsSince lists the pull requests merged since since,
+// reading the closed ones page by page until one was last updated before
+// it.
+func (f *Forgejo) MergedPullRequestsSince(ctx context.Context, owner, repo string, since time.Time) ([]MergedPullRequest, error) {
+	var out []MergedPullRequest
+	for page := 1; ; page++ {
+		prs, err := f.closedPullRequests(ctx, owner, repo, page)
+		if err != nil || len(prs) == 0 {
+			return out, err
+		}
+		for _, p := range prs {
+			if p.UpdatedAt.Before(since) {
+				return out, nil
+			}
+			if p.Merged && p.MergedAt != nil && !p.MergedAt.Before(since) {
+				out = append(out, p.merged())
+			}
+		}
+	}
 }

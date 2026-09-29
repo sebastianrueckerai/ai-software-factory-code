@@ -1501,6 +1501,45 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
   `open` for no verdict yet.
 
+Task analytics (ruling 185), counted where they happen, so a panel sums
+them over the factoryd pods:
+
+- `factory.task.outcome{project,state,model_alias,attempts,merge_rule}`:
+  once per task at `Finish`, `state` done, failed or closed. `project`
+  and `merge_rule` come from the repository's project row (the repository
+  and `human` without one), `model_alias` is the alias of the task's last
+  session (`tasks.model_alias`, set with each `sessions` row; `none` for
+  a task that ran none, a roll), `attempts` its sessions.
+- `factory.task.cost{model_alias,outcome}`: the task's `spent_eur` at
+  `Finish`, in EUR, buckets 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5 and
+  10; `outcome` is `merged` for a done task with a pull request, else the
+  final state. Spend settled after `Finish` (LiteLLM's late batches) is
+  not in it.
+- `factory.review.verdict{verdict,strict_improvement,round}`: every
+  model review answer, `verdict` approve, concerns or `none` (refused,
+  failed or invalid), `strict_improvement` true, false or `unset`, `round`
+  the review's round on the task. A roll's review asks no model and is
+  not counted.
+- `factory.human.intervention{kind}`: `approve`, `request_changes` and
+  `reject` on a console merge card, `alert_verdict_click` on the console,
+  `escalation_answer` (a writer's new comment on a task waiting for a
+  human, or waiting for its poster) and `poster_answer` (the poster's new
+  comment on a task waiting for the poster) from the Forgejo intake, so
+  answers typed in Forgejo count as well as the console's, and
+  `extra_time` when a human's answer raised the task's agent time.
+  Resource approvals are not task interventions and are not counted.
+- `factory.task.reverted{project}`: the daily revert pass (at boot, then
+  every 24 hours) sets `tasks.reverted_at` on a done agent task (a pull
+  request, not a roll) finished in the last 14 days when either a pull
+  request merged into `main` of the same repository after the task
+  finished, and within 14 days of it, undoes every file the task's pull
+  request changed (for each such file it adds exactly the lines the task
+  removed and removes exactly the lines it added, context and positions
+  aside; more files besides are allowed, a file left alone or changed
+  otherwise is no revert, a diff over 1 MiB is never judged), or the
+  task's alert is filed again (the SigNoz intake's refile) after the task
+  finished and within 14 days. Each mark counts once.
+
 ### factory-gateway
 
 Spans: a server span per request (`otelhttp`, `/healthz` not traced),

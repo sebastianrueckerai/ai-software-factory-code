@@ -450,14 +450,15 @@ var _ PolicyStore = (*PGStore)(nil)
 // Aliases are the ladder's models as the gateway sees them: without the
 // opencode provider prefix ("factory/coding-cheap" is "coding-cheap").
 func (l ModelLadder) Aliases() []string {
-	var out []string
-	for _, m := range []string{l.Start, l.Stronger} {
-		if _, alias, ok := strings.Cut(m, "/"); ok {
-			m = alias
-		}
-		out = append(out, m)
+	return []string{aliasOf(l.Start), aliasOf(l.Stronger)}
+}
+
+// aliasOf is model without its opencode provider prefix.
+func aliasOf(model string) string {
+	if _, alias, ok := strings.Cut(model, "/"); ok {
+		return alias
 	}
-	return out
+	return model
 }
 
 // SourceConfig is the source of a task filed for a refused configuration

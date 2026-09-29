@@ -69,6 +69,12 @@ type Task struct {
 	// Parent is the task whose issue a report task reads and comments
 	// on (ruling 185); "" for every other task.
 	Parent string
+	// ModelAlias is the alias of the task's last session's model, ""
+	// before its first.
+	ModelAlias string
+	// RevertedAt is when the daily revert pass found the task's merged
+	// work undone (RevertPass); nil while it holds.
+	RevertedAt *time.Time
 }
 
 // Standing is the issue author's standing (ruling 152); "" for a task
@@ -147,6 +153,9 @@ type Session struct {
 	Findings        []string
 	RestartState    []byte
 	CreatedAt       time.Time
+	// Model is the gateway alias the session runs on; inserting the
+	// session makes it the task's ModelAlias.
+	Model string
 }
 
 // Store is the durable task and session state. The production implementation
@@ -376,7 +385,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, '')`
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -384,7 +393,8 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand,
-		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent); err != nil {
+		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
+		&t.ModelAlias, &t.RevertedAt); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -571,8 +581,12 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+taskColumns+` FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
+}
+
+// tasks runs query, which returns taskColumns, and scans its rows.
+func (s *PGStore) tasks(ctx context.Context, query string, args ...any) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -681,9 +695,10 @@ func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
 		created = sess.CreatedAt
 	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO sessions (id, task_id, parent_session_id, findings, restart_state, created_at)
-		 VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, COALESCE($6, now()))`,
-		sess.ID, sess.TaskID, sess.ParentSessionID, findings, restart, created)
+		`WITH s AS (INSERT INTO sessions (id, task_id, parent_session_id, findings, restart_state, created_at, model)
+		            VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, COALESCE($6, now()), $7))
+		 UPDATE tasks SET model_alias = $7 WHERE id = $2`,
+		sess.ID, sess.TaskID, sess.ParentSessionID, findings, restart, created, sess.Model)
 	return err
 }
 

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // Intake is the Forgejo webhook endpoint: every issue becomes a task row
@@ -43,6 +44,8 @@ type Intake struct {
 	}
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
+	// Metrics counts the answers among the comments; nil counts none.
+	Metrics *telemetry.Metrics
 
 	trustMu sync.Mutex
 	trust   map[string]time.Time // repo + user → trusted until
@@ -683,7 +686,7 @@ func (in *Intake) closeSuggestion(ctx context.Context, t Task) error {
 // the heal passes that read the same state off Forgejo, and not again on
 // every pass while the workflow winds the task down.
 func (in *Intake) decide(ctx context.Context, taskID, kind, author string, number int64) error {
-	e, err := in.record(ctx, IntakeEvent{TaskID: taskID, Kind: kind, Author: author, CommentID: number, Trusted: true})
+	e, _, err := in.record(ctx, IntakeEvent{TaskID: taskID, Kind: kind, Author: author, CommentID: number, Trusted: true})
 	if err != nil {
 		return err
 	}
@@ -812,40 +815,55 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 	if !onPR && !trusted && t.Author != "" && c.Author == t.Author {
 		kind = IntakePosterComment // information for a request, whatever the author's access; never authority
 	}
-	e, err := in.record(ctx, IntakeEvent{
+	e, fresh, err := in.record(ctx, IntakeEvent{
 		TaskID: t.ID, Kind: kind, Author: c.Author, Body: c.Body, DeliveryID: delivery, CommentID: c.ID, Trusted: trusted,
 	})
 	if err != nil {
 		return err
 	}
+	if fresh && !onPR {
+		in.countAnswer(ctx, t, c.Author, trusted)
+	}
 	return in.signalEvent(ctx, t.ID, e, number)
 }
 
-// record stores e once and returns the stored row: the one just inserted,
+// countAnswer counts a new issue comment that answers a task waiting on a
+// human: the poster's on a task waiting for the poster, a writer's on a
+// task waiting for a human's answer or for the poster.
+func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool) {
+	switch {
+	case t.Status == "waiting-poster" && author == t.Author:
+		in.Metrics.Intervened(ctx, InterventionPosterAnswer)
+	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
+		in.Metrics.Intervened(ctx, InterventionEscalationAnswer)
+	}
+}
+
+// record stores e once and returns the stored row, and whether it is new: the one just inserted,
 // or the one an earlier delivery of the same webhook or a heal-pass
 // re-read of the same comment left, so that a signal that failed then is
 // sent now.
-func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, error) {
+func (in *Intake) record(ctx context.Context, e IntakeEvent) (IntakeEvent, bool, error) {
 	id, err := in.Store.InsertIntakeEvent(ctx, e)
 	if err != nil {
-		return IntakeEvent{}, err
+		return IntakeEvent{}, false, err
 	}
 	if id != 0 {
 		e.ID = id
-		return e, nil
+		return e, true, nil
 	}
 	events, err := in.Store.IntakeEvents(ctx, e.TaskID)
 	if err != nil {
-		return IntakeEvent{}, err
+		return IntakeEvent{}, false, err
 	}
 	i := slices.IndexFunc(events, func(have IntakeEvent) bool {
 		return (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
 			(e.CommentID != 0 && have.Kind == e.Kind && have.CommentID == e.CommentID)
 	})
 	if i < 0 {
-		return IntakeEvent{}, fmt.Errorf("intake event for task %s (%s, delivery %q, comment %d) recorded before but not found", e.TaskID, e.Kind, e.DeliveryID, e.CommentID)
+		return IntakeEvent{}, false, fmt.Errorf("intake event for task %s (%s, delivery %q, comment %d) recorded before but not found", e.TaskID, e.Kind, e.DeliveryID, e.CommentID)
 	}
-	return events[i], nil
+	return events[i], false, nil
 }
 
 // signalEvent delivers a trusted event not yet signalled to the task's
@@ -943,7 +961,7 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if err != nil {
 		return err
 	}
-	e, err := in.record(ctx, IntakeEvent{
+	e, _, err := in.record(ctx, IntakeEvent{
 		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery, Trusted: trusted,
 	})
 	if err != nil {

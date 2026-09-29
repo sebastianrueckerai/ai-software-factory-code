@@ -20,8 +20,8 @@ type SessionRecorder struct {
 	history bytes.Buffer
 }
 
-func NewSessionRecorder(ctx context.Context, store Store, objects ObjectStore, taskID, sessionID, parentSessionID string) (*SessionRecorder, error) {
-	if err := store.InsertSession(ctx, Session{ID: sessionID, TaskID: taskID, ParentSessionID: parentSessionID}); err != nil {
+func NewSessionRecorder(ctx context.Context, store Store, objects ObjectStore, taskID, sessionID, parentSessionID, model string) (*SessionRecorder, error) {
+	if err := store.InsertSession(ctx, Session{ID: sessionID, TaskID: taskID, ParentSessionID: parentSessionID, Model: aliasOf(model)}); err != nil {
 		return nil, err
 	}
 	return &SessionRecorder{store: store, objects: objects, taskID: taskID, id: sessionID}, nil

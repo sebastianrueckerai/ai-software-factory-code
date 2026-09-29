@@ -237,7 +237,7 @@ func main() {
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget, Projects: store,
+		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget, Projects: store, Metrics: metrics,
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
 	// runs and its rolls are watched, its writers log into the console
@@ -296,6 +296,8 @@ func main() {
 		Registry: &factoryd.Registry{BaseURL: forgejo.BaseURL,
 			Credential: factoryd.PullSecretCredential(kube, kube.Namespace(), env("PULL_SECRET", "forgejo-registry"), env("REGISTRY_HOST", "git.aisoftwarefactory.world"))}}
 	go roller.Run(ctx)
+	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
+	go revertPass.Loop(ctx)
 	go ciCollector.Run(ctx)
 	go runner.LeaseLoop(ctx, 10*time.Second)
 
@@ -373,6 +375,7 @@ func main() {
 		Projects:   store,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,
+		Metrics:    metrics,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

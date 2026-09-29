@@ -323,6 +323,10 @@ func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64
 
 func (s *fakeStore) InsertSession(ctx context.Context, sess Session) error {
 	s.sessions[sess.ID] = sess
+	if t, ok := s.tasks[sess.TaskID]; ok {
+		t.ModelAlias = sess.Model
+		s.tasks[sess.TaskID] = t
+	}
 	return nil
 }
 
