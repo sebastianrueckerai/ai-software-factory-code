@@ -23,13 +23,16 @@ const plantedDiff = "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n"
 	"new file mode 100644\n" +
 	"--- /dev/null\n" +
 	"+++ b/cfg/app.env\n" +
-	"@@ -0,0 +1,6 @@\n" +
+	"@@ -0,0 +1,9 @@\n" +
 	"+DATABASE_URL=postgres://app:s3cretpass@db:5432/app\n" +
 	"+AWS_KEY=AKIAIOSFODNN7EXAMPLE\n" +
 	"+GH=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789\n" +
 	"+GL=glpat-aBcDeFgHiJkLmNoPqRsT\n" +
 	"+OPENAI=sk-proj-aBcDeFgHiJkLmNoPqRsTuV\n" +
 	"+curl -H 'Authorization: Bearer abcdef0123456789xyz' host\n" +
+	"+DB_PASSWORD=envpass0001\n" +
+	"+  password: yamlpass0001\n" +
+	"+api-key: \"apikeyvalue01\"\n" +
 	"diff --git a/old.txt b/old.txt\n" +
 	"deleted file mode 100644\n" +
 	"--- a/old.txt\n" +
@@ -49,6 +52,9 @@ func TestScanDiffFindsPlantedSecrets(t *testing.T) {
 		{File: "cfg/app.env", Line: 4, Kind: KindGitLab},
 		{File: "cfg/app.env", Line: 5, Kind: KindAPIKey},
 		{File: "cfg/app.env", Line: 6, Kind: KindCredential},
+		{File: "cfg/app.env", Line: 7, Kind: KindAssignment},
+		{File: "cfg/app.env", Line: 8, Kind: KindAssignment},
+		{File: "cfg/app.env", Line: 9, Kind: KindAssignment},
 	}
 	if got := ScanDiff(plantedDiff); !slices.Equal(got, want) {
 		t.Fatalf("ScanDiff =\n%+v\nwant\n%+v", got, want)
@@ -59,14 +65,33 @@ func TestScanDiffCleanDiff(t *testing.T) {
 	clean := "diff --git a/internal/f/f.go b/internal/f/f.go\n" +
 		"--- a/internal/f/f.go\n" +
 		"+++ b/internal/f/f.go\n" +
-		"@@ -1,2 +1,6 @@\n" +
+		"@@ -1,2 +1,10 @@\n" +
 		" package f\n" +
 		"+\treq.Header.Set(\"Authorization\", \"Bearer \"+m.Token)\n" +
 		"+\t// missing bearer token\n" +
 		"+\tremote := \"ssh://git@forgejo.example/sf/code.git\"\n" +
 		"+\thead := \"3f786850e387550fdab836ed7e6dc881de23001b\"\n" +
-		"+\tpassword := os.Getenv(\"PASSWORD\")\n"
+		"+\tpassword := os.Getenv(\"PASSWORD\")\n" +
+		"+\t\tPassword: cfg.Password,\n" +
+		"+  password: ${DB_PASSWORD}\n" +
+		"+PASSWORD=<changeme>\n" +
+		"+  secretName: forgejo-merge-token\n"
 	if got := ScanDiff(clean); len(got) != 0 {
 		t.Fatalf("ScanDiff = %+v", got)
+	}
+}
+
+// DiffSecrets is every secret value ScanDiff sees on an added line, for a
+// scrubber: the value alone, not its key or its quotes; a PEM block's
+// body lines too.
+func TestDiffSecrets(t *testing.T) {
+	want := []string{"hunter2hunter2", "MIIEowIBAAKCAQEA", "s3cretpass", "AKIAIOSFODNN7EXAMPLE",
+		"ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789", "glpat-aBcDeFgHiJkLmNoPqRsT", "sk-proj-aBcDeFgHiJkLmNoPqRsTuV", "abcdef0123456789xyz",
+		"envpass0001", "yamlpass0001", "apikeyvalue01"}
+	if got := DiffSecrets(plantedDiff); !slices.Equal(got, want) {
+		t.Fatalf("DiffSecrets =\n%q\nwant\n%q", got, want)
+	}
+	if got := New(DiffSecrets(plantedDiff)...).String("it quotes hunter2hunter2 and envpass0001"); got != "it quotes [redacted] and [redacted]" {
+		t.Fatalf("scrubbed = %q", got)
 	}
 }

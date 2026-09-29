@@ -43,6 +43,7 @@ const (
 	auditNoVerdict     = "the audit gave no verdict"
 	auditNotSwitchedOn = "the project does not switch the audit on"
 	maxAuditFindings   = 20
+	maxPreCheck        = 50
 	maxAuditField      = 500
 )
 
@@ -74,7 +75,6 @@ func parseAudit(content string) ([]AuditFinding, string) {
 		Findings []AuditFinding `json:"findings"`
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(&answer); err != nil {
 		return nil, "the answer is not one JSON object: " + err.Error()
 	}
@@ -87,6 +87,7 @@ func parseAudit(content string) ([]AuditFinding, string) {
 	var out []AuditFinding
 	for _, f := range answer.Findings {
 		f.Item, f.File, f.Why = strings.TrimSpace(f.Item), strings.TrimSpace(f.File), strings.TrimSpace(f.Why)
+		f.Line = max(f.Line, 0)
 		if (f.Item != "" || f.Why != "") && len(out) < maxAuditFindings {
 			out = append(out, f)
 		}
@@ -121,20 +122,26 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	}
 	res := AuditResult{Model: factoryModel(v.Document, t, policy.PurposeAudit)}
 	noVerdict := func(why string) {
-		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: textutil.Truncate(why, maxAuditField)})
+		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) {
 			return AuditResult{}, err
 		}
 		noVerdict("the audit did not run: " + errMessage(err))
-		return r.recordAudit(ctx, t, pr, commit, res), nil
+		return r.recordAudit(ctx, t, pr, commit, res, redact.New()), nil
 	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, reviewDiffMax)
 	if err != nil {
 		return AuditResult{}, err
 	}
-	for _, h := range redact.ScanDiff(diff) {
+	hits := redact.ScanDiff(diff)
+	for i, h := range hits {
+		if i == maxPreCheck {
+			res.Findings = append(res.Findings, AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", len(hits)-maxPreCheck),
+				Why: fmt.Sprintf("the card lists the first %d", maxPreCheck)})
+			break
+		}
 		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
@@ -158,19 +165,21 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	default:
 		found, why := parseAudit(content)
 		if why != "" {
-			noVerdict(why + ": " + textutil.Truncate(content, 300))
+			noVerdict(fmt.Sprintf("%s (an answer of %d bytes)", why, len(content)))
 		}
-		scrub := redact.New()
-		for _, f := range found {
-			res.Findings = append(res.Findings, AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField),
-				File: textutil.Truncate(f.File, maxAuditField), Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)})
-		}
+		res.Findings = append(res.Findings, found...)
 	}
-	return r.recordAudit(ctx, t, pr, commit, res), nil
+	return r.recordAudit(ctx, t, pr, commit, res, redact.New(redact.DiffSecrets(diff)...)), nil
 }
 
-// recordAudit settles res's verdict and puts it on the timeline.
-func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, res AuditResult) AuditResult {
+// recordAudit scrubs every text of res's findings, the model's and the
+// errors', of the diff's secret values and the generic shapes, settles
+// its verdict and puts it on the timeline.
+func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, res AuditResult, scrub *redact.Scrubber) AuditResult {
+	for i, f := range res.Findings {
+		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(scrub.String(f.File), maxAuditField),
+			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
+	}
 	res.Verdict = AuditClear
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings

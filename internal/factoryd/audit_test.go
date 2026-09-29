@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
@@ -56,8 +57,10 @@ func TestParseAudit(t *testing.T) {
 		"empty":                {"", nil, "the answer is not one JSON object"},
 		"unknown verdict":      {`{"verdict":"pass"}`, nil, `unknown verdict "pass"`},
 		"findings without any": {`{"verdict":"findings","findings":[]}`, nil, "verdict findings names none"},
-		"extra field":          {`{"verdict":"clear","merge":true}`, nil, "the answer is not one JSON object"},
-		"trailing text":        {`{"verdict":"clear"} ok`, nil, "the answer is not one JSON object"},
+		"extra field":          {`{"verdict":"clear","summary":"nothing touched"}`, nil, ""},
+		"negative line": {`{"verdict":"findings","findings":[{"item":"RBAC","file":"k8s/rbac.yaml","line":-3,"why":"a new Role"}]}`,
+			[]AuditFinding{{Item: "RBAC", File: "k8s/rbac.yaml", Why: "a new Role"}}, ""},
+		"trailing text": {`{"verdict":"clear"} ok`, nil, "the answer is not one JSON object"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, why := parseAudit(tc.in)
@@ -183,5 +186,44 @@ func TestGateAuditSkipsAProjectWithoutIt(t *testing.T) {
 	}
 	if step := timelineStep(t, objects, "t1", "stage_skipped"); step["stage"] != "audit" || step["reason"] != auditNotSwitchedOn {
 		t.Fatalf("stage_skipped = %v", step)
+	}
+}
+
+// The planted secret's value reaches neither the result (the card) nor
+// the timeline, whatever the model echoes: in an unparseable answer, in a
+// finding's file or why.
+func TestGateAuditNeverShowsThePlantedSecret(t *testing.T) {
+	for name, content := range map[string]string{
+		"unparseable": `I cannot answer in JSON. The diff sets password = "hunter2hunter2" in a test.`,
+		"finding": `{"verdict":"findings","findings":[{"item":"secrets hunter2hunter2","file":"internal/x/x_test.go hunter2hunter2","line":4,` +
+			`"why":"password = \"hunter2hunter2\""}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ll := &fakeLiteLLM{content: content}
+			r, objects := newAuditRunner(t, &gateForgejo{diff: secretTestDiff}, ll, true)
+			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+			res := getInto[AuditResult](t, val, err)
+			b, _ := json.Marshal(res)
+			if res.Verdict != AuditFindings || len(res.Findings) != 2 || strings.Contains(string(b), "hunter2") {
+				t.Fatalf("audit = %s", b)
+			}
+			if tl := timeline(t, objects); strings.Contains(tl, "hunter2") {
+				t.Fatalf("timeline = %s", tl)
+			}
+		})
+	}
+}
+
+// The pre-check's hits are capped at 50 findings and one that counts the
+// rest.
+func TestGateAuditCapsThePreCheck(t *testing.T) {
+	diff := "diff --git a/f.env b/f.env\n--- a/f.env\n+++ b/f.env\n@@ -0,0 +1,60 @@\n" + strings.Repeat("+PASSWORD=envpass0001\n", 60)
+	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	res := getInto[AuditResult](t, val, err)
+	if len(res.Findings) != 51 || res.Findings[49].Line != 50 ||
+		res.Findings[50] != (AuditFinding{Item: "secret in the diff: 10 more pre-check hits", Why: "the card lists the first 50"}) {
+		t.Fatalf("findings = %d, last %+v", len(res.Findings), res.Findings[len(res.Findings)-1])
 	}
 }
