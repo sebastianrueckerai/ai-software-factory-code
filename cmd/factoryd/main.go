@@ -75,17 +75,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("CONFIG_REPO: %v", err)
 	}
-	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir}
-	// a ladder model outside the coder class would be refused mid-task
-	policyLoader := &factoryd.PolicyLoader{
-		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir},
-		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve,
-		ReadFailing: configAlarm.ReadFailing}
-	if err := policyLoader.Boot(context.Background()); err != nil {
-		log.Fatalf("config: %v", err)
-	}
-	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
-
 	otelProviders, err := telemetry.Setup(context.Background(), "factoryd")
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
@@ -99,6 +88,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
+	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics}
+	// a ladder model outside the coder class would be refused mid-task
+	policyLoader := &factoryd.PolicyLoader{
+		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir},
+		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve,
+		ReadFailing: configAlarm.ReadFailing}
+	if err := policyLoader.Boot(context.Background()); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
+
 	openActivities, err := factoryd.NewOpenActivities(metrics.Meter)
 	if err != nil {
 		log.Fatalf("telemetry: %v", err)
@@ -116,7 +116,7 @@ func main() {
 		AccessKey: mustEnv("S3_ACCESS_KEY_ID"),
 		SecretKey: mustEnv("S3_SECRET_ACCESS_KEY"),
 	}
-	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm}
+	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm, Metrics: metrics}
 	// the gateway-factoryd token: the gateway's escalation hand-over to
 	// factoryd, and factoryd's model calls on a task's account
 	gatewayURL, gatewayToken := env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"), mustEnv("GATEWAY_TOKEN")

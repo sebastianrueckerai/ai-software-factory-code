@@ -1505,11 +1505,15 @@ Task analytics (ruling 185), counted where they happen, so a panel sums
 them over the factoryd pods:
 
 - `factory.task.outcome{project,state,model_alias,attempts,merge_rule}`:
-  once per task at `Finish`, `state` done, failed or closed. `project`
+  once per task on every path that ends it (`Complete`, which `Finish`
+  and the heal pass's failure of a malformed task go through, a closed
+  suggestion, a closed human-lane issue, a resolved config task), so it
+  equals the tasks turned done, failed or closed. `state` is that final
+  status. `project`
   and `merge_rule` come from the repository's project row (the repository
   and `human` without one), `model_alias` is the alias of the task's last
   session (`tasks.model_alias`, set with each `sessions` row; `none` for
-  a task that ran none, a roll), `attempts` its sessions.
+  a task that ran none: a roll, a human-lane task), `attempts` its sessions.
 - `factory.task.cost{model_alias,outcome}`: the task's `spent_eur` at
   `Finish`, in EUR, buckets 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5 and
   10; `outcome` is `merged` for a done task with a pull request, else the
@@ -1520,14 +1524,18 @@ them over the factoryd pods:
   failed or invalid), `strict_improvement` true, false or `unset`, `round`
   the review's round on the task. A roll's review asks no model and is
   not counted.
-- `factory.human.intervention{kind}`: `approve`, `request_changes` and
-  `reject` on a console merge card, `alert_verdict_click` on the console,
-  `escalation_answer` (a writer's new comment on a task waiting for a
-  human, or waiting for its poster) and `poster_answer` (the poster's new
-  comment on a task waiting for the poster) from the Forgejo intake, so
-  answers typed in Forgejo count as well as the console's, and
-  `extra_time` when a human's answer raised the task's agent time.
-  Resource approvals are not task interventions and are not counted.
+- `factory.human.intervention{kind}`: from the Forgejo intake when its
+  event row is new (a redelivery or the heal pass's re-read counts
+  nothing), so the console's actions (it acts as the human in Forgejo) and
+  the same actions taken in Forgejo count alike: `approve` (a writer's
+  approving review of a factory pull request), `request_changes` (a
+  writer's review asking for changes), `reject` (a human closing a factory
+  pull request without a merge), `escalation_answer` (a writer's new
+  comment on a task waiting for a human, or waiting for its poster),
+  `poster_answer` (the poster's new comment on a task waiting for the
+  poster); `alert_verdict_click` from the console, and `extra_time` when
+  a human's answer raised the task's agent time. Uncounted: a human merging
+  a factory pull request in Forgejo directly, resource approvals.
 - `factory.task.reverted{project}`: the daily revert pass (at boot, then
   every 24 hours) sets `tasks.reverted_at` on a done agent task (a pull
   request, not a roll) finished in the last 14 days when either a pull
@@ -1536,7 +1544,8 @@ them over the factoryd pods:
   request changed (for each such file it adds exactly the lines the task
   removed and removes exactly the lines it added, context and positions
   aside; more files besides are allowed, a file left alone or changed
-  otherwise is no revert, a diff over 1 MiB is never judged), or the
+  otherwise is no revert, a quoted path is keyed by its whole header line,
+  a diff over 1 MiB is never judged), or the
   task's alert is filed again (the SigNoz intake's refile) after the task
   finished and within 14 days. Each mark counts once.
 

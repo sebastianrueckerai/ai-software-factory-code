@@ -1618,8 +1618,9 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 	return out
 }
 
-// The console counts a human's decision on a merge card and a verdict
-// click once each, only when it took effect.
+// The console counts only the verdict click, once, when it took effect:
+// its merge-card decisions act as the human in Forgejo and are counted by
+// the intake, like the same decisions made in Forgejo.
 func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -1643,7 +1644,7 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	for range 2 {
 		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
 	}
-	want := map[string]int64{"approve": 1, "request_changes": 1, "reject": 1, "alert_verdict_click": 1}
+	want := map[string]int64{"alert_verdict_click": 1}
 	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("interventions = %v, want %v", got, want)
 	}

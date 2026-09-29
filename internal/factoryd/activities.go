@@ -904,7 +904,6 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}
-	r.countFinish(ctx, t, final)
 	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			log.Printf("task %s: comment failure reason: %v", taskID, err)

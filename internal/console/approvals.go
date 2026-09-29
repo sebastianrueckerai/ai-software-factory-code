@@ -121,7 +121,6 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("console: %s approved PR #%d of %s at %s", user, a.PRNumber, a.TaskID, spec.HeadSHA)
-		c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionApprove)
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -167,7 +166,6 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 			if !c.decided(w, r, a, "denied", "changes requested: "+note) {
 				return
 			}
-			c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionRequestChanges)
 		case "reject":
 			pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 			if err := c.asUser(r, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, a.PRNumber),
@@ -183,7 +181,6 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 			if !c.decided(w, r, a, "denied", "rejected: "+note) {
 				return
 			}
-			c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionReject)
 		default:
 			http.Error(w, "choose request changes or reject", http.StatusBadRequest)
 			return

@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -33,7 +35,7 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	merged.Usage.Attempts = 2
 	r, store, _ := newActivityRunner(t, merged, fj)
 	m, reader := testMetrics(t)
-	r.cfg.Metrics = m
+	r.completion.Metrics = m
 	store.projects = []Project{{Name: "demo", Repository: "sf/repo", MergeRule: policy.MergeAuto}}
 	for range 2 {
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
@@ -187,5 +189,69 @@ func TestAnswersCountAsInterventions(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=escalation_answer": 2,
 		"kind=poster_answer":     1,
+	})
+}
+
+// The endings outside a workflow count their outcome as Finish does: a
+// suggestion whose issue a writer closed, and a human-lane task whose issue
+// closed.
+func TestIntakeEndingsCountTheOutcome(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	in.Metrics = m
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", IssueNumber: 30, Kind: "agent", Author: "visitor"}
+	store.tasks["t-h"] = Task{ID: "t-h", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 31, Kind: "human"}
+	for _, issue := range []int{30, 31, 31} {
+		b, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": issue, "user": map[string]string{"login": "visitor"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"}, "sender": map[string]string{"login": "sebastian"}})
+		if rr := postWebhook(in, "issues", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("close #%d: status %d", issue, rr.Code)
+		}
+	}
+	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
+		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-code,state=closed": 1,
+		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-code,state=done":   1,
+	})
+}
+
+// A human's decision on a factory pull request counts when its webhook
+// event is new, from the console (which acts as the human in Forgejo) and
+// from Forgejo alike: an approving review, a review asking for changes,
+// and a close without a merge. The bot's close, a merge and an untrusted
+// reviewer count nothing.
+func TestIntakeCountsPullRequestDecisions(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	in.Metrics = m
+	store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 21}
+	send := func(event, action, sender string, merged bool, delivery string) {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{
+			"action": action,
+			"pull_request": map[string]any{"number": 21, "merged": merged,
+				"head": map[string]any{"ref": "factory/t-pr", "repo": map[string]any{"full_name": "factory-agent/ai-software-factory-code"}}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": sender},
+			"review":     map[string]any{"content": "r"},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/webhooks/forgejo", bytes.NewReader(b))
+		req.Header.Set("X-Forgejo-Event-Type", event)
+		req.Header.Set("X-Forgejo-Signature", sign(webhookSecret, b))
+		req.Header.Set("X-Forgejo-Delivery", delivery)
+		rr := httptest.NewRecorder()
+		in.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s %s: status %d: %s", event, sender, rr.Code, rr.Body)
+		}
+	}
+	send("pull_request_review_approved", "reviewed", "sebastian", false, "d1")
+	send("pull_request_review_approved", "reviewed", "sebastian", false, "d1")
+	send("pull_request_review_approved", "reviewed", "mallory", false, "d2")
+	send("pull_request_review_rejected", "reviewed", "sebastian", false, "d3")
+	send("pull_request", "closed", "factory-agent", false, "d4")
+	send("pull_request", "closed", "sebastian", false, "d5")
+	send("pull_request", "closed", "sebastian", false, "d6")
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
+		"kind=approve": 1, "kind=request_changes": 1, "kind=reject": 1,
 	})
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // PolicyStore holds the loaded configuration versions, the holds and the
@@ -476,6 +477,7 @@ type ConfigBook interface {
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	projectLookup
 }
 
 // ConfigAlarm raises a refused commit of the configuration tree (ruling
@@ -487,6 +489,8 @@ type ConfigAlarm struct {
 	// Repo holds the tree in directory Dir.
 	Repo Repo
 	Dir  string
+	// Metrics counts the outcome of the tasks Resolve ends; nil counts none.
+	Metrics *telemetry.Metrics
 }
 
 // Raise is PolicyLoader.Rejected. The alerts row, the dedupe key, is
@@ -556,6 +560,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
 			return err
 		}
+		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
 		if err != nil {
 			return err

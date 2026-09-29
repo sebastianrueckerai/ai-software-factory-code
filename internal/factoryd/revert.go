@@ -35,10 +35,11 @@ type RevertBook interface {
 	// MarkReverted sets task id's reverted_at to at unless it has one,
 	// and reports whether it set it.
 	MarkReverted(ctx context.Context, id string, at time.Time) (bool, error)
-	// MarkRefiledFixes marks every done task whose alert's fingerprint
-	// was filed again after the task finished and within within of it,
-	// at the first refiling, and returns the tasks it marked.
-	MarkRefiledFixes(ctx context.Context, within time.Duration) ([]Task, error)
+	// MarkRefiledFixes marks every done task finished since since whose
+	// alert's fingerprint was filed again after the task finished and
+	// within within of it, at the first refiling, and returns the tasks it
+	// marked.
+	MarkRefiledFixes(ctx context.Context, since time.Time, within time.Duration) ([]Task, error)
 	projectLookup
 }
 
@@ -73,7 +74,8 @@ func (p *RevertPass) Loop(ctx context.Context) {
 // Run is one pass. Candidates reach back one period more than the window,
 // so a revert merged just inside the window a day before is still found.
 func (p *RevertPass) Run(ctx context.Context) error {
-	tasks, err := p.Book.RevertCandidates(ctx, p.Now().Add(-RevertWindow-RevertEvery))
+	since := p.Now().Add(-RevertWindow - RevertEvery)
+	tasks, err := p.Book.RevertCandidates(ctx, since)
 	if err != nil {
 		return err
 	}
@@ -87,7 +89,7 @@ func (p *RevertPass) Run(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("%s: %w", repository, err))
 		}
 	}
-	refiled, err := p.Book.MarkRefiledFixes(ctx, RevertWindow)
+	refiled, err := p.Book.MarkRefiledFixes(ctx, since, RevertWindow)
 	for _, t := range refiled {
 		log.Printf("revert pass: task %s (%s) reverted: its alert was filed again after the fix", t.ID, t.Repository)
 		p.count(ctx, t)
@@ -172,7 +174,7 @@ func (p *RevertPass) count(ctx context.Context, t Task) {
 type changedLines struct{ added, removed map[string]int }
 
 // diffFiles reads a git diff into its files (the "diff --git" header's
-// new path) and their changed lines; context lines and positions are left
+// new path, the whole header for a quoted path) and their changed lines; context lines and positions are left
 // out.
 func diffFiles(diff string) map[string]changedLines {
 	files := map[string]changedLines{}
@@ -181,13 +183,13 @@ func diffFiles(diff string) map[string]changedLines {
 	for line := range strings.SplitSeq(diff, "\n") {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
-			i := strings.LastIndex(line, " b/")
 			hunk = false
-			if i < 0 {
-				cur = changedLines{}
-				continue
+			// git quotes a path with spaces or non-ASCII characters; the
+			// same path gives the same header in both diffs
+			path := line
+			if i := strings.LastIndex(line, " b/"); i >= 0 && !strings.HasSuffix(line, `"`) {
+				path = line[i+3:]
 			}
-			path := line[i+3:]
 			if _, ok := files[path]; !ok {
 				files[path] = changedLines{added: map[string]int{}, removed: map[string]int{}}
 			}
@@ -237,17 +239,17 @@ func (s *PGStore) MarkReverted(ctx context.Context, id string, at time.Time) (bo
 	return n == 1, err
 }
 
-func (s *PGStore) MarkRefiledFixes(ctx context.Context, within time.Duration) ([]Task, error) {
+func (s *PGStore) MarkRefiledFixes(ctx context.Context, since time.Time, within time.Duration) ([]Task, error) {
 	return s.tasks(ctx, `UPDATE tasks SET reverted_at = r.first
 		FROM (SELECT a1.task_id, min(a2.raised_at) AS first
 		      FROM alerts a1
 		      JOIN alerts a2 ON a2.kind = a1.kind AND a2.fingerprint = a1.fingerprint AND a2.id > a1.id
 		      JOIN tasks f ON f.id = a1.task_id
-		      WHERE a1.kind = $1 AND f.status = 'done' AND f.reverted_at IS NULL
+		      WHERE a1.kind = $1 AND f.status = 'done' AND f.reverted_at IS NULL AND f.finished_at >= $3
 		        AND a2.raised_at > f.finished_at AND a2.raised_at <= f.finished_at + make_interval(secs => $2)
 		      GROUP BY a1.task_id) r
 		WHERE tasks.id = r.task_id AND tasks.reverted_at IS NULL
-		RETURNING `+taskColumns, AlertSigNoz, within.Seconds())
+		RETURNING `+taskColumns, AlertSigNoz, within.Seconds(), since)
 }
 
 var _ RevertBook = (*PGStore)(nil)

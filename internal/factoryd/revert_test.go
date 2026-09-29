@@ -54,6 +54,22 @@ index 3333333..0000000
 -func TestMax(t *testing.T) {}
 `
 
+const quotedDiff = `diff --git "a/my notes.md" "b/my notes.md"
+--- "a/my notes.md"
++++ "b/my notes.md"
+@@ -1 +1 @@
+-old note
++new note
+`
+
+const quotedRevert = `diff --git "a/my notes.md" "b/my notes.md"
+--- "a/my notes.md"
++++ "b/my notes.md"
+@@ -1 +1 @@
+-new note
++old note
+`
+
 const readmeDiff = `diff --git a/README.md b/README.md
 --- a/README.md
 +++ b/README.md
@@ -83,12 +99,20 @@ func TestRevertsRule(t *testing.T) {
 -func Max() int { return 64 }
 +func Max() int { return 32 }
 `, false},
-		"another file only": {readmeDiff, false},
-		"nothing":           {"", false},
+		"another file only":        {readmeDiff, false},
+		"a quoted path left alone": {revertSlug + revertTest, false},
+		"nothing":                  {"", false},
 	} {
-		if got := reverts(agentDiff, tc.later); got != tc.want {
+		agent := agentDiff
+		if strings.HasPrefix(name, "a quoted path") {
+			agent += quotedDiff
+		}
+		if got := reverts(agent, tc.later); got != tc.want {
 			t.Errorf("%s: reverts = %v, want %v", name, got, tc.want)
 		}
+	}
+	if !reverts(agentDiff+quotedDiff, revertSlug+revertTest+quotedRevert) {
+		t.Error("the revert of a quoted path too is no revert")
 	}
 	if reverts("", revertSlug) {
 		t.Error("an empty agent diff is reverted by anything")
@@ -124,7 +148,7 @@ func (b *fakeRevertBook) MarkReverted(_ context.Context, id string, at time.Time
 	return false, nil
 }
 
-func (b *fakeRevertBook) MarkRefiledFixes(context.Context, time.Duration) ([]Task, error) {
+func (b *fakeRevertBook) MarkRefiledFixes(context.Context, time.Time, time.Duration) ([]Task, error) {
 	out := b.refiled
 	b.refiled = nil
 	return out, nil
@@ -294,14 +318,23 @@ func TestPGStoreRevertMarks(t *testing.T) {
 	alert("t-refiled-late", "fp2", day)
 	alert("t-fix-open", "fp3", 2*day)
 	alert("t-again", "fp3", day)
-	marked, err := s.MarkRefiledFixes(ctx, 14*day)
+	// finished before the pass's reach, refiled within its own 14 days
+	mk("t-hist", "done", SourceAlert, 14, 20*day)
+	mk("t-hist-refiled", "queued", SourceAlert, 0, 0)
+	alert("t-hist", "fp4", 21*day)
+	alert("t-hist-refiled", "fp4", 19*day)
+	since := time.Now().Add(-15 * day)
+	marked, err := s.MarkRefiledFixes(ctx, since, 14*day)
 	if err != nil || len(marked) != 1 || marked[0].ID != "t-fix" || marked[0].Repository != "sf/r" {
 		t.Fatalf("refiled = %+v, %v; want t-fix", marked, err)
 	}
 	if got, _, _ := s.Task(ctx, "t-fix"); got.RevertedAt == nil || time.Since(*got.RevertedAt) < day-time.Minute || time.Since(*got.RevertedAt) > day+time.Minute {
 		t.Fatalf("t-fix reverted_at = %v, want the refiled alert's raise a day ago", got.RevertedAt)
 	}
-	if again, err := s.MarkRefiledFixes(ctx, 14*day); err != nil || len(again) != 0 {
+	if got, _, _ := s.Task(ctx, "t-hist"); got.RevertedAt != nil {
+		t.Fatalf("t-hist reverted_at = %v, want none: it finished before the pass's reach", got.RevertedAt)
+	}
+	if again, err := s.MarkRefiledFixes(ctx, since, 14*day); err != nil || len(again) != 0 {
 		t.Fatalf("second pass = %+v, %v", again, err)
 	}
 

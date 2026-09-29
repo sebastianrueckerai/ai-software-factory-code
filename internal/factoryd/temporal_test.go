@@ -55,7 +55,14 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
-	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, newCompletion(store, fjURL, llURL))
+	m, reader := testMetrics(t)
+	completion := newCompletion(store, fjURL, llURL)
+	completion.Metrics = m
+	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent", Metrics: m}, completion)
+	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
+		"attempts=0,merge_rule=human,model_alias=none,project=no-slash,state=failed":                  1,
+		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-code,state=done": 1,
+	})
 	slices.Sort(wf.started)
 	if want := []string{"tc", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // Completion is the task completion path: flip the task to closing (the
@@ -22,6 +23,8 @@ type Completion struct {
 	Store   Store
 	Forgejo *Forgejo
 	LiteLLM *LiteLLMAdmin
+	// Metrics counts the completed task's outcome; nil counts none.
+	Metrics *telemetry.Metrics
 }
 
 // TokenName names the task's write token on the bot's fork; BaseTokenName
@@ -39,23 +42,24 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	if err := c.Store.TransitionTask(ctx, taskID, []string{"closing"}, finalStatus); err != nil {
 		return err
 	}
-	c.mirrorState(ctx, taskID, finalStatus)
+	c.finished(ctx, taskID, finalStatus)
 	return nil
 }
 
-// mirrorState looks up a completed task and swaps its linked Forgejo issue
-// onto exactly one state/* label, via the shared mirrorTaskState helper.
-// Mirroring failures are logged, never returned: Complete's own result must
+// finished counts a completed task's outcome and swaps its linked Forgejo
+// issue onto exactly one state/* label, via the shared mirrorTaskState
+// helper. Failures are logged, never returned: Complete's own result must
 // never depend on Forgejo being reachable.
-func (c *Completion) mirrorState(ctx context.Context, taskID, state string) {
+func (c *Completion) finished(ctx context.Context, taskID, state string) {
 	t, ok, err := c.Store.Task(ctx, taskID)
 	if err != nil {
-		log.Printf("task %s: mirror state %s: %v", taskID, state, err)
+		log.Printf("task %s: finished %s: %v", taskID, state, err)
 		return
 	}
 	if !ok {
 		return
 	}
+	countOutcome(ctx, c.Metrics, c.Store, t, state)
 	mirrorTaskState(ctx, c.Forgejo, t, state)
 }
 

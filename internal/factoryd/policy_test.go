@@ -609,7 +609,8 @@ func TestForgejoConfigRefusesSymbolicLinks(t *testing.T) {
 func TestConfigAlarm(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
 	store := newFakeStore()
-	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory"}
+	m, reader := testMetrics(t)
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m}
 	ctx := context.Background()
 	reason := errors.New("workflow.yaml: workflow: stage policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
@@ -652,6 +653,9 @@ func TestConfigAlarm(t *testing.T) {
 	if err := alarm.Resolve(ctx, policy.Version{ID: 13, Commit: "cacacacacaca"}); err != nil {
 		t.Fatal(err)
 	}
+	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
+		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-infra,state=done": 1,
+	})
 	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
 		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
 		t.Fatalf("closed %v, comments %q", fj.closed, fj.comments)

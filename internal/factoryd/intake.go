@@ -668,7 +668,8 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	case t.Status == "suggested":
 		return in.closeSuggestion(ctx, t)
 	}
-	return in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
+	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
+	return err
 }
 
 // closeSuggestion: a suggestion whose issue closed ends closed, no
@@ -677,6 +678,7 @@ func (in *Intake) closeSuggestion(ctx context.Context, t Task) error {
 	if err := in.Store.TransitionTask(ctx, t.ID, []string{"suggested"}, "closed"); err != nil {
 		return err
 	}
+	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
 	return nil
 }
@@ -685,12 +687,12 @@ func (in *Intake) closeSuggestion(ctx context.Context, t Task) error {
 // merged or closed — once and signals it once: between the webhook and
 // the heal passes that read the same state off Forgejo, and not again on
 // every pass while the workflow winds the task down.
-func (in *Intake) decide(ctx context.Context, taskID, kind, author string, number int64) error {
-	e, _, err := in.record(ctx, IntakeEvent{TaskID: taskID, Kind: kind, Author: author, CommentID: number, Trusted: true})
+func (in *Intake) decide(ctx context.Context, taskID, kind, author string, number int64) (fresh bool, err error) {
+	e, fresh, err := in.record(ctx, IntakeEvent{TaskID: taskID, Kind: kind, Author: author, CommentID: number, Trusted: true})
 	if err != nil {
-		return err
+		return false, err
 	}
-	return in.signalEvent(ctx, taskID, e, number)
+	return fresh, in.signalEvent(ctx, taskID, e, number)
 }
 
 // finishHumanTask: a human-lane task has no workflow; its closed issue is
@@ -702,6 +704,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task) error {
 	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
 		return err
 	}
+	countOutcome(ctx, in.Metrics, in.Store, t, "done")
 	mirrorTaskState(ctx, in.Forgejo, t, "done")
 	return nil
 }
@@ -729,7 +732,11 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if p.PullRequest.Merged {
 		kind = "pull_request_merged"
 	}
-	return in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
+	fresh, err := in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
+	if fresh && !p.PullRequest.Merged {
+		in.Metrics.Intervened(ctx, InterventionReject)
+	}
+	return err
 }
 
 // agentTask is task id when it exists and runs a workflow to signal: a
@@ -961,11 +968,19 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if err != nil {
 		return err
 	}
-	e, _, err := in.record(ctx, IntakeEvent{
+	e, fresh, err := in.record(ctx, IntakeEvent{
 		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery, Trusted: trusted,
 	})
 	if err != nil {
 		return err
+	}
+	if fresh && trusted {
+		switch eventType {
+		case "pull_request_review_approved":
+			in.Metrics.Intervened(ctx, InterventionApprove)
+		case "pull_request_review_rejected":
+			in.Metrics.Intervened(ctx, InterventionRequestChanges)
+		}
 	}
 	return in.signalEvent(ctx, taskID, e, p.PullRequest.Index)
 }
@@ -1012,9 +1027,9 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		}
 		switch {
 		case pr.Merged:
-			err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber)
+			_, err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber)
 		case pr.State == "closed":
-			err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)
+			_, err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)
 		}
 		if err != nil {
 			return err
