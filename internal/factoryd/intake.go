@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
@@ -210,6 +211,7 @@ type issueCommentPayload struct {
 
 type prBranchInfo struct {
 	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
 	Repo struct {
 		FullName string `json:"full_name"`
 	} `json:"repo"`
@@ -945,6 +947,18 @@ func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) e
 // handleReview records a pull request review as an intake event, resolved to
 // its task directly from the payload's own head branch (no extra API call:
 // unlike a comment, a review payload already carries the pull request).
+// reviewKey stands in for the id a review's webhook payload lacks: the
+// reviewer, the head and the text, so a redelivery under a new delivery id
+// is recorded once (the event kind carries the verdict).
+func reviewKey(author, head, body string) int64 {
+	h := fnv.New64a()
+	for _, part := range []string{author, head, body} {
+		h.Write([]byte(part)) // #nosec G104 -- hash.Hash never fails
+		h.Write([]byte{0})    // #nosec G104 -- as above
+	}
+	return int64(h.Sum64()>>1) | 1
+}
+
 func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, delivery string) error {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -970,6 +984,7 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	}
 	e, fresh, err := in.record(ctx, IntakeEvent{
 		TaskID: taskID, Kind: eventType, Author: p.Sender.UserName, Body: reviewBody, DeliveryID: delivery, Trusted: trusted,
+		CommentID: reviewKey(p.Sender.UserName, p.PullRequest.Head.SHA, reviewBody),
 	})
 	if err != nil {
 		return err

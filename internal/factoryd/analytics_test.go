@@ -215,7 +215,7 @@ func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 }
 
 // A human's decision on a factory pull request counts when its webhook
-// event is new, from the console (which acts as the human in Forgejo) and
+// event is new (a redelivery, under the same or a new delivery id, is not), from the console (which acts as the human in Forgejo) and
 // from Forgejo alike: an approving review, a review asking for changes,
 // and a close without a merge. The bot's close, a merge and an untrusted
 // reviewer count nothing.
@@ -229,7 +229,7 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{
 			"action": action,
 			"pull_request": map[string]any{"number": 21, "merged": merged,
-				"head": map[string]any{"ref": "factory/t-pr", "repo": map[string]any{"full_name": "factory-agent/ai-software-factory-code"}}},
+				"head": map[string]any{"ref": "factory/t-pr", "sha": "h1", "repo": map[string]any{"full_name": "factory-agent/ai-software-factory-code"}}},
 			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
 			"sender":     map[string]string{"login": sender},
 			"review":     map[string]any{"content": "r"},
@@ -246,6 +246,8 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	}
 	send("pull_request_review_approved", "reviewed", "sebastian", false, "d1")
 	send("pull_request_review_approved", "reviewed", "sebastian", false, "d1")
+	// Forgejo's redelivery sends the same review under a new delivery id
+	send("pull_request_review_approved", "reviewed", "sebastian", false, "d1-redelivered")
 	send("pull_request_review_approved", "reviewed", "mallory", false, "d2")
 	send("pull_request_review_rejected", "reviewed", "sebastian", false, "d3")
 	send("pull_request", "closed", "factory-agent", false, "d4")
