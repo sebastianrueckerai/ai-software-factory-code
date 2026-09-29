@@ -211,7 +211,8 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	os.WriteFile(filepath.Join(seed, "wip.txt"), []byte("wip\n"), 0o644)
 	run("-C", seed, "add", "wip.txt")
 	run("-C", seed, "-c", "user.name=factory-agent", "-c", "user.email=factory-agent@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
-	run("-C", seed, "push", "-q", fork, "factory/resumed")
+	// each resumed case pushes onto its own branch at the work in progress
+	run("-C", seed, "push", "-q", fork, "factory/resumed", "factory/resumed:factory/agent-orphaned-its-history")
 	wip := run("-C", seed, "rev-parse", "HEAD")
 
 	agentCommits := func(dir string) {
@@ -237,15 +238,12 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
 			run("-C", dir, "checkout", "-q", "--orphan", "other")
 			agentCommits(dir)
-			run("-C", dir, "branch", "-q", "-D", "factory/resumed")
+			run("-C", dir, "branch", "-q", "-D", "factory/agent-orphaned-its-history")
 			run("-C", dir, "reflog", "expire", "--expire=now", "--all")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			if tc.start == wip {
-				branch = "factory/resumed"
-			}
 			e := workerEnv{taskID: "t1", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
