@@ -85,6 +85,11 @@ func (t *taskRun) stages(commit string) verdict {
 		case policy.FindingsFail:
 			return verdict{final: "failed", reason: s.Name + ": " + strings.Join(findings, "; ")}
 		case policy.FindingsAgent:
+			if t.rolling {
+				// no agent answers a roll: roll() fails on them unless a
+				// fold moved the head
+				return verdict{findings: findings, reason: s.Name + " failed"}
+			}
 			for _, f := range findings {
 				t.history = append(t.history, fmt.Sprintf("%s, round %d: %s", s.Name, t.round, f))
 			}

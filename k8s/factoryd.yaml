@@ -155,7 +155,8 @@ subjects:
   name: factoryd
   namespace: factory
 ---
-# The registry pull secret factoryd copies into each task namespace.
+# The registry pull secret factoryd copies into each task namespace, and
+# reads main CI's images with to open a roll (ruling 178).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -167,8 +168,8 @@ rules:
   verbs: [get]
   resourceNames: [forgejo-registry]
 ---
-# factoryd records its own roll at boot: both Deployments' images, Flux's
-# apply time (managedFields) and their availability.
+# factoryd records each roll: the Deployments' images, Flux's apply time
+# (managedFields) and their availability.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

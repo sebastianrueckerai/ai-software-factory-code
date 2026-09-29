@@ -589,6 +589,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	if t.Source == SourceRoll {
+		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"}
+		r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
+		return rv, nil
+	}
 	pinned, err := r.pinned(ctx, gates.Pin)
 	if err != nil {
 		return Review{}, err

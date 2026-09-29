@@ -1,3 +1,0 @@
-{"workflow_runs":[
-{"id":52,"title":"Roll factoryd","workflow_id":"ci.yml","index_in_repo":52,"prettyref":"main","commit_sha":"9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f","event":"push","trigger_event":"push","status":"running","started":"2026-09-28T10:05:50Z","stopped":"1970-01-01T00:00:00Z","created":"2026-09-28T10:05:40Z","updated":"2026-09-28T10:05:50Z"}
-],"total_count":1}

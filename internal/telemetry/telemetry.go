@@ -143,9 +143,9 @@ func New(meter metric.Meter) (*Metrics, error) {
 	m.CIJobQueue = hist("factory.ci.job.queue", "first seen waiting to picked up, 10 s resolution")
 	m.BuildVMLifetime = hist("factory.ci.buildvm.lifetime", "build VM created to deleted")
 	m.BuildVMReady = hist("factory.ci.buildvm.ready", "build VM created to buildkitd's first answer")
-	m.RollDuration = hist("factory.roll.duration", "roll push to both Deployments live")
+	m.RollDuration = hist("factory.roll.duration", "roll push to the Deployment live")
 	m.RollApply = hist("factory.roll.apply", "roll push to Flux applying it")
-	m.RollReady = hist("factory.roll.ready", "Flux applying a roll to both Deployments live")
+	m.RollReady = hist("factory.roll.ready", "Flux applying a roll to the Deployment live")
 	m.GateDuration = hist("factory.task.gate.duration", "one task gate from start to end")
 	if err != nil {
 		return nil, err

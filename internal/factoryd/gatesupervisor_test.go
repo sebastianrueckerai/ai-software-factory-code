@@ -441,3 +441,20 @@ func TestSuperviseGateLateAnswerIsRecordedAndDropped(t *testing.T) {
 		t.Fatalf("alert = %+v", a)
 	}
 }
+
+// A roll task makes no model call (ruling 178): its gate trip goes to a
+// human without asking the supervisor.
+func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, nil)
+	task := c.store.tasks["t1"]
+	task.Source = SourceRoll
+	c.store.tasks["t1"] = task
+	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
+	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	if d.Action != ActionEscalate || !strings.Contains(d.Diagnosis, "a roll task makes no model call") || len(c.model.chats) != 0 {
+		t.Fatalf("decision %+v after %d model calls", d, len(c.model.chats))
+	}
+	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "escalate" {
+		t.Fatalf("alert %+v", a)
+	}
+}

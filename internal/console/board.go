@@ -165,12 +165,22 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		byStatus[col.Status] = i
 	}
 	byStatus["closing"] = byStatus["running"]
+	pending, err := c.cfg.Approvals.ApprovalRequests(r.Context(), "pending")
+	if err != nil {
+		log.Printf("console: approvals: %v", err)
+		d.Problems = append(d.Problems, "approval requests could not be read")
+	}
+	carded := map[string]bool{}
+	for _, a := range pending {
+		carded[a.TaskID] = true
+	}
 	byID := map[string]factoryd.Task{}
 	for _, bt := range tasks {
 		t := bt.Task
 		byID[t.ID] = t
 		k := c.card(t)
-		if t.Kind == "human" {
+		// a roll task has no agent: the human lane until its card (ruling 178)
+		if t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !carded[t.ID] {
 			if !factoryd.Final(t.Status) {
 				d.HumanTasks = append(d.HumanTasks, k)
 			}
@@ -183,11 +193,6 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
 			d.Escalations = append(d.Escalations, k)
 		}
-	}
-	pending, err := c.cfg.Approvals.ApprovalRequests(r.Context(), "pending")
-	if err != nil {
-		log.Printf("console: approvals: %v", err)
-		d.Problems = append(d.Problems, "approval requests could not be read")
 	}
 	for _, a := range pending {
 		d.Approvals = append(d.Approvals, c.approvalCard(a, byID, s.csrf, d.Approver))

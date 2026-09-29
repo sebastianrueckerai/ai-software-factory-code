@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -431,6 +432,7 @@ const actionTasksPage = 50
 type ActionRun struct {
 	ID        int64     `json:"id"`
 	CommitSHA string    `json:"commit_sha"`
+	PrettyRef string    `json:"prettyref"` // the branch of a push run
 	Event     string    `json:"event"`
 	Status    string    `json:"status"`
 	Created   time.Time `json:"created"`
@@ -817,6 +819,8 @@ type PullRequestRef struct {
 	Merged   bool
 	Base     string // the branch it merges into
 	MergedBy string // who merged it, when Merged
+	// MergeCommit is the commit its merge made on the base, when Merged.
+	MergeCommit string
 	// Mergeable is Forgejo's verdict that the head merges into the base
 	// without conflict.
 	Mergeable bool
@@ -829,6 +833,7 @@ type wirePR struct {
 	State     string `json:"state"`
 	Merged    bool   `json:"merged"`
 	Mergeable bool   `json:"mergeable"`
+	MergeSHA  string `json:"merge_commit_sha"`
 	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
@@ -846,7 +851,7 @@ type wirePR struct {
 
 func (w wirePR) ref() PullRequestRef {
 	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
-		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref}
+		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
 	}
@@ -1217,4 +1222,194 @@ func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo strin
 		return fmt.Errorf("%w: %v", ErrRefused, err)
 	}
 	return err
+}
+
+// SyncFork fast-forwards fork's default branch to its upstream's head.
+// Forgejo 15 reports an up-to-date fork as not allowed and answers its
+// sync 400, so the state is read first.
+func (f *Forgejo) SyncFork(ctx context.Context, fork Repo) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/sync_fork", fork.Owner, fork.Name)
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return err
+	}
+	var st struct {
+		Allowed bool `json:"allowed"`
+		Behind  int  `json:"commits_behind"`
+	}
+	if err := json.Unmarshal(body, &st); err != nil {
+		return fmt.Errorf("forgejo sync_fork %s: %w", fork, err)
+	}
+	if st.Behind == 0 {
+		return nil
+	}
+	if !st.Allowed {
+		return fmt.Errorf("forgejo: %s is %d commits behind its upstream and cannot be synced", fork, st.Behind)
+	}
+	_, err = f.call(ctx, http.MethodPost, path, nil, http.StatusNoContent)
+	return err
+}
+
+// FileContent reads path at ref with its blob sha, which a change of the
+// file must name.
+func (f *Forgejo) FileContent(ctx context.Context, owner, repo, ref, path string) (content []byte, blob string, err error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s?ref=%s", owner, repo, path, url.QueryEscape(ref)), nil, http.StatusOK)
+	if err != nil {
+		return nil, "", err
+	}
+	var res struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+		SHA      string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, "", fmt.Errorf("forgejo contents %s: %w", path, err)
+	}
+	if res.Encoding != "base64" {
+		return nil, "", fmt.Errorf("forgejo contents %s: encoding %q", path, res.Encoding)
+	}
+	content, err = base64.StdEncoding.DecodeString(res.Content)
+	return content, res.SHA, err
+}
+
+// FileChange replaces one file's content; Blob is the sha it replaces.
+type FileChange struct {
+	Path    string
+	Content []byte
+	Blob    string
+}
+
+// CommitFiles writes changes as one commit on branch, or on newBranch
+// created from branch when newBranch is set, as the bot, and returns the
+// commit's sha.
+func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranch, message string, changes []FileChange) (string, error) {
+	files := make([]map[string]string, 0, len(changes))
+	for _, c := range changes {
+		files = append(files, map[string]string{"operation": "update", "path": c.Path, "sha": c.Blob,
+			"content": base64.StdEncoding.EncodeToString(c.Content)})
+	}
+	req := map[string]any{"branch": branch, "message": message, "files": files}
+	if newBranch != "" {
+		req["new_branch"] = newBranch
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+	body, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/contents", owner, repo), payload, http.StatusCreated)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Commit.SHA == "" {
+		return "", fmt.Errorf("forgejo contents commit on %s/%s: no commit in the answer", owner, repo)
+	}
+	return res.Commit.SHA, nil
+}
+
+// Comparison is what head has that base lacks: its commits, newest first,
+// and the files they touch.
+type Comparison struct {
+	Commits []ComparedCommit
+	Files   []string
+}
+
+// ComparedCommit is one commit of a comparison: its sha, its message's
+// first line and how many parents it has (a merge has two).
+type ComparedCommit struct {
+	SHA     string
+	Subject string
+	Parents int
+}
+
+// Compare reads base...head.
+func (f *Forgejo) Compare(ctx context.Context, owner, repo, base, head string) (Comparison, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", owner, repo, url.PathEscape(base), url.PathEscape(head)), nil, http.StatusOK)
+	if err != nil {
+		return Comparison{}, err
+	}
+	var res struct {
+		Commits []struct {
+			SHA    string `json:"sha"`
+			Commit struct {
+				Message string `json:"message"`
+			} `json:"commit"`
+			Parents []struct{} `json:"parents"`
+		} `json:"commits"`
+		Files []struct {
+			Filename string `json:"filename"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return Comparison{}, fmt.Errorf("forgejo compare %s...%s: %w", base, head, err)
+	}
+	var out Comparison
+	for _, c := range res.Commits {
+		out.Commits = append(out.Commits, ComparedCommit{SHA: c.SHA, Subject: FirstLine(c.Commit.Message), Parents: len(c.Parents)})
+	}
+	for _, f := range res.Files {
+		out.Files = append(out.Files, f.Filename)
+	}
+	return out, nil
+}
+
+// CommitParents are a commit's parents, the first parent first.
+func (f *Forgejo) CommitParents(ctx context.Context, owner, repo, sha string) ([]string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s?stat=false&verification=false&files=false", owner, repo, url.PathEscape(sha)), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo commit %s: %w", sha, err)
+	}
+	var out []string
+	for _, p := range res.Parents {
+		out = append(out, p.SHA)
+	}
+	return out, nil
+}
+
+// MergedPullRequest is a merged pull request as the roll's body names it.
+type MergedPullRequest struct {
+	Number      int64
+	Title       string
+	MergeCommit string
+	HeadSHA     string
+}
+
+// RecentMergedPullRequests lists the merged ones of the closed pull
+// requests updated last.
+func (f *Forgejo) RecentMergedPullRequests(ctx context.Context, owner, repo string) ([]MergedPullRequest, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=closed&sort=recentupdate&limit=50", owner, repo), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var prs []struct {
+		Number      int64  `json:"number"`
+		Title       string `json:"title"`
+		Merged      bool   `json:"merged"`
+		MergeCommit string `json:"merge_commit_sha"`
+		Head        struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := json.Unmarshal(body, &prs); err != nil {
+		return nil, fmt.Errorf("forgejo pulls of %s/%s: %w", owner, repo, err)
+	}
+	var out []MergedPullRequest
+	for _, p := range prs {
+		if p.Merged {
+			out = append(out, MergedPullRequest{Number: p.Number, Title: p.Title, MergeCommit: p.MergeCommit, HeadSHA: p.Head.SHA})
+		}
+	}
+	return out, nil
 }

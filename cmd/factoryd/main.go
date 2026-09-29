@@ -306,10 +306,14 @@ func main() {
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Metrics: metrics}
 	go ciRuns.Run(ctx)
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: issueOwner, Repo: issueRepo, Branch: "main",
-		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics,
-		Deployments: map[string]string{"factoryd": "k8s/factoryd.yaml", "factory-gateway": "k8s/deployment.yaml"},
-		Poll:        10 * time.Second, Timeout: 30 * time.Minute}
+		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics, Poll: 15 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)
+	// the roll as a factory task (ruling 178): main CI's images of a green
+	// commit, read with the factory's pull secret, open the roll's pull request
+	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: upstream, Budget: policyLoader.Budget, Poll: time.Minute,
+		Registry: &factoryd.Registry{BaseURL: forgejo.BaseURL,
+			Credential: factoryd.PullSecretCredential(kube, kube.Namespace(), env("PULL_SECRET", "forgejo-registry"), env("REGISTRY_HOST", "git.aisoftwarefactory.world"))}}
+	go roller.Run(ctx)
 	go ciCollector.Run(ctx)
 	go runner.LeaseLoop(ctx, 10*time.Second)
 

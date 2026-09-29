@@ -248,6 +248,14 @@ type Store interface {
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
 	// ReportOf is parent's report task of source.
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
+	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
+	// its branch does not carry yet (RollCommit).
+	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
+	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
+	// RollHead is the branch commit RollCommit last wrote for a roll task.
+	RollHead(ctx context.Context, taskID string) (string, error)
+	// SetTaskSHA sets the commit a roll task's branch was cut from.
+	SetTaskSHA(ctx context.Context, id, sha string) error
 }
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -471,6 +479,11 @@ func (s *PGStore) MarkHalfWay(ctx context.Context, id string) error {
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5 WHERE id = $1`,
 		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET sha = $2 WHERE id = $1`, id, sha)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -778,15 +791,15 @@ func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]Approv
 	return out, rows.Err()
 }
 
-func (s *PGStore) RollRecorded(ctx context.Context, sha string) (bool, error) {
+func (s *PGStore) RollRecorded(ctx context.Context, sha, image string) (bool, error) {
 	var found bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM rolls WHERE sha = $1)`, sha).Scan(&found)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM rolls WHERE sha = $1 AND image = $2)`, sha, image).Scan(&found)
 	return found, err
 }
 
 func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO rolls (sha, pushed_at, applied_at, live_at) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (sha) DO NOTHING`, r.SHA, r.PushedAt, r.AppliedAt, r.LiveAt)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO rolls (sha, image, deployment, pushed_at, applied_at, live_at) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (sha, image) DO NOTHING`, r.SHA, r.Image, r.Deployment, r.PushedAt, r.AppliedAt, r.LiveAt)
 	if err != nil {
 		return false, err
 	}

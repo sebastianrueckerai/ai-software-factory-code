@@ -64,6 +64,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityScreen:                      r.Screen,
 		ActivityJudgeScreening:              r.JudgeScreening,
 		ActivityRunReport:                   r.RunReport,
+		ActivityRollCommit:                  r.RollCommit,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -601,7 +602,8 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Parent != "", Stronger: t.Source == SourceScreening}
+	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Parent != "", Stronger: t.Source == SourceScreening,
+		Roll: t.Source == SourceRoll}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil

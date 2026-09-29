@@ -50,6 +50,7 @@ type fakeStore struct {
 	projects     []Project
 	alertsMu     sync.Mutex
 	alerts       []Alert
+	rolls        []RollRequest
 }
 
 func newFakeStore() *fakeStore {
@@ -987,8 +988,9 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls, alerts`); err != nil {
 		t.Fatal(err)
 	}
-	r := Roll{SHA: "abc", PushedAt: at("2026-09-28T10:05:40Z"), AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
-	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || ok {
+	r := Roll{SHA: "abc", Image: "gateway", Deployment: "factory-gateway",
+		PushedAt: at("2026-09-28T10:05:40Z"), AppliedAt: at("2026-09-28T10:07:11Z"), LiveAt: at("2026-09-28T10:09:50Z")}
+	if ok, err := s.RollRecorded(ctx, "abc", "gateway"); err != nil || ok {
 		t.Fatalf("recorded before insert: %v %v", ok, err)
 	}
 	if ok, err := s.RecordRoll(ctx, r); err != nil || !ok {
@@ -997,14 +999,24 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	second := r
 	second.PushedAt = at("2026-09-28T11:00:00Z")
 	if ok, err := s.RecordRoll(ctx, second); err != nil || ok {
-		t.Fatalf("second record of the same sha: %v %v", ok, err)
+		t.Fatalf("second record of the same sha and image: %v %v", ok, err)
 	}
 	var pushed time.Time
-	if err := s.db.QueryRowContext(ctx, `SELECT pushed_at FROM rolls WHERE sha = 'abc'`).Scan(&pushed); err != nil || !pushed.Equal(r.PushedAt) {
-		t.Fatalf("the first row stands: pushed %v, %v", pushed, err)
+	var deployment string
+	if err := s.db.QueryRowContext(ctx, `SELECT pushed_at, deployment FROM rolls WHERE sha = 'abc' AND image = 'gateway'`).Scan(&pushed, &deployment); err != nil ||
+		!pushed.Equal(r.PushedAt) || deployment != "factory-gateway" {
+		t.Fatalf("the first row stands: pushed %v deployment %q, %v", pushed, deployment, err)
 	}
-	if ok, err := s.RollRecorded(ctx, "abc"); err != nil || !ok {
+	if ok, err := s.RollRecorded(ctx, "abc", "gateway"); err != nil || !ok {
 		t.Fatalf("recorded: %v %v", ok, err)
+	}
+	if ok, err := s.RollRecorded(ctx, "abc", "worker"); err != nil || ok {
+		t.Fatalf("another image of the same commit recorded: %v %v", ok, err)
+	}
+	worker := r
+	worker.Image, worker.Deployment = "worker", "factoryd"
+	if ok, err := s.RecordRoll(ctx, worker); err != nil || !ok {
+		t.Fatalf("record another image of the same commit: %v %v", ok, err)
 	}
 
 	for _, a := range []Alert{

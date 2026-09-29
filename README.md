@@ -1429,14 +1429,23 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
   `.cost` (started hours times the row's hourly price), each
   `{server_type,deleted_by}` with `deleted_by` `teardown` or `collector`,
   at the moment a build VM's row closes.
-- `factory.roll.duration`, `.apply` and `.ready`: at boot factoryd reads
-  the newest `main` commit that touched `k8s/`; if it changed a
-  Deployment's images against its parent, it waits until both Deployments
-  run them and are available (`NewReplicaSetAvailable` after the
-  `kustomize-controller` apply), records the roll once in `rolls` and logs
-  `roll <sha> live: push to apply <n> s, apply to ready <n> s`. The push is
-  the `created` time of the commit's push run in `actions/runs`; without
-  one nothing is recorded.
+- `factory.roll.duration{deployment}`, `.apply` and `.ready`: from boot on,
+  every 15 s, factoryd reads the newest `main` commit that touched `k8s/`
+  (Forgejo's history simplification answers a merged pull request's head,
+  so the head of a merged pull request stands for its merge commit,
+  compared with the merge's first parent; the newest roll task's pull
+  request is read by its number, any other among the 50 closed pull
+  requests updated last); for every roll target (factoryd, gateway, worker, ci-runner) whose pinned
+  reference it changed against its parent, it waits until the target's
+  Deployment carries the new reference (an image, or an env value for the
+  worker and the runner, which roll factoryd) and is available on it
+  (`NewReplicaSetAvailable` after the `kustomize-controller` apply),
+  records one `rolls` row per target (`sha`, `image`, `deployment`, push,
+  apply and ready times), emits the three histograms once per Deployment
+  and logs `roll <sha> <deployment> live (<targets>): push to apply <n> s,
+  apply to ready <n> s`. The push is the `created` time of the commit's
+  push run in `actions/runs`; without one nothing is recorded. A commit
+  that changed no reference records nothing.
 - `factory.task.gate.duration{gate,outcome,model_alias}` from every
   timeline step that ends a gate (`factoryd.StepGates`) and carries
   `started`, labelled with the gate's name (session, checks, policy,
@@ -1592,7 +1601,48 @@ port 8090 only.
 
 CI pushes images by digest. A deploy is a commit that rolls the digests
 in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
-`WORKER_IMAGE` and `CI_RUNNER_IMAGE`), pushed to both remotes:
+`WORKER_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
+source `roll` (ruling 178). Every minute it reads the code repository's
+push runs; for the green runs of `main` it has not judged, newest first
+until one files or folds the roll (at its first judgement the newest
+only, and never one older than a run whose commit a roll carries, which
+would roll `main` back), it skips a commit that changes nothing outside
+`k8s/` against its first parent (a roll's own merge, a hand roll: rebuilt images, whatever
+the build cache made of them), and otherwise reads the images main CI tagged with the commit's short sha
+from the registry (in-cluster Forgejo, `/v2`, with the `forgejo-registry`
+pull secret) and compares each with the one `k8s/` pins by the
+linux/amd64 image manifest inside the index: main CI's indexes carry a
+provenance attestation with build timestamps, so a rebuild of unchanged
+inputs pushes a new index digest around the same image. No changed image:
+a `roll_requests` row `skipped`. Otherwise it files the task: the issue
+`roll <sha7>: <targets>` naming the new references, the commits since the
+last roll (merges and roll commits left out) and the pull requests merged
+among them (the roll tasks' own left out), and a row `opened`. The workflow runs no session and makes no model call:
+`RollCommit` syncs the bot's fork, writes one commit on `factory/<task>`
+that bumps the changed digests (the index digest main CI published),
+records the commit it wrote and sets the task's base to the main head the
+branch was cut from, and the head goes through the pull request, the checks (no image build: no
+Dockerfile input changed), the policy gate (`k8s/**` is high) and the
+card. The approver's click, `factory-merge` merges, Flux applies, and the
+roll watcher records the rows. One open roll per repository: newer images
+while it is open (and its pull request exists) are folded in as a second
+commit on the same pull request, with a comment and a `roll_folded`
+signal that wakes the approval wait (never a finding) and has the
+workflow commit and run the stages again; images that arrive after its
+merge open the next roll. Every agent task's token writes the bot's fork,
+the roll's branch included, so `RollCommit` refuses a branch whose head
+is not the commit it wrote, for a fold and for a resumed run; a run that
+died between its write and its record adopts the head only when it is
+exactly that write (its parent the recorded head or the cut base, only
+the roll's files changed, each as the requests make it). Findings on
+a head `RollCommit` leaves as it is (red checks, a human's change
+request) fail the roll: no agent answers them. A gate trip on a roll goes
+to a human without the gate supervisor's model call. A failed roll is
+not retried: any new green commit on `main`, a no-op commit included,
+opens the next roll, which compares with `main`'s pins and so carries
+everything the failed one had. The infra
+repository's rolls stay human commits. A hand roll still works and is
+pushed to both remotes:
 
     git push origin main && git push github main
 

@@ -40,6 +40,10 @@ const (
 	// write the repository: it answers an information request newer than
 	// it (ruling 150), never an escalation.
 	SignalPosterComment = "poster_comment"
+	// SignalRollFolded is the roller's notice that newer images were
+	// folded into a roll task (ruling 178): it wakes the approval wait and
+	// is never a finding.
+	SignalRollFolded = "roll_folded"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -80,6 +84,7 @@ const (
 	ActivityScreen                      = "Screen"
 	ActivityJudgeScreening              = "JudgeScreening"
 	ActivityRunReport                   = "RunReport"
+	ActivityRollCommit                  = "RollCommit"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -224,6 +229,8 @@ type RunState struct {
 	History []string
 	Reviews []Review
 	Round   int
+	// Roll: a roll task (ruling 178), whose commit RollCommit writes.
+	Roll bool
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -276,7 +283,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v13: workflow.GetVersion(ctx, "auto-merge", workflow.DefaultVersion, versionAutoMerge),
 		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo),
 		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace),
-		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages)}
+		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages),
+		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -286,7 +294,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -405,6 +413,13 @@ const (
 	// task runs RunReport and ends done; a promoted improvement's first
 	// session gets the analyzer's write-up.
 	versionStages workflow.Version = 1
+	// versionRoll (change id "roll", ruling 178): a roll task runs no
+	// session; RollCommit writes its branch and the head goes through the
+	// pull request, the checks and the gates. A fold of newer images
+	// (roll_folded, which wakes the approval wait and is no finding) has
+	// RollCommit write again; findings on a head RollCommit leaves as it
+	// is fail the task.
+	versionRoll workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -419,7 +434,7 @@ type taskRun struct {
 	v6, v7, v8, v9    workflow.Version
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
-	v16               workflow.Version
+	v16, v17          workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -433,6 +448,7 @@ type taskRun struct {
 	returns   map[string]int // how often each stage sent findings to the agent
 	history   []string       // every finding sent to the agent, tagged with its stage and round
 	reviews   []Review       // the model reviews so far, oldest first
+	rolling   bool           // a roll task's run (versionRoll): a fold wakes the approval wait
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -492,6 +508,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("failed", ReasonIssueClosed+" without merge")
 		case st.PRClosed:
 			return t.finish("failed", "pull request closed without merge")
+		case t.v17 >= versionRoll && st.Roll:
+			t.pr = st.PR
+			return t.roll(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
 			// the screening's human, asked again; the answer runs the
 			// first session
@@ -652,6 +671,50 @@ func (t *taskRun) lifecycle() (string, error) {
 		apply(v)
 	}
 	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+}
+
+// roll runs a roll task from head, its open pull request's head ("" for
+// none): each round RollCommit writes what the branch lacks and the head
+// goes through verify. Change requests pending before a round are taken
+// by its RollCommit; findings on a head it leaves as it is end the task.
+func (t *taskRun) roll(head string) (string, error) {
+	t.rolling = true
+	var last verdict
+	for {
+		if final, why, ok := t.decided(); ok {
+			return t.finish(final, why)
+		}
+		t.drainFolds()
+		last.findings = append(last.findings, t.drainChanges()...)
+		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
+			return t.finish("failed", "set running: "+errMessage(err))
+		}
+		var next string
+		if err := workflow.ExecuteActivity(t.short, ActivityRollCommit, t.taskID).Get(t.ctx, &next); err != nil {
+			return t.finish("failed", "roll commit: "+errMessage(err))
+		}
+		if next == head && len(last.findings) > 0 {
+			reason := last.reason
+			if reason == "" {
+				reason = "changes requested"
+			}
+			return t.finish("failed", "roll: "+reason+": "+strings.Join(last.findings, "; "))
+		}
+		head = next
+		if last = t.verify(head); last.final != "" {
+			return t.finish(last.final, last.reason)
+		}
+	}
+}
+
+// drainFolds takes the pending roll_folded signals; RollCommit writes what
+// they announce.
+func (t *taskRun) drainFolds() bool {
+	folded := false
+	for workflow.GetSignalChannel(t.ctx, SignalRollFolded).ReceiveAsync(nil) {
+		folded = true
+	}
+	return folded
 }
 
 // grant is what a human answer buys; only a human raises a limit. One
@@ -847,6 +910,9 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.rolling {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalRollFolded), func(workflow.ReceiveChannel, bool) {})
+		}
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -856,6 +922,9 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		}
 		if findings := t.drainChanges(); len(findings) > 0 {
 			return verdict{findings: findings, reason: "changes requested"}
+		}
+		if t.rolling && t.drainFolds() {
+			return verdict{reason: "newer images folded in"}
 		}
 		if t.v8 < versionGatesPinned {
 			approver = ""

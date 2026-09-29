@@ -106,9 +106,13 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	workflowID := activity.GetInfo(ctx).WorkflowExecution.ID
 	var d GateDecision
 	late := false
-	if !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt) {
+	switch {
+	case !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt):
 		d = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
-	} else {
+	case t.Source == SourceRoll:
+		d = GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call (ruling 178): its gate trip goes to a human",
+			Recommendation: fmt.Sprintf("look at %s of roll task %s yourself", in.Trip.Activity, t.ID)}
+	default:
 		pinned, err := r.pinned(ctx, in.PolicyVersion)
 		if err != nil {
 			return GateDecision{}, err

@@ -703,6 +703,7 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 			RunState{Status: "running", PRClosed: true}},
 		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Skip: true}},
 		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Skip: true}},
+		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Roll: true}},
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
 		if len(tc.want.Findings) > 0 {
@@ -828,6 +829,7 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 func withPR(t Task, n int64) Task      { t.PRNumber = n; return t }
 func withStatus(t Task, s string) Task { t.Status = s; return t }
 func withKind(t Task, k string) Task   { t.Kind = k; return t }
+func withSource(t Task, s string) Task { t.Source = s; return t }
 
 // Escalate moves the task to waiting-human, mirrors it on the issue and
 // asks there; its comment id is what an answer must be newer than. A
