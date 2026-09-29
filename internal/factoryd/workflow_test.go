@@ -320,8 +320,11 @@ func TestWorkflowChangesRequestedStartsNewAttempt(t *testing.T) {
 	}
 }
 
-func TestWorkflowAttemptExhaustionFails(t *testing.T) {
+// Before versionSessionCap the attempts ran out into a failure, and no
+// repeat of a trip changed the rung.
+func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("session-cap", workflow.DefaultVersion, versionSessionCap).Return(workflow.DefaultVersion)
 	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s", Summary: "pod exited without a result", Findings: []string{"ran `go test`"}})
 
 	if final := h.run(t); final != "failed" {
@@ -335,6 +338,87 @@ func TestWorkflowAttemptExhaustionFails(t *testing.T) {
 	}
 	if !slices.Equal(h.sessions[1].Findings, []string{"ran `go test`"}) || h.sessions[1].ParentSessionID != "s" {
 		t.Fatalf("second attempt = %+v, want the first session's findings and parent", h.sessions[1])
+	}
+	if h.sessions[2].Model != "factory/coding-cheap" || len(h.escalated) != 0 {
+		t.Fatalf("third attempt on %s, escalations %q; want the start rung and no card", h.sessions[2].Model, h.escalated)
+	}
+}
+
+// Ruling 177: sessions that run out of attempts without a pushed commit
+// open the card with every finding so far; the answer buys one more
+// session, which starts from the last findings.
+func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f1"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push", Findings: []string{"f2"}},
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Trip: "half_way", Summary: "supervisor: retry_stronger after half_way", Findings: []string{"f3"}},
+		pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the key is blocked, use the other one", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	wantCard := sessionCapReached + "\nlast: supervisor: retry_stronger after half_way" +
+		"\n- supervisor:repetition, round 0: f1" +
+		"\n- supervisor:, round 0: f2" +
+		"\n- supervisor:half_way, round 0: f3"
+	if !slices.Equal(h.escalated, []string{wantCard}) {
+		t.Fatalf("escalations = %q, want the card %q", h.escalated, wantCard)
+	}
+	if len(h.sessions) != 4 {
+		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
+	}
+	fourth := h.sessions[3]
+	if fourth.Attempt != 4 || fourth.Model != "factory/coding-frontier" || fourth.ParentSessionID != "s3" ||
+		!slices.Equal(fourth.Findings, []string{"f3"}) ||
+		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + sessionCapReached + `": the key is blocked, use the other one`}) {
+		t.Fatalf("fourth attempt = %+v", fourth)
+	}
+	var to []string
+	for _, r := range h.recorded {
+		if r.step == "stage_findings" {
+			to = append(to, fmt.Sprintf("%s>%s", r.detail["stage"], r.detail["to"]))
+		}
+	}
+	if want := []string{"supervisor:repetition>agent", "supervisor:>agent", "supervisor:half_way>card"}; !slices.Equal(to, want) {
+		t.Fatalf("stage_findings = %v, want %v", to, want)
+	}
+	if last := h.usage[len(h.usage)-1]; last != (TaskUsage{Attempts: 4, ExtraAttempts: 1}) {
+		t.Fatalf("usage = %+v, want four attempts, one of them granted by the answer", last)
+	}
+}
+
+// A second return on the same trip takes the stronger rung
+// (limits.stronger_after 1); a different trip keeps the model.
+func TestWorkflowRepeatTripTakesTheStrongerRung(t *testing.T) {
+	for _, c := range []struct {
+		second TripKind
+		want   string
+	}{
+		{TripRepetition, "factory/coding-frontier"},
+		{TripNoProgress, "factory/coding-cheap"},
+	} {
+		h := newWorkflowHarness(t)
+		h.onSessions(
+			SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", Trip: string(TripRepetition), Findings: []string{"a"}},
+			SessionResult{Outcome: OutcomeRedirect, SessionID: "s2", Trip: string(c.second), Findings: []string{"b"}},
+			pushed("s3", "c3"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q", c.second, final)
+		}
+		var models []string
+		for _, in := range h.sessions {
+			models = append(models, in.Model)
+		}
+		if want := []string{"factory/coding-cheap", "factory/coding-cheap", c.want}; !slices.Equal(models, want) {
+			t.Fatalf("second trip %s: models = %v, want %v", c.second, models, want)
+		}
 	}
 }
 
@@ -678,6 +762,7 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Findings: []string{"a"}},
 		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s2", Findings: []string{"b"}},
 		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Findings: []string{"c"}})
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
 	if final := h.run(t); final != "failed" {
 		t.Fatalf("final = %q", final)
@@ -766,8 +851,10 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 			return SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"}, nil
 		})
 
-	if final := h.run(t); final != "failed" || !strings.HasPrefix(h.finals[0][1], "3 attempts exhausted") {
-		t.Fatalf("final = %q, finals = %v; want the last attempt, then exhaustion", final, h.finals)
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], sessionCapReached) {
+		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {
 		t.Fatalf("sessions = %+v, want one, the third", h.sessions)

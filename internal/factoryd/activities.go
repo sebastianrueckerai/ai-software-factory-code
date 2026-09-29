@@ -356,7 +356,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		return res
 	}
 	if out.trip != nil {
-		res.Commit = out.commit
+		res.Trip, res.Commit = string(out.trip.Kind), out.commit
 		res.Findings = append(slices.Clone(out.trip.Findings), out.stopReport()...)
 	}
 	switch {

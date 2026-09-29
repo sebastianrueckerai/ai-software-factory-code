@@ -63,8 +63,11 @@ func tripVerdict(a SupervisorAction) string {
 
 // escalationSource names who asked for the human.
 func escalationSource(reason string) string {
-	if strings.HasPrefix(reason, agentAsks) {
+	switch {
+	case strings.HasPrefix(reason, agentAsks):
 		return "agent"
+	case strings.HasPrefix(reason, sessionCapReached):
+		return "cap"
 	}
 	return "supervisor"
 }

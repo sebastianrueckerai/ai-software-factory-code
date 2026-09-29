@@ -1167,7 +1167,7 @@ func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeRedirect || !slices.Contains(res.Findings, "supervisor guidance: write the file instead of reading") {
+	if res.Outcome != OutcomeRedirect || res.Trip != string(TripRepetition) || !slices.Contains(res.Findings, "supervisor guidance: write the file instead of reading") {
 		t.Fatalf("result = %+v", res)
 	}
 	if alerts := store.alertRows(); len(alerts) != 1 || alerts[0].Verdict != VerdictReal || alerts[0].Detail["action"] != "redirect" {

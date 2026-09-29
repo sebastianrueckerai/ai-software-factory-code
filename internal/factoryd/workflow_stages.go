@@ -42,6 +42,10 @@ const screeningAsks = "The screening finds this issue suspect: "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
+// sessionCapReached heads the card of a task whose sessions reached the
+// cap without a pushed commit (versionSessionCap).
+const sessionCapReached = "the session cap is reached without a pushed commit: every finding sent to the agent so far goes to a human"
+
 // stages takes a pushed commit, its pull request open, through the pinned
 // workflow's stages after the session (versionStages): each stage's
 // findings go where its on_findings says; approval and merge end it.
@@ -90,9 +94,7 @@ func (t *taskRun) stages(commit string) verdict {
 				// fold moved the head
 				return verdict{findings: findings, reason: s.Name + " failed"}
 			}
-			for _, f := range findings {
-				t.history = append(t.history, fmt.Sprintf("%s, round %d: %s", s.Name, t.round, f))
-			}
+			t.remember(s.Name, findings)
 			limit := ""
 			switch {
 			case t.lastRound:
@@ -126,6 +128,49 @@ func (t *taskRun) recordFindings(stage, to string, findings []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "stage_findings", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record stage findings", "error", err)
 	}
+}
+
+// remember adds findings from stage to the history the card shows.
+func (t *taskRun) remember(stage string, findings []string) {
+	for _, f := range findings {
+		t.history = append(t.history, fmt.Sprintf("%s, round %d: %s", stage, t.round, f))
+	}
+}
+
+// sessionReturn keeps a session's findings in the stage memory under stage
+// "supervisor:<trip>" (versionSessionCap): to the card on the last
+// attempt, else to the agent, where a redirect or no push counts as the
+// stage's return. stronger: the next session takes the stronger rung.
+func (t *taskRun) sessionReturn(res SessionResult, last bool) (stronger bool) {
+	stage := "supervisor:" + res.Trip
+	to := "agent"
+	switch {
+	case last:
+		to = "card"
+	case res.Outcome == OutcomeRetryStronger:
+		to = "stronger"
+	}
+	t.remember(stage, res.Findings)
+	t.recordFindings(stage, to, res.Findings)
+	if to != "agent" {
+		return false
+	}
+	if t.returns == nil {
+		t.returns = map[string]int{}
+	}
+	t.returns[stage]++
+	return t.returns[stage] > t.cfg.StrongerAfter
+}
+
+// sessionCapCard is the escalation of sessions at the cap: last is the
+// last session's end.
+func (t *taskRun) sessionCapCard(last string) string {
+	var b strings.Builder
+	b.WriteString(sessionCapReached + "\nlast: " + last)
+	for _, h := range t.history {
+		b.WriteString("\n- " + h)
+	}
+	return b.String()
 }
 
 func appendNew(list []string, s string) []string {

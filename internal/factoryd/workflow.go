@@ -173,6 +173,9 @@ type SessionResult struct {
 	// Reason is the supervisor's escalation reason with the progress
 	// digest's summary, for the issue.
 	Reason string
+	// Trip is the TripKind the supervisor stopped the session on, "" for
+	// none.
+	Trip string
 }
 
 type PullRequest struct {
@@ -284,7 +287,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo),
 		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace),
 		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages),
-		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll)}
+		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll),
+		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -420,6 +424,14 @@ const (
 	// RollCommit write again; findings on a head RollCommit leaves as it
 	// is fail the task.
 	versionRoll workflow.Version = 1
+	// versionSessionCap (change id "session-cap", ruling 177): sessions
+	// that run out of attempts without a pushed commit (a supervisor stop,
+	// no push, a session error) open the card with every finding so far,
+	// and a human answer buys one more session; a redirect or no push
+	// counts as a return from stage "supervisor:<trip>", recorded like a
+	// stage's findings, and a repeat past StrongerAfter takes the
+	// stronger rung.
+	versionSessionCap workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -434,7 +446,7 @@ type taskRun struct {
 	v6, v7, v8, v9    workflow.Version
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
-	v16, v17          workflow.Version
+	v16, v17, v18     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -572,7 +584,19 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = append(findings, more...)
 		}
 	}
-	for attempt := u.Attempts + 1; attempt <= t.cfg.MaxSessions+u.ExtraAttempts; attempt++ {
+	capped := false // the last session ended without a pushed commit (versionSessionCap)
+	for attempt := u.Attempts + 1; ; attempt++ {
+		if attempt > t.cfg.MaxSessions+u.ExtraAttempts {
+			if !capped {
+				break
+			}
+			final, why, answer := t.awaitHuman(t.sessionCapCard(reason), sessionCapReached)
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = append(findings, answer...)
+			t.grant(&u)
+		}
 		if drained {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
@@ -619,8 +643,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		if drained && isTerminal(err) {
 			return t.finish("failed", "session: "+errMessage(err))
 		}
+		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
+			capped = t.v18 >= versionSessionCap
 			continue
 		}
 		parent = res.SessionID
@@ -631,9 +657,19 @@ func (t *taskRun) lifecycle() (string, error) {
 		case OutcomeRetryStronger:
 			// at the top rung this is a redirect: Stronger stays Stronger
 			model, findings = t.cfg.Models.Stronger, res.Findings
+			if t.v18 >= versionSessionCap {
+				t.sessionReturn(res, last)
+				capped = true
+			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect:
 			findings = res.Findings
+			if t.v18 >= versionSessionCap {
+				if t.sessionReturn(res, last) {
+					model = t.cfg.Models.Stronger
+				}
+				capped = true
+			}
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
 			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
@@ -658,12 +694,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		startRef = res.Commit
+		capped = false
 		if drained {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
 			}
 		}
-		t.lastRound = attempt >= t.cfg.MaxSessions+u.ExtraAttempts
+		t.lastRound = last
 		v = t.verify(res.Commit)
 		if v.final != "" {
 			return t.finish(v.final, v.reason)
