@@ -231,7 +231,7 @@ var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
 	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
-	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "GateAudit",
+	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit",
 }
 
 // Bound is how long one run of activity may take before it alerts: the
