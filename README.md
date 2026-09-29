@@ -555,22 +555,39 @@ earlier row again. A refused commit, or one whose `coder` class leaves
 out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
 REJECTED`, keeps the previous version current and files, once per
 commit, a human-lane issue on the infra repository (a `human` task,
-source `config`) and an alerts row of kind `config_rejected`, judged
-real; a failed read (Forgejo unreachable) is tried again at the next
-poll. factoryd refuses to boot only when no valid version exists at all.
-A task's workflow captures, at its start, the limits of the version in
-force and the version's id (`WorkflowConfig.PolicyVersion`), so a later
-commit never changes a running task's session cap, agent time or
-stronger rung; `GET /policy` and the console's configuration page show
-the version in force, read-only, each file linked at its commit.
+source `config`) and an open alerts row of kind `config_rejected`
+(written first, so a failed filing is tried again without a second
+issue). The next valid commit that loads settles them: each open config
+issue gets a comment naming the loaded commit and is closed as the bot,
+its task ends `done`, its alert is judged real. A failed read (a revoked
+token, Forgejo unreachable) is tried again at the next poll; ten in a
+row (about five minutes) raise one `config_rejected` alert of source
+`read`, judged real, without an issue. factoryd refuses to boot only
+when no valid version exists at all, and the gateway refuses every call
+while the version in force does not validate. `config check` judges a
+tree with the loader's own function (`factoryd.CheckTree`, the ladder
+from `MODEL` and `STRONGER_MODEL` included). `GET /policy` and the
+console's configuration page show the version in force, read-only, each
+file linked at its commit.
+
+A task's workflow pins, at its start, the version in force
+(`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
+session cap, the agent time and the stronger rung (captured by the
+workflow), and in every session, gate-supervisor call and model review
+the agent time, `supervisor_calls`, `supervisor_timeout` and the
+`no_write` detector (`SessionInput`, `GateSupervision` and `GateResults`
+carry the pin; 0, a workflow from before the pin, reads the version in
+force). Read live, from the version in force when used: the risk rules
+(`GatePolicy`), the factoryd model aliases (`review_model`,
+`supervisor_model`), everything the gateway enforces (classes, tool
+caps, prices, the day cap), the budget at intake, the approvers, the
+activity bounds, `envelope_default` and `project_default`.
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
 (20m, the wall-clock cap across a task's sessions), `supervisor_calls`
 (3 per session), `supervisor_timeout` (6m per supervisor or review call,
 at most 15m) and `stronger_after` (1: the second return from the same
-stage takes the stronger rung). The session supervisor reads the agent
-time and the call count of the version in force at each session start.
-The activity bound of `RunSession` is the agent time plus a minute, of
+stage takes the stronger rung). The activity bound of `RunSession` is the agent time plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 
