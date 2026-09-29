@@ -443,7 +443,8 @@ timestamps, hex addresses, durations, temp paths, line and column
 numbers and pids stripped; a pass ends the run unless the command masks
 its exit status with `;`, `|`, `||` or `$?`, so `cmd; echo $?` does not
 hide a failure), same call (the same tool with the same arguments
-`SUPERVISE_SAME_CALL` times in a session, 4), flip-flop (a file returns
+`limits.same_call` times in a session, 4, pinned; the repetition gets its
+nudges first), flip-flop (a file returns
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
 half way (half the agent time `limits.agent_time` or half the budget;
@@ -627,12 +628,13 @@ intake, the approvers, the bounds of the other activities,
 at most 15m), `stronger_after` (1: the second return from the same
 stage takes the stronger rung) and `steps` (200, also when absent: the
 model turns of one agent session, the worker's `STEPS`), `nudge_after` (3)
-and `nudges` (1), also when absent: that many identical tool calls in a
-row (same tool, same input, from the session's event stream) get the
+and `nudges` (1), also when absent, `nudge_after` below `same_call` (4):
+that many identical tool calls in a row, or `same_call` of them scattered
+over the session (same tool, same input, from the session's event stream), get the
 running session the message "You repeated the same call three times
 (<tool>). Change approach, then continue." and a `nudge` timeline step,
-once per repetition; the next such run trips `same_call` to the
-supervisor. A harness without messages gets the redirect with that text,
+once per repetition, counted only when the session took it; the next such
+run trips `same_call` to the supervisor. A harness without messages gets the redirect with that text,
 decided without a supervisor call. The activity bound of `RunSession` is the agent time plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.

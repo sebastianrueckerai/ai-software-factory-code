@@ -239,12 +239,12 @@ func TestParseTreeStricterWins(t *testing.T) {
 // Limits' durations are strings in JSON, as in YAML: the stored tree, GET
 // /policy and the console show 20m0s, not nanoseconds.
 func TestLimitsJSON(t *testing.T) {
-	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 150, NudgeAfter: 4, Nudges: 2}
+	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 150, NudgeAfter: 4, Nudges: 2, SameCall: 5}
 	b, err := json.Marshal(l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2}`; string(b) != want {
+	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2,"same_call":5}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Limits

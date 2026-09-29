@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -26,8 +25,9 @@ func messageTokenHash(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// workerMessages waits briefly: a nudge holds up the session's event loop.
-var workerMessages = &http.Client{Timeout: 10 * time.Second}
+// workerMessages waits briefly (a nudge holds up the session's event loop)
+// but past the worker's own bound on the hand-over.
+var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout}
 
 // messageWorker posts text to the running worker's message endpoint
 // (harness.MessagePort), which hands it to the harness. The worker's 501
@@ -79,6 +79,7 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 	err := r.messageWorker(ctx, ns, pod, token, n.Text())
 	switch {
 	case err == nil:
+		sup.NudgeSent(n)
 		log.Printf("task %s: nudged session %s after %d identical %s calls", t.ID, s.id, n.Count, n.Tool)
 	case errors.Is(err, harness.ErrNotSupported):
 		detail["fallback"] = "redirect"

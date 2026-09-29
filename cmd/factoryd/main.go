@@ -153,7 +153,6 @@ func main() {
 			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
 			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
 			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),
-			SameCall:         envInt("SUPERVISE_SAME_CALL", factoryd.DefaultSameCall),
 			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),
 		},
 		Policy:        policyLoader.Current,

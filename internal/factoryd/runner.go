@@ -641,6 +641,7 @@ func (r *Runner) supervisorConfig(d policy.Document) SupervisorConfig {
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
 	c.WallClockCap, c.MaxCalls = d.Limits.AgentTime, d.Limits.SupervisorCalls
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
+	c.SameCall = d.Limits.SameCallAfter()
 	return c
 }
 

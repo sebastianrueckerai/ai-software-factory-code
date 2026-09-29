@@ -112,6 +112,11 @@ type Harness interface {
 // /message, bearer-authenticated per session, into Harness.Message.
 const MessagePort = 8091
 
+// MessageTimeout bounds the worker's hand-over of one message to its
+// harness; factoryd waits twice as long for the worker's answer, so a slow
+// hand-over is reported by the worker, not guessed by factoryd.
+const MessageTimeout = 5 * time.Second
+
 var (
 	ErrNotSupported = errors.New("the harness takes no message into a running session")
 	ErrNotRunning   = errors.New("no session is running")

@@ -107,6 +107,9 @@ func TestParseRejects(t *testing.T) {
 		"one nudge_after":    {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 1}", 1), "minimum"},
 		"zero nudges":        {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudges: 0}", 1), "minimum"},
 		"negative nudges":    {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudges: -2}", 1), "limits.nudges must not be negative"},
+		"one same_call":      {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, same_call: 1}", 1), "limits.nudge_after (3) must be below limits.same_call (1)"},
+		"nudge at same_call": {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 4}", 1), "limits.nudge_after (4) must be below limits.same_call (4)"},
+		"same_call at nudge": {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, same_call: 3}", 1), "limits.nudge_after (3) must be below limits.same_call (3)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.doc))
@@ -584,7 +587,7 @@ func TestNudge(t *testing.T) {
 	if after, nudges := d.Limits.Nudge(); after != 3 || nudges != 1 {
 		t.Errorf("default nudge = %d after, %d nudges, want 3, 1", after, nudges)
 	}
-	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 5, nudges: 2}", 1)))
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 5, nudges: 2, same_call: 6}", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,6 +600,16 @@ func TestNudge(t *testing.T) {
 	}
 	if after, nudges := pinned.Nudge(); after != 3 || nudges != 1 {
 		t.Errorf("pinned version without the nudge keys: %d after, %d nudges, want 3, 1", after, nudges)
+	}
+	if got := pinned.SameCallAfter(); got != 4 {
+		t.Errorf("pinned version without same_call: %d, want 4", got)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 5, same_call: 6}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.SameCallAfter(); got != 6 {
+		t.Errorf("same_call = %d, want 6", got)
 	}
 }
 

@@ -87,7 +87,19 @@ type Limits struct {
 	// of the same call trips the supervisor, at least 1. Absent:
 	// DefaultNudges.
 	Nudges int `yaml:"nudges,omitempty" json:"nudges"`
+	// SameCall is how many identical tool calls in one session, in a row
+	// or not, trip the same_call detector, at least 2 and above
+	// NudgeAfter: a repetition gets its nudges first. Absent:
+	// DefaultSameCall.
+	SameCall int `yaml:"same_call,omitempty" json:"same_call"`
 }
+
+// DefaultSameCall is the same_call detector's threshold of a policy
+// without limits.same_call.
+const DefaultSameCall = 4
+
+// SameCallAfter is SameCall, or DefaultSameCall when unset.
+func (l Limits) SameCallAfter() int { return cmp.Or(l.SameCall, DefaultSameCall) }
 
 // The loop nudge of a policy without the keys, and of a version pinned
 // before they existed (queue item C).
@@ -125,10 +137,11 @@ type limitsJSON struct {
 	Steps             int    `json:"steps"`
 	NudgeAfter        int    `json:"nudge_after"`
 	Nudges            int    `json:"nudges"`
+	SameCall          int    `json:"same_call"`
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -137,7 +150,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
-		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges}
+		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -176,6 +189,11 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.nudge_after must not be negative, is %d", l.NudgeAfter)
 	case l.Nudges < 0:
 		return fmt.Errorf("policy: limits.nudges must not be negative, is %d", l.Nudges)
+	case l.SameCall < 0:
+		return fmt.Errorf("policy: limits.same_call must not be negative, is %d", l.SameCall)
+	}
+	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
+		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())
 	}
 	return nil
 }

@@ -51,7 +51,7 @@ type SupervisorConfig struct {
 	WallClockCap     time.Duration // hard runtime cap for the whole task, across sessions
 	RepetitionEvents int           // tool calls without a file change before repetition trips
 	SameFailure      int           // 0 = DefaultSameFailure
-	SameCall         int           // 0 = DefaultSameCall
+	SameCall         int           // limits.same_call; 0 = policy.DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
 	MaxCalls         int           // supervisor calls per session (limits.supervisor_calls); the next trip escalates without one
 	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
@@ -221,6 +221,10 @@ func (s *Supervisor) TakeNudge() *Nudge {
 	return n
 }
 
+// NudgeSent counts n against its repetition's nudges: only a nudge the
+// session took is spent.
+func (s *Supervisor) NudgeSent(n Nudge) { s.traces.nudged[n.key]++ }
+
 // nudgeUndelivered trips on a nudge that did not reach the session: a
 // harness without messages gets the redirect with the nudge's text, decided
 // already; any other failure asks the supervisor.
@@ -256,6 +260,7 @@ func (s *Supervisor) Findings() []string {
 }
 
 func (s *Supervisor) trip(t *Trip) *Trip {
+	s.traces.nudge = nil // the trip decides; a nudge earned with it is not sent
 	t.Findings = append([]string(nil), s.findings...)
 	s.tripped = t
 	return t
@@ -305,7 +310,6 @@ const (
 // Detector defaults; each has an env override in cmd/factoryd.
 const (
 	DefaultSameFailure = 3  // same command, same error signature, in a row
-	DefaultSameCall    = 4  // same tool, same arguments, per session
 	DefaultChurn       = 15 // file changes since the diff last grew, no newly passing command
 )
 
@@ -314,9 +318,7 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	if c.SameFailure == 0 {
 		c.SameFailure = DefaultSameFailure
 	}
-	if c.SameCall == 0 {
-		c.SameCall = DefaultSameCall
-	}
+	c.SameCall = policy.Limits{SameCall: c.SameCall}.SameCallAfter()
 	if c.Churn == 0 {
 		c.Churn = DefaultChurn
 	}
@@ -378,8 +380,11 @@ func (n Nudge) Text() string {
 }
 
 // observe feeds one event to every trace detector and returns the first
-// trip; a nudge the event earns waits in d.nudge.
+// trip; a nudge the event earns waits in d.nudge until the next event. A
+// repeated call, in a row (NudgeAfter) or across the session (SameCall
+// tool calls), gets its nudges before it trips same_call.
 func (d *traceDetectors) observe(ev harness.Event) *Trip {
+	d.nudge = nil
 	trip := d.detect(ev)
 	tool, key := callKey(ev)
 	if key == "" {
@@ -388,18 +393,28 @@ func (d *traceDetectors) observe(ev harness.Event) *Trip {
 	if key != d.streakKey {
 		d.streakKey, d.streak = key, 0
 	}
-	if d.streak++; trip != nil || d.streak < d.cfg.NudgeAfter {
+	d.streak++
+	inRow, n := d.streak >= d.cfg.NudgeAfter, d.calls[key]
+	if trip != nil || (!inRow && n < d.cfg.SameCall) {
 		return trip
 	}
+	count := d.streak
+	if !inRow {
+		count = n
+	}
 	d.streak = 0
-	delete(d.calls, key)
 	if d.nudged[key] < d.cfg.Nudges {
-		d.nudged[key]++
-		d.nudge = &Nudge{Tool: tool, Count: d.cfg.NudgeAfter, key: key}
+		delete(d.calls, key)
+		d.nudge = &Nudge{Tool: tool, Count: count, key: key}
 		return nil
 	}
+	nudges := textutil.Plural(d.nudged[key], "nudge", "nudges")
+	if inRow {
+		return &Trip{Kind: TripSameCall, key: key, Detail: fmt.Sprintf("%s: the same call %d times in a row after %s", tool, count, nudges)}
+	}
+	args, _ := json.Marshal(ev.Detail["args"])
 	return &Trip{Kind: TripSameCall, key: key,
-		Detail: fmt.Sprintf("%s: the same call %d times in a row after %s", tool, d.cfg.NudgeAfter, textutil.Plural(d.nudged[key], "nudge", "nudges"))}
+		Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s after %s", tool, count, textutil.Truncate(string(args), 300), nudges)}
 }
 
 // callKey names a call by its tool and input: a tool call's arguments, a
@@ -511,14 +526,11 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 	return nil
 }
 
+// toolCall counts the call for same_call, which observe judges with the
+// nudge.
 func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
-	tool, key := callKey(ev)
+	_, key := callKey(ev)
 	d.calls[key]++
-	if n := d.calls[key]; n >= d.cfg.SameCall {
-		args, _ := json.Marshal(ev.Detail["args"])
-		return &Trip{Kind: TripSameCall, key: key,
-			Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s", tool, n, textutil.Truncate(string(args), 300))}
-	}
 	return nil
 }
 

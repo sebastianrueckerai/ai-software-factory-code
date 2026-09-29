@@ -48,7 +48,9 @@ func messageHandler(tokenSHA256 [32]byte, send func(context.Context, string) err
 			http.Error(w, "want {\"text\": \"...\"}", http.StatusBadRequest)
 			return
 		}
-		switch err := send(r.Context(), in.Text); {
+		ctx, cancel := context.WithTimeout(r.Context(), harness.MessageTimeout)
+		defer cancel()
+		switch err := send(ctx, in.Text); {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, harness.ErrNotSupported):

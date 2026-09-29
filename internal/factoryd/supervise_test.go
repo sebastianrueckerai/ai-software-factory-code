@@ -353,10 +353,22 @@ func TestSameCallTripsOnTheNthIdenticalCall(t *testing.T) {
 		d.observe(toolEvent("read", map[string]any{"filePath": "/w/b.go"}))
 		d.observe(toolEvent("grep", args()))
 	}
-	// same arguments in a different key order are the same call
-	trip := d.observe(toolEvent("read", map[string]any{"offset": float64(0), "limit": float64(200), "filePath": "/w/a.go"}))
-	if trip == nil || trip.Kind != TripSameCall || !strings.Contains(trip.Detail, "read") {
-		t.Fatalf("fourth identical call: trip = %+v, want same_call naming the tool", trip)
+	// same arguments in a different key order are the same call; the
+	// fourth earns the repetition its nudge first (limits.nudges)
+	if trip := d.observe(toolEvent("read", map[string]any{"offset": float64(0), "limit": float64(200), "filePath": "/w/a.go"})); trip != nil {
+		t.Fatalf("fourth identical call tripped before its nudge: %+v", trip)
+	}
+	if d.nudge == nil || d.nudge.Tool != "read" || d.nudge.Count != 4 || d.nudge.Text() != "You repeated the same call four times (read). Change approach, then continue." {
+		t.Fatalf("nudge = %+v, want read after 4", d.nudge)
+	}
+	d.nudged[d.nudge.key]++ // the session took it
+	var trip *Trip
+	for i := 1; i <= 4; i++ {
+		trip = d.observe(toolEvent("read", args()))
+		d.observe(toolEvent("grep", args()))
+	}
+	if trip == nil || trip.Kind != TripSameCall || !strings.HasPrefix(trip.Detail, "tool read called 4 times with the same arguments") || !strings.HasSuffix(trip.Detail, "after 1 nudge") {
+		t.Fatalf("four more after the nudge: trip = %+v, want same_call naming the tool", trip)
 	}
 }
 
@@ -374,8 +386,8 @@ func TestSameCallUsesTheAdapterHashForCappedArguments(t *testing.T) {
 			t.Fatalf("different full arguments tripped: %+v", trip)
 		}
 	}
-	if trip := d.observe(ev("h1")); trip == nil || trip.Kind != TripSameCall {
-		t.Fatalf("trip = %+v, want same_call on the fourth h1", trip)
+	if trip := d.observe(ev("h1")); trip != nil || d.nudge == nil {
+		t.Fatalf("trip = %+v, nudge %+v; want the nudge on the fourth h1", trip, d.nudge)
 	}
 }
 
@@ -735,6 +747,7 @@ func TestNudgeComesOnceBeforeTheTrip(t *testing.T) {
 	if s.TakeNudge() != nil {
 		t.Fatal("a nudge taken twice")
 	}
+	s.NudgeSent(*n)
 	// the count starts over: the same_call detector's per-session count too
 	for i := 1; i <= 2; i++ {
 		if trip := s.Event(read(), t0); trip != nil || s.TakeNudge() != nil {
@@ -793,5 +806,64 @@ func TestNudgeLimitsFromThePinnedPolicy(t *testing.T) {
 	}
 	if c := r.supervisorConfig(policy.Document{}); c.NudgeAfter != 3 || c.Nudges != 1 {
 		t.Fatalf("defaults = %d after, %d nudges; want 3, 1", c.NudgeAfter, c.Nudges)
+	}
+}
+
+// Scattered earlier identical calls count toward the nudge, never past it:
+// h1 h2 h1 h1 h1 is nudged at the fourth h1, where same_call's per-session
+// count would have tripped.
+func TestNudgePrecedesSameCallOnScatteredCalls(t *testing.T) {
+	d := newTraces()
+	h := func(v string) harness.Event {
+		e := toolEvent("webfetch", map[string]any{"url": v})
+		e.Detail["args_sha256"] = v
+		return e
+	}
+	for i, v := range []string{"h1", "h2", "h1", "h1"} {
+		if trip := d.observe(h(v)); trip != nil || d.nudge != nil {
+			t.Fatalf("call %d: trip %+v, nudge %+v", i, trip, d.nudge)
+		}
+	}
+	if trip := d.observe(h("h1")); trip != nil || d.nudge == nil || d.nudge.Count != 3 {
+		t.Fatalf("fourth h1: trip %+v, nudge %+v; want the nudge after 3 in a row", trip, d.nudge)
+	}
+}
+
+// Only a nudge the session took is spent: one taken but not sent, and one
+// dropped because the same event tripped, leave the next run its nudge.
+func TestNudgeNotSentIsNotSpent(t *testing.T) {
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	read := func() harness.Event { return toolEvent("read", map[string]any{"filePath": "/w/a.go"}) }
+	for i := 0; i < 3; i++ {
+		s.Event(read(), t0)
+	}
+	if s.TakeNudge() == nil {
+		t.Fatal("no nudge after three")
+	}
+	// not sent: the next run is nudged again, not tripped
+	for i := 0; i < 2; i++ {
+		s.Event(read(), t0)
+	}
+	if trip := s.Event(read(), t0); trip != nil || s.TakeNudge() == nil {
+		t.Fatalf("second run after an unsent nudge: trip %+v", trip)
+	}
+	// earned on the event the wall clock trips: dropped with it
+	s2 := mustSupervisor(t, 30*time.Minute, time.Hour, 100)
+	s2.Event(read(), t0)
+	s2.Event(read(), t0)
+	if trip := s2.Event(read(), t0.Add(time.Hour)); trip == nil || trip.Kind != TripWallClock {
+		t.Fatalf("trip = %+v, want wall_clock", trip)
+	}
+	s2.Resume(t0)
+	s2.deadline = t0.Add(10 * time.Hour)
+	if s2.TakeNudge() != nil {
+		t.Fatal("the dropped nudge survived the trip")
+	}
+	for i := 0; i < 2; i++ {
+		s2.Event(read(), t0)
+	}
+	if trip := s2.Event(read(), t0); trip != nil || s2.TakeNudge() == nil {
+		t.Fatalf("the next run after a dropped nudge: trip %+v, want its nudge", trip)
 	}
 }

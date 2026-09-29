@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -49,6 +50,9 @@ func TestMessageEndpoint(t *testing.T) {
 	var sent []string
 	var answer error
 	h := messageHandler(mustHash(t, testMessageHash), func(ctx context.Context, text string) error {
+		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > harness.MessageTimeout {
+			t.Errorf("hand-over deadline %v (set %v), want within %s", time.Until(dl), ok, harness.MessageTimeout)
+		}
 		sent = append(sent, text)
 		return answer
 	})
