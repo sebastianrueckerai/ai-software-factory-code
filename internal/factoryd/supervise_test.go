@@ -367,11 +367,12 @@ func TestSameCallUsesTheAdapterHashForCappedArguments(t *testing.T) {
 		e.Detail["args_sha256"] = h
 		return e
 	}
+	// not in a row, or the loop nudge would come first
 	for i := 0; i < 3; i++ {
 		d.observe(ev("h1"))
-	}
-	if trip := d.observe(ev("h2")); trip != nil {
-		t.Fatalf("different full arguments tripped: %+v", trip)
+		if trip := d.observe(ev("h2")); trip != nil {
+			t.Fatalf("different full arguments tripped: %+v", trip)
+		}
 	}
 	if trip := d.observe(ev("h1")); trip == nil || trip.Kind != TripSameCall {
 		t.Fatalf("trip = %+v, want same_call on the fourth h1", trip)
@@ -699,5 +700,98 @@ func TestReadOnlySessionTakesNoWriteDetectors(t *testing.T) {
 	}
 	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, start.Add(20*time.Minute)); trip == nil || trip.Kind != TripWallClock {
 		t.Fatalf("trip = %+v, want the wall-clock cap", trip)
+	}
+}
+
+// The loop nudge (queue item C): three identical calls in a row earn one
+// nudge and start the count over; a different call in between breaks the
+// run; three again after the nudge trip the supervisor.
+func TestNudgeComesOnceBeforeTheTrip(t *testing.T) {
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	read := func() harness.Event { return toolEvent("read", map[string]any{"filePath": "/w/a.go"}) }
+	step := harness.Event{Kind: harness.EventModelCall}
+	glob := func() harness.Event { return toolEvent("glob", map[string]any{"pattern": "*.go"}) }
+	// the per-session same_call count (4) sees these three globs too
+	for i, ev := range []harness.Event{glob(), step, glob(), toolEvent("grep", map[string]any{"pattern": "x"}), glob(), step, read(), read()} {
+		if trip := s.Event(ev, t0); trip != nil {
+			t.Fatalf("event %d tripped: %+v", i, trip)
+		}
+		if n := s.TakeNudge(); n != nil {
+			t.Fatalf("event %d nudged: %+v", i, n)
+		}
+	}
+	// the third read in a row; model steps in between do not break it
+	if trip := s.Event(read(), t0); trip != nil {
+		t.Fatalf("third in a row tripped: %+v", trip)
+	}
+	n := s.TakeNudge()
+	if n == nil || n.Tool != "read" || n.Count != 3 {
+		t.Fatalf("nudge = %+v, want read after 3", n)
+	}
+	if n.Text() != "You repeated the same call three times (read). Change approach, then continue." {
+		t.Fatalf("text = %q", n.Text())
+	}
+	if s.TakeNudge() != nil {
+		t.Fatal("a nudge taken twice")
+	}
+	// the count starts over: the same_call detector's per-session count too
+	for i := 1; i <= 2; i++ {
+		if trip := s.Event(read(), t0); trip != nil || s.TakeNudge() != nil {
+			t.Fatalf("call %d after the nudge: trip %+v", i, trip)
+		}
+	}
+	trip := s.Event(read(), t0)
+	if trip == nil || trip.Kind != TripSameCall || trip.Detail != "read: the same call 3 times in a row after 1 nudge" {
+		t.Fatalf("three again after the nudge: trip = %+v, want same_call", trip)
+	}
+	if s.TakeNudge() != nil {
+		t.Fatal("the trip came with a nudge")
+	}
+	// after a continue the repetition trips again, it earns no second nudge
+	s.Resume(t0)
+	for i := 1; i <= 2; i++ {
+		s.Event(read(), t0)
+	}
+	if trip := s.Event(read(), t0); trip == nil || trip.Kind != TripSameCall || s.TakeNudge() != nil {
+		t.Fatalf("after continue: trip = %+v", trip)
+	}
+}
+
+// Commands and file writes are calls too: the same command line three times
+// in a row is nudged, under the bash tool.
+func TestNudgeCountsCommandsAndWrites(t *testing.T) {
+	d := newTraces()
+	for i := 0; i < 3; i++ {
+		d.observe(cmdEvent("go build ./...", 0, "ok"))
+	}
+	if d.nudge == nil || d.nudge.Tool != "bash" {
+		t.Fatalf("nudge = %+v, want bash", d.nudge)
+	}
+	d.nudge = nil
+	write := harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go", "tool": "write", "sha256": "h1"}}
+	d.observe(write)
+	d.observe(write)
+	d.observe(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go", "tool": "write", "sha256": "h2"}})
+	d.observe(write)
+	if d.nudge != nil {
+		t.Fatalf("different content in between nudged: %+v", d.nudge)
+	}
+	d.observe(write)
+	d.observe(write)
+	if d.nudge == nil || d.nudge.Tool != "write" {
+		t.Fatalf("nudge = %+v, want write", d.nudge)
+	}
+}
+
+func TestNudgeLimitsFromThePinnedPolicy(t *testing.T) {
+	var d policy.Document
+	d.Limits.NudgeAfter, d.Limits.Nudges = 5, 2
+	r := &Runner{}
+	if c := r.supervisorConfig(d); c.NudgeAfter != 5 || c.Nudges != 2 {
+		t.Fatalf("config = %d after, %d nudges; want 5, 2", c.NudgeAfter, c.Nudges)
+	}
+	if c := r.supervisorConfig(policy.Document{}); c.NudgeAfter != 3 || c.Nudges != 1 {
+		t.Fatalf("defaults = %d after, %d nudges; want 3, 1", c.NudgeAfter, c.Nudges)
 	}
 }

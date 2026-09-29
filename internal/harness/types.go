@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -100,4 +101,18 @@ type SandboxEnv struct {
 type Harness interface {
 	Prepare(ctx context.Context, env SandboxEnv, brief TaskBrief) error
 	Run(ctx context.Context, brief TaskBrief, emit func(Event)) Result
+	// Message puts text into the running session as the next user turn:
+	// ErrNotSupported from a harness without such a mode (factoryd then
+	// redirects to a fresh session with the text), ErrNotRunning when no
+	// session runs.
+	Message(ctx context.Context, text string) error
 }
+
+// MessagePort is the worker's one listening port: factoryd's POST
+// /message, bearer-authenticated per session, into Harness.Message.
+const MessagePort = 8091
+
+var (
+	ErrNotSupported = errors.New("the harness takes no message into a running session")
+	ErrNotRunning   = errors.New("no session is running")
+)

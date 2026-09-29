@@ -24,6 +24,7 @@ func setRequiredEnv(t *testing.T) {
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo", "REPO_URL": "https://example/repo.git",
 		"BRANCH": "factory/t1", "REPO_TOKEN": "tok", "PUSH_URL": "https://example/fork.git", "PUSH_TOKEN": "ptok", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
+		"MESSAGE_TOKEN_SHA256": testMessageHash,
 	} {
 		t.Setenv(name, val)
 	}
@@ -130,7 +131,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b",
 		"REPO_TOKEN": "s3cret-tok", "PUSH_TOKEN": "pu5h-tok", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
-		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1",
+		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "MESSAGE_TOKEN_SHA256": testMessageHash,
 	} {
 		t.Setenv(k, v)
 	}

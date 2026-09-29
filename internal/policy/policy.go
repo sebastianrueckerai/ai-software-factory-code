@@ -5,6 +5,7 @@
 package policy
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,6 +79,26 @@ type Limits struct {
 	// at least 1: at the cap the harness asks the model to summarise and
 	// stop. Absent: DefaultSteps.
 	Steps int `yaml:"steps,omitempty" json:"steps"`
+	// NudgeAfter is how many identical tool calls in a row (same tool,
+	// same input) earn the running session a message to change approach,
+	// at least 2. Absent: DefaultNudgeAfter.
+	NudgeAfter int `yaml:"nudge_after,omitempty" json:"nudge_after"`
+	// Nudges is how many such messages one repetition gets; the next run
+	// of the same call trips the supervisor, at least 1. Absent:
+	// DefaultNudges.
+	Nudges int `yaml:"nudges,omitempty" json:"nudges"`
+}
+
+// The loop nudge of a policy without the keys, and of a version pinned
+// before they existed (queue item C).
+const (
+	DefaultNudgeAfter = 3
+	DefaultNudges     = 1
+)
+
+// Nudge is NudgeAfter and Nudges, their defaults where unset.
+func (l Limits) Nudge() (after, nudges int) {
+	return cmp.Or(l.NudgeAfter, DefaultNudgeAfter), cmp.Or(l.Nudges, DefaultNudges)
 }
 
 // DefaultSteps is the step cap of a policy without limits.steps, and of a
@@ -102,10 +123,12 @@ type limitsJSON struct {
 	SupervisorTimeout string `json:"supervisor_timeout"`
 	StrongerAfter     int    `json:"stronger_after"`
 	Steps             int    `json:"steps"`
+	NudgeAfter        int    `json:"nudge_after"`
+	Nudges            int    `json:"nudges"`
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -113,7 +136,8 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &j); err != nil {
 		return err
 	}
-	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps}
+	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
+		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -148,6 +172,10 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.stronger_after must not be negative, is %d", l.StrongerAfter)
 	case l.Steps < 0:
 		return fmt.Errorf("policy: limits.steps must not be negative, is %d", l.Steps)
+	case l.NudgeAfter < 0:
+		return fmt.Errorf("policy: limits.nudge_after must not be negative, is %d", l.NudgeAfter)
+	case l.Nudges < 0:
+		return fmt.Errorf("policy: limits.nudges must not be negative, is %d", l.Nudges)
 	}
 	return nil
 }

@@ -35,7 +35,7 @@ var (
 func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
 // minimums are the least values of integer fields, keyed Type.Field.
-var minimums = map[string]float64{"Limits.Steps": 1}
+var minimums = map[string]float64{"Limits.Steps": 1, "Limits.NudgeAfter": 2, "Limits.Nudges": 1}
 
 // enums are the enumerated values of fields, keyed Type.Field: a string
 // field's values, a map field's keys, a slice field's items.

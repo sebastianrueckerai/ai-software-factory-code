@@ -139,6 +139,13 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 
+	stopMessages, err := serveMessages(env.messageHash, oc.Message, log)
+	if err != nil {
+		log("%v", err)
+		endBrief(err)
+		return 1
+	}
+	defer stopMessages()
 	if env.report != "" {
 		endBrief(nil)
 		return runReport(ctx, oc, brief, tel, &outcome, closeTelemetry, log)
@@ -330,6 +337,9 @@ type workerEnv struct {
 	findings, answers, posterInfo, tools                      []string
 	author, authorStanding                                    string
 	home                                                      string
+	// messageHash is sha256 of the session's message bearer, which only
+	// factoryd holds
+	messageHash [32]byte
 	// report is a report session's guide (MODE report, ruling 185): no
 	// push URL or token, nothing pushed, the last message the result
 	report string
@@ -345,9 +355,11 @@ func loadEnv() (workerEnv, error) {
 	e.repoSHA = str("REPO_SHA")
 	e.branch = str("BRANCH")
 	e.repoToken, e.pushToken = str("REPO_TOKEN"), str("PUSH_TOKEN")
+	messageHash := str("MESSAGE_TOKEN_SHA256")
 	// opencode inherits this process's environment
 	os.Unsetenv("REPO_TOKEN")
 	os.Unsetenv("PUSH_TOKEN")
+	os.Unsetenv("MESSAGE_TOKEN_SHA256")
 	e.repoURL, e.pushURL = str("REPO_URL"), str("PUSH_URL")
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
@@ -373,6 +385,9 @@ func loadEnv() (workerEnv, error) {
 		e.home = "/home/worker"
 	}
 	var err error
+	if e.messageHash, err = parseHash(messageHash); err != nil {
+		return e, err
+	}
 	if e.answerTokens, err = strconv.Atoi(str("ANSWER_TOKENS")); err != nil {
 		return e, fmt.Errorf("ANSWER_TOKENS: %w", err)
 	}

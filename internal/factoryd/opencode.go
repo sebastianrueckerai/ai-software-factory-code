@@ -14,11 +14,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -60,6 +62,11 @@ type Opencode struct {
 	Budget     TokenBudget
 	Steps      int // the agent's step cap, policy limits.steps
 	HTTP       *http.Client
+
+	mu        sync.Mutex
+	base      string    // the running server's URL
+	sessionID string    // the running session; "" when none runs
+	eventTap  io.Writer // the fixture recorder's copy of the event stream
 }
 
 var _ harness.Harness = (*Opencode)(nil)
@@ -101,9 +108,14 @@ func (o *Opencode) Prepare(ctx context.Context, env harness.SandboxEnv, brief ha
 	return os.WriteFile(filepath.Join(o.WorkDir, "brief.json"), briefJSON, 0o600)
 }
 
-// Run drives `opencode run --format json` and normalizes its JSONL stream
-// onto harness events. The returned Result is the adapter's verdict; the
-// final finished event is synthesized here because the CLI has no such line.
+// Run drives the pinned opencode's server, `opencode serve` on 127.0.0.1,
+// the way `opencode run --format json --auto` drives its in-process one
+// (packages/opencode/src/cli/cmd/run.ts:697-906 at v1.18.32): it subscribes
+// to /event, creates the session with run's deny rules, prompts the brief,
+// answers every permission ask "once", and hands each event to the parser
+// as the JSON line run would print, until the session goes idle. Message
+// queues text for the running session's next turn. The returned Result is
+// the adapter's verdict; the final finished event is synthesized here.
 func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(harness.Event)) harness.Result {
 	outputLimit, err := o.Budget.OutputLimit()
 	if err != nil {
@@ -130,17 +142,25 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		return o.finish(emit, false, err.Error())
 	}
 
-	p := &opencodeParser{workDir: o.WorkDir}
-	lines := &lineWriter{
-		line:    func(b []byte) { p.line(b, emit) },
-		tooLong: func() { p.fail("opencode output line exceeds 1 MiB") },
+	listening := make(chan string, 1)
+	stdout := &lineWriter{
+		line: func(b []byte) {
+			if u, ok := strings.CutPrefix(string(b), serveListening); ok {
+				select {
+				case listening <- u:
+				default:
+				}
+			}
+		},
+		tooLong: func() {},
 	}
-	cmd := exec.CommandContext(ctx, o.binary(),
-		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief)) // #nosec G204 -- exec.CommandContext, no shell; objectiveText(brief) is one argv element from factoryd's own task brief
+	cmd := exec.CommandContext(ctx, o.binary(), "serve", "--hostname", "127.0.0.1", "--port", "0") // #nosec G204 -- exec.CommandContext, no shell, fixed argv
 	cmd.Dir = o.WorkDir
-	// opencode run takes its directory from PWD before its cwd
+	// the server takes its directory from the process's cwd
+	// (server/routes/instance/httpapi/middleware/workspace-routing.ts:87);
+	// PWD keeps an inherited one from pointing the agent elsewhere
 	cmd.Env = append(os.Environ(), "PWD="+o.WorkDir, "OPENCODE_CONFIG_CONTENT="+string(cfg))
-	cmd.Stdout = lines
+	cmd.Stdout = stdout
 	stderr := &capWriter{max: 64 << 10}
 	cmd.Stderr = stderr
 	// opencode and everything the agent starts share one process group, so
@@ -152,21 +172,279 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if err := cmd.Start(); err != nil {
 		return o.finish(emit, false, err.Error())
 	}
-	waitErr := cmd.Wait()
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // #nosec G104 -- best-effort reap of a process group already exited; ESRCH is expected
-	if errors.Is(waitErr, exec.ErrWaitDelay) {
-		waitErr = nil
-	}
-	lines.flush()
+	var waitErr error
+	exited := make(chan struct{})
+	go func() { waitErr = cmd.Wait(); close(exited) }()
 
-	success := p.stopped && p.errMessage() == "" && waitErr == nil
+	p := &opencodeParser{workDir: o.WorkDir}
+	var serveErr error
+	select {
+	case base := <-listening:
+		serveErr = o.serve(ctx, base, objectiveText(brief), p, emit, exited)
+	case <-exited:
+		serveErr = fmt.Errorf("exited before it listened: %v", waitErr)
+	case <-time.After(serveStartTimeout):
+		serveErr = fmt.Errorf("not listening after %s", serveStartTimeout)
+	case <-ctx.Done():
+		serveErr = ctx.Err()
+	}
+	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // #nosec G104 -- best-effort: the server never exits on its own; ESRCH once it has
+	<-exited
+
+	success := serveErr == nil && p.stopped && p.errMessage() == ""
 	summary := p.summary()
 	if msg := p.errMessage(); msg != "" {
 		summary = msg
-	} else if waitErr != nil {
-		summary = fmt.Sprintf("opencode exited: %v; stderr: %s", waitErr, strings.TrimSpace(stderr.String()))
+	} else if serveErr != nil {
+		summary = fmt.Sprintf("opencode serve: %v; stderr: %s", serveErr, strings.TrimSpace(stderr.String()))
 	}
 	return o.finish(emit, success, summary)
+}
+
+// serveListening opens the line `opencode serve` prints once it listens
+// (packages/opencode/src/cli/cmd/serve.ts:20).
+const serveListening = "opencode server listening on "
+
+// serveStartTimeout bounds the server's start, its first-run database
+// migration included.
+const serveStartTimeout = 60 * time.Second
+
+// runDenies are the rules `opencode run` puts on a session nobody watches
+// (run.ts:430-448): the question tool and the plan mode switches.
+var runDenies = []map[string]string{
+	{"permission": "question", "action": "deny", "pattern": "*"},
+	{"permission": "plan_enter", "action": "deny", "pattern": "*"},
+	{"permission": "plan_exit", "action": "deny", "pattern": "*"},
+}
+
+// serve runs one session on the server at base until it goes idle, ctx
+// ends or the server exits.
+func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodeParser, emit func(harness.Event), exited <-chan struct{}) error {
+	evCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := http.NewRequestWithContext(evCtx, http.MethodGet, base+"/event", nil)
+	if err != nil {
+		return err
+	}
+	// the server registers the listener before it answers
+	// (handlers/event.ts:29-33), so no event after this is lost
+	resp, err := loopback.Do(req)
+	if err != nil {
+		return fmt.Errorf("subscribe: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("subscribe: status %d", resp.StatusCode)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := serveCall(ctx, base+"/session", map[string]any{"permission": runDenies}, &created); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	if created.ID == "" {
+		return errors.New("create session: no id")
+	}
+	o.mu.Lock()
+	o.base, o.sessionID = base, created.ID
+	o.mu.Unlock()
+	ended := func() {
+		o.mu.Lock()
+		o.base, o.sessionID = "", ""
+		o.mu.Unlock()
+	}
+	defer ended()
+	if err := o.Message(ctx, text); err != nil {
+		return fmt.Errorf("prompt: %w", err)
+	}
+
+	m := &serveMapper{session: created.ID, sessions: map[string]bool{created.ID: true}}
+	var replyErr error
+	lines := &lineWriter{
+		line: func(b []byte) {
+			data, ok := bytes.CutPrefix(b, []byte("data:"))
+			if !ok || m.idle || replyErr != nil {
+				return
+			}
+			out := m.event(data, time.Now())
+			if out.line != nil {
+				p.line(out.line, emit)
+			}
+			if out.permission != "" {
+				if err := serveCall(ctx, base+"/permission/"+url.PathEscape(out.permission)+"/reply", map[string]string{"reply": "once"}, nil); err != nil {
+					replyErr = fmt.Errorf("answer permission %s: %w", out.permission, err)
+					cancel()
+				}
+			}
+			if m.idle {
+				ended()
+				cancel()
+			}
+		},
+		tooLong: func() { p.fail("opencode output line exceeds 1 MiB") },
+	}
+	go func() {
+		select {
+		case <-exited:
+			cancel()
+		case <-evCtx.Done():
+		}
+	}()
+	var events io.Reader = resp.Body
+	if o.eventTap != nil {
+		events = io.TeeReader(resp.Body, o.eventTap)
+	}
+	_, copyErr := io.Copy(lines, events)
+	switch {
+	case m.idle:
+		return nil
+	case replyErr != nil:
+		return replyErr
+	case ctx.Err() != nil:
+		return ctx.Err()
+	}
+	select {
+	case <-exited:
+		return errors.New("exited mid-session")
+	default:
+	}
+	return fmt.Errorf("the event stream ended mid-session: %v", copyErr)
+}
+
+// Message queues text as a user message for the running session's next
+// turn (POST /session/:id/prompt_async, handlers/session.ts:307-325): the
+// agent loop reads the newest user message on every turn
+// (session/prompt.ts:1089-1096), so a message sent while the agent works
+// reaches its next model call.
+func (o *Opencode) Message(ctx context.Context, text string) error {
+	o.mu.Lock()
+	base, id := o.base, o.sessionID
+	o.mu.Unlock()
+	if id == "" {
+		return harness.ErrNotRunning
+	}
+	provider, modelID := o.model()
+	return serveCall(ctx, base+"/session/"+url.PathEscape(id)+"/prompt_async", map[string]any{
+		"model": map[string]string{"providerID": provider, "modelID": modelID},
+		"parts": []map[string]string{{"type": "text", "text": text}},
+	}, nil)
+}
+
+// loopback talks to opencode's own server; the event stream has no end
+// but the session's.
+var loopback = &http.Client{}
+
+// serveCall POSTs body as JSON and decodes a 2xx answer into out, if any.
+func serveCall(ctx context.Context, u string, body, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := loopback.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	answer, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("status %d: %s", resp.StatusCode, textutil.Truncate(string(answer), 300))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(answer, out)
+}
+
+// serveMapper turns the server's events for one session into the JSON
+// lines `opencode run --format json` prints for them (run.ts:697-820).
+type serveMapper struct {
+	session  string
+	sessions map[string]bool // the session and its subagents' sessions
+	idle     bool
+}
+
+// served is one event's upshot: a run line for the parser, a permission
+// request to answer, or neither.
+type served struct {
+	line       []byte
+	permission string
+}
+
+func (m *serveMapper) event(data []byte, at time.Time) served {
+	var ev struct {
+		Type       string `json:"type"`
+		Properties struct {
+			SessionID string          `json:"sessionID"`
+			ID        string          `json:"id"`
+			Part      json.RawMessage `json:"part"`
+			Error     json.RawMessage `json:"error"`
+			Status    struct {
+				Type string `json:"type"`
+			} `json:"status"`
+			Info struct {
+				ID       string `json:"id"`
+				ParentID string `json:"parentID"`
+			} `json:"info"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return served{}
+	}
+	pr := ev.Properties
+	runLine := func(typ string, key string, v json.RawMessage) served {
+		line, _ := json.Marshal(map[string]any{"type": typ, "timestamp": at.UnixMilli(), "sessionID": m.session, key: v})
+		return served{line: line}
+	}
+	switch ev.Type {
+	case "session.created":
+		if m.sessions[pr.Info.ParentID] {
+			m.sessions[pr.Info.ID] = true
+		}
+	case "message.part.updated":
+		var part struct {
+			SessionID string `json:"sessionID"`
+			Type      string `json:"type"`
+			State     struct {
+				Status string `json:"status"`
+			} `json:"state"`
+			Time struct {
+				End int64 `json:"end"`
+			} `json:"time"`
+		}
+		if json.Unmarshal(pr.Part, &part) != nil || part.SessionID != m.session {
+			return served{}
+		}
+		switch {
+		case part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error"):
+			return runLine("tool_use", "part", pr.Part)
+		case part.Type == "step-start":
+			return runLine("step_start", "part", pr.Part)
+		case part.Type == "step-finish":
+			return runLine("step_finish", "part", pr.Part)
+		case part.Type == "text" && part.Time.End != 0:
+			return runLine("text", "part", pr.Part)
+		}
+	case "session.error":
+		if pr.SessionID == m.session && len(pr.Error) > 0 && string(pr.Error) != "null" {
+			return runLine("error", "error", pr.Error)
+		}
+	case "session.status":
+		if pr.SessionID == m.session && pr.Status.Type == "idle" {
+			m.idle = true
+		}
+	case "permission.asked":
+		if m.sessions[pr.SessionID] {
+			return served{permission: pr.ID}
+		}
+	}
+	return served{}
 }
 
 // maxOutputLine bounds one opencode JSON line, like the gateway's SSE line.

@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -58,6 +60,10 @@ type SupervisorConfig struct {
 	// ReadOnly: a report session, which writes no file; repetition and
 	// no_write do not apply.
 	ReadOnly bool
+	// NudgeAfter identical calls in a row earn a nudge, Nudges of them per
+	// repetition; the next run trips same_call (limits, 0 = the policy's
+	// defaults).
+	NudgeAfter, Nudges int
 }
 
 func (c SupervisorConfig) validate() error {
@@ -70,7 +76,8 @@ func (c SupervisorConfig) validate() error {
 	if c.RepetitionEvents < 2 {
 		return fmt.Errorf("supervisor: RepetitionEvents must be >= 2, is %d", c.RepetitionEvents)
 	}
-	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 1 {
+	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 1 ||
+		c.NudgeAfter < 0 || c.NudgeAfter == 1 || c.Nudges < 0 {
 		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 1: %+v", c)
 	}
 	if c.NoWriteAfter < 0 {
@@ -207,6 +214,24 @@ func (s *Supervisor) halfWay(now time.Time) *Trip {
 	return s.trip(&Trip{Kind: TripHalfWay, Detail: detail})
 }
 
+// TakeNudge is the nudge the last event earned, once.
+func (s *Supervisor) TakeNudge() *Nudge {
+	n := s.traces.nudge
+	s.traces.nudge = nil
+	return n
+}
+
+// nudgeUndelivered trips on a nudge that did not reach the session: a
+// harness without messages gets the redirect with the nudge's text, decided
+// already; any other failure asks the supervisor.
+func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
+	t := &Trip{Kind: TripSameCall, key: n.key, Detail: fmt.Sprintf("%s: the same call %d times in a row; the nudge was not delivered: %v", n.Tool, n.Count, err)}
+	if errors.Is(err, harness.ErrNotSupported) {
+		t.decided = &Decision{Action: ActionRedirect, Guidance: n.Text()}
+	}
+	return s.trip(t)
+}
+
 // HalfWayDone reports whether the half-way check-in has fired for the task.
 func (s *Supervisor) HalfWayDone() bool { return s.halfWayDone }
 
@@ -298,6 +323,8 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	if c.NoWriteAfter == 0 {
 		c.NoWriteAfter = policy.Document{}.Detector(policy.DetectorNoWrite)
 	}
+	after, nudges := policy.Limits{NudgeAfter: c.NudgeAfter, Nudges: c.Nudges}.Nudge()
+	c.NudgeAfter, c.Nudges = after, nudges
 	return c
 }
 
@@ -318,15 +345,85 @@ type traceDetectors struct {
 	contents map[string][]string  // by path: content hashes in the order they appeared
 	churn    int                  // file changes since the diff last grew
 	maxDiff  int                  // largest diff (insertions + deletions) seen
+
+	streakKey string         // the last call: tool and input hash
+	streak    int            // identical calls in a row ending with it
+	nudged    map[string]int // nudges sent, by call
+	nudge     *Nudge         // the nudge the last event earned, until taken
 }
 
 func newTraceDetectors(cfg SupervisorConfig) *traceDetectors {
 	return &traceDetectors{cfg: cfg, runs: map[string]outputRun{}, failed: map[string]bool{},
-		calls: map[string]int{}, contents: map[string][]string{}}
+		calls: map[string]int{}, contents: map[string][]string{}, nudged: map[string]int{}}
 }
 
-// observe feeds one event to every trace detector and returns the first trip.
+// Nudge asks the running session to change approach after Count identical
+// calls of Tool in a row (queue item C): a message into the session, not a
+// trip; it comes before the trip once per repetition.
+type Nudge struct {
+	Tool  string
+	Count int
+	key   string
+}
+
+var countWords = strings.Fields("zero once twice three four five six seven eight nine")
+
+// Text is the message the session gets.
+func (n Nudge) Text() string {
+	times := fmt.Sprintf("%d times", n.Count)
+	if n.Count > 2 && n.Count < len(countWords) {
+		times = countWords[n.Count] + " times"
+	}
+	return fmt.Sprintf("You repeated the same call %s (%s). Change approach, then continue.", times, n.Tool)
+}
+
+// observe feeds one event to every trace detector and returns the first
+// trip; a nudge the event earns waits in d.nudge.
 func (d *traceDetectors) observe(ev harness.Event) *Trip {
+	trip := d.detect(ev)
+	tool, key := callKey(ev)
+	if key == "" {
+		return trip
+	}
+	if key != d.streakKey {
+		d.streakKey, d.streak = key, 0
+	}
+	if d.streak++; trip != nil || d.streak < d.cfg.NudgeAfter {
+		return trip
+	}
+	d.streak = 0
+	delete(d.calls, key)
+	if d.nudged[key] < d.cfg.Nudges {
+		d.nudged[key]++
+		d.nudge = &Nudge{Tool: tool, Count: d.cfg.NudgeAfter, key: key}
+		return nil
+	}
+	return &Trip{Kind: TripSameCall, key: key,
+		Detail: fmt.Sprintf("%s: the same call %d times in a row after %s", tool, d.cfg.NudgeAfter, textutil.Plural(d.nudged[key], "nudge", "nudges"))}
+}
+
+// callKey names a call by its tool and input: a tool call's arguments, a
+// command's line (the bash tool), a file change's path and content. Other
+// events are no call.
+func callKey(ev harness.Event) (tool, key string) {
+	switch ev.Kind {
+	case harness.EventToolCall:
+		tool = detailString(ev, "tool")
+		h := detailString(ev, "args_sha256")
+		if h == "" {
+			h = argsHash(ev.Detail["args"])
+		}
+		return tool, tool + "\x00" + h
+	case harness.EventCommand:
+		return "bash", "bash\x00" + argsHash(map[string]any{"command": detailString(ev, "command")})
+	case harness.EventFileChange:
+		tool = cmp.Or(detailString(ev, "tool"), "write")
+		return tool, tool + "\x00" + detailString(ev, "path") + "\x00" + detailString(ev, "sha256")
+	}
+	return "", ""
+}
+
+func (d *traceDetectors) detect(ev harness.Event) *Trip {
 	switch ev.Kind {
 	case harness.EventCommand:
 		return d.command(ev)
@@ -415,12 +512,7 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 }
 
 func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
-	tool := detailString(ev, "tool")
-	h := detailString(ev, "args_sha256")
-	if h == "" {
-		h = argsHash(ev.Detail["args"])
-	}
-	key := tool + "\x00" + h
+	tool, key := callKey(ev)
 	d.calls[key]++
 	if n := d.calls[key]; n >= d.cfg.SameCall {
 		args, _ := json.Marshal(ev.Detail["args"])

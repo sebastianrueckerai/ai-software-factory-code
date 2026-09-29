@@ -71,7 +71,13 @@ the agents work on.
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
   resumed task branch that only the fork holds is fetched from there),
-  runs opencode in its own process group without either token (headless:
+  runs `opencode serve` on 127.0.0.1 in its own process group without
+  either token and drives one session over its HTTP API the way
+  `opencode run --auto` drives its own (every permission ask answered
+  "once"; the fixture `TestRecordOpencodeServeFixture` records), serves
+  factoryd's `POST /message {text}` on port 8091 (bearer per session, the
+  pod holds only its hash in `MESSAGE_TOKEN_SHA256`; the text goes to the
+  session's next turn through `prompt_async`) (headless:
   every looping agent capped at `limits.steps`, the `question` tool
   hidden, `doom_loop` allowed, a rejected tool call an error the model
   sees and the loop goes on; `buildOpencodeConfig`, its golden file and
@@ -620,7 +626,14 @@ intake, the approvers, the bounds of the other activities,
 (3 per session), `supervisor_timeout` (6m per supervisor or review call,
 at most 15m), `stronger_after` (1: the second return from the same
 stage takes the stronger rung) and `steps` (200, also when absent: the
-model turns of one agent session, the worker's `STEPS`). The activity bound of `RunSession` is the agent time plus a minute, of
+model turns of one agent session, the worker's `STEPS`), `nudge_after` (3)
+and `nudges` (1), also when absent: that many identical tool calls in a
+row (same tool, same input, from the session's event stream) get the
+running session the message "You repeated the same call three times
+(<tool>). Change approach, then continue." and a `nudge` timeline step,
+once per repetition; the next such run trips `same_call` to the
+supervisor. A harness without messages gets the redirect with that text,
+decided without a supervisor call. The activity bound of `RunSession` is the agent time plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 

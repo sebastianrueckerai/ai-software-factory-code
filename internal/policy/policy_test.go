@@ -103,6 +103,10 @@ func TestParseRejects(t *testing.T) {
 		"not yaml":           {"version: [1", "policy:"},
 		"zero steps":         {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: 0}", 1), "minimum"},
 		"negative steps":     {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: -1}", 1), "limits.steps must not be negative"},
+		"zero nudge_after":   {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 0}", 1), "minimum"},
+		"one nudge_after":    {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 1}", 1), "minimum"},
+		"zero nudges":        {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudges: 0}", 1), "minimum"},
+		"negative nudges":    {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudges: -2}", 1), "limits.nudges must not be negative"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.doc))
@@ -567,6 +571,32 @@ func TestStepCap(t *testing.T) {
 	}
 	if got := pinned.StepCap(); got != 200 {
 		t.Errorf("pinned version without steps: step cap = %d, want 200", got)
+	}
+}
+
+// A policy without the nudge keys, and a version pinned before they
+// existed, nudge once after three identical calls in a row.
+func TestNudge(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, nudges := d.Limits.Nudge(); after != 3 || nudges != 1 {
+		t.Errorf("default nudge = %d after, %d nudges, want 3, 1", after, nudges)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, nudge_after: 5, nudges: 2}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after, nudges := d.Limits.Nudge(); after != 5 || nudges != 2 {
+		t.Errorf("nudge = %d after, %d nudges, want 5, 2", after, nudges)
+	}
+	var pinned Limits
+	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":200}`), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if after, nudges := pinned.Nudge(); after != 3 || nudges != 1 {
+		t.Errorf("pinned version without the nudge keys: %d after, %d nudges, want 3, 1", after, nudges)
 	}
 }
 

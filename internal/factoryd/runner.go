@@ -95,6 +95,8 @@ type Runner struct {
 	timeline   *Timeline
 	supervisor *SupervisorModel
 	stopWait   time.Duration
+	// workerPort replaces harness.MessagePort in tests
+	workerPort int
 
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
@@ -305,6 +307,9 @@ type sessionSpec struct {
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
+	// messageToken is the bearer of the worker's message endpoint, made
+	// per session; the pod gets its hash
+	messageToken string
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -381,6 +386,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// supervisor call included, ends within r.stopWait of it
 	var stopAt time.Time
 	podName := "worker-" + s.id
+	s.messageToken = rand.Text()
 	pod := r.workerPodSpec(t, s)
 	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
 		return out, fmt.Errorf("create pod: %w", err)
@@ -614,6 +620,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			now := time.Now()
 			digest.add(*ev, now)
 			trip := sup.Event(*ev, now)
+			if n := sup.TakeNudge(); n != nil && trip == nil {
+				trip = r.nudge(ctx, t, s, sup, ns, podName, s.messageToken, *n)
+			}
 			progress(events, sup.Findings())
 			if trip != nil {
 				if end, err := onTrip(trip); end {
@@ -631,6 +640,7 @@ func (r *Runner) supervisorConfig(d policy.Document) SupervisorConfig {
 	c := r.cfg.Supervisor
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
 	c.WallClockCap, c.MaxCalls = d.Limits.AgentTime, d.Limits.SupervisorCalls
+	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
 	return c
 }
 
@@ -946,6 +956,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
+		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
 		{"name": "FINDINGS", "value": string(findingsJSON)},
 		{"name": "ANSWERS", "value": string(answersJSON)},
 		{"name": "POSTER_INFO", "value": string(posterJSON)},
@@ -1059,7 +1070,8 @@ func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool)
 // DNS answers that host with the gateway ClusterIP, which Cilium's toFQDNs
 // cannot authorize (the envoy fronting it answers 403), while the service
 // path is identity-scoped. The live gateway pods carry the plain `app`
-// label, not app.kubernetes.io/name.
+// label, not app.kubernetes.io/name. Its one ingress admits factoryd on the
+// worker's message port; every other ingress is denied.
 func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 	dnsNames := []any{}
 	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
@@ -1080,6 +1092,16 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": "opencode-worker"},
 		},
+		// the one ingress: factoryd's messages into the running session
+		"ingress": []any{map[string]any{
+			"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": r.cfg.FactoryNamespace,
+				"app":                             "factoryd",
+			}}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": strconv.Itoa(harness.MessagePort), "protocol": "TCP"}},
+			}},
+		}},
 		"egressDeny": []any{
 			map[string]any{"toCIDR": []string{"169.254.169.254/32"}},
 		},

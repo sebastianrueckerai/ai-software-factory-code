@@ -260,6 +260,17 @@ func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (strin
 	return p.phase, 0, nil
 }
 
+// PodIP answers loopback for every existing pod: a test's worker
+// endpoint listens there.
+func (k *fakeKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if _, ok := k.pods[namespace+"/"+name]; !ok {
+		return "", ErrNotFound
+	}
+	return "127.0.0.1", nil
+}
+
 func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()

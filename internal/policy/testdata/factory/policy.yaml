@@ -11,6 +11,8 @@ limits:
   supervisor_timeout: 6m
   stronger_after: 1
   steps: 200
+  nudge_after: 3
+  nudges: 1
 classes:
   coder:
     models: [coding-cheap, coding-frontier]

@@ -65,6 +65,8 @@ type Kube interface {
 	// PodStatus reports the pod phase and the container exit code (-1 while
 	// the container has not terminated).
 	PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error)
+	// PodIP is the running pod's address; ErrNotFound before it has one.
+	PodIP(ctx context.Context, namespace, name string) (string, error)
 	// PodInitFinished is when the pod's first init container exited 0
 	// with the termination message "ready"; false otherwise.
 	PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error)
@@ -295,6 +297,21 @@ func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (
 		exitCode = pod.Status.ContainerStatuses[0].State.Terminated.ExitCode
 	}
 	return pod.Status.Phase, exitCode, nil
+}
+
+func (k *InClusterKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
+	var pod struct {
+		Status struct {
+			PodIP string `json:"podIP"`
+		} `json:"status"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
+		return "", err
+	}
+	if pod.Status.PodIP == "" {
+		return "", fmt.Errorf("pod %s/%s has no address yet: %w", namespace, name, ErrNotFound)
+	}
+	return pod.Status.PodIP, nil
 }
 
 func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error) {

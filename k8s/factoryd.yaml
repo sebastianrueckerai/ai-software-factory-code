@@ -664,6 +664,15 @@ spec:
         app.kubernetes.io/name: litellm
     toPorts:
     - ports: [{port: "4000", protocol: TCP}]
+  # a running agent session's message endpoint (harness.MessagePort), for
+  # the loop nudge; the task namespace's worker policy admits only factoryd
+  - toEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: opencode-worker
+      matchExpressions:
+      - {key: "k8s:io.cilium.k8s.namespace.labels.factory.ai/task", operator: Exists}
+    toPorts:
+    - ports: [{port: "8091", protocol: TCP}]
   # the gateway: factoryd's model calls (supervisor, gate supervisor,
   # review) on a task's account
   - toEndpoints:

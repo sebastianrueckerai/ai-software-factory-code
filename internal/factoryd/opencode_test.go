@@ -271,48 +271,8 @@ func TestOpencodeConfigGolden(t *testing.T) {
 	}
 }
 
-func writeStubOpencode(t *testing.T, fixture string) string {
-	t.Helper()
-	dir := t.TempDir()
-	fixturePath, err := filepath.Abs(filepath.Join("testdata", fixture))
-	if err != nil {
-		t.Fatal(err)
-	}
-	stub := filepath.Join(dir, "opencode-stub")
-	script := `#!/bin/sh
-case "$OPENCODE_CONFIG_CONTENT" in
-	*'"output":10000'*) ;;
-	*) echo "config missing budget" >&2; exit 9;;
-esac
-case "$OPENCODE_CONFIG_CONTENT" in
-	*'"build":{"steps":200}'*) ;;
-	*) echo "config missing step cap" >&2; exit 9;;
-esac
-printf '%s\n' "$*" > stub-args.txt
-tr '\0' '\n' < /proc/$$/environ | grep '^PWD=' > stub-pwd.txt
-cat ` + fixturePath + `
-`
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return stub
-}
-
-func TestOpencodePrepareWritesBriefAndRunDrivesStub(t *testing.T) {
-	stub := writeStubOpencode(t, "opencode-run-edit.jsonl")
-	dir := t.TempDir()
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
-
-	oc := &Opencode{
-		Binary:     stub,
-		WorkDir:    dir,
-		GatewayURL: "http://127.0.0.1:1",
-		TokenFile:  tokenFile,
-		Model:      "factory/factory-main",
-		Budget:     TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
-		Steps:      200,
-	}
+func TestOpencodePrepareWritesBriefAndRunDrivesServe(t *testing.T) {
+	oc, dir := fakeServeOpencode(t, "")
 	brief := harness.TaskBrief{
 		Objective:  "Add the store",
 		Repository: "sf/ai-software-factory-code",
@@ -334,43 +294,93 @@ func TestOpencodePrepareWritesBriefAndRunDrivesStub(t *testing.T) {
 
 	var events []harness.Event
 	res := oc.Run(ctx, brief, func(ev harness.Event) { events = append(events, ev) })
-	if !res.Success {
+	if !res.Success || res.Summary != "Wrote one.txt and two.txt after the nudge." {
 		t.Fatalf("Run result = %+v", res)
 	}
 	last := events[len(events)-1]
 	if last.Kind != harness.EventFinished || last.Detail["success"] != true {
 		t.Fatalf("last event = %+v, want synthesized finished", last)
 	}
-	// The stub's argv proves the objective carried the findings forward.
-	args, _ := os.ReadFile(filepath.Join(dir, "stub-args.txt"))
-	if !strings.Contains(string(args), "Add the store") || !strings.Contains(string(args), "repo cloned at abc123") {
-		t.Fatalf("objective passed to opencode = %q", args)
+	reqs := servedRequests(t, dir)
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %+v, want start, session, prompt, permission reply", reqs)
 	}
-	// opencode run takes its directory from PWD before the process's cwd
-	// (run.ts:333): an inherited PWD would put the agent elsewhere.
-	if pwd, _ := os.ReadFile(filepath.Join(dir, "stub-pwd.txt")); string(pwd) != "PWD="+dir+"\n" {
-		t.Fatalf("opencode's PWD = %q, want the workspace %s", pwd, dir)
+	start := reqs[0]
+	// the server takes its directory from the cwd; an inherited PWD must
+	// not point elsewhere
+	if start.Cwd != dir || start.Pwd != dir {
+		t.Errorf("server cwd %q, PWD %q, want the workspace %s", start.Cwd, start.Pwd, dir)
+	}
+	if !strings.Contains(start.Config, `"output":10000`) || !strings.Contains(start.Config, `"build":{"steps":200}`) {
+		t.Errorf("config = %s, want the budget and the step cap", start.Config)
+	}
+	if reqs[1].Path != "/session" || reqs[1].Body != `{"permission":[{"action":"deny","pattern":"*","permission":"question"},{"action":"deny","pattern":"*","permission":"plan_enter"},{"action":"deny","pattern":"*","permission":"plan_exit"}]}` {
+		t.Errorf("session create = %+v", reqs[1])
+	}
+	var prompt struct {
+		Model map[string]string   `json:"model"`
+		Parts []map[string]string `json:"parts"`
+	}
+	json.Unmarshal([]byte(reqs[2].Body), &prompt)
+	if reqs[2].Path != "/session/ses_f111daf97ffeEpTXXz2p2WARoR/prompt_async" ||
+		!reflect.DeepEqual(prompt.Model, map[string]string{"providerID": "factory", "modelID": "factory-main"}) ||
+		len(prompt.Parts) != 1 || prompt.Parts[0]["type"] != "text" ||
+		!strings.Contains(prompt.Parts[0]["text"], "Add the store") || !strings.Contains(prompt.Parts[0]["text"], "repo cloned at abc123") {
+		t.Errorf("prompt = %+v", reqs[2])
+	}
+	if reqs[3].Path != "/permission/per_0eee25394001C7STG5t65eIZKB/reply" || reqs[3].Body != `{"reply":"once"}` {
+		t.Errorf("permission reply = %+v, want once, as run --auto answers", reqs[3])
 	}
 }
 
-func TestOpencodeRunFailsOnStubError(t *testing.T) {
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "opencode-stub")
-	os.WriteFile(stub, []byte("#!/bin/sh\necho 'opencode exploded' >&2\nexit 3\n"), 0o755)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
-
-	oc := &Opencode{
-		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
+// A message sent while the session runs is prompted into it; before and
+// after, there is no session to take it.
+func TestOpencodeMessageReachesTheRunningSession(t *testing.T) {
+	oc, dir := fakeServeOpencode(t, "wait")
+	if err := oc.Message(context.Background(), "early"); err != harness.ErrNotRunning {
+		t.Fatalf("Message before Run = %v, want ErrNotRunning", err)
 	}
+	done := make(chan harness.Result)
+	go func() {
+		done <- oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
+	}()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := oc.Message(context.Background(), "You repeated the same call three times (bash). Change approach, then continue.")
+		if err == nil {
+			break
+		}
+		if err != harness.ErrNotRunning || time.Now().After(deadline) {
+			t.Fatalf("Message = %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if res := <-done; !res.Success {
+		t.Fatalf("Run = %+v", res)
+	}
+	var prompts []string
+	for _, r := range servedRequests(t, dir) {
+		if strings.HasSuffix(r.Path, "/prompt_async") {
+			prompts = append(prompts, r.Body)
+		}
+	}
+	if len(prompts) != 2 || prompts[1] != `{"model":{"modelID":"factory-main","providerID":"factory"},"parts":[{"text":"You repeated the same call three times (bash). Change approach, then continue.","type":"text"}]}` {
+		t.Fatalf("prompts = %q", prompts)
+	}
+	if err := oc.Message(context.Background(), "late"); err != harness.ErrNotRunning {
+		t.Fatalf("Message after Run = %v, want ErrNotRunning", err)
+	}
+}
+
+func TestOpencodeRunFailsWhenTheServerDies(t *testing.T) {
+	oc, _ := fakeServeOpencode(t, "crash")
 	var events []harness.Event
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
 	if res.Success {
 		t.Fatalf("result = %+v, want failure", res)
 	}
-	if !strings.Contains(res.Summary, "opencode exploded") {
-		t.Fatalf("summary = %q, want stderr surfaced", res.Summary)
+	if !strings.Contains(res.Summary, "exit status 3") || !strings.Contains(res.Summary, "opencode exploded") {
+		t.Fatalf("summary = %q, want the exit and stderr surfaced", res.Summary)
 	}
 	last := events[len(events)-1]
 	if last.Kind != harness.EventFinished || last.Detail["success"] != false {
@@ -378,35 +388,23 @@ func TestOpencodeRunFailsOnStubError(t *testing.T) {
 	}
 }
 
-func TestOpencodeRunParsesUnterminatedFinalLine(t *testing.T) {
-	// Command substitution strips the fixture's trailing newline, so the
-	// stub's last step_finish reaches the adapter without a delimiter.
-	stub := writeStubOpencode(t, "opencode-run-edit.jsonl")
-	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
-	dir := t.TempDir()
-	os.WriteFile(stub, []byte(`#!/bin/sh
-printf '%s' "$(cat `+fixturePath+`)"
-`), 0o755)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
-
-	oc := &Opencode{
-		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
+// A stopped session (the pod's SIGTERM cancels ctx) ends Run at once.
+func TestOpencodeRunEndsOnCancel(t *testing.T) {
+	oc, _ := fakeServeOpencode(t, "wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan harness.Result)
+	go func() { done <- oc.Run(ctx, harness.TaskBrief{Objective: "x"}, func(harness.Event) {}) }()
+	for oc.Message(context.Background(), "") == harness.ErrNotRunning {
+		time.Sleep(20 * time.Millisecond)
 	}
-	var events []harness.Event
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
-	if !res.Success {
-		t.Fatalf("result = %+v: the unterminated final step_finish was not parsed", res)
-	}
-	var lastStep harness.Event
-	for _, ev := range events {
-		if ev.Kind == harness.EventModelCall {
-			lastStep = ev
+	cancel()
+	select {
+	case res := <-done:
+		if res.Success || !strings.Contains(res.Summary, "context canceled") {
+			t.Fatalf("result = %+v", res)
 		}
-	}
-	if lastStep.Detail == nil || lastStep.Detail["reason"] != "stop" {
-		t.Fatalf("last model call = %+v, want the fixture's final stop step", lastStep)
+	case <-time.After(20 * time.Second):
+		t.Fatal("Run did not end on cancel")
 	}
 }
 
@@ -432,23 +430,7 @@ func running(pid int) bool {
 // Whatever the agent leaves running must die with the session: one
 // leftover still holds opencode's stdout, one has let go of it.
 func TestOpencodeRunKillsLeftoverProcesses(t *testing.T) {
-	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "opencode-stub")
-	os.WriteFile(stub, []byte(`#!/bin/sh
-cat `+fixturePath+`
-sleep 300 &
-echo $! > `+dir+`/holder.pid
-sleep 300 >/dev/null 2>&1 </dev/null &
-echo $! > `+dir+`/detached.pid
-`), 0o755)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
-
-	oc := &Opencode{
-		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
-	}
+	oc, dir := fakeServeOpencode(t, "hold")
 	start := time.Now()
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
 	if !res.Success {
@@ -503,20 +485,7 @@ func TestLineWriterCapsALine(t *testing.T) {
 }
 
 func TestOpencodeRunFailsOnOversizeLine(t *testing.T) {
-	stub := writeStubOpencode(t, "opencode-run-edit.jsonl")
-	fixturePath, _ := filepath.Abs(filepath.Join("testdata", "opencode-run-edit.jsonl"))
-	os.WriteFile(stub, []byte(`#!/bin/sh
-head -c 2097152 /dev/zero | tr '\0' x
-echo
-cat `+fixturePath+`
-head -c 2097152 /dev/zero | tr '\0' e >&2
-`), 0o755)
-	tokenFile := filepath.Join(t.TempDir(), "token")
-	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
-	oc := &Opencode{
-		Binary: stub, WorkDir: t.TempDir(), GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
-	}
+	oc, _ := fakeServeOpencode(t, "oversize")
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
 	if res.Success || res.Summary != "opencode output line exceeds 1 MiB" {
 		t.Fatalf("result = %v, %.100q; want a failure naming the oversize line", res.Success, res.Summary)
