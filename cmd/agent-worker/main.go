@@ -526,9 +526,9 @@ const (
 // fetches the agent's HEAD, stages the agent's work tree on top under the
 // worker's own config (so no agent filter, hook or fsmonitor runs), commits
 // any leftovers, and pushes to the task URL if the result moved past base.
-// killAgent runs right before the push, so no agent process is alive while
-// the token is in a git process's environment. Returns the pushed commit,
-// empty when there was nothing to push.
+// killAgent runs before the fetch of main and the push, so no agent process
+// is alive while a token is in a git process's environment. Returns the
+// pushed commit, empty when there was nothing to push.
 func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() error) (string, error) {
 	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
@@ -558,22 +558,17 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if tree == baseTree {
 		return "", nil
 	}
-	// one commit of the worker's own on the start: the agent's commits, and
-	// the mentions or closing keywords their messages may carry, stay out
-	head, err := e.runGit(own, botIdentity, "commit-tree", tree, "-p", base, "-m", commitMessage(e))
+	agent, err := e.git(own, "rev-parse", "refs/heads/agent")
 	if err != nil {
-		return "", err
-	}
-	if err := refuseWorkflowDirChange(e, own, base, head); err != nil {
 		return "", err
 	}
 	if err := killAgent(); err != nil {
 		return "", fmt.Errorf("stop agent processes: %w", err)
 	}
 	// The fetch ran upload-pack under the agent's repo config, so the worker
-	// repo's config is not trusted either: the token-bearing push runs from a
-	// bare repo made after every agent process is dead, borrowing the worker
-	// repo's objects only.
+	// repo's config is not trusted either: the token-bearing fetch of main,
+	// the commit and the push run from a bare repo made after every agent
+	// process is dead, borrowing the worker repo's objects only.
 	send, err := os.MkdirTemp(filepath.Dir(agentRepo), ".send-")
 	if err != nil {
 		return "", err
@@ -582,13 +577,56 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if _, err := e.git("", "init", "-q", "--bare", send); err != nil {
 		return "", err
 	}
+	// main first: a fetch with the alternate in place reads the worker
+	// repo's refs under that repo's config
+	if err := e.gitAuth(e.repoToken, "", "--git-dir="+send, "fetch", "-q", "--no-tags", e.repoURL, "+HEAD:refs/heads/main"); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	parents, guard := sessionParents(e, send, base, agent)
+	if guardTree, err := e.git(send, "rev-parse", guard+"^{tree}"); err != nil || tree == guardTree {
+		return "", err
+	}
+	// one commit of the worker's own: the agent's commits, and the mentions
+	// or closing keywords their messages may carry, stay out
+	head, err := e.runGit(send, botIdentity, append(append([]string{"commit-tree", tree}, parents...), "-m", commitMessage(e))...)
+	if err != nil {
+		return "", err
+	}
+	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {
 		return "", err
 	}
 	if err := e.gitAuth(e.pushToken, "", "--git-dir="+send, "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil
+}
+
+// sessionParents answers the pushed commit's parents and the commit whose
+// workflow directories it must keep. The start commit is the parent, unless
+// the agent pulled main commits newer than the one the start is on (the
+// merge base of its HEAD and the fetched main descends from the start's):
+// then that newest main commit is the parent, next to the start when the
+// start is a resumed session's pushed work in progress, so main's changes
+// stay main's in the pull request's diff.
+func sessionParents(e workerEnv, send, base, agent string) ([]string, string) {
+	start, err := e.git(send, "merge-base", base, "refs/heads/main")
+	if err != nil {
+		return []string{"-p", base}, base
+	}
+	tip, err := e.git(send, "merge-base", agent, "refs/heads/main")
+	if err != nil || tip == start {
+		return []string{"-p", base}, base
+	}
+	if _, err := e.git(send, "merge-base", "--is-ancestor", start, tip); err != nil {
+		return []string{"-p", base}, base
+	}
+	if start == base {
+		return []string{"-p", tip}, tip
+	}
+	return []string{"-p", base, "-p", tip}, tip
 }
 
 // refuseWorkflowDirChange stops a push whose tree entries for the workflow
