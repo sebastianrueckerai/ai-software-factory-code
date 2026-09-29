@@ -25,6 +25,8 @@
       ]
     },
     "selectedQueryName": "F1",
+    "requireMinPoints": true,
+    "requiredNumPoints": 10,
     "thresholds": {"kind": "basic", "spec": [
       {"name": "critical", "target": 0, "targetUnit": "", "recoveryTarget": null, "matchType": "2", "op": "1", "channels": []}
     ]}
