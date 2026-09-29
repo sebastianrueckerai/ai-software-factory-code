@@ -312,6 +312,21 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 	if err := s.kube.CreateNamespace(ctx, ns, labels); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
 	}
+	// factoryd reads nothing in the namespace without this binding, so no
+	// reconcile could tear down one that lacks it
+	if err := retryForbidden(ctx, func() error {
+		return s.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+			"metadata": map[string]any{"name": "factoryd"},
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
+			"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": s.cfg.FactoryNamespace}},
+		})
+	}); err != nil && !errors.Is(err, ErrAlreadyExists) {
+		if derr := s.kube.DeleteNamespace(ctx, ns); derr != nil && !errors.Is(derr, ErrNotFound) {
+			log.Printf("ci spawner: delete namespace %s without its role binding: %v", ns, derr)
+		}
+		return fmt.Errorf("setup role binding: %w", err)
+	}
 	// The VM comes after the namespace: the collector reads a missing
 	// namespace as a finished job and would delete a VM made before it. A
 	// failure from here on leaves the namespace podless for the next
@@ -326,14 +341,6 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 	}
 	core := "/api/v1/namespaces/" + ns
 	steps := []ciSetupStep{
-		{"role binding", func() error {
-			return s.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
-				"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
-				"metadata": map[string]any{"name": "factoryd"},
-				"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
-				"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": s.cfg.FactoryNamespace}},
-			})
-		}},
 		{"resource quota", func() error {
 			return s.kube.Create(ctx, core+"/resourcequotas", map[string]any{
 				"apiVersion": "v1", "kind": "ResourceQuota",
