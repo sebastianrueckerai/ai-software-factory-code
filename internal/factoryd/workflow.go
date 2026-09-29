@@ -1246,10 +1246,12 @@ type gateRun struct{ waited, retried bool }
 
 // askGate starts SuperviseGate on one trip of the running activity.
 func (t *taskRun) askGate(trip GateTrip, opts workflow.ActivityOptions, args []any, run *gateRun) workflow.Future {
-	// a session's wait would trip again past its own start-to-close; a
-	// retry on the last attempt would fail the activity
+	// a session's wait would trip again past its own start-to-close, and
+	// so would any wait whose doubled bound outlasts the attempt (a merge:
+	// 2 x 90 s against 2 min); a retry on the last attempt would fail the
+	// activity
 	maxAttempts := opts.RetryPolicy.MaximumAttempts
-	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession,
+	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < opts.StartToCloseTimeout,
 		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts), PolicyVersion: t.cfg.PolicyVersion}
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
