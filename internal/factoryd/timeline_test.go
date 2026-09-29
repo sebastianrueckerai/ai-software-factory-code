@@ -181,3 +181,22 @@ func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
 		t.Fatalf("gates %v, want %v", got, want)
 	}
 }
+
+// The approval gate ends at the signal that ends its wait; the signal's
+// name is the sample's outcome, as the other gates carry theirs.
+func TestApprovalGateSampleCarriesItsSignal(t *testing.T) {
+	m, reader := testMetrics(t)
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+	tl := &Timeline{Objects: &fakeObjectStore{}, Metrics: m, now: func() time.Time { return now }}
+	ctx := context.Background()
+	if err := tl.Append(ctx, "t1", "signal", map[string]any{"signal": SignalApproved, "author": "sebastian", "pr": 12,
+		"started": "2026-09-28T11:48:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	got := histograms(t, reader, "factory.task.gate.duration")
+	// 11:48:00 to 12:00:00
+	want := map[string]histPoint{"gate=approval,model_alias=,outcome=approved": {1, 720}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("gates %v, want %v", got, want)
+	}
+}

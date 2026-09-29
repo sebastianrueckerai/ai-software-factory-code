@@ -109,7 +109,7 @@ func (tl *Timeline) gate(ctx context.Context, step string, detail map[string]any
 		}
 	}
 	outcome := ""
-	for _, k := range []string{"outcome", "state", "verdict"} {
+	for _, k := range []string{"outcome", "state", "verdict", "signal"} {
 		// the named string types (ChecksState, SessionOutcome) too
 		if v := reflect.ValueOf(detail[k]); v.Kind() == reflect.String && v.String() != "" {
 			outcome = v.String()
