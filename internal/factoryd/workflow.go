@@ -296,7 +296,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap),
 		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit),
 		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict),
-		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun)}
+		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun),
+		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -457,28 +458,35 @@ const (
 	// run once more on an empty commit, RerunChecks, before their
 	// findings go back to the agent; a re-run's head is not re-run.
 	versionChecksRerun workflow.Version = 1
+	// versionPosterCap (change id "poster-cap", ruling 203): the answers
+	// to information requests buy at most maxPosterAttempts attempts per
+	// task; a later answer still reaches the sessions but buys none.
+	versionPosterCap workflow.Version = 1
 )
+
+// maxPosterAttempts caps the attempts the issue author's answers buy.
+const maxPosterAttempts = 2
 
 // infoWait is how long an information request waits for the issue
 // author's answer before the issue closes as not reproducible.
 const infoWait = 14 * 24 * time.Hour
 
 type taskRun struct {
-	ctx, short        workflow.Context
-	cfg               WorkflowConfig
-	taskID            string
-	v, v2, v3, v4, v5 workflow.Version
-	v6, v7, v8, v9    workflow.Version
-	v10, v11, v12     workflow.Version
-	v13, v14, v15     workflow.Version
-	v16, v17, v18     workflow.Version
-	v19, v20, v21     workflow.Version
-	pr                PullRequest
-	approvalRequested time.Time // the current approval request's time (versionGateStarted)
-	answers           []string  // the human's answers, newest first (versionAnswers)
-	escalation        int64     // the escalation comment human answers must be newer than
-	infoRequest       int64     // the information request comment the author's answers must be newer than
-	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
+	ctx, short         workflow.Context
+	cfg                WorkflowConfig
+	taskID             string
+	v, v2, v3, v4, v5  workflow.Version
+	v6, v7, v8, v9     workflow.Version
+	v10, v11, v12      workflow.Version
+	v13, v14, v15      workflow.Version
+	v16, v17, v18      workflow.Version
+	v19, v20, v21, v22 workflow.Version
+	pr                 PullRequest
+	approvalRequested  time.Time // the current approval request's time (versionGateStarted)
+	answers            []string  // the human's answers, newest first (versionAnswers)
+	escalation         int64     // the escalation comment human answers must be newer than
+	infoRequest        int64     // the information request comment the author's answers must be newer than
+	posterInfo         []string  // the author's answers, oldest first (versionNeedsInfo)
 	// versionStages
 	standing  string         // the issue author's, for a stage's when
 	lastRound bool           // the session that pushed the commit in the stages is the task's last
@@ -591,7 +599,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 				findings = answer
 			}
-			t.grant(&u)
+			t.grantPoster(&u)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
@@ -706,7 +714,7 @@ func (t *taskRun) lifecycle() (string, error) {
 					return t.finish(final, why)
 				}
 				findings = append(res.Findings, answer...)
-				t.grant(&u)
+				t.grantPoster(&u)
 				continue
 			}
 			// a run from before request_info takes it as an escalation
@@ -805,6 +813,18 @@ func (t *taskRun) grant(u *TaskUsage) {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)
+}
+
+// grantPoster is grant for an answer to an information request, up to
+// maxPosterAttempts per task (versionPosterCap).
+func (t *taskRun) grantPoster(u *TaskUsage) {
+	if t.v22 >= versionPosterCap {
+		if u.PosterAttempts >= maxPosterAttempts {
+			return
+		}
+		u.PosterAttempts++
+	}
+	t.grant(u)
 }
 
 // recordUsage puts the usage on the task row for the next run; the row is

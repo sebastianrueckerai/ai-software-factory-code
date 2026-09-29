@@ -109,6 +109,8 @@ type TaskUsage struct {
 	Attempts      int
 	ExtraTime     time.Duration // granted by human answers near the cap
 	ExtraAttempts int           // one per human answer
+	// PosterAttempts are the ExtraAttempts the issue author's answers bought
+	PosterAttempts int
 }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
@@ -393,7 +395,7 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
-	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
@@ -401,7 +403,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt); err != nil {
 		return Task{}, err
@@ -499,8 +501,8 @@ func (s *PGStore) MarkHalfWay(ctx context.Context, id string) error {
 }
 
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts)
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts)
 	return oneRow(res, err, "task "+id)
 }
 

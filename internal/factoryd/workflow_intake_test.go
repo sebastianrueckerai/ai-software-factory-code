@@ -183,6 +183,32 @@ func TestWorkflowNeedsInfoResumesWithThePostersAnswer(t *testing.T) {
 	}
 }
 
+// Backlog 29 (ruling 203): the author's answers buy at most
+// maxPosterAttempts extra attempts. The third answer still reaches the
+// next session, but buys none: the loop ends at the session cap's card
+// after 3+2 sessions, not 3+3.
+func TestWorkflowPosterAnswersBuyAtMostTwoAttempts(t *testing.T) {
+	h := newWorkflowHarness(t)
+	noPush := SessionResult{Outcome: OutcomeNoPush, SessionID: "s", Summary: "no changes to push"}
+	h.onSessions(needsInfo("s1"), needsInfo("s2"), needsInfo("s3"), noPush)
+	for i, body := range []string{"Firefox", "131", "on Linux"} {
+		h.signalAfter(time.Duration(i+1)*time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: body, Comment: int64(700 + i)})
+	}
+	h.signalAfter(10*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.infoAsked) != 3 || len(h.sessions) != 5 || len(h.escalated) != 1 {
+		t.Fatalf("info requests %d, sessions %d, escalations %q: want 3, 5 and the session cap's card", len(h.infoAsked), len(h.sessions), h.escalated)
+	}
+	if !slices.Equal(h.sessions[3].PosterInfo, []string{"visitor: Firefox", "visitor: 131", "visitor: on Linux"}) {
+		t.Fatalf("fourth session's poster information = %q, want all three answers", h.sessions[3].PosterInfo)
+	}
+	if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 2 || u.PosterAttempts != 2 {
+		t.Fatalf("usage = %+v, want 2 extra attempts, both the poster's", u)
+	}
+}
+
 // 14 days without an answer: the issue closes as not reproducible and the
 // task ends closed.
 func TestWorkflowNeedsInfoClosesAfter14Days(t *testing.T) {
