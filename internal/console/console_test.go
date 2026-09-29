@@ -322,6 +322,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
 			Projects: map[string]policy.ProjectConfig{
@@ -873,6 +874,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
 	at := "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"
 	for _, want := range []string{"<dd>4</dd>", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
+		`&#34;agent_time&#34;: &#34;20m0s&#34;`,
 		`<a href="` + at + `"><code>c9d98bb0aa11</code></a>`,
 		`<a href="` + at + `/policy.yaml">policy.yaml</a>`,
 		`<a href="` + at + `/workflow.yaml">workflow.yaml</a>`,

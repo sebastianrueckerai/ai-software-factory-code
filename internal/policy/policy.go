@@ -5,6 +5,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -68,6 +69,42 @@ type Limits struct {
 	// StrongerAfter is how many returns from the same stage a task takes
 	// on its model; the next return takes the stronger rung.
 	StrongerAfter int `yaml:"stronger_after" json:"stronger_after"`
+}
+
+// limitsJSON is Limits with its durations as strings, as in the YAML.
+type limitsJSON struct {
+	Sessions          int    `json:"sessions"`
+	AgentTime         string `json:"agent_time"`
+	SupervisorCalls   int    `json:"supervisor_calls"`
+	SupervisorTimeout string `json:"supervisor_timeout"`
+	StrongerAfter     int    `json:"stronger_after"`
+}
+
+func (l Limits) MarshalJSON() ([]byte, error) {
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter})
+}
+
+func (l *Limits) UnmarshalJSON(b []byte) error {
+	var j limitsJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter}
+	for _, d := range []struct {
+		s  string
+		to *time.Duration
+	}{{j.AgentTime, &out.AgentTime}, {j.SupervisorTimeout, &out.SupervisorTimeout}} {
+		if d.s == "" {
+			continue
+		}
+		v, err := time.ParseDuration(d.s)
+		if err != nil {
+			return fmt.Errorf("limits: %w", err)
+		}
+		*d.to = v
+	}
+	*l = out
+	return nil
 }
 
 // MaxSupervisorTimeout is the longest supervisor_timeout a policy may set.

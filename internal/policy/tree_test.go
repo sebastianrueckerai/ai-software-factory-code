@@ -134,6 +134,26 @@ func TestParseTreeRejects(t *testing.T) {
 	}
 }
 
+// Limits' durations are strings in JSON, as in YAML: the stored tree, GET
+// /policy and the console show 20m0s, not nanoseconds.
+func TestLimitsJSON(t *testing.T) {
+	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1}
+	b, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1}`; string(b) != want {
+		t.Fatalf("JSON = %s, want %s", b, want)
+	}
+	var back Limits
+	if err := json.Unmarshal(b, &back); err != nil || back != l {
+		t.Fatalf("round trip = %+v, %v", back, err)
+	}
+	if err := json.Unmarshal([]byte(`{"agent_time":"soon"}`), &back); err == nil {
+		t.Fatal("a bad duration decoded")
+	}
+}
+
 // Every error of a tree is reported, not only the first.
 func TestParseTreeReportsEveryFile(t *testing.T) {
 	files := fixtureTree(t)
