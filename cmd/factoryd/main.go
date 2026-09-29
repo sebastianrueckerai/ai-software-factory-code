@@ -298,7 +298,8 @@ func main() {
 	registry := rollRegistry(forgejo.BaseURL)
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
-		Registry: registry}
+		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
+		Registry:  registry}
 	go roller.Run(ctx)
 	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
 	go revertPass.Loop(ctx)

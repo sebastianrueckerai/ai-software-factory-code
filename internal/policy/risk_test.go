@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -122,12 +123,39 @@ const infraRisk = `risk:
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
         "**/package.json", "**/package-lock.json", "**/npm-shrinkwrap.json", "**/yarn.lock", "**/pnpm-lock.yaml",
         "**/Cargo.toml", "**/Cargo.lock",
-        "**/pyproject.toml", "**/requirements*.txt", "**/poetry.lock", "**/uv.lock",
-        "**/Gemfile", "**/Gemfile.lock", "**/pom.xml", "**/build.gradle*", "**/composer.json", "**/composer.lock",
+        "**/bun.lock", "**/bun.lockb",
+        "**/pyproject.toml", "**/requirements*.txt", "**/requirements/*.txt", "**/poetry.lock", "**/uv.lock", "**/Pipfile", "**/Pipfile.lock",
+        "**/Gemfile", "**/Gemfile.lock", "**/pom.xml", "**/build.gradle*", "**/settings.gradle*", "**/gradle.lockfile",
+        "**/*.csproj", "**/packages.lock.json", "**/Directory.Packages.props", "**/composer.json", "**/composer.lock",
         "**/AGENTS.md", "**/CLAUDE.md", "**/opencode.json", "**/opencode.jsonc", "**/CODEOWNERS",
         ".*/**"]
   default: normal
 `
+
+// The copy above is the infra repository's block: with INFRA_FACTORY_DIR
+// set to its factory/ directory, the two must be equal.
+func TestInfraRiskIsTheCopy(t *testing.T) {
+	dir := os.Getenv("INFRA_FACTORY_DIR")
+	if dir == "" {
+		t.Skip("INFRA_FACTORY_DIR unset")
+	}
+	files, err := ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	copied, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(tree.Document.Risk, copied.Risk) {
+		t.Fatalf("infra risk = %+v\nthe copy = %+v", tree.Document.Risk, copied.Risk)
+	}
+}
 
 // Manifests and lockfiles of every common ecosystem, agent instruction
 // files, CODEOWNERS and every top-level dot directory are protected: class
@@ -145,6 +173,8 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		"pyproject.toml", "requirements.txt", "requirements-dev.txt", "svc/requirements.txt", "poetry.lock", "uv.lock",
 		"Gemfile", "Gemfile.lock", "pom.xml", "app/pom.xml", "build.gradle", "build.gradle.kts", "app/build.gradle",
 		"composer.json", "composer.lock",
+		"bun.lock", "web/bun.lockb", "Pipfile", "svc/Pipfile.lock", "requirements/base.txt", "settings.gradle", "settings.gradle.kts", "gradle.lockfile",
+		"src/App/App.csproj", "packages.lock.json", "Directory.Packages.props",
 		"AGENTS.md", "docs/AGENTS.md", "CLAUDE.md", "opencode.json", "opencode.jsonc", ".opencode/agent/review.md",
 		"CODEOWNERS", "docs/CODEOWNERS",
 		".husky/pre-commit", ".vscode/settings.json", ".devcontainer/devcontainer.json", ".config/x/y.toml",

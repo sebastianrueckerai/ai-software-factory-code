@@ -88,3 +88,11 @@ func TestPostedTextIsSanitised(t *testing.T) {
 		}
 	})
 }
+
+// A changed path is a code span no backtick in its name can close early.
+func TestListPathsKeepsNamesInTheirSpan(t *testing.T) {
+	got := listPaths([]string{"a.go", "x` @admin `y", "`edge`"})
+	if want := "- `a.go`\n- ``x` @admin `y``\n- `` `edge` ``\n"; got != want {
+		t.Fatalf("listPaths = %q, want %q", got, want)
+	}
+}

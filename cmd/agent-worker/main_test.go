@@ -182,9 +182,12 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	}
 }
 
-// An agent that commits its own work must still get it pushed, under the
-// factory-agent identity rather than one it borrows from the history.
-func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
+// The worker pushes one commit of its own on the session's start commit:
+// the agent's work, committed or not, is its tree; the agent's own commits
+// and their messages never reach the branch, and the subject, the issue's
+// title, is sanitised. A resumed session's start is the work in progress
+// an earlier session pushed, which stays the parent.
+func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	run := func(args ...string) string {
@@ -203,39 +206,53 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 	run("clone", "-q", "--bare", seed, remote)
 	run("clone", "-q", "--bare", remote, fork)
 	sha := run("-C", seed, "rev-parse", "HEAD")
+	run("-C", seed, "checkout", "-q", "-b", "factory/resumed")
+	os.WriteFile(filepath.Join(seed, "wip.txt"), []byte("wip\n"), 0o644)
+	run("-C", seed, "add", "wip.txt")
+	run("-C", seed, "-c", "user.name=factory-agent", "-c", "user.email=factory-agent@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
+	run("-C", seed, "push", "-q", fork, "factory/resumed")
+	wip := run("-C", seed, "rev-parse", "HEAD")
 
+	agentCommits := func(dir string) {
+		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+		run("-C", dir, "add", "a.txt")
+		run("-C", dir, "-c", "user.name=mallory", "-c", "user.email=m@m", "commit", "-q", "-m", "fixes #3 @admin")
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644)
+		run("-C", dir, "add", "b.txt")
+		run("-C", dir, "-c", "user.name=mallory", "-c", "user.email=m@m", "commit", "-q", "-m", "closes #4")
+	}
 	for _, tc := range []struct {
-		name       string
-		agent      func(dir string)
-		wantPushed bool
-		wantParent bool // pushed commit's parent is the agent's commit
+		name, start string
+		agent       func(dir string)
+		files       string // the pushed tree's files; "" = nothing pushed
 	}{
-		{name: "no changes", agent: func(string) {}},
-		{name: "agent committed", wantPushed: true, agent: func(dir string) {
-			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
-			run("-C", dir, "add", "a.txt")
-			run("-C", dir, "commit", "-q", "-m", "agent")
+		{name: "no changes", start: sha, agent: func(string) {}},
+		{name: "agent committed", start: sha, agent: agentCommits, files: "a.txt\nb.txt"},
+		{name: "agent committed and left changes", start: sha, files: "a.txt\nb.txt\nc.txt", agent: func(dir string) {
+			agentCommits(dir)
+			os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644)
 		}},
-		{name: "agent committed and left changes", wantPushed: true, wantParent: true, agent: func(dir string) {
-			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
-			run("-C", dir, "add", "a.txt")
-			run("-C", dir, "commit", "-q", "-m", "agent")
-			os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644)
+		{name: "resumed", start: wip, agent: agentCommits, files: "a.txt\nb.txt\nwip.txt"},
+		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
+			run("-C", dir, "checkout", "-q", "--orphan", "other")
+			agentCommits(dir)
+			run("-C", dir, "branch", "-q", "-D", "factory/resumed")
+			run("-C", dir, "reflog", "expire", "--expire=now", "--all")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: fork}
+			if tc.start == wip {
+				branch = "factory/resumed"
+			}
+			e := workerEnv{taskID: "t1", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
 			}
 			base, err := prepareRepo(dir, e)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if base != sha {
-				t.Fatalf("base = %s, want %s", base, sha)
+			if err != nil || base != tc.start {
+				t.Fatalf("base = %s (%v), want %s", base, err, tc.start)
 			}
 			tc.agent(dir)
 
@@ -243,27 +260,28 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// the branch goes to the fork (PUSH_URL), never to the repository it was cloned from
 			if out, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output(); len(out) != 0 {
 				t.Fatalf("branch %s pushed to the base repository", branch)
 			}
-			remoteHead, _ := exec.Command("git", "-C", fork, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
-			if !tc.wantPushed {
-				if commit != "" || len(remoteHead) != 0 {
+			out, _ := exec.Command("git", "-C", fork, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
+			remoteHead := strings.TrimSpace(string(out))
+			if tc.files == "" {
+				if commit != "" || remoteHead != "" {
 					t.Fatalf("commit = %q, remote branch = %q, want nothing pushed", commit, remoteHead)
 				}
 				return
 			}
-			if commit == "" || strings.TrimSpace(string(remoteHead)) != commit {
-				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
+			if commit == "" || remoteHead != commit {
+				t.Fatalf("commit = %q, remote branch = %q, want the pushed commit", commit, remoteHead)
 			}
-			for _, author := range strings.Split(run("-C", fork, "log", "--format=%an <%ae>", base+".."+commit), "\n") {
-				if author != "factory-agent <factory-agent@factory.local>" {
-					t.Fatalf("pushed commit author = %q, want factory-agent", author)
-				}
+			if parent := run("-C", fork, "rev-parse", commit+"^"); parent != tc.start {
+				t.Fatalf("parent = %s, want the session's start %s", parent, tc.start)
 			}
-			if tc.wantParent && run("-C", fork, "log", "-1", "--format=%s", commit+"^") != "agent" {
-				t.Fatal("leftover changes were not committed on top of the agent's commit")
+			if got := run("-C", fork, "log", "--format=%an <%ae>|%B", tc.start+".."+commit); got != "factory-agent <factory-agent@factory.local>|factory task t1: (Fixes) #3 for ＠admin" {
+				t.Fatalf("pushed history = %q, want one factory-agent commit with the sanitised subject", got)
+			}
+			if got := run("-C", fork, "ls-tree", "--name-only", commit); got != tc.files {
+				t.Fatalf("pushed files = %q, want %q", got, tc.files)
 			}
 		})
 	}
@@ -531,8 +549,8 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	if got := run("-C", remote, "rev-parse", "refs/heads/factory/t1"); got != commit {
 		t.Fatalf("remote branch = %s, want %s", got, commit)
 	}
-	if run("-C", remote, "log", "-1", "--format=%s", commit+"^") != "agent" {
-		t.Fatal("leftovers were not committed on top of the agent's commit")
+	if run("-C", remote, "rev-parse", commit+"^") != base {
+		t.Fatal("the pushed commit's parent is not the session's start")
 	}
 	if got := run("-C", remote, "log", "-1", "--format=%an <%ae>", commit); got != "factory-agent <factory-agent@factory.local>" {
 		t.Fatalf("leftover commit author = %q", got)

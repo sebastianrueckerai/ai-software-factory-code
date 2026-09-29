@@ -28,6 +28,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -526,26 +527,27 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
 		return "", err
 	}
-	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent"); err != nil {
-		return "", err
-	}
-	head, err := e.git(own, "rev-parse", "refs/heads/agent")
-	if err != nil {
+	// the start commit too: an agent that reset its branch may no longer
+	// have it in its HEAD's history
+	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent", "+"+base+":refs/heads/start"); err != nil {
 		return "", err
 	}
 	tree, err := stageWorkTree(own, agentRepo, e)
 	if err != nil {
 		return "", err
 	}
-	if headTree, err := e.git(own, "rev-parse", "refs/heads/agent^{tree}"); err != nil {
+	baseTree, err := e.git(own, "rev-parse", base+"^{tree}")
+	if err != nil {
 		return "", err
-	} else if tree != headTree {
-		if head, err = e.runGit(own, botIdentity, "commit-tree", tree, "-p", head, "-m", commitMessage(e)); err != nil {
-			return "", err
-		}
 	}
-	if head == base {
+	if tree == baseTree {
 		return "", nil
+	}
+	// one commit of the worker's own on the start: the agent's commits, and
+	// the mentions or closing keywords their messages may carry, stay out
+	head, err := e.runGit(own, botIdentity, "commit-tree", tree, "-p", base, "-m", commitMessage(e))
+	if err != nil {
+		return "", err
 	}
 	if err := refuseWorkflowDirChange(e, own, base, head); err != nil {
 		return "", err
@@ -669,7 +671,7 @@ func commitMessage(e workerEnv) string {
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}
-	return fmt.Sprintf("factory task %s: %s", e.taskID, subject)
+	return fmt.Sprintf("factory task %s: %s", e.taskID, sanitize.Outbound(subject, nil))
 }
 
 type diffStat struct{ Files, Insertions, Deletions int }

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -245,6 +246,9 @@ type Roller struct {
 	Repo      Repo
 	Token     string // reads the repository's Actions
 	Budget    func() policy.Budget
+	// LinkHosts are policy.yaml's link_hosts: links in the carried
+	// subjects and titles may point there or at the Forgejo host
+	LinkHosts func() []string
 	Poll      time.Duration
 }
 
@@ -454,17 +458,26 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 	if err != nil {
 		return "", err
 	}
+	// subjects and titles can be an agent's or an issue author's: the
+	// summary goes into the roll issue, comments and commit messages
+	hosts := []string{}
+	if r.LinkHosts != nil {
+		hosts = append(hosts, r.LinkHosts()...)
+	}
+	if u, err := url.Parse(r.Forgejo.PublicURL); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, u.Hostname())
+	}
 	b.WriteString("\n\nCommits it carries since the last roll:\n")
 	if len(commits) == 0 {
 		b.WriteString("\n- none found")
 	}
 	for _, c := range commits {
-		fmt.Fprintf(&b, "\n- %s %s", c.SHA[:min(7, len(c.SHA))], c.Subject)
+		fmt.Fprintf(&b, "\n- %s %s", c.SHA[:min(7, len(c.SHA))], sanitize.Outbound(c.Subject, hosts))
 	}
 	if len(prs) > 0 {
 		b.WriteString("\n\nMerged pull requests it carries:\n")
 		for _, p := range prs {
-			fmt.Fprintf(&b, "\n- #%d %s", p.Number, p.Title)
+			fmt.Fprintf(&b, "\n- #%d %s", p.Number, sanitize.Outbound(p.Title, hosts))
 		}
 	}
 	return b.String(), nil

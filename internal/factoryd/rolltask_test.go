@@ -169,7 +169,7 @@ var sinceHandRoll = []map[string]any{
 	{"sha": commitC1, "commit": map[string]string{"message": "Tighten the gateway's upstream timeout\n\nbody"}, "parents": []any{map[string]any{}}},
 	{"sha": mergePR12, "commit": map[string]string{"message": "Merge pull request 'Keys are no longer blocked' (#12) from factory-agent/x:factory/t-agent1 into main"},
 		"parents": []any{map[string]any{}, map[string]any{}}},
-	{"sha": agentA1, "commit": map[string]string{"message": "Stop blocking keys at every session"}, "parents": []any{map[string]any{}}},
+	{"sha": agentA1, "commit": map[string]string{"message": "Stop blocking keys at every session, fixes #3 for @admin, see https://evil.test/x"}, "parents": []any{map[string]any{}}},
 	{"sha": mergePR14, "commit": map[string]string{"message": "Merge pull request 'roll 0a0a0a0: worker' (#14) from factory-agent/x:factory/t-roll0 into main"},
 		"parents": []any{map[string]any{}, map[string]any{}}},
 	{"sha": rollR0, "commit": map[string]string{"message": "roll 0a0a0a0: worker\n\nMain CI's push run 50 published"}, "parents": []any{map[string]any{}}},
@@ -276,7 +276,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply([]map[string]any{
 				{"number": 14, "title": "roll 0a0a0a0: worker", "merged": true, "merge_commit_sha": mergePR14, "head": map[string]any{"sha": rollR0}},
 				{"number": 13, "title": "closed unmerged", "merged": false},
-				{"number": 12, "title": "Keys are no longer blocked at every session", "merged": true, "merge_commit_sha": mergePR12,
+				{"number": 12, "title": "Keys are no longer blocked at every session (closes #4, @bob)", "merged": true, "merge_commit_sha": mergePR12,
 					"head": map[string]any{"sha": agentA1, "ref": "refs/pull/12/head"}},
 				{"number": 11, "title": "merged before the last roll", "merged": true, "merge_commit_sha": "0b0b"},
 			})
@@ -382,8 +382,8 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	want := "roll c1c1c1c: factoryd, gateway\n\n" +
 		"Main CI's push run 57 published the images of " + commitC1 + ". The digests under k8s/ that change:\n\n" +
 		"- factoryd: " + newGw + "\n- gateway: " + newGw + "\n\n" +
-		"Commits it carries since the last roll:\n\n- a1a1a1a Stop blocking keys at every session\n- c1c1c1c Tighten the gateway's upstream timeout\n\n" +
-		"Merged pull requests it carries:\n\n- #12 Keys are no longer blocked at every session"
+		"Commits it carries since the last roll:\n\n- a1a1a1a Stop blocking keys at every session, (fixes) #3 for ＠admin, see hxxps://evil[.]test/x\n- c1c1c1c Tighten the gateway's upstream timeout\n\n" +
+		"Merged pull requests it carries:\n\n- #12 Keys are no longer blocked at every session ((closes) #4, ＠bob)"
 	if len(f.issues) != 1 || f.issues[0] != want {
 		t.Fatalf("issues %q, want one:\n%s", f.issues, want)
 	}

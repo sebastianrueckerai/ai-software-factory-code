@@ -13,9 +13,12 @@ var (
 	htmlComment = regexp.MustCompile(`(?s)<!--.*?(-->|$)`)
 	// a link reference definition whose target is # or <> renders nothing
 	markdownComment = regexp.MustCompile(`(?m)^[ \t]{0,3}\[[^\]\n]*\]:[ \t]*(#|<>)[^\n]*(\n|$)`)
-	mention         = regexp.MustCompile(`(^|[^\w@./-])@([A-Za-z0-9][\w.-]*)`)
-	// Forgejo's closing and reopening keywords followed by a reference
-	closing = regexp.MustCompile(`(?i)\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?|reopen(?:s|ed)?)(:?[ \t]+)((?:[\w.-]+/[\w.-]+)?#\d|https?://)`)
+	// Forgejo strips emphasis (_x_, __x__) before it looks for mentions and
+	// keywords, so an underscore is a lead like a space
+	mention = regexp.MustCompile(`(^|[^A-Za-z0-9@./-])@([A-Za-z0-9][\w.-]*)`)
+	// Forgejo's closing and reopening keywords followed by an issue (#) or
+	// pull request (!) reference or a link, autolinked or not
+	closing = regexp.MustCompile(`(?i)(^|[^\pL\pN])(close[sd]?|fix(?:e[sd])?|resolve[sd]?|reopen(?:s|ed)?)(:?[ \t]+)((?:[\w.-]+/[\w.-]+)?[#!]\d|<?https?://)`)
 	link    = regexp.MustCompile(`(?i)\b(?:https?|ftp)://[^\s<>"'` + "`" + `)\]]+|\bwww\.[^\s<>"'` + "`" + `)\]]+|(?:^|[\s(<\["'])//[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+[^\s<>"'` + "`" + `)\]]*`)
 )
 
@@ -49,7 +52,7 @@ func Outbound(s string, hosts []string) string {
 // so Forgejo neither notifies nor closes anything.
 func neutralise(s string) string {
 	s = mention.ReplaceAllString(s, "${1}＠${2}")
-	return closing.ReplaceAllString(s, "(${1})${2}${3}")
+	return closing.ReplaceAllString(s, "${1}(${2})${3}${4}")
 }
 
 func allowed(link string, hosts []string) bool {

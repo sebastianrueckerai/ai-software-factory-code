@@ -221,9 +221,19 @@ func listPaths(paths []string) string {
 			fmt.Fprintf(&b, "- … and %d more\n", len(paths)-maxListed)
 			break
 		}
-		fmt.Fprintf(&b, "- `%s`\n", p)
+		fmt.Fprintf(&b, "- %s\n", codeSpan(p))
 	}
 	return b.String()
+}
+
+// codeSpan is s as a markdown code span whose delimiter is longer than any
+// backtick run in s, padded where s starts or ends with a backtick.
+func codeSpan(s string) string {
+	fence := strings.Repeat("`", longestBackticks(s)+1)
+	if strings.HasPrefix(s, "`") || strings.HasSuffix(s, "`") {
+		s = " " + s + " "
+	}
+	return fence + s + fence
 }
 
 // headIs refuses, terminally, a pull request whose head is not the gated
@@ -492,9 +502,7 @@ func (r *Runner) untrusted(t Task, s string) string {
 	return sanitize.Outbound(s, hosts)
 }
 
-// fenced puts s in a markdown code fence longer than any backtick run in
-// it, so the text cannot close the fence early.
-func fenced(s string) string {
+func longestBackticks(s string) int {
 	run, longest := 0, 0
 	for _, c := range s {
 		if c == '`' {
@@ -504,7 +512,13 @@ func fenced(s string) string {
 			run = 0
 		}
 	}
-	f := strings.Repeat("`", max(3, longest+1))
+	return longest
+}
+
+// fenced puts s in a markdown code fence longer than any backtick run in
+// it, so the text cannot close the fence early.
+func fenced(s string) string {
+	f := strings.Repeat("`", max(3, longestBackticks(s)+1))
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
 }
 
