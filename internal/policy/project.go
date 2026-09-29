@@ -207,11 +207,12 @@ type SeedTokens struct {
 	Merge string `yaml:"merge,omitempty" json:"merge,omitempty"`
 }
 
-// The seeded secrets a seed project may name.
+// The seeded secrets a seed project may name: Kubernetes secret names, no
+// credentials.
 const (
-	SecretCIRegistrar = "forgejo-ci-registrar"
-	SecretMerge       = "forgejo-merge"
-	SecretConfig      = "forgejo-config"
+	SecretCIRegistrar = "forgejo-ci-registrar" // #nosec G101 -- a secret's name
+	SecretMerge       = "forgejo-merge"        // #nosec G101 -- a secret's name
+	SecretConfig      = "forgejo-config"       // #nosec G101 -- a secret's name
 )
 
 // SeedSecrets are the tokens values.

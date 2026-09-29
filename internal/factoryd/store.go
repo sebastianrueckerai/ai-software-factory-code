@@ -337,14 +337,14 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 		created = &t.CreatedAt
 	}
 	// an agent task starts in intake, since the work was asked for
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
+	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
 		                    author, author_writer, parent_task)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
 		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN $16 ELSE '' END,
 		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''))
-		 `+onConflict,
+		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's two constant clauses
+	_, err = s.db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent)
