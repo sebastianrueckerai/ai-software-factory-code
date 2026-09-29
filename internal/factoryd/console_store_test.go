@@ -213,13 +213,13 @@ func TestPGStoreResolveAlert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveAlert(ctx, bound, VerdictNoise, "supervisor", map[string]any{"action": "wait", "diagnosis": "checks run"}); err != nil {
+	if err := s.ResolveAlert(ctx, bound, AlertGateBound, VerdictNoise, "supervisor", map[string]any{"action": "wait", "diagnosis": "checks run"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ResolveAlert(ctx, bound, VerdictReal, "supervisor", map[string]any{"action": "cancel"}); !errors.Is(err, ErrNotFound) {
+	if err := s.ResolveAlert(ctx, bound, AlertGateBound, VerdictReal, "supervisor", map[string]any{"action": "cancel"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second verdict err = %v, want ErrNotFound", err)
 	}
-	if err := s.ResolveAlert(ctx, esc, VerdictReal, "supervisor", nil); !errors.Is(err, ErrNotFound) {
+	if err := s.ResolveAlert(ctx, esc, AlertGateBound, VerdictReal, "supervisor", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("verdict on an escalation err = %v, want ErrNotFound: a human judges it", err)
 	}
 	alerts, err := s.Alerts(ctx, 10)

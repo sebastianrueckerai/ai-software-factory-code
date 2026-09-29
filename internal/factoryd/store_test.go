@@ -370,11 +370,28 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	return a.ID, nil
 }
 
-func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
+func (s *fakeStore) SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
 	for i, a := range s.alerts {
-		if a.ID == id && a.Kind == AlertGateBound && a.Verdict == "" {
+		if a.ID == id {
+			a.TaskID, a.Detail = taskID, maps.Clone(a.Detail)
+			if a.Detail == nil {
+				a.Detail = map[string]any{}
+			}
+			maps.Copy(a.Detail, detail)
+			s.alerts[i] = a
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.ID == id && a.Kind == kind && a.Verdict == "" {
 			now := time.Now()
 			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
 			a.Detail = maps.Clone(a.Detail)
@@ -1084,13 +1101,26 @@ func TestPGStoreConfigRejectedAlert(t *testing.T) {
 	if _, ok, err := s.AlertByFingerprint(ctx, AlertConfigRejected, "c1"); err != nil || ok {
 		t.Fatalf("config_rejected before any row: %v %v", ok, err)
 	}
-	rejected, err := s.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", TaskID: "t-cfg", Fingerprint: "c1", Verdict: VerdictReal, ResolvedBy: "factoryd"})
+	rejected, err := s.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", Fingerprint: "c1", Detail: map[string]any{"commit": "c1"}})
 	if err != nil {
 		t.Fatalf("insert config_rejected: %v", err)
 	}
+	if err := s.SetAlertTask(ctx, rejected, "t-cfg", map[string]any{"issue": 41}); err != nil {
+		t.Fatal(err)
+	}
 	a, ok, err := s.AlertByFingerprint(ctx, AlertConfigRejected, "c1")
-	if err != nil || !ok || a.ID != rejected || a.Verdict != VerdictReal || a.ResolvedAt == nil || a.TaskID != "t-cfg" {
-		t.Fatalf("config_rejected by fingerprint: %+v %v %v, want row %d judged real", a, ok, err, rejected)
+	if err != nil || !ok || a.ID != rejected || a.Verdict != "" || a.TaskID != "t-cfg" || a.Detail["issue"] != float64(41) || a.Detail["commit"] != "c1" {
+		t.Fatalf("config_rejected by fingerprint: %+v %v %v, want row %d open on t-cfg", a, ok, err, rejected)
+	}
+	if err := s.ResolveAlert(ctx, rejected, AlertGateBound, VerdictReal, "factoryd", nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("resolve as another kind = %v, want ErrNotFound", err)
+	}
+	if err := s.ResolveAlert(ctx, rejected, AlertConfigRejected, VerdictReal, "factoryd", map[string]any{"fixed_by": "c2"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ = s.AlertByFingerprint(ctx, AlertConfigRejected, "c1")
+	if a.Verdict != VerdictReal || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil || a.Detail["fixed_by"] != "c2" {
+		t.Fatalf("resolved config_rejected = %+v", a)
 	}
 }
 

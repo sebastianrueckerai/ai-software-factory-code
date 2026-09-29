@@ -234,7 +234,7 @@ type Store interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	// ResolveAlert records the gate supervisor's verdict on an open
 	// gate_bound alert and merges detail into the alert's.
-	ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error
+	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	// JudgeTaskAlerts sets verdict on the task's SigNoz alert rows that
 	// have none.
 	JudgeTaskAlerts(ctx context.Context, taskID, verdict, by string) error

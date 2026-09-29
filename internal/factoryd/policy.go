@@ -48,11 +48,15 @@ type PolicyLoader struct {
 	// Rejected raises a refused commit, once per commit: the loader asks
 	// again at the next poll while it fails. nil: logged only.
 	Rejected func(ctx context.Context, commit string, reason error, current policy.Version, loaded bool) error
+	// Loaded settles a loaded head once (the open rejections close): the
+	// loader asks again at the next poll while it fails. nil: nothing.
+	Loaded func(ctx context.Context, v policy.Version) error
 
 	mu      sync.Mutex
 	current policy.Version
 	loaded  bool
 	seen    string // the commit last handled, valid or not
+	settled string // the loaded commit Loaded last succeeded for
 }
 
 // Boot makes the stored current version current, then loads the head. It
@@ -97,7 +101,7 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 	seen, cur, loaded := l.seen, l.current, l.loaded
 	l.mu.Unlock()
 	if head == seen {
-		return nil
+		return l.settle(ctx, head)
 	}
 	files, err := l.Source.Files(ctx, head)
 	if err != nil {
@@ -135,6 +139,24 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 		how = "current (commit known)"
 	}
 	log.Printf("config: version %d %s, commit %s", v.ID, how, v.Commit)
+	return l.settle(ctx, head)
+}
+
+// settle runs Loaded once for head when head is the version in force.
+func (l *PolicyLoader) settle(ctx context.Context, head string) error {
+	l.mu.Lock()
+	cur, done := l.current, l.settled == head
+	l.mu.Unlock()
+	if l.Loaded == nil || done || cur.Commit != head {
+		return nil
+	}
+	if err := l.Loaded(ctx, cur); err != nil {
+		log.Printf("config: settle commit %s: %v", head, err)
+		return err
+	}
+	l.mu.Lock()
+	l.settled = head
+	l.mu.Unlock()
 	return nil
 }
 
@@ -412,8 +434,12 @@ const SourceConfig = "config"
 // one alerts row per refused commit.
 type ConfigBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
+	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 }
 
 // ConfigAlarm raises a refused commit of the configuration tree (ruling
@@ -427,10 +453,19 @@ type ConfigAlarm struct {
 	Dir  string
 }
 
-// Raise is PolicyLoader.Rejected.
+// Raise is PolicyLoader.Rejected. The alerts row, the dedupe key, is
+// written first and linked to the task once the issue is filed, so a
+// failed filing is tried again without a second issue.
 func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, current policy.Version, loaded bool) error {
-	if _, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, commit); err != nil || ok {
+	row, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, commit)
+	if err != nil || row.TaskID != "" {
 		return err
+	}
+	if !ok {
+		if row.ID, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", Fingerprint: commit,
+			Detail: map[string]any{"commit": commit, "repository": a.Repo.String(), "reason": reason.Error(), "current": current.ID}}); err != nil {
+			return err
+		}
 	}
 	short := commit[:min(10, len(commit))]
 	stays := "No version is current: factoryd cannot run tasks until a valid commit lands."
@@ -440,7 +475,7 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s", a.Forgejo.PublicURL, a.Repo, commit, a.Dir)
 	title := fmt.Sprintf("config: %s/ at %s rejected", a.Dir, short)
 	body := fmt.Sprintf("factoryd refused the configuration tree %s/ at commit %s (%s). %s\n\nReasons (`factoryd config check %s` shows the same):\n\n%s\n\n"+
-		"Fix the files and push; the next valid commit on main becomes current within 30 s.\n\nfiled by factoryd",
+		"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue.\n\nfiled by factoryd",
 		a.Dir, commit, link, stays, a.Dir, fenced(reason.Error()))
 	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, Task{
 		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
@@ -449,8 +484,41 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 	if err != nil {
 		return err
 	}
-	_, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertConfigRejected, Source: "loader", TaskID: t.ID, Fingerprint: commit,
-		Verdict: VerdictReal, ResolvedBy: "factoryd",
-		Detail: map[string]any{"commit": commit, "repository": a.Repo.String(), "issue": ref.Number, "reason": reason.Error(), "current": current.ID}})
-	return err
+	return a.Store.SetAlertTask(ctx, row.ID, t.ID, map[string]any{"issue": ref.Number})
+}
+
+// Resolve is PolicyLoader.Loaded: a valid commit loaded, so every open
+// rejection is fixed. Each issue gets a comment naming the commit and is
+// closed as the bot, its task ends done, and its alert is judged real.
+func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
+	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return err
+	}
+	for _, t := range open {
+		if t.Source != SourceConfig || t.Repository != a.Repo.String() {
+			continue
+		}
+		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
+		if _, err := a.Forgejo.CreateIssueComment(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber, msg); err != nil {
+			return err
+		}
+		if err := a.Forgejo.CloseIssue(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber); err != nil {
+			return err
+		}
+		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			return err
+		}
+		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
+		if err != nil {
+			return err
+		}
+		if ok && row.Verdict == "" {
+			if err := a.Store.ResolveAlert(ctx, row.ID, AlertConfigRejected, VerdictReal, "factoryd", map[string]any{"fixed_by": v.Commit}); err != nil {
+				return err
+			}
+		}
+		log.Printf("config: commit %s closed issue #%d of rejected commit %s, task %s done", v.Commit, t.IssueNumber, t.SHA, t.ID)
+	}
+	return nil
 }

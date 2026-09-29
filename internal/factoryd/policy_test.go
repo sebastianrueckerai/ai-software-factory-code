@@ -252,6 +252,37 @@ func TestPolicyLoader(t *testing.T) {
 	}
 }
 
+// Each valid head, once loaded, is settled (Loaded: the open rejections
+// close); a refused head settles nothing, and a failed settling is tried
+// again at the next poll.
+func TestPolicyLoaderSettlesEachLoadedHead(t *testing.T) {
+	ctx := context.Background()
+	src := &memSource{}
+	var settled []string
+	var fail error
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, Rejected: (&rejections{}).raise,
+		Loaded: func(_ context.Context, v policy.Version) error {
+			settled = append(settled, v.Commit)
+			return fail
+		}}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	src.push("bad", testFiles("version: 1\n"))
+	l.Load(ctx) // #nosec G104 -- the rejection is the point
+	fail = errors.New("forgejo down")
+	src.push("c2", testFiles(testPolicyYAML))
+	l.Load(ctx) // #nosec G104
+	l.Load(ctx) // #nosec G104
+	fail = nil
+	l.Load(ctx) // #nosec G104
+	l.Load(ctx) // #nosec G104
+	if !slices.Equal(settled, []string{"c1", "c2", "c2", "c2"}) {
+		t.Fatalf("settled = %v, want c1 once, c2 until it succeeds", settled)
+	}
+}
+
 // A rejection that cannot be raised is raised again at the next poll.
 func TestPolicyLoaderRaisesUntilItSucceeds(t *testing.T) {
 	ctx := context.Background()
@@ -450,6 +481,19 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 		}
 		var n int64
 		switch {
+		case r.Method == http.MethodPost && path == "issues" && fj.failNext > 0:
+			fj.failNext--
+			http.Error(w, "down", http.StatusInternalServerError)
+		case r.Method == http.MethodPost && fmtScan(path, "issues/%d/comments", &n):
+			var in struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodPatch && fmtScan(path, "issues/%d", &n):
+			fj.closed = append(fj.closed, n)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		case r.Method == http.MethodPost && path == "issues":
 			var in struct{ Title, Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -491,7 +535,10 @@ func TestForgejoConfigSource(t *testing.T) {
 }
 
 // A refused commit files one human-lane issue on the infra repository and
-// one alerts row, however often it is raised.
+// one open alerts row, however often it is raised; the alerts row, the
+// dedupe key, is written before the issue, so a failed filing is tried
+// again without a second issue. The next valid commit closes the issue,
+// ends the task and judges the alert real.
 func TestConfigAlarm(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
 	store := newFakeStore()
@@ -499,6 +546,10 @@ func TestConfigAlarm(t *testing.T) {
 	ctx := context.Background()
 	reason := errors.New("workflow.yaml: workflow: stage policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
+	fj.failNext = 1
+	if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", reason, current, true); err == nil {
+		t.Fatal("a failed filing raised nothing")
+	}
 	for range 2 {
 		if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", reason, current, true); err != nil {
 			t.Fatal(err)
@@ -523,11 +574,30 @@ func TestConfigAlarm(t *testing.T) {
 	for _, task = range store.tasks {
 	}
 	if task.Kind != "human" || task.Status != "waiting-human" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 ||
-		task.Source != SourceConfig || len(task.RequiredCapabilities) != 0 {
+		task.Source != SourceConfig || task.SHA != "c9c9c9c9c9c9c9c9" || len(task.RequiredCapabilities) != 0 {
 		t.Fatalf("task = %+v", task)
 	}
 	a, ok, _ := store.AlertByFingerprint(ctx, AlertConfigRejected, "c9c9c9c9c9c9c9c9")
-	if !ok || a.TaskID != task.ID || a.Verdict != VerdictReal || a.Detail["issue"] != int64(41) || a.Detail["current"] != int64(12) {
-		t.Fatalf("alert = %+v, %v", a, ok)
+	if !ok || a.TaskID != task.ID || a.Verdict != "" || a.Detail["issue"] != int64(41) || a.Detail["current"] != int64(12) || len(store.alertRows()) != 1 {
+		t.Fatalf("alert = %+v, %v (%d rows), want one open row on the task", a, ok, len(store.alertRows()))
+	}
+
+	if err := alarm.Resolve(ctx, policy.Version{ID: 13, Commit: "cacacacacaca"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
+		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
+		t.Fatalf("closed %v, comments %q", fj.closed, fj.comments)
+	}
+	if got := store.tasks[task.ID]; got.Status != "done" || got.FinishedAt == nil {
+		t.Fatalf("task after the fix = %+v, want done", got)
+	}
+	a, _, _ = store.AlertByFingerprint(ctx, AlertConfigRejected, "c9c9c9c9c9c9c9c9")
+	if a.Verdict != VerdictReal || a.ResolvedBy != "factoryd" || a.Detail["fixed_by"] != "cacacacacaca" {
+		t.Fatalf("alert after the fix = %+v", a)
+	}
+	// nothing open: a second resolve does nothing
+	if err := alarm.Resolve(ctx, policy.Version{ID: 14, Commit: "cbcb"}); err != nil || len(fj.closed) != 1 {
+		t.Fatalf("second resolve = %v, closed %v", err, fj.closed)
 	}
 }

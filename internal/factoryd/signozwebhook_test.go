@@ -24,6 +24,8 @@ type alertForgejo struct {
 	issues   []string // "title\n\nbody"
 	labels   map[int64][]string
 	comments []string // "#n body"
+	closed   []int64  // issues closed
+	failNext int      // issue creations to answer 500
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {

@@ -143,7 +143,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	if late {
 		detail["note"] = "gate ended before the answer"
 	}
-	if err := r.store.ResolveAlert(ctx, in.Trip.AlertID, verdict, "supervisor", detail); err != nil {
+	if err := r.store.ResolveAlert(ctx, in.Trip.AlertID, AlertGateBound, verdict, "supervisor", detail); err != nil {
 		log.Printf("task %s: judge alert %d: %v", t.ID, in.Trip.AlertID, err)
 	}
 	detail["activity"], detail["attempt"], detail["alert"] = in.Trip.Activity, in.Trip.Attempt, in.Trip.AlertID

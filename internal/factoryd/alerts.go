@@ -150,18 +150,28 @@ func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by str
 	return oneRow(res, err, "open escalation alert")
 }
 
-// ResolveAlert is the gate supervisor's verdict on an open gate_bound
-// alert, its action and diagnosis merged into the detail; ErrNotFound when
-// there is none.
-func (s *PGStore) ResolveAlert(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
+// ResolveAlert is a machine's verdict on an open alert of kind (the gate
+// supervisor's on a gate_bound, a loaded commit's on a config_rejected),
+// detail merged in; ErrNotFound when there is none.
+func (s *PGStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error {
 	b, err := json.Marshal(detail)
 	if err != nil {
 		return err
 	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $4::jsonb
-		 WHERE id = $1 AND kind = $5 AND verdict IS NULL`, id, verdict, by, b, AlertGateBound)
-	return oneRow(res, err, "open gate_bound alert")
+		 WHERE id = $1 AND kind = $5 AND verdict IS NULL`, id, verdict, by, b, kind)
+	return oneRow(res, err, "open "+kind+" alert")
+}
+
+// SetAlertTask links alert id to the task filed for it, detail merged in.
+func (s *PGStore) SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error {
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE alerts SET task_id = $2, detail = detail || $3::jsonb WHERE id = $1`, id, taskID, b)
+	return oneRow(res, err, "alert")
 }
 
 // AlertCount is the number of alerts of one kind and verdict ("open" for
