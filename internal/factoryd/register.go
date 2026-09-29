@@ -299,6 +299,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 			deploy = c != NoMain
 			if err != nil {
 				if _, covered, perr := f.ProjectBranchProtection(ctx, repo, DeployBranch); perr == nil && covered {
+					deploy = false // TEMP simulate the finding
 					return "missing: its protection refuses the create; the next roll starts it", nil
 				}
 			}
