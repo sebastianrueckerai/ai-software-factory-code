@@ -166,9 +166,9 @@ func TestSuperviseGateWaitChecks(t *testing.T) {
 		jsonOf(bundle["allowed_actions"]) != `["wait","retry","cancel","escalate"]` {
 		t.Fatalf("bundle = %s", jsonOf(bundle))
 	}
-	// the scrubber's 32-character rule takes the long URL path (review I7's known cost)
+	// the scrubber keeps the URL path (a lowercase path, not a key)
 	want := `{"checks":{"commit":"c1","runner_queue":[{"job":"build","label":"ubuntu","waiting_s":0}],"state":"pending",` +
-		`"statuses":[{"context":"ci / lint","description":"ok","status":"success","target_url":"https://git.[redacted]"},` +
+		`"statuses":[{"context":"ci / lint","description":"ok","status":"success","target_url":"https://git.example/sf/r/actions/runs/4/jobs/0"},` +
 		`{"context":"ci / test","description":"running","status":"pending","target_url":""}]}}`
 	if got := jsonOf(bundle["state"]); got != want {
 		t.Fatalf("state = %s\nwant    %s", got, want)

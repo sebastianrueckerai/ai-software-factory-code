@@ -2,6 +2,29 @@ package redact
 
 import "testing"
 
+func TestStringKeepsCommitsDigestsAndPaths(t *testing.T) {
+	s := New()
+	for in, want := range map[string]string{
+		`head 3f786850e387550fdab836ed7e6dc881de23001b pushed`:                                                              `head 3f786850e387550fdab836ed7e6dc881de23001b pushed`,
+		`{"head":"3f786850e387550fdab836ed7e6dc881de23001b"}`:                                                               `{"head":"3f786850e387550fdab836ed7e6dc881de23001b"}`,
+		`image forgejo.example/sf/ci-runner@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 pulled`: `image forgejo.example/sf/ci-runner@sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 pulled`,
+		`sf/demo-app-with-a-long-name/services/payments-api`:                                                                `sf/demo-app-with-a-long-name/services/payments-api`,
+		`internal/factoryd/some_really_long_file_name_here_test.go`:                                                         `internal/factoryd/some_really_long_file_name_here_test.go`,
+		`GET /api/v1/repos/sf/demo-app-with-a-long-name/pulls/9/files 404`:                                                  `GET /api/v1/repos/sf/demo-app-with-a-long-name/pulls/9/files 404`,
+		`key hash 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 blocked`:                                 `key hash [redacted] blocked`,
+		`head 3F786850E387550FDAB836ED7E6DC881DE23001B pushed`:                                                              `head [redacted] pushed`,
+		`id 3f786850e387550fdab836ed7e6dc881de23001b0 seen`:                                                                 `id [redacted] seen`,
+		`digest sha256:9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08 bad`:                                `digest [redacted] bad`,
+		`callback /hooks/0123456789abcdef0123456789abcdef01234567 failed`:                                                   `callback [redacted] failed`,
+		`secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY rejected`:                                                          `secret [redacted] rejected`,
+		`token sf/aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC1dE3f rejected`:                                                              `token [redacted] rejected`,
+	} {
+		if got := s.String(in); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestStringRemovesKeys(t *testing.T) {
 	s := New("hunter2-master", "short")
 	for in, want := range map[string]string{
