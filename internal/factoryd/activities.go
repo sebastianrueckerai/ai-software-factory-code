@@ -902,6 +902,11 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 			return err
 		}
 	}
+	for _, kind := range []string{AlertEscalation, AlertInfoRequest} {
+		if err := r.store.JudgeTaskAlerts(ctx, taskID, kind, VerdictUnjudged, FactoryDecider); err != nil {
+			return err
+		}
+	}
 	if err := r.completion.Complete(ctx, taskID, final); err != nil {
 		return err
 	}

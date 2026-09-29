@@ -102,7 +102,7 @@ func RegisterAlertCount(meter metric.Meter, counts func(context.Context) ([]Aler
 			}
 			n := map[[2]string]int64{}
 			for _, k := range alertKinds {
-				for _, v := range []string{VerdictReal, VerdictNoise, "open"} {
+				for _, v := range []string{VerdictReal, VerdictNoise, VerdictUnjudged, "open"} {
 					n[[2]string{k, v}] = 0
 				}
 			}

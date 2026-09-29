@@ -915,11 +915,48 @@ func TestFinishJudgesTheTasksSigNozAlert(t *testing.T) {
 			t.Fatal(err)
 		}
 		rows := store.alertRows()
-		if rows[0].Verdict != c.want || rows[1].Verdict != "" || rows[2].Verdict != "" {
-			t.Fatalf("%s %q: verdicts %q %q %q, want %q on the task's SigNoz alert only", c.final, c.reason, rows[0].Verdict, rows[1].Verdict, rows[2].Verdict, c.want)
+		if rows[0].Verdict != c.want || rows[1].Verdict != "" || rows[2].Verdict != VerdictUnjudged {
+			t.Fatalf("%s %q: verdicts %q %q %q, want %q on the task's SigNoz alert and unjudged on its escalation", c.final, c.reason, rows[0].Verdict, rows[1].Verdict, rows[2].Verdict, c.want)
 		}
 		if c.want != "" && rows[0].ResolvedBy != "factoryd" {
 			t.Fatalf("resolved by %q", rows[0].ResolvedBy)
 		}
+	}
+}
+
+func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+	task := prTask
+	task.Status = "in-review"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "t1", Verdict: VerdictReal, ResolvedBy: "sebastian"})
+	store.InsertAlert(ctx, Alert{Kind: AlertGateBound, Source: "WaitChecks", TaskID: "t1", BoundS: 600})
+	store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "agent", TaskID: "t2"})
+
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "pull request closed without merge"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got []string
+	for _, a := range store.alertRows() {
+		got = append(got, fmt.Sprintf("%s %s %q %q", a.TaskID, a.Kind, a.Verdict, a.ResolvedBy))
+	}
+	want := []string{
+		`t1 escalation "unjudged" "factoryd"`,
+		`t1 info_request "unjudged" "factoryd"`,
+		`t1 escalation "real" "sebastian"`,
+		`t1 gate_bound "" ""`,
+		`t2 escalation "" ""`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alerts =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	rows := store.alertRows()
+	if rows[0].ResolvedAt == nil || rows[1].ResolvedAt == nil {
+		t.Fatalf("resolved_at = %v, %v, want set on the unjudged rows", rows[0].ResolvedAt, rows[1].ResolvedAt)
 	}
 }

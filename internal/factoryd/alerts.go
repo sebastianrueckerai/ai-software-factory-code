@@ -31,6 +31,9 @@ const (
 const (
 	VerdictReal  = "real"
 	VerdictNoise = "noise"
+	// VerdictUnjudged closes an escalation or info_request alert whose
+	// task ended before an approver judged it.
+	VerdictUnjudged = "unjudged"
 )
 
 // Alert is an alerts row. A machine that decides at once (the supervisor)

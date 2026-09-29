@@ -1065,12 +1065,18 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.JudgeTaskAlerts(ctx, "t1", AlertInfoRequest, VerdictUnjudged, FactoryDecider); err != nil {
+		t.Fatal(err)
+	}
 	counts, err := s.AlertCounts(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
-	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}}; !reflect.DeepEqual(counts, want) {
+	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
 	}
 }
