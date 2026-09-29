@@ -2,6 +2,7 @@ package policy
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,5 +104,71 @@ func TestParseAutoOnlyOnNormal(t *testing.T) {
 				t.Fatalf("Parse error = %v, want the auto refusal", err)
 			}
 		})
+	}
+}
+
+// infraRisk is the risk block of the infra repository's factory/policy.yaml.
+const infraRisk = `risk:
+  classes:
+    - {name: forbidden, outcome: forbidden}
+    - {name: migration, outcome: requires_approval, migration: true}
+    - {name: high, outcome: requires_approval}
+    - {name: normal, outcome: auto}
+  rules:
+    - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
+    - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
+    - class: high
+      paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
+        "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
+        "**/package.json", "**/package-lock.json", "**/npm-shrinkwrap.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+        "**/Cargo.toml", "**/Cargo.lock",
+        "**/pyproject.toml", "**/requirements*.txt", "**/poetry.lock", "**/uv.lock",
+        "**/Gemfile", "**/Gemfile.lock", "**/pom.xml", "**/build.gradle*", "**/composer.json", "**/composer.lock",
+        "**/AGENTS.md", "**/CLAUDE.md", "**/opencode.json", "**/opencode.jsonc", "**/CODEOWNERS",
+        ".*/**"]
+  default: normal
+`
+
+// Manifests and lockfiles of every common ecosystem, agent instruction
+// files, CODEOWNERS and every top-level dot directory are protected: class
+// high, at any depth for the files.
+func TestClassifyProtectedFilesHigh(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		"go.mod", "go.sum", "tools/go.mod", "go.work", "go.work.sum",
+		"package.json", "web/package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "web/pnpm-lock.yaml",
+		"Cargo.toml", "crates/x/Cargo.toml", "Cargo.lock",
+		"pyproject.toml", "requirements.txt", "requirements-dev.txt", "svc/requirements.txt", "poetry.lock", "uv.lock",
+		"Gemfile", "Gemfile.lock", "pom.xml", "app/pom.xml", "build.gradle", "build.gradle.kts", "app/build.gradle",
+		"composer.json", "composer.lock",
+		"AGENTS.md", "docs/AGENTS.md", "CLAUDE.md", "opencode.json", "opencode.jsonc", ".opencode/agent/review.md",
+		"CODEOWNERS", "docs/CODEOWNERS",
+		".husky/pre-commit", ".vscode/settings.json", ".devcontainer/devcontainer.json", ".config/x/y.toml",
+		".gitignore", ".golangci.yml",
+		"k8s/factoryd.yaml", "deploy/prod/app.yaml", "cmd/x/Dockerfile",
+	} {
+		if c := d.Risk.Classify([]string{p, "README.md"}); c.Class.Name != "high" || !slices.Equal(c.Paths, []string{p}) {
+			t.Errorf("Classify(%s) = %s %v, want high on %s", p, c.Class.Name, c.Paths, p)
+		}
+	}
+	for p, want := range map[string]string{
+		".forgejo/workflows/pr.yml":  "forbidden",
+		".github/CODEOWNERS":         "forbidden",
+		"db/migrations/0001.sql":     "migration",
+		"internal/x/main.go":         "normal",
+		"docs/.hidden/x.md":          "normal",
+		"docs/package.json.md":       "normal",
+		"requirements/base.in":       "normal",
+		"internal/gomod/go.mod.tmpl": "normal",
+		"docs/agents.md":             "normal",
+		"src/Gemfile.example":        "normal",
+	} {
+		if c := d.Risk.Classify([]string{p}); c.Class.Name != want {
+			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
+		}
 	}
 }
