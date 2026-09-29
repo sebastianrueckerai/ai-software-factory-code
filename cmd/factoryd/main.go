@@ -343,7 +343,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	// the console is the only listener the edge gateway reaches; the
@@ -382,7 +382,7 @@ func main() {
 	}
 	consoleServer := &http.Server{
 		Addr:              *consoleAddr,
-		Handler:           consoleHandler,
+		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", consoleHandler),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

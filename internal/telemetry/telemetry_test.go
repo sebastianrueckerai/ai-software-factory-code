@@ -17,8 +17,12 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	lognoop "go.opentelemetry.io/otel/log/noop"
 	"go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	logcol "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	metriccol "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -185,5 +189,32 @@ func TestExportErrorsLogAtMostOncePerMinute(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "export: timeout") || !strings.Contains(lines[1], "2 more suppressed") {
 		t.Fatalf("second line %q", lines[1])
+	}
+}
+
+// Every request but the probes is a server span named by method and path
+// with its status code: what a service's 5xx-rate alert rule counts.
+func TestHandlerTracesEveryRequestButTheProbes(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	h := Handler(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)), "factoryd", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tasks/t-1" {
+			http.Error(w, "store down", http.StatusInternalServerError)
+		}
+	}))
+	for _, path := range []string{"/tasks/t-1", "/healthz", "/readyz", "/"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+	var got []string
+	for _, s := range spans.Ended() {
+		code := ""
+		for _, a := range s.Attributes() {
+			if a.Key == attribute.Key("http.response.status_code") {
+				code = a.Value.Emit()
+			}
+		}
+		got = append(got, s.Name()+" "+s.SpanKind().String()+" "+code)
+	}
+	if want := []string{"GET /tasks/t-1 " + trace.SpanKindServer.String() + " 500", "GET / server 200"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("spans %q, want %q", got, want)
 	}
 }

@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"os"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -195,4 +197,14 @@ func New(meter metric.Meter) (*Metrics, error) {
 		}
 	}
 	return m, nil
+}
+
+// Handler wraps h in a server span per request named by method and path,
+// the probes /healthz and /readyz untraced. The global propagator is the
+// no-op one, so a caller's trace headers are ignored.
+func Handler(tp trace.TracerProvider, service string, h http.Handler) http.Handler {
+	return otelhttp.NewHandler(h, service,
+		otelhttp.WithTracerProvider(tp),
+		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" && r.URL.Path != "/readyz" }),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }))
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -1665,5 +1666,61 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
 		}
+	}
+}
+
+// Ruling 180: an alert filed into the human lane of a project on agents
+// none is judged by its close: real when a writer closes it as fixed,
+// noise when they label it noise first.
+func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {
+	const infra = "/api/v1/repos/sf/ai-software-factory-infra"
+	labels := map[string]string{
+		infra + "/issues/31/labels": `[{"name":"bug"},{"name":"human"},{"name":"state/waiting-human"}]`,
+		infra + "/issues/32/labels": `[{"name":"bug"},{"name":"human"},{"name":"noise"},{"name":"state/waiting-human"}]`,
+	}
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.Path; {
+		case strings.HasPrefix(p, "/api/v1/orgs/") || strings.HasPrefix(p, "/api/v1/teams/"):
+			serveWriters(t, w, r)
+		case p == infra+"/collaborators" || p == infra+"/assignees":
+			io.WriteString(w, `[{"login":"sebastian"}]`)
+		case r.Method == http.MethodGet && labels[p] != "":
+			io.WriteString(w, labels[p])
+		case strings.HasSuffix(p, "/labels"):
+		case strings.HasSuffix(p, "/timeline"):
+			io.WriteString(w, `[{"type":"close","user":{"login":"sebastian"}}]`)
+		case strings.HasPrefix(p, infra+"/issues/"):
+			io.WriteString(w, `{"state":"closed"}`)
+		default:
+			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	store := newFakeStore()
+	store.projects = []Project{{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", MergeRule: "human", Objects: "seed",
+		Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}}}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"},
+		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+	ctx := context.Background()
+	for _, n := range []int64{31, 32} {
+		task := Task{ID: fmt.Sprintf("t-%d", n), Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-infra",
+			IssueNumber: n, Source: SourceAlert}
+		if err := store.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, TaskID: task.ID, Fingerprint: fmt.Sprintf("fp%d", n)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := in.Resync(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := map[string]string{}
+	for _, a := range store.alertRows() {
+		got[a.TaskID] = a.Verdict + " by " + a.ResolvedBy
+	}
+	want := map[string]string{"t-31": "real by sebastian", "t-32": "noise by sebastian"}
+	if !maps.Equal(got, want) || store.tasks["t-31"].Status != "done" || store.tasks["t-32"].Status != "done" {
+		t.Fatalf("verdicts %v, want %v; tasks %s, %s", got, want, store.tasks["t-31"].Status, store.tasks["t-32"].Status)
 	}
 }

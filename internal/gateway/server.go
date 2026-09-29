@@ -20,6 +20,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // Authenticator is implemented by Auth; tests substitute a fake.
@@ -165,7 +166,7 @@ func (s *Server) Routes(version string) http.Handler {
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
-	return s.tel.handler(mux)
+	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
 }
 
 // inTokenSlack covers the bytes the output limit adds to the body after the

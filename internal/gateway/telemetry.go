@@ -3,13 +3,11 @@ package gateway
 import (
 	"context"
 	"errors"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otellog "go.opentelemetry.io/otel/log"
@@ -65,16 +63,6 @@ func NewTelemetry(tp trace.TracerProvider, mp metric.MeterProvider, lp otellog.L
 func noTelemetry() *Telemetry {
 	t, _ := NewTelemetry(tracenoop.NewTracerProvider(), noop.NewMeterProvider(), lognoop.NewLoggerProvider()) // #nosec G104 -- the no-op instruments never fail
 	return t
-}
-
-// handler wraps the routes in a server span per request; /healthz is not
-// traced. The global propagator is the no-op one, so a sandbox's trace
-// headers are ignored.
-func (t *Telemetry) handler(h http.Handler) http.Handler {
-	return otelhttp.NewHandler(h, "factory-gateway",
-		otelhttp.WithTracerProvider(t.tp),
-		otelhttp.WithFilter(func(r *http.Request) bool { return r.URL.Path != "/healthz" }),
-		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method + " " + r.URL.Path }))
 }
 
 // caller puts the verified task on the request's server span.

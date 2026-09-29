@@ -17,11 +17,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
-// alertForgejo is the project repository demo-app/demo-app as the alert
-// intake sees it: issues filed, labels set and comments posted, in order.
+// alertForgejo is the projects' repositories as the alert intake sees
+// them: issues filed (numbered across all of them), labels set and
+// comments posted, in order.
 type alertForgejo struct {
 	mu       sync.Mutex
 	issues   []string // "title\n\nbody"
+	repos    []string // each issue's repository
 	labels   map[int64][]string
 	comments []string // "#n body"
 	closed   []int64  // issues closed
@@ -37,7 +39,13 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		if u, p, ok := r.BasicAuth(); !ok || u != "factory-agent" || p != "bot-pw" {
 			t.Errorf("%s %s not as the bot", r.Method, r.URL.Path)
 		}
-		const repo = "/api/v1/repos/demo-app/demo-app"
+		parts := strings.SplitN(r.URL.Path, "/", 7) // "", api, v1, repos, owner, name, rest
+		if len(parts) < 6 || parts[3] != "repos" {
+			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusTeapot)
+			return
+		}
+		repo := strings.Join(parts[:6], "/")
 		var n int64
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == repo:
@@ -48,8 +56,9 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			var in struct{ Title, Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
 			fj.issues = append(fj.issues, in.Title+"\n\n"+in.Body)
+			fj.repos = append(fj.repos, parts[4]+"/"+parts[5])
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/demo-app/demo-app/issues/%d"}`, len(fj.issues), len(fj.issues))
+			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/%s/%s/issues/%d"}`, len(fj.issues), parts[4], parts[5], len(fj.issues))
 		case r.Method == http.MethodPut && fmtScan(r.URL.Path, repo+"/issues/%d/labels", &n):
 			var in struct{ Labels []string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -417,5 +426,67 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 ||
 		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
 		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
+	}
+}
+
+// Ruling 180: the factory's own namespaces route like a project's. An
+// alert in factory, a namespace of the code repository's seed project on
+// agents coder, files a bug issue there and starts its task; one in
+// platform, of the infra repository's seed project on agents none, files
+// a human-lane issue there and starts nothing. Neither project has
+// registration's tokens. The issue names the service the alert is about.
+func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
+	r := newAlertRig(t)
+	r.ns.labels["factory"], r.ns.labels["platform"] = "ai-software-factory-code", "ai-software-factory-infra"
+	m := r.in.Projects.(*memProjects).m
+	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
+		File: true, Namespaces: []string{"factory"}}
+	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
+		File: true, Namespaces: []string{"platform", "forgejo"}}
+
+	gateway := sigAlert("firing", "fp-gw", "factory", firedAt, neverEnds)
+	gateway["labels"].(map[string]string)["service.name"] = "factory-gateway"
+	clickhouse := sigAlert("firing", "fp-ch", "platform", firedAt, neverEnds)
+	clickhouse["labels"].(map[string]string)["alertname"] = "ClickHouse disk above 80 %"
+	clickhouse["labels"].(map[string]string)["service"] = "clickhouse"
+	for _, a := range []map[string]any{gateway, clickhouse} {
+		if rr := r.post(t, "signoz", "hook-pw", a); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	if !slices.Equal(r.fj.repos, []string{"sf/ai-software-factory-code", "sf/ai-software-factory-infra"}) {
+		t.Fatalf("issues on %v", r.fj.repos)
+	}
+	gwTitle, gwBody, _ := strings.Cut(r.fj.issues[0], "\n\n")
+	chTitle, chBody, _ := strings.Cut(r.fj.issues[1], "\n\n")
+	if gwTitle != "alert: 5xx rate above 5 % on factory-gateway in factory" ||
+		!strings.HasPrefix(gwBody, "factoryd: SigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
+			"Firing since 2026-09-28T20:01:29Z. SigNoz: https://signoz.example/alerts/overview?ruleId=r-1\n\n") ||
+		chTitle != "alert: ClickHouse disk above 80 % on clickhouse in platform" ||
+		!strings.HasPrefix(chBody, "factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
+		t.Fatalf("issues\n%s\n---\n%s", r.fj.issues[0], r.fj.issues[1])
+	}
+	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+		t.Fatalf("labels %v", r.fj.labels)
+	}
+	byRepo := map[string]Task{}
+	for _, task := range r.store.tasks {
+		byRepo[task.Repository] = task
+	}
+	code, infra := byRepo["sf/ai-software-factory-code"], byRepo["sf/ai-software-factory-infra"]
+	if code.Kind != "agent" || code.Status != "queued" || code.Standing() != harness.StandingTelemetry ||
+		infra.Kind != "human" || infra.Status != "waiting-human" || len(r.store.tasks) != 2 {
+		t.Fatalf("tasks %+v", r.store.tasks)
+	}
+	if !slices.Equal(r.flows.started, []string{code.ID}) {
+		t.Fatalf("started %v, want the code repository's task alone", r.flows.started)
+	}
+	rows := map[string]Alert{}
+	for _, a := range r.store.alertRows() {
+		rows[a.Fingerprint] = a
+	}
+	if rows["fp-gw"].TaskID != code.ID || rows["fp-gw"].Detail["project"] != "ai-software-factory-code" ||
+		rows["fp-ch"].TaskID != infra.ID || rows["fp-ch"].Detail["project"] != "ai-software-factory-infra" || rows["fp-ch"].Kind != AlertSigNoz {
+		t.Fatalf("alert rows %+v", rows)
 	}
 }

@@ -235,13 +235,20 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 	return p, p.Active() && slices.Contains(p.Namespaces, ns), nil
 }
 
-// alertIssue is the bug issue of alert a: title "alert: <name> in <ns>"
-// and a body with the firing time, the SigNoz link, the value and
-// annotations and the labels, the values one line each inside fences.
+// alertIssue is the bug issue of alert a: title "alert: <name> on
+// <service> in <ns>" (no "on" without a service) and a body with the
+// firing time, the SigNoz link, the value and annotations and the labels,
+// the values one line each inside fences.
 func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
-	name := oneLine(a.Labels["alertname"])
+	name, on := oneLine(a.Labels["alertname"]), ""
+	if s := oneLine(cmp.Or(a.Labels["service"], a.Labels["service.name"])); s != "" {
+		on = " on service " + s
+		title = "alert: " + name + " on " + s + " in " + ns
+	} else {
+		title = "alert: " + name + " in " + ns
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "factoryd: SigNoz fires the alert %s in namespace %s of project %s.\n\nFiring since %s.", name, ns, project, stamp(a.StartsAt))
+	fmt.Fprintf(&b, "factoryd: SigNoz fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", name, on, ns, project, stamp(a.StartsAt))
 	if safeLink(a.GeneratorURL) {
 		b.WriteString(" SigNoz: " + a.GeneratorURL)
 	}
@@ -259,7 +266,7 @@ func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
 	}
 	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from SigNoz alert %s",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), oneLine(a.Fingerprint))
-	return "alert: " + name + " in " + ns, b.String()
+	return title, b.String()
 }
 
 // The final reasons of a task whose issue a human closed; the merge state

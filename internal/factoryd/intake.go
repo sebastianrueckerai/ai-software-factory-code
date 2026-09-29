@@ -253,6 +253,9 @@ var priorityLabelWeight = map[string]int{
 	"severity/critical": 3, "severity/high": 2, "severity/medium": 1, "severity/low": 0,
 }
 
+// LabelNoise on a human-lane alert issue closes it as not a problem.
+const LabelNoise = "noise"
+
 // BootLabels are the labels factoryd creates on every project's repository
 // at each reconcile (boot included), before anything files
 // an issue or mirrors state onto one (Forgejo drops an unknown label name
@@ -263,6 +266,7 @@ var BootLabels = map[string]string{
 	"human":                "#c2e0c6",
 	"bug":                  "#cf222e",
 	"improvement":          "#0e8a16",
+	LabelNoise:             "#bfbfbf",
 	"state/suggested":      "#c5def5",
 	"state/queued":         "#ededed",
 	"state/running":        "#1f6feb",
@@ -666,7 +670,7 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	}
 	switch {
 	case t.Kind == "human":
-		return in.finishHumanTask(ctx, t)
+		return in.finishHumanTask(ctx, t, closer)
 	case t.Status == "suggested":
 		return in.closeSuggestion(ctx, t)
 	}
@@ -698,10 +702,28 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 }
 
 // finishHumanTask: a human-lane task has no workflow; its closed issue is
-// its end.
-func (in *Intake) finishHumanTask(ctx context.Context, t Task) error {
+// its end. A SigNoz alert's gets its verdict from the close (ruling 180):
+// noise when the issue carries LabelNoise, else real.
+func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) error {
 	if t.Status != "waiting-human" {
 		return nil
+	}
+	if t.Source == SourceAlert {
+		repo, err := SplitRepo(t.Repository)
+		if err != nil {
+			return err
+		}
+		labels, err := in.Forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if err != nil {
+			return fmt.Errorf("labels of the alert's issue: %w", err)
+		}
+		verdict := VerdictReal
+		if slices.Contains(labels, LabelNoise) {
+			verdict = VerdictNoise
+		}
+		if err := in.Store.JudgeTaskAlerts(ctx, t.ID, verdict, closer); err != nil {
+			return err
+		}
 	}
 	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
 		return err
