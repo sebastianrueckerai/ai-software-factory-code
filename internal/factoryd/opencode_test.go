@@ -147,6 +147,48 @@ func TestOpencodeParserRejectsGarbage(t *testing.T) {
 	}
 }
 
+// The pinned binary's run under the worker's config at a step cap of 3
+// (TestRecordOpencodeFixture): a denied call, the loop going on, a call
+// past the cap, and the text the step-cap message asks for.
+func TestOpencodeMapsRecordedStepCapAndDenial(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "opencode-run-stepcap-deny.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []harness.Event
+	p := &opencodeParser{}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		p.line([]byte(line), func(ev harness.Event) { events = append(events, ev) })
+	}
+	want := []harness.EventKind{
+		harness.EventCheckpoint, harness.EventToolCall, harness.EventModelCall,
+		harness.EventCheckpoint, harness.EventCommand, harness.EventModelCall,
+		harness.EventCheckpoint, harness.EventCommand, harness.EventModelCall,
+		harness.EventCheckpoint, harness.EventModelCall,
+	}
+	if !reflect.DeepEqual(kinds(events), want) {
+		t.Fatalf("events = %v, want %v", kinds(events), want)
+	}
+	denied := events[1].Detail
+	if denied["tool"] != "bash" || denied["status"] != "error" || !strings.HasPrefix(denied["error"].(string), deniedMarker) ||
+		denied["args"].(map[string]any)["command"] != "git push origin HEAD" {
+		t.Fatalf("denied call = %v", denied)
+	}
+	if c := events[4].Detail; c["command"] != "echo two > two.txt" || c["exit"] != 0 {
+		t.Fatalf("call after the denial = %v", c)
+	}
+	if c := events[7].Detail; c["command"] != "echo past-the-cap" || c["output"] != "past-the-cap\n" {
+		t.Fatalf("call past the cap = %v", c)
+	}
+	summary := "Maximum steps reached. Wrote two.txt; the push was denied. Nothing remains."
+	if last := events[10].Detail; last["reason"] != "stop" || last["text"] != summary {
+		t.Fatalf("final model call = %v", last)
+	}
+	if !p.stopped || p.errMessage() != "" || p.summary() != summary {
+		t.Fatalf("parser: stopped %v, error %q, summary %q", p.stopped, p.errMessage(), p.summary())
+	}
+}
+
 func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 	if _, err := (TokenBudget{AnswerTokens: 1000, HeadroomTokens: 200}).OutputLimit(); err != nil {
 		t.Fatalf("valid budget: %v", err)
@@ -163,7 +205,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000)
+	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +240,36 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 	}
 }
 
+// The whole config the worker hands opencode v1.18.32, one golden file. The
+// headless settings, each read in the pinned source: question denied at
+// pattern "*" is hidden from the model (permission/index.ts:204-219), not
+// asked; doom_loop allow, since a denied doom_loop fails the stream and ends
+// the session (session/processor.ts:371-379, 668-694); a rejected call
+// continues the loop (processor.ts:200-201, 647); steps caps every agent
+// that loops (session/prompt.ts:1178-1179).
+func TestOpencodeConfigGolden(t *testing.T) {
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.ReadFile(filepath.Join("testdata", "opencode-config.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, got, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(indented.String()) != strings.TrimSpace(string(want)) {
+		t.Fatalf("config =\n%s\nwant\n%s", indented.String(), want)
+	}
+	for _, steps := range []int{0, -1} {
+		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps); err == nil {
+			t.Errorf("steps %d accepted: a session must not run uncapped", steps)
+		}
+	}
+}
+
 func writeStubOpencode(t *testing.T, fixture string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -211,7 +283,12 @@ case "$OPENCODE_CONFIG_CONTENT" in
 	*'"output":10000'*) ;;
 	*) echo "config missing budget" >&2; exit 9;;
 esac
+case "$OPENCODE_CONFIG_CONTENT" in
+	*'"build":{"steps":200}'*) ;;
+	*) echo "config missing step cap" >&2; exit 9;;
+esac
 printf '%s\n' "$*" > stub-args.txt
+tr '\0' '\n' < /proc/$$/environ | grep '^PWD=' > stub-pwd.txt
 cat ` + fixturePath + `
 `
 	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
@@ -233,6 +310,7 @@ func TestOpencodePrepareWritesBriefAndRunDrivesStub(t *testing.T) {
 		TokenFile:  tokenFile,
 		Model:      "factory/factory-main",
 		Budget:     TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+		Steps:      200,
 	}
 	brief := harness.TaskBrief{
 		Objective:  "Add the store",
@@ -267,6 +345,11 @@ func TestOpencodePrepareWritesBriefAndRunDrivesStub(t *testing.T) {
 	if !strings.Contains(string(args), "Add the store") || !strings.Contains(string(args), "repo cloned at abc123") {
 		t.Fatalf("objective passed to opencode = %q", args)
 	}
+	// opencode run takes its directory from PWD before the process's cwd
+	// (run.ts:333): an inherited PWD would put the agent elsewhere.
+	if pwd, _ := os.ReadFile(filepath.Join(dir, "stub-pwd.txt")); string(pwd) != "PWD="+dir+"\n" {
+		t.Fatalf("opencode's PWD = %q, want the workspace %s", pwd, dir)
+	}
 }
 
 func TestOpencodeRunFailsOnStubError(t *testing.T) {
@@ -278,7 +361,7 @@ func TestOpencodeRunFailsOnStubError(t *testing.T) {
 
 	oc := &Opencode{
 		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
 	}
 	var events []harness.Event
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
@@ -308,7 +391,7 @@ printf '%s' "$(cat `+fixturePath+`)"
 
 	oc := &Opencode{
 		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
 	}
 	var events []harness.Event
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
@@ -363,7 +446,7 @@ echo $! > `+dir+`/detached.pid
 
 	oc := &Opencode{
 		Binary: stub, WorkDir: dir, GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
 	}
 	start := time.Now()
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
@@ -431,7 +514,7 @@ head -c 2097152 /dev/zero | tr '\0' e >&2
 	os.WriteFile(tokenFile, []byte("jwt"), 0o600)
 	oc := &Opencode{
 		Binary: stub, WorkDir: t.TempDir(), GatewayURL: "http://127.0.0.1:1", TokenFile: tokenFile,
-		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000},
+		Model: "factory/factory-main", Budget: TokenBudget{AnswerTokens: 8000, HeadroomTokens: 2000}, Steps: 200,
 	}
 	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
 	if res.Success || res.Summary != "opencode output line exceeds 1 MiB" {
@@ -608,7 +691,7 @@ func TestBriefNamesTheAuthorsStandingAndPosterInformation(t *testing.T) {
 		"<<<ISSUE-T\nalert: x in demo-staging\nISSUE-T>>>\n\n" + workGuide; got != want {
 		t.Fatalf("telemetry: %q, want %q", got, want)
 	}
-	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "filed from a SigNoz alert, open your last message with a ```repro block"} {
+	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block"} {
 		if !strings.Contains(workGuide, s) {
 			t.Errorf("the brief does not ask for %s", s)
 		}

@@ -1259,6 +1259,36 @@ func TestRunSessionTakesThePinnedVersion(t *testing.T) {
 	}
 }
 
+// The worker's step cap is the pinned version's limits.steps, and
+// DefaultSteps for a version pinned before the key existed.
+func TestRunSessionPassesThePinnedStepCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned int
+		want   string
+	}{
+		"pinned":           {pinned: 40, want: "40"},
+		"pinned before it": {pinned: 0, want: "200"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := Task{ID: "t5", Status: "running", Objective: "steps", Repository: "sf/repo"}
+			kube := newFakeKube()
+			runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+			pinned, current := testPolicyVersion(), testPolicyVersion()
+			pinned.Document.Limits.Steps = tc.pinned
+			current.ID, current.Document.Limits.Steps = 8, 90
+			runner.cfg.Policy = func() policy.Version { return current }
+			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m", PolicyVersion: 7}, nil,
+				pushedLine("c0ffee")+"\n"+resultLine(true, "pushed")); err != nil {
+				t.Fatal(err)
+			}
+			if got := podEnv(kube.podAt(0))["STEPS"]; got != tc.want {
+				t.Fatalf("STEPS = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRunSessionWallClockTrip(t *testing.T) {
 	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
 	kube := newFakeKube()

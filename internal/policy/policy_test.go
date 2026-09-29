@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -98,6 +99,7 @@ func TestParseRejects(t *testing.T) {
 		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
 		"duplicate approver": {strings.Replace(valid, "approvers: [sebastian]", "approvers: [sebastian, sebastian]", 1), "approvers must be distinct"},
 		"not yaml":           {"version: [1", "policy:"},
+		"negative steps":     {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: -1}", 1), "limits.steps must not be negative"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(tc.doc))
@@ -512,6 +514,32 @@ func TestDetectors(t *testing.T) {
 	}
 	if got := d.Detector(DetectorNoWrite); got != time.Minute {
 		t.Errorf("no_write = %s, want 1m", got)
+	}
+}
+
+// A policy without limits.steps, and a version pinned before the key
+// existed, cap a session at DefaultSteps.
+func TestStepCap(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.StepCap(); got != 200 {
+		t.Errorf("default step cap = %d, want 200", got)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: 40}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.StepCap(); got != 40 {
+		t.Errorf("step cap = %d, want 40", got)
+	}
+	var pinned Limits
+	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1}`), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinned.StepCap(); got != 200 {
+		t.Errorf("pinned version without steps: step cap = %d, want 200", got)
 	}
 }
 

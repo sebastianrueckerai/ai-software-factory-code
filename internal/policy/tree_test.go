@@ -44,7 +44,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1}
+	want := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 200}
 	if tree.Document.Limits != want {
 		t.Fatalf("limits = %+v, want %+v", tree.Document.Limits, want)
 	}
@@ -114,7 +114,7 @@ func TestParseTreeRejects(t *testing.T) {
 		"merge not last":              {edit("workflow.yaml", "  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: checks, on_findings: agent, enabled: true}\n"), "stage checks is listed twice"},
 		"no approval":                 {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n", ""), "stage approval is required"},
 		"merge before approval":       {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n"), "stage merge must be last"},
-		"no limits":                   {edit("policy.yaml", "limits:\n  sessions: 3\n  agent_time: 20m\n  supervisor_calls: 3\n  supervisor_timeout: 6m\n  stronger_after: 1\n", ""), "limits.sessions must be positive"},
+		"no limits":                   {edit("policy.yaml", "limits:\n  sessions: 3\n  agent_time: 20m\n  supervisor_calls: 3\n  supervisor_timeout: 6m\n  stronger_after: 1\n  steps: 200\n", ""), "limits.sessions must be positive"},
 		"limit missing":               {edit("policy.yaml", "  stronger_after: 1\n", ""), "policy.yaml: schema:"},
 		"limit not a duration":        {edit("policy.yaml", "agent_time: 20m", "agent_time: twenty"), "policy.yaml: yaml:"},
 		"supervisor timeout too long": {edit("policy.yaml", "supervisor_timeout: 6m", "supervisor_timeout: 20m"), "limits.supervisor_timeout must lie between 30s and 15m0s"},
@@ -166,12 +166,12 @@ func TestParseTreeRejects(t *testing.T) {
 // Limits' durations are strings in JSON, as in YAML: the stored tree, GET
 // /policy and the console show 20m0s, not nanoseconds.
 func TestLimitsJSON(t *testing.T) {
-	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1}
+	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 150}
 	b, err := json.Marshal(l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1}`; string(b) != want {
+	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Limits

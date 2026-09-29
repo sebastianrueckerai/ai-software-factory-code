@@ -1,0 +1,52 @@
+{
+  "agent": {
+    "build": {
+      "steps": 40
+    },
+    "explore": {
+      "steps": 40
+    },
+    "general": {
+      "steps": 40
+    }
+  },
+  "experimental": {
+    "continue_loop_on_deny": true
+  },
+  "mcp": {
+    "factory-tools": {
+      "enabled": true,
+      "oauth": false,
+      "timeout": 150000,
+      "type": "remote",
+      "url": "http://127.0.0.1:45678/mcp"
+    }
+  },
+  "permission": {
+    "doom_loop": "allow",
+    "question": "deny"
+  },
+  "provider": {
+    "factory": {
+      "models": {
+        "factory-main": {
+          "interleaved": {
+            "field": "reasoning_content"
+          },
+          "limit": {
+            "context": 200000,
+            "output": 10000
+          },
+          "name": "Factory model",
+          "reasoning": true
+        }
+      },
+      "name": "Factory gateway",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "sandbox-dummy",
+        "baseURL": "http://127.0.0.1:45678/v1"
+      }
+    }
+  }
+}

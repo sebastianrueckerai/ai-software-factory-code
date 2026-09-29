@@ -69,6 +69,24 @@ type Limits struct {
 	// StrongerAfter is how many returns from the same stage a task takes
 	// on its model; the next return takes the stronger rung.
 	StrongerAfter int `yaml:"stronger_after" json:"stronger_after"`
+	// Steps caps one agent session's model turns (opencode's agent steps):
+	// at the cap the harness asks the model to summarise and stop. Absent:
+	// DefaultSteps.
+	Steps int `yaml:"steps,omitempty" json:"steps"`
+}
+
+// DefaultSteps is the step cap of a policy without limits.steps, and of a
+// version pinned before the key existed: a turn takes 5 to 15 s, so 200
+// steps outlast the 20m agent time at the slow end and cut only a fast
+// loop that turns without end (opencode #45442: 364 calls in 50 minutes).
+const DefaultSteps = 200
+
+// StepCap is Steps, or DefaultSteps when the policy sets none.
+func (l Limits) StepCap() int {
+	if l.Steps == 0 {
+		return DefaultSteps
+	}
+	return l.Steps
 }
 
 // limitsJSON is Limits with its durations as strings, as in the YAML.
@@ -78,10 +96,11 @@ type limitsJSON struct {
 	SupervisorCalls   int    `json:"supervisor_calls"`
 	SupervisorTimeout string `json:"supervisor_timeout"`
 	StrongerAfter     int    `json:"stronger_after"`
+	Steps             int    `json:"steps"`
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -89,7 +108,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &j); err != nil {
 		return err
 	}
-	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter}
+	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -122,6 +141,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.supervisor_timeout must lie between 30s and %s, is %s", MaxSupervisorTimeout, l.SupervisorTimeout)
 	case l.StrongerAfter < 0:
 		return fmt.Errorf("policy: limits.stronger_after must not be negative, is %d", l.StrongerAfter)
+	case l.Steps < 0:
+		return fmt.Errorf("policy: limits.steps must not be negative, is %d", l.Steps)
 	}
 	return nil
 }

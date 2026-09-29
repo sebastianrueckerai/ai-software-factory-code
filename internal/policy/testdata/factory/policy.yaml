@@ -10,6 +10,7 @@ limits:
   supervisor_calls: 3
   supervisor_timeout: 6m
   stronger_after: 1
+  steps: 200
 classes:
   coder:
     models: [coding-cheap, coding-frontier]

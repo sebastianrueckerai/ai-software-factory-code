@@ -56,6 +56,7 @@ type Opencode struct {
 	TokenFile  string // projected ServiceAccount JWT, re-read per request
 	Model      string // default "factory/factory-main"
 	Budget     TokenBudget
+	Steps      int // the agent's step cap, policy limits.steps
 	HTTP       *http.Client
 }
 
@@ -122,7 +123,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	defer func() { proxy.Shutdown(context.Background()); <-done }() // #nosec G104 -- shutdown error is inconsequential once the run is over
 
 	provider, modelID := o.model()
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit)
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -135,7 +136,8 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	cmd := exec.CommandContext(ctx, o.binary(),
 		"run", "--format", "json", "--auto", "--model", provider+"/"+modelID, objectiveText(brief)) // #nosec G204 -- exec.CommandContext, no shell; objectiveText(brief) is one argv element from factoryd's own task brief
 	cmd.Dir = o.WorkDir
-	cmd.Env = append(os.Environ(), "OPENCODE_CONFIG_CONTENT="+string(cfg))
+	// opencode run takes its directory from PWD before its cwd
+	cmd.Env = append(os.Environ(), "PWD="+o.WorkDir, "OPENCODE_CONFIG_CONTENT="+string(cfg))
 	cmd.Stdout = lines
 	stderr := &capWriter{max: 64 << 10}
 	cmd.Stderr = stderr
@@ -318,6 +320,7 @@ const workGuide = "How to work: reproduce the reported fault before you change c
 	"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
 	"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. If you cannot reproduce it and find no fault, " +
 	"call request_info with what you tried and what you need instead of guessing. If only a human can decide, call escalate_to_human with your recommendation. " +
+	"These two tools are your only way to ask: nobody answers a question in a message. " +
 	"You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the module proxy. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
 
@@ -334,9 +337,23 @@ const mcpTimeoutMS = 150000
 // MCP tools as the remote server factory-tools: the proxy attaches the
 // task identity, so the entry carries no header. The model sees the tools
 // as factory-tools_<tool>.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit int) ([]byte, error) {
+//
+// The headless settings, read in v1.18.32's source: every agent
+// that loops is capped at steps; question is denied at pattern "*", which
+// hides the tool from the model, so the only ask path is the gateway's
+// request_info and escalate_to_human; doom_loop is allowed, since a denied
+// one fails the stream and ends the session unseen by the model; a rejected
+// tool call continues the loop as an error the model sees.
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int) ([]byte, error) {
+	if steps <= 0 {
+		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
+	}
 	baseURL := proxyURL + "/v1"
+	capped := map[string]any{"steps": steps}
 	cfg := map[string]any{
+		"agent":        map[string]any{"build": capped, "general": capped, "explore": capped},
+		"permission":   map[string]any{"question": "deny", "doom_loop": "allow"},
+		"experimental": map[string]any{"continue_loop_on_deny": true},
 		"mcp": map[string]any{
 			"factory-tools": map[string]any{
 				"type": "remote", "url": proxyURL + "/mcp", "enabled": true, "oauth": false, "timeout": mcpTimeoutMS,

@@ -129,6 +129,7 @@ func run(log func(string, ...any)) int {
 		TokenFile:  env.tokenFile,
 		Model:      env.model,
 		Budget:     factoryd.TokenBudget{AnswerTokens: env.answerTokens, HeadroomTokens: env.headroomTokens},
+		Steps:      env.steps,
 	}
 	if err := oc.Prepare(ctx, harness.SandboxEnv{}, brief); err != nil {
 		log("prepare: %v", err)
@@ -323,6 +324,7 @@ type workerEnv struct {
 	repoURL, repoToken, pushURL, pushToken                    string
 	gatewayURL, tokenFile, model                              string
 	answerTokens, headroomTokens                              int
+	steps                                                     int
 	findings, answers, posterInfo                             []string
 	author, authorStanding                                    string
 	home                                                      string
@@ -374,6 +376,9 @@ func loadEnv() (workerEnv, error) {
 	}
 	if e.headroomTokens, err = strconv.Atoi(str("HEADROOM_TOKENS")); err != nil {
 		return e, fmt.Errorf("HEADROOM_TOKENS: %w", err)
+	}
+	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
+		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
 	// FINDINGS, ANSWERS and POSTER_INFO arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo} {

@@ -71,7 +71,12 @@ the agents work on.
 - `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
   from the repository with the read token before the agent starts (a
   resumed task branch that only the fork holds is fetched from there),
-  runs opencode in its own process group without either token, kills
+  runs opencode in its own process group without either token (headless:
+  every looping agent capped at `limits.steps`, the `question` tool
+  hidden, `doom_loop` allowed, a rejected tool call an error the model
+  sees and the loop goes on; `buildOpencodeConfig`, its golden file and
+  the fixture `TestRecordOpencodeFixture` records from the pinned binary
+  with `OPENCODE_RECORD_BIN` set, on every version bump), kills
   and reaps every other process when the agent is done, then fetches
   the agent's commits into a clean repository and pushes `factory/<id>`
   from there to the fork `factory-agent/<repo>` with the write token.
@@ -576,7 +581,7 @@ A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
 session cap, the agent time, the stronger rung and the workflow's stages
 (captured by the workflow), and in every session, report session,
-gate-supervisor call and model review the agent time, `supervisor_calls`,
+gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,
 `supervisor_model`), and the activity bounds of a session, a
@@ -591,8 +596,9 @@ intake, the approvers, the bounds of the other activities,
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
 (20m, the wall-clock cap across a task's sessions), `supervisor_calls`
 (3 per session), `supervisor_timeout` (6m per supervisor or review call,
-at most 15m) and `stronger_after` (1: the second return from the same
-stage takes the stronger rung). The activity bound of `RunSession` is the agent time plus a minute, of
+at most 15m), `stronger_after` (1: the second return from the same
+stage takes the stronger rung) and `steps` (200, also when absent: the
+model turns of one agent session, the worker's `STEPS`). The activity bound of `RunSession` is the agent time plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 

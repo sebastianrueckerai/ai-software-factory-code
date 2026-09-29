@@ -23,7 +23,7 @@ func setRequiredEnv(t *testing.T) {
 	for name, val := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo", "REPO_URL": "https://example/repo.git",
 		"BRANCH": "factory/t1", "REPO_TOKEN": "tok", "PUSH_URL": "https://example/fork.git", "PUSH_TOKEN": "ptok", "GATEWAY_URL": "http://gw",
-		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10",
+		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
 	} {
 		t.Setenv(name, val)
 	}
@@ -36,6 +36,23 @@ func TestLoadEnvRejectsMalformedFindings(t *testing.T) {
 	t.Setenv("FINDINGS", "not json")
 	if _, err := loadEnv(); err == nil {
 		t.Fatal("want an error for malformed FINDINGS, got nil")
+	}
+}
+
+// The step cap reaches opencode's config from factoryd's STEPS; a session
+// without one must not run uncapped.
+func TestLoadEnvStepCap(t *testing.T) {
+	setRequiredEnv(t)
+	e, err := loadEnv()
+	if err != nil || e.steps != 200 {
+		t.Fatalf("steps = %d, %v; want 200", e.steps, err)
+	}
+	for _, v := range []string{"", "0", "-3", "many"} {
+		setRequiredEnv(t) // loadEnv unsets the tokens
+		t.Setenv("STEPS", v)
+		if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "STEPS") {
+			t.Errorf("STEPS=%q: err = %v, want a STEPS error", v, err)
+		}
 	}
 }
 
@@ -113,7 +130,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b",
 		"REPO_TOKEN": "s3cret-tok", "PUSH_TOKEN": "pu5h-tok", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
-		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1",
+		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1",
 	} {
 		t.Setenv(k, v)
 	}

@@ -944,6 +944,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "MODEL", "value": s.model},
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
+		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
 		{"name": "FINDINGS", "value": string(findingsJSON)},
 		{"name": "ANSWERS", "value": string(answersJSON)},
 		{"name": "POSTER_INFO", "value": string(posterJSON)},
