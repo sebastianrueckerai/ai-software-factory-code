@@ -1085,10 +1085,12 @@ cases:
   that needs `factory-projects` and nothing in the cluster: it keeps the boot
   labels and (agents coder) the bot's fork as the bot, and reports the
   webhook to factoryd (read with the project's read token: `present`, or
-  `missing: the seed makes it`, or the refusal when that token's user does
-  not administer the repository) and each namespace's `factory/project`
-  label (`present`, `wrong`, `missing`). A seed file names no environments,
-  quota or secrets.
+  `missing: the seed makes it`, or `not checkable, no admin credential on
+  <repo>` when that token's user does not administer it, as on the infra
+  repository; no error) and each namespace's `factory/project`
+  label (`present`, `wrong`, `missing`). The fork is made for `agents:
+  coder` only: a project no agent works on needs no branch to push to. A
+  seed file names no environments, quota or secrets.
 - `agents`: `coder` lets agent tasks run; `none` sends every issue, and
   every alert of its namespaces, to the human lane whatever its labels, and
   `POST /tasks` on it answers 422 with the reason, as it does for a
@@ -1107,7 +1109,9 @@ The code repository names `forgejo-ci-registrar` (read, Actions) and
 and the heal pass's close of a human-lane task; the org-read token adds the
 teams). The factory's own project is the one whose file lists factoryd's
 namespace: its CI runs and rolls are watched (with its Actions token), its
-writers log into the console.
+writers log into the console. factoryd does not boot without it: a configuration
+whose project files list no project in factoryd's namespace stops the boot
+with `no project file lists factoryd's namespace factory`.
 
 **A project is its own Forgejo organisation** (ruling 164): the organisation
 `<name>`, owned by `factory-projects`, with the one repository

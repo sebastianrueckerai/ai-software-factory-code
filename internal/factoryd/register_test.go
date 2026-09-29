@@ -942,13 +942,14 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 		t.Fatalf("second run wrote %v:\n%s", rig.fj.writes[writes:], logs)
 	}
 
-	// agents none: no fork; a read token without admin cannot see the hooks
+	// agents none: no fork; a read token without admin cannot see the
+	// hooks: one line, no error, the reconcile ends clean
 	p.Agents, p.Tokens = "none", policy.SeedTokens{Read: policy.SecretConfig}
 	rig.fj.fork = nil
 	rig.logs.Reset()
 	err := rig.reg.Reconcile(ctx, p)
 	if logs := rig.logs.String(); !strings.Contains(logs, "project demo-app: fork factory-agent/demo-app: none: agents none\n") || rig.fj.fork != nil ||
-		err == nil || !strings.Contains(err.Error(), "webhook: cannot read the hooks with forgejo-config") {
+		err != nil || !strings.Contains(logs, "project demo-app: webhook: not checkable, no admin credential on demo-app/demo-app\n") {
 		t.Fatalf("agents none: err %v, fork %v:\n%s", err, rig.fj.fork, logs)
 	}
 	if rig.fj.hookReads[len(rig.fj.hookReads)-1] != "token config-tok" {

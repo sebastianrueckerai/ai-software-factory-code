@@ -226,13 +226,17 @@ func (run *reconcileRun) seed(ctx context.Context) {
 }
 
 // seedWebhook reports whether the repository's webhook reaches factoryd,
-// never making one: the seed does.
+// never making one: the seed does. A read token whose user does not
+// administer the repository cannot list its hooks: not checkable.
 func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
 	token := run.r.Forgejo.Access(run.p).Read
 	if token == "" {
 		return "", fmt.Errorf("the file's tokens.read %q is no secret factoryd holds", run.p.Tokens.Read)
 	}
 	hooks, err := run.r.Forgejo.Hooks(ctx, run.p.Repo(), token)
+	if errors.Is(err, ErrRefused) {
+		return Change("not checkable, no admin credential on " + run.p.Repository), nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("cannot read the hooks with %s: %w", run.p.Tokens.Read, err)
 	}
