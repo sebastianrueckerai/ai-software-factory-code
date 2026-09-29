@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -936,6 +937,36 @@ func TestReconcileGoesOnWhenDeployProtectionRefusesTheBranch(t *testing.T) {
 	// the protection step ran on deploy: the NoMain skip would log waiting
 	if strings.Contains(got, "project demo-app: protection deploy: "+string(NoMain)+"\n") {
 		t.Errorf("the protection step skipped deploy as NoMain:\n%s", got)
+	}
+}
+
+// Item 25: a hand edit in Forgejo (main's protection deleted) is set back
+// by the next periodic reconcile, with no boot, console change or new
+// policy version in between.
+func TestReconcileLoopSetsBackAHandEdit(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+		t.Fatal(err)
+	}
+	rig.logs.Reset()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.reg.ReconcileLoop(ctx, func() int64 { return 7 }, time.Millisecond, 50*time.Millisecond)
+	}()
+	time.Sleep(100 * time.Millisecond)
+	rig.fj.mu.Lock()
+	delete(rig.fj.protection, "main")
+	rig.fj.mu.Unlock()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+	if rig.fj.protection["main"] == nil {
+		t.Fatalf("main's protection not set back:\n%s", rig.logs)
+	}
+	if n := strings.Count(rig.logs.String(), "project demo-app: protection main: created\n"); n != 1 {
+		t.Fatalf("protection main created %d times, want once:\n%s", n, rig.logs)
 	}
 }
 

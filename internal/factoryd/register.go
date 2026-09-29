@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -151,6 +152,25 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 		errs = append(errs, r.Reconcile(ctx, p))
 	}
 	return errors.Join(errs...)
+}
+
+// ReconcileLoop reconciles every project at its start, at each new policy
+// version (ruling 156) and every interval besides, so a hand edit in
+// Forgejo or the cluster is set back within that interval. It polls the
+// version every poll until ctx ends.
+func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, poll, every time.Duration) {
+	seen, last := int64(0), time.Time{}
+	for {
+		if v := version(); v != seen || time.Since(last) >= every {
+			seen, last = v, time.Now()
+			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(poll):
+		}
+	}
 }
 
 // MainPushed reconciles the factory project whose repository this is when
