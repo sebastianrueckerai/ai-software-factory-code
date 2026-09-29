@@ -713,12 +713,15 @@ against the other; the holds remain the primary cap. LiteLLM's
 `fail_closed_budget_enforcement` is the backstop.
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,
-kind (`model` per call with the alias as ref, `settlement` for the raise
-the settlement pass makes when LiteLLM shows more model spend than the
-task's `model` and `settlement` rows hold (tool rows never offset it; a
-difference below 1e-9 EUR is float noise and books nothing),
-dated the day the pass runs, `tool` per tool call with the tool as ref,
-`resource` for the later leases), ref, EUR (never negative). Costs are LiteLLM's USD prices
+kind (`model` per call with the alias as ref, `settlement` for the
+difference the settlement pass books between LiteLLM's model spend and
+the task's `model` and `settlement` rows (tool rows never offset it; a
+difference below 1e-9 EUR is float noise and books nothing): inside the
+settle window only a raise, dated the day the pass runs; once past the
+window the final row sets the task to LiteLLM's figure, down as well as
+up, dated the task's finished day (ruling 196), `tool` per tool call with
+the tool as ref, `resource` for the later leases), ref, EUR (never
+negative, except a final `settlement` row). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
 `policy_activations`, `ledger` and `holds` lives in
 `internal/policy/schema.sql`. Both binaries share the `gateway` database
