@@ -89,7 +89,7 @@ func (t *taskRun) stages(commit string) verdict {
 			t.recordSkip(s.Name, why)
 			continue
 		}
-		findings, v, stop := t.runStage(s.Name, commit, &g, &review)
+		findings, v, stop := t.runStage(s.Name, &commit, &g, &review)
 		if stop {
 			return v
 		}
@@ -247,9 +247,11 @@ func (t *taskRun) recordSkip(stage, why string) {
 	}
 }
 
-// runStage runs one stage on commit and returns its findings, or stop
-// with the task's verdict (a terminal signal, a failed activity).
-func (t *taskRun) runStage(name, commit string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
+// runStage runs one stage on head and returns its findings, or stop with
+// the task's verdict (a terminal signal, a failed activity); a re-run of
+// the checks moves head.
+func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
+	commit := *head
 	failed := func(what string, err error) (verdict, bool) {
 		return verdict{final: "failed", reason: what + ": " + errMessage(err)}, true
 	}
@@ -266,6 +268,18 @@ func (t *taskRun) runStage(name, commit string, g *GateResults, review *Review) 
 		}
 		if final, why, ok := t.decided(); ok {
 			return nil, verdict{final: final, reason: why}, true
+		}
+		if t.v21 >= versionChecksRerun && checks.State == ChecksFailure {
+			if commit != t.redHead || commit == t.rerunHead {
+				t.redHead = commit
+			} else {
+				if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, head); err != nil {
+					v, stop = failed("re-run the checks", err)
+					return nil, v, stop
+				}
+				t.rerunHead = *head
+				return t.runStage(name, head, g, review)
+			}
 		}
 		switch checks.State {
 		case ChecksSuccess:

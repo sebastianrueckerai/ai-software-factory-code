@@ -295,7 +295,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll),
 		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap),
 		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit),
-		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict)}
+		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict),
+		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -451,6 +452,11 @@ const (
 	// on the card, whatever its on_findings; a roll's review (no model
 	// call, ruling 178) is no finding.
 	versionReviewVerdict workflow.Version = 1
+	// versionChecksRerun (change id "checks-rerun"): red checks on the
+	// head a session left as it was (the agent could not act on them)
+	// run once more on an empty commit, RerunChecks, before their
+	// findings go back to the agent; a re-run's head is not re-run.
+	versionChecksRerun workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -466,7 +472,7 @@ type taskRun struct {
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
 	v16, v17, v18     workflow.Version
-	v19, v20          workflow.Version
+	v19, v20, v21     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -481,6 +487,9 @@ type taskRun struct {
 	history   []string       // every finding sent to the agent, tagged with its stage and round
 	reviews   []Review       // the model reviews so far, oldest first
 	rolling   bool           // a roll task's run (versionRoll): a fold wakes the approval wait
+	// versionChecksRerun
+	redHead   string // the last head whose checks failed
+	rerunHead string // the head the last RerunChecks made
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
