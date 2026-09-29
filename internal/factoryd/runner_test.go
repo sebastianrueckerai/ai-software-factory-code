@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
 	"reflect"
 	"slices"
@@ -24,6 +26,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
+	"gopkg.in/yaml.v3"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -1747,5 +1750,38 @@ func TestChecksPollDefaultsToTheHeartbeatInterval(t *testing.T) {
 	}
 	if r.cfg.ChecksPoll != HeartbeatEvery {
 		t.Fatalf("checks poll = %s, want %s", r.cfg.ChecksPoll, HeartbeatEvery)
+	}
+}
+
+// The gateway's ingress admits only the node's probes, factoryd and the
+// sandboxes (opencode-worker pods in a factory.ai/task namespace). Every
+// other in-cluster pod, a project's or a CI runner's, is refused even
+// though its token would not authenticate.
+func TestGatewayIngressAdmitsFactorydAndTheSandboxes(t *testing.T) {
+	data, err := os.ReadFile("../../k8s/deployment.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var spec any
+	for {
+		var doc struct {
+			Kind     string
+			Metadata struct{ Name, Namespace string }
+			Spec     any
+		}
+		if err := dec.Decode(&doc); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatal(err)
+		}
+		if doc.Kind == "CiliumNetworkPolicy" && doc.Metadata.Name == "factory-gateway-ingress" && doc.Metadata.Namespace == "factory" {
+			spec = doc.Spec
+		}
+	}
+	want := `{"endpointSelector":{"matchLabels":{"app":"factory-gateway"}},"ingress":[{"fromEntities":["host"],"toPorts":[{"ports":[{"port":"8081","protocol":"TCP"}]}]},{"fromEndpoints":[{"matchLabels":{"app":"factoryd"}}],"toPorts":[{"ports":[{"port":"8081","protocol":"TCP"}]}]},{"fromEndpoints":[{"matchExpressions":[{"key":"k8s:io.cilium.k8s.namespace.labels.factory.ai/task","operator":"Exists"}],"matchLabels":{"app.kubernetes.io/name":"opencode-worker"}}],"toPorts":[{"ports":[{"port":"8081","protocol":"TCP"}]}]}]}`
+	if got := jsonOf(spec); got != want {
+		t.Fatalf("factory-gateway-ingress spec = %s, want %s", got, want)
 	}
 }

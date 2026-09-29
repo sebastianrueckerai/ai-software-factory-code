@@ -810,7 +810,7 @@ entity on 6443, the backend port behind the Service's 443, dialled at the
 injected `KUBERNETES_SERVICE_HOST` for the JWKS), and `api.firecrawl.dev`,
 `api.replicate.com`, `fal.run`, `api.fal.ai` and `api.hetzner.cloud` by
 name on 443, SigNoz's collector on 4318, with kube-dns for exactly those
-names (`ndots: 1`, every callee named in full). factoryd's ingress admits the gateway on 8080.
+names (`ndots: 1`, every callee named in full). factoryd's ingress admits the gateway on 8080. Its ingress (`factory-gateway-ingress`) admits the node (probes), factoryd and the `opencode-worker` pods of namespaces labelled `factory.ai/task`, each on 8081.
 
 ## Commissioned resources
 

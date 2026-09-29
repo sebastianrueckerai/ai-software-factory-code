@@ -162,3 +162,31 @@ spec:
     - matchName: api.hetzner.cloud
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
+---
+# Only the gateway's callers reach it: factoryd's model calls, the agent
+# sandboxes (opencode-worker pods in a task namespace, which factoryd
+# labels factory.ai/task) and the node's kubelet probes. The tokens stay
+# the admission check.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factory-gateway-ingress
+  namespace: factory
+spec:
+  endpointSelector:
+    matchLabels: {app: factory-gateway}
+  ingress:
+  - fromEntities: [host]
+    toPorts:
+    - ports: [{port: "8081", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels: {app: factoryd}
+    toPorts:
+    - ports: [{port: "8081", protocol: TCP}]
+  - fromEndpoints:
+    - matchLabels:
+        app.kubernetes.io/name: opencode-worker
+      matchExpressions:
+      - {key: "k8s:io.cilium.k8s.namespace.labels.factory.ai/task", operator: Exists}
+    toPorts:
+    - ports: [{port: "8081", protocol: TCP}]
