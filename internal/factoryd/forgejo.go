@@ -182,6 +182,10 @@ func (f *Forgejo) ciCall(ctx context.Context, method, path string, payload []byt
 	})
 }
 
+// ErrAnswerTooLong is an answer past maxForgejoAnswer: an error for every
+// caller but PullRequestDiff, which takes the cut body.
+var ErrAnswerTooLong = errors.New("the answer is longer than 1 MiB")
+
 // maxForgejoAnswer bounds a Forgejo answer factoryd reads.
 const maxForgejoAnswer = 1 << 20
 
@@ -215,8 +219,9 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
+	var tooLong error
 	if len(body) > maxForgejoAnswer {
-		return nil, fmt.Errorf("forgejo %s %s: the answer is longer than 1 MiB", method, path)
+		body, tooLong = body[:maxForgejoAnswer], fmt.Errorf("forgejo %s %s: %w", method, path, ErrAnswerTooLong)
 	}
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
@@ -230,7 +235,7 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		}
 		return nil, fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, body)
 	}
-	return body, nil
+	return body, tooLong
 }
 
 // RepoWriters lists the users who may write the repository's code, the
@@ -1207,6 +1212,9 @@ func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, numb
 // (the rest cut, and said so).
 func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, number int64, max int) (string, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK)
+	if errors.Is(err, ErrAnswerTooLong) && len(body) > max {
+		return string(body[:max]) + fmt.Sprintf("\n… (diff cut at %d bytes of more than 1 MiB)", max), nil
+	}
 	if err != nil {
 		return "", err
 	}

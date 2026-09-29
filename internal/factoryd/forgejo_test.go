@@ -987,3 +987,20 @@ func TestForgejoRefusesAnAnswerPastItsReadLimit(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 }
+
+// A diff past the 1 MiB read is still the model review's input, cut to its
+// bound and saying so; every other long answer stays an error.
+func TestPullRequestDiffPastTheReadLimitIsCut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("d", 3<<19))
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "b", BotPassword: "p"}
+	got, err := f.PullRequestDiff(context.Background(), "sf", "repo", 7, 48<<10)
+	if want := strings.Repeat("d", 48<<10) + "\n… (diff cut at 49152 bytes of more than 1 MiB)"; err != nil || got != want {
+		t.Fatalf("diff of %d bytes ending %q, err %v", len(got), got[max(0, len(got)-60):], err)
+	}
+	if _, err := f.ActionRuns(context.Background(), "sf", "repo", url.Values{}); !errors.Is(err, ErrAnswerTooLong) {
+		t.Fatalf("another long answer: %v", err)
+	}
+}
