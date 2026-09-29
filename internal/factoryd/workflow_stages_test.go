@@ -642,3 +642,103 @@ func TestStagesAuditSkipped(t *testing.T) {
 		t.Fatalf("skipped = %v", got)
 	}
 }
+
+// A pull request of risk class migration runs the model review like any
+// class (backlog 68): the migration finding and the review's verdict are
+// both on the card.
+func TestStagesMigrationClassRunsTheReview(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.gate = PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7,
+			Migrations: []string{"internal/schema/migrations/factoryd/0033_unjudged.sql"}}
+		g.review = Review{Verdict: "approve", Summary: "judges the open rows"}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{"policy", "migration internal/schema/migrations/factoryd/0033_unjudged.sql", "repro c1", "review c1", "approval c1", "merge"}
+	if !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	in := g.approvals[0]
+	if in.Review.Verdict != "approve" || in.Review.Summary != "judges the open rows" {
+		t.Fatalf("card review = %+v", in.Review)
+	}
+	if want := []string{"migration: schema migration, human review required: internal/schema/migrations/factoryd/0033_unjudged.sql"}; !slices.Equal(in.WhyHuman, want) {
+		t.Fatalf("why human = %q, want %q", in.WhyHuman, want)
+	}
+}
+
+// A review with no verdict (a note: a failed call, an invalid answer, a
+// head that moved) is a finding on the card, not a pass, on every class;
+// it never goes back to the agent, who cannot answer it.
+func TestStagesReviewWithoutVerdictIsAFindingOnTheCard(t *testing.T) {
+	for name, gate := range map[string]PolicyGate{
+		"migration": {Class: "migration", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Migrations: []string{"m/0033.sql"}},
+		"high":      {Class: "high", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+				g.gate = gate
+				g.review = Review{Note: "model review failed: the policy names no review model for the task's capability classes"}
+			})
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" || len(g.sessions) != 1 {
+				t.Fatalf("final = %q, sessions %d", final, len(g.sessions))
+			}
+			finding := "review: the review gave no verdict: model review failed: the policy names no review model for the task's capability classes"
+			if len(g.approvals) != 1 || !slices.Contains(g.approvals[0].WhyHuman, finding) {
+				t.Fatalf("approvals = %+v", g.approvals)
+			}
+		})
+	}
+}
+
+// The merge rule auto never merges past a review with no verdict: a
+// review that failed after its retries puts the finding on the card.
+func TestStagesAutoWithoutVerdictGoesToTheCard(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+		g.repro = []ReproResult{{Ran: true, Exit: 0, BaseExit: 1, Command: "go test ./x"}}
+		g.reviewErr = temporal.NewNonRetryableApplicationError("gateway down", errTerminal, nil)
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.autoNotes) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
+		t.Fatalf("auto notes %v, merges %v", g.autoNotes, g.merges)
+	}
+	if want := []string{"review: the review gave no verdict: model review failed: gateway down"}; len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, want) {
+		t.Fatalf("approvals = %+v, want why human %q", g.approvals, want)
+	}
+}
+
+// A review turned off with enabled: false is no finding: the card says
+// only why no auto merge.
+func TestStagesDisabledReviewIsNoFinding(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+		setStage(w, "review", func(s *policy.Stage) { s.Enabled = false })
+	}))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	for _, w := range g.approvals[0].WhyHuman {
+		if strings.Contains(w, "the review gave no verdict") {
+			t.Fatalf("why human = %q", g.approvals[0].WhyHuman)
+		}
+	}
+}

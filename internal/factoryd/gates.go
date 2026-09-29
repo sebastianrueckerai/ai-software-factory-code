@@ -582,8 +582,9 @@ func parseReview(content string) Review {
 // reviews of the task's earlier heads (earlier, oldest first), through
 // the gateway on the task's account, and posts it on the pull request. No
 // answer (a gateway refusal such as refused_budget, a failed call, an
-// invalid answer) is a note the approval card shows; concerns are
-// findings under the review stage's on_findings (ruling 177).
+// invalid answer) is a note, which the review stage puts on the card as a
+// finding (versionReviewVerdict); concerns are findings under the review
+// stage's on_findings (ruling 177).
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review) (Review, error) {
 	// the heartbeats, from the start to the answer, carry the workflow's
 	// cancel (a terminal signal during the review) into the Forgejo reads
@@ -681,7 +682,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	}
 	id, err := r.store.OpenApproval(ctx, ApprovalRequest{
 		Kind: "merge", TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec,
-		Reason: fmt.Sprintf("pull request #%d at %s passed its gates (risk class %s); a human approves the merge", in.PR.Number, in.Commit, g.Class),
+		Reason: fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
 	})
 	if err != nil {
 		return err

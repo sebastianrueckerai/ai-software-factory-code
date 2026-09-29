@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -39,6 +40,9 @@ const screenedLine = "factoryd: screened: a human looks at this report first."
 
 // screeningAsks opens the escalation of a suspect screening verdict.
 const screeningAsks = "The screening finds this issue suspect: "
+
+// noVerdict heads the card finding of a review that gave no verdict.
+const noVerdict = "the review gave no verdict: "
 
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
@@ -90,6 +94,10 @@ func (t *taskRun) stages(commit string) verdict {
 			return v
 		}
 		reviewed = reviewed || s.Name == policy.StageReview
+		if s.Name == policy.StageReview && review.Verdict == "" && !t.rolling && t.v20 >= versionReviewVerdict {
+			card = append(card, s.Name+": "+noVerdict+cmp.Or(review.Note, "no reason recorded"))
+			continue
+		}
 		if len(findings) == 0 {
 			continue
 		}

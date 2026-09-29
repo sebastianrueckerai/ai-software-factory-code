@@ -293,7 +293,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages),
 		v17: workflow.GetVersion(ctx, "roll", workflow.DefaultVersion, versionRoll),
 		v18: workflow.GetVersion(ctx, "session-cap", workflow.DefaultVersion, versionSessionCap),
-		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit)}
+		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit),
+		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -443,6 +444,12 @@ const (
 	// the card beside the review, never to the agent; a roll task skips
 	// it (ruling 178).
 	versionAudit workflow.Version = 1
+	// versionReviewVerdict (change id "review-verdict", backlog 68): a
+	// review stage that ran and gave no verdict (a failed call, an invalid
+	// answer, a head that moved) puts "the review gave no verdict: <why>"
+	// on the card, whatever its on_findings; a roll's review (no model
+	// call, ruling 178) is no finding.
+	versionReviewVerdict workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -458,7 +465,7 @@ type taskRun struct {
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
 	v16, v17, v18     workflow.Version
-	v19               workflow.Version
+	v19, v20          workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

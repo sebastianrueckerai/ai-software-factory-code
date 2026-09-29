@@ -77,12 +77,13 @@ var StagePredicates = []string{WhenOutsider}
 // Validate checks the stage list: known names, each once, known rules and
 // predicates; policy, approval and merge present, approval and merge the
 // last two; checks, policy, approval and merge enabled for every task (no
-// when); approval, merge, screening and audit with findings for a human
-// (ruling 182: a suspect issue never reaches the agent unread; ruling
-// 188); screening first (it runs before the first session); migration
-// after policy (policy finds the migrations); audit between review and
-// approval (it reads the reviewed head); max_returns at least 1, on agent
-// stages only.
+// when); review with no when (a review skipped for any reason but enabled
+// false would be a pass without a verdict, backlog 68); approval, merge,
+// screening and audit with findings for a human (ruling 182: a suspect
+// issue never reaches the agent unread; ruling 188); screening first (it
+// runs before the first session); migration after policy (policy finds
+// the migrations); audit between review and approval (it reads the
+// reviewed head); max_returns at least 1, on agent stages only.
 func (w Workflow) Validate() error {
 	var errs []error
 	var seen []string
@@ -102,6 +103,9 @@ func (w Workflow) Validate() error {
 		}
 		if slices.Contains([]string{StageChecks, StagePolicy, StageApproval, StageMerge}, s.Name) && (!s.Enabled || s.When != "") {
 			errs = append(errs, fmt.Errorf("workflow: stage %s must run for every task (enabled, no when)", s.Name))
+		}
+		if s.Name == StageReview && s.When != "" {
+			errs = append(errs, fmt.Errorf("workflow: stage review: when is not allowed: a review runs for every task, or enabled: false turns it off"))
 		}
 		if slices.Contains([]string{StageApproval, StageMerge, StageScreening, StageAudit}, s.Name) && s.OnFindings != FindingsHuman {
 			errs = append(errs, fmt.Errorf("workflow: stage %s: on_findings must be human", s.Name))

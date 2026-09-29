@@ -490,6 +490,10 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	if spec.Recommendation != "Fixed the slug check; merge it." || !slices.Equal(spec.WhyHuman, in.WhyHuman) || spec.Review.Verdict != "concerns" {
 		t.Fatalf("spec = %+v", spec)
 	}
+	// the card claims no pass: why a human decides is its list (backlog 68)
+	if want := "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"; pending[0].Reason != want {
+		t.Fatalf("reason = %q, want %q", pending[0].Reason, want)
+	}
 	g := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto", PolicyVersion: 7},
 		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1}}
 	if _, err := execActivity(t, r, ActivityAutoMergeNote, "t1", int64(9), "c1", g, Review{Verdict: "approve", Summary: "narrow fix"}); err != nil {
