@@ -1566,9 +1566,10 @@ factoryd pods:
   request, not a roll) finished in the last 14 days when either a pull
   request merged into `main` of the same repository after the task
   finished, and within 14 days of it, undoes every file the task's pull
-  request changed (for each such file it adds exactly the lines the task
-  removed and removes exactly the lines it added, context and positions
-  aside; more files besides are allowed, a file left alone or changed
+  request changed (for each such file its net change, per line text the
+  times added less the times removed, is the exact opposite of the task's,
+  so context, positions and how git aligned a moved block do not count;
+  more files besides are allowed, a file left alone or changed
   otherwise is no revert, a quoted path is keyed by its whole header line,
   a diff over 1 MiB is never judged), or the
   task's alert is filed again (the SigNoz intake's refile) after the task

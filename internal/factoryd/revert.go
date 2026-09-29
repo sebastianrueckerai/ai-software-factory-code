@@ -169,16 +169,14 @@ func (p *RevertPass) count(ctx context.Context, t Task) {
 	p.Metrics.TaskReverted.Add(ctx, 1, metric.WithAttributes(attribute.String("project", project)))
 }
 
-// changedLines are one file's added and removed lines of a diff, counted
-// by their text.
-type changedLines struct{ added, removed map[string]int }
-
 // diffFiles reads a git diff into its files (the "diff --git" header's
-// new path, the whole header for a quoted path) and their changed lines; context lines and positions are left
-// out.
-func diffFiles(diff string) map[string]changedLines {
-	files := map[string]changedLines{}
-	var cur changedLines
+// new path, the whole header for a quoted path) and each file's net
+// change: per line text, the times it was added less the times it was
+// removed, zeros left out. Context, positions and how the diff aligned a
+// moved block do not count.
+func diffFiles(diff string) map[string]map[string]int {
+	files := map[string]map[string]int{}
+	var cur map[string]int
 	hunk := false
 	for line := range strings.SplitSeq(diff, "\n") {
 		switch {
@@ -190,36 +188,45 @@ func diffFiles(diff string) map[string]changedLines {
 			if i := strings.LastIndex(line, " b/"); i >= 0 && !strings.HasSuffix(line, `"`) {
 				path = line[i+3:]
 			}
-			if _, ok := files[path]; !ok {
-				files[path] = changedLines{added: map[string]int{}, removed: map[string]int{}}
+			if files[path] == nil {
+				files[path] = map[string]int{}
 			}
 			cur = files[path]
 		case strings.HasPrefix(line, "@@"):
 			hunk = true
-		case hunk && cur.added != nil && strings.HasPrefix(line, "+"):
-			cur.added[line[1:]]++
-		case hunk && cur.added != nil && strings.HasPrefix(line, "-"):
-			cur.removed[line[1:]]++
+		case hunk && cur != nil && strings.HasPrefix(line, "+"):
+			cur[line[1:]]++
+		case hunk && cur != nil && strings.HasPrefix(line, "-"):
+			cur[line[1:]]--
 		}
+	}
+	for _, net := range files {
+		maps.DeleteFunc(net, func(_ string, n int) bool { return n == 0 })
 	}
 	return files
 }
 
-// reverts is the revert rule: later reverts agent when agent changed at
-// least one line and, for every file agent changed, later changed the
-// same file in the opposite direction, adding exactly the lines agent
-// removed and removing exactly the lines it added. Files later changes
-// besides are allowed (one pull request may revert several); a file of
-// agent's that later leaves alone or changes otherwise is no revert.
+// reverts is the revert rule: later reverts agent when agent's net change
+// is not empty and, for every file agent changed, later's net change of
+// the same file is its exact opposite (it adds back what agent removed and
+// removes what agent added, however git aligned either diff). Files later
+// changes besides are allowed (one pull request may revert several); a
+// file of agent's that later leaves alone or changes otherwise is no
+// revert.
 func reverts(agent, later string) bool {
 	a, l := diffFiles(agent), diffFiles(later)
 	changed := false
-	for path, af := range a {
-		lf, ok := l[path]
-		if !ok || !maps.Equal(lf.added, af.removed) || !maps.Equal(lf.removed, af.added) {
+	for path, an := range a {
+		ln, ok := l[path]
+		if !ok || len(ln) != len(an) {
 			return false
 		}
-		changed = changed || len(af.added)+len(af.removed) > 0
+		for text, n := range an {
+			if ln[text] != -n {
+				return false
+			}
+		}
+		changed = changed || len(an) > 0
 	}
 	return changed
 }

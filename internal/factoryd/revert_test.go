@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -346,5 +347,27 @@ func TestPGStoreRevertMarks(t *testing.T) {
 	}
 	if got, _, _ := s.Task(ctx, "t-a"); got.ModelAlias != "coding-frontier" {
 		t.Fatalf("model alias = %q, want the last session's", got.ModelAlias)
+	}
+}
+
+// The revert of demo-app #6 as git writes it: the agent moved the zero-run
+// loop below the character loop, and the revert's diff moves the character
+// loop above it instead, so the lines each side adds and removes differ
+// while the net change of the file is the exact opposite. The rule
+// compares the net change.
+func TestRevertsRuleTakesTheNetChange(t *testing.T) {
+	agent, err := os.ReadFile("testdata/revert-agent-pr6.diff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := os.ReadFile("testdata/revert-of-pr6.diff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reverts(string(agent), string(later)) {
+		t.Fatal("git's revert of demo-app #6 is no revert")
+	}
+	if reverts(string(agent), string(agent)) {
+		t.Fatal("the same change again is a revert")
 	}
 }
