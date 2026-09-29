@@ -99,6 +99,7 @@ func TestParseRejects(t *testing.T) {
 		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
 		"duplicate approver": {strings.Replace(valid, "approvers: [sebastian]", "approvers: [sebastian, sebastian]", 1), "approvers must be distinct"},
 		"not yaml":           {"version: [1", "policy:"},
+		"zero steps":         {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: 0}", 1), "minimum"},
 		"negative steps":     {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: -1}", 1), "limits.steps must not be negative"},
 	} {
 		t.Run(name, func(t *testing.T) {

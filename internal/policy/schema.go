@@ -34,6 +34,9 @@ var (
 
 func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
+// minimums are the least values of integer fields, keyed Type.Field.
+var minimums = map[string]float64{"Limits.Steps": 1}
+
 // enums are the enumerated values of fields, keyed Type.Field: a string
 // field's values, a map field's keys, a slice field's items.
 var enums = map[string][]string{
@@ -180,6 +183,9 @@ func schemaFor(t reflect.Type, docs map[string]string) (*jsonschema.Schema, erro
 				default:
 					p.Enum = enum
 				}
+			}
+			if m, ok := minimums[id]; ok {
+				p.Minimum = &m
 			}
 			s.Properties[key] = p
 			s.PropertyOrder = append(s.PropertyOrder, key)

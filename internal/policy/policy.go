@@ -69,9 +69,9 @@ type Limits struct {
 	// StrongerAfter is how many returns from the same stage a task takes
 	// on its model; the next return takes the stronger rung.
 	StrongerAfter int `yaml:"stronger_after" json:"stronger_after"`
-	// Steps caps one agent session's model turns (opencode's agent steps):
-	// at the cap the harness asks the model to summarise and stop. Absent:
-	// DefaultSteps.
+	// Steps caps one agent session's model turns (opencode's agent steps),
+	// at least 1: at the cap the harness asks the model to summarise and
+	// stop. Absent: DefaultSteps.
 	Steps int `yaml:"steps,omitempty" json:"steps"`
 }
 

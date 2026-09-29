@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -168,10 +167,9 @@ func TestRecordOpencodeFixture(t *testing.T) {
 	if len(fake.loop) != 4 {
 		t.Fatalf("agent loop made %d model calls, want 4 (denied, call, call past the cap, text)", len(fake.loop))
 	}
+	// No question check here: run denies question for its own session
+	// (run.ts:430-448), so the config's rule shows only in the golden file.
 	for i, req := range fake.loop {
-		if slices.Contains(req.tools, "question") {
-			t.Errorf("call %d offers the question tool: %v", i+1, req.tools)
-		}
 		if want := i+1 >= recordSteps; req.maxSteps != want {
 			t.Errorf("call %d: step-cap message present = %v, want %v", i+1, req.maxSteps, want)
 		}

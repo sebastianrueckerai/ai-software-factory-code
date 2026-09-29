@@ -242,11 +242,11 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 
 // The whole config the worker hands opencode v1.18.32, one golden file. The
 // headless settings, each read in the pinned source: question denied at
-// pattern "*" is hidden from the model (permission/index.ts:204-219), not
+// pattern "*" is hidden from the model (permission/index.ts:204-214), not
 // asked; doom_loop allow, since a denied doom_loop fails the stream and ends
-// the session (session/processor.ts:371-379, 668-694); a rejected call
-// continues the loop (processor.ts:200-201, 647); steps caps every agent
-// that loops (session/prompt.ts:1178-1179).
+// the session (session/processor.ts:371-379, halt 613-639, 689, 694); a
+// rejected call continues the loop (processor.ts:200-201, 647); steps caps
+// every agent that loops (session/prompt.ts:1178-1179).
 func TestOpencodeConfigGolden(t *testing.T) {
 	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40)
 	if err != nil {
