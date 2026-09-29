@@ -162,12 +162,13 @@ func (t *taskRun) sessionReturn(res SessionResult, last bool) (stronger bool) {
 	return t.returns[stage] > t.cfg.StrongerAfter
 }
 
-// sessionCapCard is the escalation of sessions at the cap: last is the
-// last session's end.
-func (t *taskRun) sessionCapCard(last string) string {
+// sessionCapCard is the escalation of sessions at the cap: last is how
+// the last round ended, pending its findings not in the history (a change
+// request).
+func (t *taskRun) sessionCapCard(last string, pending []string) string {
 	var b strings.Builder
 	b.WriteString(sessionCapReached + "\nlast: " + last)
-	for _, h := range t.history {
+	for _, h := range append(slices.Clone(t.history), pending...) {
 		b.WriteString("\n- " + h)
 	}
 	return b.String()

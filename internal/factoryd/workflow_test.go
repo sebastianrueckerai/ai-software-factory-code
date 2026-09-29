@@ -391,6 +391,55 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	}
 }
 
+// A change request on the last round, after a pushed commit, is the
+// cap's last finding on the card; the answer buys a session with it.
+func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	h.onSessions(pushed("s3", "c3"), pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "alias it", Comment: 602})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	change := "reviewer sebastian requested changes: keep the old flag"
+	if want := []string{sessionCapReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 2 || h.sessions[1].Attempt != 4 || h.sessions[1].StartRef != "c3" ||
+		!slices.Equal(h.sessions[1].Findings, []string{change}) ||
+		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + sessionCapReached + `": alias it`}) {
+		t.Fatalf("sessions = %+v, want the fourth from c3 with the change request and the answer", h.sessions)
+	}
+}
+
+// A run that starts with every attempt used opens the card before any
+// session.
+func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	h.onSessions(pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{sessionCapReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 {
+		t.Fatalf("sessions = %+v, want one, the fourth, after the answer", h.sessions)
+	}
+	if h.usage[0] != (TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3, ExtraTime: 2 * time.Minute, ExtraAttempts: 1}) {
+		t.Fatalf("usage = %+v, want the answer's grant first: an attempt, and 2m to a 10m slice", h.usage)
+	}
+}
+
 // A second return on the same trip takes the stronger rung
 // (limits.stronger_after 1); a different trip keeps the model.
 func TestWorkflowRepeatTripTakesTheStrongerRung(t *testing.T) {

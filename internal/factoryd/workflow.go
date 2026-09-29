@@ -424,10 +424,10 @@ const (
 	// RollCommit write again; findings on a head RollCommit leaves as it
 	// is fail the task.
 	versionRoll workflow.Version = 1
-	// versionSessionCap (change id "session-cap", ruling 177): sessions
-	// that run out of attempts without a pushed commit (a supervisor stop,
-	// no push, a session error) open the card with every finding so far,
-	// and a human answer buys one more session; a redirect or no push
+	// versionSessionCap (change id "session-cap", ruling 177): a session
+	// loop out of attempts, however its last round ended and a run that
+	// starts at the cap too, opens the card with every finding so far, and
+	// a human answer buys one more session; a redirect or no push
 	// counts as a return from stage "supervisor:<trip>", recorded like a
 	// stage's findings, and a repeat past StrongerAfter takes the
 	// stronger rung.
@@ -483,11 +483,12 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
+	remembered := false // findings are in t.history (versionSessionCap)
 	apply := func(v verdict) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
-		findings, reason = v.findings, v.reason
+		findings, reason, remembered = v.findings, v.reason, false
 	}
 	if t.v2 >= versionReconcileRace {
 		var st RunState
@@ -584,13 +585,16 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = append(findings, more...)
 		}
 	}
-	capped := false // the last session ended without a pushed commit (versionSessionCap)
 	for attempt := u.Attempts + 1; ; attempt++ {
 		if attempt > t.cfg.MaxSessions+u.ExtraAttempts {
-			if !capped {
+			if t.v18 < versionSessionCap {
 				break
 			}
-			final, why, answer := t.awaitHuman(t.sessionCapCard(reason), sessionCapReached)
+			pending := findings
+			if remembered {
+				pending = nil
+			}
+			final, why, answer := t.awaitHuman(t.sessionCapCard(reason, pending), sessionCapReached)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -646,7 +650,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
-			capped = t.v18 >= versionSessionCap
 			continue
 		}
 		parent = res.SessionID
@@ -659,7 +662,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			model, findings = t.cfg.Models.Stronger, res.Findings
 			if t.v18 >= versionSessionCap {
 				t.sessionReturn(res, last)
-				capped = true
+				remembered = true
 			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect:
@@ -668,7 +671,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				if t.sessionReturn(res, last) {
 					model = t.cfg.Models.Stronger
 				}
-				capped = true
+				remembered = true
 			}
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
@@ -694,7 +697,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		startRef = res.Commit
-		capped = false
 		if drained {
 			if final, why, ok := t.decided(); ok {
 				return t.finish(final, why)
