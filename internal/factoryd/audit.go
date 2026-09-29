@@ -135,6 +135,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
+	scrub := redact.New(redact.DiffSecrets(diff)...)
 	hits := redact.ScanDiff(diff)
 	for i, h := range hits {
 		if i == maxPreCheck {
@@ -167,17 +168,21 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		if why != "" {
 			noVerdict(fmt.Sprintf("%s (an answer of %d bytes)", why, len(content)))
 		}
-		res.Findings = append(res.Findings, found...)
+		for _, f := range found {
+			f.File = scrub.String(f.File)
+			res.Findings = append(res.Findings, f)
+		}
 	}
-	return r.recordAudit(ctx, t, pr, commit, res, redact.New(redact.DiffSecrets(diff)...)), nil
+	return r.recordAudit(ctx, t, pr, commit, res, scrub), nil
 }
 
-// recordAudit scrubs every text of res's findings, the model's and the
-// errors', of the diff's secret values and the generic shapes, settles
-// its verdict and puts it on the timeline.
+// recordAudit scrubs the item and why of res's findings, the model's and
+// the errors', of the diff's secret values and the generic shapes (a
+// model's file is scrubbed where it is read, a pre-check hit's path is
+// the diff's own), settles its verdict and puts it on the timeline.
 func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, res AuditResult, scrub *redact.Scrubber) AuditResult {
 	for i, f := range res.Findings {
-		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(scrub.String(f.File), maxAuditField),
+		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
 			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
 	}
 	res.Verdict = AuditClear

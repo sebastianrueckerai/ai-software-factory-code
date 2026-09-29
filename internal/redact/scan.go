@@ -28,22 +28,61 @@ const (
 )
 
 // shapes are the secret shapes; a named group v is the secret's value,
-// else the whole match is.
+// else the whole match is; skip, when set, refuses a match by its key k
+// and its value.
 var shapes = []struct {
 	kind string
 	re   *regexp.Regexp
+	skip func(key, value string) bool
 }{
-	{KindPrivateKey, regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`)},
-	{KindConnection, regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?P<v>[^/\s@]+)@`)},
-	{KindJWT, regexp.MustCompile(`\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*`)},
-	{KindAPIKey, regexp.MustCompile(`\bsk-[\w-]{20,}`)},
-	{KindGitHub, regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`)},
-	{KindGitLab, regexp.MustCompile(`\bglpat-[\w-]{20,}`)},
-	{KindAWS, regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
-	{KindAssignment, regexp.MustCompile(`(?i)(password|passwd|secret|token|api[_-]?key|access[_-]?key)[\w-]*["']?\s*(:=|=|:)\s*["'](?P<v>[^"'\s]{8,})["']`)},
+	{KindPrivateKey, regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----`), nil},
+	{KindConnection, regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?P<v>[^/\s@]+)@`), nil},
+	{KindJWT, regexp.MustCompile(`\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*`), nil},
+	{KindAPIKey, regexp.MustCompile(`\bsk-[\w-]{20,}`), nil},
+	{KindGitHub, regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`), nil},
+	{KindGitLab, regexp.MustCompile(`\bglpat-[\w-]{20,}`), nil},
+	{KindAWS, regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`), nil},
+	{KindAssignment, regexp.MustCompile(`(?i)(?P<k>[\w-]*?(password|passwd|secret|token|api[_-]?key|access[_-]?key)[\w-]*)["']?\s*(:=|=|:)\s*["'](?P<v>[^"'\s]{8,})["']`),
+		func(key, value string) bool {
+			return reference(key) || strings.ContainsAny(value[:1], "<${") || strings.Contains(value, "://")
+		}},
 	// an .env, YAML or Dockerfile line: a password unquoted, but no
-	// ${...}, <placeholder>, call or reference
-	{KindAssignment, regexp.MustCompile(`(?i)^\s*(export\s+|ENV\s+)?[\w-]*(password|passwd)[\w-]*\s*[=:]\s*(?P<v>[^\s"'$<{(,}]{8,})\s*$`)},
+	// ${...}, <placeholder>, call, path or dotted reference
+	{KindAssignment, regexp.MustCompile(`(?i)^\s*(export\s+|ENV\s+)?(?P<k>[\w-]*(password|passwd)[\w-]*)\s*[=:]\s*(?P<v>[^\s"'$<{(,}]{8,})\s*$`),
+		func(key, value string) bool {
+			return reference(key) || strings.HasPrefix(value, "/") || strings.Contains(value, ".")
+		}},
+}
+
+var (
+	secretWord = regexp.MustCompile(`password|passwd|secret|token|api[_-]?key|access[_-]?key`)
+	refSuffix  = regexp.MustCompile(`(file|secret|ref|name|url)$`)
+)
+
+// reference: the key names where a secret lives (password_file,
+// existingPasswordSecret, secretName, tokenURL), not the secret: after
+// its first secret word it ends in file, secret, ref, name or url.
+func reference(key string) bool {
+	k := strings.ToLower(key)
+	loc := secretWord.FindStringIndex(k)
+	return loc != nil && refSuffix.MatchString(k[loc[1]:])
+}
+
+// matches are re's matches on text that skip does not refuse, each with
+// its value.
+func matches(re *regexp.Regexp, skip func(key, value string) bool, text string) []string {
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(text, -1) {
+		v := m[0]
+		if i := re.SubexpIndex("v"); i > 0 {
+			v = m[i]
+		}
+		if skip != nil && skip(m[re.SubexpIndex("k")], v) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // hunkStart reads the new version's first line from a hunk header.
@@ -114,13 +153,7 @@ func DiffSecrets(diff string) []string {
 				pem = pem || s.re.MatchString(text) && !strings.Contains(text, "-----END ")
 				continue
 			}
-			for _, m := range s.re.FindAllStringSubmatch(text, -1) {
-				v := m[0]
-				if i := s.re.SubexpIndex("v"); i > 0 {
-					v = m[i]
-				}
-				out = append(out, v)
-			}
+			out = append(out, matches(s.re, s.skip, text)...)
 		}
 		if m := credential.FindStringSubmatch(text); m != nil && !shortWord.MatchString(m[2]) {
 			out = append(out, m[2])
@@ -131,7 +164,7 @@ func DiffSecrets(diff string) []string {
 
 func shapeOf(l string) string {
 	for _, s := range shapes {
-		if s.re.MatchString(l) {
+		if len(matches(s.re, s.skip, l)) > 0 {
 			return s.kind
 		}
 	}

@@ -23,7 +23,7 @@ const plantedDiff = "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n"
 	"new file mode 100644\n" +
 	"--- /dev/null\n" +
 	"+++ b/cfg/app.env\n" +
-	"@@ -0,0 +1,9 @@\n" +
+	"@@ -0,0 +1,10 @@\n" +
 	"+DATABASE_URL=postgres://app:s3cretpass@db:5432/app\n" +
 	"+AWS_KEY=AKIAIOSFODNN7EXAMPLE\n" +
 	"+GH=ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789\n" +
@@ -33,6 +33,7 @@ const plantedDiff = "diff --git a/internal/x/x_test.go b/internal/x/x_test.go\n"
 	"+DB_PASSWORD=envpass0001\n" +
 	"+  password: yamlpass0001\n" +
 	"+api-key: \"apikeyvalue01\"\n" +
+	"+client_secret: \"clientsecret01\"\n" +
 	"diff --git a/old.txt b/old.txt\n" +
 	"deleted file mode 100644\n" +
 	"--- a/old.txt\n" +
@@ -55,6 +56,7 @@ func TestScanDiffFindsPlantedSecrets(t *testing.T) {
 		{File: "cfg/app.env", Line: 7, Kind: KindAssignment},
 		{File: "cfg/app.env", Line: 8, Kind: KindAssignment},
 		{File: "cfg/app.env", Line: 9, Kind: KindAssignment},
+		{File: "cfg/app.env", Line: 10, Kind: KindAssignment},
 	}
 	if got := ScanDiff(plantedDiff); !slices.Equal(got, want) {
 		t.Fatalf("ScanDiff =\n%+v\nwant\n%+v", got, want)
@@ -65,7 +67,7 @@ func TestScanDiffCleanDiff(t *testing.T) {
 	clean := "diff --git a/internal/f/f.go b/internal/f/f.go\n" +
 		"--- a/internal/f/f.go\n" +
 		"+++ b/internal/f/f.go\n" +
-		"@@ -1,2 +1,10 @@\n" +
+		"@@ -1,2 +1,21 @@\n" +
 		" package f\n" +
 		"+\treq.Header.Set(\"Authorization\", \"Bearer \"+m.Token)\n" +
 		"+\t// missing bearer token\n" +
@@ -75,7 +77,18 @@ func TestScanDiffCleanDiff(t *testing.T) {
 		"+\t\tPassword: cfg.Password,\n" +
 		"+  password: ${DB_PASSWORD}\n" +
 		"+PASSWORD=<changeme>\n" +
-		"+  secretName: forgejo-merge-token\n"
+		"+  secretName: forgejo-merge-token\n" +
+		"+\t\tPassword: cfg.Password\n" +
+		"+password_file: /run/secrets/db\n" +
+		"+ENV POSTGRES_PASSWORD_FILE=/run/secrets/pg\n" +
+		"+existingPasswordSecret: my-db-secret\n" +
+		"+password = \"<your-password>\"\n" +
+		"+secretName: \"forgejo-merge-token\"\n" +
+		"+tokenURL: \"https://example.com/token\"\n" +
+		"+token_url = \"https://example.com/token\"\n" +
+		"+token: \"${GITHUB_TOKEN_VALUE}\"\n" +
+		"+api_key: \"{{.Values.apiKey}}\"\n" +
+		"+passwordSecretRef: my-db-secret\n"
 	if got := ScanDiff(clean); len(got) != 0 {
 		t.Fatalf("ScanDiff = %+v", got)
 	}
@@ -87,7 +100,7 @@ func TestScanDiffCleanDiff(t *testing.T) {
 func TestDiffSecrets(t *testing.T) {
 	want := []string{"hunter2hunter2", "MIIEowIBAAKCAQEA", "s3cretpass", "AKIAIOSFODNN7EXAMPLE",
 		"ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789", "glpat-aBcDeFgHiJkLmNoPqRsT", "sk-proj-aBcDeFgHiJkLmNoPqRsTuV", "abcdef0123456789xyz",
-		"envpass0001", "yamlpass0001", "apikeyvalue01"}
+		"envpass0001", "yamlpass0001", "apikeyvalue01", "clientsecret01"}
 	if got := DiffSecrets(plantedDiff); !slices.Equal(got, want) {
 		t.Fatalf("DiffSecrets =\n%q\nwant\n%q", got, want)
 	}

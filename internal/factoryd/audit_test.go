@@ -227,3 +227,16 @@ func TestGateAuditCapsThePreCheck(t *testing.T) {
 		t.Fatalf("findings = %d, last %+v", len(res.Findings), res.Findings[len(res.Findings)-1])
 	}
 }
+
+// A pre-check hit keeps its own path even where the path holds the value
+// the scrubber hides; the model's file is scrubbed.
+func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
+	diff := "diff --git a/k8s/hunter2hunter2.yaml b/k8s/hunter2hunter2.yaml\n--- /dev/null\n+++ b/k8s/hunter2hunter2.yaml\n@@ -0,0 +1 @@\n+password: \"hunter2hunter2\"\n"
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"k8s/hunter2hunter2.yaml","line":1,"why":"a password"}]}`}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	res := getInto[AuditResult](t, val, err)
+	if len(res.Findings) != 2 || res.Findings[0].File != "k8s/hunter2hunter2.yaml" || res.Findings[1].File != "k8s/[redacted].yaml" {
+		t.Fatalf("findings = %+v", res.Findings)
+	}
+}
