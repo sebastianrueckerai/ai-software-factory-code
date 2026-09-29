@@ -355,6 +355,13 @@ activities, each with a timeline step and a comment on the pull request:
    "Security audit" section and the timeline step `audit` (verdict,
    model, deployment), never to the pull request; on the merge rule auto
    they send the merge to the card. A roll task skips the stage.
+   From change id
+   `review-verdict` on (backlog 68), a review stage that ran and gave no
+   verdict puts "review: the review gave no verdict: <note>" on the card
+   whatever its `on_findings`, so it is never a pass and the merge rule
+   `auto` never merges past it; a roll's review (no model call) is no
+   finding, and the review stage takes no `when`: `enabled: false` is its
+   only skip.
 5. From change id `auto-merge` on (ruling 149), `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
