@@ -252,6 +252,84 @@ func TestCommitAndPushKeepsAgentCommits(t *testing.T) {
 	}
 }
 
+// The work guide asks an agent to write its reproduction as a scratch test
+// named zz_repro_*_test.go; that file is the agent's evidence, not the
+// change. The worker commits the agent's work tree, so it must leave the
+// scratch file out of the pushed commit, and push nothing when the only
+// change is a scratch file.
+func TestCommitAndPushLeavesScratchReproTestsOut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	os.MkdirAll(filepath.Join(seed, "internal", "x"), 0o755)
+	os.WriteFile(filepath.Join(seed, "internal", "x", "fix.go"), []byte("package x\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "-m", "init")
+	sha := run("-C", seed, "rev-parse", "HEAD")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+
+	for _, tc := range []struct {
+		name       string
+		agent      func(dir string)
+		wantPushed bool
+	}{
+		{name: "fix-and-scratch", wantPushed: true, agent: func(dir string) {
+			os.WriteFile(filepath.Join(dir, "internal", "x", "fix.go"), []byte("package x\n\nfunc F() {}\n"), 0o644)
+			os.WriteFile(filepath.Join(dir, "internal", "x", "zz_repro_fix_test.go"), []byte("package x\n"), 0o644)
+		}},
+		{name: "scratch-only", agent: func(dir string) {
+			os.WriteFile(filepath.Join(dir, "internal", "x", "zz_repro_fix_test.go"), []byte("package x\n"), 0o644)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + tc.name
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: fork}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := cloneBase(e, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, err := prepareRepo(dir, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.agent(dir)
+
+			commit, err := commitAndPush(dir, e, base, func() error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.wantPushed {
+				if commit != "" {
+					t.Fatalf("commit = %q, want nothing pushed for a scratch-only tree", commit)
+				}
+				return
+			}
+			if commit == "" {
+				t.Fatal("nothing pushed, want the fix")
+			}
+			tree := run("-C", fork, "ls-tree", "-r", "--name-only", commit)
+			if !strings.Contains(tree, "internal/x/fix.go") {
+				t.Fatalf("pushed tree lost the fix:\n%s", tree)
+			}
+			if strings.Contains(tree, "zz_repro") {
+				t.Fatalf("pushed tree carries the scratch repro test:\n%s", tree)
+			}
+		})
+	}
+}
+
 // An agent that plants every git-driven program it can must see none of
 // them run while the worker commits and pushes, and the token must still
 // reach the server on the push.
