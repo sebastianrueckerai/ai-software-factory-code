@@ -119,6 +119,11 @@ func TestProjectConfigValidate(t *testing.T) {
 	if err := demo().Validate("demo-app"); err != nil {
 		t.Fatalf("demo-app: %v", err)
 	}
+	withEgress := demo()
+	withEgress.Egress = []string{"api.example.com", "hooks.example.org"}
+	if err := withEgress.Validate("demo-app"); err != nil {
+		t.Fatalf("demo-app with egress: %v", err)
+	}
 	for name, tc := range map[string]struct {
 		file   string
 		change func(*ProjectConfig)
@@ -141,6 +146,12 @@ func TestProjectConfigValidate(t *testing.T) {
 		"host twice":        {"demo-app", func(p *ProjectConfig) { p.Environments[1].Hostname = p.Environments[0].Hostname }, "a distinct DNS name"},
 		"env twice":         {"demo-app", func(p *ProjectConfig) { p.Environments[1].Namespace = "demo-staging" }, `environment "demo-staging": given twice`},
 		"quota":             {"demo-app", func(p *ProjectConfig) { p.Quota.CPU = "two" }, "quota.cpu"},
+		"egress wildcard":   {"demo-app", func(p *ProjectConfig) { p.Egress = []string{"*"} }, `egress "*": a distinct DNS name`},
+		"egress address":    {"demo-app", func(p *ProjectConfig) { p.Egress = []string{"10.0.0.1"} }, `egress "10.0.0.1": a distinct DNS name`},
+		"egress twice":      {"demo-app", func(p *ProjectConfig) { p.Egress = []string{"api.example.com", "api.example.com"} }, `egress "api.example.com": a distinct DNS name`},
+		"seed egress": {"x", func(p *ProjectConfig) {
+			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Egress: []string{"api.example.com"}, Tokens: &SeedTokens{Read: SecretConfig}}
+		}, "objects seed: egress"},
 		"seed quota": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Quota: &Quota{"1", "1Gi", "1Gi"}, Tokens: &SeedTokens{Read: SecretConfig}}
 		}, "objects seed: environments, quota and secrets"},

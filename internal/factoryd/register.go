@@ -634,7 +634,7 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 		run.apply(ctx, ns+" networkpolicy", "/apis/cilium.io/v2/namespaces/"+ns+"/ciliumnetworkpolicies/"+projectObject, map[string]any{
 			"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
 			"metadata": map[string]any{"name": projectObject, "namespace": ns, "labels": labels},
-			"spec":     ProjectNetworkPolicy(ns),
+			"spec":     ProjectNetworkPolicy(ns, p.Egress),
 		})
 		run.apply(ctx, ns+" resourcequota", core+"/resourcequotas/"+projectObject, map[string]any{
 			"apiVersion": "v1", "kind": "ResourceQuota",
@@ -700,8 +700,8 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 // role writes no network policy, so the project cannot widen it): in, from
 // its own namespace, the edge gateway's Envoy and the CNPG operator; out,
 // to its own namespace, DNS, the API server (CNPG's instance manager), the
-// SigNoz collector and anything on 443.
-func ProjectNetworkPolicy(ns string) map[string]any {
+// SigNoz collector and the project file's egress hosts on 443.
+func ProjectNetworkPolicy(ns string, egress []string) map[string]any {
 	own := []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": ns}}}
 	ports := func(proto string, ps ...string) []any {
 		var out []any
@@ -709,6 +709,26 @@ func ProjectNetworkPolicy(ns string) map[string]any {
 			out = append(out, map[string]any{"port": p, "protocol": proto})
 		}
 		return []any{map[string]any{"ports": out}}
+	}
+	dns := ports("ANY", "53")
+	out := []any{
+		map[string]any{"toEndpoints": own},
+		map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+			"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
+			"toPorts": dns},
+		map[string]any{"toEntities": []any{"kube-apiserver"}},
+		map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+			"k8s:io.kubernetes.pod.namespace": "platform", "app.kubernetes.io/component": "otel-collector"}}},
+			"toPorts": ports("TCP", "4318")},
+	}
+	if len(egress) > 0 {
+		// Cilium learns a name's addresses from the DNS answers its proxy sees
+		dns[0].(map[string]any)["rules"] = map[string]any{"dns": []any{map[string]any{"matchPattern": "*"}}}
+		names := make([]any, len(egress))
+		for i, h := range egress {
+			names[i] = map[string]any{"matchName": h}
+		}
+		out = append(out, map[string]any{"toFQDNs": names, "toPorts": ports("TCP", "443")})
 	}
 	return map[string]any{
 		"endpointSelector": map[string]any{},
@@ -718,17 +738,7 @@ func ProjectNetworkPolicy(ns string) map[string]any {
 			map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": "cnpg-system"}}},
 				"toPorts": ports("TCP", "8000", "5432")},
 		},
-		"egress": []any{
-			map[string]any{"toEndpoints": own},
-			map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
-				"k8s:io.kubernetes.pod.namespace": "kube-system", "k8s:k8s-app": "kube-dns"}}},
-				"toPorts": ports("ANY", "53")},
-			map[string]any{"toEntities": []any{"kube-apiserver"}},
-			map[string]any{"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
-				"k8s:io.kubernetes.pod.namespace": "platform", "app.kubernetes.io/component": "otel-collector"}}},
-				"toPorts": ports("TCP", "4318")},
-			map[string]any{"toEntities": []any{"world"}, "toPorts": ports("TCP", "443")},
-		},
+		"egress": out,
 	}
 }
 

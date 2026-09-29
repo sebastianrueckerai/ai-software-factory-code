@@ -35,6 +35,7 @@ environments:
 quota: {cpu: "2", memory: 4Gi, storage: 10Gi}
 secrets: [demo-write-token/token]
 envelope: {monthly_eur: 5, server_types: [cx23], max_count: 1, max_lease_hours: 2, volume_max_gb: 0}
+egress: [api.example.com]
 `
 
 // codeFile is the factory's own code as a seed project agents work on.
@@ -78,6 +79,7 @@ func TestProjectsOf(t *testing.T) {
 	demo := demoProject()
 	demo.GitToken, demo.MergeToken = "g", "m"
 	demo.Envelope = policy.Envelope{MonthlyEUR: 5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, Standing: policy.Standing{ServerTypes: []string{}}}
+	demo.Egress = []string{"api.example.com"}
 	if !reflect.DeepEqual(got[2], demo) {
 		t.Fatalf("demo-app = %+v\nwant %+v", got[2], demo)
 	}
@@ -206,6 +208,7 @@ func TestPGProjects(t *testing.T) {
 	got, ok, err := s.Project(ctx, "demo-app")
 	want := demoProject()
 	want.Envelope = policy.Envelope{MonthlyEUR: 5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, Standing: policy.Standing{ServerTypes: []string{}}}
+	want.Egress = []string{"api.example.com"}
 	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken, want.HostKeyHash = "h1", "k1", "p1", "g1", "m1", "s1"
 	want.CreatedAt, want.UpdatedAt = got.CreatedAt, got.UpdatedAt
 	if err != nil || !ok || !reflect.DeepEqual(got, want) {

@@ -36,6 +36,9 @@ type Project struct {
 	// Secrets are "secret/key" entries: each namespace gets the secret with
 	// a random value for the key when it is missing.
 	Secrets []string
+	// Egress are the host names outside the cluster its namespaces reach
+	// on 443.
+	Egress []string
 	// Envelope is the file's envelope and standing block, else the policy's.
 	Envelope policy.Envelope
 	// Tokens name a seed project's seeded secrets.
@@ -100,7 +103,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 	for name, c := range v.Projects {
 		p := byName[name]
 		p.Name, p.Repository, p.MergeRule, p.Objects, p.Agents = name, c.Repository, c.MergeRule, c.Objects, c.Agents
-		p.Notify, p.Namespaces, p.Environments, p.Secrets = c.Notify, c.Namespaces, c.Environments, c.Secrets
+		p.Notify, p.Namespaces, p.Environments, p.Secrets, p.Egress = c.Notify, c.Namespaces, c.Environments, c.Secrets, c.Egress
 		p.Quota, p.Envelope, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), true
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens

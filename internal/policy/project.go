@@ -199,6 +199,10 @@ type ProjectConfig struct {
 	// project_default.standing, each number at most the policy's, each
 	// server type one it lists; a looser file is rejected.
 	Standing *Standing `yaml:"standing,omitempty" json:"standing,omitempty"`
+	// Egress are the host names outside the cluster the project's
+	// namespaces may reach, on 443 only; absent: none. A factory project's
+	// only: its network policy is registration's.
+	Egress []string `yaml:"egress,omitempty" json:"egress"`
 	// Tokens name the seeded secrets factoryd reaches a seed project's
 	// repository with; a factory project's are registration's own.
 	Tokens *SeedTokens `yaml:"tokens,omitempty" json:"tokens,omitempty"`
@@ -345,6 +349,11 @@ func (p ProjectConfig) Validate(name string) error {
 			bad("secret %q: want secret-name/key, each once", s)
 		}
 	}
+	for i, h := range p.Egress {
+		if !hostname.MatchString(h) || slices.Contains(p.Egress[:i], h) {
+			bad("egress %q: a distinct DNS name", h)
+		}
+	}
 	if p.Envelope != nil {
 		if err := p.Envelope.validate("envelope"); err != nil {
 			bad("%v", err)
@@ -374,6 +383,9 @@ func (p ProjectConfig) Validate(name string) error {
 	case ObjectsSeed:
 		if len(p.Environments) > 0 || p.Quota != nil || len(p.Secrets) > 0 {
 			bad("objects seed: environments, quota and secrets are registration's objects, which a seed project's infra repository owns")
+		}
+		if len(p.Egress) > 0 {
+			bad("objects seed: egress is the network policy registration writes, which a seed project's infra repository owns")
 		}
 		switch {
 		case p.Tokens == nil || p.Tokens.Read == "":

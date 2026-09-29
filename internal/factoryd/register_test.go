@@ -662,10 +662,16 @@ func TestRegistrationObjects(t *testing.T) {
 	cnp := k.object(t, "/apis/cilium.io/v2/namespaces/demo-prod/ciliumnetworkpolicies/project")
 	b, _ := json.Marshal(cnp["spec"])
 	for _, want := range []string{`"endpointSelector":{}`, `"fromEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"demo-prod"}}]`,
-		`"fromEntities":["ingress"]`, `"toEntities":["world"],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]`,
+		`"fromEntities":["ingress"]`,
 		`"k8s:k8s-app":"kube-dns"`, `"port":"4318"`, `"toEntities":["kube-apiserver"]`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("network policy lacks %s: %s", want, b)
+		}
+	}
+	// backlog 20: a file without egress reaches nothing outside the cluster
+	for _, not := range []string{"world", "toFQDNs", "rules"} {
+		if strings.Contains(string(b), not) {
+			t.Errorf("network policy has %s: %s", not, b)
 		}
 	}
 	flux := k.object(t, "/apis/rbac.authorization.k8s.io/v1/namespaces/demo-staging/rolebindings/flux")
@@ -809,6 +815,32 @@ func TestDeployKeyHeals(t *testing.T) {
 	rig.reg.Reconcile(ctx, rig.store.m[p.Name])
 	if !strings.Contains(rig.logs.String(), "deploy key: updated") || len(rig.fj.keys) != 1 || rig.fj.secrets["DEPLOY_KEY"] == old {
 		t.Fatalf("keys %v, log:\n%s", rig.fj.keys, rig.logs)
+	}
+}
+
+// Backlog 20 (ruling 203): a project file's egress hosts are all its
+// namespaces reach outside the cluster, on 443 only, by name; Cilium
+// learns a name's addresses from the DNS answers its proxy sees, so the
+// DNS rule gets a visibility rule that still allows every lookup.
+func TestProjectEgressReachesOnlyTheFilesHosts(t *testing.T) {
+	rig := newRegisterRig(t)
+	p := demoProject()
+	p.Egress = []string{"api.example.com", "hooks.example.org"}
+	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	cnp := rig.kube.object(t, "/apis/cilium.io/v2/namespaces/demo-staging/ciliumnetworkpolicies/project")
+	b, _ := json.Marshal(cnp["spec"].(map[string]any)["egress"])
+	for _, want := range []string{
+		`{"toFQDNs":[{"matchName":"api.example.com"},{"matchName":"hooks.example.org"}],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]}`,
+		`"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}],"rules":{"dns":[{"matchPattern":"*"}]}}]`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("egress lacks %s: %s", want, b)
+		}
+	}
+	if strings.Contains(string(b), "world") {
+		t.Errorf("egress still reaches world: %s", b)
 	}
 }
 
