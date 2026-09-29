@@ -42,7 +42,7 @@ func TestLiveRevocationRefusesTaskCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	minter := &gateway.LiteLLM{BaseURL: env["FACTORYD_LIVE_LITELLM_URL"], MasterKey: env["FACTORYD_LIVE_LITELLM_MASTER_KEY"]}
-	key, err := minter.Mint(ctx, taskID, 0.01, []string{"coding-cheap"})
+	key, err := minter.Mint(ctx, taskID, taskID, 0.01, []string{"coding-cheap"})
 	if err != nil {
 		t.Fatal(err)
 	}

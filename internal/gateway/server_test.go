@@ -248,7 +248,7 @@ func (f *fakeMinter) blockedKeys() []string {
 	return append([]string(nil), f.blocked...)
 }
 
-func (f *fakeMinter) Mint(_ context.Context, taskID string, maxBudget float64, models []string) (string, error) {
+func (f *fakeMinter) Mint(_ context.Context, slot, taskID string, maxBudget float64, models []string) (string, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, mintCall{taskID, maxBudget, strings.Join(models, ",")})
 	hold := f.hold[taskID]
@@ -1067,6 +1067,71 @@ func TestKeyCachedPerTask(t *testing.T) {
 	audits := store.auditRows()
 	if n := len(audits); n != 2 || *audits[1].SpendEUR != 2.75 {
 		t.Fatalf("audits = %+v, want 2 rows, the last at spend 2.75", audits)
+	}
+}
+
+// factoryd blocks the task's keys at every reconcile, so a key the gateway
+// cached can die between two calls on the same run, policy version and UTC
+// day. LiteLLM says so ("Key is blocked"): the gateway drops the slot's
+// cached key, mints a new one and retries the call once.
+func TestBlockedKeyIsReMinted(t *testing.T) {
+	const blockedBody = `{"error":{"message":"Authentication Error, Key is blocked. Update via ` + "`/key/unblock`" + ` if you are an admin.","code":"401"}}`
+	var mu sync.Mutex
+	hits := map[string]int{}
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		hits[auth]++
+		n := hits[auth]
+		mu.Unlock()
+		// the first call succeeds on key 1; the reconcile that follows
+		// blocks it, so the second attempt with it answers 401
+		if auth == "sk-task-key-1" && n > 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, blockedBody)
+			return
+		}
+		w.Header().Set("x-litellm-response-cost", "0.1")
+		io.WriteString(w, `{}`)
+	}))
+	defer up.Close()
+
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     minter,
+		LiteLLMURL: up.URL,
+		Prices:     testPrices,
+	})
+	h := s.Routes("test")
+
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("first call = %d: %s", rr.Code, rr.Body)
+	}
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("call after the block = %d: %s, want the gateway to re-mint and retry", rr.Code, rr.Body)
+	}
+
+	if calls := minter.mintCalls(); len(calls) != 2 {
+		t.Fatalf("mint calls = %+v, want a second key after the block", calls)
+	}
+	mu.Lock()
+	got := map[string]int{}
+	for k, v := range hits {
+		got[k] = v
+	}
+	mu.Unlock()
+	if got["sk-task-key-1"] != 2 || got["sk-task-key-2"] != 1 {
+		t.Fatalf("upstream hits = %v, want key 1 twice (the blocked answer) then the re-minted key 2 once", got)
+	}
+	if spent, ok := store.spentOf("42"); !ok || spent != 0.2 {
+		t.Fatalf("spent = (%v, %v), want 0.2: the blocked answer booked nothing", spent, ok)
+	}
+	audits := store.auditRows()
+	if len(audits) != 2 || audits[0].Decision != "allowed" || audits[1].Decision != "allowed" {
+		t.Fatalf("audits = %+v, want two allowed rows", audits)
 	}
 }
 

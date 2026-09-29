@@ -73,6 +73,26 @@ func TestLiteLLMBlockTaskKeys(t *testing.T) {
 	}
 }
 
+// A reconcile runs at the start and the end of every session attempt, while
+// the gateway still holds its factoryd-slot key cached: blocking that key
+// would kill factoryd's own next call, so only the agent's keys go.
+func TestLiteLLMBlockTaskKeysLeavesTheFactorydSlotLive(t *testing.T) {
+	hub := &keyHub{
+		pages: map[int]string{1: `{"keys":[
+			{"token":"h-agent","blocked":null,"spend":0.1,"metadata":{"task_id":"t1","slot":"agent"}},
+			{"token":"h-factoryd","blocked":null,"spend":0.2,"metadata":{"task_id":"t1","slot":"factoryd"}}
+		],"total_count":2,"current_page":1,"total_pages":1}`},
+	}
+	l := &LiteLLMAdmin{BaseURL: hub.srv(t).URL, MasterKey: "mk"}
+	n, err := l.BlockTaskKeys(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("BlockTaskKeys: %v", err)
+	}
+	if n != 1 || strings.Join(hub.blocked, ",") != "h-agent" {
+		t.Fatalf("blocked = %d %v, want only the agent key, not the factoryd slot", n, hub.blocked)
+	}
+}
+
 func TestLiteLLMBlockTaskKeysWalksEveryPage(t *testing.T) {
 	hub := &keyHub{
 		pages: map[int]string{

@@ -52,7 +52,7 @@ func TestLiteLLMMint(t *testing.T) {
 			defer srv.Close()
 
 			l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-			key, err := l.Mint(context.Background(), "42", 8, []string{"coding-cheap", "coding-frontier"})
+			key, err := l.Mint(context.Background(), "42", "42", 8, []string{"coding-cheap", "coding-frontier"})
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -85,13 +85,36 @@ func TestLiteLLMMint(t *testing.T) {
 			if meta["task_id"] != "42" {
 				t.Fatalf("metadata.task_id = %v, want 42", meta["task_id"])
 			}
+			if meta["slot"] != "agent" {
+				t.Fatalf("metadata.slot = %v, want agent for the task's own slot", meta["slot"])
+			}
 		})
+	}
+}
+
+// The factoryd slot is named in the key's metadata, so factoryd's reconcile
+// can tell its own keys from the agent's and leave them live.
+func TestLiteLLMMintNamesTheFactorydSlot(t *testing.T) {
+	var gotPayload map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &gotPayload)
+		io.WriteString(w, `{"key":"sk-factoryd-key"}`)
+	}))
+	defer srv.Close()
+	l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
+	if _, err := l.Mint(context.Background(), "42/factoryd", "42", 8, []string{"review-frontier"}); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := gotPayload["metadata"].(map[string]any)
+	if meta["slot"] != "factoryd" || meta["task_id"] != "42" {
+		t.Fatalf("metadata = %v, want slot factoryd on task 42", meta)
 	}
 }
 
 func TestLiteLLMMintRefusesNoModels(t *testing.T) {
 	l := &LiteLLM{BaseURL: "http://127.0.0.1:1", MasterKey: "sk-master"}
-	if _, err := l.Mint(context.Background(), "42", 8, nil); err == nil || !strings.Contains(err.Error(), "no models") {
+	if _, err := l.Mint(context.Background(), "42", "42", 8, nil); err == nil || !strings.Contains(err.Error(), "no models") {
 		t.Fatalf("Mint without models = %v, want a refusal", err)
 	}
 }

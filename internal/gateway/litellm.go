@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -19,14 +20,22 @@ type LiteLLM struct {
 	HTTP      *http.Client // nil = a client with a mint-sized timeout
 }
 
-func (l *LiteLLM) Mint(ctx context.Context, taskID string, maxBudget float64, models []string) (string, error) {
+// Mint mints a virtual key for the task's slot (the task id, or
+// <task>/factoryd) capped at maxBudget and limited to models. Its metadata
+// names the task and the slot kind, so factoryd's reconcile can tell the
+// agent's keys from its own (internal/factoryd BlockTaskKeys).
+func (l *LiteLLM) Mint(ctx context.Context, slot string, taskID string, maxBudget float64, models []string) (string, error) {
 	if len(models) == 0 {
 		return "", fmt.Errorf("key generate: no models (an empty list would allow every alias)")
+	}
+	metadata := map[string]string{"task_id": taskID, "slot": "agent"}
+	if strings.HasSuffix(slot, "/"+factorydSA) {
+		metadata["slot"] = factorydSA
 	}
 	payload, err := json.Marshal(map[string]any{
 		"max_budget": maxBudget,
 		"models":     models,
-		"metadata":   map[string]string{"task_id": taskID},
+		"metadata":   metadata,
 	})
 	if err != nil {
 		return "", err

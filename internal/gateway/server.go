@@ -28,11 +28,11 @@ type Authenticator interface {
 	Authenticate(r *http.Request) (Identity, error)
 }
 
-// KeyMinter mints a per-task LiteLLM virtual key capped at maxBudget and
-// limited to models, and blocks a superseded one. Implemented by LiteLLM;
-// tests substitute a fake.
+// KeyMinter mints a per-task LiteLLM virtual key for a slot (the task, or
+// the task's factoryd slot) capped at maxBudget and limited to models, and
+// blocks a superseded one. Implemented by LiteLLM; tests substitute a fake.
 type KeyMinter interface {
-	Mint(ctx context.Context, taskID string, maxBudget float64, models []string) (string, error)
+	Mint(ctx context.Context, slot, taskID string, maxBudget float64, models []string) (string, error)
 	Block(ctx context.Context, key string) error
 }
 
@@ -273,7 +273,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose, slot: slot}
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
+		slot: slot, saUID: id.SAUID, models: models, pv: pv}
 
 	if body, err = chatReq.withOutputLimit(hold.MaxOut); err != nil {
 		s.finish(call, zeroCost, "")
@@ -286,10 +287,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
-	defer s.doneWith(slot, key)
 	call.key = key
+	// the key can be re-minted mid-call (a blocked key); end the call on
+	// whichever key it finished with
+	defer func() {
+		if call.key != nil {
+			s.doneWith(slot, call.key)
+		}
+	}()
 
-	s.proxy(w, r, call, key.key, body, chatReq.Stream)
+	s.proxy(w, r, call, body, chatReq.Stream)
 }
 
 // identify is the caller: factoryd by the gateway-factoryd token, with
@@ -508,7 +515,7 @@ func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID strin
 				return nil, nil
 			}
 			ctx := context.WithoutCancel(ctx)
-			key, err := s.opts.Minter.Mint(ctx, task.ID, hold.Headroom, models)
+			key, err := s.opts.Minter.Mint(ctx, slot, task.ID, hold.Headroom, models)
 			if err != nil {
 				return nil, fmt.Errorf("mint virtual key: %w", err)
 			}
@@ -536,6 +543,17 @@ func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID strin
 
 func (s *Server) matches(k *liveKey, want liveKey) bool {
 	return k != nil && k.saUID == want.saUID && k.version == want.version && k.day == want.day
+}
+
+// dropKey removes the slot's cached key after LiteLLM answered that it is
+// blocked, so the next keyFor mints. A key another call already replaced is
+// left in place.
+func (s *Server) dropKey(slot string, k *liveKey) {
+	s.mu.Lock()
+	if s.keysByTask[slot] == k {
+		delete(s.keysByTask, slot)
+	}
+	s.mu.Unlock()
 }
 
 // acquire returns the slot's current key if it matches want, counting one
@@ -576,6 +594,9 @@ type modelCall struct {
 	alias      string
 	kind       string // the factoryd purpose, "" for an agent's call
 	slot       string // the key slot: the task, or the task's factoryd slot
+	saUID      string // what the slot's key was minted for, to re-mint it
+	models     []string
+	pv         *policy.Version
 	key        *liveKey
 	overHold   string        // the booking's flag, on every audit row after it
 	deployment string        // the LiteLLM deployment that answered
@@ -614,82 +635,122 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	s.auditCall(c, decision, reason, &b.Spent)
 }
 
-func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, key string, body []byte, stream bool) {
+func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, body []byte, stream bool) {
 	ctx, up := s.tel.startCall(r.Context(), c.task, "model", c.alias, c.hold.EUR)
 	c.up = up
 	defer up.end()
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		s.finish(c, zeroCost, "")
-		s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
-		return
-	}
-	upReq.Header.Set("Content-Type", contentType(r))
-	upReq.Header.Set("Authorization", "Bearer "+key)
 
-	res, err := s.http.Do(upReq)
-	if err != nil {
-		// the provider may have run part of the call: book the hold
-		s.finish(c, nil, "")
-		s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
-		return
-	}
-	defer res.Body.Close()
-	up.status = strconv.Itoa(res.StatusCode)
-	c.deployment = res.Header.Get(headerDeployment)
-	up.deployment = c.deployment
-
-	if res.StatusCode/100 != 2 {
-		respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
-		// a failure LiteLLM still priced (partial provider work) is booked;
-		// an unpriced one is not, or every transient 503 would burn budget
-		cost := zeroCost
-		if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
-			cost = &v
-		}
-		s.finish(c, cost, "")
-		if res.StatusCode == http.StatusTooManyRequests && isBudgetExceeded(respBody) {
-			var liteErr struct {
-				Error struct {
-					Message string `json:"message"`
-				} `json:"error"`
-			}
-			json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-			// the key's max_budget was the task's or the day's headroom
-			reason := "litellm budget_exceeded: " + liteErr.Error.Message
-			s.auditCall(c, c.key.bound, reason, &c.task.SpentEUR)
-			w.Header().Set(HeaderDecision, c.key.bound)
-			writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
+	// a cached key can have been blocked under this call (factoryd's
+	// reconcile blocks the task's keys): drop it, mint a fresh one and
+	// retry once, so a blocked key never turns a call into a refusal
+	for attempt := 0; ; attempt++ {
+		upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, s.opts.LiteLLMURL+"/v1/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			s.finish(c, zeroCost, "")
+			s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 			return
 		}
-		s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
+		upReq.Header.Set("Content-Type", contentType(r))
+		upReq.Header.Set("Authorization", "Bearer "+c.key.key)
+
+		res, err := s.http.Do(upReq)
+		if err != nil {
+			// the provider may have run part of the call: book the hold
+			s.finish(c, nil, "")
+			s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
+			return
+		}
+		up.status = strconv.Itoa(res.StatusCode)
+		c.deployment = res.Header.Get(headerDeployment)
+		up.deployment = c.deployment
+
+		if res.StatusCode/100 != 2 {
+			respBody, _ := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+			res.Body.Close()
+			if res.StatusCode == http.StatusUnauthorized && attempt == 0 && isKeyBlocked(respBody) {
+				if err := s.rekey(ctx, c); err != nil {
+					s.finish(c, zeroCost, "")
+					s.refuse(w, c.pid, c.task.ID, c.kind, "error_mint", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
+					return
+				}
+				continue
+			}
+			// a failure LiteLLM still priced (partial provider work) is booked;
+			// an unpriced one is not, or every transient 503 would burn budget
+			cost := zeroCost
+			if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
+				cost = &v
+			}
+			s.finish(c, cost, "")
+			if res.StatusCode == http.StatusTooManyRequests && isBudgetExceeded(respBody) {
+				var liteErr struct {
+					Error struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
+				// the key's max_budget was the task's or the day's headroom
+				reason := "litellm budget_exceeded: " + liteErr.Error.Message
+				s.auditCall(c, c.key.bound, reason, &c.task.SpentEUR)
+				w.Header().Set(HeaderDecision, c.key.bound)
+				writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
+				return
+			}
+			s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
+			w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
+			w.WriteHeader(res.StatusCode)
+			w.Write(respBody) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
+			return
+		}
+
+		defer res.Body.Close()
+
 		w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
 		w.WriteHeader(res.StatusCode)
-		w.Write(respBody) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
+
+		// Each call's own cost is booked onto the task. x-litellm-key-spend is
+		// not: it is a cached read that lags, and a stream's headers leave before
+		// its cost exists. A stream's cost arrives in its final usage chunk; a
+		// stream the client broke off never shows it, and books the hold.
+		var cost *float64
+		if stream {
+			usage := &usageScanner{}
+			s.stream(w, io.TeeReader(res.Body, usage))
+			if usage.seen {
+				cost = &usage.cost
+			}
+		} else {
+			s.stream(w, res.Body)
+			if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
+				cost = &v
+			}
+		}
+		s.finish(c, cost, "allowed")
 		return
 	}
+}
 
-	w.Header().Set("Content-Type", res.Header.Get("Content-Type"))
-	w.WriteHeader(res.StatusCode)
+// isKeyBlocked reports whether LiteLLM refused the key because it is blocked
+// (a reconcile or an admin blocked it between two calls).
+func isKeyBlocked(body []byte) bool {
+	return bytes.Contains(body, []byte("Key is blocked"))
+}
 
-	// Each call's own cost is booked onto the task. x-litellm-key-spend is
-	// not: it is a cached read that lags, and a stream's headers leave before
-	// its cost exists. A stream's cost arrives in its final usage chunk; a
-	// stream the client broke off never shows it, and books the hold.
-	var cost *float64
-	if stream {
-		usage := &usageScanner{}
-		s.stream(w, io.TeeReader(res.Body, usage))
-		if usage.seen {
-			cost = &usage.cost
-		}
-	} else {
-		s.stream(w, res.Body)
-		if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
-			cost = &v
-		}
+// rekey retires the slot's blocked cached key and mints a fresh one for the
+// same call, holding the same hold. It is the retry path of a 401 "Key is
+// blocked": the old key is dropped from the cache and its in-flight count
+// released, then keyFor mints through the regular path.
+func (s *Server) rekey(ctx context.Context, c *modelCall) error {
+	old := c.key
+	s.dropKey(c.slot, old)
+	s.doneWith(c.slot, old)
+	c.key = nil
+	key, err := s.keyFor(ctx, c.slot, c.task, c.saUID, c.models, c.pv, c.hold)
+	if err != nil {
+		return err
 	}
-	s.finish(c, cost, "allowed")
+	c.key = key
+	return nil
 }
 
 // headerDeployment names the deployment that answered (its litellm_params

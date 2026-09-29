@@ -13,9 +13,9 @@ import (
 
 // LiteLLMAdmin blocks a finished task's virtual keys so no spend can happen
 // after completion (Stage 4 gate item), and reports spend per task for
-// settlement. The gateway mints keys with metadata.task_id
-// (internal/gateway); this client finds them by that metadata under the
-// master key.
+// settlement. The gateway mints keys with metadata.task_id and a metadata
+// slot naming the agent's or factoryd's own key (internal/gateway); this
+// client finds them by that metadata under the master key.
 //
 // Wire shapes verified against the live proxy (litellm 1.102.1,
 // 2026-09-26): /key/list?return_full_object=true returns key objects whose
@@ -41,8 +41,10 @@ type keyList struct {
 	TotalPages int       `json:"total_pages"`
 }
 
-// BlockTaskKeys blocks the task's unblocked keys and returns how many it
-// blocked.
+// BlockTaskKeys blocks the task's unblocked agent keys and returns how many
+// it blocked. factoryd's own slot is left live: the gateway's cached key for
+// it is reused across reconciles, and blocking it would turn the next gate
+// supervisor call into a "Key is blocked" refusal.
 func (l *LiteLLMAdmin) BlockTaskKeys(ctx context.Context, taskID string) (int, error) {
 	keys, err := l.keysByTask(ctx)
 	if err != nil {
@@ -51,6 +53,9 @@ func (l *LiteLLMAdmin) BlockTaskKeys(ctx context.Context, taskID string) (int, e
 	blocked := 0
 	for _, k := range keys[taskID] {
 		if k.Blocked {
+			continue
+		}
+		if slot, _ := k.Metadata["slot"].(string); slot == "factoryd" {
 			continue
 		}
 		if err := l.blockKey(ctx, k.Token); err != nil {
