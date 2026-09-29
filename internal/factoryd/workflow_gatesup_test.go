@@ -251,6 +251,18 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 	if final := h.run(t); final != "done" || len(*sessionCalls) != 1 || (*sessionCalls)[0].CanWait || !(*sessionCalls)[0].CanRetry {
 		t.Fatalf("final %q, calls %+v; want retry but no wait for a session", final, *sessionCalls)
 	}
+
+	m := newGateHarness(t, func(g *gateHarness) { g.mergeDelay = 20 * time.Minute })
+	m.onSessions(pushed("s1", "c1"))
+	m.onChecks(ChecksResult{State: ChecksSuccess})
+	mergeCalls := m.onGateSupervisor(GateDecision{Action: ActionRetry, Diagnosis: "hung"})
+	m.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	m.env.RegisterDelayedCallback(func() {
+		m.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityMerge, ActivityID: "11", Attempt: 1, AlertID: 1, Bound: 90 * time.Second})
+	}, time.Hour+5*time.Minute)
+	if final := m.run(t); final != "done" || len(*mergeCalls) != 1 || (*mergeCalls)[0].CanWait || !(*mergeCalls)[0].CanRetry {
+		t.Fatalf("final %q, calls %+v; want retry but no wait for a merge (2 x 90 s outlasts its 2 min attempt)", final, *mergeCalls)
+	}
 }
 
 // A gate that finishes while the supervisor deliberates wins (ruling
