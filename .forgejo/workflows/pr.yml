@@ -45,13 +45,17 @@ jobs:
       - name: print job environment variable NAMES only
         run: env | cut -d= -f1 | sort
       # The per-run job token (FORGEJO_TOKEN = GITHUB_TOKEN, plus the runtime
-      # and OIDC request tokens) is the only credential a PR job may hold.
+      # token) is the only credential a PR job may hold. forgejo-runner sets
+      # ACTIONS_ID_TOKEN_REQUEST_TOKEN and _URL on every job, empty unless the
+      # workflow enables enable-openid-connect, which Forgejo overrides to off
+      # on a fork's pull request (backlog 56).
       - name: assert no registry or repository write credential
         run: |
           bad=$(env | cut -d= -f1 | grep -Ei '(TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIALS?|AUTH|(^|_)PAT|(^|_)KEY)$|REGISTRY|DOCKER' \
             | grep -Evx 'FORGEJO_TOKEN|GITHUB_TOKEN|GITEA_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN' || true)
           if [ -n "$bad" ]; then echo "credential-shaped variables: $bad"; exit 1; fi
           if [ -e "$HOME/.docker/config.json" ] || [ -e "$HOME/.git-credentials" ]; then echo "credential file in HOME"; exit 1; fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "the job can request an OIDC ID token"; exit 1; fi
           echo "only the per-run job token is present"
       - name: assert the job token reads but cannot push
         run: |
