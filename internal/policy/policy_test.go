@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +145,27 @@ risk:
   default: normal
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
+
+// Tools are the tools the classes may call together, sorted: coder's
+// two, researcher's one, and nothing for a class the policy lacks.
+func TestTools(t *testing.T) {
+	d, err := Parse([]byte(withTools))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		classes []string
+		want    []string
+	}{
+		{[]string{"researcher"}, []string{"web_scrape"}},
+		{[]string{"coder", "researcher"}, []string{"replicate_predict", "web_scrape"}},
+		{[]string{"nobody"}, nil},
+	} {
+		if got := d.Tools(tc.classes); !slices.Equal(got, tc.want) {
+			t.Errorf("Tools(%v) = %v, want %v", tc.classes, got, tc.want)
+		}
+	}
+}
 
 func TestToolCap(t *testing.T) {
 	d, err := Parse([]byte(withTools))

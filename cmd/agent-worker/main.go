@@ -122,6 +122,7 @@ func run(log func(string, ...any)) int {
 		Author:         env.author,
 		AuthorStanding: env.authorStanding,
 		Report:         env.report,
+		Tools:          env.tools,
 	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
@@ -325,7 +326,7 @@ type workerEnv struct {
 	gatewayURL, tokenFile, model                              string
 	answerTokens, headroomTokens                              int
 	steps                                                     int
-	findings, answers, posterInfo                             []string
+	findings, answers, posterInfo, tools                      []string
 	author, authorStanding                                    string
 	home                                                      string
 	// report is a report session's guide (MODE report, ruling 185): no
@@ -380,8 +381,8 @@ func loadEnv() (workerEnv, error) {
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
-	// FINDINGS, ANSWERS and POSTER_INFO arrive as JSON arrays; absent means none.
-	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo} {
+	// FINDINGS, ANSWERS, POSTER_INFO and TOOLS arrive as JSON arrays; absent means none.
+	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools} {
 		if raw := str(name); raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)

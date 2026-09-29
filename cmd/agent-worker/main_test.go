@@ -842,6 +842,18 @@ func TestDeliverPushesFinishedOrStoppedSessionsOnly(t *testing.T) {
 	}
 }
 
+func TestLoadEnvParsesTools(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("TOOLS", `["request_info","web_search"]`)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if len(e.tools) != 2 || e.tools[0] != "request_info" || e.tools[1] != "web_search" {
+		t.Fatalf("tools = %v", e.tools)
+	}
+}
+
 func TestLoadEnvParsesAnswers(t *testing.T) {
 	setRequiredEnv(t)
 	t.Setenv("ANSWERS", `["sebastian: b", "sebastian: a"]`)

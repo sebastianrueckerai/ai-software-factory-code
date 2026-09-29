@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -309,20 +310,43 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
 	}
-	b.WriteString("\n\n" + cmp.Or(brief.Report, workGuide))
+	b.WriteString("\n\n" + toolsLine(brief.Tools) + "\n" + cmp.Or(brief.Report, workGuide(brief.Tools)))
 	return b.String()
 }
 
+// toolsLine names the gateway's tools open to the task: the ones its
+// tools/list shows.
+func toolsLine(tools []string) string {
+	if len(tools) == 0 {
+		return "Factory tools: none is open to you."
+	}
+	return "Factory tools open to you (the MCP server factory-tools, each as factory-tools_<tool>): " + strings.Join(tools, ", ") + ". No other factory tool is."
+}
+
 // workGuide ends every brief: reproduce first, and how to end a session
-// (rulings 149, 150).
-const workGuide = "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
-	"holding the shell command that reproduced it: the factory runs it at the base, where it must fail, and on your change, where it must pass, so it must " +
-	"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
-	"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. If you cannot reproduce it and find no fault, " +
-	"call request_info with what you tried and what you need instead of guessing. If only a human can decide, call escalate_to_human with your recommendation. " +
-	"These two tools are your only way to ask: nobody answers a question in a message. " +
-	"You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the module proxy. " +
-	"End with a short last message: what you changed, and whether you recommend merging it and why."
+// (rulings 149, 150), naming request_info and escalate_to_human only where
+// the task's tools hold them.
+func workGuide(tools []string) string {
+	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
+		"holding the shell command that reproduced it: the factory runs it at the base, where it must fail, and on your change, where it must pass, so it must " +
+		"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
+		"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. "
+	if slices.Contains(tools, policy.ToolRequestInfo) {
+		g += "If you cannot reproduce it and find no fault, call request_info with what you tried and what you need instead of guessing. "
+	}
+	asks := 0
+	if slices.Contains(tools, policy.ToolRequestInfo) {
+		asks++
+	}
+	if slices.Contains(tools, policy.ToolEscalate) {
+		g += "If only a human can decide, call escalate_to_human with your recommendation. "
+		asks++
+	}
+	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
+		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
+	return g + "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the module proxy. " +
+		"End with a short last message: what you changed, and whether you recommend merging it and why."
+}
 
 // mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP
 // tools, which also cuts a tool call (5000 ms by default): above the

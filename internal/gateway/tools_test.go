@@ -227,6 +227,45 @@ func TestMCPListsTheTools(t *testing.T) {
 	}
 }
 
+// tools/list shows only what the task's classes may call, from the same
+// check that decides a call: a hidden tool called anyway is refused and
+// audited like any tool the class lacks.
+func TestMCPListsOnlyTheClassTools(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Document.Classes["reader"] = policy.Class{Models: []string{"coding-cheap"}, Tools: map[string]policy.ToolCap{
+		policy.ToolWebSearch: {MaxRequests: 3, MaxEUR: 0.1}, policy.ToolRequestInfo: {}}}
+	for _, tc := range []struct {
+		classes []string
+		want    string
+	}{
+		{[]string{"reader"}, "request_info,web_search"},
+		{[]string{"odd"}, ""},
+	} {
+		e := newToolEnv(t, running(tc.classes...), pv)
+		res, err := e.session.ListTools(context.Background(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, tl := range res.Tools {
+			names = append(names, tl.Name)
+		}
+		if strings.Join(names, ",") != tc.want {
+			t.Fatalf("%v: tools = %v, want %s", tc.classes, names, tc.want)
+		}
+		text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"})
+		if !isErr || !strings.Contains(text, "refused_capability") {
+			t.Fatalf("%v: hidden web_scrape = %q, want refused_capability", tc.classes, text)
+		}
+		if a := e.lastAudit(t); a.Decision != "refused_capability" || a.Tool != policy.ToolWebScrape {
+			t.Fatalf("%v: audit = %+v", tc.classes, a)
+		}
+		if len(e.providers.calls) != 0 {
+			t.Fatalf("%v: provider called", tc.classes)
+		}
+	}
+}
+
 func TestMCPRefusesWithoutIdentity(t *testing.T) {
 	store := newMemStore(running("coder"))
 	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("no token")}, Store: store, Minter: &fakeMinter{}, Prices: testPrices})

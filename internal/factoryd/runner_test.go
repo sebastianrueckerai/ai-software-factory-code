@@ -820,6 +820,26 @@ func podEnv(p *fakePod) map[string]string {
 	return env
 }
 
+// The worker gets the tools the task's classes may call under its pinned
+// version, for the brief to name.
+func TestRunSessionPassesTheOpenTools(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	v := runner.cfg.Policy()
+	coder := v.Document.Classes["coder"]
+	coder.Tools = map[string]policy.ToolCap{policy.ToolWebSearch: {MaxRequests: 1, MaxEUR: 0.1}, policy.ToolRequestInfo: {}}
+	v.Document.Classes["coder"] = coder
+	runner.cfg.Policy = func() policy.Version { return v }
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["TOOLS"]; got != `["request_info","web_search"]` {
+		t.Fatalf("TOOLS = %s, want request_info and web_search", got)
+	}
+}
+
 func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()

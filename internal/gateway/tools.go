@@ -182,7 +182,22 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
 	}
+	srv.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if list, ok := res.(*mcp.ListToolsResult); ok {
+				list.Tools = slices.DeleteFunc(list.Tools, func(t *mcp.Tool) bool { return !c.allows(t.Name) })
+			}
+			return res, err
+		}
+	})
 	return srv
+}
+
+// allows is the one admission check of a tool, for tools/list and for
+// every call: one of the task's classes lists it.
+func (c *toolCaller) allows(tool string) bool {
+	return c.pv.Document.AllowsTool(c.task.Classes, tool)
 }
 
 // paidCall is one paid tool call. prepare validates the arguments and
@@ -457,7 +472,7 @@ const escalationTimeout = 30 * time.Second
 
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
-	if !c.pv.Document.AllowsTool(c.task.Classes, tool) {
+	if !c.allows(tool) {
 		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf(
 			"%s is not allowed for capability classes %q under policy version %d", tool, c.task.Classes, c.pv.ID))
 	}

@@ -929,6 +929,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	findingsJSON, _ := json.Marshal(s.findings)
 	answersJSON, _ := json.Marshal(s.answers)
 	posterJSON, _ := json.Marshal(s.posterInfo)
+	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities))
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
@@ -948,6 +949,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "FINDINGS", "value": string(findingsJSON)},
 		{"name": "ANSWERS", "value": string(answersJSON)},
 		{"name": "POSTER_INFO", "value": string(posterJSON)},
+		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
 	}

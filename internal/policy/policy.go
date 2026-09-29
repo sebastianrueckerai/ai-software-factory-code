@@ -527,6 +527,19 @@ func (d Document) AllowsTool(classes []string, tool string) bool {
 	return ok
 }
 
+// Tools are the tools any of classes may call, sorted: what the gateway
+// lists to the task and the brief names.
+func (d Document) Tools(classes []string) []string {
+	var out []string
+	for _, tool := range append(slices.Clone(PaidTools), FreeTools...) {
+		if d.AllowsTool(classes, tool) {
+			out = append(out, tool)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // AllowsModel reports whether any of classes may call model.
 func (d Document) AllowsModel(classes []string, model string) bool {
 	for _, c := range classes {

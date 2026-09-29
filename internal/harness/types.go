@@ -31,6 +31,8 @@ type TaskBrief struct {
 	// Report is a report session's guide (ruling 185): what to write in
 	// the last message instead of changing code; "" for a coding session.
 	Report string `json:"report,omitempty"`
+	// Tools are the gateway's tools the task's classes may call, sorted.
+	Tools []string `json:"tools,omitempty"`
 }
 
 // Author standings (ruling 152).
