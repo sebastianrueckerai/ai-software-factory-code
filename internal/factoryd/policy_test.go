@@ -504,11 +504,11 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 			case path == "git/trees/f1" && r.URL.Query().Get("recursive") == "true":
 				var entries []string
 				for _, name := range []string{"policy.yaml", "projects", "projects/ai-software-factory-infra.yaml", "schema", "schema/policy.schema.json", "workflow.yaml"} {
-					typ := "blob"
+					typ, mode := "blob", "100644"
 					if !strings.Contains(name, ".") {
-						typ = "tree"
+						typ, mode = "tree", "040000"
 					}
-					entries = append(entries, fmt.Sprintf(`{"path":%q,"type":%q,"sha":"x"}`, name, typ))
+					entries = append(entries, fmt.Sprintf(`{"path":%q,"type":%q,"mode":%q,"sha":"x"}`, name, typ, mode))
 				}
 				fmt.Fprintf(w, `{"total_count":%d,"tree":[%s]}`, len(entries), strings.Join(entries, ","))
 			case strings.HasPrefix(path, "raw/factory/") && r.URL.Query().Get("ref") == "c9":
@@ -579,6 +579,25 @@ func TestForgejoConfigSource(t *testing.T) {
 	}
 	if !maps.EqualFunc(got, want, bytes.Equal) {
 		t.Fatalf("Files = %v, want %v", slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
+	}
+}
+
+// A symbolic link in factory/ is refused, as config check refuses it.
+func TestForgejoConfigRefusesSymbolicLinks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/i/git/trees/c9":
+			io.WriteString(w, `{"total_count":1,"tree":[{"path":"factory","type":"tree","mode":"040000","sha":"f1"}]}`)
+		case "/api/v1/repos/sf/i/git/trees/f1":
+			io.WriteString(w, `{"total_count":2,"tree":[{"path":"policy.yaml","type":"blob","mode":"100644","sha":"a"},{"path":"workflow.yaml","type":"blob","mode":"120000","sha":"b"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	src := &ForgejoConfig{Forgejo: &Forgejo{BaseURL: srv.URL}, Token: "t", Repo: Repo{Owner: "sf", Name: "i"}, Branch: "main", Dir: "factory"}
+	if _, err := src.Files(context.Background(), "c9"); err == nil || !strings.Contains(err.Error(), "workflow.yaml: the tree holds regular files only") {
+		t.Fatalf("Files with a symbolic link = %v", err)
 	}
 }
 

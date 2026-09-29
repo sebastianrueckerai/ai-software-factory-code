@@ -285,11 +285,18 @@ func (c *ForgejoConfig) Files(ctx context.Context, commit string) (map[string][]
 	if err != nil {
 		return nil, err
 	}
-	files := map[string][]byte{}
+	var blobs []treeEntry
 	for _, e := range entries {
-		if e.Type != "blob" || strings.HasPrefix(e.Path, policy.DirSchema+"/") {
-			continue
+		switch {
+		case e.Type == "tree" || strings.HasPrefix(e.Path, policy.DirSchema+"/"):
+		case e.Type != "blob" || e.Mode != "100644" && e.Mode != "100755":
+			return nil, fmt.Errorf("%s: the tree holds regular files only", e.Path)
+		default:
+			blobs = append(blobs, e)
 		}
+	}
+	files := map[string][]byte{}
+	for _, e := range blobs {
 		var segs []string
 		for _, seg := range strings.Split(c.Dir+"/"+e.Path, "/") {
 			segs = append(segs, url.PathEscape(seg))
@@ -306,6 +313,7 @@ func (c *ForgejoConfig) Files(ctx context.Context, commit string) (map[string][]
 type treeEntry struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
+	Mode string `json:"mode"`
 	SHA  string `json:"sha"`
 }
 

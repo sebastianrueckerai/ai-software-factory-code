@@ -150,8 +150,8 @@ func decodeOne(b []byte, out any, strict bool) error {
 }
 
 // ReadDir reads every regular file under dir, keyed by its slash path
-// relative to dir, as ParseTree and CheckSchemas take them. Nothing
-// outside dir is read, a symbolic link included.
+// relative to dir, as ParseTree and CheckSchemas take them. Any other
+// entry, a symbolic link included, is an error, as it is in the loader.
 func ReadDir(dir string) (map[string][]byte, error) {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -161,8 +161,11 @@ func ReadDir(dir string) (map[string][]byte, error) {
 	fsys := root.FS()
 	files := map[string][]byte{}
 	err = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
+		switch {
+		case err != nil || d.IsDir():
 			return err
+		case !d.Type().IsRegular():
+			return fmt.Errorf("%s: the tree holds regular files only", p)
 		}
 		files[p], err = fs.ReadFile(fsys, p)
 		return err

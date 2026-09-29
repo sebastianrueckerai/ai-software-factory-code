@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"path"
 	"reflect"
 	"slices"
@@ -151,6 +153,30 @@ func TestLimitsJSON(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(`{"agent_time":"soon"}`), &back); err == nil {
 		t.Fatal("a bad duration decoded")
+	}
+}
+
+// The tree holds regular files only: a symbolic link is refused, as the
+// loader refuses one in Forgejo, not skipped.
+func TestReadDirRefusesSymbolicLinks(t *testing.T) {
+	dir := t.TempDir()
+	for name, b := range fixtureTree(t) {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ReadDir(dir); err != nil {
+		t.Fatalf("regular tree: %v", err)
+	}
+	if err := os.Symlink("demo-app.yaml", filepath.Join(dir, "projects", "demo.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadDir(dir); err == nil || !strings.Contains(err.Error(), "projects/demo.yaml: the tree holds regular files only") {
+		t.Fatalf("ReadDir with a symbolic link = %v", err)
 	}
 }
 
