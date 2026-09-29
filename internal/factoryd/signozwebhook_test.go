@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -235,6 +236,64 @@ func TestAlertIntakeFilesABugIssueThatStartsATask(t *testing.T) {
 		a.Detail["project"] != "demo-app" || a.Detail["namespace"] != "demo-staging" || a.Detail["issue"] != int64(1) ||
 		a.Detail["starts_at"] != firedAt || a.Detail["link"] != "https://signoz.example/alerts/overview?ruleId=r-1" {
 		t.Fatalf("alert row %+v", a)
+	}
+}
+
+// flakyBook fails CreateTask the first creates times.
+type flakyBook struct {
+	*fakeStore
+	creates int
+}
+
+func (b *flakyBook) CreateTask(ctx context.Context, t Task) error {
+	if b.creates > 0 {
+		b.creates--
+		return errors.New("database down")
+	}
+	return b.fakeStore.CreateTask(ctx, t)
+}
+
+// TestAlertIntakeRetryAfterAFailedFilingFilesOneTask: a delivery that
+// fails after the issue was filed leaves its alerts row, so SigNoz's
+// retry files the same one task, not a second issue and task.
+func TestAlertIntakeRetryAfterAFailedFilingFilesOneTask(t *testing.T) {
+	r := newAlertRig(t)
+	r.in.Store = &flakyBook{fakeStore: r.store, creates: 1}
+	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("first post: status %d, want 500", rr.Code)
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 1 || rows[0].TaskID == "" {
+		t.Fatalf("after the failed delivery: %d alert rows, first TaskID %q; want 1 row with its task's id", len(rows), rows)
+	}
+	if len(r.store.tasks) != 0 {
+		t.Fatalf("after the failed delivery: %d tasks, want 0", len(r.store.tasks))
+	}
+	for i := 1; i <= 2; i++ {
+		if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusOK {
+			t.Fatalf("retry %d: status %d, want 200", i, rr.Code)
+		}
+	}
+	rows = r.store.alertRows()
+	if len(rows) != 1 {
+		t.Fatalf("after the retries: %d alert rows, want 1", len(rows))
+	}
+	id := rows[0].TaskID
+	if len(r.store.tasks) != 1 {
+		t.Fatalf("after the retries: %d tasks, want 1", len(r.store.tasks))
+	}
+	if got := r.store.tasks[id].IssueNumber; got != 2 {
+		t.Fatalf("task's issue %d, want 2 (issue #1 is the orphan of the failed delivery)", got)
+	}
+	if !slices.Equal(r.flows.started, []string{id}) {
+		t.Fatalf("started %v, want [%s]", r.flows.started, id)
+	}
+	if got := rows[0].Detail["issue"]; got != int64(2) {
+		t.Fatalf("row's issue %v, want 2", got)
+	}
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	if want := []string{"#2 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("comments %q, want %q", r.fj.comments, want)
 	}
 }
 
