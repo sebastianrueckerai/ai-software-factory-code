@@ -1510,7 +1510,7 @@ them over the factoryd pods:
   suggestion, a closed human-lane issue, a resolved config task), so it
   equals the tasks turned done, failed or closed. `state` is that final
   status. `project`
-  and `merge_rule` come from the repository's project row (the repository
+  and `merge_rule` come from the repository's project file (the repository
   and `human` without one), `model_alias` is the alias of the task's last
   session (`tasks.model_alias`, set with each `sessions` row; `none` for
   a task that ran none: a roll, a human-lane task), `attempts` its sessions.

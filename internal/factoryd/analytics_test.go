@@ -55,7 +55,7 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityFinish, "t-roll", "done", "pull request merged by factory-merge"); err != nil {
 		t.Fatal(err)
 	}
-	store.projects = nil
+	store.projects = []Project{}
 	failed := prTask
 	failed.ID, failed.Status, failed.SpentEUR, failed.ModelAlias = "t2", "running", 0.1, "coding-cheap"
 	failed.Usage.Attempts = 3
@@ -209,8 +209,8 @@ func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-code,state=closed": 1,
-		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-code,state=done":   1,
+		"attempts=0,merge_rule=human,model_alias=none,project=sf-ai-software-factory-code,state=closed": 1,
+		"attempts=0,merge_rule=human,model_alias=none,project=sf-ai-software-factory-code,state=done":   1,
 	})
 }
 

@@ -654,7 +654,7 @@ func TestConfigAlarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=0,merge_rule=human,model_alias=none,project=sf/ai-software-factory-infra,state=done": 1,
+		"attempts=0,merge_rule=human,model_alias=none,project=sf-ai-software-factory-infra,state=done": 1,
 	})
 	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
 		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
