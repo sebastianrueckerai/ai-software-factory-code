@@ -11,7 +11,7 @@ import (
 )
 
 func TestSupervisorConfigMustBeSane(t *testing.T) {
-	base := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10}
+	base := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, MaxCalls: 3}
 	if _, err := NewSupervisor(base, time.Unix(0, 0), time.Unix(0, 0)); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
@@ -22,6 +22,7 @@ func TestSupervisorConfigMustBeSane(t *testing.T) {
 		"wall clock spent":  func(c *SupervisorConfig) { c.WallClockCap = -time.Hour },
 		"repetition 1":      func(c *SupervisorConfig) { c.RepetitionEvents = 1 },
 		"repetition 0":      func(c *SupervisorConfig) { c.RepetitionEvents = 0 },
+		"no calls":          func(c *SupervisorConfig) { c.MaxCalls = 0 },
 	} {
 		cfg := base
 		mutate(&cfg)
@@ -123,7 +124,7 @@ func TestSupervisorRepetitionDetector(t *testing.T) {
 }
 
 func TestSupervisorWallClockSpansSessions(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 30 * time.Minute, RepetitionEvents: 100}
+	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 30 * time.Minute, RepetitionEvents: 100, MaxCalls: 3}
 	taskStart := time.Unix(0, 0)
 	// A resumed session starting 25 minutes into the task has 5 minutes left.
 	s, err := NewSupervisor(cfg, taskStart, taskStart.Add(25*time.Minute))
@@ -163,6 +164,7 @@ func mustSupervisor(t *testing.T, noProgress, wallClock time.Duration, repetitio
 		NoProgressAfter:  noProgress,
 		WallClockCap:     wallClock,
 		RepetitionEvents: repetition,
+		MaxCalls:         3,
 		NoWriteAfter:     100 * time.Hour,
 	}, time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
@@ -463,7 +465,7 @@ func TestResetClearsOnlyTheTrippedDetector(t *testing.T) {
 }
 
 func TestSupervisorHalfWayByTimeFiresOncePerTask(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 100}
+	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 100, MaxCalls: 3}
 	start := time.Unix(0, 0)
 	// a second session: 8 of the 20 minutes were used before it
 	s, err := NewSupervisor(cfg, start, start.Add(8*time.Minute))
@@ -601,7 +603,7 @@ func minute(m float64) time.Time { return time.Unix(0, 0).Add(time.Duration(m * 
 // trips it, the wait after the last write or edit tool call; a command, a
 // shell edit's diff, a checkpoint or silence never do.
 func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
-	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000},
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3},
 		time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)

@@ -51,7 +51,7 @@ type SupervisorConfig struct {
 	SameFailure      int           // 0 = DefaultSameFailure
 	SameCall         int           // 0 = DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
-	MaxCalls         int           // 0 = DefaultMaxCalls
+	MaxCalls         int           // supervisor calls per session (limits.supervisor_calls); the next trip escalates without one
 	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
 	// policy.DefaultDetectors
 	NoWriteAfter time.Duration
@@ -67,8 +67,8 @@ func (c SupervisorConfig) validate() error {
 	if c.RepetitionEvents < 2 {
 		return fmt.Errorf("supervisor: RepetitionEvents must be >= 2, is %d", c.RepetitionEvents)
 	}
-	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 0 {
-		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 0: %+v", c)
+	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 1 {
+		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 1: %+v", c)
 	}
 	if c.NoWriteAfter < 0 {
 		return fmt.Errorf("supervisor: NoWriteAfter must be positive (0 = default), is %s", c.NoWriteAfter)
@@ -279,7 +279,6 @@ const (
 	DefaultSameFailure = 3  // same command, same error signature, in a row
 	DefaultSameCall    = 4  // same tool, same arguments, per session
 	DefaultChurn       = 15 // file changes since the diff last grew, no newly passing command
-	DefaultMaxCalls    = 3  // supervisor calls per session; the next trip escalates without one
 )
 
 // withDefaults fills unset detector thresholds.
@@ -292,9 +291,6 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	}
 	if c.Churn == 0 {
 		c.Churn = DefaultChurn
-	}
-	if c.MaxCalls == 0 {
-		c.MaxCalls = DefaultMaxCalls
 	}
 	if c.NoWriteAfter == 0 {
 		c.NoWriteAfter = policy.Document{}.Detector(policy.DetectorNoWrite)
