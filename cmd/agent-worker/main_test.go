@@ -286,6 +286,117 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	}
 }
 
+// An agent that pulls main mid-session (merge or rebase) must not push
+// main's newer commits as its own: the pushed commit sits on the newest main
+// commit its HEAD holds, next to a resumed session's work in progress, so
+// the pull request's diff is the agent's change only. Main's change to
+// .forgejo/ comes with the pull and is not the agent's.
+func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	human := []string{"-c", "user.name=Human", "-c", "user.email=h@h"}
+	agentID := []string{"-c", "user.name=mallory", "-c", "user.email=m@m"}
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	os.MkdirAll(filepath.Join(seed, ".forgejo", "workflows"), 0o755)
+	os.WriteFile(filepath.Join(seed, ".forgejo", "workflows", "pr.yml"), []byte("v1\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run(append([]string{"-C", seed}, append(human, "commit", "-q", "-m", "init")...)...)
+	m0 := run("-C", seed, "rev-parse", "HEAD")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	run("-C", seed, "checkout", "-q", "-b", "wip")
+	os.WriteFile(filepath.Join(seed, "wip.txt"), []byte("wip\n"), 0o644)
+	run("-C", seed, "add", "wip.txt")
+	run(append([]string{"-C", seed}, append(human, "commit", "-q", "-m", "factory task t1: work in progress")...)...)
+	wip := run("-C", seed, "rev-parse", "HEAD")
+	run("-C", seed, "push", "-q", fork, "wip:factory/resumed-merged-main")
+	run("-C", seed, "checkout", "-q", "main")
+	os.WriteFile(filepath.Join(seed, ".forgejo", "workflows", "pr.yml"), []byte("v2\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "main.txt"), []byte("main\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run(append([]string{"-C", seed}, append(human, "commit", "-q", "-m", "main moves on")...)...)
+	m1 := run("-C", seed, "rev-parse", "HEAD")
+	run("-C", seed, "push", "-q", remote, "main")
+
+	change := func(dir string) {
+		os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o644)
+		run("-C", dir, "add", "a.txt")
+		run(append([]string{"-C", dir}, append(agentID, "commit", "-q", "-m", "fix")...)...)
+	}
+	pull := func(dir string) {
+		run("-C", dir, "fetch", "-q", "origin", "main")
+		run(append([]string{"-C", dir}, append(agentID, "merge", "-q", "--no-edit", "FETCH_HEAD")...)...)
+	}
+	for _, tc := range []struct {
+		name, start string
+		agent       func(dir string)
+		parents     string // the pushed commit's parents; "" = nothing pushed
+		diff        string // files the commit changes against m1
+		refused     bool
+	}{
+		{name: "merged main", start: m0, parents: m1, diff: "a.txt", agent: func(dir string) { change(dir); pull(dir) }},
+		{name: "rebased onto main", start: m0, parents: m1, diff: "a.txt", agent: func(dir string) {
+			change(dir)
+			run("-C", dir, "fetch", "-q", "origin", "main")
+			run(append([]string{"-C", dir}, append(agentID, "rebase", "-q", "FETCH_HEAD")...)...)
+		}},
+		{name: "resumed merged main", start: wip, parents: wip + " " + m1, diff: "a.txt\nwip.txt", agent: func(dir string) { pull(dir); change(dir) }},
+		{name: "only pulled main", start: m0, agent: pull},
+		{name: "pulled main and undid its workflow", start: m0, refused: true, agent: func(dir string) {
+			pull(dir)
+			os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "pr.yml"), []byte("v1\n"), 0o644)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := cloneBase(e, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, err := prepareRepo(dir, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.agent(dir)
+
+			commit, err := commitAndPush(dir, e, base, func() error { return nil })
+			if tc.refused {
+				if err == nil || !strings.Contains(err.Error(), "refusing to push: .forgejo/") {
+					t.Fatalf("commitAndPush = %q, %v; want the workflow refusal", commit, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.parents == "" {
+				if commit != "" {
+					t.Fatalf("commit = %q, want nothing pushed: main's commits are not the agent's change", commit)
+				}
+				return
+			}
+			if got := run("-C", fork, "rev-list", "--parents", "-n", "1", commit); got != commit+" "+tc.parents {
+				t.Fatalf("commit and parents = %q, want %q", got, commit+" "+tc.parents)
+			}
+			if got := run("-C", fork, "diff", "--name-only", m1, commit); got != tc.diff {
+				t.Fatalf("change against main = %q, want %q", got, tc.diff)
+			}
+		})
+	}
+}
+
 // The work guide asks an agent to write its reproduction as a scratch test
 // named zz_repro_*_test.go; that file is the agent's evidence, not the
 // change. The worker commits the agent's work tree, so it must leave the
