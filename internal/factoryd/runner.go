@@ -69,6 +69,9 @@ type RunnerConfig struct {
 	// LastFailure is the last failure of a workflow's pending activity
 	// run, "" for none (Temporal's pending activity info).
 	LastFailure func(ctx context.Context, workflowID, activityID string) (string, error)
+	// Workflows starts the workflows of the report tasks the screening
+	// stage opens.
+	Workflows Workflows
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the
@@ -207,8 +210,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if err := (&Runner{cfg: cfg}).supervisorConfig(cfg.Policy().Document).validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
-	if cfg.Gates == nil || cfg.LastFailure == nil {
-		return nil, fmt.Errorf("runner: the gate watch and the last failure reader are required")
+	if cfg.Gates == nil || cfg.LastFailure == nil || cfg.Workflows == nil {
+		return nil, fmt.Errorf("runner: the gate watch, the last failure reader and the workflows are required")
 	}
 	if cfg.ReproTimeout <= 0 {
 		cfg.ReproTimeout = 10 * time.Minute
@@ -247,6 +250,7 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		ChecksTimeout: r.cfg.ChecksTimeout,
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,
+		Stages:        v.Workflow.Stages,
 	}
 }
 
@@ -292,6 +296,12 @@ type sessionSpec struct {
 	repo       Repo
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
+	// report is a report session's guide (ruling 185); "" for a coding
+	// session
+	report string
+	// standing overrides the task's author standing: a report reads its
+	// parent's issue
+	standing string
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -352,6 +362,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return out, err
 	}
 	supCfg := r.supervisorConfig(s.policy)
+	supCfg.ReadOnly = s.report != ""
 	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
@@ -623,29 +634,35 @@ func (r *Runner) supervisorConfig(d policy.Document) SupervisorConfig {
 // pinned is policy version id, the one a task's workflow started under;
 // the version in force for id 0 (a workflow from before the pin).
 func (r *Runner) pinned(ctx context.Context, id int64) (policy.Document, error) {
+	v, err := r.pinnedVersion(ctx, id)
+	return v.Document, err
+}
+
+// pinnedVersion is pinned's whole version, its ID with it.
+func (r *Runner) pinnedVersion(ctx context.Context, id int64) (policy.Version, error) {
 	if id == 0 {
-		return r.cfg.Policy().Document, nil
+		return r.cfg.Policy(), nil
 	}
 	v, ok, err := r.cfg.PolicyVersion(ctx, id)
 	if err != nil {
-		return policy.Document{}, fmt.Errorf("read policy version %d: %w", id, err)
+		return policy.Version{}, fmt.Errorf("read policy version %d: %w", id, err)
 	}
 	if !ok {
-		return policy.Document{}, terminalError("policy version %d, which the task started under, does not exist", id)
+		return policy.Version{}, terminalError("policy version %d, which the task started under, does not exist", id)
 	}
-	return v.Document, nil
+	return v, nil
 }
 
-// factoryModel is the alias the policy in force names for purpose on t's
-// capability classes; "" when it names none.
-func (r *Runner) factoryModel(t Task, purpose string) string {
-	return r.cfg.Policy().Document.FactoryModel(t.RequiredCapabilities, purpose)
+// factoryModel is the alias the task's pinned document names for purpose
+// on t's capability classes; "" when it names none.
+func factoryModel(d policy.Document, t Task, purpose string) string {
+	return d.FactoryModel(t.RequiredCapabilities, purpose)
 }
 
 // askSupervisor builds the supervisor's input and calls it through the
 // gateway on the task's account.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
-	return r.supervisor.Decide(ctx, t.ID, r.factoryModel(t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
+	return r.supervisor.Decide(ctx, t.ID, factoryModel(s.policy, t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
 			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
 		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},
@@ -917,9 +934,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": r.branch(t)},
-		{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
-		{"name": "PUSH_TOKEN", "valueFrom": map[string]any{
-			"secretKeyRef": map[string]any{"name": "task-git", "key": "PUSH_TOKEN"}}},
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
@@ -929,7 +943,14 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "ANSWERS", "value": string(answersJSON)},
 		{"name": "POSTER_INFO", "value": string(posterJSON)},
 		{"name": "AUTHOR", "value": t.Author},
-		{"name": "AUTHOR_STANDING", "value": t.Standing()},
+		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
+	}
+	if s.report != "" {
+		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": s.report})
+	} else {
+		env = append(env, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
+			map[string]any{"name": "PUSH_TOKEN", "valueFrom": map[string]any{
+				"secretKeyRef": map[string]any{"name": "task-git", "key": "PUSH_TOKEN"}}})
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})

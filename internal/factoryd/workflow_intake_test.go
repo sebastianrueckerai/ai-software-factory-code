@@ -25,6 +25,7 @@ func TestAutoMerge(t *testing.T) {
 	auto := GateResults{
 		Policy:       PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto},
 		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1},
+		ChecksPassed: true,
 	}
 	approve := Review{Verdict: "approve", Summary: "fixes the slug check", StrictImprovement: &yes}
 	with := func(f func(*GateResults, *Review)) (GateResults, Review) {
@@ -38,6 +39,7 @@ func TestAutoMerge(t *testing.T) {
 		unmet string
 	}{
 		"all hold":                 {func(*GateResults, *Review) {}, true, ""},
+		"checks not green":         {func(g *GateResults, _ *Review) { g.ChecksPassed = false }, false, "the checks did not run green"},
 		"merge rule human":         {func(g *GateResults, _ *Review) { g.Policy.MergeRule = policy.MergeHuman }, false, "the project's merge rule is human"},
 		"no project row":           {func(g *GateResults, _ *Review) { g.Policy.MergeRule = "" }, false, "the project's merge rule is human"},
 		"normal requires approval": {func(g *GateResults, _ *Review) { g.Policy.Outcome = policy.OutcomeRequiresApproval }, false, "risk class normal is requires_approval"},
@@ -577,5 +579,32 @@ func TestWorkflowHealedWaitingPosterWithAnAnswerResumes(t *testing.T) {
 	}
 	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].PosterInfo, []string{"visitor: Firefox 131"}) || len(h.infoAsked) != 0 {
 		t.Fatalf("sessions = %+v, info requests %q: want one session with the answer once", h.sessions, h.infoAsked)
+	}
+}
+
+// The second review round is given the first review and asked which of its
+// findings the new head addressed; the timeline counts the round (ruling
+// 177).
+func TestModelReviewSecondRoundCarriesTheFirst(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/slug.go b/slug.go\n"}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"the flag is checked now","findings":[],"strict_improvement":true}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, []Review{first})
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" {
+		t.Fatalf("review = %+v", rv)
+	}
+	msgs, _ := ll.chats[0]["messages"].([]any)
+	system, _ := msgs[0].(map[string]any)["content"].(string)
+	user, _ := msgs[1].(map[string]any)["content"].(string)
+	if !strings.Contains(user, `"earlier_reviews": [`) || !strings.Contains(user, `"main.go: check the flag"`) {
+		t.Fatalf("review input lacks the first review: %s", user)
+	}
+	if !strings.Contains(system, "which of their findings the new head addressed") {
+		t.Fatalf("prompt = %s", system)
+	}
+	if timeline := string(objGet(objects, "sessions/t1/timeline.jsonl")); !strings.Contains(timeline, `"round":2`) {
+		t.Fatalf("timeline = %s", timeline)
 	}
 }

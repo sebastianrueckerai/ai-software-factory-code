@@ -642,3 +642,11 @@ func TestBriefKeepsForgeriesInsideTheMarkers(t *testing.T) {
 		t.Fatalf("the standing line is not factoryd's first line:\n%s", outside)
 	}
 }
+
+// A report session's brief ends with its guide, not the coding guide.
+func TestBriefTextOfAReportEndsWithItsGuide(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", Report: "Write, do not code."}, "T")
+	if want := "The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>\n\nWrite, do not code."; got != want {
+		t.Fatalf("brief =\n%s\nwant\n%s", got, want)
+	}
+}

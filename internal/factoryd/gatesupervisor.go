@@ -114,9 +114,9 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 			return GateDecision{}, err
 		}
 		readCtx, cancel := context.WithTimeout(ctx, bundleReads)
-		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in)
+		bundle, secrets := r.gateBundle(readCtx, t, workflowID, in, pinned)
 		cancel()
-		content, err := r.supervisor.Chat(ctx, t.ID, r.factoryModel(t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
+		content, err := r.supervisor.Chat(ctx, t.ID, factoryModel(pinned, t, policy.PurposeGateSupervisor), policy.PurposeGateSupervisor,
 			pinned.Limits.SupervisorTimeout, gateSupervisorPrompt, scrubbed(bundle, redact.New(secrets...)))
 		if err != nil {
 			d = GateDecision{Action: ActionEscalate, Diagnosis: "the gate supervisor could not be asked: " + err.Error(),
@@ -154,7 +154,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 // gateBundle reads what the supervisor needs for the activity, and the
 // task's git tokens the bundle is scrubbed of; a read that fails puts its
 // error in the bundle instead.
-func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision) (gateBundle, []string) {
+func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision, pinned policy.Document) (gateBundle, []string) {
 	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: t.Objective,
@@ -210,7 +210,7 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 		}
 		b.State = map[string]any{"pull_request": pr}
 	case ActivityModelReview:
-		review := map[string]any{"model": r.factoryModel(t, policy.PurposeReview), "last_result": "none on this task's timeline"}
+		review := map[string]any{"model": factoryModel(pinned, t, policy.PurposeReview), "last_result": "none on this task's timeline"}
 		if step := lastStep(tl, "model_review"); step != nil {
 			review["last_result"] = step
 		}

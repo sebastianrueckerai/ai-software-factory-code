@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -60,6 +61,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityAutoMergeNote:               r.AutoMergeNote,
 		ActivityRequestInfo:                 r.RequestInfo,
 		ActivityCloseNotReproduced:          r.CloseNotReproduced,
+		ActivityScreen:                      r.Screen,
+		ActivityJudgeScreening:              r.JudgeScreening,
+		ActivityRunReport:                   r.RunReport,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -119,7 +123,8 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	if t.IssueNumber == 0 {
+	// a report task comments on its parent's issue
+	if t.IssueNumber == 0 && t.Parent == "" {
 		return terminalError("task %s has no linked issue", taskID)
 	}
 	return r.timeline.Append(ctx, taskID, "intake", map[string]any{"source": t.Source, "issue": t.IssueNumber, "started": rfc3339(t.CreatedAt)})
@@ -382,14 +387,20 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 		return 0, err
 	}
 	if t.Status != "waiting-human" {
-		if err := r.store.TransitionTask(ctx, taskID, []string{"running", "in-review"}, "waiting-human"); err != nil {
+		// queued: the screening stage's suspect verdict, before any session
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review"}, "waiting-human"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: task "+taskID+
-		" needs a human.\n\n"+fenced(reason)+"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task.")
+	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(reason) +
+		"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	if strings.HasPrefix(reason, screeningAsks) {
+		// the reasons go to the card only: they would teach the author
+		body = screenedLine
+	}
+	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body)
 	if err != nil {
 		return 0, err
 	}
@@ -399,8 +410,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
 		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
 	}
-	if reason == healedReason {
-		return id, nil // the question asked again: its alert is open already
+	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
+		return id, nil // the question asked again, or the screening's: its alert is open already
 	}
 	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: taskID,
 		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
@@ -590,10 +601,19 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status, Usage: t.Usage}
+	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Parent != "", Stronger: t.Source == SourceScreening}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
+	}
+	if st.Report {
+		return st, nil
+	}
+	if st.WriteUp, err = r.writeUp(ctx, t.ID); err != nil {
+		return RunState{}, err
+	}
+	if err := r.stageMemory(ctx, t.ID, &st); err != nil {
+		return RunState{}, err
 	}
 	var pr *PullRequestRef
 	if t.PRNumber != 0 {
@@ -631,11 +651,61 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st.Answers, st.Question = answersFrom(events)
+	st.Screening = waitsOnScreening(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})
 	return st, nil
+}
+
+// stageMemory rebuilds what the stages remembered from the task's
+// timeline: the stage_findings steps (returns to the agent, the history)
+// and the model_review steps (the reviews), the last round.
+func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
+	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return fmt.Errorf("read the timeline: %w", err)
+	}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		var step struct {
+			Step, Stage, To, Verdict, Summary, Note string
+			Round                                   int
+			Findings                                []string
+		}
+		if json.Unmarshal([]byte(line), &step) != nil {
+			continue
+		}
+		switch step.Step {
+		case "stage_findings":
+			for _, f := range step.Findings {
+				st.History = append(st.History, fmt.Sprintf("%s, round %d: %s", step.Stage, step.Round, f))
+			}
+			if step.To == "agent" {
+				if st.Returns == nil {
+					st.Returns = map[string]int{}
+				}
+				st.Returns[step.Stage]++
+			}
+			st.Round = max(st.Round, step.Round)
+		case "model_review":
+			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
+			st.Round = max(st.Round, step.Round)
+		}
+	}
+	return nil
+}
+
+// waitsOnScreening: the task's last escalation, not counting a healed
+// run's re-ask, is its screening's suspect verdict.
+func waitsOnScreening(events []IntakeEvent) bool {
+	last := ""
+	for _, e := range events {
+		if e.Kind == IntakeEscalation && e.Body != healedReason {
+			last = e.Body
+		}
+	}
+	return strings.HasPrefix(last, screeningAsks)
 }
 
 // answersFrom rebuilds the human's answers from a task's intake events
@@ -805,7 +875,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return err
 	}
 	if v := alertVerdict(final, reason); v != "" {
-		if err := r.store.JudgeTaskAlerts(ctx, taskID, v, FactoryDecider); err != nil {
+		if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
 			return err
 		}
 	}

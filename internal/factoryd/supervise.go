@@ -55,6 +55,9 @@ type SupervisorConfig struct {
 	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
 	// policy.DefaultDetectors
 	NoWriteAfter time.Duration
+	// ReadOnly: a report session, which writes no file; repetition and
+	// no_write do not apply.
+	ReadOnly bool
 }
 
 func (c SupervisorConfig) validate() error {
@@ -131,11 +134,11 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if traced != nil {
 		return s.trip(traced)
 	}
-	if s.sinceChange >= s.cfg.RepetitionEvents {
+	if !s.cfg.ReadOnly && s.sinceChange >= s.cfg.RepetitionEvents {
 		return s.trip(&Trip{Kind: TripRepetition, Detail: fmt.Sprintf("%d tool calls and commands without a file change", s.sinceChange)})
 	}
 	agent := ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand || ev.Kind == harness.EventModelCall
-	if agent && at.Sub(s.noWriteFrom) >= s.cfg.NoWriteAfter {
+	if agent && !s.cfg.ReadOnly && at.Sub(s.noWriteFrom) >= s.cfg.NoWriteAfter {
 		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("agent events for %s without a file write or edit", at.Sub(s.noWriteFrom).Round(time.Second))})
 	}
 	return s.halfWay(at)

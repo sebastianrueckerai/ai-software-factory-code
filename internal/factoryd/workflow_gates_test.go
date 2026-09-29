@@ -24,6 +24,10 @@ type gateHarness struct {
 	gate      PolicyGate
 	repro     []ReproResult // in order, the last repeating
 	review    Review
+	reviews   []Review      // in order, the last repeating; empty: review
+	earlier   [][]Review    // the earlier reviews each ModelReview call was given
+	screened  int           // Screen calls
+	judged    []string      // JudgeScreening verdicts
 	merge     []MergeResult // in order, the last repeating
 	mergeErrs []error       // Merge's error per call, in order; nil or short = none
 	reported  []string      // ReportMergeFailure reasons
@@ -35,6 +39,7 @@ type gateHarness struct {
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
 	policyCommits []string
+	policyPins    []int64
 	started       time.Time
 	requested     []time.Time // when each approval was requested, on the workflow's clock
 }
@@ -43,7 +48,12 @@ type gateHarness struct {
 // defaults: a normal class, no reproduction, an approving review, a
 // merge that goes through.
 func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
-	g := &gateHarness{workflowHarness: newWorkflowHarness(t),
+	return newGateHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, setup...)
+}
+
+// newGateHarnessWith is newGateHarness running wf.
+func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarness)) *gateHarness {
+	g := &gateHarness{workflowHarness: newWorkflowHarness(t, wf),
 		gate:   PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2},
 		repro:  []ReproResult{{}},
 		review: Review{Verdict: "approve", Summary: "does what the brief asks"},
@@ -53,8 +63,9 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 		f(g)
 	}
 	g.started = g.env.Now()
-	g.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything).After(g.policyDelay).Return(
-		func(ctx context.Context, taskID string, pr int64, commit string) (PolicyGate, error) {
+	g.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.policyDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+			g.policyPins = append(g.policyPins, pin)
 			g.policyCommits = append(g.policyCommits, commit)
 			g.steps = append(g.steps, "policy")
 			return g.gate, nil
@@ -71,10 +82,19 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			g.steps = append(g.steps, "repro "+commit)
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
-	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (Review, error) {
+	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review) (Review, error) {
 			g.steps = append(g.steps, "review "+commit)
+			g.earlier = append(g.earlier, earlier)
+			if len(g.reviews) > 0 {
+				return g.reviews[min(len(g.earlier), len(g.reviews))-1], g.reviewErr
+			}
 			return g.review, g.reviewErr
+		})
+	g.env.OnActivity(ActivityJudgeScreening, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, verdict string) error {
+			g.judged = append(g.judged, verdict)
+			return nil
 		})
 	g.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, in ApprovalInput) error {
@@ -106,6 +126,15 @@ func newGateHarness(t *testing.T, setup ...func(*gateHarness)) *gateHarness {
 			return nil
 		})
 	return g
+}
+
+// onScreen answers Screen with res.
+func (g *gateHarness) onScreen(res ScreenResult) {
+	g.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (ScreenResult, error) {
+			g.screened++
+			return res, nil
+		})
 }
 
 // Green checks go through the policy gate, the reproduction and the model
@@ -186,6 +215,7 @@ func TestWorkflowApprovalCarriesTheRequestsTime(t *testing.T) {
 func TestWorkflowBeforeGateStartedRecordsNoStart(t *testing.T) {
 	g := newGateHarness(t)
 	g.env.OnGetVersion("gate-started", workflow.DefaultVersion, versionGateStarted).Return(workflow.DefaultVersion)
+	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -232,10 +262,11 @@ func TestWorkflowMigrationsAreFlagged(t *testing.T) {
 	}
 }
 
-// A failed reproduction sends the next attempt back to the agent on the
-// stronger rung with the output as findings, like red checks.
-func TestWorkflowFailedReproductionIsFindings(t *testing.T) {
+// Before versionStages a failed reproduction sent the next attempt back
+// to the agent on the stronger rung at once, like red checks.
+func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
 	g := newGateHarness(t)
+	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
 	g.repro = []ReproResult{{Ran: true, Command: "go test ./x", Exit: 1, Output: "--- FAIL: TestX"}, {Ran: true, Command: "go test ./x"}}
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -349,6 +380,7 @@ func TestWorkflowFailedModelReviewIsANote(t *testing.T) {
 func TestWorkflowBeforeGatesRunsNoGate(t *testing.T) {
 	g := newGateHarness(t)
 	g.env.OnGetVersion("gates", workflow.DefaultVersion, versionGates).Return(workflow.DefaultVersion)
+	g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})

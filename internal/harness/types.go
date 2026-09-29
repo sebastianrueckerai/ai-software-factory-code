@@ -28,6 +28,9 @@ type TaskBrief struct {
 	Author         string   `json:"author,omitempty"`
 	AuthorStanding string   `json:"author_standing,omitempty"`
 	Artifacts      []string `json:"artifacts,omitempty"`
+	// Report is a report session's guide (ruling 185): what to write in
+	// the last message instead of changing code; "" for a coding session.
+	Report string `json:"report,omitempty"`
 }
 
 // Author standings (ruling 152).

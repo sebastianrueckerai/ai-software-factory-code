@@ -121,6 +121,7 @@ func run(log func(string, ...any)) int {
 		PosterInfo:     env.posterInfo,
 		Author:         env.author,
 		AuthorStanding: env.authorStanding,
+		Report:         env.report,
 	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
@@ -135,6 +136,10 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 
+	if env.report != "" {
+		endBrief(nil)
+		return runReport(ctx, oc, brief, tel, &outcome, closeTelemetry, log)
+	}
 	ck, err := newCheckpointer(repoDir, env, base)
 	if err != nil {
 		log("checkpoint store: %v", err)
@@ -187,6 +192,38 @@ func run(log func(string, ...any)) int {
 		return commit, pushErr
 	}, env.branch, emit)
 	outcome = sessionOutcome(res, stopped, commit, pushErr)
+	writeResult(os.Stdout, res, closeTelemetry)
+	if !res.Success {
+		log("result: %s", res.Summary)
+		return 1
+	}
+	return 0
+}
+
+// runReport runs a report session: the agent writes, nothing is committed
+// or pushed, and its last message is the result's summary, which factoryd
+// posts on the issue. A stopped session reports what it has.
+func runReport(ctx context.Context, oc *factoryd.Opencode, brief harness.TaskBrief, tel *sessionTelemetry, outcome *string,
+	closeTelemetry func(), log func(string, ...any)) int {
+	emit := func(ev harness.Event) {
+		tel.observe(ev)
+		if line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev}); err == nil {
+			fmt.Println(string(line))
+		}
+	}
+	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
+	defer stopRun()
+	endRun := tel.phase("run")
+	res := oc.Run(runCtx, brief, emit)
+	if err := killOthers(); err != nil {
+		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
+	}
+	if res.Success {
+		endRun(nil)
+		*outcome = "reported"
+	} else {
+		endRun(errors.New("the agent did not finish"))
+	}
 	writeResult(os.Stdout, res, closeTelemetry)
 	if !res.Success {
 		log("result: %s", res.Summary)
@@ -289,6 +326,9 @@ type workerEnv struct {
 	findings, answers, posterInfo                             []string
 	author, authorStanding                                    string
 	home                                                      string
+	// report is a report session's guide (MODE report, ruling 185): no
+	// push URL or token, nothing pushed, the last message the result
+	report string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -310,11 +350,17 @@ func loadEnv() (workerEnv, error) {
 	e.model = str("MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
-	for name, val := range map[string]string{
+	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
-		"BRANCH": e.branch, "PUSH_URL": e.pushURL, "PUSH_TOKEN": e.pushToken, "GATEWAY_URL": e.gatewayURL,
-		"TOKEN_FILE": e.tokenFile, "MODEL": e.model,
-	} {
+		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,
+	}
+	if str("MODE") == "report" {
+		e.report = str("REPORT_GUIDE")
+		required["REPORT_GUIDE"] = e.report
+	} else {
+		required["PUSH_URL"], required["PUSH_TOKEN"] = e.pushURL, e.pushToken
+	}
+	for name, val := range required {
 		if val == "" {
 			return e, fmt.Errorf("%s is required", name)
 		}

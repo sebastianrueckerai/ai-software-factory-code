@@ -107,10 +107,14 @@ type fakeWorkflows struct {
 	started []string
 	signals []string // "<task> <signal> <author> #<pr>: <body>"
 	err     error    // returned by Signal when set
+	onStart func(taskID string)
 }
 
 func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
 	w.started = append(w.started, taskID)
+	if w.onStart != nil {
+		w.onStart(taskID)
+	}
 	return nil
 }
 
@@ -432,13 +436,11 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 			}
-			if len(store.tasks) != 1 {
-				t.Fatalf("tasks = %d, want 1", len(store.tasks))
+			// a suggestion's second row is its presort (ruling 185)
+			if want := map[bool]int{true: 2, false: 1}[tc.status == "suggested"]; len(store.tasks) != want {
+				t.Fatalf("tasks = %d, want %d", len(store.tasks), want)
 			}
-			var task Task
-			for _, tk := range store.tasks {
-				task = tk
-			}
+			task, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 5)
 			if task.Status != tc.status || task.Kind != tc.kind || task.Author != tc.poster || task.AuthorWriter != tc.writer || task.Priority != 0 {
 				t.Fatalf("task = %+v, want status %s kind %s author %s writer %v", task, tc.status, tc.kind, tc.poster, tc.writer)
 			}
@@ -466,10 +468,9 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
 	postWebhook(in, "issues", opened, sign(webhookSecret, opened))
-	var id string
-	for _, tk := range store.tasks {
-		id = tk.ID
-	}
+	wish, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
+	id := wish.ID
+	presort, _, _ := store.ReportOf(context.Background(), id, SourcePresort)
 	labelled := func(sender string) []byte {
 		var p map[string]any
 		json.Unmarshal(issueOpenedBody(12, "outsider", []string{"improvement", "agent"}, "A wish", "body"), &p)
@@ -491,7 +492,7 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 			t.Fatalf("status = %d", rr.Code)
 		}
 	}
-	if store.tasks[id].Status != "suggested" || len(workflowsOf(in).started) != 0 {
+	if store.tasks[id].Status != "suggested" || !slices.Equal(workflowsOf(in).started, []string{presort.ID}) {
 		t.Fatalf("task = %+v, started %q: an outside account's or no sender's label starts nothing", store.tasks[id], workflowsOf(in).started)
 	}
 	b := labelled("sebastian")
@@ -499,7 +500,7 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	got := store.tasks[id]
-	if got.Status != "queued" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{id}) {
+	if got.Status != "queued" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{presort.ID, id}) {
 		t.Fatalf("task = %+v, started %q: want queued at the branch head with its workflow started", got, workflowsOf(in).started)
 	}
 	if labels := issueLabels(t, in.Forgejo, 12); !slices.Contains(labels, "state/queued") {
@@ -1035,15 +1036,17 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 		byIssue[tk.IssueNumber] = tk
 	}
 	agent, human, bug, wish := byIssue[7], byIssue[9], byIssue[11], byIssue[12]
-	if len(store.tasks) != 5 || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
+	presort, _, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
+	if len(store.tasks) != 6 || presort.ID == "" || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
 		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" ||
 		bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter || wish.Status != "suggested" {
-		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 suggested", store.tasks)
+		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 suggested with its presort", store.tasks)
 	}
 	// the second pass starts the still-queued workflows again, as the
-	// webhook's redelivery would (Temporal refuses a running one)
-	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, bug.ID, agent.ID, bug.ID}) {
-		t.Fatalf("started = %q, want #7's and #11's workflows once a pass", got)
+	// webhook's redelivery would (Temporal refuses a running one); #12's
+	// presort starts once, when it opens (the heal pass restarts it)
+	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, bug.ID, presort.ID, agent.ID, bug.ID}) {
+		t.Fatalf("started = %q, want #7's and #11's workflows once a pass, #12's presort once", got)
 	}
 }
 
@@ -1477,5 +1480,31 @@ func TestHealPassClosesASuggestion(t *testing.T) {
 	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
 	if got := store.tasks["t-s"].Status; got != "closed" || len(workflowsOf(in).started) != 0 || len(workflowsOf(in).signals) != 0 {
 		t.Fatalf("status %s, started %q, signals %q", got, workflowsOf(in).started, workflowsOf(in).signals)
+	}
+}
+
+// An improvement issue stays suggested and opens an analyzer report task
+// on it at the branch head, whose workflow starts (ruling 185); a
+// redelivery or heal pass opens no second one.
+func TestIntakeImprovementIsPresorted(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
+	for range 2 {
+		if rr := postWebhook(in, "issues", opened, sign(webhookSecret, opened)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+	}
+	wish, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
+	if !ok || wish.Status != "suggested" {
+		t.Fatalf("wish = %+v", wish)
+	}
+	presort, ok, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
+	if !ok || presort.Status != "queued" || presort.SHA != "sha-main-head" || presort.IssueNumber != 0 ||
+		!slices.Equal(presort.RequiredCapabilities, []string{policy.ClassAnalyzer}) || presort.Objective != wish.Objective ||
+		presort.Author != "outsider" || presort.AuthorWriter || len(store.tasks) != 2 {
+		t.Fatalf("presort = %+v, %d tasks", presort, len(store.tasks))
+	}
+	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
+		t.Fatalf("started = %v, want the presort's workflow once", started)
 	}
 }

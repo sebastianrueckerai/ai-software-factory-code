@@ -969,3 +969,35 @@ func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 		}
 	}
 }
+
+// GatePolicy classifies under the risk rules of the version the task
+// pinned, and names it; the review asks the pinned version's review model
+// (Task 72's review: the pin covers the gates too). 0 reads the current.
+func TestGatePolicyAndReviewTakeThePinnedVersion(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"k8s/factoryd.yaml"}`}, diff: "diff --git a/k8s/factoryd.yaml b/k8s/factoryd.yaml\n"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	current.ID = 8
+	current.Document.Risk.Rules = nil
+	coder := current.Document.Classes["coder"]
+	coder.ReviewModel = "current-review"
+	current.Document.Classes = map[string]policy.Class{"coder": coder}
+	r.cfg.Policy = func() policy.Version { return current }
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1", int64(7))
+	if g := getInto[PolicyGate](t, val, err); g.Class != "high" || g.PolicyVersion != 7 {
+		t.Fatalf("pinned gate = %+v, want class high under version 7", g)
+	}
+	val, err = execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Class != "normal" || g.PolicyVersion != 8 {
+		t.Fatalf("unpinned gate = %+v, want the current version 8", g)
+	}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if got := ll.chats[0]["model"]; got != pinned.Document.Classes["coder"].ReviewModel {
+		t.Fatalf("review model = %v, want the pinned %q", got, pinned.Document.Classes["coder"].ReviewModel)
+	}
+}

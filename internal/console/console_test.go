@@ -363,7 +363,8 @@ func newRig(t *testing.T) *rig {
 			{ID: 4, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 9, Status: "pending",
 				Spec: json.RawMessage(`{"risk_class":"high","migration":true,"migrations":["internal/factoryd/migrations/0018_x.sql"],` +
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123",` +
-					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"]}`)},
+					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
+					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}]}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
 		resources: &fakeResources{set: map[string]policy.Envelope{}}, alerts: &fakeAlerts{}, projects: &fakeProjects{}}
@@ -913,6 +914,8 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// ruling 149: the agent's recommendation and why no auto merge
 		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
 		"<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>",
+		// ruling 177: the reviews of earlier heads, oldest first, with their findings
+		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default</dd>",
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
 	} {

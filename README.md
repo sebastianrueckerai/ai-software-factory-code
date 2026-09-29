@@ -572,15 +572,16 @@ file linked at its commit.
 
 A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
-session cap, the agent time and the stronger rung (captured by the
-workflow), and in every session, gate-supervisor call and model review
-the agent time, `supervisor_calls`, `supervisor_timeout` and the
-`no_write` detector, and the activity bounds of a session, a
+session cap, the agent time, the stronger rung and the workflow's stages
+(captured by the workflow), and in every session, report session,
+gate-supervisor call and model review the agent time, `supervisor_calls`,
+`supervisor_timeout` and the `no_write` detector, the risk rules
+(`GatePolicy`), the factoryd model aliases (`review_model`,
+`supervisor_model`), and the activity bounds of a session, a
 gate-supervisor call and a model review (`SessionInput`,
-`GateSupervision` and `GateResults` carry the pin; 0, a workflow from
-before the pin, reads the version in force). Read live, from the version
-in force when used: the risk rules (`GatePolicy`), the factoryd model
-aliases (`review_model`, `supervisor_model`), everything the gateway
+`GateSupervision`, `GateResults`, `GatePolicy` and `RunReport` carry the
+pin; 0, a workflow from before the pin, reads the version in force).
+Read live, from the version in force when used: everything the gateway
 enforces (classes, tool caps, prices, the day cap), the budget at
 intake, the approvers, the bounds of the other activities,
 `envelope_default` and `project_default`.

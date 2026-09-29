@@ -19,6 +19,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 var testWorkflowConfig = WorkflowConfig{
@@ -28,25 +30,43 @@ var testWorkflowConfig = WorkflowConfig{
 	AnswerSlice:   10 * time.Minute,
 	ChecksTimeout: 45 * time.Minute,
 	PolicyVersion: 7,
+	StrongerAfter: 1,
+	Stages:        testStages(),
+}
+
+// testStages is the Stage 9 workflow (rulings 177, 182): screening on
+// for outside accounts, every other stage on.
+func testStages() []policy.Stage {
+	return []policy.Stage{
+		{Name: "screening", OnFindings: "human", Enabled: true, When: "outsider"},
+		{Name: "checks", OnFindings: "agent", Enabled: true},
+		{Name: "policy", OnFindings: "fail", Enabled: true},
+		{Name: "migration", OnFindings: "human", Enabled: true},
+		{Name: "reproduction", OnFindings: "agent", Enabled: true},
+		{Name: "review", OnFindings: "agent", Enabled: true},
+		{Name: "approval", OnFindings: "human", Enabled: true},
+		{Name: "merge", OnFindings: "human", Enabled: true},
+	}
 }
 
 // workflowHarness drives TaskWorkflow with every activity stubbed: the
 // defaults are a clean first session, a PR, green checks; tests override
 // the step they are about.
 type workflowHarness struct {
-	env       *testsuite.TestWorkflowEnvironment
-	sessions  []SessionInput
-	finals    [][2]string
-	states    []string
-	state     RunState // what Reconcile reports; zero = a fresh task
-	finishAt  time.Time
-	escalated []string // Escalate reasons, in order
-	usage     []TaskUsage
-	logs      *lockedBuffer // the workflow's log
-	recorded  []recordedStep
-	infoAsked []string    // RequestInfo reasons, in order
-	closedAt  []time.Time // CloseNotReproduced calls
-	autoNotes []string    // AutoMergeNote calls: "pr commit"
+	env         *testsuite.TestWorkflowEnvironment
+	sessions    []SessionInput
+	finals      [][2]string
+	states      []string
+	state       RunState // what Reconcile reports; zero = a fresh task
+	finishAt    time.Time
+	escalated   []string // Escalate reasons, in order
+	usage       []TaskUsage
+	logs        *lockedBuffer // the workflow's log
+	recorded    []recordedStep
+	infoAsked   []string    // RequestInfo reasons, in order
+	closedAt    []time.Time // CloseNotReproduced calls
+	autoNotes   []string    // AutoMergeNote calls: "pr commit"
+	escalateErr error       // Escalate's error, nil = none
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -73,12 +93,18 @@ func (l *lockedBuffer) String() string {
 	return l.b.String()
 }
 
-func newWorkflowHarness(t *testing.T) *workflowHarness {
+// newWorkflowHarness runs wf, TaskWorkflow on testWorkflowConfig when
+// none is given.
+func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
+	w := TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}
+	if len(wf) > 0 {
+		w = wf[0]
+	}
 	var suite testsuite.WorkflowTestSuite
 	logs := &lockedBuffer{}
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
-	h.env.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+	h.env.RegisterWorkflowWithOptions(w.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:       func(ctx context.Context, taskID string) error { return nil },
 		ActivitySetState:          func(ctx context.Context, taskID, state string) error { return nil },
@@ -91,15 +117,20 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
 		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
-		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string) (PolicyGate, error) {
+		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
 		},
 		ActivityGateMigration: func(ctx context.Context, taskID string, pr int64, migrations []string) error { return nil },
 		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			return ReproResult{}, nil
 		},
-		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (Review, error) {
+		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review) (Review, error) {
 			return Review{}, nil
+		},
+		ActivityScreen:         func(ctx context.Context, taskID string) (ScreenResult, error) { return ScreenResult{}, nil },
+		ActivityJudgeScreening: func(ctx context.Context, taskID, verdict string) error { return nil },
+		ActivityRunReport: func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
 		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
@@ -133,7 +164,7 @@ func newWorkflowHarness(t *testing.T) *workflowHarness {
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
-			return int64(600 + len(h.escalated)), nil
+			return int64(600 + len(h.escalated)), h.escalateErr
 		})
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
@@ -232,8 +263,8 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	var reviewed []int64
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (Review, error) {
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review) (Review, error) {
 			reviewed = append(reviewed, g.Pin)
 			return Review{}, nil
 		})
@@ -246,8 +277,10 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 	}
 }
 
-func TestWorkflowRedChecksRetryStrongerFromBranchHead(t *testing.T) {
+// Before versionStages red checks climbed at once.
+func TestWorkflowBeforeStagesRedChecksRetryStrongerFromBranchHead(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
 	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	red := []string{"pr / test (pull_request): failure — Failure after 2m (https://git.example/sf/r/actions/runs/7/jobs/0)"}
 	h.onChecks(ChecksResult{State: ChecksFailure, Findings: red}, ChecksResult{State: ChecksSuccess})
@@ -473,6 +506,7 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnGetVersion("signals-drained", workflow.DefaultVersion, versionSignalsDrained).Return(workflow.DefaultVersion)
 	h.env.OnGetVersion("gates", workflow.DefaultVersion, versionGates).Return(workflow.DefaultVersion)
+	h.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
 	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "a"})

@@ -30,6 +30,7 @@ const (
 	GateMerge         = "merge"
 	GateHuman         = "human"
 	GateCommissioning = "commissioning"
+	GateScreening     = "screening"
 )
 
 // StepGates are the timeline steps that end a gate, each carrying the
@@ -39,7 +40,7 @@ var StepGates = map[string]string{
 	"intake": GateIntake, "session_end": GateSession, "checks": GateChecks,
 	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
-	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning,
+	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
 }
 
 // activityGates are the gates the activities open: the task's row is in
@@ -54,6 +55,8 @@ var activityGates = map[string]string{
 	ActivityRequestApproval:  GateApproval,
 	ActivityMerge:            GateMerge,
 	ActivityEscalate:         GateHuman,
+	ActivityScreen:           GateScreening,
+	ActivityRunReport:        GateSession,
 }
 
 // GateStore is what GateWatch writes.

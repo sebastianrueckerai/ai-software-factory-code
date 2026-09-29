@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -76,6 +77,9 @@ const (
 	ActivityAutoMergeNote               = "AutoMergeNote"
 	ActivityRequestInfo                 = "RequestInfo"
 	ActivityCloseNotReproduced          = "CloseNotReproduced"
+	ActivityScreen                      = "Screen"
+	ActivityJudgeScreening              = "JudgeScreening"
+	ActivityRunReport                   = "RunReport"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -114,6 +118,8 @@ type WorkflowConfig struct {
 	// PolicyVersion is the configuration version the task started under,
 	// whose tree its stages read.
 	PolicyVersion int64
+	// Stages are the pinned version's workflow stages (versionStages).
+	Stages []policy.Stage
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -198,6 +204,26 @@ type RunState struct {
 	// InfoAnswered: an answer to the last information request is among
 	// PosterInfo already; the healed run resumes without waiting.
 	InfoAnswered bool
+	// Report: the task is a report session's (ruling 185), no stage.
+	Report bool
+	// Standing is the issue author's (Task.Standing), for a stage's when.
+	Standing string
+	// WriteUp is the analyzer's write-up of a promoted improvement.
+	WriteUp string
+	// Screening: the human the task waits on answers its screening's
+	// suspect verdict.
+	Screening bool
+	// Stronger: a report task that runs on the stronger rung (the
+	// screening, ruling 191).
+	Stronger bool
+	// The stage memory the timeline kept (versionStages): each stage's
+	// returns to the agent, every finding sent there (or to the card at a
+	// cap) tagged with stage and round, the model reviews oldest first,
+	// and the last round.
+	Returns map[string]int
+	History []string
+	Reviews []Review
+	Round   int
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -249,7 +275,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v12: workflow.GetVersion(ctx, "gate-supervisor", workflow.DefaultVersion, versionGateSupervisor),
 		v13: workflow.GetVersion(ctx, "auto-merge", workflow.DefaultVersion, versionAutoMerge),
 		v14: workflow.GetVersion(ctx, "needs-info", workflow.DefaultVersion, versionNeedsInfo),
-		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace)}
+		v15: workflow.GetVersion(ctx, "gate-supervisor-race", workflow.DefaultVersion, versionGateSupervisorRace),
+		v16: workflow.GetVersion(ctx, "stages", workflow.DefaultVersion, versionStages)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -367,6 +394,17 @@ const (
 	// task ends closed. A healed run waiting on the author waits on for
 	// the rest of infoWait.
 	versionNeedsInfo workflow.Version = 1
+	// versionStages (change id "stages", rulings 177, 182, 185): the gates
+	// are the pinned workflow's stages in order, each with its
+	// on_findings (agent: back to the agent, the second return from one
+	// stage on the stronger rung, the card at the session cap; human: the
+	// card; fail: the task fails); a disabled stage or one whose when does
+	// not hold is recorded as skipped; the screening stage runs before the
+	// first session and a suspect verdict waits on a human; each model
+	// review is given the earlier ones and the card shows them; a report
+	// task runs RunReport and ends done; a promoted improvement's first
+	// session gets the analyzer's write-up.
+	versionStages workflow.Version = 1
 )
 
 // infoWait is how long an information request waits for the issue
@@ -381,12 +419,20 @@ type taskRun struct {
 	v6, v7, v8, v9    workflow.Version
 	v10, v11, v12     workflow.Version
 	v13, v14, v15     workflow.Version
+	v16               workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
 	escalation        int64     // the escalation comment human answers must be newer than
 	infoRequest       int64     // the information request comment the author's answers must be newer than
 	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
+	// versionStages
+	standing  string         // the issue author's, for a stage's when
+	lastRound bool           // the session that pushed the commit in the stages is the task's last
+	round     int            // the stages' pass, from 1
+	returns   map[string]int // how often each stage sent findings to the agent
+	history   []string       // every finding sent to the agent, tagged with its stage and round
+	reviews   []Review       // the model reviews so far, oldest first
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -429,9 +475,15 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v14 >= versionNeedsInfo {
 			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
 		}
+		t.standing = st.Standing
+		if t.v16 >= versionStages {
+			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
+		}
 		switch {
 		case st.Skip:
 			return st.Status, nil
+		case t.v16 >= versionStages && st.Report:
+			return t.report(st.Stronger)
 		case st.Merged:
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
@@ -440,6 +492,17 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("failed", ReasonIssueClosed+" without merge")
 		case st.PRClosed:
 			return t.finish("failed", "pull request closed without merge")
+		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
+			// the screening's human, asked again; the answer runs the
+			// first session
+			final, why, answer := t.awaitScreening(healedReason, cmp.Or(st.Question, screeningQuestion))
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = answer
+			if st.WriteUp != "" {
+				findings = append(findings, writeUpFinding(st.WriteUp))
+			}
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
 			question := st.Question
@@ -473,11 +536,21 @@ func (t *taskRun) lifecycle() (string, error) {
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
+			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
 			v := t.verify(st.Head)
 			if v.final != "" {
 				return t.finish(v.final, v.reason)
 			}
 			apply(v)
+		case t.v16 >= versionStages && u.Attempts == 0:
+			if st.WriteUp != "" {
+				findings = append(findings, writeUpFinding(st.WriteUp))
+			}
+			final, why, more := t.screen()
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = append(findings, more...)
 		}
 	}
 	for attempt := u.Attempts + 1; attempt <= t.cfg.MaxSessions+u.ExtraAttempts; attempt++ {
@@ -571,6 +644,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 		}
+		t.lastRound = attempt >= t.cfg.MaxSessions+u.ExtraAttempts
 		v = t.verify(res.Commit)
 		if v.final != "" {
 			return t.finish(v.final, v.reason)
@@ -616,6 +690,9 @@ func (t *taskRun) verify(commit string) verdict {
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
 	}
+	if t.v16 >= versionStages {
+		return t.stages(commit)
+	}
 	var checks ChecksResult
 	v, decided, err := t.gateActivity(true, t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
 	if decided {
@@ -652,7 +729,8 @@ func (t *taskRun) verify(commit string) verdict {
 // gate takes a commit with green checks through the gates, the model
 // review and the human's approval to its merge.
 func (t *taskRun) gate(commit string) verdict {
-	var g GateResults
+	// before versionStages the gates run after green checks only
+	g := GateResults{ChecksPassed: true}
 	policyArgs := []any{t.taskID, t.pr.Number}
 	if t.v8 >= versionGatesPinned {
 		policyArgs = append(policyArgs, commit)
@@ -1186,7 +1264,7 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 // (versionAnswers), or into answer before it.
 func (t *taskRun) awaitHuman(reason, question string) (final, why string, answer []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason).Get(t.ctx, &t.escalation); err != nil {
-		return "failed", "escalate: " + errMessage(err), nil
+		return "failed", escalateFailed + errMessage(err), nil
 	}
 	for {
 		sel := workflow.NewSelector(t.ctx)
@@ -1428,6 +1506,10 @@ func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
 }
+
+// escalateFailed opens the final reason of a task whose escalation failed:
+// no human decided.
+const escalateFailed = "escalate: "
 
 // healedReason is what a healed run waiting for a human asks again.
 const healedReason = "factoryd restarted while the task waited for a human; the question above still stands."

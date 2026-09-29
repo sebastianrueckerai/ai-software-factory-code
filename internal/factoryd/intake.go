@@ -442,6 +442,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			return in.Workflows.Start(ctx, t.ID)
 		case t.Status == "suggested" && lane == LaneAgent:
 			return in.promote(ctx, via, t, defaultBranch, sender)
+		case t.Status == "suggested":
+			// a presort a crash kept from opening opens now
+			return in.presort(ctx, t, defaultBranch)
 		}
 		return nil
 	}
@@ -499,10 +502,28 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, lane, id)
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
-	if task.Status == "queued" {
+	switch task.Status {
+	case "queued":
 		return in.Workflows.Start(ctx, id)
+	case "suggested":
+		return in.presort(ctx, task, defaultBranch)
 	}
 	return nil
+}
+
+// presort opens suggestion t's analyzer report task at the branch head
+// (ruling 185): its write-up lands on the issue while the row stays
+// suggested, and a writer's agent label later hands it to the coder.
+func (in *Intake) presort(ctx context.Context, t Task, defaultBranch string) error {
+	if _, ok, err := in.Store.ReportOf(ctx, t.ID, SourcePresort); err != nil || ok {
+		return err
+	}
+	sha, err := in.baseSHA(ctx, t.Repository, defaultBranch)
+	if err != nil {
+		return err
+	}
+	_, err = openReport(ctx, in.Store, in.Workflows, in.Budget(), t, SourcePresort, sha)
+	return err
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {

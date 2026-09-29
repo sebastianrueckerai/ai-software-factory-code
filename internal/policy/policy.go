@@ -147,7 +147,7 @@ const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
 // 154): a merge attempt is one API call under a 2-minute timeout, its
-// retries on workflow timers (ruling 163). RunSession and SuperviseGate
+// retries on workflow timers (ruling 163). RunSession, RunReport, Screen and SuperviseGate
 // follow the limits (Bound).
 var DefaultBounds = map[string]int{
 	"WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "Merge": 90, BoundDefault: 120,
@@ -159,7 +159,7 @@ var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
 	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
-	"AutoMergeNote", "RequestInfo", "CloseNotReproduced",
+	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport",
 }
 
 // Bound is how long one run of activity may take before it alerts: the
@@ -171,8 +171,11 @@ func (d Document) Bound(activity string) time.Duration {
 	s, ok := d.Bounds[activity]
 	switch {
 	case ok:
-	case activity == "RunSession":
+	case activity == "RunSession" || activity == "RunReport":
 		return d.Limits.AgentTime + time.Minute
+	case activity == "Screen":
+		// the screening's report session, and its pod start
+		return d.Limits.AgentTime + 2*time.Minute
 	case activity == "SuperviseGate":
 		return d.Limits.SupervisorTimeout + 2*time.Minute
 	}
@@ -280,6 +283,10 @@ type ToolCap struct {
 
 // ClassCoder is the class intake gives agent tasks.
 const ClassCoder = "coder"
+
+// ClassAnalyzer is the class of a report session (ruling 185): it reads
+// and writes a comment, it changes no code and commissions nothing.
+const ClassAnalyzer = "analyzer"
 
 // The gateway's paid tools: a class allows one by listing it in
 // classes.<c>.tools with its caps.

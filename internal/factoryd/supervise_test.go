@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -663,16 +664,40 @@ func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
 }
 
 // The limits of the version in force when a task's workflow starts are
-// the task's: its session cap, agent time and stronger rung, and the
-// version it pinned.
+// the task's: its session cap, agent time and stronger rung, its
+// workflow's stages, and the version it pinned.
 func TestWorkflowConfigTakesTheLimits(t *testing.T) {
+	stages := testStages()
 	v := policy.Version{ID: 9, Tree: policy.Tree{Document: policy.Document{
-		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}}}}
+		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}},
+		Workflow: policy.Workflow{Stages: stages}}}
 	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, AnswerSlice: time.Minute, ChecksTimeout: time.Hour,
 		Policy: func() policy.Version { return v }}}
 	want := WorkflowConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, MaxSessions: 5, WallClockCap: 30 * time.Minute,
-		AnswerSlice: time.Minute, ChecksTimeout: time.Hour, StrongerAfter: 2, PolicyVersion: 9}
-	if got := r.WorkflowConfig(); got != want {
+		AnswerSlice: time.Minute, ChecksTimeout: time.Hour, StrongerAfter: 2, PolicyVersion: 9, Stages: stages}
+	if got := r.WorkflowConfig(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("WorkflowConfig = %+v, want %+v", got, want)
+	}
+}
+
+// A report session writes no file by design: neither repetition nor
+// no_write trips it; the wall-clock cap still does.
+func TestReadOnlySessionTakesNoWriteDetectors(t *testing.T) {
+	start := time.Unix(0, 0)
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 3,
+		NoWriteAfter: time.Minute, MaxCalls: 3, ReadOnly: true}, start, start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// nine reads over eight minutes: three times the repetition count and
+	// eight times the no_write wait, short of the half-way check-in at 10
+	for i := range 9 {
+		ev := toolEvent("read", map[string]any{"path": fmt.Sprintf("f%d.go", i)})
+		if trip := s.Event(ev, start.Add(time.Duration(i)*time.Minute)); trip != nil {
+			t.Fatalf("event %d tripped: %+v", i, trip)
+		}
+	}
+	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, start.Add(20*time.Minute)); trip == nil || trip.Kind != TripWallClock {
+		t.Fatalf("trip = %+v, want the wall-clock cap", trip)
 	}
 }

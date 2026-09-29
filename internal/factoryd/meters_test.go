@@ -80,7 +80,7 @@ func TestAlertCountReadsTheTableAtExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]float64{}
-	for _, k := range []string{"gate_bound", "supervisor_trip", "escalation", "info_request", "alert"} {
+	for _, k := range []string{"gate_bound", "supervisor_trip", "escalation", "info_request", "alert", "screening"} {
 		for _, v := range []string{"real", "noise", "open"} {
 			want["kind="+k+",verdict="+v] = 0
 		}

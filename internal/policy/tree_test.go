@@ -106,7 +106,7 @@ func TestParseTreeRejects(t *testing.T) {
 		"invalid on_findings":         {edit("workflow.yaml", "on_findings: fail", "on_findings: maybe"), `workflow.yaml: workflow: stage policy: on_findings "maybe", want one of [agent human fail]`},
 		"invalid objects":             {edit("projects/infra.yaml", "objects: seed", "objects: flux"), `projects/infra.yaml: project infra: objects "flux": want one of [factory seed]`},
 		"invalid agents":              {edit("projects/infra.yaml", "agents: none", "agents: all"), `project infra: agents "all"`},
-		"stage enabled missing":       {edit("workflow.yaml", "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent}"), "workflow.yaml: schema:"},
+		"stage enabled missing":       {edit("workflow.yaml", "{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent}"), "workflow.yaml: schema:"},
 		"merge not last":              {edit("workflow.yaml", "  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: checks, on_findings: agent, enabled: true}\n"), "stage checks is listed twice"},
 		"no approval":                 {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n", ""), "stage approval is required"},
 		"merge before approval":       {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n"), "stage merge must be last"},

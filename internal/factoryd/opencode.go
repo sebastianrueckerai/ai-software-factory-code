@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -306,7 +307,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
 	}
-	b.WriteString("\n\n" + workGuide)
+	b.WriteString("\n\n" + cmp.Or(brief.Report, workGuide))
 	return b.String()
 }
 

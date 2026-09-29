@@ -165,6 +165,7 @@ func main() {
 		LastFailure: func(ctx context.Context, workflowID, activityID string) (string, error) {
 			return workflows.LastFailure(ctx, workflowID, activityID)
 		},
+		Workflows: &workflows,
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL,
 		Token:      gatewayToken,

@@ -26,6 +26,20 @@ type Stage struct {
 	// When limits the stage to some tasks: outsider runs it only on issues
 	// whose author is an outside account. Absent: every task.
 	When string `yaml:"when,omitempty" json:"when,omitempty"`
+	// MaxReturns caps how often the stage sends its findings back to the
+	// agent; its next findings go to the human card. Absent: no cap of its
+	// own, the session cap decides (ruling 190). On a stage whose
+	// on_findings is agent only, at least 1.
+	MaxReturns *int `yaml:"max_returns,omitempty" json:"max_returns,omitempty"`
+}
+
+// Stage is the named stage and whether the workflow lists it.
+func (w Workflow) Stage(name string) (Stage, bool) {
+	i := slices.IndexFunc(w.Stages, func(s Stage) bool { return s.Name == name })
+	if i < 0 {
+		return Stage{}, false
+	}
+	return w.Stages[i], true
 }
 
 // Stage names.
@@ -60,7 +74,12 @@ const WhenOutsider = "outsider"
 var StagePredicates = []string{WhenOutsider}
 
 // Validate checks the stage list: known names, each once, known rules and
-// predicates, policy, approval and merge present, merge last.
+// predicates; policy, approval and merge present, approval and merge the
+// last two; checks, policy, approval and merge enabled for every task (no
+// when); approval, merge and screening with findings for a human (ruling
+// 182: a suspect issue never reaches the agent unread); screening first
+// (it runs before the first session); migration after policy (policy
+// finds the migrations); max_returns at least 1, on agent stages only.
 func (w Workflow) Validate() error {
 	var errs []error
 	var seen []string
@@ -78,6 +97,28 @@ func (w Workflow) Validate() error {
 		if s.When != "" && !slices.Contains(StagePredicates, s.When) {
 			errs = append(errs, fmt.Errorf("workflow: stage %s: when %q, want one of %v", s.Name, s.When, StagePredicates))
 		}
+		if slices.Contains([]string{StageChecks, StagePolicy, StageApproval, StageMerge}, s.Name) && (!s.Enabled || s.When != "") {
+			errs = append(errs, fmt.Errorf("workflow: stage %s must run for every task (enabled, no when)", s.Name))
+		}
+		if slices.Contains([]string{StageApproval, StageMerge, StageScreening}, s.Name) && s.OnFindings != FindingsHuman {
+			errs = append(errs, fmt.Errorf("workflow: stage %s: on_findings must be human", s.Name))
+		}
+		if s.MaxReturns != nil && *s.MaxReturns < 1 {
+			errs = append(errs, fmt.Errorf("workflow: stage %s: max_returns must be at least 1, is %d", s.Name, *s.MaxReturns))
+		}
+		if s.MaxReturns != nil && s.OnFindings != FindingsAgent {
+			errs = append(errs, fmt.Errorf("workflow: stage %s: max_returns needs on_findings agent", s.Name))
+		}
+	}
+	at := func(name string) int { return slices.IndexFunc(w.Stages, func(s Stage) bool { return s.Name == name }) }
+	if i, m := at(StageApproval), at(StageMerge); i >= 0 && m >= 0 && i != m-1 {
+		errs = append(errs, errors.New("workflow: stage approval must come right before merge"))
+	}
+	if i := at(StageScreening); i > 0 {
+		errs = append(errs, errors.New("workflow: stage screening must be first: it runs before the first session"))
+	}
+	if i, p := at(StageMigration), at(StagePolicy); i >= 0 && p >= 0 && i < p {
+		errs = append(errs, errors.New("workflow: stage migration must come after policy, which finds the migrations"))
 	}
 	for _, name := range []string{StagePolicy, StageApproval, StageMerge} {
 		if !slices.Contains(seen, name) {

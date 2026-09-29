@@ -762,3 +762,32 @@ func TestLoadEnvParsesAnswers(t *testing.T) {
 		t.Fatal("malformed ANSWERS accepted")
 	}
 }
+
+// A report session (ruling 185) gets no push URL or token and needs none;
+// its guide arrives as REPORT_GUIDE. A coding session still needs both.
+func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
+	// loadEnv unsets the tokens it read: each call gets them anew
+	env := func(mode, guide string) {
+		setRequiredEnv(t)
+		t.Setenv("PUSH_URL", "")
+		t.Setenv("PUSH_TOKEN", "")
+		t.Setenv("MODE", mode)
+		t.Setenv("REPORT_GUIDE", guide)
+	}
+	env("", "")
+	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "PUSH_") {
+		t.Fatalf("coding session without push credentials: err = %v", err)
+	}
+	env("report", "write, do not code")
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if e.report != "write, do not code" || e.pushToken != "" {
+		t.Fatalf("env = %+v", e)
+	}
+	env("report", "")
+	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "REPORT_GUIDE") {
+		t.Fatalf("report mode without a guide: err = %v", err)
+	}
+}

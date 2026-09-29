@@ -31,6 +31,7 @@ var funcs = template.FuncMap{
 		return fmt.Sprintf("%d min", minutes)
 	},
 	"utc":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"inc":         func(i int) int { return i + 1 },
 	"verdictForm": func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
 	// alertSupervisor is what the supervisor did on a machine alert; an
 	// escalation's detail stays off the page

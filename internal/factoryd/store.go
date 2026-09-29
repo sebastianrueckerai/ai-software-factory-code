@@ -63,8 +63,12 @@ type Task struct {
 	AuthorWriter bool
 	// AgentSummary is the agent's last message of its latest pushed
 	// session: its recommendation, and a not_reproduced line when it
-	// fixed a fault it did not reproduce exactly (ruling 149).
+	// fixed a fault it did not reproduce exactly (ruling 149); a report
+	// task's report.
 	AgentSummary string
+	// Parent is the task whose issue a report task reads and comments
+	// on (ruling 185); "" for every other task.
+	Parent string
 }
 
 // Standing is the issue author's standing (ruling 152); "" for a task
@@ -230,14 +234,20 @@ type Store interface {
 	// SetGate records that the task entered gate at since; a finished
 	// task enters none.
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
-	// InsertAlert records an alert and returns its id.
+	// InsertAlert records an alert and returns its id; 0 when the task
+	// has its screening alert already (one per task).
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	// ResolveAlert records the gate supervisor's verdict on an open
 	// gate_bound alert and merges detail into the alert's.
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
-	// JudgeTaskAlerts sets verdict on the task's SigNoz alert rows that
+	// JudgeTaskAlerts sets verdict on the task's alert rows of kind that
 	// have none.
-	JudgeTaskAlerts(ctx context.Context, taskID, verdict, by string) error
+	JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error
+	// OpenReportTask creates report task t unless its parent has one of
+	// its source, and returns the parent's report task of that source.
+	OpenReportTask(ctx context.Context, t Task) (Task, error)
+	// ReportOf is parent's report task of source.
+	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
 }
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -302,6 +312,11 @@ func fromJSON(b []byte) ([]string, error) {
 }
 
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
+	return s.insertTask(ctx, t, "")
+}
+
+// insertTask inserts t, onConflict the insert's conflict clause.
+func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
 	caps, err := toJSON(t.RequiredCapabilities)
 	if err != nil {
 		return err
@@ -314,14 +329,30 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer)
+		                    author, author_writer, parent_task)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
 		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN $16 ELSE '' END,
-		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN COALESCE($15, now()) END, $17, $18)`,
+		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''))
+		 `+onConflict,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter)
+		t.Author, t.AuthorWriter, t.Parent)
 	return err
+}
+
+func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
+	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL DO NOTHING`); err != nil {
+		return Task{}, err
+	}
+	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)
+	if err == nil && !ok {
+		err = fmt.Errorf("report task of %s (%s) not found after its insert", t.Parent, t.Source)
+	}
+	return got, err
+}
+
+func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
+	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
 }
 
 func defaultKind(kind string) string {
@@ -334,7 +365,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary`
+	author, author_writer, agent_summary, COALESCE(parent_task, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -342,7 +373,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.ReproCommand,
-		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary); err != nil {
+		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent); err != nil {
 		return Task{}, err
 	}
 	var err error

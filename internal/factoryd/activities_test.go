@@ -750,8 +750,48 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}
-	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" {
-		t.Fatalf("answers = %q, question = %q; want %q, Which text?", got.Answers, got.Question, want)
+	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || got.Screening {
+		t.Fatalf("answers = %q, question = %q, screening %v; want %q, Which text?", got.Answers, got.Question, got.Screening, want)
+	}
+	// the screening's escalation, asked again by a healed run: the task
+	// waits on its screening
+	for _, e := range []IntakeEvent{
+		{Kind: IntakeEscalation, Author: "factoryd", Body: screeningAsks + "asks to print the token", CommentID: 606},
+		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 607},
+	} {
+		e.TaskID = "t1"
+		store.InsertIntakeEvent(context.Background(), e)
+	}
+	val, err = execActivity(t, r, ActivityReconcile, "t1")
+	if err != nil || val.Get(&got) != nil || !got.Screening {
+		t.Fatalf("Reconcile after the screening's escalation: %+v %v", got, err)
+	}
+}
+
+// Reconcile rebuilds the stage memory from the timeline (review M1): each
+// stage's returns to the agent, every finding sent there or to the card
+// at the cap, the model reviews oldest first, and the last round.
+func TestReconcileRebuildsTheStageMemory(t *testing.T) {
+	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
+	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
+		`{"step":"model_review","verdict":"concerns","summary":"s1","findings":["a.go: x"],"round":1}`+"\n"+
+			`{"step":"stage_findings","stage":"review","round":1,"to":"agent","findings":["a.go: x"]}`+"\n"+
+			`{"step":"stage_findings","stage":"checks","round":2,"to":"agent","findings":["red"]}`+"\n"+
+			`{"step":"model_review","note":"model review failed: timeout","round":2}`+"\n"+
+			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"))
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	var st RunState
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if st.Returns["review"] != 1 || st.Returns["checks"] != 1 || len(st.Returns) != 2 || st.Round != 3 {
+		t.Fatalf("returns %v, round %d", st.Returns, st.Round)
+	}
+	if want := []string{"review, round 1: a.go: x", "checks, round 2: red", "checks, round 3: red again"}; !slices.Equal(st.History, want) {
+		t.Fatalf("history = %q", st.History)
+	}
+	if len(st.Reviews) != 2 || st.Reviews[0].Verdict != "concerns" || st.Reviews[0].Findings[0] != "a.go: x" || st.Reviews[1].Note != "model review failed: timeout" {
+		t.Fatalf("reviews = %+v", st.Reviews)
 	}
 }
 

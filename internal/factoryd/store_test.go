@@ -71,6 +71,22 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	return nil
 }
 
+func (s *fakeStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
+	if have, ok, _ := s.ReportOf(ctx, t.Parent, t.Source); ok {
+		return have, nil
+	}
+	return t, s.CreateTask(ctx, t)
+}
+
+func (s *fakeStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
+	for _, t := range s.tasks {
+		if t.Parent == parent && t.Source == source {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil
@@ -365,6 +381,9 @@ func (s *fakeStore) SetGate(ctx context.Context, id, gate string, since time.Tim
 func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
+	if a.Kind == AlertScreening && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertScreening && b.TaskID == a.TaskID }) {
+		return 0, nil
+	}
 	a.ID = int64(len(s.alerts) + 1)
 	s.alerts = append(s.alerts, a)
 	return a.ID, nil
@@ -435,11 +454,11 @@ func (s *fakeStore) MergeAlertDetail(ctx context.Context, id int64, detail map[s
 	return ErrNotFound
 }
 
-func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
 	for i, a := range s.alerts {
-		if a.TaskID == taskID && a.Kind == AlertSigNoz && a.Verdict == "" {
+		if a.TaskID == taskID && a.Kind == kind && a.Verdict == "" {
 			now := time.Now()
 			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
 			s.alerts[i] = a
@@ -1160,10 +1179,10 @@ func TestPGStoreSigNozAlerts(t *testing.T) {
 	if a.Detail["issue"] != float64(9) || a.Detail["resolved_at"] != "2026-09-28T20:00:00Z" {
 		t.Fatalf("merged detail %v", a.Detail)
 	}
-	if err := s.JudgeTaskAlerts(ctx, "t-new", VerdictReal, "merge"); err != nil {
+	if err := s.JudgeTaskAlerts(ctx, "t-new", AlertSigNoz, VerdictReal, "merge"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.JudgeTaskAlerts(ctx, "t-new", VerdictNoise, "sebastian"); err != nil {
+	if err := s.JudgeTaskAlerts(ctx, "t-new", AlertSigNoz, VerdictNoise, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	counts, err := s.AlertCounts(ctx)
@@ -1173,5 +1192,69 @@ func TestPGStoreSigNozAlerts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Verdict, b.Verdict) })
 	if want := []AlertCount{{"alert", "open", 1}, {"alert", "real", 2}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v (row %d stays open)", counts, want, old)
+	}
+}
+
+// Migration 0028 on a real Postgres: a report task opens once per parent
+// and source, keeps its parent, and is found again; a screening alert is
+// judged apart from the task's SigNoz alerts.
+func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, alerts CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	parent := Task{ID: "t-parent", RiskClass: "standard", BudgetEUR: 2, Status: "suggested", Objective: "o", Repository: "sf/r", IssueNumber: 5, Source: "webhook"}
+	if err := s.CreateTask(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	report := Task{ID: "t-report", RiskClass: "standard", BudgetEUR: 2, Status: "queued", Objective: "o", Repository: "sf/r", Source: SourcePresort,
+		Parent: "t-parent", RequiredCapabilities: []string{"analyzer"}}
+	got, err := s.OpenReportTask(ctx, report)
+	if err != nil || got.ID != "t-report" || got.Parent != "t-parent" || got.RequiredCapabilities[0] != "analyzer" {
+		t.Fatalf("open: %+v %v", got, err)
+	}
+	again := report
+	again.ID = "t-other"
+	if got, err := s.OpenReportTask(ctx, again); err != nil || got.ID != "t-report" {
+		t.Fatalf("open again: %+v %v, want the first row", got, err)
+	}
+	if _, ok, _ := s.Task(ctx, "t-other"); ok {
+		t.Fatal("a second report row exists")
+	}
+	if got, ok, err := s.ReportOf(ctx, "t-parent", SourcePresort); err != nil || !ok || got.ID != "t-report" {
+		t.Fatalf("report of: %+v %v %v", got, ok, err)
+	}
+	if _, ok, err := s.ReportOf(ctx, "t-parent", SourceScreening); err != nil || ok {
+		t.Fatalf("no screening: %v %v", ok, err)
+	}
+	if p, _, _ := s.Task(ctx, "t-parent"); p.Parent != "" {
+		t.Fatalf("parent's parent = %q", p.Parent)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertScreening, Source: "outside account", TaskID: "t-parent"}); err != nil {
+		t.Fatal(err)
+	}
+	// a retried screening finds its row: no second one, id 0
+	if id, err := s.InsertAlert(ctx, Alert{Kind: AlertScreening, Source: "outside account", TaskID: "t-parent"}); err != nil || id != 0 {
+		t.Fatalf("second screening alert: id %d, %v", id, err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t-parent", Fingerprint: "fp"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.JudgeTaskAlerts(ctx, "t-parent", AlertScreening, VerdictNoise, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.AlertCounts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
+	if want := []AlertCount{{"alert", "open", 1}, {"screening", "noise", 1}}; !reflect.DeepEqual(counts, want) {
+		t.Fatalf("counts %v, want %v", counts, want)
 	}
 }

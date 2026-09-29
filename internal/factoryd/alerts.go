@@ -22,6 +22,9 @@ const (
 	// AlertConfigRejected is a commit of the configuration tree factoryd
 	// refused, filed as a human-lane issue on the tree's repository.
 	AlertConfigRejected = "config_rejected"
+	// AlertScreening is the screening stage's suspect verdict (ruling 182):
+	// real when a human closes the issue, noise when one lets it run.
+	AlertScreening = "screening"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.
@@ -78,7 +81,10 @@ func (s *PGStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	err = s.db.QueryRowContext(ctx,
 		`INSERT INTO alerts (kind, source, task_id, bound_s, verdict, resolved_by, resolved_at, detail, fingerprint)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, 0), NULLIF($5, ''), NULLIF($6, ''), CASE WHEN $5 <> '' THEN now() END, $7::jsonb, NULLIF($8, ''))
-		 RETURNING id`, a.Kind, a.Source, a.TaskID, a.BoundS, a.Verdict, a.ResolvedBy, detail, a.Fingerprint).Scan(&id)
+		 ON CONFLICT (task_id) WHERE kind = 'screening' DO NOTHING RETURNING id`, a.Kind, a.Source, a.TaskID, a.BoundS, a.Verdict, a.ResolvedBy, detail, a.Fingerprint).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil // a screening alert of the task exists: a retry's
+	}
 	return id, err
 }
 
@@ -133,11 +139,11 @@ func (s *PGStore) MergeAlertDetail(ctx context.Context, id int64, detail map[str
 	return oneRow(res, err, "alert")
 }
 
-// JudgeTaskAlerts sets verdict on task's SigNoz alert rows that have none.
-func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, verdict, by string) error {
+// JudgeTaskAlerts sets verdict on task's alert rows of kind that have none.
+func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
-		 WHERE task_id = $1 AND kind = $4 AND verdict IS NULL`, taskID, verdict, by, AlertSigNoz)
+		 WHERE task_id = $1 AND kind = $4 AND verdict IS NULL`, taskID, verdict, by, kind)
 	return err
 }
 

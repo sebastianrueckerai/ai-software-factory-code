@@ -428,6 +428,13 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.calls = append(h.calls, "list")
 			list, _ := json.Marshal(h.tokens)
 			w.Write(list)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/comments"):
+			var list []map[string]any
+			for i, c := range h.comments {
+				list = append(list, map[string]any{"id": 501 + i, "body": c, "user": map[string]string{"login": "factory-agent"}})
+			}
+			b, _ := json.Marshal(list)
+			w.Write(b)
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/comments"):
 			var body struct{ Body string }
 			json.NewDecoder(r.Body).Decode(&body)
@@ -495,6 +502,7 @@ func testRunnerConfig() RunnerConfig {
 		Leases:      &fakeLeases{},
 		Gates:       &GateWatch{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
+		Workflows:   &fakeWorkflows{},
 	}
 }
 
