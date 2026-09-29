@@ -414,7 +414,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(reason) +
+	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) +
 		"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
 	if strings.HasPrefix(reason, screeningAsks) {
 		// the reasons go to the card only: they would teach the author
@@ -463,7 +463,7 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 	} else if ok {
 		notify = p.NotifyOrApprovers(notify)
 	}
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, reason, notify))
+	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, infoRequestComment(t, r.untrusted(t, reason), notify))
 	if err != nil {
 		return 0, err
 	}
@@ -573,8 +573,9 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if existing != nil {
 		ref = *existing
 	} else {
-		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", t.Objective, t.IssueNumber, t.ID)
-		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(t.Objective), body); err != nil {
+		objective := r.untrusted(t, t.Objective)
+		body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
+		if ref, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body); err != nil {
 			return PullRequest{}, err
 		}
 	}
@@ -885,13 +886,13 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return nil // nothing to finish: gone, or already final
 	}
 	r.forgetNamespace(ctx, taskID)
-	msg := "factoryd: task " + taskID + " failed: " + reason
+	msg := "factoryd: task " + taskID + " failed: " + r.untrusted(t, reason)
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	if repoErr == nil {
 		if final != "done" {
 			if final == "closed" {
-				msg = "factoryd: task " + taskID + " closed: " + reason
+				msg = "factoryd: task " + taskID + " closed: " + r.untrusted(t, reason)
 			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err

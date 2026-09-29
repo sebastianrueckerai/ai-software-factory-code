@@ -48,6 +48,11 @@ type Document struct {
 	// ProjectDefault is what a project file leaves out takes, and the most
 	// its quota and standing may set; absent: DefaultProject.
 	ProjectDefault *ProjectDefault `yaml:"project_default,omitempty" json:"project_default,omitempty"`
+	// LinkHosts are the hosts, their subdomains with them, that links in
+	// agent-written text factoryd posts on Forgejo may point at; the
+	// Forgejo host and the project's environment hosts always may. Any
+	// other link is defanged (hxxps://evil[.]example).
+	LinkHosts []string `yaml:"link_hosts,omitempty" json:"link_hosts"`
 }
 
 // Limits bound a task's work; a task keeps the limits of the version it
@@ -429,6 +434,11 @@ func (d Document) Validate() error {
 	for i, a := range d.Approvers {
 		if a == "" || slices.Contains(d.Approvers[:i], a) {
 			return fmt.Errorf("policy: approvers must be distinct, non-empty user names (%q)", a)
+		}
+	}
+	for _, h := range d.LinkHosts {
+		if !hostname.MatchString(h) {
+			return fmt.Errorf("policy: link_hosts: %q is not a host name such as example.org", h)
 		}
 	}
 	for name, s := range d.Bounds {

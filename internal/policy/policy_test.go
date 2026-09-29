@@ -99,6 +99,7 @@ func TestParseRejects(t *testing.T) {
 		"two documents":      {valid + "---\nversion: 1\n", "more than one YAML document"},
 		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
 		"duplicate approver": {strings.Replace(valid, "approvers: [sebastian]", "approvers: [sebastian, sebastian]", 1), "approvers must be distinct"},
+		"link host a URL":    {valid + "link_hosts: [https://example.org]\n", `link_hosts: "https://example.org" is not a host name`},
 		"not yaml":           {"version: [1", "policy:"},
 		"zero steps":         {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: 0}", 1), "minimum"},
 		"negative steps":     {strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, steps: -1}", 1), "limits.steps must not be negative"},

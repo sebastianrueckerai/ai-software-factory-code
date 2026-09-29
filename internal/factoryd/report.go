@@ -98,7 +98,7 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 	}
 	// fenced: a mention the analyzer wrote rings no bell
 	return r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue, fmt.Sprintf(
-		"factoryd %s, analyzer task %s: a report, no code changed.\n\n%s\n\n%s", t.Source, t.ID, fenced(text), marker))
+		"factoryd %s, analyzer task %s: a report, no code changed.\n\n%s\n\n%s", t.Source, t.ID, fenced(r.untrusted(t, text)), marker))
 }
 
 // reportSession runs one worker in report mode in the task's own sandbox:

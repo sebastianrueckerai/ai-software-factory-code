@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -193,7 +195,7 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 		"1. risk class **%s**, whose outcome is auto (policy version %d);\n"+
 		"2. %s\n\n3. the model review approves: %s",
 		commit, g.Policy.Class, g.Policy.PolicyVersion, proof, rv.Summary)
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, r.untrusted(t, msg)); err != nil {
 		return err
 	}
 	r.record(ctx, t.ID, "auto_merge", map[string]any{"pr": pr, "commit": commit, "class": g.Policy.Class, "merge_rule": g.Policy.MergeRule,
@@ -330,7 +332,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	note := NotReproduced(t.AgentSummary)
 	if note != "" {
-		r.commentOnce(ctx, t, repo, pr, "factoryd: the agent fixed a fault it did not reproduce exactly (not_reproduced):\n\n"+fenced(note)+
+		r.commentOnce(ctx, t, repo, pr, "factoryd: the agent fixed a fault it did not reproduce exactly (not_reproduced):\n\n"+fenced(r.untrusted(t, note))+
 			"\n\nThe model review is asked whether the change is a strict improvement with no drawback.")
 	}
 	if t.ReproCommand == "" {
@@ -387,7 +389,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n%s\n\nOutput tail at the head:\n\n%s\n\nOutput tail at the base:\n\n%s",
 		verdict, res.Exit, commit, fenced(res.Command), fenced(res.Output), fenced(textutil.Tail(at.Output, reproOutputTail)))
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, r.untrusted(t, msg)); err != nil {
 		log.Printf("task %s: comment the reproduction: %v", t.ID, err)
 	}
 	detail := map[string]any{"pr": pr, "commit": commit, "command": res.Command, "exit": res.Exit, "output": res.Output,
@@ -469,6 +471,25 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 			return *env.Repro, nil
 		}
 	}
+}
+
+// untrusted is agent-, model- or issue-written text as factoryd posts it on
+// t's repository: sanitize.Outbound, links allowed to the policy's
+// link_hosts, the Forgejo host and the project's environment hosts.
+func (r *Runner) untrusted(t Task, s string) string {
+	v := r.cfg.Policy()
+	hosts := slices.Clone(v.Document.LinkHosts)
+	if u, err := url.Parse(r.forgejo.PublicURL); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, u.Hostname())
+	}
+	if _, p, ok := v.ProjectOf(t.Repository); ok {
+		for _, e := range p.Environments {
+			if e.Hostname != "" {
+				hosts = append(hosts, e.Hostname)
+			}
+		}
+	}
+	return sanitize.Outbound(s, hosts)
 }
 
 // fenced puts s in a markdown code fence longer than any backtick run in
@@ -636,7 +657,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	default:
 		rv = parseReview(content)
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, reviewComment(model, commit, rv)); err != nil {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, r.untrusted(t, reviewComment(model, commit, rv))); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": model,

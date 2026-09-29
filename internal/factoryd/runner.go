@@ -720,7 +720,7 @@ func (r *Runner) commentDecision(ctx context.Context, t Task, s sessionSpec, tri
 	if note != "" {
 		body += "\n\n" + note
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.untrusted(t, body)); err != nil {
 		log.Printf("task %s: comment supervisor decision: %v", t.ID, err)
 	}
 }

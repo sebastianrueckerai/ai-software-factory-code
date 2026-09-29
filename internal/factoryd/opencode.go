@@ -24,6 +24,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -241,8 +242,16 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // (the issue and every answer to an information request) stands between
 // markers with a random tag the author cannot know, after the lines
 // factoryd writes, so none of it can pass for the standing line or for
-// the brief's own sections (ruling 152).
+// the brief's own sections (ruling 152). Every text of the issue and its
+// comments arrives sanitised (sanitize.Inbound).
 func objectiveText(brief harness.TaskBrief) string {
+	brief.Objective = sanitize.Inbound(brief.Objective)
+	for _, texts := range []*[]string{&brief.PosterInfo, &brief.Answers, &brief.Findings} {
+		*texts = slices.Clone(*texts)
+		for i, s := range *texts {
+			(*texts)[i] = sanitize.Inbound(s)
+		}
+	}
 	texts := append([]string{brief.Objective}, brief.PosterInfo...)
 	for {
 		tag := randomTag()
