@@ -43,6 +43,7 @@ type fakeStore struct {
 	sessions     map[string]Session
 	started      map[string]bool
 	finished     map[string]time.Time
+	settled      map[string]bool
 	intakeEvents []IntakeEvent
 	deliveries   map[string]bool
 	pruned       []time.Duration
@@ -56,7 +57,7 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
-		started: map[string]bool{}, finished: map[string]time.Time{}}
+		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -318,6 +319,28 @@ func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64
 	}
 	t.SpentEUR = max(t.SpentEUR, reported)
 	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error) {
+	var ids []string
+	for id, at := range s.finished {
+		if st := s.tasks[id].Status; (st == "done" || st == "failed") && time.Since(at) >= olderThan && !s.settled[id] {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+func (s *fakeStore) SettleSpendFinal(ctx context.Context, id string, reported float64) error {
+	t, ok := s.tasks[id]
+	if !ok || s.settled[id] {
+		return fmt.Errorf("task %s: not found", id)
+	}
+	t.SpentEUR = reported
+	s.tasks[id] = t
+	s.settled[id] = true
 	return nil
 }
 
@@ -828,6 +851,50 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
+	}
+	// the final settlement (ruling 196): a task past the window, two
+	// reviews the gate cut booked at their hold of 0.1447 each on top of
+	// 0.1873 of answered calls (0.4767), while LiteLLM charged 0.2751: set
+	// to 0.2751, the difference a negative settlement row on the task's
+	// own day, and settled once
+	if err := s.CreateTask(ctx, Task{ID: "s-cut", BudgetEUR: 2, SpentEUR: 0.4767, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id = 's-cut'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('s-cut', current_date - 1, 'model', 'coding-cheap', 0.1873), ('s-cut', current_date - 1, 'model', 'review/review-frontier', 0.1447), ('s-cut', current_date - 1, 'model', 'review/review-frontier', 0.1447)`); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-cut", "s-old"}) {
+		t.Fatalf("unsettled past 2h = (%v, %v), want [s-cut s-old]", ids, err)
+	}
+	if err := s.SettleSpendFinal(ctx, "s-cut", 0.2751); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "s-cut"); math.Abs(got.SpentEUR-0.2751) > 1e-9 {
+		t.Fatalf("s-cut spent = %v, want 0.2751 (LiteLLM's final figure)", got.SpentEUR)
+	}
+	var cutRow string
+	if err := s.db.QueryRowContext(ctx, `SELECT ledger.ref || ' ' || round(ledger.eur::numeric, 4)::text || ' ' || (ledger.day = (tasks.finished_at::date))::text FROM ledger JOIN tasks ON tasks.id = ledger.task_id WHERE ledger.task_id = 's-cut' AND ledger.kind = 'settlement'`).Scan(&cutRow); err != nil || cutRow != "litellm-final -0.2016 true" {
+		t.Fatalf("s-cut settlement row = %q (%v), want litellm-final -0.2016 on the task's finish day", cutRow, err)
+	}
+	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-old"}) {
+		t.Fatalf("unsettled after the final settlement = (%v, %v), want [s-old]", ids, err)
+	}
+	if err := s.SettleSpendFinal(ctx, "s-cut", 0.1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a second final settlement = %v, want ErrNotFound (settled once)", err)
+	}
+	// LiteLLM's figure equal to the booked spend marks the task settled with no row
+	if err := s.SettleSpendFinal(ctx, "s-old", 0.5); err != nil {
+		t.Fatal(err)
+	}
+	var oldRows int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM ledger WHERE task_id = 's-old' AND kind = 'settlement'`).Scan(&oldRows); err != nil || oldRows != 0 {
+		t.Fatalf("s-old settlement rows = %d (%v), want 0", oldRows, err)
+	}
+	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || len(ids) != 0 {
+		t.Fatalf("unsettled after both = (%v, %v), want none", ids, err)
 	}
 
 	_, ok, err = s.Task(ctx, "nope")

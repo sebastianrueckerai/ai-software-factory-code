@@ -168,6 +168,7 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 			{"token":"h1","spend":`+h1Spend+`,"metadata":{"task_id":"t1"}},
 			{"token":"h2","spend":0.5,"blocked":true,"metadata":{"task_id":"t1"}},
 			{"token":"h3","spend":9,"metadata":{"task_id":"old"}},
+			{"token":"h5","spend":0.2751,"metadata":{"task_id":"cut"}},
 			{"token":"h4","spend":9,"metadata":{"task_id":"run"}}],"total_pages":1}`)
 	}))
 	defer ll.Close()
@@ -178,20 +179,24 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 		{ID: "t1", SpentEUR: 0.5, Status: "done"},
 		{ID: "t2", SpentEUR: 1, Status: "failed"},
 		{ID: "old", SpentEUR: 0.5, Status: "done"},
+		{ID: "cut", SpentEUR: 0.4767, Status: "done"},
 		{ID: "run", SpentEUR: 0.5, Status: "running"},
 	} {
 		store.CreateTask(context.Background(), tk)
 	}
 	store.finished["t1"] = now.Add(-10 * time.Second)
 	store.finished["t2"] = now.Add(-30 * time.Minute)
-	store.finished["old"] = now.Add(-121 * time.Minute) // past the 2h window
+	store.finished["old"] = now.Add(-121 * time.Minute) // past the 2h window: settled once, to LiteLLM's figure
+	store.finished["cut"] = now.Add(-3 * time.Hour)     // two reviews the gate cut, booked at their hold
 	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
 
 	check := func(pass int, want map[string]float64) {
 		t.Helper()
 		n, err := c.SettleSpend(context.Background())
-		if err != nil || n != 2 {
-			t.Fatalf("pass %d: SettleSpend = (%d, %v), want (2, nil): t1 and t2", pass, n, err)
+		// pass 1 settles t1 and t2 inside the window and old and cut past
+		// it; pass 2 finds old and cut settled
+		if wantN := map[int]int{1: 4, 2: 2}[pass]; err != nil || n != wantN {
+			t.Fatalf("pass %d: SettleSpend = (%d, %v), want (%d, nil)", pass, n, err, wantN)
 		}
 		for id, w := range want {
 			if got, _, _ := store.Task(context.Background(), id); got.SpentEUR != w {
@@ -203,17 +208,18 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 		}
 	}
 	check(1, map[string]float64{
-		"t1":  0.75, // 0.25 + 0.5 from its two keys, above the booked 0.5
-		"t2":  1,    // no LiteLLM keys: never lowered
-		"old": 0.5,  // outside the window
-		"run": 0.5,  // not finished
+		"t1":  0.75,   // 0.25 + 0.5 from its two keys, above the booked 0.5
+		"t2":  1,      // no LiteLLM keys: never lowered inside the window
+		"old": 9,      // past the window: LiteLLM's figure, up
+		"cut": 0.2751, // past the window: LiteLLM's figure, down from the holds
+		"run": 0.5,    // not finished
 	})
 	mu.Lock()
 	h1Spend = "0.5" // LiteLLM's late spend write lands: 0.5 + 0.5
 	mu.Unlock()
-	check(2, map[string]float64{"t1": 1, "t2": 1, "old": 0.5, "run": 0.5})
+	check(2, map[string]float64{"t1": 1, "t2": 1, "old": 9, "cut": 0.2751, "run": 0.5})
 
-	// nothing finished in the window: no LiteLLM call at all
+	// nothing finished in the window and nothing unsettled: no LiteLLM call at all
 	delete(store.finished, "t1")
 	delete(store.finished, "t2")
 	if n, err := c.SettleSpend(context.Background()); n != 0 || err != nil || lists != 2 {

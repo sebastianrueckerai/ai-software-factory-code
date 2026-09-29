@@ -182,6 +182,15 @@ type Store interface {
 	// settlement rows) to at least reported, LiteLLM's model spend, and
 	// books the raise onto spent_eur and as a settlement row, together.
 	SettleSpend(ctx context.Context, id string, reported float64) error
+	// UnsettledTasks lists tasks that finished at least olderThan ago, on
+	// the store's clock, with no open model hold and no final settlement
+	// yet.
+	UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error)
+	// SettleSpendFinal sets the task's booked model spend to reported,
+	// LiteLLM's final figure, down as well as up (ruling 196), books the
+	// difference onto spent_eur and as a settlement row, and marks the
+	// task settled; a settled task is never listed again.
+	SettleSpendFinal(ctx context.Context, id string, reported float64) error
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency; false means no task is linked to that
 	// issue yet.
@@ -657,6 +666,63 @@ func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) 
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, 'litellm', $3)`,
 		id, policy.KindSettlement, reported-booked); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id FROM tasks WHERE status IN ('done', 'failed', 'closed') AND settled_at IS NULL
+		 AND finished_at <= now() - make_interval(secs => $1)
+		 AND NOT EXISTS (SELECT 1 FROM holds WHERE holds.task_id = tasks.id AND holds.kind = $2)
+		 ORDER BY finished_at`, olderThan.Seconds(), policy.KindModel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported float64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	var finished time.Time
+	err = tx.QueryRowContext(ctx, `SELECT finished_at FROM tasks WHERE id = $1 AND settled_at IS NULL FOR UPDATE`, id).Scan(&finished)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	var booked float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1 AND kind IN ($2, $3)`,
+		id, policy.KindModel, policy.KindSettlement).Scan(&booked); err != nil {
+		return err
+	}
+	if delta := reported - booked; delta >= settleEpsilon || delta <= -settleEpsilon {
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, id, delta); err != nil {
+			return err
+		}
+		// on the task's own day, so the day cap of that day is what was charged
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ($1, $2::date, $3, 'litellm-final', $4)`,
+			id, finished, policy.KindSettlement, delta); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET settled_at = now() WHERE id = $1`, id); err != nil {
 		return err
 	}
 	return tx.Commit()
