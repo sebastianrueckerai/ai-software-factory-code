@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -77,6 +78,8 @@ type Kube interface {
 	PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error)
 	// PodLogTail is the pod's last lines of stdout, not followed.
 	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
+	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
+	DeletePersistentVolume(ctx context.Context, name string) error
 }
 
 // PodDiagnosis is what the gate supervisor reads of a sandbox pod.
@@ -393,6 +396,99 @@ const podLogTailBytes = 64 << 10
 func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
 	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d&limitBytes=%d", namespace, name, lines, podLogTailBytes), nil, nil)
 	return string(b), err
+}
+
+// CacheClass is the StorageClass (infra k8s/platform/local-path) whose
+// volume path is the claim's name: every namespace's claim of one name
+// reaches the same directory on a node, and Retain keeps it.
+const CacheClass = "factory-cache"
+
+// cacheClaim is the claim name of class CacheClass; local-path does not
+// enforce the request.
+func cacheClaim(name string) map[string]any {
+	return map[string]any{
+		"apiVersion": "v1", "kind": "PersistentVolumeClaim",
+		"metadata": map[string]any{"name": name},
+		"spec": map[string]any{
+			"storageClassName": CacheClass,
+			"accessModes":      []any{"ReadWriteOnce"},
+			"resources":        map[string]any{"requests": map[string]any{"storage": "20Gi"}},
+		},
+	}
+}
+
+// cacheEnv points Go's and npm's caches at the cache volume at /cache; PATH
+// is the sandbox's and the CI runner's own with go install's target first.
+var cacheEnv = []map[string]any{
+	{"name": "GOPATH", "value": "/cache/go"},
+	{"name": "GOCACHE", "value": "/cache/go-build"},
+	{"name": "npm_config_cache", "value": "/cache/npm"},
+	{"name": "PATH", "value": "/cache/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+}
+
+var cacheMount = map[string]any{"name": "cache", "mountPath": "/cache"}
+
+func cacheVolume(claim string) map[string]any {
+	return map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": claim}}
+}
+
+// deleteReleasedCaches deletes the cache volumes whose claims went with
+// their namespaces; Retain keeps their directory for the next claim.
+func deleteReleasedCaches(ctx context.Context, kube Kube) {
+	pvs, err := kube.PersistentVolumes(ctx)
+	if err != nil {
+		log.Printf("cache volumes: list: %v", err)
+		return
+	}
+	for _, pv := range pvs {
+		if pv.StorageClass != CacheClass || pv.Phase != "Released" {
+			continue
+		}
+		if err := kube.DeletePersistentVolume(ctx, pv.Name); err != nil && !errors.Is(err, ErrNotFound) {
+			log.Printf("cache volumes: delete %s: %v", pv.Name, err)
+		}
+	}
+}
+
+// PersistentVolume is what the cache sweep reads of a volume.
+type PersistentVolume struct {
+	Name           string
+	StorageClass   string
+	Phase          string
+	ClaimNamespace string
+}
+
+func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolume, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				StorageClassName string `json:"storageClassName"`
+				ClaimRef         struct {
+					Namespace string `json:"namespace"`
+				} `json:"claimRef"`
+			} `json:"spec"`
+			Status struct {
+				Phase string `json:"phase"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/persistentvolumes", &list); err != nil {
+		return nil, err
+	}
+	out := make([]PersistentVolume, 0, len(list.Items))
+	for _, it := range list.Items {
+		out = append(out, PersistentVolume{Name: it.Metadata.Name, StorageClass: it.Spec.StorageClassName,
+			Phase: it.Status.Phase, ClaimNamespace: it.Spec.ClaimRef.Namespace})
+	}
+	return out, nil
+}
+
+func (k *InClusterKube) DeletePersistentVolume(ctx context.Context, name string) error {
+	_, err := k.call(ctx, http.MethodDelete, "/api/v1/persistentvolumes/"+name, nil, nil)
+	return err
 }
 
 // Deployment reads one Deployment (the factory namespace's roll record).

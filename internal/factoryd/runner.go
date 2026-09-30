@@ -298,6 +298,8 @@ type sessionSpec struct {
 	// progress starts past it
 	base string
 	repo Repo
+	// cache is the project's cache claim in the task namespace
+	cache string
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
 	// report is a report session's guide (ruling 185); "" for a coding
@@ -772,13 +774,21 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 // setupNamespace builds the session's sandbox: base is the read token on
 // the task's repository (the clone), push the write token on the bot's fork
 // (the branch push).
-func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoToken) error {
+func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoToken) (string, error) {
+	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
+	}
+	cache := "cache-" + p.Name
 	ns := r.agentNamespace(t.ID)
 	if err := r.freshNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    t.ID,
 		"pod-security.kubernetes.io/enforce": "restricted",
 	}); err != nil {
-		return fmt.Errorf("setup namespace: %w", err)
+		return "", fmt.Errorf("setup namespace: %w", err)
 	}
 	core := "/api/v1/namespaces/" + ns
 	steps := []struct {
@@ -830,13 +840,16 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoT
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, r.kube, r.cfg.FactoryNamespace, r.cfg.PullSecret, ns)
 		}},
+		{"cache claim", func() error {
+			return r.kube.Create(ctx, core+"/persistentvolumeclaims", cacheClaim(cache))
+		}},
 	}
 	for _, step := range steps {
 		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
-			return fmt.Errorf("setup %s: %w", step.name, err)
+			return "", fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
-	return nil
+	return cache, nil
 }
 
 // freshNamespace creates the task namespace, deleting a leftover one first:
@@ -914,6 +927,7 @@ func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {
 	if err := r.kube.DeleteNamespace(ctx, r.agentNamespace(taskID)); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("task %s: delete namespace: %v", taskID, err)
 	}
+	deleteReleasedCaches(ctx, r.kube)
 }
 
 func (r *Runner) agentNamespace(taskID string) string {
@@ -982,14 +996,14 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}
-	return r.sandboxPodSpec(t, env, true)
+	return r.sandboxPodSpec(t, s.cache, env, true)
 }
 
 // sandboxPodSpec is a gVisor worker pod in the task namespace; only an
 // agent session gets the gateway token. Every sandbox pod carries the
 // worker label the egress policy selects: without it no policy would
 // confine its egress.
-func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool) map[string]any {
+func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gatewayToken bool) map[string]any {
 	pullSecrets := []any{}
 	if r.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": r.cfg.PullSecret})
@@ -1016,6 +1030,7 @@ func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool)
 			}},
 		}})
 	}
+	mounts, volumes = append(mounts, cacheMount), append(volumes, cacheVolume(cache))
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
@@ -1040,7 +1055,7 @@ func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool)
 				"name":    "worker",
 				"image":   r.cfg.WorkerImage,
 				"command": []any{"/usr/local/bin/agent-worker"},
-				"env":     env,
+				"env":     append(env, cacheEnv...),
 				"resources": map[string]any{
 					"requests": sandboxRequests,
 					"limits":   sandboxLimits,

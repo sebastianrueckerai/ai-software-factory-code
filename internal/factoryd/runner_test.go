@@ -57,6 +57,8 @@ type fakeKube struct {
 	applies      []string                     // ns/name of every applied CNP, in order
 	onCreatePod  func()                       // runs on every CreatePod
 	nsDelay      time.Duration                // every CreateNamespace takes this long
+	pvs          []PersistentVolume
+	deletedPVs   []string
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -388,6 +390,19 @@ func (k *fakeKube) scriptPods(start int, bodies ...string) {
 
 func (k *fakeKube) podAt(i int) *fakePod {
 	return k.podOrder[i]
+}
+
+func (k *fakeKube) PersistentVolumes(ctx context.Context) ([]PersistentVolume, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return slices.Clone(k.pvs), nil
+}
+
+func (k *fakeKube) DeletePersistentVolume(ctx context.Context, name string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.deletedPVs = append(k.deletedPVs, name)
+	return nil
 }
 
 var _ Kube = (*fakeKube)(nil)
@@ -1818,8 +1833,8 @@ func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
-	r := &Runner{cfg: cfg, kube: kube}
-	if err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}, ForgejoToken{}); err != nil {
+	r := &Runner{cfg: cfg, kube: kube, store: newFakeStore()}
+	if _, err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}, ForgejoToken{}); err != nil {
 		t.Fatal(err)
 	}
 	egress := fmt.Sprint(kube.cnps["factory-agents-t1/worker-egress"]["egress"])

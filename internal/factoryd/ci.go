@@ -80,6 +80,9 @@ type CIRepo struct {
 	Repo    Repo
 	Token   string
 	Project string
+	// Cache is the claim of the project's CI cache (design 4.6), apart from
+	// its agents' cache-<project>: the checks gate merges
+	Cache string
 }
 
 // CIReposOf serves every project agents work on.
@@ -96,7 +99,7 @@ func CIReposOf(f *Forgejo, projects interface {
 			if !p.Coder() {
 				continue
 			}
-			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions}
+			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: "cache-ci-" + p.Name}
 			if p.Objects == policy.ObjectsFactory {
 				r.Project = p.Name
 			}
@@ -386,6 +389,9 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, s.kube, s.cfg.FactoryNamespace, s.cfg.PullSecret, ns)
 		}},
+		{"cache claim", func() error {
+			return s.kube.Create(ctx, core+"/persistentvolumeclaims", cacheClaim(repo.Cache))
+		}},
 	}
 	if vm != nil {
 		steps = append(steps, ciSetupStep{"buildkit client secret", func() error {
@@ -397,7 +403,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
-	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(kind, vm, s.vmTries[jobID] > 1))
+	return s.kube.CreatePod(ctx, ns, ciPodName, s.runnerPodSpec(kind, repo.Cache, vm, s.vmTries[jobID] > 1))
 }
 
 // reconcile tears down CI namespaces whose pod has finished — successfully,
@@ -512,6 +518,7 @@ func (s *CISpawner) teardown(ctx context.Context, ns string, repos []CIRepo) {
 	if err := s.kube.DeleteNamespace(ctx, ns); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("ci spawner: delete namespace %s: %v", ns, err)
 	}
+	deleteReleasedCaches(ctx, s.kube)
 }
 
 // sweepOrphanRunners deregisters runners that spawn's own naming convention
@@ -578,7 +585,7 @@ var (
 	}
 )
 
-func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM, lastTry bool) map[string]any {
+func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, lastTry bool) map[string]any {
 	pullSecrets := []any{}
 	if s.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": s.cfg.PullSecret})
@@ -588,17 +595,22 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, vm *BuildVM, lastTry bool) map
 		map[string]any{"name": "RUNNER_UUID", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": ciSecretName, "key": "uuid"}}},
 	}
+	for _, e := range cacheEnv {
+		env = append(env, e)
+	}
 	mounts := []any{
 		map[string]any{"name": "workspace", "mountPath": "/workspace"},
 		map[string]any{"name": "home", "mountPath": "/home/runner"},
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
 		map[string]any{"name": "registration", "mountPath": "/var/run/secrets/ci", "readOnly": true},
+		cacheMount,
 	}
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 		map[string]any{"name": "registration", "secret": map[string]any{"secretName": ciSecretName}},
+		cacheVolume(cache),
 	}
 	securityContext := map[string]any{
 		"runAsNonRoot":             true,

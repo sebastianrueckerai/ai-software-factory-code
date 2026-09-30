@@ -315,7 +315,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// freshNamespace deletes a leftover namespace first, and with it any
 	// pod a dead session left running
-	if err := r.setupNamespace(ctx, t, base, push); err != nil {
+	if s.cache, err = r.setupNamespace(ctx, t, base, push); err != nil {
 		return SessionResult{}, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))

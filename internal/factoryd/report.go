@@ -134,7 +134,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		return "", "", false, err
 	}
-	if err := r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
+	if s.cache, err = r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
 		return "", "", false, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))

@@ -5,9 +5,11 @@ metadata:
   namespace: factory
 ---
 # Cluster scope holds only what cannot be namespaced: namespace create,
-# delete and list, and creating the RoleBinding that grants factoryd-task
-# inside each task namespace. RBAC cannot restrict create by name, so the
-# ValidatingAdmissionPolicy below confines all of it to factory-agents-*.
+# delete and list, creating the RoleBinding that grants factoryd-task
+# inside each task namespace, and deleting released cache volumes. RBAC
+# cannot restrict create by name, so the ValidatingAdmissionPolicy below
+# confines all of it to factory-agents-* (and the volumes to released
+# ones of class factory-cache).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -25,6 +27,9 @@ rules:
   resources: [clusterroles]
   verbs: [bind]
   resourceNames: [factoryd-task, factoryd-project, factory-project-deployer]
+- apiGroups: [""]
+  resources: [persistentvolumes]
+  verbs: [list, delete]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -52,7 +57,7 @@ rules:
   resources: [pods/log]
   verbs: [get]
 - apiGroups: [""]
-  resources: [serviceaccounts, resourcequotas, limitranges]
+  resources: [serviceaccounts, resourcequotas, limitranges, persistentvolumeclaims]
   verbs: [create]
 - apiGroups: [""]
   # get: the CI reconciler reads the runner registration secret to
@@ -231,7 +236,8 @@ spec:
   - name: kind
     expression: request.kind.kind
   - name: target
-    expression: "request.kind.kind != 'Namespace' ? request.namespace : request.operation == 'DELETE' ? oldObject.metadata.name : object.metadata.name"
+    # a cluster-scoped request (a PersistentVolume) has no namespace
+    expression: "request.kind.kind != 'Namespace' ? (has(request.namespace) ? request.namespace : '') : request.operation == 'DELETE' ? oldObject.metadata.name : object.metadata.name"
   - name: task
     expression: variables.target.startsWith('factory-agents-')
   # a project's namespace (Task 65): created with factory/project and the
@@ -272,6 +278,13 @@ spec:
       (request.operation == 'CREATE' ||
        (has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
         oldObject.metadata.labels['factory/project'] == object.metadata.labels['factory/project']))
+  # a cache volume whose claim went with its task namespace (the
+  # directory stays: the class retains it)
+  - name: releasedCache
+    expression: >-
+      variables.kind == 'PersistentVolume' && request.operation == 'DELETE' &&
+      has(oldObject.spec.storageClassName) && oldObject.spec.storageClassName == 'factory-cache' &&
+      has(oldObject.status.phase) && oldObject.status.phase == 'Released'
   # that source's credential
   - name: projectGitSecret
     expression: >-
@@ -280,13 +293,18 @@ spec:
       object.metadata.name == object.metadata.labels['factory/project'] + '-git' &&
       (!has(object.type) || object.type == 'Opaque')
   validations:
-  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret
-    message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces and on its projects' Flux sources
+  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret || variables.releasedCache
+    message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces, on its projects' Flux sources and on released cache volumes
   - expression: >-
-      variables.task ? variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod'] :
+      variables.task ? variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod', 'PersistentVolumeClaim'] :
       variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization', 'CiliumNetworkPolicy'] :
       true
     message: factoryd may not create this kind of object
+  - expression: >-
+      variables.kind != 'PersistentVolumeClaim' || request.operation == 'DELETE' ||
+      (object.metadata.name.startsWith('cache-') &&
+       has(object.spec.storageClassName) && object.spec.storageClassName == 'factory-cache')
+    message: factoryd's claims are cache-* claims of class factory-cache
   # a service account token would carry the account's rights (the flux
   # account's deployer role) past factoryd's own lockdown
   - expression: >-
