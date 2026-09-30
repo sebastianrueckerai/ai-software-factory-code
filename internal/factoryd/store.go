@@ -529,14 +529,15 @@ func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time
 
 // MonthSpend is the UTC calendar month's variable spend over the ledger,
 // standing lines left out, as the gateway's month headroom counts it, and
-// whether the gateway refused a call at the month cap this month.
+// the month's first refused_month_cap reason.
 func (s *PGStore) MonthSpend(ctx context.Context) (MonthSpend, error) {
 	var m MonthSpend
 	err := s.db.QueryRowContext(ctx,
 		`SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM'),
 		        `+policy.MonthSpentSQL+`::float8,
-		        EXISTS (SELECT 1 FROM audit WHERE decision = $1 AND ts >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
-		policy.RefusedMonthCap).Scan(&m.Month, &m.EUR, &m.Refused)
+		        COALESCE((SELECT reason FROM audit WHERE decision = $1 AND ts >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		                  ORDER BY ts, id LIMIT 1), '')`,
+		policy.RefusedMonthCap).Scan(&m.Month, &m.EUR, &m.Refusal)
 	return m, err
 }
 
@@ -746,9 +747,9 @@ func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported floa
 	delta := reported - booked
 	changed := delta >= settleEpsilon || delta <= -settleEpsilon
 	if changed {
-		// on the task's own day, so the day cap of that day is what was charged
+		// on the task's own UTC day, so the day cap of that day is what was charged
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ($1, $2::date, $3, 'litellm-final', $4)`,
-			id, finished, policy.KindSettlement, delta); err != nil {
+			id, finished.UTC(), policy.KindSettlement, delta); err != nil {
 			return false, err
 		}
 		if err := spendFromLedger(ctx, tx, id); err != nil {

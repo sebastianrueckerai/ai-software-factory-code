@@ -49,7 +49,9 @@ the agents work on.
   classes' aliases and capped at the smallest headroom; a new run, policy version or UTC day
   mints a new key and blocks the old one once the calls still using it
   are done. A LiteLLM budget refusal is labelled by the headroom the key
-  was capped at (`refused_budget`, `refused_day_cap` or `refused_month_cap`). Every decision has an audit row
+  was capped at (`refused_budget`, `refused_day_cap` or `refused_month_cap`);
+  LiteLLM's proxy-wide `max_budget` (its message names no entity) is
+  `refused_month_cap`. Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
   output limit and hold. factoryd's own model calls (the session
   supervisor, the gate supervisor, the model review, the audit) take the same route:

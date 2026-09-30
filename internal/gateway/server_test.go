@@ -555,7 +555,39 @@ func TestChatCompletions(t *testing.T) {
 			reqBody:  chatBody("coding-cheap"),
 			resp: stubResp{
 				status: http.StatusTooManyRequests,
-				body:   `{"error":{"message":"Budget has been exceeded!","type":"budget_exceeded","param":null,"code":"429"}}`,
+				body:   `{"error":{"message":"Budget has been exceeded! Key=42 (sk-...W8TA) Current cost: 5.0, Max budget: 5.0","type":"budget_exceeded","param":null,"code":"429"}}`,
+			},
+			wantStatus:      http.StatusPaymentRequired,
+			wantDecision:    "refused_day_cap",
+			wantErrType:     "budget_exceeded",
+			wantUpstreamHit: 1,
+		},
+		{
+			// LiteLLM 1.102.2 auth_checks.py _global_proxy_budget_check raises
+			// BudgetExceededError without a message; exceptions.py's default
+			// names no entity, auth_exception_handler.py passes it through
+			name:    "litellm 429 on the proxy-wide budget is a month-cap refusal",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp: stubResp{
+				status: http.StatusTooManyRequests,
+				body:   `{"error":{"message":"Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0","type":"budget_exceeded","param":null,"code":"429"}}`,
+			},
+			wantStatus:      http.StatusPaymentRequired,
+			wantDecision:    "refused_month_cap",
+			wantReason:      "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0",
+			wantErrType:     "budget_exceeded",
+			wantUpstreamHit: 1,
+		},
+		{
+			// the key's window budget (auth_checks.py) names the key
+			name:     "litellm 429 on a key's window budget stays the key's bound",
+			task:     &runningTask,
+			dayTotal: 15,
+			reqBody:  chatBody("coding-cheap"),
+			resp: stubResp{
+				status: http.StatusTooManyRequests,
+				body:   `{"error":{"message":"ExceededBudget: Key over 1d budget. Spend=$5.0100, Limit=$5.00","type":"budget_exceeded","param":null,"code":"429"}}`,
 			},
 			wantStatus:      http.StatusPaymentRequired,
 			wantDecision:    "refused_day_cap",

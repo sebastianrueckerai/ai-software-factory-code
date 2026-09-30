@@ -20,12 +20,13 @@ const SourceMonthCap = "month_cap"
 const monthCapReached = "the month cap is reached: the gateway refused this task's spend (refused_month_cap): "
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
-// YYYY-MM, EUR booked in the ledger, and whether the gateway refused a
-// call at the month cap.
+// YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
+// first refused_month_cap ("" for none): the gateway's headroom, or
+// LiteLLM's proxy-wide budget.
 type MonthSpend struct {
 	Month   string
 	EUR     float64
-	Refused bool
+	Refusal string
 }
 
 // MonthBook is what the month alarm reads and keeps.
@@ -82,7 +83,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 		return err
 	}
 	for _, pct := range []int{50, 80, 100} {
-		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && m.Refused) {
+		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && m.Refusal != "") {
 			continue
 		}
 		fp := m.Month + "/" + strconv.Itoa(pct)
@@ -91,7 +92,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 			return err
 		}
 		if !ok {
-			detail := map[string]any{"month": m.Month, "spent_eur": m.EUR, "cap_eur": limit, "refused": m.Refused, "policy_version": v.ID}
+			detail := map[string]any{"month": m.Month, "spent_eur": m.EUR, "cap_eur": limit, "refusal": m.Refusal, "policy_version": v.ID}
 			if row.ID, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: strconv.Itoa(pct), Fingerprint: fp,
 				Verdict: VerdictReal, ResolvedBy: "factoryd", Detail: detail}); err != nil {
 				return err
@@ -123,13 +124,17 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		return fmt.Errorf("%s at %s has no month_eur line", policy.FilePolicy, v.Commit)
 	}
 	limit := v.Document.Budget.MonthEUR
+	refusal := ""
+	if m.Refusal != "" {
+		refusal = "\n\nThe first refusal:\n\n" + fenced(m.Refusal)
+	}
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s/%s#L%d", a.Forgejo.PublicURL, a.Repo, v.Commit, a.Dir, policy.FilePolicy, line)
 	title := fmt.Sprintf("budget: the month cap of %.2f EUR is reached (%s)", limit, m.Month)
 	body := fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) "+
 		"is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`, %s).\n\n"+
 		"The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; "+
 		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, "+
-		"like any setting. Close this issue once decided.\n\nfiled by factoryd", m.EUR, limit, link)
+		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
 	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, Task{
 		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
 		Source: SourceMonthCap, Author: a.Forgejo.BotUser,

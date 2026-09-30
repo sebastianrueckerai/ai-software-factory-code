@@ -1475,7 +1475,7 @@ func TestPGStoreMonthCap(t *testing.T) {
 	}
 	month := time.Now().UTC().Format("2006-01")
 	m, err := s.MonthSpend(ctx)
-	if err != nil || m.Month != month || math.Abs(m.EUR-0.04) > 1e-12 || m.Refused {
+	if err != nil || m.Month != month || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" {
 		t.Fatalf("MonthSpend = (%+v, %v), want %s, 0.04 EUR, no refusal", m, err, month)
 	}
 	if _, ok, err := s.MonthCapRefusal(ctx, "u", time.Now().Add(-40*24*time.Hour)); err != nil || !ok {
@@ -1484,8 +1484,8 @@ func TestPGStoreMonthCap(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason) VALUES ('t', 'refused_month_cap', 'the month')`); err != nil {
 		t.Fatal(err)
 	}
-	if m, err := s.MonthSpend(ctx); err != nil || !m.Refused {
-		t.Fatalf("MonthSpend after a refusal = (%+v, %v), want refused", m, err)
+	if m, err := s.MonthSpend(ctx); err != nil || m.Refusal != "the month" {
+		t.Fatalf("MonthSpend after a refusal = (%+v, %v), want the month's refusal", m, err)
 	}
 	if reason, ok, err := s.MonthCapRefusal(ctx, "t", time.Now().Add(-time.Minute)); err != nil || !ok || reason != "the month" {
 		t.Fatalf("t's refusal since a minute ago = (%q, %v, %v), want the month", reason, ok, err)

@@ -9,6 +9,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+const proxyRefusal = "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0"
+
 // monthPolicy is a policy.yaml whose month_eur is on line 7.
 const monthPolicy = "# yaml-language-server: $schema=schema/policy.schema.json\nversion: 1\n\nbudget:\n  task_default_eur: 2\n  day_eur: 20\n  month_eur: 50\n"
 
@@ -60,19 +62,19 @@ func TestMonthAlarm(t *testing.T) {
 	}
 	// a failed filing is filed at the next check, once
 	fj.failNext = 1
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refused: true}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal}
 	if err := alarm.Check(ctx); err == nil {
 		t.Fatal("a failed filing raised nothing")
 	}
-	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refused: true}, "2026-09/50", "2026-09/80", "2026-09/100")
-	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refused: true}, "2026-09/50", "2026-09/80", "2026-09/100")
+	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal}, "2026-09/50", "2026-09/80", "2026-09/100")
+	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refusal: proxyRefusal}, "2026-09/50", "2026-09/80", "2026-09/100")
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
 	for _, want := range []string{"budget: the month cap of 50.00 EUR is reached (2026-09)\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
-		"refused_month_cap"} {
+		"refused_month_cap", "The first refusal:\n\n```\n" + proxyRefusal + "\n```"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
 		}
@@ -107,7 +109,7 @@ func TestMonthAlarm(t *testing.T) {
 func TestMonthAlarmZeroCap(t *testing.T) {
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 0)
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refused: true}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: proxyRefusal}
 	if err := alarm.Check(context.Background()); err != nil || len(store.alertRows()) != 0 || len(fj.issues) != 0 {
 		t.Fatalf("check under a cap of 0 = %v, alerts %+v, issues %q", err, store.alertRows(), fj.issues)
 	}

@@ -690,10 +690,14 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 					} `json:"error"`
 				}
 				json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-				// the key's max_budget was the task's or the day's headroom
-				reason := "litellm budget_exceeded: " + liteErr.Error.Message
-				s.auditCall(c, c.key.bound, reason, &c.task.SpentEUR)
-				w.Header().Set(HeaderDecision, c.key.bound)
+				// the key's max_budget was the task's, the day's or the
+				// month's headroom; the proxy-wide budget stops every key
+				decision, reason := c.key.bound, "litellm budget_exceeded: "+liteErr.Error.Message
+				if isProxyBudget(liteErr.Error.Message) {
+					decision, reason = policy.RefusedMonthCap, "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "+liteErr.Error.Message
+				}
+				s.auditCall(c, decision, reason, &c.task.SpentEUR)
+				w.Header().Set(HeaderDecision, decision)
 				writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
 				return
 			}
@@ -839,6 +843,16 @@ func isBudgetExceeded(body []byte) bool {
 		} `json:"error"`
 	}
 	return json.Unmarshal(body, &e) == nil && e.Error.Type == "budget_exceeded"
+}
+
+// isProxyBudget: LiteLLM 1.102 raises the proxy-wide max_budget
+// (auth_checks.py _global_proxy_budget_check) as a BudgetExceededError
+// without a message, so it carries exceptions.py's default "Budget has
+// been exceeded! Current cost: {current_cost}, Max budget: {max_budget}".
+// Every other budget names its entity before the cost ("Key=...",
+// "Team=...") or reads "ExceededBudget: ...".
+func isProxyBudget(message string) bool {
+	return strings.HasPrefix(message, "Budget has been exceeded! Current cost: ")
 }
 
 func contentType(r *http.Request) string {
