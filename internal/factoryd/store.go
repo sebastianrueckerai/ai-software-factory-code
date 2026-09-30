@@ -77,6 +77,9 @@ type Task struct {
 	RevertedAt *time.Time
 }
 
+// Report tells a report task (ruling 185): a parent's write-up.
+func (t Task) Report() bool { return t.Parent != "" }
+
 // Standing is the issue author's standing (ruling 152); "" for a task
 // from before authors were kept.
 func (t Task) Standing() string {

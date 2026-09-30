@@ -1076,13 +1076,19 @@ func TestTaskConfigFromProcess(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, want)
 			}
 		})
+	} // Reconcile's report task, with no class to run: refused, never a
+	// coding session
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort}, &prForgejo{})
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil || !strings.Contains(err.Error(), "task t1: a report task with no class") {
+		t.Fatalf("error = %v, want the report task with no class refused", err)
 	}
 }
 
 // processNameUses are the string literals of a Go file that name process
 // maintenance or spec: "maintenance" anywhere, a process file's name, and
-// "spec" anywhere but as a map literal's key or an index into a map other
-// than Processes (a Kubernetes object's spec).
+// "spec" anywhere but as a key of a map[string]any literal or an index into
+// a map other than Processes (a Kubernetes object's spec).
 func processNameUses(t *testing.T, name string, src []byte) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -1115,7 +1121,7 @@ func processNameUses(t *testing.T, name string, src []byte) []string {
 			flagged = true
 			switch p := parent.(type) {
 			case *ast.KeyValueExpr:
-				flagged = p.Key != n
+				flagged = p.Key != n || !kubeObject(stack[len(stack)-3])
 			case *ast.IndexExpr:
 				sel, isSel := p.X.(*ast.SelectorExpr)
 				flagged = isSel && sel.Sel.Name == "Processes"
@@ -1129,6 +1135,22 @@ func processNameUses(t *testing.T, name string, src []byte) []string {
 	return uses
 }
 
+// kubeObject reports whether n is a map[string]any literal, the shape of
+// the Kubernetes objects factoryd builds.
+func kubeObject(n ast.Node) bool {
+	lit, ok := n.(*ast.CompositeLit)
+	if !ok {
+		return false
+	}
+	m, ok := lit.Type.(*ast.MapType)
+	if !ok {
+		return false
+	}
+	key, kok := m.Key.(*ast.Ident)
+	val, vok := m.Value.(*ast.Ident)
+	return kok && vok && key.Name == "string" && val.Name == "any"
+}
+
 // The engine names no process (stage11-design.md section 0): its program
 // follows the session mode and the stages of the task's process, never a
 // process's name.
@@ -1140,17 +1162,25 @@ func f(v V, pod map[string]any) {
 	_ = name == "spec"
 	read("processes/maintenance.yaml")
 	_ = map[string]any{"spec": 1}
+	_ = map[string]bool{"spec": true}[v.Process]
 	_ = pod["spec"]
 }
 type T struct{ S int ` + "`json:\"spec\"`" + ` }
 `
-	if got := processNameUses(t, "planted.go", []byte(planted)); len(got) != 4 {
-		t.Fatalf("planted uses = %q, want the four process names and neither Kubernetes spec", got)
+	if got := processNameUses(t, "planted.go", []byte(planted)); len(got) != 5 {
+		t.Fatalf("planted uses = %q, want the five process names and neither Kubernetes spec", got)
 	}
-	files, err := filepath.Glob("*.go")
+	// the policy package's constants too: a name there would reach the
+	// engine as an identifier
+	engine, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	policyFiles, err := filepath.Glob("../policy/*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := append(engine, policyFiles...)
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue

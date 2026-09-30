@@ -659,7 +659,10 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 			tc.Lane, tc.Class = l.Name, l.Class
 		}
 	}
-	if t.Parent != "" && len(t.RequiredCapabilities) > 0 {
+	if t.Report() {
+		if len(t.RequiredCapabilities) == 0 {
+			return TaskConfig{}, terminalError("task %s: a report task with no class", t.ID)
+		}
 		tc.Lane, tc.Class = "", t.RequiredCapabilities[0]
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
@@ -676,7 +679,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Parent != "", Stronger: t.Source == SourceScreening,
+	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
 		Roll: t.Source == SourceRoll}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
