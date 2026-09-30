@@ -129,6 +129,10 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	switch ev.Kind {
 	case harness.EventToolCall, harness.EventCommand:
 		s.sinceChange++
+		if ev.Kind == harness.EventCommand {
+			// the command's running time is the machine's, not the agent's
+			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
+		}
 	case harness.EventFileChange:
 		s.sinceChange = 0
 		s.noWriteFrom = at
@@ -149,6 +153,12 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("agent events for %s without a file write or edit", at.Sub(s.noWriteFrom).Round(time.Second))})
 	}
 	return s.halfWay(at)
+}
+
+// commandDuration is how long a command event's command ran (duration_ms).
+func commandDuration(ev harness.Event) time.Duration {
+	ms, _ := ev.Detail["duration_ms"].(float64)
+	return time.Duration(ms) * time.Millisecond
 }
 
 // Tick is the heartbeat check between (or instead of) events: it catches a
