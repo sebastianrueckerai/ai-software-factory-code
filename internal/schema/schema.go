@@ -22,8 +22,8 @@ var files embed.FS
 // files apply in name order.
 var sets = []string{"factoryd", "gateway"}
 
-// Migrate applies every migration not yet recorded in schema_migrations,
-// each file with its record in one transaction, then the policy schema. It
+// Migrate applies the policy schema, then every migration not yet recorded
+// in schema_migrations, each file with its record in one transaction. It
 // logs each migration it applies, or that the schema was up to date.
 func Migrate(ctx context.Context, db *sql.DB) (err error) {
 	conn, err := db.Conn(ctx)
@@ -43,6 +43,10 @@ func Migrate(ctx context.Context, db *sql.DB) (err error) {
 		return err
 	}
 	applied := 0
+	// first: a migration may read the ledger or the holds
+	if err := policy.Migrate(ctx, db); err != nil {
+		return err
+	}
 	for _, set := range sets {
 		entries, err := files.ReadDir("migrations/" + set)
 		if err != nil {
@@ -67,9 +71,6 @@ func Migrate(ctx context.Context, db *sql.DB) (err error) {
 			log.Printf("migration %s applied", name)
 			applied++
 		}
-	}
-	if err := policy.Migrate(ctx, db); err != nil {
-		return err
 	}
 	if applied == 0 {
 		log.Printf("migrations up to date")
