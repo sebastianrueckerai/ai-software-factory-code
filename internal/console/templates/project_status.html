@@ -1,18 +1,19 @@
 {{template "head" .}}
 <h2>Project {{.Name}}</h2>
-<p>Hover a step for what it does.</p>
+<p>Hover a step, or focus it, for what it does.</p>
 {{template "status-panel" .}}
 {{template "foot"}}
 
 {{define "status-panel"}}<section id="status" class="status" aria-live="polite" aria-label="The steps of project {{.Name}}"{{if not .Final}} hx-get="/projects/{{.Name}}/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
-<ol class="steps">
-{{range .Steps}}<li class="step {{.State}}" title="{{.Tip}}"><span class="name">{{.Name}}</span> <span class="state">{{.State}}</span><br><span class="detail">{{if .Link}}<a href="{{.Link}}">{{.Detail}}</a>{{else}}{{.Detail}}{{end}}</span></li>
+{{if .Error}}<p class="problem" role="alert">{{.Error}}</p>
+{{end}}<ol class="steps">
+{{range .Steps}}<li class="step {{.State}}" tabindex="0" title="{{.Tip}}"><span class="name">{{.Name}}</span> <span class="state">{{.State}}</span><br><span class="detail">{{if .Link}}<a href="{{.Link}}">{{.Detail}}</a>{{else}}{{.Detail}}{{end}}</span></li>
 {{end}}</ol>
-{{if .CanMerge}}<form method="post" action="/projects/{{.Name}}/merge" hx-post="/projects/{{.Name}}/merge" hx-target="#status" hx-swap="outerHTML" hx-indicator="find button">
+{{if .CanMerge}}<form method="post" action="/projects/{{.Name}}/merge" hx-post="/projects/{{.Name}}/merge" hx-target="#status" hx-swap="outerHTML" hx-sync="closest section:replace" hx-indicator="find button">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <button type="submit">Merge</button>
 </form>{{end}}
-{{if .CanRegister}}<form method="post" action="/projects/{{.Name}}/register" hx-post="/projects/{{.Name}}/register" hx-target="#status" hx-swap="outerHTML" hx-indicator="find button">
+{{if .CanRegister}}<form method="post" action="/projects/{{.Name}}/register" hx-post="/projects/{{.Name}}/register" hx-target="#status" hx-swap="outerHTML" hx-sync="closest section:replace" hx-indicator="find button">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label for="password">Password of the Forgejo site admin {{.User}}</label>
 <input id="password" name="password" type="password" autocomplete="off" required hx-preserve="true">

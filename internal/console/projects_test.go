@@ -338,7 +338,7 @@ func TestNewProjectOpensPullRequestAsHuman(t *testing.T) {
 	}
 }
 
-var stepRE = regexp.MustCompile(`<li class="step (\w+)" title="([^"]*)"><span class="name">([^<]*)</span>`)
+var stepRE = regexp.MustCompile(`<li class="step (\w+)" tabindex="0" title="([^"]*)"><span class="name">([^<]*)</span>`)
 
 // steps reads the panel's steps: name, state, tooltip.
 func steps(body string) (names, states, tips []string) {
@@ -624,4 +624,60 @@ func waitRun(t *testing.T, c *Console, name string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the registration did not end")
+}
+
+// A button's request htmx sends swaps only a 2xx answer, so a refused
+// click answers the panel with its reason; a poll never replaces the panel
+// while a button's request runs.
+func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
+	s := newStatusRig(t)
+	s.force.load("linkshort")
+	page := s.status(t)
+	for _, want := range []string{"Hover a step, or focus it, for what it does.", `hx-sync="closest section:replace"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page lacks %q", want)
+		}
+	}
+	hx := func(path string, form url.Values) *httptest.ResponseRecorder {
+		req := post(path, form)
+		req.Header.Set("HX-Request", "true")
+		return s.do(req, s.ck)
+	}
+	for _, c := range []struct {
+		path string
+		form url.Values
+		want string
+	}{
+		{"/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}, "No open pull request from project-linkshort."},
+		{"/projects/linkshort/register", url.Values{"csrf": {s.csrf}}, "The Forgejo site admin&#39;s password is required."},
+	} {
+		rec := hx(c.path, c.form)
+		body := rec.Body.String()
+		if rec.Code != http.StatusOK || !strings.HasPrefix(body, `<section id="status"`) || !strings.Contains(body, `<p class="problem" role="alert">`+c.want+`</p>`) {
+			t.Errorf("htmx POST %s = %d:\n%s", c.path, rec.Code, body)
+		}
+	}
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	s.c.cfg.Register = func(context.Context, string, factoryd.AdminAuth) error { <-release; return nil }
+	if rec := hx("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}); rec.Code != http.StatusOK {
+		t.Fatalf("register = %d", rec.Code)
+	}
+	body := hx("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}).Body.String()
+	if !strings.Contains(body, `role="alert">The registration of linkshort is running.</p>`) {
+		t.Errorf("a second registration's panel:\n%s", body)
+	}
+	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusConflict {
+		t.Errorf("a plain POST's refusal = %d, want 409", rec.Code)
+	}
+	s.infra.set(openPull)
+	s.force.mu.Lock()
+	s.force.add = nil
+	s.force.mu.Unlock()
+	s.infra.mergeStatus = http.StatusTeapot
+	s.infra.mergeBody = "{"
+	body = hx("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}).Body.String()
+	if !strings.Contains(body, "Forgejo refused the merge: {") {
+		t.Errorf("a refusal without a message:\n%s", body)
+	}
 }

@@ -215,6 +215,8 @@ type statusPanel struct {
 	Steps                 []step
 	Final                 bool
 	CanMerge, CanRegister bool
+	// Error is why the button just pressed did nothing.
+	Error string
 }
 
 // panel reads each step's state from the sources section 5's table names.
@@ -330,7 +332,22 @@ func (c *Console) projectStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Console) showPanel(w http.ResponseWriter, r *http.Request, name string) {
+	c.showPanelWith(w, r, name, "")
+}
+
+// refuse answers a refused panel button: htmx swaps only a 2xx answer, so
+// its request gets the panel with the reason; a plain POST gets the code.
+func (c *Console) refuse(w http.ResponseWriter, r *http.Request, name, reason string, code int) {
+	if r.Header.Get("HX-Request") == "" {
+		http.Error(w, reason, code)
+		return
+	}
+	c.showPanelWith(w, r, name, reason)
+}
+
+func (c *Console) showPanelWith(w http.ResponseWriter, r *http.Request, name, refusal string) {
 	p, err := c.panel(r, name)
+	p.Error = refusal
 	if err != nil {
 		log.Printf("console: status of project %s: %v", name, err)
 		http.Error(w, "cannot read the project's state", http.StatusInternalServerError)
@@ -372,11 +389,11 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	pr, ok, err := c.pullOf(r.Context(), name)
 	if err != nil {
 		log.Printf("console: pull request of project-%s: %v", name, err)
-		http.Error(w, "cannot read the pull request; see the factoryd log", http.StatusBadGateway)
+		c.refuse(w, r, name, "Cannot read the pull request; see the factoryd log.", http.StatusBadGateway)
 		return
 	}
 	if !ok || pr.State != "open" || pr.Merged {
-		http.Error(w, "no open pull request from project-"+name, http.StatusConflict)
+		c.refuse(w, r, name, "No open pull request from project-"+name+".", http.StatusConflict)
 		return
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), pr.Number)
@@ -385,7 +402,12 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	if ae := (*apiError)(nil); errors.As(err, &ae) {
 		refusal = ae.reason()
 	} else if err != nil {
-		c.forgejoFailed(w, r, "merge the pull request", err)
+		if r.Header.Get("HX-Request") == "" || c.session(r) == nil {
+			c.forgejoFailed(w, r, "merge the pull request", err)
+			return
+		}
+		log.Printf("console: %s could not merge the pull request: %v", current(r).user, err)
+		c.refuse(w, r, name, "Forgejo could not be reached for the merge; see the factoryd log.", http.StatusBadGateway)
 		return
 	}
 	c.mu.Lock()
@@ -411,7 +433,7 @@ func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
 	}
 	password := r.PostFormValue("password")
 	if password == "" {
-		http.Error(w, "the Forgejo site admin's password is required", http.StatusBadRequest)
+		c.refuse(w, r, name, "The Forgejo site admin's password is required.", http.StatusBadRequest)
 		return
 	}
 	user := current(r).user
@@ -419,7 +441,7 @@ func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
 	run := c.run(name)
 	if run.registering != "" {
 		c.mu.Unlock()
-		http.Error(w, "the registration of "+name+" is running", http.StatusConflict)
+		c.refuse(w, r, name, "The registration of "+name+" is running.", http.StatusConflict)
 		return
 	}
 	run.registering, run.regErr = user, ""
