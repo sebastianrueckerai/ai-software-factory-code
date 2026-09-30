@@ -86,8 +86,10 @@ func TestChangeIDsUnique(t *testing.T) {
 	}
 	const last = `v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)`
 	const fields = "v22, v23          workflow.Version"
+	const depWait = `run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)`
 	for _, tc := range []struct{ name, old, new, bad string }{
-		{"a named field passes", fields, fields + "\n\tdepWait workflow.Version", ""},
+		{"a named field passes", fields, fields + "\n\tmergeQueue workflow.Version", ""},
+		{"dep-wait twice", depWait, depWait + "\n\trun.mergeQueue = " + depWait[len("run.depWait = "):], `"dep-wait"`},
 		{"a repeated change id", last, last + `,
 		v24: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap)`, `"poster-cap"`},
 		{"a v24 field", fields, fields + "\n\tv24 workflow.Version", "v24"},

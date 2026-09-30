@@ -59,11 +59,12 @@ func enterLane(ctx context.Context, tl *Timeline, wf Workflows, t Task, by strin
 // done (one factoryd replica).
 var allDoneMu sync.Mutex
 
-// taskEnded records task t's end in state final, the hook the cards that
-// depend on it wait for; when t is the last of a plan's cards to turn done,
-// the plan records all_children_done and its issue says so.
-func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, t Task, final string) {
+// taskEnded records task t's end in state final and wakes the cards
+// waiting on it (wf nil wakes none); when t is the last of a plan's cards
+// to turn done, the plan records all_children_done and its issue says so.
+func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, wf Workflows, t Task, final string) {
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, map[string]any{"state": final})
+	signalDependents(ctx, store, wf, t.ID)
 	if t.Source != SourcePlan || t.Parent == "" || final != "done" {
 		return
 	}

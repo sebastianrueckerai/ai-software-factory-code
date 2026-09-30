@@ -26,6 +26,7 @@
 {{define "card"}}<article class="card">
 <h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
 <p class="meta"><span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .Gate}} · <span class="gate">{{.Gate}}</span> for {{.GateAge}}{{end}}</p>
+{{if .WaitingOn}}<p class="waiting">waiting on {{.WaitingOn}}</p>{{end}}
 <p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
 </article>{{end}}
 

@@ -238,13 +238,13 @@ func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
 	}
 }
 
-// Every activity factoryd registers may carry a policy bound, and the
-// policy knows no other.
+// Every activity factoryd registers may carry a policy bound or takes the
+// default one, and the policy knows no other.
 func TestBoundActivitiesAreTheRegisteredOnes(t *testing.T) {
 	var names []string
 	(&Runner{}).RegisterActivities(nameRecorder(func(n string) { names = append(names, n) }))
 	slices.Sort(names)
-	want := slices.Sorted(slices.Values(policy.BoundActivities))
+	want := slices.Sorted(slices.Values(append(slices.Clone(policy.BoundActivities), defaultBoundActivities...)))
 	if !slices.Equal(names, want) {
 		t.Fatalf("registered %v, policy bounds %v", names, want)
 	}

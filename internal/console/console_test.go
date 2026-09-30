@@ -1322,6 +1322,24 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	}
 }
 
+// A card in waiting-deps sits in the Queued column and reads the issues it
+// waits on.
+func TestBoardCardShowsWaitingOn(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Objective: "links api",
+		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, ">Queued <span")
+	if start < 0 {
+		t.Fatal("column Queued missing")
+	}
+	col := body[start : start+strings.Index(body[start:], "</section>")]
+	if !strings.Contains(col, "links api") || !strings.Contains(col, `<p class="waiting">waiting on #3, #5</p>`) {
+		t.Fatalf("Queued column = %s, want the card waiting on #3, #5", col)
+	}
+}
+
 // The timeline page opens with a table of the gates: each step that ended
 // a gate is a row from its start, the task's open gate a row "open for N
 // min", CI jobs rows under their checks, and every bar is scaled to the

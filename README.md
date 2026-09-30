@@ -206,7 +206,7 @@ A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
 
-A task's state (`backlog`, `queued`, `running`, `waiting-human`,
+A task's state (`backlog`, `queued`, `waiting-deps`, `running`, `waiting-human`,
 `waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
 onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
@@ -606,6 +606,19 @@ backlog card, a closed human-lane issue),
 merges, intake for a human's merge in Forgejo) and `all_children_done`
 with `cards` on the plan task when the last of its cards turns done,
 which also comments on the plan's issue.
+
+The dependency wait (`internal/factoryd/deps.go`, change id `dep-wait`):
+a card of a process with the `dependencies` block asks, before its first
+session, for the cards it depends on (`task_deps`, which `CreateChildren`
+fills). None open: it starts. One ended `failed` or `closed`: the card
+waits for a human (`dependency #3 (links-api) ended failed: close this
+card, or answer to start it anyway`); an answer starts it with that
+line as a finding, a close ends it `closed`. Else it enters `waiting-deps`
+in gate `dependencies` (the board reads `waiting on #3, #5`) and waits
+for the signal `dep_ended`, which `task_ended` sends to every card
+waiting on the task, or 10 minutes, then asks again. The heal pass starts
+every waiting card's workflow and signals `dep_ended` to each whose wait
+would end.
 
 ## Configuration, policy and costs
 

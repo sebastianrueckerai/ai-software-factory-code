@@ -73,6 +73,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRollCommit:                  r.RollCommit,
 		ActivityGateAudit:                   r.GateAudit,
 		ActivityTaskConfig:                  r.TaskConfig,
+		ActivityDependencies:                r.Dependencies,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -143,7 +144,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
-		"running": {"queued", "running", "in-review", "waiting-human", "waiting-poster"},
+		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"},
 		// waiting-human: a human answered a gate's escalation and the gate runs again
 		"in-review": {"running", "in-review", "waiting-human"},
 	}[state]
@@ -427,8 +428,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 		return 0, err
 	}
 	if t.Status != "waiting-human" {
-		// queued: the screening stage's suspect verdict, before any session
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "running", "in-review"}, "waiting-human"); err != nil {
+		// queued: the screening stage's suspect verdict, before any session;
+		// waiting-deps: a dependency ended failed or closed
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review"}, "waiting-human"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
@@ -1028,7 +1030,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
 	// after the final state, never ahead of an end that may not come; a
 	// crash between the two loses only this record
-	taskEnded(ctx, r.timeline, r.store, r.forgejo, t, final)
+	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final)
 	return nil
 }
 

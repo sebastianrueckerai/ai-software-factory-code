@@ -60,6 +60,45 @@ type fakeStore struct {
 	monthRefusals map[string]string
 	// createFails fails that many CreateTask calls
 	createFails int
+	deps        map[string][]string // task → the tasks it depends on
+	planKeys    map[string]string   // task → its plan key
+}
+
+func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
+	if s.deps == nil {
+		s.deps = map[string][]string{}
+	}
+	for _, d := range dependsOn {
+		if d == id {
+			return fmt.Errorf("task %s depends on itself", id)
+		}
+		if !slices.Contains(s.deps[id], d) {
+			s.deps[id] = append(s.deps[id], d)
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) OpenDependencies(ctx context.Context, id string) ([]Dependency, error) {
+	var out []Dependency
+	for _, d := range s.deps[id] {
+		if t := s.tasks[d]; t.Status != "done" {
+			out = append(out, Dependency{TaskID: d, Issue: t.IssueNumber, Key: s.planKeys[d], Status: t.Status})
+		}
+	}
+	slices.SortFunc(out, func(a, b Dependency) int { return int(a.Issue - b.Issue) })
+	return out, nil
+}
+
+func (s *fakeStore) WaitingDependents(ctx context.Context, id string) ([]string, error) {
+	var out []string
+	for task, deps := range s.deps {
+		if slices.Contains(deps, id) && s.tasks[task].Status == "waiting-deps" {
+			out = append(out, task)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func newFakeStore() *fakeStore {
@@ -194,7 +233,7 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 
 func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	t, ok := s.tasks[id]
-	if !ok || !slices.Contains([]string{"queued", "running", "in-review", "waiting-human", "waiting-poster"}, t.Status) {
+	if !ok || !slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"}, t.Status) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
@@ -583,7 +622,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 
@@ -1028,7 +1067,7 @@ func TestPGStoreApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r"}); err != nil {
@@ -1205,7 +1244,7 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests, alerts`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests, alerts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-sug", Status: "backlog", Objective: "o", Repository: "sf/r", Kind: "agent",

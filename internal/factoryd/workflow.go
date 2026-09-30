@@ -319,6 +319,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap),
 		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
+	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -356,7 +357,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -520,6 +521,11 @@ const (
 	// its stages replace the ones WorkflowConfig recorded, and its class's
 	// session mode chooses the program.
 	versionProcesses workflow.Version = 1
+	// versionDepWait (change id "dep-wait", stage 11 section 1.5): a card
+	// of a process with the dependencies block, before its first session,
+	// waits in waiting-deps until every card it depends on is done; one
+	// that ended failed or closed asks a human first.
+	versionDepWait workflow.Version = 1
 )
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
@@ -541,6 +547,7 @@ type taskRun struct {
 	v19, v20, v21     workflow.Version
 	v22, v23          workflow.Version
 	processes         workflow.Version
+	depWait           workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -603,6 +610,14 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.standing = st.Standing
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
+		}
+		if t.waitsForDependencies(st, u) {
+			final, why, answer := t.awaitDependencies(st.Status == "waiting-human")
+			if final != "" {
+				return t.finish(final, why)
+			}
+			// the card starts: the first session's path below
+			findings, st.Status = answer, "queued"
 		}
 		if t.v18 >= versionSessionCap && t.climbed(st.Climbed) {
 			model = t.cfg.Models.Stronger

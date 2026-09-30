@@ -19,7 +19,7 @@ func TestPGStoreBoardTasks(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
@@ -79,7 +79,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, alerts`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, alerts CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	asked := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)

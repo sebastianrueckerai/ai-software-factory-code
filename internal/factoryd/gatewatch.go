@@ -42,7 +42,7 @@ var StepGates = map[string]string{
 	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
 	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
-	"audit": GateAudit,
+	"audit": GateAudit, "dependencies_done": GateDependencies,
 }
 
 // activityGates are the gates the activities open: the task's row is in
@@ -61,6 +61,12 @@ var activityGates = map[string]string{
 	ActivityRunReport:        GateSession,
 	ActivityGateAudit:        GateAudit,
 }
+
+// defaultBoundActivities are the activities policy.BoundActivities does
+// not name: they take the policy's default bound. Naming one there would
+// change the configuration tree's schema, which only an infra commit
+// follows.
+var defaultBoundActivities = []string{ActivityDependencies}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

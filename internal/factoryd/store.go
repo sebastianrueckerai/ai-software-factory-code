@@ -177,8 +177,8 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time and leaves the gate.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	// MarkStarted moves a queued, running, in-review, waiting-human or
-	// waiting-poster task to running.
+	// MarkStarted moves a queued, waiting-deps, running, in-review,
+	// waiting-human or waiting-poster task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -286,6 +286,14 @@ type Store interface {
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
 	// PlanCards are the cards plan filed (source plan).
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// AddTaskDeps records that task id waits on each of dependsOn; an
+	// edge recorded before stays as it is.
+	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	// OpenDependencies are the cards task id waits on that are not done,
+	// each with its status, by issue number.
+	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
+	// WaitingDependents are the tasks in waiting-deps that wait on id.
+	WaitingDependents(ctx context.Context, id string) ([]string, error)
 	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
 	// its branch does not carry yet (RollCommit).
 	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
@@ -650,7 +658,7 @@ func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time)
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'running'
-		 WHERE id = $1 AND status IN ('queued', 'running', 'in-review', 'waiting-human', 'waiting-poster')`, id)
+		 WHERE id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster')`, id)
 	return oneRow(res, err, "task "+id)
 }
 

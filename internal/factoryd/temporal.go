@@ -110,7 +110,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	if err := in.ResyncIssues(ctx); err != nil {
 		log.Printf("heal pass: issues: %v", err)
 	}
-	for _, status := range []string{"backlog", "queued", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
+	for _, status := range []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)
@@ -136,7 +136,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					log.Printf("heal pass: fail task %s: %v", t.ID, err)
 					continue
 				}
-				taskEnded(ctx, in.Timeline, store, in.Forgejo, t, "failed")
+				taskEnded(ctx, in.Timeline, store, in.Forgejo, wf, t, "failed")
 				continue
 			}
 			if status == "queued" {
@@ -151,10 +151,13 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				log.Printf("start open workflows: task %s: %v", t.ID, err)
 				continue
 			}
-			if status == "in-review" || status == "waiting-human" || status == "waiting-poster" {
+			if status == "waiting-deps" || status == "in-review" || status == "waiting-human" || status == "waiting-poster" {
 				if err := in.Resync(ctx, t); err != nil {
 					log.Printf("heal pass: resync task %s: %v", t.ID, err)
 				}
+			}
+			if status == "waiting-deps" {
+				healDependencyWait(ctx, store, wf, t)
 			}
 		}
 	}

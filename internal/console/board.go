@@ -78,7 +78,8 @@ type card struct {
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate.
 	Total, GateAge  string
-	EscalationAlert int64 // the escalation's open alert
+	EscalationAlert int64  // the escalation's open alert
+	WaitingOn       string // a card in waiting-deps: the issues it waits on
 }
 
 type column struct {
@@ -165,6 +166,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		byStatus[col.Status] = i
 	}
 	byStatus["closing"] = byStatus["running"]
+	byStatus["waiting-deps"] = byStatus["queued"]
 	pending, err := c.cfg.Approvals.ApprovalRequests(r.Context(), "pending")
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
@@ -179,6 +181,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		t := bt.Task
 		byID[t.ID] = t
 		k := c.card(t)
+		k.WaitingOn = bt.WaitingOn
 		// a roll task has no agent: the human lane until its card (ruling 178)
 		if t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !carded[t.ID] {
 			if !factoryd.Final(t.Status) {

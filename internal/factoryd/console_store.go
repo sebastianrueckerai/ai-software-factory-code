@@ -7,11 +7,13 @@ import (
 
 // BoardTask is a task on the console's board with the reason of its
 // latest escalation ("" when it never escalated) and its open escalation
-// alert (0 when none awaits a verdict).
+// alert (0 when none awaits a verdict); a card in waiting-deps the issues
+// it waits on (WaitingOn: "#3, #5").
 type BoardTask struct {
 	Task
 	Escalation      string
 	EscalationAlert int64
+	WaitingOn       string
 }
 
 // BoardTasks lists at most limit tasks for the console's board: those not
@@ -23,7 +25,9 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 		`SELECT `+taskColumns+`, COALESCE((SELECT e.body FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $2 ORDER BY e.id DESC LIMIT 1), ''),
 		        COALESCE((SELECT a.id FROM alerts a
-		        WHERE a.task_id = tasks.id AND a.kind = $4 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0)
+		        WHERE a.task_id = tasks.id AND a.kind = $4 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0),
+		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
+		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END
 		 FROM tasks WHERE status NOT IN ('done', 'failed', 'closed') OR finished_at > $1
 		 ORDER BY status IN ('done', 'failed', 'closed'), priority DESC, finished_at DESC NULLS FIRST, id
 		 LIMIT $3`, since, IntakeEscalation, limit, AlertEscalation)
@@ -34,7 +38,9 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 	var tasks []BoardTask
 	for rows.Next() {
 		var b BoardTask
-		t, err := scanTask(func(dest ...any) error { return rows.Scan(append(dest, &b.Escalation, &b.EscalationAlert)...) })
+		t, err := scanTask(func(dest ...any) error {
+			return rows.Scan(append(dest, &b.Escalation, &b.EscalationAlert, &b.WaitingOn)...)
+		})
 		if err != nil {
 			return nil, err
 		}

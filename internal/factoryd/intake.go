@@ -280,6 +280,7 @@ var BootLabels = map[string]string{
 	LabelReal:              "#d93f0b",
 	"state/backlog":        "#c5def5",
 	"state/queued":         "#ededed",
+	"state/waiting-deps":   "#bfd4f2",
 	"state/running":        "#1f6feb",
 	"state/waiting-human":  "#d4a72c",
 	"state/waiting-poster": "#fbca04",
@@ -720,7 +721,7 @@ func (in *Intake) closeBacklogCard(ctx context.Context, t Task) error {
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, t, "closed")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed")
 	return nil
 }
 
@@ -765,7 +766,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) er
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "done")
 	mirrorTaskState(ctx, in.Forgejo, t, "done")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, t, "done")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "done")
 	return nil
 }
 
@@ -1013,7 +1014,7 @@ func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) e
 	// a decision on another pull request of the task branch was ignored
 	// by the workflow and stays ignored
 	if !decision || !e.Trusted || !e.Signalled || time.Since(e.CreatedAt) < decisionResignalAfter ||
-		!slices.Contains([]string{"in-review", "waiting-human", "waiting-poster"}, t.Status) || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
+		!slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster"}, t.Status) || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
 		return nil
 	}
 	log.Printf("intake: task %s still %s after decision %d (%s): signalling it again", t.ID, t.Status, e.ID, e.Kind)
