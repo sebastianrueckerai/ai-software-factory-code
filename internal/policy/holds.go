@@ -11,9 +11,10 @@ import (
 	"time"
 )
 
-// MinCallTokens is the smallest output limit worth a call: GLM reasons
-// 200+ tokens before any answer. A call that cannot fit this many output
-// tokens in the headroom is refused, unless the caller asked for fewer.
+// MinCallTokens is the smallest output limit worth a call: a floor any
+// model needs room to fill, whether it reasons before it answers or answers
+// straight away. A call that cannot fit this many output tokens in the
+// headroom is refused, unless the caller asked for fewer.
 const MinCallTokens = 1024
 
 // holdStatuses are the task statuses that spend: running (the agent, its

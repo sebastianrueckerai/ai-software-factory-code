@@ -176,9 +176,9 @@ const inTokenSlack = 64
 // handleChat admits a call only if its worst case fits the task's and the
 // day's free headroom: the output limit is clamped to what the headroom can
 // pay for at the alias's LiteLLM price, and that worst case is held until
-// the call's cost is booked. GLM always reasons before answering (200+
-// output tokens even for trivial prompts), so a call that cannot fit
-// policy.MinCallTokens is refused.
+// the call's cost is booked. A call must leave room for its output: a
+// reasoning model spends tokens thinking before it answers, so a call that
+// cannot fit policy.MinCallTokens is refused.
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -757,7 +757,7 @@ func (s *Server) rekey(ctx context.Context, c *modelCall) error {
 }
 
 // HeaderDeployment names the deployment that answered (its litellm_params
-// model, e.g. zai/glm-5.3). LiteLLM rewrites the body's model to the alias
+// model, e.g. qwen3.8-max). LiteLLM rewrites the body's model to the alias
 // the client asked for, so the header is the only place it shows; the
 // gateway passes it on to factoryd's calls.
 const HeaderDeployment = "x-litellm-model-name"

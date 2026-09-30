@@ -201,7 +201,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 		t.Fatal("negative headroom accepted")
 	}
 	if _, err := (TokenBudget{AnswerTokens: 1000, HeadroomTokens: 0}).OutputLimit(); err == nil {
-		t.Fatal("zero headroom accepted: GLM is reasoning-always-on, output would truncate")
+		t.Fatal("zero headroom accepted: a call must leave room for its output, or it truncates")
 	}
 }
 
