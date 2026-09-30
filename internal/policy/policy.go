@@ -288,7 +288,9 @@ func (t *Time) UnmarshalJSON(b []byte) error {
 
 // TimeOf resolves agent_time and check_in for a task of the given class,
 // process and project: limits, then the class, then the process, then the
-// project, most specific wins, each field on its own.
+// project, most specific wins, each field on its own. A resolved check_in
+// at or past the resolved agent_time (each field can come from a
+// different level) is not a check-in at all, so it clamps to 0.
 func (d Document) TimeOf(class string, proc Process, p ProjectConfig) (agentTime, checkIn time.Duration) {
 	agentTime, checkIn = d.Limits.AgentTime, d.Limits.CheckIn
 	for _, t := range []*Time{d.Classes[class].Time, proc.Time, p.Time} {
@@ -301,6 +303,9 @@ func (d Document) TimeOf(class string, proc Process, p ProjectConfig) (agentTime
 		if t.CheckIn != nil {
 			checkIn = *t.CheckIn
 		}
+	}
+	if checkIn >= agentTime {
+		checkIn = 0
 	}
 	return agentTime, checkIn
 }

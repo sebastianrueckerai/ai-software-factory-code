@@ -315,6 +315,41 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 	}
 }
 
+// The task's own class time, not the workflow's fallback cap, anchors the
+// session (review-task110.md I2): program() carries TaskConfig's
+// AgentTime and CheckIn into t.cfg.Task and, when set, into
+// t.cfg.WallClockCap; the lifecycle's SessionInput and sessionOptions both
+// read from there. testWorkflowConfig's 20 minute cap is deliberately
+// smaller than the 2h/45m class below, so a session anchored on the cap
+// instead of the class shows up in either assertion. Breaking any of the
+// three lines this depends on (program()'s t.cfg.Task assignment, its
+// WallClockCap override, or the lifecycle's SessionInput literal) turns
+// this red.
+func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour, CheckIn: 45 * time.Minute}
+	var deadlines []time.Duration
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			deadlines = append(deadlines, activity.GetInfo(ctx).StartToCloseTimeout)
+			return pushed("s1", "c1"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].AgentTime != 2*time.Hour || h.sessions[0].CheckIn != 45*time.Minute {
+		t.Fatalf("sessions = %+v, want the class's AgentTime 2h, CheckIn 45m", h.sessions)
+	}
+	if want := 2*time.Hour + sessionGrace; len(deadlines) != 1 || deadlines[0] != want {
+		t.Fatalf("activity StartToCloseTimeout = %v, want %v (the class's own agent_time plus grace, not the workflow's 20m cap)", deadlines, want)
+	}
+}
+
 // Before versionStages red checks climbed at once.
 func TestWorkflowBeforeStagesRedChecksRetryStrongerFromBranchHead(t *testing.T) {
 	h := newWorkflowHarness(t)

@@ -20,7 +20,7 @@ func parentTask() Task {
 // the worker runs in report mode with its guide and no push URL; its last
 // message is posted on the parent's issue and kept on the report task.
 func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
-	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123",
+	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
 		Parent: "t-parent", Source: SourcePresort, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
@@ -182,7 +182,7 @@ func TestRunReportCommentsOnce(t *testing.T) {
 
 // A report on an alert-filed task's issue reads it as telemetry (review M6).
 func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
-	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Author: "factory-agent",
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Author: "factory-agent", Process: "maintenance",
 		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})

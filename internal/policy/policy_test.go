@@ -723,6 +723,12 @@ func TestTimeMostSpecificWins(t *testing.T) {
 	if agentTime, checkIn := d.TimeOf("researcher", Process{}, ProjectConfig{}); agentTime != 20*time.Minute || checkIn != 0 {
 		t.Errorf("class without Time: TimeOf = %s, %s, want the limits, 20m, 0", agentTime, checkIn)
 	}
+	// The process shortens agent_time below the class's check_in without
+	// overriding check_in itself: a check-in that would land at or after
+	// the session's own deadline is no check-in.
+	if agentTime, checkIn := d.TimeOf("coder", Process{Time: &Time{AgentTime: 30 * time.Minute}}, ProjectConfig{}); agentTime != 30*time.Minute || checkIn != 0 {
+		t.Errorf("check_in past agent_time: TimeOf = %s, %s, want 30m, 0", agentTime, checkIn)
+	}
 }
 
 // agent_time lies between 1m and 72h, check_in is 0 (no check-in) or

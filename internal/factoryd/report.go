@@ -118,7 +118,11 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return "", "", false, err
 	}
-	s.agentTime, s.checkIn = s.policy.Limits.AgentTime, s.policy.Limits.CheckIn
+	tc, err := r.TaskConfig(ctx, t.ID, pin)
+	if err != nil {
+		return "", "", false, err
+	}
+	s.agentTime, s.checkIn = tc.AgentTime, tc.CheckIn
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {

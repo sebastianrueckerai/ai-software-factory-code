@@ -303,9 +303,10 @@ type sessionSpec struct {
 	cache string
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
-	// agentTime and checkIn are the task's resolved values (policy.Time):
-	// supervisorConfig's WallClockCap and CheckIn, and the session's
-	// deadline; a report session's are its policy's limits, unresolved.
+	// agentTime and checkIn are the task's resolved values (policy.Time,
+	// via TaskConfig for every session kind, RunSession's and
+	// reportSession's alike): supervisorConfig's WallClockCap and
+	// CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
 	// report is a report session's guide (ruling 185); "" for a coding
 	// session

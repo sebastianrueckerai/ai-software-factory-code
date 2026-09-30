@@ -1010,3 +1010,65 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		t.Fatalf("pod env %v", env)
 	}
 }
+
+// RunPlan takes its time from the task's class, not the policy's raw
+// limits (review-task110.md I-1): reportSession resolves through
+// TaskConfig, the planner's own agent_time and check_in, not
+// limits.agent_time and limits.check_in. A class override much smaller
+// than the limits, as the planner's real shape is (2h/45m against
+// 30m/0), proves the wiring: the test activity environment fixes
+// activity.GetInfo(ctx).Deadline about 10 minutes out (testRunnerConfig),
+// so a session that anchors on the raw limits' 20 minutes starts its
+// wall clock already deep in the past and trips at once, while one that
+// anchors on the planner's 5 minutes starts on time. Reverting
+// reportSession to s.policy.Limits.AgentTime/CheckIn turns this red: the
+// runner's supervisor is the srv that fails the test on any call.
+func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := func(file, old, new string) {
+		t.Helper()
+		s := string(files[file])
+		if !strings.Contains(s, old) {
+			t.Fatalf("%s lacks %q", file, old)
+		}
+		files[file] = []byte(strings.Replace(s, old, new, 1))
+	}
+	edit("policy.yaml", "  agent_time: 20m\n", "  agent_time: 20m\n  check_in: 15m\n")
+	edit("policy.yaml", "  planner:\n    session: plan\n    models: [coding-cheap, coding-frontier]\n    supervisor_model: supervisor\n",
+		"  planner:\n    session: plan\n    models: [coding-cheap, coding-frontier]\n    supervisor_model: supervisor\n    time: {agent_time: 5m, check_in: 0s}\n")
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := policy.Version{ID: 7, Commit: "c7", Tree: tree}
+
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+
+	if tc, err := runner.TaskConfig(context.Background(), "t-plan", 7); err != nil || tc.AgentTime != 5*time.Minute || tc.CheckIn != 0 {
+		t.Fatalf("TaskConfig = %+v, %v, want agent_time 5m, check_in 0", tc, err)
+	}
+
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(true, "no plan yet")
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string{})
+		if err == nil {
+			var res PlanResult
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+}
