@@ -71,6 +71,9 @@ type workflowHarness struct {
 	// taskConfig answers TaskConfig when set; configPins are its calls' pins
 	taskConfig *TaskConfig
 	configPins []int64
+	// branchHead answers BranchHead; branchReads counts its calls
+	branchHead  string
+	branchReads int
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -156,6 +159,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return AuditResult{}, nil
 		},
 		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
+		ActivityBranchHead:   func(ctx context.Context, taskID string) (string, error) { return "", nil },
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
 		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },
 		ActivitySyncWithMain: func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
@@ -188,6 +192,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			}
 			return tc, nil
 		})
+	h.env.OnActivity(ActivityBranchHead, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (string, error) { h.branchReads++; return h.branchHead, nil })
 	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
@@ -664,6 +670,138 @@ func TestWorkflowSessionWallClockTripFails(t *testing.T) {
 	}
 }
 
+// wallClock is a session the supervisor stopped at the agent-time cap,
+// its work in progress pushed as commit ("" for none).
+func wallClock(session, commit string) SessionResult {
+	return SessionResult{Outcome: OutcomeWallClock, SessionID: session, Commit: commit, Summary: "supervision trip: wall_clock"}
+}
+
+// onVerify answers OpenPullRequest with PR #9, recording each commit in
+// order into steps as "pr <commit> after <n> cards", and WaitChecks green.
+func (h *workflowHarness) onVerify(steps *[]string) {
+	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (PullRequest, error) {
+			*steps = append(*steps, fmt.Sprintf("pr %s after %d cards", sha, len(h.escalated)))
+			return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil
+		})
+	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(ChecksResult{State: ChecksSuccess}, nil)
+}
+
+// A session stopped at the cap with pushed work: the branch's head goes
+// through verification instead of failing the task.
+func TestCapWithCommitsGoesToVerification(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	h.onSessions(wallClock("s1", "c1"))
+	var steps []string
+	h.onVerify(&steps)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if !slices.Equal(steps, []string{"pr c1 after 0 cards"}) || len(h.sessions) != 1 || h.branchReads != 1 {
+		t.Fatalf("pull requests = %v, sessions = %d, branch reads = %d; want pr c1 after one session and one read", steps, len(h.sessions), h.branchReads)
+	}
+}
+
+// A branch with nothing past the base fails at the cap as before.
+func TestCapWithoutCommitsFails(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(wallClock("s1", ""))
+
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || h.branchReads != 1 {
+		t.Fatalf("final = %q, finals = %v, branch reads = %d", final, h.finals, h.branchReads)
+	}
+}
+
+// With 20m of agent time and 16m used, 4m are left: no session starts,
+// the cap reads the branch. 15m used leaves 5m: a session starts.
+func TestNoSessionUnderFiveMinutes(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 16 * time.Minute, Attempts: 1}}
+	h.onSessions(pushed("s2", "c2"))
+
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.sessions) != 0 || h.branchReads != 1 {
+		t.Fatalf("final = %q, finals = %v, sessions = %d, branch reads = %d; want no session, one read", final, h.finals, len(h.sessions), h.branchReads)
+	}
+
+	h = newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 15 * time.Minute, Attempts: 1}}
+	h.onSessions(pushed("s2", "c2"))
+	var steps []string
+	h.onVerify(&steps)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q, sessions = %d with 5m left, want done after one", final, len(h.sessions))
+	}
+}
+
+// A head a verification already judged is not verified again at the cap:
+// a run that adopts PR #9 at c1 with the whole 20m used verifies c1, the
+// reviewer asks for changes, and with no time left the cap card goes to a
+// human, whose answer buys an attempt and a 10m slice.
+func TestTimeCapWithJudgedHeadOpensTheCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	h.onSessions(pushed("s2", "c2"))
+	var steps []string
+	h.onVerify(&steps)
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"pr c1 after 0 cards", "pr c2 after 1 cards"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	change := "reviewer sebastian requested changes: keep the old flag"
+	if want := []string{capReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 1 || h.branchReads != 1 || !slices.Equal(h.sessions[0].Findings, []string{change}) {
+		t.Fatalf("sessions = %+v, branch reads = %d; want one with the change request, one read", h.sessions, h.branchReads)
+	}
+	if h.usage[0] != (TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 10 * time.Minute, ExtraAttempts: 1}) {
+		t.Fatalf("usage = %+v, want the answer's grant first", h.usage)
+	}
+}
+
+// The last session stops with work in progress (a redirect with c2): at
+// the session cap c2 goes through verification before the cap card, and
+// the change request it gets is the card's last finding.
+func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c2"
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		SessionResult{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4"))
+	var steps []string
+	h.onVerify(&steps)
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "alias it", Comment: 602})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"pr c2 after 0 cards", "pr c4 after 1 cards"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	change := "reviewer sebastian requested changes: keep the old flag"
+	if want := []string{capReached + "\nlast: changes requested\n- supervisor:repetition, attempt 3: f3\n- " + change}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.sessions) != 4 || h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{change}) {
+		t.Fatalf("sessions = %+v, want a fourth from c2 with the change request", h.sessions)
+	}
+}
+
 func TestWorkflowRepetitionTripClimbsTheLadder(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Findings: []string{"changed a.go"}}, pushed("s2", "c2"))
@@ -1081,8 +1219,10 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 	}
 }
 
+// Before versionKeepWork a session started with any time left.
 func TestWorkflowNewRunResumesAgentTimeFromTheRow(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("keep-work", workflow.DefaultVersion, versionKeepWork).Return(workflow.DefaultVersion)
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 18 * time.Minute}}
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(3 * time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {

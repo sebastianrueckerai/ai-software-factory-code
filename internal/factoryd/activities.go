@@ -49,6 +49,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityOpenPullRequest:             r.OpenPullRequest,
 		ActivityWaitChecks:                  r.WaitChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
+		ActivityBranchHead:                  r.BranchHead,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
 		ActivityFinish:                      r.Finish,
@@ -266,7 +267,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, base: t.SHA}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, err
 	}
@@ -280,9 +281,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	// the branch head, when the branch exists, is where every attempt
 	// continues: the push of an earlier attempt, or of a session that died
 	// after pushing, which a non-force push must build on
-	if s.startRef, err = r.startRef(ctx, t, repo, in.StartRef); err != nil {
+	if s.startRef, err = r.startRef(ctx, &t, repo, in.StartRef); err != nil {
 		return SessionResult{}, err
 	}
+	s.base = t.SHA
 	var dead sessionProgress
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		s.parent = dead.SessionID
@@ -363,9 +365,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	return res, nil
 }
 
-func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) (string, error) {
+// startRef is where a session starts: the branch's head, else the given
+// ref, else main's current head, which becomes the task's base.
+func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string) (string, error) {
 	fork := r.forgejo.Fork(repo)
-	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(*t))
 	switch {
 	case err == nil:
 		return head, nil
@@ -374,7 +378,17 @@ func (r *Runner) startRef(ctx context.Context, t Task, repo Repo, given string) 
 	case given != "":
 		return given, nil
 	}
-	return t.SHA, nil
+	main, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		return "", fmt.Errorf("main head: %w", err)
+	}
+	if main != t.SHA {
+		if err := r.store.SetTaskSHA(ctx, t.ID, main); err != nil {
+			return "", err
+		}
+		t.SHA = main
+	}
+	return main, nil
 }
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
@@ -923,6 +937,26 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 	}
 }
 
+// BranchHead is the head of the task's branch on the fork when it holds
+// commits past the task's base, "" when it is at the base or missing.
+func (r *Runner) BranchHead(ctx context.Context, taskID string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	fork := r.forgejo.Fork(repo)
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("branch head: %w", err)
+	case head == t.SHA:
+		return "", nil
+	}
+	return head, nil
+}
+
 // RerunChecks runs the checks of sha, the head of the task's branch, once
 // more: an empty commit on top of it, which Forgejo's pull_request
 // synchronize runs the workflows on (Forgejo 15 has no API to re-run a
@@ -985,8 +1019,8 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 }
 
 // Finish is the terminal step. A failed task's open pull request is closed
-// first, with the reason, and the task's branch on the fork deleted; both
-// return a transient error, so a Forgejo blip retries them before the task
+// first, with the reason; a done or closed task's branch on the fork is
+// deleted. Both return a transient error, so a Forgejo blip retries them before the task
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
@@ -1014,9 +1048,11 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 				return err
 			}
 		}
-		fork := r.forgejo.Fork(repo)
-		if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t))); err != nil {
-			return err
+		if final == "done" || final == "closed" {
+			fork := r.forgejo.Fork(repo)
+			if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t))); err != nil {
+				return err
+			}
 		}
 	}
 	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {

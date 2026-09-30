@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -418,6 +419,7 @@ type forgejoHub struct {
 	nextID      int64
 	calls       []string
 	branchHead  string // the task branch's head; empty = no branch yet
+	mainHead    string // the task repository's main head
 	comments    []string
 }
 
@@ -472,6 +474,10 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
+			if strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.HasSuffix(r.URL.Path, "/branches/main") {
+				fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.mainHead)
+				return
+			}
 			// task branches live on the fork only
 			if h.branchHead == "" || !strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") {
 				w.WriteHeader(http.StatusNotFound)
@@ -573,7 +579,8 @@ func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error)
 // newTestRunner wires a runner against scripted backends and a queued task.
 func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore) (*Runner, *forgejoHub, *fakeStore) {
 	t.Helper()
-	hub := &forgejoHub{nextID: 100}
+	// main is where the task was filed unless a test moves it
+	hub := &forgejoHub{nextID: 100, mainHead: cmp.Or(task.SHA, "m0")}
 	fjSrv := hub.srv(t)
 	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/key/list" {
@@ -980,6 +987,30 @@ func TestRunSessionStartsFromTheBranchHead(t *testing.T) {
 	}
 	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "c9" {
 		t.Fatalf("REPO_SHA = %q, want the branch head c9", env["REPO_SHA"])
+	}
+}
+
+// A first session (no branch, no given ref) starts at main as it is now
+// and records it as the task's base; a given ref leaves the base alone.
+func TestFirstSessionStartsAtMainHead(t *testing.T) {
+	for name, tc := range map[string]struct{ ref, wantStart, wantSHA string }{
+		"no ref": {"", "main2", "main2"},
+		"ref c3": {"c3", "c3", "seed1"},
+	} {
+		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "seed1"}
+		kube := newFakeKube()
+		runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+		hub.mainHead = "main2"
+
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m", StartRef: tc.ref}, nil, resultLine(false, "x")); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != tc.wantStart {
+			t.Fatalf("%s: REPO_SHA = %q, want %s", name, env["REPO_SHA"], tc.wantStart)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.SHA != tc.wantSHA {
+			t.Fatalf("%s: task sha = %q, want %s", name, got.SHA, tc.wantSHA)
+		}
 	}
 }
 

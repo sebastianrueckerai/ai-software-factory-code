@@ -625,8 +625,8 @@ func TestFinishFailedClosesTheOpenPR(t *testing.T) {
 		if want := 1 + len(tc.closed); len(fj.comments) != want || !strings.Contains(fj.comments[want-1], "issue closed") {
 			t.Fatalf("%s: comments = %q, want the reason on the issue and on a closed PR", name, fj.comments)
 		}
-		if !slices.Equal(fj.deleted, []string{"factory-agent/repo factory/t1"}) {
-			t.Fatalf("%s: deleted = %v, want the task's branch on the fork", name, fj.deleted)
+		if len(fj.deleted) != 0 {
+			t.Fatalf("%s: deleted = %v, want the failed task's branch kept", name, fj.deleted)
 		}
 	}
 }
@@ -692,6 +692,59 @@ func TestFinishDeletesTheForkBranch(t *testing.T) {
 		}
 		if !slices.Equal(fj.deleted, tc.deleted) || len(fj.closed) != 0 || len(fj.comments) != 0 {
 			t.Fatalf("%s: deleted = %v, closed = %v, comments = %q", name, fj.deleted, fj.closed, fj.comments)
+		}
+	}
+}
+
+// A failed task keeps its branch on the fork: its work survives for a
+// refile.
+func TestFinishFailedKeepsBranch(t *testing.T) {
+	fj := &prForgejo{}
+	r, _, _ := newActivityRunner(t, withStatus(prTask, "running"), fj)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "wall-clock cap reached"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.deleted) != 0 {
+		t.Fatalf("deleted = %v, want none", fj.deleted)
+	}
+}
+
+// done and closed delete the task's branch on the fork.
+func TestFinishDoneDeletesBranch(t *testing.T) {
+	for _, final := range []string{"done", "closed"} {
+		fj := &prForgejo{}
+		r, _, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
+		if _, err := execActivity(t, r, ActivityFinish, "t1", final, "x"); err != nil {
+			t.Fatalf("%s: %v", final, err)
+		}
+		if !slices.Equal(fj.deleted, []string{"factory-agent/repo factory/t1"}) {
+			t.Fatalf("%s: deleted = %v, want the task's branch on the fork", final, fj.deleted)
+		}
+	}
+}
+
+// BranchHead answers the fork branch's head when it is past the task's
+// base, "" when the branch is at the base or missing.
+func TestBranchHead(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fj   *prForgejo
+		want string
+	}{
+		"past the base": {&prForgejo{head: "c1"}, "c1"},
+		"at the base":   {&prForgejo{head: "base"}, ""},
+		"no branch":     {&prForgejo{branchGone: true}, ""},
+	} {
+		r, _, _ := newActivityRunner(t, prTask, tc.fj)
+		val, err := execActivity(t, r, ActivityBranchHead, "t1")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		var head string
+		if err := val.Get(&head); err != nil || head != tc.want {
+			t.Fatalf("%s: head = %q (%v), want %q", name, head, err, tc.want)
+		}
+		if !slices.Contains(tc.fj.calls, "GET /api/v1/repos/factory-agent/repo/branches/factory/t1") {
+			t.Fatalf("%s: calls = %v, want the fork branch read", name, tc.fj.calls)
 		}
 	}
 }

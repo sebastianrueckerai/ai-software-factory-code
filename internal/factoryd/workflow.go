@@ -91,6 +91,7 @@ const (
 	ActivityRerunChecks                 = "RerunChecks"
 	ActivityGateAudit                   = "GateAudit"
 	ActivityTaskConfig                  = "TaskConfig"
+	ActivityBranchHead                  = "BranchHead"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -338,6 +339,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
 	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
+	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -562,7 +564,18 @@ const (
 	// session mode plan runs planLoop: planner sessions until a valid plan,
 	// the approvers' wait on it, the cards filed on acceptance.
 	versionPlan workflow.Version = 1
+	// versionKeepWork (change id "keep-work", stage12-design section 3):
+	// at every cap (agent time, sessions, under minSession left) the
+	// branch's head past the base that no verification judged goes to
+	// verify; findings from it with nothing left go to the cap card, whose
+	// answer buys time; a branch with nothing past the base fails at the
+	// agent-time cap as before.
+	versionKeepWork workflow.Version = 1
 )
+
+// minSession is the least agent time a session starts with: pod start and
+// the first build take one to two minutes.
+const minSession = 5 * time.Minute
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
 const maxPosterAttempts = 2
@@ -587,6 +600,8 @@ type taskRun struct {
 	mergeQueue        workflow.Version
 	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
 	plan              workflow.Version
+	keepWork          workflow.Version
+	judged            []string // the heads a verification took up (versionKeepWork)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -632,6 +647,41 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		findings, reason = v.findings, v.reason
 	}
+	// verifyAtCap takes the branch's head past the base through verify
+	// when no verification judged it (versionKeepWork): head "" for none.
+	verifyAtCap := func() (head string, v verdict) {
+		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &head); err != nil {
+			return "", verdict{final: "failed", reason: "branch head: " + errMessage(err)}
+		}
+		if head == "" || slices.Contains(t.judged, head) || head == t.rerunHead || head == t.syncedHead {
+			return head, verdict{}
+		}
+		t.lastRound, startRef = true, head
+		v = t.verify(head)
+		if v.final == "" {
+			apply(v)
+		}
+		return head, v
+	}
+	// timeCap is the agent-time cap (versionKeepWork): a branch with nothing
+	// past the base fails; else findings on its head go to the cap card,
+	// whose answer buys time.
+	timeCap := func() (final, why string) {
+		head, v := verifyAtCap()
+		switch {
+		case v.final != "":
+			return v.final, v.reason
+		case head == "":
+			return "failed", "wall-clock cap reached"
+		}
+		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
+		if final != "" {
+			return final, why
+		}
+		findings = append(findings, answer...)
+		t.grant(&u)
+		return "", ""
+	}
 	if t.v2 >= versionReconcileRace {
 		var st RunState
 		if err := workflow.ExecuteActivity(t.short, ActivityReconcile, t.taskID).Get(t.ctx, &st); err != nil {
@@ -647,6 +697,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
 		}
 		t.standing = st.Standing
+		if st.PR.Number != 0 {
+			t.judged = append(t.judged, st.Head)
+		}
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
 		}
@@ -743,6 +796,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v18 < versionSessionCap {
 				break
 			}
+			if t.keepWork >= versionKeepWork {
+				if _, v := verifyAtCap(); v.final != "" {
+					return t.finish(v.final, v.reason)
+				}
+			}
 			final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
 			if final != "" {
 				return t.finish(final, why)
@@ -761,6 +819,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		if t.keepWork >= versionKeepWork && remaining < minSession {
+			if final, why := timeCap(); final != "" {
+				return t.finish(final, why)
+			}
+			remaining = t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
@@ -791,7 +855,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish(v.final, v.reason)
 		}
 		if isWallClockTimeout(err) {
-			return t.finish("failed", "wall-clock cap reached")
+			if t.keepWork < versionKeepWork {
+				return t.finish("failed", "wall-clock cap reached")
+			}
+			reason = "wall-clock cap reached"
+			if final, why := timeCap(); final != "" {
+				return t.finish(final, why)
+			}
+			continue
 		}
 		if drained && isTerminal(err) {
 			return t.finish("failed", "session: "+errMessage(err))
@@ -805,7 +876,14 @@ func (t *taskRun) lifecycle() (string, error) {
 		reason = res.Summary
 		switch res.Outcome {
 		case OutcomeWallClock:
-			return t.finish("failed", "wall-clock cap reached")
+			if t.keepWork < versionKeepWork {
+				return t.finish("failed", "wall-clock cap reached")
+			}
+			findings = res.Findings
+			if final, why := timeCap(); final != "" {
+				return t.finish(final, why)
+			}
+			continue
 		case OutcomeRetryStronger:
 			// at the top rung this is a redirect: Stronger stays Stronger
 			model, findings = t.cfg.Models.Stronger, res.Findings
@@ -956,6 +1034,7 @@ func (t *taskRun) recordUsage(u TaskUsage) {
 // verify takes a pushed commit through its pull request, the checks and
 // the review wait.
 func (t *taskRun) verify(commit string) verdict {
+	t.judged = append(t.judged, commit)
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
 	}
