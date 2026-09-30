@@ -30,6 +30,7 @@ type approvalCard struct {
 	SpecLines   string
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
+	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
 	CSRF        string
 	Approver    bool

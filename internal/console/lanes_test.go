@@ -337,6 +337,15 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	if strings.Contains(card, "Stats: per day.") {
 		t.Error("the plan card shows the whole spec, not its first lines")
 	}
+	// a plan at the session cap reads the cap line on its card, which
+	// Request changes answers: no second card in Escalations
+	r.tasks.tasks[0].Escalation = "limit reached: 3 sessions"
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(col(t, body, "Approvals"), `<p class="reason">limit reached: 3 sessions</p>`) ||
+		!strings.Contains(body, `Escalations <span class="count">0</span>`) {
+		t.Errorf("the plan's escalation is not on its plan card alone:\n%s", body)
+	}
+	r.tasks.tasks[0].Escalation = ""
 
 	ak, as := r.as(t, "alice")
 	alice := col(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "Approvals")

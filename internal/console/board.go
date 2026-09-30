@@ -280,10 +280,12 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		log.Printf("console: approvals: %v", err)
 		d.Problems = append(d.Problems, "approval requests could not be read")
 	}
-	carded := map[string]bool{}
+	carded, planned := map[string]bool{}, map[string]bool{}
 	for _, a := range pending {
 		carded[a.TaskID] = true
+		planned[a.TaskID] = planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
 	}
+	escalations := map[string]string{}
 	byID := map[string]factoryd.Task{}
 	for _, bt := range tasks {
 		byID[bt.ID] = bt.Task
@@ -341,14 +343,21 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		if ok {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 		}
-		if t.Status == "waiting-human" {
+		// a waiting plan's card is its escalation: Request changes answers it
+		if t.Status == "waiting-human" && planned[t.ID] {
+			escalations[t.ID] = bt.Escalation
+		} else if t.Status == "waiting-human" {
 			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
 			d.Escalations = append(d.Escalations, k)
 		}
 	}
 	for _, a := range pending {
 		if inView(a.Project) {
-			d.Approvals = append(d.Approvals, c.approvalCard(ctx, a, byID, s.csrf, d.Approver))
+			k := c.approvalCard(ctx, a, byID, s.csrf, d.Approver)
+			if a.Kind == factoryd.ApprovalPlan {
+				k.Escalation = escalations[a.TaskID]
+			}
+			d.Approvals = append(d.Approvals, k)
 		}
 	}
 	return d, nil

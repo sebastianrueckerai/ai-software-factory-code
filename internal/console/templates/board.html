@@ -79,11 +79,12 @@
 
 {{define "plan"}}<h4 id="approval-{{.ID}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 <p class="spec">{{.SpecLines}}</p>
+{{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
-<table><caption>The plan's cards, in filing order</caption>
+<div class="scroll"><table><caption>The plan's cards, in filing order</caption>
 <thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
-</table>
+</table></div>
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
 {{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept">
