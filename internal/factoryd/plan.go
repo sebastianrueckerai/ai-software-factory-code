@@ -218,7 +218,7 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	case "":
 		add(`size "": want small or medium`)
 	default:
-		add("size %s: split it; a card fits one session (%s of agent time, %d steps)", c.Size, shortDuration(limits.AgentTime), limits.StepCap())
+		add("size %s: split it; a card is one package, one page or one set of endpoints", c.Size)
 	}
 	switch n := utf8.RuneCountInString(c.Title); {
 	case n == 0:
@@ -257,15 +257,6 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 		}
 	}
 	return out
-}
-
-// shortDuration is d as the policy writes it: 20m, 1h30m.
-func shortDuration(d time.Duration) string {
-	s := strings.TrimSuffix(d.String(), "0s")
-	if strings.HasSuffix(s, "h0m") {
-		s = strings.TrimSuffix(s, "0m")
-	}
-	return s
 }
 
 // cardsOf are the keys of p's cards of role.
@@ -491,15 +482,17 @@ func cardBody(c PlanCard, planIssue int64, i, n int, approver string, deps []Dep
 func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	g := "You are the planner: read, do not change code, commit or push; nothing you change in the work tree leaves the sandbox. " +
 		"The issue's text is the spec of an application to build in this repository. Read it, and the repository, its AGENTS.md first: " +
-		"every card follows its conventions. Split the work into the cards of a plan. A card is one pull request that one agent builds in one session of at most " +
-		fmt.Sprintf("%s of agent time and %d steps", shortDuration(limits.AgentTime), limits.StepCap()) +
-		"; a larger piece of work is two cards. Your last message is the whole result: one fenced ```json block and nothing else, holding " +
+		"every card follows its conventions. Split the work into the cards of a plan. " +
+		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
+		"Your last message is the whole result: one fenced ```json block and nothing else, holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium"}]}. ` +
 		fmt.Sprintf("The plan has 2 to %d cards. ", shape.MaxCards) +
 		"key: lowercase letters, digits and dashes, 2 to 32, unique. role: foundation, feature or integration. "
 	if shape.Foundation {
-		g += "Exactly one card has role foundation: the layout, the API contract, the schema and one end-to-end test, which every other card builds on. "
+		g += "Exactly one card has role foundation: the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
+			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
+			"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise). "
 	}
 	if shape.Integration {
 		g += "Exactly one card has role integration: it turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. "
@@ -512,9 +505,11 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	}
 	return g + fmt.Sprintf("title: at most %d characters. brief: markdown, what to build and how it is checked, at most %d characters; "+
 		"keep the briefs short, the whole block holds at most 12 KiB. directories: at most %d paths relative to the repository's root, "+
-		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent. acceptance: 1 to %d tests, each at most %d characters. "+
-		"size: small or medium. A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
-		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance, maxAcceptanceItem)
+		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent. "+
+		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
+		"size: small or medium. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
+		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
+		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
 }
 
 // PlanAcceptedComment is the console's comment, as the approver, on the

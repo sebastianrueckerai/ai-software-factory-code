@@ -643,12 +643,15 @@ func workGuide(tools []string) string {
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
+	g += "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: " +
+		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
 	return g + guideEnd
 }
 
 // guideEnd closes every coding guide: the sandbox, the migration names,
 // the last message.
-const guideEnd = "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the Go module proxy and the npm registry. " +
+const guideEnd = "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. " +
+	"The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms. " +
 	"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
 
@@ -656,7 +659,8 @@ const guideEnd = "You have no credentials and cannot push, by design: when you e
 // workGuide: build the card, a test per acceptance item; the integration
 // card turns the spec's acceptance tests into acceptance/.
 func featureGuide(tools []string, role string) string {
-	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. Add a test for each of the card's acceptance items. " +
+	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. " +
+		"Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs. " +
 		"Keep to the card's directories where you can; they are guidance, not a boundary. Follow the repository's AGENTS.md. "
 	if role == RoleIntegration {
 		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
@@ -666,6 +670,8 @@ func featureGuide(tools []string, role string) string {
 	} else {
 		g += "Nobody answers a question in a message. "
 	}
+	g += "Run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: " +
+		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
 	return g + guideEnd
 }
 

@@ -663,7 +663,7 @@ func TestBriefNamesTheAuthorsStandingAndPosterInformation(t *testing.T) {
 	}
 	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block",
 		"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number.",
-		"No server, no SSH, no network beyond the Go module proxy and the npm registry."} {
+		"The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms."} {
 		if !strings.Contains(workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}), s) {
 			t.Errorf("the brief does not ask for %s", s)
 		}
@@ -749,5 +749,53 @@ func TestBriefTextOfAReportEndsWithItsGuide(t *testing.T) {
 	got := briefText(harness.TaskBrief{Objective: "o", Report: "Write, do not code."}, "T")
 	if want := "The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>\n\n" + noTools + "Write, do not code."; got != want {
 		t.Fatalf("brief =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// stage12-design 5.2: the sandbox now has a C compiler and reaches the npm
+// registry too, so a session installs its own checks' tools.
+func TestGuideEndSandboxSentence(t *testing.T) {
+	want := "The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms."
+	if !strings.Contains(guideEnd, want) {
+		t.Fatalf("guideEnd = %q, want it to contain %q", guideEnd, want)
+	}
+}
+
+// No guide asks for a build without -race any more (stage12-design 5.2,
+// ruling 221): the sandbox now has gcc.
+func TestGuideEndNoLongerForbidsRace(t *testing.T) {
+	for _, g := range []string{workGuide(nil), featureGuide(nil, RoleFeature), planGuide(testShape, testLimits)} {
+		if strings.Contains(g, "without -race") {
+			t.Fatalf("guide still forbids -race: %q", g)
+		}
+	}
+}
+
+// featureGuide's card always has a check file (the ts-go template): it
+// runs bash check and ends once CI is green (ruling 221, in place of the
+// design's run_checks line).
+func TestFeatureGuideRunsBashCheckThenEnds(t *testing.T) {
+	want := "Run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	if !strings.Contains(featureGuide(nil, RoleFeature), want) {
+		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(nil, RoleFeature), want)
+	}
+}
+
+// workGuide's repositories (fix cards on the factory's own code and
+// demo-app) do not all have a check file, so the bash check sentence is
+// conditional on one existing at the repository's root.
+func TestWorkGuideRunsBashCheckOnlyIfPresent(t *testing.T) {
+	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	if !strings.Contains(workGuide(nil), want) {
+		t.Fatalf("workGuide = %q, want it to contain %q", workGuide(nil), want)
+	}
+}
+
+// featureGuide's card writes the tests the acceptance items name, not any
+// probe or debug program (stage12-design 5.2).
+func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
+	want := "Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs."
+	if !strings.Contains(featureGuide(nil, RoleFeature), want) {
+		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(nil, RoleFeature), want)
 	}
 }

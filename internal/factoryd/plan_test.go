@@ -93,7 +93,7 @@ func TestValidatePlan(t *testing.T) {
 		"unknown card":      {change(func(p *Plan) { p.Cards[2].DependsOn = []string{"qr-codes"} }), []string{`plan: card redirects: depends on "qr-codes", which is no card of the plan`}},
 		"itself":            {change(func(p *Plan) { p.Cards[2].DependsOn = []string{"redirects"} }), []string{"plan: card redirects: depends on itself"}},
 		"cycle":             {change(func(p *Plan) { p.Cards[1].DependsOn = []string{"redirects"} }), []string{"plan: the dependencies form a cycle: links-api -> redirects -> links-api"}},
-		"size":              {change(func(p *Plan) { p.Cards[2].Size = "large" }), []string{"plan: card redirects: size large: split it; a card fits one session (20m of agent time, 200 steps)"}},
+		"size":              {change(func(p *Plan) { p.Cards[2].Size = "large" }), []string{"plan: card redirects: size large: split it; a card is one package, one page or one set of endpoints"}},
 		"no size":           {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small or medium`}},
 		"no title":          {change(func(p *Plan) { p.Cards[2].Title = "" }), []string{"plan: card redirects: title empty"}},
 		"long title":        {change(func(p *Plan) { p.Cards[2].Title = strings.Repeat("t", 121) }), []string{"plan: card redirects: title over 120 characters"}},
@@ -112,6 +112,46 @@ func TestValidatePlan(t *testing.T) {
 				t.Fatalf("ValidatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// stage12-design 5.2: a card is bounded by shape, not a session's time or
+// step budget (ruling 221: the guide gives no time estimate any more).
+func TestPlanGuideCardSizeSentence(t *testing.T) {
+	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
+
+// stage12-design 5.2: acceptance items are named tests, not free text
+// ValidatePlan cannot check for.
+func TestPlanGuideAcceptanceRule(t *testing.T) {
+	want := fmt.Sprintf("acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects.", maxCardAcceptance)
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
+
+// stage12-design 5.2 (plan.go:502): the foundation's brief names the
+// contracts every other card builds on.
+func TestPlanGuideFoundationContractsSentence(t *testing.T) {
+	want := "The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
+		"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise)."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
+		t.Fatal("a shape with no foundation card still gets the foundation's contracts sentence")
+	}
+}
+
+// stage12-design 5.2: the planner is told every card's agent and CI run
+// bash check, so it never asks a card to verify some other way.
+func TestPlanGuideBashCheckLine(t *testing.T) {
+	want := "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
 
@@ -778,7 +818,7 @@ func TestAcceptRefusesCycle(t *testing.T) {
 // card waits for a human with the findings, a writer's comment buys one
 // more session, a closed issue ends the task closed.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
-	invalid := []string{"plan: card web: size large: split it; a card fits one session (20m of agent time, 200 steps)"}
+	invalid := []string{"plan: card web: size large: split it; a card is one package, one page or one set of endpoints"}
 	h := newPlanHarness(t, PlanResult{Findings: invalid})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
 	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
@@ -1005,7 +1045,8 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
 	env := podEnv(kube.podAt(0))
-	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") || !strings.Contains(env["REPORT_GUIDE"], "20m of agent time and 200 steps") ||
+	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") ||
+		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
 	}
