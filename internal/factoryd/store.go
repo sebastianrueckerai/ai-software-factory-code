@@ -181,18 +181,20 @@ type Store interface {
 	// spend, so they never hold up settlement.
 	RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error)
 	// SettleSpend raises the task's booked model spend (its model and
-	// settlement rows) to at least reported, LiteLLM's model spend, and
-	// books the raise onto spent_eur and as a settlement row, together.
-	SettleSpend(ctx context.Context, id string, reported float64) error
+	// settlement rows) to at least reported, LiteLLM's model spend: it books
+	// the raise as a settlement row, sets spent_eur to the task's ledger sum
+	// and reports whether it booked one.
+	SettleSpend(ctx context.Context, id string, reported float64) (bool, error)
 	// UnsettledTasks lists tasks that finished at least olderThan ago, on
 	// the store's clock, with no open model hold and no final settlement
 	// yet.
 	UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error)
 	// SettleSpendFinal sets the task's booked model spend to reported,
-	// LiteLLM's final figure, down as well as up (ruling 196), books the
-	// difference onto spent_eur and as a settlement row, and marks the
-	// task settled; a settled task is never listed again.
-	SettleSpendFinal(ctx context.Context, id string, reported float64) error
+	// LiteLLM's final figure, down as well as up (ruling 196): it books the
+	// difference as a settlement row, sets spent_eur to the task's ledger
+	// sum, marks the task settled and reports whether it booked a row; a
+	// settled task is never listed again.
+	SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency; false means no task is linked to that
 	// issue yet.
@@ -640,37 +642,37 @@ const settleEpsilon = 1e-9
 // spend the raise replaces even while the gateway books calls. LiteLLM
 // reports model spend only, so it is weighed against the task's model and
 // settlement rows, never against spent_eur, which carries tool rows too.
-func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) error {
+func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE`, id).Scan(new(int))
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+		return false, fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	var booked float64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1 AND kind IN ($2, $3)`,
 		id, policy.KindModel, policy.KindSettlement).Scan(&booked); err != nil {
-		return err
+		return false, err
 	}
 	// below a nano-euro the two sums differ by float noise only
 	if reported-booked < settleEpsilon {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, id, reported-booked); err != nil {
-		return err
+		return false, nil
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, 'litellm', $3)`,
 		id, policy.KindSettlement, reported-booked); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	if err := spendFromLedger(ctx, tx, id); err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
 }
 
 func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error) {
@@ -694,40 +696,51 @@ func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) (
 	return ids, rows.Err()
 }
 
-func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported float64) error {
+func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var finished time.Time
 	err = tx.QueryRowContext(ctx, `SELECT finished_at FROM tasks WHERE id = $1 AND settled_at IS NULL FOR UPDATE`, id).Scan(&finished)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+		return false, fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	var booked float64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1 AND kind IN ($2, $3)`,
 		id, policy.KindModel, policy.KindSettlement).Scan(&booked); err != nil {
-		return err
+		return false, err
 	}
-	if delta := reported - booked; delta >= settleEpsilon || delta <= -settleEpsilon {
-		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = spent_eur + $2 WHERE id = $1`, id, delta); err != nil {
-			return err
-		}
+	delta := reported - booked
+	changed := delta >= settleEpsilon || delta <= -settleEpsilon
+	if changed {
 		// on the task's own day, so the day cap of that day is what was charged
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ($1, $2::date, $3, 'litellm-final', $4)`,
 			id, finished, policy.KindSettlement, delta); err != nil {
-			return err
+			return false, err
+		}
+		if err := spendFromLedger(ctx, tx, id); err != nil {
+			return false, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE tasks SET settled_at = now() WHERE id = $1`, id); err != nil {
-		return err
+		return false, err
 	}
-	return tx.Commit()
+	return changed, tx.Commit()
+}
+
+// spendFromLedger sets the task's spent_eur to the sum of its ledger rows.
+// Every booking writes both, so they agree, except on a task whose spend
+// predates the ledger: spent_eur holds that spend with no row, and a
+// settlement delta added to it would count it twice.
+func spendFromLedger(ctx context.Context, tx *sql.Tx, id string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = (SELECT COALESCE(sum(eur), 0) FROM ledger WHERE task_id = $1) WHERE id = $1`, id)
+	return err
 }
 
 func oneRow(res sql.Result, err error, what string) error {
