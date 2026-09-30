@@ -417,23 +417,37 @@ func cacheClaim(name string) map[string]any {
 	}
 }
 
-// cacheEnv points Go's and npm's caches at the cache volume at /cache; PATH
-// is the sandbox's and the CI runner's own with go install's target first.
+// cacheEnv points Go's build cache, go install and npm's cache at the
+// cache volume at /cache, and Go's module cache at the pod's own modcache:
+// the module unpack relies on file locks, which gVisor keeps inside each
+// sandbox (ruling 223). PATH is the sandbox's and the CI runner's own with
+// go install's target first.
 var cacheEnv = []map[string]any{
 	{"name": "GOPATH", "value": "/cache/go"},
+	{"name": "GOMODCACHE", "value": "/modcache"},
 	{"name": "GOCACHE", "value": "/cache/go-build"},
 	{"name": "npm_config_cache", "value": "/cache/npm"},
 	{"name": "PATH", "value": "/cache/go/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 }
 
-var cacheMount = map[string]any{"name": "cache", "mountPath": "/cache"}
+var cacheMounts = []any{
+	map[string]any{"name": "cache", "mountPath": "/cache"},
+	map[string]any{"name": "modcache", "mountPath": "/modcache"},
+}
 
-func cacheVolume(claim string) map[string]any {
-	return map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": claim}}
+func cacheVolumes(claim string) []any {
+	return []any{
+		map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": claim}},
+		map[string]any{"name": "modcache", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
+	}
 }
 
 // deleteReleasedCaches deletes the cache volumes whose claims went with
-// their namespaces; Retain keeps their directory for the next claim.
+// their namespaces; Retain keeps their directory for the next claim. A
+// namespace deletion is asynchronous, so the claim of the namespace just
+// deleted is not Released yet: each sweep takes the earlier ones', and
+// the last lingers until the next teardown (harmless: a Released volume
+// never binds again, and a new claim gets a new volume on the same path).
 func deleteReleasedCaches(ctx context.Context, kube Kube) {
 	pvs, err := kube.PersistentVolumes(ctx)
 	if err != nil {
@@ -452,10 +466,9 @@ func deleteReleasedCaches(ctx context.Context, kube Kube) {
 
 // PersistentVolume is what the cache sweep reads of a volume.
 type PersistentVolume struct {
-	Name           string
-	StorageClass   string
-	Phase          string
-	ClaimNamespace string
+	Name         string
+	StorageClass string
+	Phase        string
 }
 
 func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolume, error) {
@@ -466,9 +479,6 @@ func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolu
 			} `json:"metadata"`
 			Spec struct {
 				StorageClassName string `json:"storageClassName"`
-				ClaimRef         struct {
-					Namespace string `json:"namespace"`
-				} `json:"claimRef"`
 			} `json:"spec"`
 			Status struct {
 				Phase string `json:"phase"`
@@ -481,7 +491,7 @@ func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolu
 	out := make([]PersistentVolume, 0, len(list.Items))
 	for _, it := range list.Items {
 		out = append(out, PersistentVolume{Name: it.Metadata.Name, StorageClass: it.Spec.StorageClassName,
-			Phase: it.Status.Phase, ClaimNamespace: it.Spec.ClaimRef.Namespace})
+			Phase: it.Status.Phase})
 	}
 	return out, nil
 }

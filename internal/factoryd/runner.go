@@ -782,7 +782,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoT
 	if !ok {
 		return "", terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
 	}
-	cache := "cache-" + p.Name
+	cache := "cache-agent-" + p.Name
 	ns := r.agentNamespace(t.ID)
 	if err := r.freshNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    t.ID,
@@ -1030,7 +1030,7 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			}},
 		}})
 	}
-	mounts, volumes = append(mounts, cacheMount), append(volumes, cacheVolume(cache))
+	mounts, volumes = append(mounts, cacheMounts...), append(volumes, cacheVolumes(cache)...)
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{

@@ -776,7 +776,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	if got := envOf(parsed.Spec.InitContainers); got != "fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
 		t.Fatalf("init containers = %s", got)
 	}
-	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOCACHE npm_config_cache PATH" {
+	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH" {
 		t.Fatalf("containers = %s", got)
 	}
 	if calls := strings.Join(hub.calls, "\n"); !strings.Contains(calls, "mint task-t1-base read:repository sf/repo") || strings.Contains(calls, "write:repository") {

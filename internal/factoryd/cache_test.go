@@ -10,7 +10,9 @@ import (
 )
 
 // checkCache asserts the pod mounts claim as volume cache at /cache and
-// points Go's and npm's caches there.
+// points Go's build cache, go install and npm's cache there, and Go's
+// module cache at the pod's own volume modcache (ruling 223: its unpack
+// relies on file locks gVisor keeps per sandbox).
 func checkCache(t *testing.T, pod map[string]any, claim string) {
 	t.Helper()
 	spec := pod["spec"].(map[string]any)
@@ -24,9 +26,20 @@ func checkCache(t *testing.T, pod map[string]any, claim string) {
 	if !reflect.DeepEqual(vol, want) {
 		t.Errorf("volume cache = %v, want %v", vol, want)
 	}
+	var mod any
+	for _, v := range spec["volumes"].([]any) {
+		if v.(map[string]any)["name"] == "modcache" {
+			mod = v
+		}
+	}
+	if want := map[string]any{"name": "modcache", "emptyDir": map[string]any{"sizeLimit": "8Gi"}}; !reflect.DeepEqual(mod, want) {
+		t.Errorf("volume modcache = %v, want %v", mod, want)
+	}
 	c := spec["containers"].([]any)[0].(map[string]any)
-	if !strings.Contains(fmt.Sprint(c["volumeMounts"]), "map[mountPath:/cache name:cache]") {
-		t.Errorf("volumeMounts = %v, want cache at /cache", c["volumeMounts"])
+	for _, m := range []string{"map[mountPath:/cache name:cache]", "map[mountPath:/modcache name:modcache]"} {
+		if !strings.Contains(fmt.Sprint(c["volumeMounts"]), m) {
+			t.Errorf("volumeMounts = %v, want %s", c["volumeMounts"], m)
+		}
 	}
 	env := map[string]string{}
 	add := func(e map[string]any) {
@@ -44,7 +57,7 @@ func checkCache(t *testing.T, pod map[string]any, claim string) {
 			add(e.(map[string]any))
 		}
 	}
-	for k, v := range map[string]string{"GOPATH": "/cache/go", "GOCACHE": "/cache/go-build", "npm_config_cache": "/cache/npm"} {
+	for k, v := range map[string]string{"GOPATH": "/cache/go", "GOMODCACHE": "/modcache", "GOCACHE": "/cache/go-build", "npm_config_cache": "/cache/npm"} {
 		if env[k] != v {
 			t.Errorf("env %s = %q, want %q", k, env[k], v)
 		}
@@ -82,9 +95,9 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkClaim(t, kube, "factory-agents-t1", "cache-linkshort")
-	checkCache(t, r.workerPodSpec(task, sessionSpec{id: "s-1", cache: cache}), "cache-linkshort")
-	checkCache(t, r.reproPodSpec(task, cache, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "cache-linkshort")
+	checkClaim(t, kube, "factory-agents-t1", "cache-agent-linkshort")
+	checkCache(t, r.workerPodSpec(task, sessionSpec{id: "s-1", cache: cache}), "cache-agent-linkshort")
+	checkCache(t, r.reproPodSpec(task, cache, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "cache-agent-linkshort")
 }
 
 func TestCIPodMountsCICache(t *testing.T) {
@@ -136,5 +149,21 @@ func TestReleasedCachePVsDeleted(t *testing.T) {
 	}
 	if slices.Contains(kube.deletedPVs, "pv-bound-cache") {
 		t.Fatal("a bound cache volume was deleted")
+	}
+}
+
+// A task whose repository is no project's has no cache to mount: the
+// sandbox is not built.
+func TestSetupNamespaceRefusesATaskWithoutProject(t *testing.T) {
+	kube := newFakeKube()
+	store := newFakeStore()
+	store.projects = []Project{{Name: "linkshort", Repository: "linkshort/linkshort"}}
+	r := &Runner{cfg: testRunnerConfig(), kube: kube, store: store}
+	_, err := r.setupNamespace(context.Background(), Task{ID: "t1", Repository: "someone/else"}, ForgejoToken{}, ForgejoToken{})
+	if !isTerminal(err) || !strings.Contains(err.Error(), "repository someone/else is no project's") {
+		t.Fatalf("err = %v, want a terminal error naming the repository", err)
+	}
+	if len(kube.createdNs) != 0 {
+		t.Fatalf("namespaces created: %v", kube.createdNs)
 	}
 }

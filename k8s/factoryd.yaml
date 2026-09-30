@@ -300,11 +300,14 @@ spec:
       variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization', 'CiliumNetworkPolicy'] :
       true
     message: factoryd may not create this kind of object
+  # bound by the class's provisioner, never to a volume of factoryd's choice
   - expression: >-
       variables.kind != 'PersistentVolumeClaim' || request.operation == 'DELETE' ||
       (object.metadata.name.startsWith('cache-') &&
-       has(object.spec.storageClassName) && object.spec.storageClassName == 'factory-cache')
-    message: factoryd's claims are cache-* claims of class factory-cache
+       has(object.spec.storageClassName) && object.spec.storageClassName == 'factory-cache' &&
+       !has(object.spec.volumeName) && !has(object.spec.selector) &&
+       !has(object.spec.dataSource) && !has(object.spec.dataSourceRef))
+    message: factoryd's claims are cache-* claims of class factory-cache, bound by the provisioner
   # a service account token would carry the account's rights (the flux
   # account's deployer role) past factoryd's own lockdown
   - expression: >-
@@ -395,6 +398,39 @@ metadata:
   name: factoryd-task-namespaces
 spec:
   policyName: factoryd-task-namespaces
+  validationActions: [Deny]
+---
+# The class factory-cache reaches every project's cache directory by the
+# claim's name, the factory's own CI cache included: only factoryd claims
+# it, and only in the namespaces it makes for sessions and CI jobs. CREATE
+# only: the class is immutable after it, and the binder updates claims.
+# The beta annotation still selects a class.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factory-cache-claims
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: ["*"]
+      operations: [CREATE]
+      resources: [persistentvolumeclaims]
+  validations:
+  - expression: >-
+      !((has(object.spec.storageClassName) && object.spec.storageClassName == 'factory-cache') ||
+        (has(object.metadata.annotations) && 'volume.beta.kubernetes.io/storage-class' in object.metadata.annotations &&
+         object.metadata.annotations['volume.beta.kubernetes.io/storage-class'] == 'factory-cache')) ||
+      (request.userInfo.username == 'system:serviceaccount:factory:factoryd' && request.namespace.startsWith('factory-agents-'))
+    message: only factoryd claims the class factory-cache, in its factory-agents-* namespaces
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factory-cache-claims
+spec:
+  policyName: factory-cache-claims
   validationActions: [Deny]
 ---
 apiVersion: apps/v1

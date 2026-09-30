@@ -603,15 +603,15 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		map[string]any{"name": "home", "mountPath": "/home/runner"},
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
 		map[string]any{"name": "registration", "mountPath": "/var/run/secrets/ci", "readOnly": true},
-		cacheMount,
 	}
+	mounts = append(mounts, cacheMounts...)
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 		map[string]any{"name": "registration", "secret": map[string]any{"secretName": ciSecretName}},
-		cacheVolume(cache),
 	}
+	volumes = append(volumes, cacheVolumes(cache)...)
 	securityContext := map[string]any{
 		"runAsNonRoot":             true,
 		"runAsUser":                1000,

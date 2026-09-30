@@ -1579,7 +1579,7 @@ Each package behind `FACTORYD_TEST_DATABASE_URL` migrates its own database
 URL's user must be allowed to create databases. The API-server tests
 run only with `FACTORYD_APISERVER` (host:port of a throwaway k3s),
 `FACTORYD_APISERVER_SA` (factoryd's token and the CA, k8s/factoryd.yaml's
-RBAC and admission policy applied) and `FACTORYD_APISERVER_ADMIN` (an
+RBAC and admission policies applied) and `FACTORYD_APISERVER_ADMIN` (an
 admin's token; for the cache tests also the CA, and the cluster runs
 infra `k8s/platform/local-path` with its `factory-cache` class). The
 revocation test runs only with the `FACTORYD_LIVE_*` variables set
