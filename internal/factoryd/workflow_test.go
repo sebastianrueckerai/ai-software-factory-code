@@ -162,6 +162,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return SyncResult{}, nil
 		},
 		ActivityLeaveQueue: func(ctx context.Context, taskID, why string) error { return nil },
+		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+			return PlanResult{}, nil
+		},
+		ActivityRequestPlan: func(ctx context.Context, taskID string, revision int) (PlanRef, error) { return PlanRef{}, nil },
+		ActivityCreateChildren: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
+			return ChildrenResult{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

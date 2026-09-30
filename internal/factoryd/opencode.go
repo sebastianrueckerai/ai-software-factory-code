@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -523,14 +522,14 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // the brief's own sections (ruling 152). Every text of the issue and its
 // comments arrives sanitised (sanitize.Inbound).
 func objectiveText(brief harness.TaskBrief) string {
-	brief.Objective = sanitize.Inbound(brief.Objective)
+	brief.Objective, brief.Spec = sanitize.Inbound(brief.Objective), sanitize.Inbound(brief.Spec)
 	for _, texts := range []*[]string{&brief.PosterInfo, &brief.Answers, &brief.Findings} {
 		*texts = slices.Clone(*texts)
 		for i, s := range *texts {
 			(*texts)[i] = sanitize.Inbound(s)
 		}
 	}
-	texts := append([]string{brief.Objective}, brief.PosterInfo...)
+	texts := append([]string{brief.Objective, brief.Spec}, brief.PosterInfo...)
 	for {
 		tag := randomTag()
 		if !slices.ContainsFunc(texts, func(s string) bool { return strings.Contains(s, tag) }) {
@@ -583,6 +582,11 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		fmt.Fprintf(&b, "The task is the issue's text between the lines %s and %s.\n", open, closing)
 	}
 	fmt.Fprintf(&b, "%s\n%s\n%s", open, brief.Objective, closing)
+	if brief.Spec != "" {
+		sopen, sclose := "<<<SPEC-"+tag, "SPEC-"+tag+">>>"
+		fmt.Fprintf(&b, "\n\nThe spec and the plan: this card is one of a plan's. Between the lines %s and %s stand the spec, the plan's issue as a writer wrote it, "+
+			"and the plan's summary as the planner wrote it: the whole application, of which this card builds its own part only.\n%s\n%s\n%s", sopen, sclose, sopen, brief.Spec, sclose)
+	}
 	if len(brief.PosterInfo) > 0 {
 		popen, pclose := "<<<POSTER-"+tag, "POSTER-"+tag+">>>"
 		fmt.Fprintf(&b, "\n\nPoster information: the issue's author answered your request for information (oldest first), each answer between the lines %s and %s. "+
@@ -597,7 +601,15 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
 	}
-	b.WriteString("\n\n" + toolsLine(brief.Tools) + "\n" + cmp.Or(brief.Report, workGuide(brief.Tools)))
+	guide := brief.Report
+	switch {
+	case guide != "":
+	case brief.CardRole != "":
+		guide = featureGuide(brief.Tools, brief.CardRole)
+	default:
+		guide = workGuide(brief.Tools)
+	}
+	b.WriteString("\n\n" + toolsLine(brief.Tools) + "\n" + guide)
 	return b.String()
 }
 
@@ -631,9 +643,30 @@ func workGuide(tools []string) string {
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
-	return g + "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the Go module proxy and the npm registry. " +
-		"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number. " +
-		"End with a short last message: what you changed, and whether you recommend merging it and why."
+	return g + guideEnd
+}
+
+// guideEnd closes every coding guide: the sandbox, the migration names,
+// the last message.
+const guideEnd = "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the Go module proxy and the npm registry. " +
+	"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number. " +
+	"End with a short last message: what you changed, and whether you recommend merging it and why."
+
+// featureGuide ends the brief of a plan's card of role instead of
+// workGuide: build the card, a test per acceptance item; the integration
+// card turns the spec's acceptance tests into acceptance/.
+func featureGuide(tools []string, role string) string {
+	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. Add a test for each of the card's acceptance items. " +
+		"Keep to the card's directories where you can; they are guidance, not a boundary. Follow the repository's AGENTS.md. "
+	if role == RoleIntegration {
+		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
+	}
+	if slices.Contains(tools, policy.ToolEscalate) {
+		g += "If only a human can decide, call escalate_to_human with your recommendation. This tool is your only way to ask: nobody answers a question in a message. "
+	} else {
+		g += "Nobody answers a question in a message. "
+	}
+	return g + guideEnd
 }
 
 // mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP

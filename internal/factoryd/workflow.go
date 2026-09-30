@@ -54,6 +54,9 @@ type TaskSignal struct {
 	Body    string
 	PR      int64
 	Comment int64 // the issue comment's id, for human_comment
+	// Revision and SHA256 are the plan revision plan_accepted accepts.
+	Revision int
+	SHA256   string
 }
 
 // Activity names, registered by Runner.RegisterActivities.
@@ -324,6 +327,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
+	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -331,7 +335,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 
 // program runs the task's program, chosen by its class's session mode: code
 // (and a run from before versionProcesses) the lifecycle, report the
-// lifecycle's write-up (report); no other mode is built.
+// lifecycle's write-up (report), plan the plan loop (versionPlan).
 func (t *taskRun) program() (string, error) {
 	if t.processes < versionProcesses {
 		return t.lifecycle()
@@ -344,6 +348,10 @@ func (t *taskRun) program() (string, error) {
 	switch tc.Session {
 	case policy.SessionCode, policy.SessionReport:
 		return t.lifecycle()
+	case policy.SessionPlan:
+		if t.plan >= versionPlan {
+			return t.planLoop()
+		}
 	}
 	return t.finish("failed", fmt.Sprintf("session %s is not built yet", tc.Session))
 }
@@ -361,7 +369,8 @@ func (t *taskRun) isReport(st RunState) bool {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
+		SignalPlanAccepted, SignalPlanRejected} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -536,6 +545,10 @@ const (
 	// the merge; at its turn main is merged into the head and the checks
 	// run again on a head that moved; every way out leaves the queue.
 	versionMergeQueue workflow.Version = 1
+	// versionPlan (change id "plan", stage 11 section 1.2): a task of
+	// session mode plan runs planLoop: planner sessions until a valid plan,
+	// the approvers' wait on it, the cards filed on acceptance.
+	versionPlan workflow.Version = 1
 )
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
@@ -560,6 +573,7 @@ type taskRun struct {
 	depWait           workflow.Version
 	mergeQueue        workflow.Version
 	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
+	plan              workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

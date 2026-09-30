@@ -60,13 +60,16 @@ var activityGates = map[string]string{
 	ActivityScreen:           GateScreening,
 	ActivityRunReport:        GateSession,
 	ActivityGateAudit:        GateAudit,
+	ActivityRunPlan:          GateSession,
+	ActivityRequestPlan:      GateApproval,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
-// not name: they take the policy's default bound. Naming one there would
-// change the configuration tree's schema, which only an infra commit
-// follows.
-var defaultBoundActivities = []string{ActivityDependencies, ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue}
+// not name: they take the policy's default bound, RunPlan a session's.
+// Naming one there would change the configuration tree's schema, which
+// only an infra commit follows.
+var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
+	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

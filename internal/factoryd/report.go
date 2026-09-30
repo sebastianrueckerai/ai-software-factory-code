@@ -65,8 +65,12 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	}
 	text := t.AgentSummary
 	if text == "" {
-		if text, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin); err != nil {
+		var why string
+		if text, why, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil); err != nil {
 			return ReportResult{}, err
+		}
+		if text == "" {
+			return ReportResult{}, terminalError("the report session ended without a report: %s", why)
 		}
 		text = textutil.Truncate(text, maxReport)
 		if err := r.store.SetAgentSummary(ctx, t.ID, text); err != nil {
@@ -104,19 +108,19 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 		"factoryd %s, analyzer task %s: a report, no code changed.\n\n%s\n\n%s", t.Source, t.ID, fenced(r.untrusted(t, text)), marker))
 }
 
-// reportSession runs one worker in report mode in the task's own sandbox:
-// the read token on the repository, no push token, no fork. Its report is
-// the agent's last message, or why a stop ended it.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64) (string, error) {
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: r.reportGuide(t.Source), standing: standing}
-	var err error
+// reportSession runs one worker in report mode, with guide and findings,
+// in the task's own sandbox: the read token on the repository, no push
+// token, no fork. Its report is the agent's last message, or why a stop
+// ended it; with none, why the session ended without one.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings []string) (report, why string, err error) {
+	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
-		return "", err
+		return "", "", err
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return "", fmt.Errorf("revoke leftover credentials: %w", err)
+		return "", "", fmt.Errorf("revoke leftover credentials: %w", err)
 	}
 	cleanup := context.WithoutCancel(ctx)
 	defer func() {
@@ -127,21 +131,21 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}()
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
-		return "", err
+		return "", "", err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))
 	began := rfc3339(time.Now())
-	r.record(ctx, t.ID, "session_start", map[string]any{"session": s.id, "model": s.model, "mode": "report", "start_ref": s.startRef})
+	r.record(ctx, t.ID, "session_start", map[string]any{"session": s.id, "model": s.model, "mode": "report", "start_ref": s.startRef, "findings": s.findings})
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
 	if err != nil {
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report", "outcome": "aborted",
 			"summary": err.Error(), "started": began})
-		return "", err
+		return "", "", err
 	}
-	var text, why string
+	var text string
 	switch {
 	case out.result != nil && out.result.Success:
 		text = out.result.Summary
@@ -158,10 +162,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report",
 		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(text, why), 2000), "started": began})
-	if text == "" {
-		return "", terminalError("the report session ended without a report: %s", why)
-	}
-	return text, nil
+	return text, why, nil
 }
 
 // Screen is the screening stage (ruling 182): it opens the task's

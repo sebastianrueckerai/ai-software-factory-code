@@ -79,6 +79,8 @@ type Task struct {
 	// lane, rolls and report tasks. Process is the process it follows,
 	// "" where it has no lane or the loader has not filled it yet.
 	Lane, Process string
+	// PlanKey is a plan's card's key in the plan (source plan).
+	PlanKey string
 }
 
 // Report tells a report task (ruling 185) by its source: a plan's cards
@@ -254,8 +256,8 @@ type Store interface {
 	// request.
 	SetTaskRisk(ctx context.Context, id, class string) error
 	// OpenApproval records a pending approval request and returns its id;
-	// a merge request denies the task's earlier pending one (a retry, or
-	// a new head) as superseded.
+	// a merge or plan request denies the task's earlier pending one of its
+	// kind (a retry, a new head, a new plan revision) as superseded.
 	OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error)
 	// ResolveApprovals decides the task's pending approval requests of
 	// kind ("" = every kind): status approved or denied, by whom
@@ -294,6 +296,16 @@ type Store interface {
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
 	// WaitingDependents are the tasks in waiting-deps that wait on id.
 	WaitingDependents(ctx context.Context, id string) ([]string, error)
+	// AddPlanRevision stores plan as task id's next revision and returns
+	// its number; a plan equal to the newest (sha) is that revision.
+	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
+	// PlanRevision is revision n of task id's plan, the newest for 0.
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+	// CreatePlanCard inserts plan card t unless its plan has a card of its
+	// key, and returns the plan's card of that key.
+	CreatePlanCard(ctx context.Context, t Task) (Task, error)
+	// SetTaskIssue links task id to its issue.
+	SetTaskIssue(ctx context.Context, id string, issue int64) error
 	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
 	// its branch does not carry yet (RollCommit).
 	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
@@ -310,10 +322,13 @@ type Store interface {
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning
-// request (cloudres files these).
+// request (cloudres files these), a planner's plan.
 const (
 	ApprovalMerge    = "merge"
 	ApprovalResource = "resource"
+	// ApprovalPlan is a plan revision for approvers to accept (Spec a
+	// PlanSpec).
+	ApprovalPlan = "plan"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -394,16 +409,16 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process)
+		                    author, author_writer, parent_task, lane, process, plan_key)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN $16 ELSE '' END,
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
-		         NULLIF($20, ''), NULLIF($21, ''))
-		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's two constant clauses
+		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''))
+		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = s.db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey)
 	return err
 }
 
@@ -436,7 +451,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, '')`
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -445,7 +460,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process); err != nil {
+		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -899,10 +914,10 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 		return 0, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	if a.Kind == ApprovalMerge {
+	if a.Kind == ApprovalMerge || a.Kind == ApprovalPlan {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = 'superseded by a newer request'
-			 WHERE task_id = $1 AND kind = 'merge' AND status = 'pending'`, a.TaskID, FactoryDecider); err != nil {
+			 WHERE task_id = $1 AND kind = $3 AND status = 'pending'`, a.TaskID, FactoryDecider, a.Kind); err != nil {
 			return 0, err
 		}
 	}

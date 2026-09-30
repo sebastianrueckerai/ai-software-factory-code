@@ -306,6 +306,8 @@ type sessionSpec struct {
 	// standing overrides the task's author standing: a report reads its
 	// parent's issue
 	standing string
+	// spec and cardRole are a plan's card's brief section and role
+	spec, cardRole string
 	// messageToken is the bearer of the worker's message endpoint, made
 	// per session; the pod gets its hash
 	messageToken string
@@ -973,6 +975,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
+	}
+	if s.spec != "" {
+		env = append(env, map[string]any{"name": "SPEC", "value": s.spec}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
 	}
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})

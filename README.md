@@ -650,6 +650,41 @@ waiting on the task, or 10 minutes, then asks again. The heal pass starts
 every waiting card's workflow and signals `dep_ended` to each whose wait
 would end.
 
+The planner (`internal/factoryd/plan.go`, change id `plan`): a card in
+lane plan runs report-mode sessions of its class (the `planner`) on the
+stronger rung with the plan guide: the issue is the spec, the answer one
+fenced json block (a summary and 2 to `max_cards` cards, each with key,
+role, title, brief, directories, depends_on, acceptance and size), a card
+one session of the pinned `agent_time` and `steps`. `ValidatePlan` judges
+it (one line per finding, the block at most 12 KiB, a brief at most 1500
+characters); factoryd adds every card's edge to the foundation card and
+the integration card's to every other, and refuses a cycle. An invalid
+plan goes back to the planner as its findings. A valid one is the task's
+next revision (`plan_revisions`, timeline `plan_revision`), posted once
+on the issue under `<!-- factoryd plan <task> revision <n> -->`
+(sanitised: summary, a table of the cards, each brief in a details
+block), with an approval request of kind `plan` (`{"revision",
+"sha256"}`, superseding an earlier revision's); the task waits in
+`waiting-human`. A writer's comment sends the planner back with it and
+the last plan; `plan_accepted` (the console's `AcceptPlan`, approvers;
+a revision that is no longer the newest is refused: `the plan changed to
+revision <m>; reload`) runs `CreateChildren`; `plan_rejected` (`RejectPlan`)
+ends the task `failed`, a closed issue `closed`. Every session counts
+against `limits.sessions`; at the cap the card waits with the findings
+and a writer's comment buys one more. `CreateChildren` judges the
+revision again (a finding refuses the acceptance, comments `accepting
+revision <n> was refused: ...` and goes to the planner), then files each
+card in topological order, once however often it runs: a backlog task
+row (source `plan`, the plan's process, `plan_key`, the approver as
+author) and a bot issue labelled `backlog` and `state/backlog` under
+`<!-- factoryd plan <task> card <key> -->` (found by that marker on a
+retry), `card_created` per card; the edges as Forgejo issue dependencies
+and `task_deps`; the issues in the plan's comment; the plan task ends
+`done` (`plan revision <n> accepted: <k> cards filed`). A card's sessions
+get the section "The spec and the plan" (the plan's issue and summary,
+the pod's `SPEC`) and the feature guide instead of the work guide
+(`CARD_ROLE`; the integration card's adds the `acceptance/` tests).
+
 ## Configuration, policy and costs
 
 factoryd's configuration is the directory `factory/` of the infra
@@ -720,8 +755,8 @@ filled it yet the process of the task's project, with the row's lane,
 its stages, merge queue and dependency block, and the session mode of
 the lane's class (ready's for a roll, which has no lane), or of a report
 task's own class, which chooses
-the program: `code` the lifecycle, `report` the write-up, `plan` not
-built yet); and in every session, report session,
+the program: `code` the lifecycle, `report` the write-up, `plan` the
+plan loop); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,

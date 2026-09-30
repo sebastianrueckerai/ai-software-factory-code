@@ -32,6 +32,11 @@ type TaskBrief struct {
 	// Report is a report session's guide (ruling 185): what to write in
 	// the last message instead of changing code; "" for a coding session.
 	Report string `json:"report,omitempty"`
+	// Spec is a plan's card's section "The spec and the plan": the plan
+	// issue's text and the plan's summary; CardRole the card's role in
+	// the plan, whose guide the brief ends with. Both "" for any other task.
+	Spec     string `json:"spec,omitempty"`
+	CardRole string `json:"card_role,omitempty"`
 	// Tools are the gateway's tools the task's classes may call, sorted.
 	Tools []string `json:"tools,omitempty"`
 }

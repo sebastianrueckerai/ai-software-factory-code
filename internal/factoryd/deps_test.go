@@ -366,9 +366,8 @@ func TestFailedDependencyOpensCard(t *testing.T) {
 		ctx := context.Background()
 		card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
 		r, store, _ := newActivityRunner(t, card, &prForgejo{})
-		store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "closed", Repository: "sf/repo", IssueNumber: 3})
+		store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "closed", Repository: "sf/repo", IssueNumber: 3, PlanKey: "links-api"})
 		store.CreateTask(ctx, Task{ID: "t-b", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 5})
-		store.planKeys = map[string]string{"t-a": "links-api"}
 		store.AddTaskDeps(ctx, "t-c", []string{"t-a", "t-b"})
 		v, err := execActivity(t, r, ActivityDependencies, "t-c")
 		if err != nil {

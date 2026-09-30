@@ -243,7 +243,7 @@ func (d Document) Bound(activity string) time.Duration {
 	s, ok := d.Bounds[activity]
 	switch {
 	case ok:
-	case activity == "RunSession" || activity == "RunReport":
+	case activity == "RunSession" || activity == "RunReport" || activity == "RunPlan":
 		return d.Limits.AgentTime + time.Minute
 	case activity == "Screen":
 		// the screening's report session, and its pod start

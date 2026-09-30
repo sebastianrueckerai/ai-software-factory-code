@@ -61,8 +61,8 @@ type fakeStore struct {
 	// createFails fails that many CreateTask calls
 	createFails int
 	deps        map[string][]string // task → the tasks it depends on
-	planKeys    map[string]string   // task → its plan key
-	queue       []queueEntry        // the merge queues, oldest first
+	plans       map[string][]PlanRevision
+	queue       []queueEntry // the merge queues, oldest first
 }
 
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -84,7 +84,7 @@ func (s *fakeStore) OpenDependencies(ctx context.Context, id string) ([]Dependen
 	var out []Dependency
 	for _, d := range s.deps[id] {
 		if t := s.tasks[d]; t.Status != "done" {
-			out = append(out, Dependency{TaskID: d, Issue: t.IssueNumber, Key: s.planKeys[d], Status: t.Status})
+			out = append(out, Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 		}
 	}
 	slices.SortFunc(out, func(a, b Dependency) int { return int(a.Issue - b.Issue) })
@@ -139,6 +139,51 @@ func (s *fakeStore) ReportOf(ctx context.Context, parent, source string) (Task, 
 		}
 	}
 	return Task{}, false, nil
+}
+
+func (s *fakeStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
+	if s.plans == nil {
+		s.plans = map[string][]PlanRevision{}
+	}
+	revs := s.plans[id]
+	if n := len(revs); n > 0 && revs[n-1].SHA256 == sha {
+		return n, nil
+	}
+	s.plans[id] = append(revs, PlanRevision{TaskID: id, Revision: len(revs) + 1, Plan: plan, SHA256: sha, CreatedAt: time.Now()})
+	return len(revs) + 1, nil
+}
+
+func (s *fakeStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	revs := s.plans[id]
+	if n == 0 {
+		n = len(revs)
+	}
+	if n < 1 || n > len(revs) {
+		return PlanRevision{}, false, nil
+	}
+	return revs[n-1], true, nil
+}
+
+func (s *fakeStore) CreatePlanCard(ctx context.Context, t Task) (Task, error) {
+	for _, have := range s.tasks {
+		if have.Parent == t.Parent && have.Source == SourcePlan && have.PlanKey == t.PlanKey {
+			return have, nil
+		}
+	}
+	if err := s.CreateTask(ctx, t); err != nil {
+		return Task{}, err
+	}
+	return s.tasks[t.ID], nil
+}
+
+func (s *fakeStore) SetTaskIssue(ctx context.Context, id string, issue int64) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.IssueNumber = issue
+	s.tasks[id] = t
+	return nil
 }
 
 func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
@@ -459,7 +504,7 @@ func (s *fakeStore) SetTaskRisk(ctx context.Context, id, class string) error {
 
 func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	for i := range s.approvals {
-		if a.Kind == "merge" && s.approvals[i].TaskID == a.TaskID && s.approvals[i].Kind == "merge" && s.approvals[i].Status == "pending" {
+		if (a.Kind == ApprovalMerge || a.Kind == ApprovalPlan) && s.approvals[i].TaskID == a.TaskID && s.approvals[i].Kind == a.Kind && s.approvals[i].Status == "pending" {
 			s.approvals[i].Status, s.approvals[i].DecidedBy, s.approvals[i].DecisionNote = "denied", FactoryDecider, "superseded by a newer request"
 		}
 	}

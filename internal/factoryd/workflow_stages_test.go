@@ -825,10 +825,12 @@ func TestProgramBySessionMode(t *testing.T) {
 	}{
 		"report": {policy.SessionReport, 1, 0, [2]string{"done", "report kept on the task, no issue comment"}},
 		"code":   {policy.SessionCode, 0, 1, [2]string{"done", "pull request merged by factory-merge after sebastian's approval"}},
-		"plan":   {policy.SessionPlan, 0, 0, [2]string{"failed", "session plan is not built yet"}},
+		// a run from before versionPlan; the plan loop's are plan_test.go's
+		"plan": {policy.SessionPlan, 0, 0, [2]string{"failed", "session plan is not built yet"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+			g.env.OnGetVersion("plan", workflow.DefaultVersion, versionPlan).Return(workflow.DefaultVersion)
 			g.taskConfig = &TaskConfig{Session: tc.session, Stages: testStages()}
 			reports := 0
 			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(

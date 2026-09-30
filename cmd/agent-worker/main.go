@@ -124,6 +124,8 @@ func run(log func(string, ...any)) int {
 		AuthorStanding: env.authorStanding,
 		Report:         env.report,
 		Tools:          env.tools,
+		Spec:           env.spec,
+		CardRole:       env.cardRole,
 	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
@@ -343,6 +345,8 @@ type workerEnv struct {
 	// report is a report session's guide (MODE report, ruling 185): no
 	// push URL or token, nothing pushed, the last message the result
 	report string
+	// spec and cardRole are a plan's card's (SPEC, CARD_ROLE)
+	spec, cardRole string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -366,6 +370,7 @@ func loadEnv() (workerEnv, error) {
 	e.model = str("MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
+	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
 	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
 		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,

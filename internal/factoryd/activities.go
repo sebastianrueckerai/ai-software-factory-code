@@ -77,6 +77,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityEnterQueue:                  r.EnterQueue,
 		ActivitySyncWithMain:                r.SyncWithMain,
 		ActivityLeaveQueue:                  r.LeaveQueue,
+		ActivityRunPlan:                     r.RunPlan,
+		ActivityRequestPlan:                 r.RequestPlan,
+		ActivityCreateChildren:              r.CreateChildren,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -265,6 +268,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, base: t.SHA}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
+		return SessionResult{}, err
+	}
+	if s.spec, s.cardRole, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, err
 	}
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
