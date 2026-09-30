@@ -399,6 +399,9 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	case p.TemplateFiles == nil:
 		return "", fmt.Errorf("template %q is not in the configuration version in force", p.Template)
 	}
+	if _, protected, err := f.ProjectBranchProtection(ctx, p.Repo(), "main"); err != nil || protected {
+		return "waiting: main's protection exists, which refuses the seed; push main's first commit", err
+	}
 	data := policy.TemplateData{Name: p.Name, Repository: p.Repository, Image: run.r.RegistryHost + "/" + p.Repository, Namespaces: map[string]string{}}
 	for _, e := range p.Environments {
 		data.Namespaces[e.Path] = e.Namespace

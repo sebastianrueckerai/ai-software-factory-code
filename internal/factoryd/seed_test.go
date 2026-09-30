@@ -80,6 +80,29 @@ func TestSeedSkipsExistingMain(t *testing.T) {
 	}
 }
 
+// A registered empty repository whose file gains a template after main's
+// protection exists is not seeded, and the steps after the seed still run.
+func TestSeedSkipsProtectedMain(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+		t.Fatal(err)
+	}
+	rig.store.m["demo-app"] = seededProject()
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if len(rig.fj.seeds) != 0 {
+		t.Fatalf("seeded under main's protection: %+v", rig.fj.seeds)
+	}
+	for _, want := range []string{"seed: waiting: main's protection exists, which refuses the seed; push main's first commit", "protection main: no change", "labels: no change"} {
+		if !strings.Contains(rig.logs.String(), "project demo-app: "+want+"\n") {
+			t.Errorf("log lacks %q:\n%s", want, rig.logs)
+		}
+	}
+}
+
 // The seed commit lands before main's protection is made, and the same
 // reconcile starts the deploy branch from it.
 func TestSeedBeforeProtection(t *testing.T) {
