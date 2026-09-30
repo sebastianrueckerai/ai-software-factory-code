@@ -127,17 +127,20 @@ func (in *Intake) refuseEntry(ctx context.Context, via, repository string, numbe
 // a lane label is judged against the poster, and so is the default entry
 // (no lane label, or bug), which enters ready from anyone where ready is
 // moved by writers and from an approver only where it is moved by the
-// approvers. A refused entry lands in the backlog. It returns the card as
-// it is to be created.
-func (in *Intake) enterOnCreation(ctx context.Context, via string, p Project, task Task, names []string, defaultBranch string) (Task, error) {
+// approvers. When a label event's sender (not the heal pass) brings the
+// issue in, its lane label was added later and judges the sender too.
+// It returns the card as it is to be created and, for a refused entry,
+// which lands in the backlog, the line refuseEntry comments once the row
+// exists.
+func (in *Intake) enterOnCreation(ctx context.Context, p Project, task Task, names []string, defaultBranch, sender string) (Task, string, error) {
 	name := IssueLane(names, p.Lanes)
 	task.Lane, task.Process, task.Status = policy.LaneBacklog, p.Process, "backlog"
 	if name == policy.LaneBacklog {
-		return task, nil
+		return task, "", nil
 	}
 	lane, ok := laneOf(p.Lanes, name)
 	if !ok {
-		return Task{}, fmt.Errorf("project %s: process %q has no lane %s", p.Name, p.Process, name)
+		return Task{}, "", fmt.Errorf("project %s: process %q has no lane %s", p.Name, p.Process, name)
 	}
 	// bug is the default entry at creation, a lane label only when added
 	byLabel := name == policy.LanePlan || slices.Contains(names, LabelAgent)
@@ -146,15 +149,38 @@ func (in *Intake) enterOnCreation(ctx context.Context, via string, p Project, ta
 		allowed = slices.Contains(in.Policy().Approvers, task.Author)
 	}
 	if !allowed {
-		in.refuseEntry(ctx, via, task.Repository, task.IssueNumber, names, refusal(lane, task.Repository, task.Author))
-		return task, nil
+		return task, refusal(lane, task.Repository, task.Author), nil
+	}
+	if byLabel && sender != "" && sender != task.Author {
+		if ok, err := in.mayMove(ctx, task.Repository, sender, lane.MovedBy); err != nil {
+			return Task{}, "", err
+		} else if !ok {
+			return task, refusal(lane, task.Repository, sender), nil
+		}
 	}
 	sha, err := in.baseSHA(ctx, task.Repository, defaultBranch)
 	if err != nil {
-		return Task{}, err
+		return Task{}, "", err
 	}
 	task.Lane, task.Status, task.RequiredCapabilities, task.SHA = name, "queued", []string{lane.Class}, sha
-	return task, nil
+	return task, "", nil
+}
+
+// keepLaneLabel leaves issue number of repository, labelled names, with
+// lane's own label as its one lane label: the others (backlog, plan, and
+// agent off ready) come off as the bot.
+func (in *Intake) keepLaneLabel(ctx context.Context, via, repository string, number int64, names []string, lane string) {
+	own := map[string]string{policy.LaneBacklog: LabelBacklog, policy.LanePlan: LabelPlan, policy.LaneReady: LabelAgent}[lane]
+	kept := slices.DeleteFunc(slices.Clone(names), func(n string) bool {
+		return n != own && (n == LabelBacklog || n == LabelPlan || n == LabelAgent)
+	})
+	repo, err := SplitRepo(repository)
+	if len(kept) == len(names) || err != nil {
+		return
+	}
+	if err := in.Forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, kept); err != nil {
+		log.Printf("%s: issue #%d on %s: keep one lane label: %v", via, number, repository, err)
+	}
 }
 
 // enterOnLabelAdded is a lane label added by sender to backlog card t,
@@ -200,6 +226,7 @@ func (in *Intake) move(ctx context.Context, via string, p Project, t Task, name 
 		return err
 	}
 	log.Printf("%s: issue #%d on %s: %s moved task %s to lane %s", via, t.IssueNumber, t.Repository, sender, t.ID, name)
+	in.keepLaneLabel(ctx, via, t.Repository, t.IssueNumber, names, name)
 	mirrorTaskState(ctx, in.Forgejo, t, "queued")
 	return in.Workflows.Start(ctx, t.ID)
 }

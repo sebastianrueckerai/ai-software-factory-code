@@ -368,8 +368,9 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 // ResyncIssues takes in the open issues of every active project that no
 // task is linked to yet: Forgejo never retries a failed delivery, so an issue
 // filed or labelled while factoryd was down is otherwise never seen. Each
-// goes through the webhook's own intake, which checks the poster and the
-// labels before it looks for a linked task.
+// goes through the webhook's own intake: a linked task takes the labels,
+// and an unlinked issue is judged by its poster and labels (the heal pass
+// knows no sender).
 func (in *Intake) ResyncIssues(ctx context.Context) error {
 	if in.Projects == nil {
 		return nil
@@ -447,7 +448,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	if err != nil {
 		return err
 	}
-	if kept := outsiderLabels(names); !writer && len(kept) != len(names) && p.Agents == policy.AgentsCoder {
+	// a writer's label event vouches for the labels the issue carries
+	vouched := false
+	if sender != "" && sender != poster && !writer {
+		if vouched, err = in.trusted(ctx, repo, sender); err != nil {
+			return err
+		}
+	}
+	if kept := outsiderLabels(names); !writer && !vouched && len(kept) != len(names) && p.Agents == policy.AgentsCoder {
 		// off the issue too, so no later writer's event reads them
 		names = kept
 		if parts, err := SplitRepo(repo); err != nil {
@@ -476,11 +484,20 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		// the start (architecture 5.6's board column) and closing its
 		// issue finishes it
 		task.Kind, task.Status, task.ReproCommand = "human", "waiting-human", ""
-	} else if task, err = in.enterOnCreation(ctx, via, p, task, names, defaultBranch); err != nil {
-		return err
+	}
+	var refused string
+	if task.Kind == "agent" {
+		if task, refused, err = in.enterOnCreation(ctx, p, task, names, defaultBranch, sender); err != nil {
+			return err
+		}
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
+	}
+	if refused != "" {
+		in.refuseEntry(ctx, via, repo, issue.Index, names, refused)
+	} else if task.Lane != "" && task.Lane != policy.LaneBacklog {
+		in.keepLaneLabel(ctx, via, repo, issue.Index, names, task.Lane)
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)

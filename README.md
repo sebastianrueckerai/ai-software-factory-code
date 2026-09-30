@@ -138,12 +138,14 @@ approvers (the policy's). A new issue with a lane label judges its
 poster; the default entry (no lane label, or `bug`) enters ready from
 anyone under `writers` and from an approver only under `approvers`. On a
 backlog card, a lane label added, or a lane label removed so that none is
-left, judges the event's sender; the heal pass and the bot know no sender
+left, judges the event's sender, and so does a label event that brings in
+an issue with no card yet (its lane label judges poster and sender); the heal pass and the bot know no sender
 and move nothing. A refused entry lands in the backlog: factoryd takes
 the starting lane labels off, puts `backlog` on and comments once why
 (`factoryd: lane ready takes a card from writers of <repo>; <user> is
 none. The card stays in backlog.`). A card that enters a starting lane
-is queued at the branch head with the lane's class as its capabilities
+keeps that lane's label as its one lane label, is queued at the branch
+head with the lane's class as its capabilities
 and its workflow starts; the row keeps its lane and its process
 (`tasks.lane`, `tasks.process`). A backlog lane with `write_up` opens that
 class's write-up of the card (source `presort`). Until it moves a

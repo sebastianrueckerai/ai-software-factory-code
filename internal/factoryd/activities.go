@@ -669,6 +669,8 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = t.RequiredCapabilities[0]
 	case !ok:
 		return TaskConfig{}, terminalError("task %s: process %s has no lane %s in configuration version %d", t.ID, name, t.Lane, v.ID)
+	case lane.Class == "":
+		return TaskConfig{}, terminalError("task %s: lane %s of process %s starts nothing", t.ID, t.Lane, name)
 	default:
 		tc.Class = lane.Class
 	}

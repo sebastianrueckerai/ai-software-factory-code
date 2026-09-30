@@ -618,3 +618,64 @@ func TestStateSuggestedRenamed(t *testing.T) {
 		t.Fatalf("old absent: %q, %v, calls %q", change, err, lf.calls)
 	}
 }
+
+// A label event on an issue with no task row yet (its opened delivery lost
+// or not yet processed) added its lane label later: the sender is judged
+// too. A writer who is no approver labels an approver's issue agent into
+// an approvers-only ready: the card lands in the backlog.
+func TestLabelEventWithoutRowJudgesSender(t *testing.T) {
+	in, store, requests := laneIntake(t, "gated", approversLanes)
+	labels := []string{"agent"}
+	setLabels(t, in, 17, labels)
+	post(t, in, "issue_label", labelEvent(17, "alice", labels, "sebastian"))
+	if got := card(store, 17); got.Status != "backlog" || got.Lane != "backlog" || got.Author != "alice" {
+		t.Fatalf("card = %+v, want alice's card in the backlog", got)
+	}
+	want := "factoryd: lane ready takes a card from the approvers; sebastian is none. The card stays in backlog."
+	if got := comments(*requests); !slices.Equal(got, []string{want}) || len(workflowsOf(in).started) != 0 {
+		t.Fatalf("comments = %q, started %v", got, workflowsOf(in).started)
+	}
+	// the approver's own label enters
+	setLabels(t, in, 18, labels)
+	post(t, in, "issue_label", labelEvent(18, "alice", labels, "alice"))
+	if got := card(store, 18); got.Status != "queued" || got.Lane != "ready" {
+		t.Fatalf("alice's own label: %+v", got)
+	}
+}
+
+// The refusal is commented once the row exists: a failed insert and the
+// redelivery that retries it comment once between them.
+func TestRefusalCommentedAfterTheRow(t *testing.T) {
+	in, store, requests := laneIntake(t, "gated", approversLanes)
+	store.createFails = 1
+	body := issueOpenedBody(19, "sebastian", []string{"agent"}, "Fix it", "body")
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("failed insert: status %d", rr.Code)
+	}
+	if got := comments(*requests); len(got) != 0 {
+		t.Fatalf("comments before the row = %q", got)
+	}
+	post(t, in, "issues", body)
+	if got := comments(*requests); len(got) != 1 || card(store, 19).Status != "backlog" {
+		t.Fatalf("comments = %q, card %+v", got, card(store, 19))
+	}
+}
+
+// A card keeps one lane label: a move into ready takes backlog off, and a
+// new issue labelled plan and agent keeps agent only.
+func TestMoveKeepsOneLaneLabel(t *testing.T) {
+	in, store, _ := laneIntake(t, "spec", specLanes)
+	store.tasks["t-c"] = Task{ID: "t-c", Kind: "agent", Status: "backlog", Lane: "backlog", Process: "spec", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 25, Author: "sebastian", AuthorWriter: true}
+	labels := []string{"backlog", "state/backlog", "agent"}
+	setLabels(t, in, 25, labels)
+	post(t, in, "issue_label", labelEvent(25, "sebastian", labels, "sebastian"))
+	if got := issueLabels(t, in.Forgejo, 25); !slices.Equal(got, []string{"agent", "state/queued"}) || store.tasks["t-c"].Lane != "ready" {
+		t.Fatalf("labels = %v, card %+v", got, store.tasks["t-c"])
+	}
+	setLabels(t, in, 26, []string{"plan", "agent"})
+	post(t, in, "issues", issueOpenedBody(26, "sebastian", []string{"plan", "agent"}, "Build it", "body"))
+	if got := issueLabels(t, in.Forgejo, 26); !slices.Equal(got, []string{"agent", "state/queued"}) || card(store, 26).Lane != "ready" {
+		t.Fatalf("labels = %v, card %+v", got, card(store, 26))
+	}
+}

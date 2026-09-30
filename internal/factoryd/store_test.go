@@ -58,6 +58,8 @@ type fakeStore struct {
 	// by task
 	monthSpend    MonthSpend
 	monthRefusals map[string]string
+	// createFails fails that many CreateTask calls
+	createFails int
 }
 
 func newFakeStore() *fakeStore {
@@ -66,6 +68,10 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
+	if s.createFails > 0 {
+		s.createFails--
+		return errors.New("insert failed")
+	}
 	if t.Kind == "" {
 		t.Kind = "agent"
 	}

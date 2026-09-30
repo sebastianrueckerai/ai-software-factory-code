@@ -1118,6 +1118,12 @@ func TestTaskConfigReadsRowLane(t *testing.T) {
 		!strings.Contains(err.Error(), "task t1: process maintenance has no lane plan in configuration version 7") {
 		t.Fatalf("error = %v, want the missing lane refused", err)
 	}
+	r, _, _ = newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "backlog", Process: "maintenance"}, &prForgejo{})
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil ||
+		!strings.Contains(err.Error(), "task t1: lane backlog of process maintenance starts nothing") {
+		t.Fatalf("error = %v, want a backlog card refused", err)
+	}
 }
 
 // A row with no process yet (open before the lanes migration, not reached
