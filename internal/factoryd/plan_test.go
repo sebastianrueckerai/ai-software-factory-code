@@ -648,6 +648,14 @@ func TestPlanLoopAcceptFilesTheCards(t *testing.T) {
 	if len(h.usage) != 1 || h.usage[0].Attempts != 1 {
 		t.Fatalf("usage %+v", h.usage)
 	}
+	// the accepting signal ends the approvers' wait, an hour after it began
+	i := slices.IndexFunc(h.recorded, func(s recordedStep) bool { return s.step == "signal" && s.detail["signal"] == SignalPlanAccepted })
+	if i < 0 {
+		t.Fatal("no plan_accepted step")
+	}
+	if started, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(h.recorded[i].detail["started"])); h.recorded[i].at.Sub(started) != time.Hour {
+		t.Fatalf("accepted at %s, wait started %v", h.recorded[i].at, h.recorded[i].detail["started"])
+	}
 }
 
 // An invalid plan goes back to the planner as its findings; a writer's

@@ -665,6 +665,7 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
 		t.escalation, findings, wait = ref.Comment, nil, true
+		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for an approver", ref.Revision)
 	}
 }
@@ -677,7 +678,7 @@ func (t *taskRun) planLoop() (string, error) {
 func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string) {
 	for {
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected, SignalChangesRequested} {
+		for _, n := range []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
@@ -691,7 +692,11 @@ func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string)
 			return "failed", fmt.Sprintf("plan rejected by %s: %s", sig.Author, sig.Body), nil
 		}
 		for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
-			if ref.Revision == 0 || sig.Revision != ref.Revision || sig.SHA256 != ref.SHA256 {
+			if ref.Revision == 0 {
+				t.recordPlanSignal(SignalPlanAccepted, sig, "no plan waits for acceptance")
+				continue
+			}
+			if sig.Revision != ref.Revision || sig.SHA256 != ref.SHA256 {
 				t.recordPlanSignal(SignalPlanAccepted, sig, fmt.Sprintf("the plan changed to revision %d", ref.Revision))
 				continue
 			}
@@ -705,8 +710,6 @@ func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string)
 				return "", "", res.Refused
 			}
 			return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil
-		}
-		for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(nil) {
 		}
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 			if !t.counted(SignalHumanComment, sig) || ref.Revision != 0 && strings.TrimSpace(sig.Body) == PlanAcceptedComment(ref.Revision) {
@@ -724,8 +727,13 @@ func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string)
 // timeline, with why it does not count when it does not.
 func (t *taskRun) recordPlanSignal(name string, sig TaskSignal, ignored string) {
 	detail := map[string]any{"signal": name, "author": sig.Author, "revision": sig.Revision}
-	if ignored != "" {
+	switch {
+	case ignored != "":
 		detail["ignored"] = ignored
+	case !t.approvalRequested.IsZero():
+		// the approvers' wait ends: its step carries the wait's start
+		detail["started"] = rfc3339(t.approvalRequested)
+		t.approvalRequested = time.Time{}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
