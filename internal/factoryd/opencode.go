@@ -646,7 +646,7 @@ func workGuide(tools []string) string {
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
-	g += "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: " +
+	g += "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
 	return g + guideEnd
 }
@@ -673,7 +673,7 @@ func featureGuide(tools []string, role string) string {
 	} else {
 		g += "Nobody answers a question in a message. "
 	}
-	g += "Run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: " +
+	g += "Run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
 	return g + guideEnd
 }

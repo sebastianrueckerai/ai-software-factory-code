@@ -800,7 +800,7 @@ func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 // runs bash check and ends once CI is green (ruling 221, in place of the
 // design's run_checks line).
 func TestFeatureGuideRunsBashCheckThenEnds(t *testing.T) {
-	want := "Run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	want := "Run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
 	if !strings.Contains(featureGuide(nil, RoleFeature), want) {
 		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(nil, RoleFeature), want)
 	}
@@ -810,7 +810,7 @@ func TestFeatureGuideRunsBashCheckThenEnds(t *testing.T) {
 // demo-app) do not all have a check file, so the bash check sentence is
 // conditional on one existing at the repository's root.
 func TestWorkGuideRunsBashCheckOnlyIfPresent(t *testing.T) {
-	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, commit and end at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
 	if !strings.Contains(workGuide(nil), want) {
 		t.Fatalf("workGuide = %q, want it to contain %q", workGuide(nil), want)
 	}
