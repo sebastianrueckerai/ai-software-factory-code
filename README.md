@@ -412,7 +412,10 @@ task finishes done. main's protection lets factory-merge merge but not
 push, and only after an approval by a user on the approvals whitelist, so
 Forgejo itself refuses the merge without the human (405; a moved head or
 a conflict is 409). A refusal is commented and the wait goes on. Merge
-refuses by itself a pull request whose base is not `main`. A merge that
+refuses by itself a pull request whose base is not `main`, and a gated
+head whose combined commit status is not green (`merge_red_head`, the
+card reads `the checks are red on <head>: the merge waits for a green
+head`): the approval stays, and a change request sends the agent back. A merge that
 fails otherwise (Forgejo unreachable) is retried five times, then
 commented and recorded (`merge_failed`); the approval stands and the
 merge is tried again after 10 minutes. From change id
@@ -621,8 +624,13 @@ file linked at its commit.
 
 A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
-session cap, the agent time, the stronger rung and the workflow's stages
-(captured by the workflow), and in every session, report session,
+session cap, the agent time and the stronger rung (captured by the
+workflow); the task's process (its first activity, `TaskConfig`, from
+change id `processes`: the process of the task's project with lane
+ready, its stages, merge queue and dependency block, and the session
+mode of the lane's class, or of a report task's own class, which chooses
+the program: `code` the lifecycle, `report` the write-up, `plan` not
+built yet); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,
