@@ -118,31 +118,46 @@ both sides.
 `X-Forgejo-Signature` (hex HMAC-SHA256 of the raw body, secret
 `factoryd-webhook`) is checked with a constant-time compare before the
 body is parsed at all; a bad or missing signature is a 401 and only the
-event type is logged, never the body. Every issue becomes a task by its
-labels (ruling 148), idempotent per (repository, issue number) —
-redeliveries and later relabel events on the same issue find the task
-already linked and no-op:
+event type is logged, never the body. Every issue becomes a card of the
+lane its labels ask for (`internal/factoryd/lanes.go`), idempotent per
+(repository, issue number): redeliveries and later relabel events on the
+same issue find the task already linked. The lane rule is fixed in code,
+the same for every process:
 
-| labels | task |
+| labels | lane |
 | --- | --- |
-| `human` (wins over the rest) | human lane, `waiting-human`, no agent run |
-| `agent` or `bug` | agent task, started at once, whoever filed it |
-| `improvement` (and neither of the above) | `suggested`: a row, no workflow, until a writer labels it `agent` (or `bug`) |
-| none of the four | a bug: agent task, started at once |
+| `human` (wins over the rest) | human lane, `waiting-human`, no agent run, no lane or process on the row |
+| `agent` or `bug` | ready |
+| `plan` | plan where the project's process has a plan lane, else backlog |
+| `backlog` or `improvement` | backlog: status `backlog`, no workflow |
+| none of these | ready (the default entry) |
 
-A suggested task starts on a label event whose sender is trusted (a
-writer); its base is read then. The heal pass knows no sender and leaves
-it to the label's webhook. Until then a suggestion runs nothing: comments
-on it are neither recorded nor signalled, and a writer's close (webhook or
-heal pass) ends it `closed`. Forgejo 15 applies whatever labels its
+A card entering a starting lane (plan, ready) is judged against the
+lane's `moved_by`: writers (write access on the repository) or
+approvers (the policy's). A new issue with a lane label judges its
+poster; the default entry (no lane label, or `bug`) enters ready from
+anyone under `writers` and from an approver only under `approvers`. On a
+backlog card, a lane label added, or a lane label removed so that none is
+left, judges the event's sender; the heal pass and the bot know no sender
+and move nothing. A refused entry lands in the backlog: factoryd takes
+the starting lane labels off, puts `backlog` on and comments once why
+(`factoryd: lane ready takes a card from writers of <repo>; <user> is
+none. The card stays in backlog.`). A card that enters a starting lane
+is queued at the branch head with the lane's class as its capabilities
+and its workflow starts; the row keeps its lane and its process
+(`tasks.lane`, `tasks.process`). A backlog lane with `write_up` opens that
+class's write-up of the card (source `presort`). Until it moves a
+backlog card runs nothing: comments on it are neither recorded nor
+signalled, and a writer's close (webhook or heal pass) ends it `closed`.
+Forgejo 15 applies whatever labels its
 new-issue form posts, from any account (checked on 15.0.9: an account
 with no access filed issues with a template's label, with smuggled
 `agent` and `improvement` label ids, and with a label and no template;
 all three kept their labels, while the API drops a non-writer's labels
 and refuses its later label edits with 403), so from an outside account
 intake reads only `bug`, `improvement` and non-lane labels: `agent`,
-`human`, `priority/*` and `severity/*` count from writers only, and intake
-takes them off an outside account's new issue. The task
+`plan`, `human`, `priority/*` and `severity/*` count from writers only,
+and intake takes them off an outside account's new issue. The task
 keeps its author and whether they could write the repository then
 (`tasks.author`, `tasks.author_writer`; ruling 152); an API task is the
 bot's, as a writer. The day cap bounds the spend; there is no per-author
@@ -153,12 +168,16 @@ factory's own two repositories included. The issue templates in
 field rendered as the `repro` block; `improvement.yaml`, label
 `improvement`) are what every factory-managed repository carries; their
 labels must exist in the repository, which factoryd ensures (the boot
-labels below) for every project. Issues and comments authored by the bot user itself
-(`FORGEJO_BOT_USER`, default `factory-agent`) are ignored, and so are
-pull requests it closed itself, so the factory's own status updates
-never create a second task or a stray signal. `POST /tasks`
-files a Forgejo issue and labels it the same way, so every task —
-API-created or webhook-created — has exactly one linked issue.
+labels below) for every project. An issue the bot user
+(`FORGEJO_BOT_USER`, default `factory-agent`) filed with no task linked
+is ignored, as are its comments and the pull requests it closed itself,
+so the factory's own status updates never create a second task or a
+stray signal; a bot issue with a task row (a plan's card) takes its
+label events like any other. `POST /tasks` and SigNoz alerts file a
+Forgejo issue through `FileAgentTask`: the default entry into ready of
+the project's process (the backlog where the approvers move ready), so
+every task — API-created or webhook-created — has exactly one linked
+issue. A roll takes ready's class and no lane.
 
 Priority is the higher of two label scales, default 0 if neither is present:
 
@@ -180,15 +199,17 @@ A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
 
-A task's state (`suggested`, `queued`, `running`, `waiting-human`,
+A task's state (`backlog`, `queued`, `running`, `waiting-human`,
 `waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
 onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
 site behind the task workflow's activities, completion, and the webhook
 intake; the full label set (`agent`, `human`, `bug`, `improvement`, the
-priorities and severities, and one `state/*` per status) is created at
-boot by `EnsureLabels` if missing, and on every project by its
-registration. Mirroring
+priorities and severities, one `state/*` per status, and the lane labels
+of the project's process: `backlog`, and `plan` where it has a plan lane)
+is created at boot by `EnsureProjectLabels` if missing, and on every
+project by its registration; that step first renames `state/suggested`
+to `state/backlog` in place. Mirroring
 failures are logged and retried on the next transition, never fail the
 task itself. A webhook-created task is mirrored immediately after its
 row exists: `state/queued` for the agent lane, and `state/waiting-human`
@@ -626,9 +647,11 @@ A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
 session cap, the agent time and the stronger rung (captured by the
 workflow); the task's process (its first activity, `TaskConfig`, from
-change id `processes`: the process of the task's project with lane
-ready, its stages, merge queue and dependency block, and the session
-mode of the lane's class, or of a report task's own class, which chooses
+change id `processes`: the row's process, or where the loader has not
+filled it yet the process of the task's project, with the row's lane,
+its stages, merge queue and dependency block, and the session mode of
+the lane's class (ready's for a roll, which has no lane), or of a report
+task's own class, which chooses
 the program: `code` the lifecycle, `report` the write-up, `plan` not
 built yet); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
@@ -1608,7 +1631,7 @@ factoryd pods:
 - `factory.task.outcome{project,state,model_alias,attempts,merge_rule}`:
   once per task on every path that ends it (`Complete`, which `Finish`
   and the heal pass's failure of a malformed task go through, a closed
-  suggestion, a closed human-lane issue, a resolved config task), so it
+  backlog card, a closed human-lane issue, a resolved config task), so it
   equals the tasks turned done, failed or closed. `state` is that final
   status. `project`
   and `merge_rule` come from the repository's project file (the repository
