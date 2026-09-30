@@ -657,6 +657,33 @@ func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
 	}
 }
 
+// A command's own running time is the machine's, not the agent's: a
+// compile of 3 min 30 s does not count towards no_write (Stage 11's gate
+// lane task tripped it on a cold `go test` compile in the sandbox).
+func TestNoWriteExcludesACommandsRunningTime(t *testing.T) {
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3},
+		time.Unix(0, 0), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.halfWayDone = true
+	if trip := s.Event(fileEvent("a_test.go", "1"), minute(2)); trip != nil {
+		t.Fatalf("write tripped: %+v", trip)
+	}
+	build := cmdEvent("go test ./internal/factoryd/ -run TestX", 0, "ok")
+	build.Detail["duration_ms"] = float64(210000)
+	if trip := s.Event(build, minute(6)); trip != nil {
+		t.Fatalf("the command tripped: %+v", trip)
+	}
+	if trip := s.Event(toolEvent("grep", map[string]any{"pattern": "x"}), minute(7.25)); trip != nil {
+		t.Fatalf("tripped at 7:15 after 1m45s of agent time: %+v", trip)
+	}
+	trip := s.Event(toolEvent("grep", map[string]any{"pattern": "y"}), minute(10.75))
+	if trip == nil || trip.Kind != TripNoWrite || trip.Detail != "agent events for 5m15s without a file write or edit" {
+		t.Fatalf("trip = %+v, want no_write at 10:45 with 5m15s", trip)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
 
 func TestNoWriteRejectsANegativeWait(t *testing.T) {
