@@ -972,6 +972,15 @@ func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 	}
 }
 
+// A skipped reproduction is no finding: the checks ran the tests (#287).
+func TestReviewPromptSkippedReproductionIsNoFinding(t *testing.T) {
+	for _, s := range []string{"A reproduction with Ran false means the issue carried no reproduction command: that is no finding by itself", "the pull request's checks (build, vet, the race tests) already ran and passed before this review"} {
+		if !strings.Contains(reviewPrompt, s) {
+			t.Errorf("the review prompt lacks %q", s)
+		}
+	}
+}
+
 // GatePolicy classifies under the risk rules of the version the task
 // pinned, and names it; the review asks the pinned version's review model
 // (Task 72's review: the pin covers the gates too). 0 reads the current.
