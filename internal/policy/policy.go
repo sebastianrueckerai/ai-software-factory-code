@@ -326,6 +326,11 @@ type Budget struct {
 // call through the gateway and its tools with per-task caps, and the
 // aliases factoryd calls on the task's account, which the agent may not.
 type Class struct {
+	// Session is the program a task of the class runs: code the coding
+	// lifecycle, plan the plan loop, report a write-up. The tree's check
+	// requires it; Document.Validate does not, so a gateway reading a
+	// version written before it stays valid.
+	Session string `yaml:"session" json:"session,omitempty"`
 	// Models are the aliases the agent may call through the gateway.
 	Models []string `yaml:"models" json:"models"`
 	// Tools are the gateway tools the class may call: a paid tool with its

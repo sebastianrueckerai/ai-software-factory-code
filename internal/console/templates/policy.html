@@ -7,14 +7,14 @@
 <dt>In force since</dt><dd>{{.ActivatedAt}}</dd>
 </dl>
 <p>The configuration is the directory {{.Dir}}/ of the infra repository; every change is a commit there. <a href="{{.Main}}">Edit it on main</a>.</p>
-<h3>Workflow (<a href="{{.At}}/workflow.yaml">workflow.yaml</a>)</h3>
+{{range $name, $p := .Version.Processes}}<h3>Process {{$name}} (<a href="{{$.At}}/processes/{{$name}}.yaml">processes/{{$name}}.yaml</a>)</h3>
 <table>
 <thead><tr><th scope="col">Stage</th><th scope="col">Findings go to</th><th scope="col">Enabled</th><th scope="col">When</th></tr></thead>
 <tbody>
-{{range .Version.Workflow.Stages}}<tr><td>{{.Name}}</td><td>{{.OnFindings}}</td><td>{{if .Enabled}}yes{{else}}no{{end}}</td><td>{{.When}}</td></tr>
+{{range $p.Stages}}<tr><td>{{.Name}}</td><td>{{.OnFindings}}</td><td>{{if .Enabled}}yes{{else}}no{{end}}</td><td>{{.When}}</td></tr>
 {{end}}</tbody>
 </table>
-<h3>Projects</h3>
+{{end}}<h3>Projects</h3>
 <table>
 <thead><tr><th scope="col">Project</th><th scope="col">Repository</th><th scope="col">Merge rule</th><th scope="col">Objects</th><th scope="col">Agents</th><th scope="col">Namespaces</th></tr></thead>
 <tbody>

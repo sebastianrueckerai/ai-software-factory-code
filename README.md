@@ -567,21 +567,27 @@ replays histories recorded on the cluster (`internal/factoryd/testdata`).
 ## Configuration, policy and costs
 
 factoryd's configuration is the directory `factory/` of the infra
-repository's `main` (ruling 183): `policy.yaml`, `workflow.yaml` (the
-stages a task passes, each with its `on_findings` rule, ruling 177) and
-`projects/<name>.yaml` (one per project: repository, merge rule,
-`objects: factory|seed`, `agents: coder|none`, notify, namespaces,
-environments, quota, secrets). The Go types in `internal/policy` are the
+repository's `main` (ruling 183): `policy.yaml` (classes with their
+`session: code|plan|report`), `processes/<name>.yaml` (ruling 206: the
+blocks `lanes`, `dependencies`, `stages`, each with its `on_findings`
+rule, ruling 177, and `merge`) and `projects/<name>.yaml` (one per
+project: repository, merge rule, `objects: factory|seed`,
+`agents: coder|none`, `process`, notify, namespaces, environments,
+quota, secrets). The Go types in `internal/policy` are the
 schema: `factoryd schema --out <dir>` writes one JSON Schema per file
 kind (draft-07; every enumerated field lists its values, every key its
 doc comment, a key is required unless its yaml tag says `omitempty`),
 committed as `factory/schema/`, and each file's first line references
 its schema (`# yaml-language-server: $schema=schema/policy.schema.json`,
-`../schema/project.schema.json` under `projects/`) for completion and
+`../schema/project.schema.json` under `projects/`,
+`../schema/process.schema.json` under `processes/`) for completion and
 linting in an editor. `factoryd config check <dir>` decodes a tree as
 the loader does and compares its `schema/` with the generated one: exit
 0 ok, 1 refused with every reason, 2 usage; the infra repository's CI
-runs it on every push to `main`.
+runs it on every push to `main`. `factoryd config explain [--tree <dir>]
+<process> <card kind>` prints the path of a card kind (`bug`,
+`improvement`, `plan`, `child`) through a process, generated from the
+same graph whose check refuses a dead end or an uncapped cycle.
 
 factoryd polls the head of `main` of `CONFIG_REPO` (the infra
 repository, set in `k8s/factoryd.yaml`) every 30 s through the Forgejo API
@@ -594,8 +600,8 @@ keys, enumerations). A valid tree becomes an immutable `policy_versions`
 row keyed by the commit (`commit_sha`, the whole tree as one JSON
 document, `loaded_at`); the version in force is the latest row of the
 append-only `policy_activations`; a commit seen before activates its
-earlier row again. A refused commit, or one whose `coder` class leaves
-out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
+earlier row again. A refused commit, or one where a class a starting
+lane names leaves out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
 REJECTED`, keeps the previous version current and files, once per
 commit, a human-lane issue on the infra repository (a `human` task,
 source `config`) and an open alerts row of kind `config_rejected`

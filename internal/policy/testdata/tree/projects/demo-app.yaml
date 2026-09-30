@@ -3,6 +3,7 @@ repository: demo-app/demo-app
 merge_rule: auto
 objects: factory
 agents: coder
+process: maintenance
 namespaces: [demo-staging, demo-prod]
 environments:
   - {namespace: demo-staging, path: deploy/staging, hostname: demo-staging.example.org}

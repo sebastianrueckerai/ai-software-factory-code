@@ -3,10 +3,13 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -99,7 +102,7 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 	if ok {
 		err := v.Validate()
 		if err == nil {
-			err = l.fitsLadder(v.Document)
+			err = fitsLadder(v.Tree, l.LadderModels)
 		}
 		if err != nil {
 			log.Printf("CONFIG REJECTED: stored version %d (commit %s): %v", v.ID, v.Commit, err)
@@ -210,30 +213,39 @@ func (l *PolicyLoader) Current() policy.Version {
 
 func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budget }
 
-func (l *PolicyLoader) fitsLadder(d policy.Document) error { return fitsLadder(d, l.LadderModels) }
-
 // CheckTree is the loader's whole judgement of a tree's files, which
-// `factoryd config check` runs too: policy.ParseTree, and the coder class
-// must allow every model of the ladder, else a task would be refused
-// mid-run.
+// `factoryd config check` runs too: policy.ParseTree, and every class a
+// starting lane names must allow every model of the ladder, else a task
+// would be refused mid-run.
 func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
 	tree, err := policy.ParseTree(files)
 	if err != nil {
 		return policy.Tree{}, err
 	}
-	if err := fitsLadder(tree.Document, ladder); err != nil {
-		return policy.Tree{}, fmt.Errorf("%s: %w", policy.FilePolicy, err)
+	if err := fitsLadder(tree, ladder); err != nil {
+		return policy.Tree{}, err
 	}
 	return tree, nil
 }
 
-func fitsLadder(d policy.Document, ladder []string) error {
-	for _, m := range ladder {
-		if !d.AllowsModel(AgentCapabilities, m) {
-			return fmt.Errorf("capability classes %q do not allow the ladder model %q", AgentCapabilities, m)
+// fitsLadder holds every class a starting lane of any process names
+// against the ladder, one line per class and missing model.
+func fitsLadder(t policy.Tree, ladder []string) error {
+	var errs []error
+	seen := map[string]bool{}
+	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
+		for _, l := range t.Processes[name].Lanes {
+			for _, m := range ladder {
+				if l.Class == "" || seen[l.Class+" "+m] || t.Document.AllowsModel([]string{l.Class}, m) {
+					continue
+				}
+				seen[l.Class+" "+m] = true
+				errs = append(errs, fmt.Errorf("%s: capability class %q does not allow the ladder model %q (lane %s of %s starts it)",
+					policy.FilePolicy, l.Class, m, l.Name, policy.ProcessFile(name)))
+			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ForgejoConfig is the configuration tree in Forgejo: directory Dir of

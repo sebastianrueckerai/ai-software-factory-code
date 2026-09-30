@@ -17,7 +17,7 @@ import (
 func tree(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	files, err := policy.ReadDir("../../internal/policy/testdata/factory")
+	files, err := policy.ReadDir("../../internal/policy/testdata/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +68,8 @@ func TestConfigCheck(t *testing.T) {
 	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
 		t.Fatalf("valid tree: exit %d: %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "3 projects, 9 stages") {
-		t.Fatalf("stdout = %q", stdout.String())
+	if want := dir + ": ok, 4 projects, 2 processes, 0 templates\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 
 	for name, tc := range map[string]struct {
@@ -77,14 +77,14 @@ func TestConfigCheck(t *testing.T) {
 		want   []string
 	}{
 		"invalid enum and unknown key": {func(dir string) {
-			write(t, filepath.Join(dir, "projects/infra.yaml"), "# yaml-language-server: $schema=../schema/project.schema.json\nrepository: sf/infra\nmerge_rule: human\nobjects: flux\nagents: none\n")
-			b, _ := os.ReadFile(filepath.Join(dir, "workflow.yaml"))
-			write(t, filepath.Join(dir, "workflow.yaml"), strings.Replace(string(b), "enabled: true}", "enabled: true, retries: 2}", 1))
-		}, []string{`projects/infra.yaml: project infra: objects "flux"`, "workflow.yaml: yaml: unmarshal errors:"}},
+			write(t, filepath.Join(dir, "projects/ai-software-factory-infra.yaml"), "# yaml-language-server: $schema=../schema/project.schema.json\nrepository: sf/ai-software-factory-infra\nmerge_rule: human\nobjects: flux\nagents: none\n")
+			b, _ := os.ReadFile(filepath.Join(dir, "processes/spec.yaml"))
+			write(t, filepath.Join(dir, "processes/spec.yaml"), strings.Replace(string(b), "enabled: true}", "enabled: true, retries: 2}", 1))
+		}, []string{`projects/ai-software-factory-infra.yaml: project ai-software-factory-infra: objects "flux"`, "processes/spec.yaml: yaml: unmarshal errors:"}},
 		"ladder model left out": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "policy.yaml"))
 			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [coding-cheap, coding-frontier]", "models: [coding-cheap]", 1))
-		}, []string{`policy.yaml: capability classes ["coder"] do not allow the ladder model "coding-frontier"`}},
+		}, []string{`policy.yaml: capability class "coder" does not allow the ladder model "coding-frontier" (lane ready of processes/maintenance.yaml starts it)`}},
 		"a looser project file": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "projects/demo-app.yaml"))
 			write(t, filepath.Join(dir, "projects/demo-app.yaml"), strings.Replace(string(b), "max_lease_hours: 2", "max_lease_hours: 48", 1))
@@ -92,6 +92,11 @@ func TestConfigCheck(t *testing.T) {
 		"schema drift": {func(dir string) {
 			write(t, filepath.Join(dir, "schema/policy.schema.json"), "{}\n")
 		}, []string{"schema/policy.schema.json differs from factoryd schema"}},
+		"the old workflow file": {func(dir string) {
+			write(t, filepath.Join(dir, "workflow.yaml"), "# yaml-language-server: $schema=schema/workflow.schema.json\nstages: []\n")
+			write(t, filepath.Join(dir, "schema/workflow.schema.json"), "{}\n")
+		}, []string{`workflow.yaml: unknown file "workflow.yaml": the tree holds policy.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`,
+			"schema/workflow.schema.json is not a schema factoryd writes"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := tree(t)
@@ -114,5 +119,122 @@ func TestConfigCheck(t *testing.T) {
 	}
 	if code := run([]string{"config", "check", filepath.Join(dir, "absent")}, &stdout, &stderr); code != 1 {
 		t.Errorf("absent directory: exit %d, want 1", code)
+	}
+}
+
+// runExplain runs config explain on the fixture tree.
+func runExplain(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	code := run(append([]string{"config", "explain", "--tree", tree(t)}, args...), &stdout, &stderr)
+	return stdout.String(), stderr.String(), code
+}
+
+func TestExplainSpecPlan(t *testing.T) {
+	const want = `process spec (processes/spec.yaml), card kind plan
+ 1. card created: an issue labelled plan by a writer, or a card a writer moves from backlog to plan
+ 2. lane plan: starts a task of class planner (session plan) at once
+ 3. planner session on the stronger rung: answers a plan of 2 to 12 cards, one foundation first, one integration last
+      plan invalid -> back to the planner (step 3)
+ 4. human card: the plan, for approvers to accept
+      a writer's comment -> back to the planner (step 3)
+      Reject -> end: failed; the issue closed -> end: closed
+      Accept plan (approvers) -> step 5
+ 5. factoryd files one card per planned card in lane backlog, with their dependencies (card kind child)
+      a cycle or any finding -> back to the planner (step 3)
+ 6. end: done
+ later: Start plan (approvers) moves every card of this plan still in backlog to lane ready
+ caps: every planner session counts against limits.sessions (3); at the cap -> human card (step 4)
+`
+	if got, stderr, code := runExplain(t, "spec", "plan"); code != 0 || got != want {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s\nwant:\n%s", code, stderr, got, want)
+	}
+}
+
+func TestExplainSpecChild(t *testing.T) {
+	const want = `process spec (processes/spec.yaml), card kind child
+ 1. card created: by factoryd when an approver accepts a plan, in lane backlog, with the plan's dependencies
+ 2. lane backlog: does not start
+      Start plan (approvers), or a writer's move -> step 3
+ 3. lane ready: waits until every card it depends on is done ("waiting on #n")
+      a dependency ends failed or closed -> human card: an answer -> step 4, a close -> end: closed
+ 4. lane ready: starts a task of class coder (session code)
+ 5. stage screening: an outside account's card only; findings -> human card
+ 6. coder session (at most 3 per task, limits.sessions)
+ 7. stage checks: findings -> back to the coder (step 6)
+ 8. stage policy: findings -> end: failed
+ 9. stage migration: findings -> human card
+10. stage reproduction: findings -> back to the coder (step 6)
+11. stage review: findings -> back to the coder (step 6); no verdict -> human card
+12. stage audit: projects with audit: true only; findings -> human card
+13. merge queue (project): one pull request at a time; main merged in and the checks run again when main moved
+      a conflict or red checks -> back to the coder (step 6)
+14. stage approval: human card, or merge rule auto without one
+      request changes -> back to the coder (step 6); reject -> end: failed
+15. stage merge: a refusal -> human card; a conflict -> back to the coder (step 6)
+16. end: done; the cards that depend on this one may start
+ caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
+`
+	if got, stderr, code := runExplain(t, "spec", "child"); code != 0 || got != want {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s\nwant:\n%s", code, stderr, got, want)
+	}
+}
+
+func TestExplainMaintenanceBug(t *testing.T) {
+	const want = `process maintenance (processes/maintenance.yaml), card kind bug
+ 1. card created: an issue labelled bug or agent, or with no lane label, from anyone
+ 2. lane ready: starts a task of class coder (session code) at once
+ 3. stage screening: an outside account's card only; findings -> human card
+ 4. coder session (at most 3 per task, limits.sessions)
+ 5. stage checks: findings -> back to the coder (step 4)
+ 6. stage policy: findings -> end: failed
+ 7. stage migration: findings -> human card
+ 8. stage reproduction: findings -> back to the coder (step 4)
+ 9. stage review: findings -> back to the coder (step 4); no verdict -> human card
+10. stage audit: projects with audit: true only; findings -> human card
+11. stage approval: human card, or merge rule auto without one
+      request changes -> back to the coder (step 4); reject -> end: failed
+12. stage merge: a refusal -> human card; a conflict -> back to the coder (step 4)
+13. end: done
+ caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
+`
+	if got, stderr, code := runExplain(t, "maintenance", "bug"); code != 0 || got != want {
+		t.Fatalf("exit %d, stderr %q, stdout:\n%s\nwant:\n%s", code, stderr, got, want)
+	}
+}
+
+// A switched-off stage and a stage's own return cap read in its row.
+func TestExplainSwitchedOffAndMaxReturns(t *testing.T) {
+	dir := tree(t)
+	b, _ := os.ReadFile(filepath.Join(dir, "processes/maintenance.yaml"))
+	s := strings.Replace(string(b), "{name: reproduction, on_findings: agent, enabled: true}", "{name: reproduction, on_findings: agent, enabled: false}", 1)
+	s = strings.Replace(s, "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent, enabled: true, max_returns: 2}", 1)
+	write(t, filepath.Join(dir, "processes/maintenance.yaml"), s)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"config", "explain", "--tree", dir, "maintenance", "bug"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	for _, want := range []string{" 5. stage checks: findings -> back to the coder (step 4), at most 2 returns, then human card\n", " 8. stage reproduction: switched off\n"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("stdout lacks %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestExplainRefusesKind(t *testing.T) {
+	got, stderr, code := runExplain(t, "maintenance", "plan")
+	if code != 1 || got != "" || stderr != "process maintenance has no lane plan: a plan card cannot enter it\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, got, stderr)
+	}
+	for _, args := range [][]string{{"maintenance", "epic"}, {"nightly", "bug"}} {
+		if _, stderr, code := runExplain(t, args...); code != 1 || stderr == "" {
+			t.Errorf("%v: exit %d, stderr %q", args, code, stderr)
+		}
+	}
+	var stdout, errOut bytes.Buffer
+	for _, args := range [][]string{{"config", "explain"}, {"config", "explain", "spec"}, {"config", "explain", "--tree"}} {
+		if code := run(args, &stdout, &errOut); code != 2 {
+			t.Errorf("%v: exit %d, want 2", args, code)
+		}
 	}
 }

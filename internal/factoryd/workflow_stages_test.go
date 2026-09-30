@@ -16,10 +16,10 @@ import (
 
 // stagesWorkflow is TaskWorkflow on testStages edited by edit, with a
 // session cap of sessions.
-func stagesWorkflow(sessions int, edit func(w *policy.Workflow)) TaskWorkflow {
+func stagesWorkflow(sessions int, edit func(w *policy.Process)) TaskWorkflow {
 	cfg := testWorkflowConfig
 	cfg.MaxSessions = sessions
-	w := policy.Workflow{Stages: testStages()}
+	w := policy.Process{Stages: testStages()}
 	if edit != nil {
 		edit(&w)
 	}
@@ -28,7 +28,7 @@ func stagesWorkflow(sessions int, edit func(w *policy.Workflow)) TaskWorkflow {
 }
 
 // setStage changes one stage of w.
-func setStage(w *policy.Workflow, name string, f func(s *policy.Stage)) {
+func setStage(w *policy.Process, name string, f func(s *policy.Stage)) {
 	for i := range w.Stages {
 		if w.Stages[i].Name == name {
 			f(&w.Stages[i])
@@ -88,7 +88,7 @@ func TestStagesRedChecksKeepThenClimbThenCard(t *testing.T) {
 // on_findings human sends red checks to the card after one session; the
 // other stages still run and no auto merge is tried.
 func TestStagesHumanFindingsGoToTheCard(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "checks", func(s *policy.Stage) { s.OnFindings = "human" })
 	}), func(g *gateHarness) {
 		g.gate = PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto}
@@ -113,7 +113,7 @@ func TestStagesHumanFindingsGoToTheCard(t *testing.T) {
 
 // on_findings fail ends the task at the stage.
 func TestStagesFailFindingsFailTheTask(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "reproduction", func(s *policy.Stage) { s.OnFindings = "fail" })
 	}), func(g *gateHarness) {
 		g.repro = []ReproResult{{Ran: true, Command: "go test ./x", Exit: 1, Output: "--- FAIL"}}
@@ -145,7 +145,7 @@ func TestStagesForbiddenClass(t *testing.T) {
 		t.Fatalf("final = %q, reason %q", final, g.finals[0][1])
 	}
 
-	g = newGateHarnessWith(t, stagesWorkflow(2, func(w *policy.Workflow) {
+	g = newGateHarnessWith(t, stagesWorkflow(2, func(w *policy.Process) {
 		setStage(w, "policy", func(s *policy.Stage) { s.OnFindings = "agent" })
 	}), forbidden)
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
@@ -164,7 +164,7 @@ func (g *gateHarness) finalsReasonForbidden() string {
 // A disabled stage does not run and is recorded as skipped; a stage for
 // outsiders is skipped for a writer's task.
 func TestStagesDisabledAndWhenAreSkippedOnTheTimeline(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "reproduction", func(s *policy.Stage) { s.Enabled = false })
 		setStage(w, "review", func(s *policy.Stage) { s.When = "outsider" })
 	}))
@@ -189,7 +189,7 @@ func TestStagesDisabledAndWhenAreSkippedOnTheTimeline(t *testing.T) {
 // I1): a workflow the loader would refuse, checks disabled, red checks
 // never read, goes to the card with the reason.
 func TestStagesSkippedChecksNeverAutoMerge(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "checks", func(s *policy.Stage) { s.Enabled = false })
 	}), autoGates)
 	g.onSessions(pushed("s1", "c1"))
@@ -320,7 +320,7 @@ func TestStagesReviewMaxReturns(t *testing.T) {
 	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
 	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: the flag is still unchecked"}}
 	one := 1
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "review", func(s *policy.Stage) { s.MaxReturns = &one })
 	}), func(g *gateHarness) { g.reviews = []Review{first, second} })
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"))
@@ -526,7 +526,7 @@ func TestStagesScreeningReportEndsWithoutAComment(t *testing.T) {
 
 // withAudit lists the audit stage (ruling 188) between review and
 // approval.
-func withAudit(w *policy.Workflow) {
+func withAudit(w *policy.Process) {
 	i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageReview })
 	w.Stages = slices.Insert(w.Stages, i+1, policy.Stage{Name: policy.StageAudit, OnFindings: policy.FindingsHuman, Enabled: true})
 }
@@ -628,7 +628,7 @@ func TestStagesAuditSkipped(t *testing.T) {
 		t.Fatalf("final = %q, auto notes %v, approvals %d", final, g.autoNotes, len(g.approvals))
 	}
 
-	g = newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g = newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		withAudit(w)
 		setStage(w, "audit", func(s *policy.Stage) { s.Enabled = false })
 	}), autoGates)
@@ -726,7 +726,7 @@ func TestStagesAutoWithoutVerdictGoesToTheCard(t *testing.T) {
 // A review turned off with enabled: false is no finding: the card says
 // only why no auto merge.
 func TestStagesDisabledReviewIsNoFinding(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Workflow) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
 		setStage(w, "review", func(s *policy.Stage) { s.Enabled = false })
 	}))
 	g.onSessions(pushed("s1", "c1"))

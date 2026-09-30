@@ -28,7 +28,7 @@ func Parse(b []byte) (Document, error) {
 
 func fixtureTree(t *testing.T) map[string][]byte {
 	t.Helper()
-	files, err := ReadDir("testdata/factory")
+	files, err := ReadDir("testdata/tree")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func fixtureTree(t *testing.T) map[string][]byte {
 
 func TestParseTreeAccepts(t *testing.T) {
 	files := fixtureTree(t)
-	if got := slices.Sorted(maps.Keys(files)); !slices.Equal(got, []string{"policy.yaml", "projects/code.yaml", "projects/demo-app.yaml", "projects/infra.yaml", "workflow.yaml"}) {
+	if got := slices.Sorted(maps.Keys(files)); !slices.Equal(got, []string{"policy.yaml", "processes/maintenance.yaml", "processes/spec.yaml", "projects/ai-software-factory-code.yaml", "projects/ai-software-factory-infra.yaml", "projects/demo-app.yaml", "projects/linkshort.yaml"}) {
 		t.Fatalf("ReadDir keys = %v", got)
 	}
 	tree, err := ParseTree(files)
@@ -51,7 +51,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if tree.Document.Bound("GateReproduction") != 30*time.Minute {
 		t.Fatalf("GateReproduction bound = %s", tree.Document.Bound("GateReproduction"))
 	}
-	if got := slices.Sorted(maps.Keys(tree.Projects)); !slices.Equal(got, []string{"code", "demo-app", "infra"}) {
+	if got := slices.Sorted(maps.Keys(tree.Projects)); !slices.Equal(got, []string{"ai-software-factory-code", "ai-software-factory-infra", "demo-app", "linkshort"}) {
 		t.Fatalf("projects = %v", got)
 	}
 	demo := tree.Projects["demo-app"]
@@ -59,24 +59,24 @@ func TestParseTreeAccepts(t *testing.T) {
 		len(demo.Environments) != 2 || demo.Environments[0].Hostname != "demo-staging.example.org" || demo.Quota == nil || demo.Quota.Memory != "4Gi" {
 		t.Fatalf("demo-app = %+v", demo)
 	}
-	if infra := tree.Projects["infra"]; infra.Objects != ObjectsSeed || infra.Agents != AgentsNone || infra.Quota != nil ||
+	if infra := tree.Projects["ai-software-factory-infra"]; infra.Objects != ObjectsSeed || infra.Agents != AgentsNone || infra.Quota != nil ||
 		*infra.Tokens != (SeedTokens{Read: SecretConfig}) {
 		t.Fatalf("infra = %+v", infra)
 	}
-	if code := tree.Projects["code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
+	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
 		t.Fatalf("code = %+v", code)
 	}
 	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "coding-frontier" || tree.Document.Bound("GateAudit") != 6*time.Minute {
 		t.Fatalf("demo-app audit %v, audit model %q, bound %s", demo.Audit, tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit), tree.Document.Bound("GateAudit"))
 	}
 	var names []string
-	for _, s := range tree.Workflow.Stages {
+	for _, s := range tree.Processes["maintenance"].Stages {
 		names = append(names, s.Name)
 	}
 	if !slices.Equal(names, []string{"screening", "checks", "policy", "migration", "reproduction", "review", "audit", "approval", "merge"}) {
 		t.Fatalf("stages = %v", names)
 	}
-	if s := tree.Workflow.Stages[0]; s.Enabled || s.When != WhenOutsider || s.OnFindings != FindingsHuman {
+	if s := tree.Processes["maintenance"].Stages[0]; !s.Enabled || s.When != WhenOutsider || s.OnFindings != FindingsHuman {
 		t.Fatalf("screening = %+v", s)
 	}
 	// the stored form: the tree round-trips through JSON unchanged
@@ -106,34 +106,28 @@ func TestParseTreeRejects(t *testing.T) {
 		change func(map[string][]byte)
 		want   string
 	}{
-		"unknown key in the workflow": {edit("workflow.yaml", "enabled: true}", "enabled: true, retries: 2}"), "workflow.yaml: yaml: unmarshal errors:\n  line 4: field retries not found"},
 		"second document": {func(f map[string][]byte) {
-			f["projects/infra.yaml"] = append(f["projects/infra.yaml"], "---\nagents: coder\n"...)
-		}, "projects/infra.yaml: more than one YAML document"},
-		"invalid on_findings":         {edit("workflow.yaml", "on_findings: fail", "on_findings: maybe"), `workflow.yaml: workflow: stage policy: on_findings "maybe", want one of [agent human fail]`},
-		"invalid objects":             {edit("projects/infra.yaml", "objects: seed", "objects: flux"), `projects/infra.yaml: project infra: objects "flux": want one of [factory seed]`},
-		"invalid agents":              {edit("projects/infra.yaml", "agents: none", "agents: all"), `project infra: agents "all"`},
-		"stage enabled missing":       {edit("workflow.yaml", "{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent}"), "workflow.yaml: schema:"},
-		"merge not last":              {edit("workflow.yaml", "  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: checks, on_findings: agent, enabled: true}\n"), "stage checks is listed twice"},
-		"no approval":                 {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n", ""), "stage approval is required"},
-		"merge before approval":       {edit("workflow.yaml", "  - {name: approval, on_findings: human, enabled: true}\n  - {name: merge, on_findings: human, enabled: true}\n", "  - {name: merge, on_findings: human, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n"), "stage merge must be last"},
+			f["projects/ai-software-factory-infra.yaml"] = append(f["projects/ai-software-factory-infra.yaml"], "---\nagents: coder\n"...)
+		}, "projects/ai-software-factory-infra.yaml: more than one YAML document"},
+		"invalid objects":             {edit("projects/ai-software-factory-infra.yaml", "objects: seed", "objects: flux"), `projects/ai-software-factory-infra.yaml: project ai-software-factory-infra: objects "flux": want one of [factory seed]`},
+		"invalid agents":              {edit("projects/ai-software-factory-infra.yaml", "agents: none", "agents: all"), `project ai-software-factory-infra: agents "all"`},
+		"stage enabled missing":       {edit("processes/spec.yaml", "{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent}"), "processes/spec.yaml: schema:"},
 		"no limits":                   {edit("policy.yaml", "limits:\n  sessions: 3\n  agent_time: 20m\n  supervisor_calls: 3\n  supervisor_timeout: 6m\n  stronger_after: 1\n  steps: 200\n  nudge_after: 3\n  nudges: 1\n", ""), "limits.sessions must be positive"},
 		"limit missing":               {edit("policy.yaml", "  stronger_after: 1\n", ""), "policy.yaml: schema:"},
 		"limit not a duration":        {edit("policy.yaml", "agent_time: 20m", "agent_time: twenty"), "policy.yaml: yaml:"},
 		"supervisor timeout too long": {edit("policy.yaml", "supervisor_timeout: 6m", "supervisor_timeout: 20m"), "limits.supervisor_timeout must lie between 30s and 15m0s"},
 		"no header":                   {edit("policy.yaml", "# yaml-language-server: $schema=schema/policy.schema.json\n", ""), "policy.yaml: the first line must be # yaml-language-server: $schema=schema/policy.schema.json"},
-		"project header path":         {edit("projects/infra.yaml", "../schema/", "schema/"), "projects/infra.yaml: the first line must be # yaml-language-server: $schema=../schema/project.schema.json"},
+		"project header path":         {edit("projects/ai-software-factory-infra.yaml", "../schema/", "schema/"), "projects/ai-software-factory-infra.yaml: the first line must be # yaml-language-server: $schema=../schema/project.schema.json"},
 		"unknown file":                {func(f map[string][]byte) { f["notes.txt"] = []byte("hi") }, `unknown file "notes.txt"`},
-		"nested project":              {func(f map[string][]byte) { f["projects/x/y.yaml"] = f["projects/infra.yaml"] }, `unknown file "projects/x/y.yaml"`},
-		"bad project name":            {func(f map[string][]byte) { f["projects/Infra_2.yaml"] = f["projects/infra.yaml"] }, "project Infra_2: the file name"},
-		"no workflow":                 {func(f map[string][]byte) { delete(f, "workflow.yaml") }, "workflow.yaml is missing"},
+		"nested project":              {func(f map[string][]byte) { f["projects/x/y.yaml"] = f["projects/ai-software-factory-infra.yaml"] }, `unknown file "projects/x/y.yaml"`},
+		"bad project name":            {func(f map[string][]byte) { f["projects/Infra_2.yaml"] = f["projects/ai-software-factory-infra.yaml"] }, "project Infra_2: the file name"},
 		"no policy":                   {func(f map[string][]byte) { delete(f, "policy.yaml") }, "policy.yaml is missing"},
-		"seed without tokens":         {edit("projects/infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project infra: objects seed: tokens.read names the secret"},
-		"seed coder without merge":    {edit("projects/code.yaml", ", merge: forgejo-merge", ""), "project code: objects seed with agents coder: tokens.actions and tokens.merge"},
-		"seed names the projects token": {edit("projects/infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
-			`project infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
-		"seed with environments": {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [x]\nenvironments: [{namespace: x, path: deploy}]\n"),
-			"project infra: objects seed: environments, quota and secrets are registration's"},
+		"seed without tokens":         {edit("projects/ai-software-factory-infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project ai-software-factory-infra: objects seed: tokens.read names the secret"},
+		"seed coder without merge":    {edit("projects/ai-software-factory-code.yaml", ", merge: forgejo-merge", ""), "project ai-software-factory-code: objects seed with agents coder: tokens.actions and tokens.merge"},
+		"seed names the projects token": {edit("projects/ai-software-factory-infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
+			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
+		"seed with environments": {edit("projects/ai-software-factory-infra.yaml", "agents: none\n", "agents: none\nnamespaces: [x]\nenvironments: [{namespace: x, path: deploy}]\n"),
+			"project ai-software-factory-infra: objects seed: environments, quota and secrets are registration's"},
 		"factory with tokens":          {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\ntokens: {read: forgejo-config}\n"), "project demo-app: objects factory: tokens are registration's"},
 		"factory not its organisation": {edit("projects/demo-app.yaml", "repository: demo-app/demo-app", "repository: demo/app"), `project demo-app: objects factory: repository "demo/app": a project is its own organisation`},
 		"factory in a reserved namespace": {edit("projects/demo-app.yaml", "namespaces: [demo-staging, demo-prod]", "namespaces: [demo-staging, demo-prod, platform]"),
@@ -142,19 +136,18 @@ func TestParseTreeRejects(t *testing.T) {
 			f["projects/sf.yaml"] = []byte(strings.ReplaceAll(string(f["projects/demo-app.yaml"]), "demo-app", "sf"))
 			delete(f, "projects/demo-app.yaml")
 		}, "project sf: objects factory: the name is its Forgejo organisation's"},
-		"bad deploy path":               {edit("projects/demo-app.yaml", "path: deploy/prod", "path: ../prod"), `environment demo-prod: path "../prod"`},
-		"environment elsewhere":         {edit("projects/demo-app.yaml", "{namespace: demo-prod, path", "{namespace: demo-qa, path"), `environment "demo-qa": not one of the project's namespaces`},
-		"bad hostname":                  {edit("projects/demo-app.yaml", "hostname: demo-staging.example.org", "hostname: Demo_Staging"), `hostname "Demo_Staging"`},
-		"bad secret":                    {edit("projects/demo-app.yaml", "secrets: [demo-write-token/token]", "secrets: [token]"), `secret "token": want secret-name/key`},
-		"bad notify":                    {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\nnotify: [a b]\n"), `notify "a b": not a Forgejo user name`},
-		"bad envelope":                  {edit("projects/demo-app.yaml", "envelope: {monthly_eur: 5", "envelope: {monthly_eur: 0"), "project demo-app: envelope.monthly_eur must be positive"},
-		"bad standing":                  {edit("projects/demo-app.yaml", "standing: {monthly_eur: 3", "standing: {monthly_eur: -3"), "project demo-app: standing.monthly_eur must not be negative"},
-		"one repository, two files":     {func(f map[string][]byte) { f["projects/infra2.yaml"] = f["projects/infra.yaml"] }, "project infra2: repository sf/infra is project infra's"},
-		"one namespace, two files":      {edit("projects/infra.yaml", "agents: none\n", "agents: none\nnamespaces: [demo-prod]\n"), "project infra: namespace demo-prod is project demo-app's"},
-		"audit switched on, not listed": {edit("workflow.yaml", "  - {name: audit, on_findings: human, enabled: true}\n", ""), "project code: audit: the workflow lists no audit stage"},
+		"bad deploy path":           {edit("projects/demo-app.yaml", "path: deploy/prod", "path: ../prod"), `environment demo-prod: path "../prod"`},
+		"environment elsewhere":     {edit("projects/demo-app.yaml", "{namespace: demo-prod, path", "{namespace: demo-qa, path"), `environment "demo-qa": not one of the project's namespaces`},
+		"bad hostname":              {edit("projects/demo-app.yaml", "hostname: demo-staging.example.org", "hostname: Demo_Staging"), `hostname "Demo_Staging"`},
+		"bad secret":                {edit("projects/demo-app.yaml", "secrets: [demo-write-token/token]", "secrets: [token]"), `secret "token": want secret-name/key`},
+		"bad notify":                {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\nnotify: [a b]\n"), `notify "a b": not a Forgejo user name`},
+		"bad envelope":              {edit("projects/demo-app.yaml", "envelope: {monthly_eur: 5", "envelope: {monthly_eur: 0"), "project demo-app: envelope.monthly_eur must be positive"},
+		"bad standing":              {edit("projects/demo-app.yaml", "standing: {monthly_eur: 3", "standing: {monthly_eur: -3"), "project demo-app: standing.monthly_eur must not be negative"},
+		"one repository, two files": {func(f map[string][]byte) { f["projects/infra2.yaml"] = f["projects/ai-software-factory-infra.yaml"] }, "project infra2: repository sf/ai-software-factory-infra is project ai-software-factory-infra's"},
+		"one namespace, two files":  {edit("projects/ai-software-factory-infra.yaml", "agents: none\n", "agents: none\nnamespaces: [demo-prod]\n"), "project demo-app: namespace demo-prod is project ai-software-factory-infra's"},
 		"empty project": {func(f map[string][]byte) {
-			f["projects/infra.yaml"] = []byte("# yaml-language-server: $schema=../schema/project.schema.json\n")
-		}, "projects/infra.yaml: empty document"},
+			f["projects/ai-software-factory-infra.yaml"] = []byte("# yaml-language-server: $schema=../schema/project.schema.json\n")
+		}, "projects/ai-software-factory-infra.yaml: empty document"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			files := fixtureTree(t)
@@ -283,10 +276,10 @@ func TestReadDirRefusesSymbolicLinks(t *testing.T) {
 // Every error of a tree is reported, not only the first.
 func TestParseTreeReportsEveryFile(t *testing.T) {
 	files := fixtureTree(t)
-	files["workflow.yaml"] = []byte(strings.Replace(string(files["workflow.yaml"]), "on_findings: fail", "on_findings: maybe", 1))
-	files["projects/infra.yaml"] = []byte(strings.Replace(string(files["projects/infra.yaml"]), "agents: none", "agents: all", 1))
+	files["processes/spec.yaml"] = []byte(strings.Replace(string(files["processes/spec.yaml"]), "on_findings: fail", "on_findings: maybe", 1))
+	files["projects/ai-software-factory-infra.yaml"] = []byte(strings.Replace(string(files["projects/ai-software-factory-infra.yaml"]), "agents: none", "agents: all", 1))
 	_, err := ParseTree(files)
-	if err == nil || !strings.Contains(err.Error(), "workflow.yaml:") || !strings.Contains(err.Error(), "projects/infra.yaml:") {
+	if err == nil || !strings.Contains(err.Error(), "processes/spec.yaml:") || !strings.Contains(err.Error(), "projects/ai-software-factory-infra.yaml:") {
 		t.Fatalf("ParseTree error = %v, want both files named", err)
 	}
 }
@@ -330,8 +323,11 @@ func yamlInstance(t *testing.T, b []byte) any {
 func TestSchemaRoundTrip(t *testing.T) {
 	files := fixtureTree(t)
 	kindOf := func(file string) string {
-		if path.Dir(file) == "projects" {
+		switch path.Dir(file) {
+		case "projects":
 			return "project.schema.json"
+		case "processes":
+			return "process.schema.json"
 		}
 		return strings.TrimSuffix(file, ".yaml") + ".schema.json"
 	}
@@ -341,11 +337,11 @@ func TestSchemaRoundTrip(t *testing.T) {
 		}
 	}
 	for name, tc := range map[string]struct{ file, old, new string }{
-		"invalid enum":         {"workflow.yaml", "on_findings: fail", "on_findings: maybe"},
-		"invalid stage name":   {"workflow.yaml", "name: review", "name: lint"},
-		"invalid predicate":    {"workflow.yaml", "when: outsider", "when: insider"},
-		"unknown key":          {"projects/infra.yaml", "agents: none", "agents: none\nowner: me"},
-		"required key missing": {"projects/infra.yaml", "objects: seed\n", ""},
+		"invalid enum":         {"processes/spec.yaml", "on_findings: fail", "on_findings: maybe"},
+		"invalid stage name":   {"processes/spec.yaml", "name: review", "name: lint"},
+		"invalid predicate":    {"processes/spec.yaml", "when: outsider", "when: insider"},
+		"unknown key":          {"projects/ai-software-factory-infra.yaml", "agents: none", "agents: none\nowner: me"},
+		"required key missing": {"projects/ai-software-factory-infra.yaml", "objects: seed\n", ""},
 		"wrong type":           {"policy.yaml", "sessions: 3", "sessions: three"},
 		"not a duration":       {"policy.yaml", "agent_time: 20m", "agent_time: 20"},
 		"unknown tool":         {"policy.yaml", "escalate_to_human: {}", "firecrawl: {}"},
@@ -373,7 +369,7 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := slices.Sorted(maps.Keys(schemas)); !slices.Equal(got, []string{"policy.schema.json", "project.schema.json", "workflow.schema.json"}) {
+	if got := slices.Sorted(maps.Keys(schemas)); !slices.Equal(got, []string{"policy.schema.json", "process.schema.json", "project.schema.json"}) {
 		t.Fatalf("schema files = %v", got)
 	}
 	var walk func(where string, s *jsonschema.Schema)
@@ -403,7 +399,7 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 		walk(name, &s)
 		root[name] = &s
 	}
-	stage := root["workflow.schema.json"].Properties["stages"].Items
+	stage := root["process.schema.json"].Properties["stages"].Items
 	if got := stage.Properties["on_findings"].Enum; !reflect.DeepEqual(got, []any{"agent", "human", "fail"}) {
 		t.Errorf("on_findings enum = %v", got)
 	}
@@ -412,6 +408,19 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	}
 	if !slices.Equal(stage.Required, []string{"name", "on_findings", "enabled"}) {
 		t.Errorf("stage required = %v", stage.Required)
+	}
+	proc := root["process.schema.json"]
+	if got := proc.Properties["lanes"].Items.Properties["name"].Enum; !reflect.DeepEqual(got, []any{"backlog", "plan", "ready"}) {
+		t.Errorf("lane name enum = %v", got)
+	}
+	if got := proc.Properties["merge"].Properties["queue"].Enum; !reflect.DeepEqual(got, []any{"none", "project"}) {
+		t.Errorf("merge queue enum = %v", got)
+	}
+	if !slices.Equal(proc.Required, []string{"lanes", "stages", "merge"}) || !strings.Contains(proc.Properties["stages"].Items.Properties["on_findings"].Description, "limits.sessions is the round cap") {
+		t.Errorf("process required = %v, on_findings %q", proc.Required, proc.Properties["stages"].Items.Properties["on_findings"].Description)
+	}
+	if got := root["policy.schema.json"].Properties["classes"].AdditionalProperties.Properties["session"].Enum; !reflect.DeepEqual(got, []any{"code", "plan", "report"}) {
+		t.Errorf("class session enum = %v", got)
 	}
 	project := root["project.schema.json"]
 	if got := project.Properties["agents"].Enum; !reflect.DeepEqual(got, []any{"coder", "none"}) {
@@ -460,7 +469,7 @@ func TestCheckSchemas(t *testing.T) {
 		"differs": {func(f map[string][]byte) {
 			f["schema/policy.schema.json"] = append(f["schema/policy.schema.json"], ' ')
 		}, "schema/policy.schema.json differs from factoryd schema"},
-		"missing": {func(f map[string][]byte) { delete(f, "schema/workflow.schema.json") }, "schema/workflow.schema.json is missing"},
+		"missing": {func(f map[string][]byte) { delete(f, "schema/process.schema.json") }, "schema/process.schema.json is missing"},
 		"extra":   {func(f map[string][]byte) { f["schema/old.schema.json"] = []byte("{}") }, "schema/old.schema.json is not a schema factoryd writes"},
 	} {
 		t.Run(name, func(t *testing.T) {

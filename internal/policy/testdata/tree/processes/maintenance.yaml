@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=../schema/process.schema.json
+# Today's flow as blocks (ruling 208): a bug from anyone, or a writer's
+# agent label, starts a coder at once; an improvement waits in the backlog
+# with an analyzer's write-up until a writer moves it to ready.
+lanes:
+  - {name: backlog, write_up: analyzer}
+  - {name: ready, class: coder, moved_by: writers}
+stages:
+  - {name: screening, on_findings: human, enabled: true, when: outsider}
+  - {name: checks, on_findings: agent, enabled: true}
+  - {name: policy, on_findings: fail, enabled: true}
+  - {name: migration, on_findings: human, enabled: true}
+  - {name: reproduction, on_findings: agent, enabled: true}
+  - {name: review, on_findings: agent, enabled: true}
+  - {name: audit, on_findings: human, enabled: true}
+  - {name: approval, on_findings: human, enabled: true}
+  - {name: merge, on_findings: human, enabled: true}
+merge: {queue: none}

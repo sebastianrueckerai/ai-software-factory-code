@@ -28,6 +28,7 @@ budget:
 limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 classes:
   coder:
+    session: code
     models: [coding-cheap, coding-frontier]
     tools: {}
     review_model: review-frontier
@@ -46,7 +47,11 @@ risk:
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
-const testWorkflowYAML = `stages:
+const testProcessYAML = `lanes:
+  - {name: backlog}
+  - {name: ready, class: coder, moved_by: writers}
+merge: {queue: none}
+stages:
   - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}
   - {name: review, on_findings: agent, enabled: true}
@@ -57,8 +62,8 @@ const testWorkflowYAML = `stages:
 // testFiles is a configuration tree with policyYAML as its policy.yaml.
 func testFiles(policyYAML string) map[string][]byte {
 	return map[string][]byte{
-		"policy.yaml":   []byte(policy.Header("policy.yaml") + "\n" + policyYAML),
-		"workflow.yaml": []byte(policy.Header("workflow.yaml") + "\n" + testWorkflowYAML),
+		"policy.yaml":                []byte(policy.Header("policy.yaml") + "\n" + policyYAML),
+		"processes/maintenance.yaml": []byte(policy.Header("processes/maintenance.yaml") + "\n" + testProcessYAML),
 		"projects/ai-software-factory-infra.yaml": []byte(policy.Header("projects/ai-software-factory-infra.yaml") +
 			"\nrepository: sf/ai-software-factory-infra\nmerge_rule: human\nobjects: seed\nagents: none\ntokens: {read: forgejo-config}\n"),
 	}
@@ -219,7 +224,7 @@ func TestPolicyLoader(t *testing.T) {
 
 	// an invalid tree: rejected and raised, version 2 stays current
 	bad := testFiles(testPolicyYAML)
-	bad["workflow.yaml"] = []byte(strings.Replace(string(bad["workflow.yaml"]), "on_findings: fail", "on_findings: maybe", 1))
+	bad["processes/maintenance.yaml"] = []byte(strings.Replace(string(bad["processes/maintenance.yaml"]), "on_findings: fail", "on_findings: maybe", 1))
 	src.push("c3", bad)
 	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), `on_findings "maybe"`) {
 		t.Fatalf("invalid tree = %v, want the on_findings reason", err)
@@ -412,6 +417,28 @@ func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
 	}
 }
 
+// Every class a starting lane of any process names must allow the whole
+// ladder (N7): the planner, not only the coder.
+func TestCheckTreeLadderPerLane(t *testing.T) {
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	if _, err := CheckTree(files, ladder); err != nil {
+		t.Fatalf("the fixture tree: %v", err)
+	}
+	const planner = "    session: plan\n    models: [coding-cheap, coding-frontier]\n"
+	if !strings.Contains(string(files["policy.yaml"]), planner) {
+		t.Fatal("policy.yaml lacks the planner's models")
+	}
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), planner, "    session: plan\n    models: [coding-cheap]\n", 1))
+	_, err = CheckTree(files, ladder)
+	if err == nil || err.Error() != `policy.yaml: capability class "planner" does not allow the ladder model "coding-frontier" (lane plan of processes/spec.yaml starts it)` {
+		t.Fatalf("CheckTree = %v", err)
+	}
+}
+
 // A stored version from before the tree (a policy file's document) is no
 // valid version: the head's tree replaces it at boot, and without a valid
 // head the boot is refused.
@@ -420,19 +447,21 @@ func TestPolicyLoaderBootRevalidatesTheStoredVersion(t *testing.T) {
 	src := &memSource{}
 	store := &memPolicy{}
 	old := testTree(testPolicyYAML)
-	old.Workflow = policy.Workflow{}
+	coder := old.Document.Classes["coder"]
+	coder.Session = ""
+	old.Document.Classes = map[string]policy.Class{"coder": coder}
 	store.RecordPolicy(ctx, "before-the-tree", old) // #nosec G104 -- the fake never fails
 	src.push("bad", testFiles("version: 2\n"))
 	if err := (&PolicyLoader{Source: src, Store: store}).Boot(ctx); err == nil {
-		t.Fatal("boot with only a stored version without a workflow succeeded")
+		t.Fatal("boot with only a stored version without a class session succeeded")
 	}
 	src.push("good", testFiles(testPolicyYAML))
 	l := &PolicyLoader{Source: src, Store: store}
 	if err := l.Boot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 2 || len(cur.Workflow.Stages) != 5 {
-		t.Fatalf("current = %d with %d stages, want version 2 with the head's workflow", cur.ID, len(cur.Workflow.Stages))
+	if cur := l.Current(); cur.ID != 2 || len(cur.Stages()) != 5 || cur.Document.Classes["coder"].Session != policy.SessionCode {
+		t.Fatalf("current = %d with %d stages, want version 2 with the head's process", cur.ID, len(cur.Stages()))
 	}
 }
 
@@ -462,10 +491,10 @@ func TestPolicyHandler(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || rr.Code != http.StatusOK {
 		t.Fatalf("GET /policy = %d %s", rr.Code, rr.Body.String())
 	}
-	if got.ID != 1 || got.Commit != "abc" || got.Document.Budget.TaskMaxEUR != 5 || len(got.Workflow.Stages) != 5 || got.LoadedAt.IsZero() {
+	if got.ID != 1 || got.Commit != "abc" || got.Document.Budget.TaskMaxEUR != 5 || len(got.Stages()) != 5 || got.LoadedAt.IsZero() {
 		t.Fatalf("GET /policy = %+v", got)
 	}
-	for _, key := range []string{`"id"`, `"commit"`, `"loaded_at"`, `"activated_at"`, `"policy"`, `"projects"`, `"workflow"`, `"task_default_eur"`, `"coder"`} {
+	for _, key := range []string{`"id"`, `"commit"`, `"loaded_at"`, `"activated_at"`, `"policy"`, `"projects"`, `"processes"`, `"task_default_eur"`, `"coder"`} {
 		if !strings.Contains(rr.Body.String(), key) {
 			t.Fatalf("GET /policy body lacks %s: %s", key, rr.Body.String())
 		}
@@ -506,7 +535,7 @@ func TestCostsHandler(t *testing.T) {
 }
 
 // infraForgejo is sf/ai-software-factory-infra: main at commit c9 with
-// factory/ (policy.yaml, workflow.yaml, projects/, schema/) next to k8s/,
+// factory/ (policy.yaml, processes/, projects/, schema/) next to k8s/,
 // readable with the config token only; issues filed by the bot.
 func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgejo) {
 	t.Helper()
@@ -539,7 +568,7 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 				io.WriteString(w, `{"total_count":3,"tree":[{"path":"README.md","type":"blob","sha":"r"},{"path":"factory","type":"tree","sha":"f1"},{"path":"k8s","type":"tree","sha":"k"}]}`)
 			case path == "git/trees/f1" && r.URL.Query().Get("recursive") == "true":
 				var entries []string
-				for _, name := range []string{"policy.yaml", "projects", "projects/ai-software-factory-infra.yaml", "schema", "schema/policy.schema.json", "workflow.yaml"} {
+				for _, name := range []string{"policy.yaml", "processes", "processes/maintenance.yaml", "projects", "projects/ai-software-factory-infra.yaml", "schema", "schema/policy.schema.json"} {
 					typ, mode := "blob", "100644"
 					if !strings.Contains(name, ".") {
 						typ, mode = "tree", "040000"
@@ -625,14 +654,14 @@ func TestForgejoConfigRefusesSymbolicLinks(t *testing.T) {
 		case "/api/v1/repos/sf/i/git/trees/c9":
 			io.WriteString(w, `{"total_count":1,"tree":[{"path":"factory","type":"tree","mode":"040000","sha":"f1"}]}`)
 		case "/api/v1/repos/sf/i/git/trees/f1":
-			io.WriteString(w, `{"total_count":2,"tree":[{"path":"policy.yaml","type":"blob","mode":"100644","sha":"a"},{"path":"workflow.yaml","type":"blob","mode":"120000","sha":"b"}]}`)
+			io.WriteString(w, `{"total_count":2,"tree":[{"path":"policy.yaml","type":"blob","mode":"100644","sha":"a"},{"path":"processes/maintenance.yaml","type":"blob","mode":"120000","sha":"b"}]}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	src := &ForgejoConfig{Forgejo: &Forgejo{BaseURL: srv.URL}, Token: "t", Repo: Repo{Owner: "sf", Name: "i"}, Branch: "main", Dir: "factory"}
-	if _, err := src.Files(context.Background(), "c9"); err == nil || !strings.Contains(err.Error(), "workflow.yaml: the tree holds regular files only") {
+	if _, err := src.Files(context.Background(), "c9"); err == nil || !strings.Contains(err.Error(), "processes/maintenance.yaml: the tree holds regular files only") {
 		t.Fatalf("Files with a symbolic link = %v", err)
 	}
 }
@@ -648,7 +677,7 @@ func TestConfigAlarm(t *testing.T) {
 	m, reader := testMetrics(t)
 	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m}
 	ctx := context.Background()
-	reason := errors.New("workflow.yaml: workflow: stage policy: on_findings \"maybe\", want one of [agent human fail]")
+	reason := errors.New("processes/maintenance.yaml: stages.policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
 	fj.failNext = 1
 	if err := alarm.Raise(ctx, "c9c9c9c9c9c9c9c9", reason, current, true); err == nil {

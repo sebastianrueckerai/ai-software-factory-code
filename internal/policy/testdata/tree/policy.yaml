@@ -16,12 +16,28 @@ limits:
   nudges: 1
 classes:
   coder:
+    session: code
     models: [coding-cheap, coding-frontier]
     review_model: review-frontier
     audit_model: coding-frontier
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
+      escalate_to_human: {}
+  analyzer:
+    session: report
+    models: [coding-cheap, coding-frontier]
+    supervisor_model: supervisor
+    tools:
+      web_scrape: {max_requests: 30, max_eur: 0.20}
+      escalate_to_human: {}
+  planner:
+    session: plan
+    models: [coding-cheap, coding-frontier]
+    supervisor_model: supervisor
+    tools:
+      web_scrape: {max_requests: 30, max_eur: 0.20}
+      web_search: {max_requests: 30, max_eur: 0.20}
       escalate_to_human: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}

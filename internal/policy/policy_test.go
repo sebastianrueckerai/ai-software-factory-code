@@ -26,6 +26,7 @@ budget:
   month_eur: 50
 classes:
   coder:
+    session: code
     models: [coding-cheap, coding-frontier]
     tools: {}
 risk:
@@ -130,11 +131,13 @@ limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 
 budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
+    session: code
     models: [coding-cheap]
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.2}
       replicate_predict: {max_requests: 5, max_eur: 0.5}
   researcher:
+    session: code
     models: [coding-cheap]
     tools:
       web_scrape: {max_requests: 10, max_eur: 1}
@@ -475,14 +478,17 @@ limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 
 budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
+    session: code
     models: [coding-cheap]
     review_model: review-frontier
     supervisor_model: supervisor
     audit_model: coding-frontier
   researcher:
+    session: code
     models: [coding-cheap]
     review_model: review-cheap
   plain:
+    session: code
     models: [coding-cheap]
 risk:
   classes: [{name: normal, outcome: requires_approval}]

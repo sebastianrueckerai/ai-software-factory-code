@@ -24,104 +24,213 @@ type Tree struct {
 	Document Document `json:"policy"`
 	// Projects are projects/<name>.yaml by name.
 	Projects map[string]ProjectConfig `json:"projects"`
-	// Workflow is workflow.yaml.
-	Workflow Workflow `json:"workflow"`
+	// Processes are processes/<name>.yaml by name.
+	Processes map[string]Process `json:"processes"`
 }
 
 // The tree's files, relative to its directory.
 const (
 	FilePolicy   = "policy.yaml"
-	FileWorkflow = "workflow.yaml"
 	DirProjects  = "projects"
+	DirProcesses = "processes"
 	// DirSchema holds the generated JSON Schemas; the loader reads none.
 	DirSchema = "schema"
 )
 
+// ProcessFile is the file of process name.
+func ProcessFile(name string) string { return DirProcesses + "/" + name + ".yaml" }
+
+// ProjectFile is the file of project name.
+func ProjectFile(name string) string { return DirProjects + "/" + name + ".yaml" }
+
+// Stages are the stages of process maintenance, which every task runs
+// until Task 95's TaskConfig reads the task's own process.
+func (t Tree) Stages() []Stage { return t.Processes["maintenance"].Stages }
+
 // Validate checks every file of a tree, as ParseTree does after decoding;
 // for a tree read back from Postgres.
 func (t Tree) Validate() error {
-	errs := []error{t.Document.Validate(), t.Workflow.Validate()}
-	for name, p := range t.Projects {
-		errs = append(errs, p.Validate(name), t.Document.checkBounds(name, p))
+	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document)))}
+	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
+		errs = append(errs, inFile(ProcessFile(name), t.Processes[name].Validate()))
 	}
-	return errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...)
-}
-
-// checkAudit refuses a project that switches on an audit stage the
-// workflow does not list.
-func (t Tree) checkAudit() error {
-	if _, ok := t.Workflow.Stage(StageAudit); ok {
-		return nil
-	}
-	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
-		if t.Projects[name].Audit {
-			errs = append(errs, fmt.Errorf("project %s: audit: the workflow lists no audit stage", name))
-		}
+		p := t.Projects[name]
+		errs = append(errs, inFile(ProjectFile(name), errors.Join(p.Validate(name), t.Document.checkBounds(name, p))))
 	}
-	return errors.Join(errs...)
+	return errors.Join(append(errs, checkProjects(t.Projects), t.checkLinks())...)
 }
 
 // ParseTree decodes and validates a tree's files, keyed by their slash
-// path relative to the tree's directory: policy.yaml, workflow.yaml and
-// projects/<name>.yaml, each a single YAML document whose first line
-// references its schema, without unknown keys, with every required key,
-// valid by its schema and by the Go rules. Files under schema/ are
-// skipped; any other file is an error. Every file's errors are reported.
+// path relative to the tree's directory: policy.yaml,
+// processes/<name>.yaml and projects/<name>.yaml, each a single YAML
+// document whose first line references its schema, without unknown keys,
+// with every required key, valid by its schema and by the Go rules, and
+// what each file names in another valid. Files under schema/ are skipped;
+// any other file is an error. Every file's errors are reported, one line
+// each, "<file>: <block>: <reason>".
 func ParseTree(files map[string][]byte) (Tree, error) {
-	t := Tree{Projects: map[string]ProjectConfig{}}
+	t := Tree{Projects: map[string]ProjectConfig{}, Processes: map[string]Process{}}
 	var errs []error
-	policyOK, projectsOK := false, []string{}
-	for _, name := range []string{FilePolicy, FileWorkflow} {
-		if _, ok := files[name]; !ok {
-			errs = append(errs, fmt.Errorf("%s is missing", name))
-		}
+	if _, ok := files[FilePolicy]; !ok {
+		errs = append(errs, fmt.Errorf("%s is missing", FilePolicy))
 	}
+	policyOK, broken := false, false
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		b := files[name]
 		var err error
+		stem := strings.TrimSuffix(path.Base(name), ".yaml")
 		switch {
 		case strings.HasPrefix(name, DirSchema+"/"):
 			continue
 		case name == FilePolicy:
-			t.Document, err = parseFile(b, FilePolicy, kindPolicy, Document.Validate)
+			t.Document, err = parseFile(b, FilePolicy, kindPolicy, func(d Document) error { return errors.Join(d.Validate(), checkSessions(d)) })
 			policyOK = err == nil
-		case name == FileWorkflow:
-			t.Workflow, err = parseFile(b, FileWorkflow, kindWorkflow, Workflow.Validate)
-		case path.Dir(name) == DirProjects && path.Ext(name) == ".yaml":
-			project := strings.TrimSuffix(path.Base(name), ".yaml")
-			if t.Projects[project], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(project) }); err == nil {
-				projectsOK = append(projectsOK, project)
+		case path.Dir(name) == DirProcesses && path.Ext(name) == ".yaml":
+			if !projectFileName.MatchString(stem) {
+				err = errors.New("the file name: lowercase letters, digits and dashes, at most 37")
+				break
 			}
+			t.Processes[stem], err = parseFile(b, name, kindProcess, Process.Validate)
+		case path.Dir(name) == DirProjects && path.Ext(name) == ".yaml":
+			t.Projects[stem], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(stem) })
 		default:
-			err = fmt.Errorf("unknown file %q: the tree holds %s, %s, %s/<name>.yaml and %s/", name, FilePolicy, FileWorkflow, DirProjects, DirSchema)
+			err = fmt.Errorf("unknown file %q: the tree holds %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/ and %s/", name, FilePolicy, DirProcesses, DirProjects, DirSchema)
 		}
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", name, err))
+			broken = true
+			errs = append(errs, inFile(name, err))
 		}
 	}
 	if policyOK {
-		for _, name := range projectsOK {
-			if err := t.Document.checkBounds(name, t.Projects[name]); err != nil {
-				errs = append(errs, fmt.Errorf("%s/%s.yaml: %w", DirProjects, name, err))
-			}
+		for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
+			errs = append(errs, inFile(ProjectFile(name), t.Document.checkBounds(name, t.Projects[name])))
 		}
 	}
-	if err := errors.Join(append(errs, checkProjects(t.Projects), t.checkAudit())...); err != nil {
+	errs = append(errs, checkProjects(t.Projects))
+	// what one file names in another is judged only between valid files:
+	// a broken file's refusal says it all
+	if !broken {
+		errs = append(errs, t.checkLinks())
+	}
+	if err := errors.Join(errs...); err != nil {
 		return Tree{}, err
 	}
 	return t, nil
 }
 
+// inFile prefixes every line of err with file.
+func inFile(file string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if j, ok := err.(interface{ Unwrap() []error }); ok {
+		var errs []error
+		for _, e := range j.Unwrap() {
+			errs = append(errs, inFile(file, e))
+		}
+		return errors.Join(errs...)
+	}
+	return fmt.Errorf("%s: %w", file, err)
+}
+
+// checkSessions requires every class's session, which Document.Validate
+// leaves out for the gateway (stage11-design.md 1.3).
+func checkSessions(d Document) error {
+	var errs []error
+	for _, name := range slices.Sorted(maps.Keys(d.Classes)) {
+		switch s := d.Classes[name].Session; {
+		case s == "":
+			errs = append(errs, fmt.Errorf("classes.%s: session is required, one of %v", name, Sessions))
+		case !slices.Contains(Sessions, s):
+			errs = append(errs, fmt.Errorf("classes.%s: session %q, want one of %v", name, s, Sessions))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// checkLinks judges what the files name in each other: a lane's class of
+// the right session, naming the models the stages call; a project's
+// process; the audit a project switches on.
+func (t Tree) checkLinks() error {
+	var errs []error
+	classes := slices.Sorted(maps.Keys(t.Document.Classes))
+	for _, pname := range slices.Sorted(maps.Keys(t.Processes)) {
+		p := t.Processes[pname]
+		bad := func(block, format string, a ...any) {
+			errs = append(errs, fmt.Errorf("%s: %s: "+format, append([]any{ProcessFile(pname), block}, a...)...))
+		}
+		review, reviewOK := p.Stage(StageReview)
+		_, audit := p.Stage(StageAudit)
+		for _, l := range p.Lanes {
+			block := "lanes." + l.Name
+			for _, ref := range []struct{ key, class, want string }{
+				{"class", l.Class, map[string]string{LaneReady: SessionCode, LanePlan: SessionPlan}[l.Name]},
+				{"write_up", l.WriteUp, SessionReport},
+			} {
+				if ref.class == "" || ref.want == "" {
+					continue
+				}
+				c, ok := t.Document.Classes[ref.class]
+				switch {
+				case !ok:
+					bad(block, "%s %q is not a class of policy.yaml (classes: %s)", ref.key, ref.class, strings.Join(classes, ", "))
+					continue
+				case c.Session != ref.want && ref.key == "class":
+					bad(block, "class %s has session %s; lane %s needs a class with session %s", ref.class, c.Session, l.Name, ref.want)
+				case c.Session != ref.want:
+					bad(block, "write_up %s has session %s; a write-up needs a class with session %s", ref.class, c.Session, ref.want)
+				}
+				if c.SupervisorModel == "" {
+					bad(block, "class %s names no supervisor_model, which the session supervisor calls", ref.class)
+				}
+				if l.Name != LaneReady || ref.key != "class" {
+					continue
+				}
+				if reviewOK && review.Enabled && c.ReviewModel == "" {
+					bad(block, "class %s names no review_model, which the review stage calls", ref.class)
+				}
+				for _, proj := range slices.Sorted(maps.Keys(t.Projects)) {
+					if pc := t.Projects[proj]; audit && pc.Process == pname && pc.Audit && c.AuditModel == "" {
+						bad(block, "class %s names no audit_model, which the audit stage calls for project %s (audit: true)", ref.class, proj)
+					}
+				}
+			}
+		}
+	}
+	processes := slices.Sorted(maps.Keys(t.Processes))
+	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
+		pc := t.Projects[name]
+		file := ProjectFile(name)
+		p, ok := t.Processes[pc.Process]
+		switch {
+		case pc.Agents == AgentsNone && pc.Process != "":
+			errs = append(errs, fmt.Errorf("%s: agents none: process is not allowed, no card starts there", file))
+		case pc.Agents == AgentsCoder && pc.Process == "":
+			errs = append(errs, fmt.Errorf("%s: agents coder needs process, the name of a file under %s/", file, DirProcesses))
+		case pc.Process != "" && !ok:
+			errs = append(errs, fmt.Errorf("%s: process %q: no file %s (processes: %s)", file, pc.Process, ProcessFile(pc.Process), strings.Join(processes, ", ")))
+		case pc.Audit && ok:
+			if _, listed := p.Stage(StageAudit); !listed {
+				errs = append(errs, fmt.Errorf("%s: audit: process %s lists no audit stage", file, pc.Process))
+			}
+		}
+	}
+	for _, name := range processes {
+		errs = append(errs, BuildGraph(name, t.Processes[name], t.Document).Check())
+	}
+	return errors.Join(errs...)
+}
+
 // Header is the first line of the tree's file name (policy.yaml,
-// workflow.yaml, projects/<name>.yaml): the reference to its schema
-// yaml-language-server reads, relative to the file.
+// processes/<name>.yaml, projects/<name>.yaml): the reference to its
+// schema yaml-language-server reads, relative to the file.
 func Header(name string) string {
 	kind := kindPolicy
-	switch {
-	case name == FileWorkflow:
-		kind = kindWorkflow
-	case path.Dir(name) == DirProjects:
+	switch path.Dir(name) {
+	case DirProcesses:
+		kind = kindProcess
+	case DirProjects:
 		kind = kindProject
 	}
 	rel := strings.Repeat("../", strings.Count(name, "/")) + DirSchema + "/" + kind.schemaFile()

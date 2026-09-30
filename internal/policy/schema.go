@@ -26,10 +26,10 @@ type fileKind struct {
 }
 
 var (
-	kindPolicy   = fileKind{"policy", reflect.TypeFor[Document]()}
-	kindProject  = fileKind{"project", reflect.TypeFor[ProjectConfig]()}
-	kindWorkflow = fileKind{"workflow", reflect.TypeFor[Workflow]()}
-	fileKinds    = []fileKind{kindPolicy, kindProject, kindWorkflow}
+	kindPolicy  = fileKind{"policy", reflect.TypeFor[Document]()}
+	kindProject = fileKind{"project", reflect.TypeFor[ProjectConfig]()}
+	kindProcess = fileKind{"process", reflect.TypeFor[Process]()}
+	fileKinds   = []fileKind{kindPolicy, kindProject, kindProcess}
 )
 
 func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
@@ -53,6 +53,12 @@ var enums = map[string][]string{
 	"Stage.Name":              StageNames,
 	"Stage.OnFindings":        FindingsRules,
 	"Stage.When":              StagePredicates,
+	"Lane.Name":               LaneNames,
+	"Lane.MovedBy":            MovedByValues,
+	"Class.Session":           Sessions,
+	"Dependencies.WaitUntil":  WaitUntilValues,
+	"Dependencies.OnFailed":   OnFailedValues,
+	"Merge.Queue":             Queues,
 }
 
 // SchemaVersion is Document.Version's one value.
@@ -63,7 +69,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go workflow.go
+//go:embed policy.go project.go risk.go process.go
 var typeSources embed.FS
 
 var (

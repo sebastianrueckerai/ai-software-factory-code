@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=../schema/process.schema.json
+# Build from a spec (ruling 205): a plan card's planner answers a plan, an
+# approver accepts it, factoryd files one card per planned card in the
+# backlog with their dependencies, Start plan moves them to ready, each
+# waits for its dependencies, and one pull request merges at a time.
+lanes:
+  - {name: backlog}
+  - name: plan
+    class: planner
+    moved_by: writers
+    plan: {max_cards: 12, foundation: true, integration: true}
+  - {name: ready, class: coder, moved_by: writers}
+dependencies: {wait_until: done, on_failed: human}
+stages:
+  - {name: screening, on_findings: human, enabled: true, when: outsider}
+  - {name: checks, on_findings: agent, enabled: true}
+  - {name: policy, on_findings: fail, enabled: true}
+  - {name: migration, on_findings: human, enabled: true}
+  - {name: reproduction, on_findings: agent, enabled: true}
+  - {name: review, on_findings: agent, enabled: true}
+  - {name: audit, on_findings: human, enabled: true}
+  - {name: approval, on_findings: human, enabled: true}
+  - {name: merge, on_findings: human, enabled: true}
+merge: {queue: project}

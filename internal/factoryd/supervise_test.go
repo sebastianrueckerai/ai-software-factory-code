@@ -683,7 +683,7 @@ func TestWorkflowConfigTakesTheLimits(t *testing.T) {
 	stages := testStages()
 	v := policy.Version{ID: 9, Tree: policy.Tree{Document: policy.Document{
 		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}},
-		Workflow: policy.Workflow{Stages: stages}}}
+		Processes: map[string]policy.Process{"maintenance": {Stages: stages}}}}
 	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, AnswerSlice: time.Minute, ChecksTimeout: time.Hour,
 		Policy: func() policy.Version { return v }}}
 	want := WorkflowConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, MaxSessions: 5, WallClockCap: 30 * time.Minute,

@@ -28,6 +28,7 @@ const demoFile = `repository: demo-app/demo-app
 merge_rule: auto
 objects: factory
 agents: coder
+process: maintenance
 namespaces: [demo-staging, demo-prod]
 environments:
   - {namespace: demo-staging, path: deploy/staging, hostname: demo-staging.aisoftwarefactory.world}
@@ -43,6 +44,7 @@ const codeFile = `repository: sf/ai-software-factory-code
 merge_rule: human
 objects: seed
 agents: coder
+process: maintenance
 namespaces: [factory]
 tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}
 `

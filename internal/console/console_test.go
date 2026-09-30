@@ -326,11 +326,11 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
-			Workflow: policy.Workflow{Stages: []policy.Stage{
+			Processes: map[string]policy.Process{"maintenance": {Stages: []policy.Stage{
 				{Name: "screening", OnFindings: "human", When: "outsider"},
 				{Name: "checks", OnFindings: "agent", Enabled: true},
 				{Name: "merge", OnFindings: "human", Enabled: true},
-			}}}}, true, nil
+			}}}}}, true, nil
 }
 
 type rig struct {
@@ -882,7 +882,7 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 }
 
 // The configuration page shows the version in force read-only: its
-// commit, the policy, the projects and the workflow, each linked to its
+// commit, the policy, the projects and the processes, each linked to its
 // file at that commit.
 func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	r := newRig(t)
@@ -893,7 +893,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 		`&#34;agent_time&#34;: &#34;20m0s&#34;`,
 		`<a href="` + at + `"><code>c9d98bb0aa11</code></a>`,
 		`<a href="` + at + `/policy.yaml">policy.yaml</a>`,
-		`<a href="` + at + `/workflow.yaml">workflow.yaml</a>`,
+		`<h3>Process maintenance (<a href="` + at + `/processes/maintenance.yaml">processes/maintenance.yaml</a>)</h3>`,
 		`<a href="` + at + `/projects/demo-app.yaml">demo-app</a>`,
 		`<a href="` + at + `/projects/infra.yaml">infra</a>`,
 		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
