@@ -665,8 +665,11 @@ on the issue under `<!-- factoryd plan <task> revision <n> -->`
 (sanitised: summary, a table of the cards, each brief in a details
 block), with an approval request of kind `plan` (`{"revision",
 "sha256"}`, superseding an earlier revision's); the task waits in
-`waiting-human`. A writer's comment sends the planner back with it and
-the last plan; `plan_accepted` (the console's `AcceptPlan`, approvers;
+`waiting-human`. A writer's comment (one made while a session ran
+included) sends the planner back with it and the last plan; a planner
+that stops to ask a human (its `escalate_to_human`, the gate supervisor)
+puts the question on the card, and the answer goes to the next session;
+a session without a plan passes its last message on with the findings; `plan_accepted` (the console's `AcceptPlan`, approvers;
 a revision that is no longer the newest is refused: `the plan changed to
 revision <m>; reload`) runs `CreateChildren`; `plan_rejected` (`RejectPlan`)
 ends the task `failed`, a closed issue `closed`. Every session counts

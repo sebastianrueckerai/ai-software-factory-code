@@ -76,7 +76,7 @@ func TestValidatePlan(t *testing.T) {
 		"valid":             {fencePlan(testPlan()), nil},
 		"brief at the cap":  {change(func(p *Plan) { p.Cards[2].Brief = strings.Repeat("b", 1500) }), nil},
 		"block at the cap":  {padded(12 << 10), nil},
-		"a byte over":       {padded(12<<10 + 1), []string{"plan: the plan is 12.0 KiB; at most 12 KiB: shorten the briefs"}},
+		"a byte over":       {padded(12<<10 + 1), []string{"plan: the plan is 12289 bytes; at most 12 KiB: shorten the briefs"}},
 		"no block":          {"I could not plan this.", []string{"plan: no fenced json block in the last message"}},
 		"over 12 KiB":       {"```json\n" + strings.Repeat("x", 14541) + "\n```", []string{"plan: the plan is 14.2 KiB; at most 12 KiB: shorten the briefs"}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"extra\": 1}\n```", []string{`plan: json: unknown field "extra"`}},
@@ -94,6 +94,7 @@ func TestValidatePlan(t *testing.T) {
 		"itself":            {change(func(p *Plan) { p.Cards[2].DependsOn = []string{"redirects"} }), []string{"plan: card redirects: depends on itself"}},
 		"cycle":             {change(func(p *Plan) { p.Cards[1].DependsOn = []string{"redirects"} }), []string{"plan: the dependencies form a cycle: links-api -> redirects -> links-api"}},
 		"size":              {change(func(p *Plan) { p.Cards[2].Size = "large" }), []string{"plan: card redirects: size large: split it; a card fits one session (20m of agent time, 200 steps)"}},
+		"no size":           {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small or medium`}},
 		"no title":          {change(func(p *Plan) { p.Cards[2].Title = "" }), []string{"plan: card redirects: title empty"}},
 		"long title":        {change(func(p *Plan) { p.Cards[2].Title = strings.Repeat("t", 121) }), []string{"plan: card redirects: title over 120 characters"}},
 		"no brief":          {change(func(p *Plan) { p.Cards[2].Brief = "" }), []string{"plan: card redirects: brief empty"}},
@@ -573,6 +574,9 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 	}
 }
 
+// planSession is how long a planner session takes on the harness's clock.
+const planSession = 5 * time.Minute
+
 // planHarness is the workflow harness on a plan card: its RunPlan answers
 // results in order, RequestPlan posts revision n as comment 699+n,
 // CreateChildren files three cards unless refuse says why not.
@@ -592,7 +596,7 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 		func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			h.plans, h.models = append(h.plans, findings), append(h.models, model)
 			return results[min(len(h.plans), len(results))-1], nil
-		})
+		}).After(planSession)
 	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, revision int) (PlanRef, error) {
 			h.requests = append(h.requests, revision)
@@ -648,27 +652,27 @@ func TestPlanLoopAcceptFilesTheCards(t *testing.T) {
 	if len(h.usage) != 1 || h.usage[0].Attempts != 1 {
 		t.Fatalf("usage %+v", h.usage)
 	}
-	// the accepting signal ends the approvers' wait, an hour after it began
+	// the accepting signal ends the approvers' wait, begun when the session ended
 	i := slices.IndexFunc(h.recorded, func(s recordedStep) bool { return s.step == "signal" && s.detail["signal"] == SignalPlanAccepted })
 	if i < 0 {
 		t.Fatal("no plan_accepted step")
 	}
-	if started, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(h.recorded[i].detail["started"])); h.recorded[i].at.Sub(started) != time.Hour {
+	if started, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(h.recorded[i].detail["started"])); h.recorded[i].at.Sub(started) != time.Hour-planSession {
 		t.Fatalf("accepted at %s, wait started %v", h.recorded[i].at, h.recorded[i].detail["started"])
 	}
 }
 
 // An invalid plan goes back to the planner as its findings; a writer's
-// comment on the waiting plan asks for a new revision (comments older than
-// the plan's, and the console's acceptance comment, ask nothing); Reject
-// ends the task failed.
+// comment on the waiting plan asks for a new revision (a comment older
+// than the plan the session answered, and the console's acceptance
+// comment, ask nothing); Reject ends the task failed.
 func TestPlanLoopFindingsCommentsAndReject(t *testing.T) {
 	invalid := []string{"plan: no fenced json block in the last message"}
 	h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "an old remark", Comment: 650})
-	h.signalAfter(time.Hour+time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: PlanAcceptedComment(1), Comment: 702})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: PlanAcceptedComment(1), Comment: 702})
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "split the web card", Comment: 703})
-	h.signalAfter(3*time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
+	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "a redelivered old remark", Comment: 699})
+	h.signalAfter(4*time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: not this quarter" {
 		t.Fatalf("finals %v", h.finals)
 	}
@@ -681,6 +685,55 @@ func TestPlanLoopFindingsCommentsAndReject(t *testing.T) {
 	}
 	if got := h.planSignals(); !slices.Equal(got, []string{"plan_rejected alice 0 "}) {
 		t.Fatalf("recorded %v", got)
+	}
+	var ignored []string
+	for _, s := range h.recorded {
+		if s.step == "signal" && s.detail["signal"] == SignalHumanComment && s.detail["ignored"] != nil {
+			ignored = append(ignored, fmt.Sprintf("%v %v", s.detail["comment"], s.detail["ignored"]))
+		}
+	}
+	if !slices.Equal(ignored, []string{"702 the console's acceptance comment", "699 older than the plan or question the planner answered"}) {
+		t.Fatalf("ignored comments %q", ignored)
+	}
+}
+
+// A writer's comment made while a planner session runs (older than the
+// plan that session then posts) reaches the next session: the new plan
+// goes back at once. One made during an invalid session goes along with
+// the findings.
+func TestPlanLoopCommentDuringSession(t *testing.T) {
+	invalid := []string{"plan: no fenced json block in the last message"}
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Findings: invalid}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.signalAfter(2*time.Minute, SignalHumanComment, TaskSignal{Author: "alice", Body: "auth is by magic link", Comment: 650})
+	h.signalAfter(7*time.Minute, SignalHumanComment, TaskSignal{Author: "alice", Body: "and no passwords", Comment: 705})
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want := [][]string{nil, {"writer alice asked for changes to the plan: auth is by magic link"},
+		{invalid[0], "writer alice asked for changes to the plan: and no passwords"}}
+	if len(h.plans) != 3 || !slices.Equal(h.plans[1], want[1]) || !slices.Equal(h.plans[2], want[2]) {
+		t.Fatalf("RunPlan findings %q, want %q", h.plans, want)
+	}
+	if !slices.Equal(h.requests, []int{1, 2}) || !slices.Equal(h.created, []string{"2 sebastian 7"}) {
+		t.Fatalf("requests %v created %v", h.requests, h.created)
+	}
+}
+
+// A planner that stops to ask a human (its own escalate_to_human, or the
+// gate supervisor's escalation) puts the question on the card; the
+// answer goes to the next session. A Reject sent while a session runs
+// ends the task before another one.
+func TestPlanLoopPlannerAsksAHuman(t *testing.T) {
+	ask := "The session stopped (agent_escalation, escalate): which login does the spec mean?"
+	h := newPlanHarness(t, PlanResult{Escalate: ask}, PlanResult{Findings: []string{"plan: 1 cards; this process allows 2 to 12"}})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "magic links", Comment: 602})
+	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: we buy one" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{ask}) || len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer alice asked for changes to the plan: magic links"}) {
+		t.Fatalf("escalated %q, plans %q", h.escalated, h.plans)
 	}
 }
 
@@ -889,5 +942,71 @@ func TestPGStorePlans(t *testing.T) {
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || string(pending[0].Spec) != `{"revision": 2}` {
 		t.Fatalf("pending %+v", pending)
+	}
+
+	// RequestPlan on Postgres, which returns the jsonb spec with its keys
+	// reordered: asked twice (a retry, a healed run), one request stays
+	// pending, the same one
+	r, _, _, _ := newPlanRunner(t, testPlan())
+	r.store = s
+	if err := s.CreateTask(ctx, Task{ID: "t-p2", Status: "running", Kind: "agent", Repository: "linkshort/linkshort", BudgetEUR: 1,
+		Lane: "plan", Process: "spec", IssueNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	raw, sha, _ := planSHA(testPlan())
+	if _, err := s.AddPlanRevision(ctx, "t-p2", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityRequestPlan, "t-p2", 0); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		for _, a := range pending {
+			if a.TaskID == "t-p2" {
+				ids = append(ids, a.ID)
+			}
+		}
+	}
+	if len(ids) != 2 || ids[0] != ids[1] {
+		t.Fatalf("pending requests of t-p2 after two asks: %v, want the same one twice", ids)
+	}
+}
+
+// A planner session that ends without a plan passes its last message on:
+// the next session, and the cap card, read what it said beside the
+// finding.
+func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	said := "I need to know whether accounts use passwords or magic links before I can split this."
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string{"an earlier finding"})
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, said))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := []string{"plan: no fenced json block in the last message", "the planner's last message: " + said}
+	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
+		t.Fatalf("result %+v, want findings %q", res, want)
+	}
+	env := podEnv(kube.podAt(0))
+	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") || !strings.Contains(env["REPORT_GUIDE"], "20m of agent time and 200 steps") ||
+		env["FINDINGS"] != `["an earlier finding"]` {
+		t.Fatalf("pod env %v", env)
 	}
 }

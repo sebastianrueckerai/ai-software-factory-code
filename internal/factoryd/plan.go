@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -22,6 +21,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The plan (stage11-design.md section 1.2): a plan card's planner answers
@@ -91,12 +91,17 @@ type PlanSpec struct {
 }
 
 // PlanResult is one planner session: the revision its valid plan became,
-// or the findings of an invalid one.
+// the findings of an invalid one, or the stop that asks a human.
 type PlanResult struct {
 	Revision int
 	SHA256   string
 	Findings []string
+	Escalate string
 }
+
+// maxPlanEcho bounds the last message a planner answered without a plan,
+// as its next session's finding.
+const maxPlanEcho = 2000
 
 // PlanRef is the plan revision a plan task waits on, and its comment on
 // the issue: only later comments ask for changes. Zero: no plan yet.
@@ -117,6 +122,8 @@ var (
 	planBlock = regexp.MustCompile("(?s)```json[ \t]*\r?\n(.*?)\r?\n[ \t]*```")
 	cardKey   = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
 	roles     = []string{RoleFoundation, RoleFeature, RoleIntegration}
+	// acceptedComment is PlanAcceptedComment of any revision
+	acceptedComment = regexp.MustCompile(`^Plan revision [0-9]+ accepted\.$`)
 )
 
 // ValidatePlan judges the planner's last message against the process's plan
@@ -134,7 +141,11 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 	}
 	block := blocks[len(blocks)-1][1]
 	if len(block) > maxPlanBytes {
-		return Plan{}, []string{fmt.Sprintf("plan: the plan is %.1f KiB; at most 12 KiB: shorten the briefs", float64(len(block))/1024)}
+		size := fmt.Sprintf("%.1f KiB", float64(len(block))/1024)
+		if size == "12.0 KiB" {
+			size = fmt.Sprintf("%d bytes", len(block))
+		}
+		return Plan{}, []string{"plan: the plan is " + size + "; at most 12 KiB: shorten the briefs"}
 	}
 	var p Plan
 	dec := json.NewDecoder(strings.NewReader(block))
@@ -202,7 +213,11 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	add := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
 	}
-	if c.Size != "small" && c.Size != "medium" {
+	switch c.Size {
+	case "small", "medium":
+	case "":
+		add(`size "": want small or medium`)
+	default:
 		add("size %s: split it; a card fits one session (%s of agent time, %d steps)", c.Size, shortDuration(limits.AgentTime), limits.StepCap())
 	}
 	switch n := utf8.RuneCountInString(c.Title); {
@@ -608,21 +623,27 @@ func (t *taskRun) planLoop() (string, error) {
 	}
 	wait := ref.Revision != 0
 	var findings []string
+	var ask string // a question for a human: the cap card, or a stop's
 	reason := "no session answered a plan"
+	// the comment the running or next session answers: writers' comments
+	// newer than it ask for changes
+	floor := t.escalation
 	for {
-		if !wait && u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
-			ask := t.sessionCapCard(reason, findings)
+		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
+			ask = t.sessionCapCard(reason, findings)
 			if healed {
 				ask = healedReason
 			}
+		}
+		if ask != "" {
 			if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask).Get(t.ctx, &t.escalation); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
-			wait = true
+			ask, wait = "", true
 		}
 		healed = false
 		if wait {
-			final, why, next := t.awaitPlan(&ref)
+			final, why, next := t.awaitPlan(&ref, floor)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -639,26 +660,34 @@ func (t *taskRun) planLoop() (string, error) {
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
+		floor = t.escalation
 		began := workflow.Now(t.ctx)
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts++
 		t.recordUsage(u)
+		if final, why, ok := t.planRejected(); ok {
+			return t.finish(final, why)
+		}
 		switch {
 		case decided && v.final != "":
 			final, why, _ := closedBeforeStart(v.final, v.reason)
 			return t.finish(final, why)
 		case decided:
-			return t.finish("failed", v.escalate)
+			reason, findings, ask = "the gate supervisor stopped the planner session", nil, v.escalate
+			continue
 		case isTerminal(err):
 			return t.finish("failed", "planner session: "+errMessage(err))
 		case err != nil:
 			reason = "planner session failed: " + errMessage(err)
-			findings = []string{"the last planner session failed: " + errMessage(err)}
+			findings = append([]string{"the last planner session failed: " + errMessage(err)}, t.planComments(floor)...)
+			continue
+		case res.Escalate != "":
+			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			reason, findings = "the plan was invalid", res.Findings
+			reason, findings = "the plan was invalid", append(res.Findings, t.planComments(floor)...)
 			continue
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
@@ -670,12 +699,46 @@ func (t *taskRun) planLoop() (string, error) {
 	}
 }
 
+// planRejected takes a Reject sent while a session ran: the task ends
+// before the next session spends.
+func (t *taskRun) planRejected() (final, why string, ok bool) {
+	var sig TaskSignal
+	if workflow.GetSignalChannel(t.ctx, SignalPlanRejected).ReceiveAsync(&sig) {
+		t.recordPlanSignal(SignalPlanRejected, sig, "")
+		return "failed", fmt.Sprintf("plan rejected by %s: %s", sig.Author, sig.Body), true
+	}
+	return "", "", false
+}
+
+// planComments takes the writers' comments signalled so far: each newer
+// than floor, the comment the session answered, asks for changes; the
+// console's acceptance comment asks for nothing.
+func (t *taskRun) planComments(floor int64) []string {
+	var out []string
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment}
+		switch {
+		case sig.Comment <= floor:
+			detail["ignored"] = "older than the plan or question the planner answered"
+		case acceptedComment.MatchString(strings.TrimSpace(sig.Body)):
+			detail["ignored"] = "the console's acceptance comment"
+		default:
+			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
+		}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+		}
+	}
+	return out
+}
+
 // awaitPlan waits, at no cost, for the approvers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
 // findings the next planner session starts with. An accepted revision
 // files its cards and ends the task done; a refused acceptance, or a
 // writer's comment, goes back to the planner.
-func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string) {
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findings []string) {
 	for {
 		sel := workflow.NewSelector(t.ctx)
 		for _, n := range []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected} {
@@ -687,9 +750,8 @@ func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string)
 			t.counted(SignalIssueClosed, sig)
 			return "closed", ReasonIssueClosed + " before the plan was accepted", nil
 		}
-		for workflow.GetSignalChannel(t.ctx, SignalPlanRejected).ReceiveAsync(&sig) {
-			t.recordPlanSignal(SignalPlanRejected, sig, "")
-			return "failed", fmt.Sprintf("plan rejected by %s: %s", sig.Author, sig.Body), nil
+		if final, why, ok := t.planRejected(); ok {
+			return final, why, nil
 		}
 		for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
 			if ref.Revision == 0 {
@@ -711,12 +773,7 @@ func (t *taskRun) awaitPlan(ref *PlanRef) (final, why string, findings []string)
 			}
 			return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil
 		}
-		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
-			if !t.counted(SignalHumanComment, sig) || ref.Revision != 0 && strings.TrimSpace(sig.Body) == PlanAcceptedComment(ref.Revision) {
-				continue
-			}
-			findings = append(findings, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
-		}
+		findings = t.planComments(floor)
 		if len(findings) > 0 {
 			return "", "", findings
 		}
@@ -778,13 +835,20 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if ok {
 		findings = append(slices.Clone(findings), fmt.Sprintf("your last plan, revision %d: answer the whole plan again, changed as the findings ask:\n```json\n%s\n```", last.Revision, last.Plan))
 	}
-	text, why, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings)
+	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings)
 	if err != nil {
 		return PlanResult{}, err
 	}
+	if escalated {
+		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": text})
+		return PlanResult{Escalate: text}, nil
+	}
 	p, found := readPlan(text, shape, v.Document.Limits)
-	if text == "" {
+	switch {
+	case text == "":
 		found = append(found, "plan: the session ended without a last message: "+why)
+	case len(p.Cards) == 0 && len(found) > 0:
+		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
 	if len(found) > 0 {
 		r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
@@ -832,12 +896,14 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	if err != nil {
 		return PlanRef{}, err
 	}
-	spec, err := json.Marshal(PlanSpec{Revision: rev.Revision, SHA256: rev.SHA256})
+	want := PlanSpec{Revision: rev.Revision, SHA256: rev.SHA256}
+	spec, err := json.Marshal(want)
 	if err != nil {
 		return PlanRef{}, err
 	}
 	if !slices.ContainsFunc(pending, func(a ApprovalRequest) bool {
-		return a.Kind == ApprovalPlan && a.TaskID == taskID && bytes.Equal(a.Spec, spec)
+		var have PlanSpec
+		return a.Kind == ApprovalPlan && a.TaskID == taskID && json.Unmarshal(a.Spec, &have) == nil && have == want
 	}) {
 		id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: taskID, Project: t.Repository, Spec: spec,
 			Reason: fmt.Sprintf("plan revision %d of issue #%d, %d cards, waits for an approver", rev.Revision, t.IssueNumber, len(p.Cards))})
@@ -908,9 +974,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, note); err != nil {
 			return ChildrenResult{}, err
 		}
-		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+r.untrusted(t, note)); err != nil {
-			return ChildrenResult{}, err
-		}
+		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+r.untrusted(t, note))
 		r.record(ctx, taskID, "plan_refused", map[string]any{"revision": revision, "by": approver, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
 	}
@@ -927,7 +991,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		title := r.untrusted(t, c.Title)
 		body := r.untrusted(t, cardBody(c, t.IssueNumber, i+1, len(order), approver, deps))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
-			BudgetEUR: r.cfg.Policy().Document.Budget.ClampBudget(0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
+			BudgetEUR: v.Document.Budget.ClampBudget(0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: taskID, PlanKey: c.Key,
 			Author: approver, AuthorWriter: true})
 		if err != nil {

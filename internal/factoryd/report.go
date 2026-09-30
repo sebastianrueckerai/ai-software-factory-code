@@ -66,7 +66,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	text := t.AgentSummary
 	if text == "" {
 		var why string
-		if text, why, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil); err != nil {
+		if text, why, _, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil); err != nil {
 			return ReportResult{}, err
 		}
 		if text == "" {
@@ -111,16 +111,17 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 // reportSession runs one worker in report mode, with guide and findings,
 // in the task's own sandbox: the read token on the repository, no push
 // token, no fork. Its report is the agent's last message, or why a stop
-// ended it; with none, why the session ended without one.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings []string) (report, why string, err error) {
+// ended it (escalated: a stop for a human); with none, why the session
+// ended without one.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings []string) (report, why string, escalated bool, err error) {
 	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return "", "", fmt.Errorf("revoke leftover credentials: %w", err)
+		return "", "", false, fmt.Errorf("revoke leftover credentials: %w", err)
 	}
 	cleanup := context.WithoutCancel(ctx)
 	defer func() {
@@ -131,10 +132,10 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}()
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if err := r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))
 	began := rfc3339(time.Now())
@@ -143,14 +144,15 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report", "outcome": "aborted",
 			"summary": err.Error(), "started": began})
-		return "", "", err
+		return "", "", false, err
 	}
 	var text string
 	switch {
 	case out.result != nil && out.result.Success:
 		text = out.result.Summary
 	case out.decision != nil && out.trip != nil:
-		text = fmt.Sprintf("The analyzer stopped (%s, %s): %s", out.trip.Kind, out.decision.Action, cmp.Or(out.decision.Reason, out.decision.Guidance, out.trip.Detail))
+		text = fmt.Sprintf("The session stopped (%s, %s): %s", out.trip.Kind, out.decision.Action, cmp.Or(out.decision.Reason, out.decision.Guidance, out.trip.Detail))
+		escalated = out.decision.Action == ActionEscalate
 	case out.result != nil:
 		why = out.result.Summary
 	default:
@@ -162,7 +164,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report",
 		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(text, why), 2000), "started": began})
-	return text, why, nil
+	return text, why, escalated, nil
 }
 
 // Screen is the screening stage (ruling 182): it opens the task's
