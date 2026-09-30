@@ -809,3 +809,31 @@ func TestLoaderRefusesRemovedLaneWithOpenCards(t *testing.T) {
 		})
 	}
 }
+
+// The new-project button judges its file the loader's way (stage11-design.md
+// section 5): the tree at infra's head plus projects/<name>.yaml, through
+// CheckTree; a name already in the tree is refused before the check.
+func TestCheckProjectFile(t *testing.T) {
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	linkshort := files["projects/linkshort.yaml"]
+	delete(files, "projects/linkshort.yaml")
+	if err := CheckProjectFile(files, "linkshort", linkshort, ladder); err != nil {
+		t.Fatalf("the exit test's file: %v", err)
+	}
+	if _, ok := files["projects/linkshort.yaml"]; ok {
+		t.Error("CheckProjectFile added the file to the caller's map")
+	}
+	bad := []byte(strings.Replace(string(linkshort), "process: spec", "process: specs", 1))
+	err = CheckProjectFile(files, "linkshort", bad, ladder)
+	if want := `projects/linkshort.yaml: process "specs": no file processes/specs.yaml (processes: maintenance, spec)`; err == nil || err.Error() != want {
+		t.Errorf("unknown process: %v, want %s", err, want)
+	}
+	err = CheckProjectFile(files, "demo-app", linkshort, ladder)
+	if want := "projects/demo-app.yaml: the file exists at infra's head: the project is there already"; err == nil || err.Error() != want {
+		t.Errorf("existing name: %v, want %s", err, want)
+	}
+}

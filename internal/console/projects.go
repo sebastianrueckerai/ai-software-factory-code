@@ -1,10 +1,21 @@
 package console
 
 import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"fmt"
 	"log"
+	"maps"
 	"net/http"
+	"net/url"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 type projectRow struct {
@@ -52,4 +63,379 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 	s := current(r)
 	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": rows,
 		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects"})
+}
+
+// projectRun is what the status panel keeps in memory of a new project:
+// the last merge Forgejo refused, and the registration running (as whom)
+// or its last error. Never the password.
+type projectRun struct {
+	merge       string
+	registering string
+	regErr      string
+}
+
+var (
+	newProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,35}[a-z0-9]$`)
+	treeName       = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$`)
+)
+
+// registerTimeout bounds a registration no request waits for.
+const registerTimeout = 15 * time.Minute
+
+type newProject struct {
+	Name, Process, Template, MergeRule string
+}
+
+func (c *Console) newProjectForm(w http.ResponseWriter, r *http.Request) {
+	c.renderNewProject(w, r, http.StatusOK, newProject{MergeRule: policy.MergeHuman}, nil)
+}
+
+func (c *Console) renderNewProject(w http.ResponseWriter, r *http.Request, code int, p newProject, refused []string) {
+	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
+	if err != nil || !ok {
+		log.Printf("console: current policy: loaded %v, %v", ok, err)
+		http.Error(w, "cannot read the policy", http.StatusInternalServerError)
+		return
+	}
+	s := current(r)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(code)
+	c.render(w, "project_new.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Form": p, "Refused": refused,
+		"Processes": slices.Sorted(maps.Keys(v.Tree.Processes)), "Templates": slices.Sorted(maps.Keys(v.Tree.Templates)),
+		"Approver": c.approver(r)})
+}
+
+// projectFile is the file section 5 of stage11-design.md shows: the form's
+// four fields, one staging namespace deployed from deploy/staging, no
+// hostname, every other key the policy's default.
+func projectFile(p newProject, user string, day time.Time) []byte {
+	var b strings.Builder
+	b.WriteString("# yaml-language-server: $schema=../schema/project.schema.json\n")
+	fmt.Fprintf(&b, "# Filed from the console by %s on %s.\n", user, day.UTC().Format(time.DateOnly))
+	fmt.Fprintf(&b, "repository: %s/%s\nmerge_rule: %s\nobjects: factory\nagents: coder\nprocess: %s\n", p.Name, p.Name, p.MergeRule, p.Process)
+	if p.Template != "" {
+		fmt.Fprintf(&b, "template: %s\n", p.Template)
+	}
+	fmt.Fprintf(&b, "namespaces: [%s-staging]\nenvironments:\n  - {namespace: %s-staging, path: deploy/staging}\n", p.Name, p.Name)
+	return []byte(b.String())
+}
+
+// createProject writes the new project's file, judges it the loader's way
+// against infra's head, and files it as the human: a new branch
+// project-<name> off main with the one file, and its pull request.
+func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
+	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
+		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule")}
+	var refused []string
+	if !newProjectName.MatchString(p.Name) {
+		refused = append(refused, "name: a DNS label of 2 to 37 lowercase letters, digits and dashes, a letter or digit at each end")
+	}
+	if !treeName.MatchString(p.Process) {
+		refused = append(refused, "process: one of the configuration's processes")
+	}
+	if p.Template != "" && !treeName.MatchString(p.Template) {
+		refused = append(refused, "template: one of the configuration's templates, or none")
+	}
+	if p.MergeRule != policy.MergeHuman && p.MergeRule != policy.MergeAuto {
+		refused = append(refused, "merge rule: human or auto")
+	}
+	if len(refused) > 0 {
+		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
+		return
+	}
+	user := current(r).user
+	file := projectFile(p, user, time.Now())
+	refused, err := c.cfg.CheckProject(r.Context(), p.Name, file)
+	if err != nil {
+		log.Printf("console: check projects/%s.yaml against infra's head: %v", p.Name, err)
+		http.Error(w, "cannot read the configuration at infra's head; see the factoryd log", http.StatusBadGateway)
+		return
+	}
+	if len(refused) > 0 {
+		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
+		return
+	}
+	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
+	branch := "project-" + p.Name
+	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
+		"branch": "main", "new_branch": branch,
+		"message": fmt.Sprintf("Project %s: add its file (console, %s)", p.Name, user),
+		"files": []map[string]string{{"operation": "create", "path": c.cfg.ConfigDir + "/" + policy.ProjectFile(p.Name),
+			"content": base64.StdEncoding.EncodeToString(file)}},
+	}, http.StatusCreated, nil); err != nil {
+		c.forgejoFailed(w, r, "commit the project's file", err)
+		return
+	}
+	var pull struct {
+		Number int64 `json:"number"`
+	}
+	if err := c.asUser(r, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": "Project " + p.Name},
+		http.StatusCreated, &pull); err != nil {
+		c.forgejoFailed(w, r, "open the pull request", err)
+		return
+	}
+	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
+	http.Redirect(w, r, "/projects/"+p.Name+"/status", http.StatusSeeOther)
+}
+
+type infraPull struct {
+	Number  int64  `json:"number"`
+	State   string `json:"state"`
+	Merged  bool   `json:"merged"`
+	HTMLURL string `json:"html_url"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// pullOf reads the pull request from project-<name> into infra's main with
+// factoryd's config token; ok false when there is none.
+func (c *Console) pullOf(ctx context.Context, name string) (pr infraPull, ok bool, err error) {
+	path := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name) + "/pulls/main/project-" + name
+	err = c.api(ctx, c.cfg.InfraToken, http.MethodGet, path, nil, http.StatusOK, &pr)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return pr, false, nil
+	}
+	return pr, err == nil, err
+}
+
+const (
+	stepWaiting = "waiting"
+	stepRunning = "running"
+	stepDone    = "done"
+	stepFailed  = "failed"
+)
+
+type step struct {
+	Name, Tip, State, Detail, Link string
+}
+
+type statusPanel struct {
+	Name, User, CSRF      string
+	Steps                 []step
+	Final                 bool
+	CanMerge, CanRegister bool
+}
+
+// panel reads each step's state from the sources section 5's table names.
+func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
+	ctx := r.Context()
+	s := current(r)
+	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf}
+	pulled := step{Name: "Pull request opened", State: stepWaiting,
+		Tip:    "The project's file as a pull request on the infra repository, filed as you; the factory checked it as its loader will.",
+		Detail: "No pull request from branch project-" + name + " into main yet."}
+	merged := step{Name: "Approved and merged", State: stepWaiting,
+		Tip: "An approver merges the file into infra's main; the factory loads it within 30 seconds."}
+	created := step{Name: "Repository created", State: stepWaiting,
+		Tip:    "The Forgejo site admin's login registers the project: organisation, repository from the template, CI user, tokens. The password is used once and never stored.",
+		Detail: "After the merge."}
+	ready := step{Name: "Board ready", State: stepWaiting,
+		Tip:    "Webhook, labels, bot fork, deploy branch, namespaces, network policy and the Flux Kustomization are in place.",
+		Detail: "After the repository."}
+
+	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
+	if err != nil || !ok {
+		return out, errors.Join(errors.New("no version in force"), err)
+	}
+	c.mu.Lock()
+	run := projectRun{}
+	if p := c.runs[name]; p != nil {
+		run = *p
+	}
+	c.mu.Unlock()
+	approver := c.approver(r)
+
+	if _, loaded := v.Tree.Projects[name]; loaded {
+		pulled.State, pulled.Detail = stepDone, fmt.Sprintf("%s is in the configuration version %d.", policy.ProjectFile(name), v.ID)
+		merged.State, merged.Detail = stepDone, fmt.Sprintf("Loaded in version %d (commit %s).", v.ID, v.Commit)
+	} else {
+		pr, found, err := c.pullOf(ctx, name)
+		switch {
+		case err != nil:
+			log.Printf("console: pull request of project-%s: %v", name, err)
+			pulled.State, pulled.Detail = stepFailed, "Cannot read the pull request; the factoryd log says why."
+		case !found:
+		case pr.Merged:
+			pulled.State, pulled.Detail, pulled.Link = stepDone, fmt.Sprintf("#%d, filed by %s", pr.Number, pr.User.Login), pr.HTMLURL
+			merged.State, merged.Detail = stepRunning, "Merged; the factory loads it within 30 seconds."
+		case pr.State != "open":
+			pulled.State, pulled.Detail, pulled.Link = stepFailed, fmt.Sprintf("#%d was closed without merging.", pr.Number), pr.HTMLURL
+		default:
+			pulled.State, pulled.Detail, pulled.Link = stepDone, fmt.Sprintf("#%d, filed by %s", pr.Number, pr.User.Login), pr.HTMLURL
+			merged.Detail = fmt.Sprintf("Waiting for an approver to merge #%d.", pr.Number)
+			if run.merge != "" {
+				merged.State, merged.Detail = stepFailed, "Forgejo refused the merge: "+run.merge
+			}
+			out.CanMerge = approver
+		}
+	}
+
+	if merged.State == stepDone {
+		ps, err := c.cfg.Projects.Projects(ctx)
+		if err != nil {
+			return out, err
+		}
+		var row factoryd.Project
+		if i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == name }); i >= 0 {
+			row = ps[i]
+		}
+		hasMain, mainErr := false, error(nil)
+		if row.Minted() {
+			hasMain, mainErr = c.cfg.MainExists(ctx, row.Repo())
+		}
+		switch {
+		case mainErr != nil:
+			log.Printf("console: main of %s: %v", row.Repository, mainErr)
+			created.State, created.Detail = stepFailed, "Cannot read the repository's main; the factoryd log says why."
+		case row.Minted() && hasMain:
+			created.State, created.Detail = stepDone, row.Repository+" with main."
+		case run.registering != "":
+			created.State, created.Detail = stepRunning, "Registering with the login of "+run.registering+"."
+		case run.regErr != "":
+			created.State, created.Detail = stepFailed, "Registration failed: "+run.regErr
+		case row.Minted():
+			created.State, created.Detail = stepRunning, "Organisation, repository, CI user and tokens made; waiting for main's first commit."
+		default:
+			created.Detail = "Waiting for an approver to enter the Forgejo site admin's password."
+		}
+		out.CanRegister = approver && (created.State == stepWaiting || created.State == stepFailed && run.regErr != "")
+		switch {
+		case !row.ReadyAt.IsZero():
+			ready.State, ready.Detail, ready.Link = stepDone,
+				"Ready since "+row.ReadyAt.UTC().Format("2006-01-02 15:04")+" UTC: open the board", "/board?project="+url.QueryEscape(name)
+		case created.State != stepDone:
+		case run.registering != "":
+			ready.State, ready.Detail = stepRunning, "The registration's reconcile is running."
+		case run.regErr != "":
+			ready.State, ready.Detail = stepFailed, "The reconcile failed: "+run.regErr
+		default:
+			ready.State, ready.Detail = stepRunning, "Waiting for a reconcile that finds every object in place; one runs at least hourly."
+		}
+	}
+	out.Steps = []step{pulled, merged, created, ready}
+	out.Final = !slices.ContainsFunc(out.Steps, func(s step) bool { return s.State != stepDone })
+	return out, nil
+}
+
+// projectStatus is the new project's panel: the whole page, or the panel
+// alone for htmx's poll.
+func (c *Console) projectStatus(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !newProjectName.MatchString(name) {
+		http.NotFound(w, r)
+		return
+	}
+	c.showPanel(w, r, name)
+}
+
+func (c *Console) showPanel(w http.ResponseWriter, r *http.Request, name string) {
+	p, err := c.panel(r, name)
+	if err != nil {
+		log.Printf("console: status of project %s: %v", name, err)
+		http.Error(w, "cannot read the project's state", http.StatusInternalServerError)
+		return
+	}
+	if r.Header.Get("HX-Request") != "" {
+		c.render(w, "status-panel", p)
+		return
+	}
+	c.render(w, "project_status.html", p)
+}
+
+// acted answers a panel button: the panel for htmx, else the page.
+func (c *Console) acted(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Header.Get("HX-Request") != "" {
+		c.showPanel(w, r, name)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+name+"/status", http.StatusSeeOther)
+}
+
+func (c *Console) run(name string) *projectRun {
+	p := c.runs[name]
+	if p == nil {
+		p = &projectRun{}
+		c.runs[name] = p
+	}
+	return p
+}
+
+// mergeProject merges the project's pull request on infra as the human;
+// a refusal is kept for the panel in Forgejo's words.
+func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !newProjectName.MatchString(name) {
+		http.NotFound(w, r)
+		return
+	}
+	pr, ok, err := c.pullOf(r.Context(), name)
+	if err != nil {
+		log.Printf("console: pull request of project-%s: %v", name, err)
+		http.Error(w, "cannot read the pull request; see the factoryd log", http.StatusBadGateway)
+		return
+	}
+	if !ok || pr.State != "open" || pr.Merged {
+		http.Error(w, "no open pull request from project-"+name, http.StatusConflict)
+		return
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), pr.Number)
+	err = c.asUser(r, http.MethodPost, path, map[string]any{"Do": "merge", "delete_branch_after_merge": true}, http.StatusOK, nil)
+	refusal := ""
+	if ae := (*apiError)(nil); errors.As(err, &ae) {
+		refusal = ae.reason()
+	} else if err != nil {
+		c.forgejoFailed(w, r, "merge the pull request", err)
+		return
+	}
+	c.mu.Lock()
+	c.run(name).merge = refusal
+	c.mu.Unlock()
+	if refusal != "" {
+		log.Printf("console: Forgejo refused %s's merge of %s#%d: %s", current(r).user, c.cfg.InfraRepo, pr.Number, refusal)
+	} else {
+		log.Printf("console: %s merged %s#%d", current(r).user, c.cfg.InfraRepo, pr.Number)
+	}
+	c.acted(w, r, name)
+}
+
+// registerProject runs Registrar.Register with the site admin's login the
+// approver typed, on a context detached from the request, so a closed tab
+// does not cut a half-made registration. The password is the goroutine's
+// argument only; the panel keeps the last error.
+func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if !newProjectName.MatchString(name) {
+		http.NotFound(w, r)
+		return
+	}
+	password := r.PostFormValue("password")
+	if password == "" {
+		http.Error(w, "the Forgejo site admin's password is required", http.StatusBadRequest)
+		return
+	}
+	user := current(r).user
+	c.mu.Lock()
+	run := c.run(name)
+	if run.registering != "" {
+		c.mu.Unlock()
+		http.Error(w, "the registration of "+name+" is running", http.StatusConflict)
+		return
+	}
+	run.registering, run.regErr = user, ""
+	c.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), registerTimeout)
+	go func(password string) {
+		defer cancel()
+		err := c.cfg.Register(ctx, name, factoryd.AdminAuth{User: user, Password: password})
+		log.Printf("console: registration of %s by %s ended (failed: %v)", name, user, err != nil)
+		c.mu.Lock()
+		run.registering, run.regErr = "", ""
+		if err != nil {
+			run.regErr = err.Error()
+		}
+		c.mu.Unlock()
+	}(password)
+	log.Printf("console: %s started the registration of %s", user, name)
+	c.acted(w, r, name)
 }

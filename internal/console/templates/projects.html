@@ -1,6 +1,6 @@
 {{template "head" .}}
 <h2>Projects</h2>
-<p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits. The settings are the project's file in the configuration: change them, or add a project, <a href="{{.New}}">in Git</a>. A factory project's Forgejo organisation, repository, CI user and tokens come from <code>factoryd register-project --name</code> with the Forgejo admin's login, its hostnames from one infra commit with the gateway YAML below.</p>
+<p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits. The settings are the project's file in the configuration: change them <a href="{{.New}}">in Git</a>. <a href="/projects/new">New project</a> files a new project's file as a pull request and shows each step up to its board: the merge, the Forgejo organisation, repository, CI user and tokens made with the Forgejo admin's login, and the rest registration sets up.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
 <h3 id="project-{{.Name}}">{{.Name}}</h3>
 {{if .File}}<p class="meta">Settings from <a href="{{.File}}">projects/{{.Name}}.yaml</a>.</p>

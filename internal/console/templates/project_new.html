@@ -1,0 +1,28 @@
+{{template "head" .}}
+<h2>New project</h2>
+<form method="post" action="/projects" class="newtask">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<p>Writes the project's file, checks it as the factory's loader will, and files it on the infra repository as a pull request from you. The panel after it shows each step. Only the policy's approvers may file one: a project is standing spend.</p>
+{{if .Refused}}<div class="problem" role="alert"><p>The factory's check refused the file:</p>
+<ul>{{range .Refused}}<li><code>{{.}}</code></li>{{end}}</ul></div>{{end}}
+<label for="name">Name</label>
+<input id="name" name="name" type="text" required minlength="2" maxlength="37" pattern="[a-z0-9][a-z0-9\-]{0,35}[a-z0-9]" value="{{.Form.Name}}" aria-describedby="name-help">
+<p id="name-help" class="meta">A DNS label: 2 to 37 lowercase letters, digits and dashes. It names the organisation, the repository and the namespace <var>name</var>-staging.</p>
+<label for="process">Process</label>
+<select id="process" name="process" required>
+{{range .Processes}}<option value="{{.}}"{{if eq . $.Form.Process}} selected{{end}}>{{.}}</option>{{end}}
+</select>
+<label for="template">Template</label>
+<select id="template" name="template" aria-describedby="template-help">
+<option value=""{{if not .Form.Template}} selected{{end}}>none</option>
+{{range .Templates}}<option value="{{.}}"{{if eq . $.Form.Template}} selected{{end}}>{{.}}</option>{{end}}
+</select>
+<p id="template-help" class="meta">The files registration seeds the empty repository with. None: main's first push starts the project.</p>
+<label for="merge_rule">Merge rule</label>
+<select id="merge_rule" name="merge_rule">
+<option value="human"{{if eq .Form.MergeRule "human"}} selected{{end}}>human</option>
+<option value="auto"{{if eq .Form.MergeRule "auto"}} selected{{end}}>auto</option>
+</select>
+{{if .Approver}}<button type="submit">File the project</button>{{else}}<p class="meta">Only the policy's approvers may file a project.</p>{{end}}
+</form>
+{{template "foot"}}

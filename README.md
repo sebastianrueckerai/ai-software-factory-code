@@ -1468,6 +1468,23 @@ for the infra commit (ruling 155). The console's `/projects` lists every
 project read-only with its file's settings, the envelope with its use and
 the standing monthly line, and a link to the file.
 
+The console's New project (`/projects/new`, filed by approvers only) is the
+same path without a shell (stage11-design.md section 5). Its form (name,
+process, template, merge rule) writes the file with one staging namespace
+deployed from `deploy/staging` and no hostname. factoryd judges the file with
+`CheckProjectFile`, which runs the loader's `CheckTree` over infra's head
+with the file added. The human's token then commits the file to a new
+branch `project-<name>` and opens its pull request. The status panel
+`/projects/<name>/status` polls every 3 s until its four steps are done:
+1. the pull request, read with the `forgejo-config` token;
+2. the merge, with a Merge button that merges as the human and shows
+   Forgejo's refusal, and the version in force holding the file;
+3. the repository: an approver types the site admin's password and
+   `Registrar.Register` runs in the background on a context detached from the
+   request. The password is never stored or logged; the last error stays in
+   memory;
+4. `ready_at`, with a link to the project's board.
+
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
 `FACTORY_READ_TOKEN` (compared by hash in constant time; 401 otherwise, an

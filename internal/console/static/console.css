@@ -58,3 +58,21 @@ form.move button { margin: .25rem .25rem 0 0; padding: .15rem .5rem; }
 .column:has(.approval.plan) { grid-column: span 2; }
 .plan-cards { font-size: .8rem; }
 .plan-cards td { overflow-wrap: break-word; }
+.steps { list-style: none; padding: 0; }
+.step { padding: .4rem .5rem .4rem 2rem; position: relative; border-left: 3px solid var(--line); margin-bottom: .3rem; }
+.step .name { font-weight: 600; }
+.step .state { color: var(--muted); font-size: .85rem; }
+.step .detail { font-size: .85rem; }
+.step.done { border-left-color: #2da44e; }
+.step.failed { border-left-color: var(--warn); }
+.step.failed .state { color: var(--warn); }
+.step.running { border-left-color: var(--accent); }
+.step::before { position: absolute; left: .5rem; top: .5rem; width: 1rem; text-align: center; }
+.step.waiting::before { content: "\25CB"; color: var(--muted); }
+.step.done::before { content: "\2713"; color: #2da44e; }
+.step.failed::before { content: "\2717"; color: var(--warn); }
+.step.running::before, button.htmx-request::after { content: ""; width: .8rem; height: .8rem; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+button.htmx-request::after { display: inline-block; margin-left: .4rem; vertical-align: middle; border-top-color: #fff; }
+input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inherit; border: 1px solid var(--muted); border-radius: 4px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .step.running::before, button.htmx-request::after { animation-duration: 3s; } }

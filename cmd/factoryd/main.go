@@ -374,7 +374,19 @@ func main() {
 		Projects:   store,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,
-		Metrics:    metrics,
+		InfraRepo:  configRepo,
+		InfraToken: forgejo.Seeded[policy.SecretConfig],
+		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
+			return checkProject(ctx, configSource, name, file, ladder.Aliases())
+		},
+		MainExists: func(ctx context.Context, repo factoryd.Repo) (bool, error) {
+			return forgejo.ProjectBranchExists(ctx, repo, "main")
+		},
+		Register: func(ctx context.Context, name string, admin factoryd.AdminAuth) error {
+			_, err := registrar.Register(ctx, name, admin, false)
+			return err
+		},
+		Metrics: metrics,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

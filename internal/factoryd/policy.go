@@ -279,6 +279,20 @@ func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
 	return tree, nil
 }
 
+// CheckProjectFile judges a new project's file the loader's way before the
+// console files it (stage11-design.md section 5): files is the tree at
+// infra's head, file becomes projects/<name>.yaml, and CheckTree judges.
+func CheckProjectFile(files map[string][]byte, name string, file []byte, ladder []string) error {
+	path := policy.ProjectFile(name)
+	if _, ok := files[path]; ok {
+		return fmt.Errorf("%s: the file exists at infra's head: the project is there already", path)
+	}
+	tree := maps.Clone(files)
+	tree[path] = file
+	_, err := CheckTree(tree, ladder)
+	return err
+}
+
 // CheckOpenLanes is the loader's one judgement the tree alone cannot make
 // (D1, D1b): no open card may sit in a lane that the process its project
 // follows in tree lacks. One line per project and lane, on the process file

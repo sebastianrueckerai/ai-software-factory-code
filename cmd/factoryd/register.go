@@ -58,6 +58,24 @@ func registerProject(ctx context.Context, args []string, stdin io.Reader, stdout
 	return nil
 }
 
+// checkProject is the new-project button's judgement: the tree at infra's
+// head with projects/<name>.yaml added, judged as the loader will
+// (factoryd.CheckProjectFile); a refusal is its lines.
+func checkProject(ctx context.Context, src factoryd.ConfigSource, name string, file []byte, ladder []string) ([]string, error) {
+	head, err := src.Head(ctx)
+	if err != nil {
+		return nil, err
+	}
+	files, err := src.Files(ctx, head)
+	if err != nil {
+		return nil, err
+	}
+	if err := factoryd.CheckProjectFile(files, name, file, ladder); err != nil {
+		return strings.Split(err.Error(), "\n"), nil
+	}
+	return nil, nil
+}
+
 // registerMain runs the subcommand in the factoryd pod, with its
 // database, tokens and service account.
 func registerMain(args []string) {

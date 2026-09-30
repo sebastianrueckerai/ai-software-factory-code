@@ -98,7 +98,21 @@ type Config struct {
 	// (factoryd.AcceptPlan, factoryd.RejectPlan).
 	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
 	RejectPlan func(ctx context.Context, taskID, by, why string) error
-	HTTP       *http.Client // nil = 15 s timeout
+	// InfraRepo is the infra repository (owner/name), where the new-project
+	// button files its pull request; InfraToken reads its pull requests
+	// (factoryd's forgejo-config token).
+	InfraRepo  factoryd.Repo
+	InfraToken string
+	// CheckProject judges projects/<name>.yaml with file's text the
+	// loader's way against the tree at infra's head
+	// (factoryd.CheckProjectFile): the refusal's lines, none when it
+	// passes; err when the tree could not be read.
+	CheckProject func(ctx context.Context, name string, file []byte) (refused []string, err error)
+	// MainExists reports whether a project's repository has main.
+	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
+	// Register is Registrar.Register with the Forgejo site admin's login.
+	Register func(ctx context.Context, name string, admin factoryd.AdminAuth) error
+	HTTP     *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics
@@ -116,6 +130,9 @@ type Console struct {
 	writersT time.Time
 	flight   singleflight.Group
 	moves    map[string]answer // the board's MayMove answers
+	// runs are the new projects' merge refusals and registrations, in
+	// memory for the status panel.
+	runs map[string]*projectRun
 }
 
 type session struct {
@@ -142,7 +159,7 @@ func New(cfg Config) (*Console, error) {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(),
-		sessions: map[string]*session{}}
+		sessions: map[string]*session{}, runs: map[string]*projectRun{}}
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
@@ -171,6 +188,11 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
 	c.mux.Handle("GET /alerts", c.auth(c.alerts))
 	c.mux.Handle("GET /projects", c.auth(c.projects))
+	c.mux.Handle("GET /projects/new", c.auth(c.newProjectForm))
+	c.mux.Handle("POST /projects", c.auth(c.spend("add a project", c.createProject)))
+	c.mux.Handle("GET /projects/{name}/status", c.auth(c.projectStatus))
+	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
+	c.mux.Handle("POST /projects/{name}/register", c.auth(c.spend("register a project", c.registerProject)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil
 }

@@ -205,6 +205,28 @@ func (c *Console) asUser(r *http.Request, method, path string, payload any, want
 	return c.api(r.Context(), tok, method, path, payload, want, out)
 }
 
+// apiError is an answer of Forgejo's API other than the one wanted.
+type apiError struct {
+	method, path string
+	status       int
+	body         []byte
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("forgejo %s %s: status %d: %s", e.method, e.path, e.status, e.body)
+}
+
+// reason is Forgejo's own sentence: the body's message, else the body.
+func (e *apiError) reason() string {
+	var m struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(e.body, &m) == nil && m.Message != "" {
+		return m.Message
+	}
+	return string(e.body)
+}
+
 func (c *Console) api(ctx context.Context, token, method, path string, payload any, want int, out any) error {
 	var body io.Reader
 	if payload != nil {
@@ -233,7 +255,7 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	if res.StatusCode != want {
-		return fmt.Errorf("forgejo %s %s: status %d: %s", method, path, res.StatusCode, bytes.TrimSpace(b))
+		return &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {
