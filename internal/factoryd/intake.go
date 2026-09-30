@@ -49,6 +49,9 @@ type Intake struct {
 	MainPushed func(ctx context.Context, repository string) error
 	// Metrics counts the answers among the comments; nil counts none.
 	Metrics *telemetry.Metrics
+	// Timeline records the events of the cards intake creates and moves;
+	// nil records none.
+	Timeline *Timeline
 
 	trustMu sync.Mutex
 	trust   map[string]time.Time // repo + user → trusted until
@@ -418,10 +421,11 @@ func outsiderLabels(names []string) []string {
 // ask for (every issue of a project on agents none is the human lane's),
 // idempotent per (repository, issue number): a redelivery, a later label
 // event or a heal pass finds the task already linked, and only a label
-// event's sender moves a backlog card into a starting lane. An issue the
-// bot filed with no task linked is ignored. defaultBranch is the
-// repository's when the caller knows it (a webhook payload), else read.
-// via names the path in the log.
+// event's sender, or for a pass without one the user the issue's timeline
+// names as the lane label's adder, moves a backlog card into a starting
+// lane. An issue the bot filed with no task linked is ignored.
+// defaultBranch is the repository's when the caller knows it (a webhook
+// payload), else read. via names the path in the log.
 func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch string, issue webhookIssue, sender string) error {
 	p, ok, err := in.Store.ProjectByRepository(ctx, repo)
 	if err != nil {
@@ -500,14 +504,15 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		in.keepLaneLabel(ctx, via, repo, issue.Index, names, task.Lane)
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
+	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index})
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
-	switch task.Status {
-	case "queued":
-		return in.Workflows.Start(ctx, task.ID)
-	case "backlog":
-		return in.writeUp(ctx, p, task, defaultBranch)
-	}
-	return nil
+	return in.enterLane(ctx, p, task, poster, defaultBranch)
+}
+
+// enterLane is card t's entry into its lane of project p by user by: the
+// event, then the lane's task or the backlog's write-up.
+func (in *Intake) enterLane(ctx context.Context, p Project, t Task, by, defaultBranch string) error {
+	return enterLane(ctx, in.Timeline, in.Workflows, t, by, func() error { return in.writeUp(ctx, p, t, defaultBranch) })
 }
 
 // labelled acts on a label event, or a heal pass's read, of the issue of
@@ -532,10 +537,37 @@ func (in *Intake) labelled(ctx context.Context, via string, p Project, t Task, n
 	case name == LaneHuman:
 		return nil
 	case laneLabelled(names, name):
+		if sender == "" {
+			var err error
+			if sender, err = in.laneLabelAdder(ctx, t, name, names); err != nil {
+				return err
+			}
+		}
 		return in.enterOnLabelAdded(ctx, via, p, t, name, names, defaultBranch, sender)
 	default:
 		return in.enterOnLabelRemoved(ctx, via, p, t, names, defaultBranch, sender)
 	}
+}
+
+// laneLabelAdder is who last added a label of names that asks for lane
+// to card t's issue, the bot aside: the sender a lost label webhook would
+// have carried, read off the timeline by a pass that knows none. A removal
+// is never inferred: an entry names who added a label, not who took one.
+func (in *Intake) laneLabelAdder(ctx context.Context, t Task, lane string, names []string) (string, error) {
+	asking := []string{LabelPlan}
+	if lane == policy.LaneReady {
+		asking = []string{LabelAgent, "bug"}
+	}
+	asking = slices.DeleteFunc(asking, func(n string) bool { return !slices.Contains(names, n) })
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return "", err
+	}
+	by, err := in.Forgejo.LabelAdder(ctx, repo.Owner, repo.Name, t.IssueNumber, asking, in.BotUser)
+	if err != nil {
+		return "", fmt.Errorf("who added %v to issue #%d: %w", asking, t.IssueNumber, err)
+	}
+	return by, nil
 }
 
 // writeUp opens backlog card t's write-up at the branch head (ruling 185)
@@ -589,12 +621,12 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 // FileTask files task t the way the API, the alert intake, the roller
 // and the configuration loader do (task 42): the issue on repo first, as
 // the bot, labelled labels and its state, then the task row linked to it.
-// A queued agent task's workflow is started (a failed start is logged and
-// healed by the next HealPass); a task of kind human waits on a human
-// from the start and has no workflow. No row exists without its issue.
+// A task of kind human waits on a human from the start and has no
+// workflow; an agent task's goes through FileAgentTask. No row exists
+// without its issue.
 func FileTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if t.Kind == "human" {
 		t.Status = "waiting-human"
 	}
@@ -609,24 +641,32 @@ func FileTask(ctx context.Context, store interface {
 	if err := store.CreateTask(ctx, t); err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	if t.Status == "queued" {
-		if err := workflows.Start(ctx, t.ID); err != nil {
-			log.Printf("task %s: start workflow: %v", t.ID, err)
-		}
-	}
 	return t, ref, nil
 }
 
 // FileAgentTask files agent task t on project p's repository through
-// FileTask, entering its process by fileEntry.
+// FileTask, entering its process by fileEntry, and starts it where it
+// entered a starting lane (a failed start is logged and healed by the next
+// HealPass). tl records the card's events.
 func FileAgentTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	return FileTask(ctx, store, forgejo, workflows, p.Repo(), title, body, labels, t)
+	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+	if err != nil {
+		return Task{}, IssueRef{}, err
+	}
+	by := cmp.Or(t.Author, forgejo.BotUser)
+	if t.Lane != "" {
+		tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": ref.Number})
+	}
+	if err := enterLane(ctx, tl, workflows, t, by, nil); err != nil {
+		log.Printf("task %s: start workflow: %v", t.ID, err)
+	}
+	return t, ref, nil
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
@@ -680,6 +720,7 @@ func (in *Intake) closeBacklogCard(ctx context.Context, t Task) error {
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, t, "closed")
 	return nil
 }
 
@@ -724,6 +765,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) er
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "done")
 	mirrorTaskState(ctx, in.Forgejo, t, "done")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, t, "done")
 	return nil
 }
 
@@ -743,7 +785,8 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if !ok {
 		return nil
 	}
-	if _, ok, err := in.agentTask(ctx, taskID); err != nil || !ok {
+	t, ok, err := in.agentTask(ctx, taskID)
+	if err != nil || !ok {
 		return err
 	}
 	kind := "pull_request_closed"
@@ -751,10 +794,21 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 		kind = "pull_request_merged"
 	}
 	fresh, err := in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
-	if fresh && !p.PullRequest.Merged {
-		in.Metrics.Intervened(ctx, InterventionReject)
+	switch {
+	case fresh && p.PullRequest.Merged:
+		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
+	case fresh:
+		in.intervened(ctx, t, InterventionReject)
 	}
 	return err
+}
+
+// humanMerged records the event pull_request_merged of task taskID's pull
+// request pr merged in Forgejo by by; factory-merge's merges are Merge's.
+func (in *Intake) humanMerged(ctx context.Context, taskID, by string, pr int64) {
+	if by != MergeUser {
+		in.Timeline.recordEvent(ctx, taskID, EventPullRequestMerged, map[string]any{"pr": pr, "by": by})
+	}
 }
 
 // agentTask is task id when it exists and runs a workflow to signal: a
@@ -858,10 +912,16 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool) {
 	switch {
 	case t.Status == "waiting-poster" && author == t.Author:
-		in.Metrics.Intervened(ctx, InterventionPosterAnswer)
+		in.intervened(ctx, t, InterventionPosterAnswer)
 	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
-		in.Metrics.Intervened(ctx, InterventionEscalationAnswer)
+		in.intervened(ctx, t, InterventionEscalationAnswer)
 	}
+}
+
+// intervened counts a human intervention of kind in task t.
+func (in *Intake) intervened(ctx context.Context, t Task, kind string) {
+	process, lane := processLane(ctx, in.Store, t)
+	in.Metrics.Intervened(ctx, kind, process, lane)
 }
 
 // record stores e once and returns the stored row, and whether it is new: the one just inserted,
@@ -987,7 +1047,8 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if !ok {
 		return nil
 	}
-	if _, ok, err := in.agentTask(ctx, taskID); err != nil || !ok {
+	t, ok, err := in.agentTask(ctx, taskID)
+	if err != nil || !ok {
 		return err
 	}
 	reviewBody := ""
@@ -1008,9 +1069,9 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if fresh && trusted {
 		switch eventType {
 		case "pull_request_review_approved":
-			in.Metrics.Intervened(ctx, InterventionApprove)
+			in.intervened(ctx, t, InterventionApprove)
 		case "pull_request_review_rejected":
-			in.Metrics.Intervened(ctx, InterventionRequestChanges)
+			in.intervened(ctx, t, InterventionRequestChanges)
 		}
 	}
 	return in.signalEvent(ctx, taskID, e, p.PullRequest.Index)
@@ -1058,7 +1119,10 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 		}
 		switch {
 		case pr.Merged:
-			_, err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber)
+			var fresh bool
+			if fresh, err = in.decide(ctx, t.ID, "pull_request_merged", healAuthor, t.PRNumber); fresh {
+				in.humanMerged(ctx, t.ID, pr.MergedBy, t.PRNumber)
+			}
 		case pr.State == "closed":
 			_, err = in.decide(ctx, t.ID, "pull_request_closed", healAuthor, t.PRNumber)
 		}

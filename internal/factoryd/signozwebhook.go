@@ -70,7 +70,9 @@ type AlertIntake struct {
 	Store          AlertBook
 	Forgejo        *Forgejo
 	Workflows      Workflows
-	Budget         func() policy.Budget
+	// Timeline records the events of the cards it files.
+	Timeline *Timeline
+	Budget   func() policy.Budget
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
@@ -212,9 +214,9 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	var ref IssueRef
 	if p.Agents == policy.AgentsNone {
 		t.Kind = "human"
-		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, []string{"bug", "human"}, t)
+		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, repo, title, body, []string{"bug", "human"}, t)
 	} else {
-		t, ref, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, p, title, body, []string{"bug"}, t)
+		t, ref, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
 	}
 	if err != nil {
 		return err

@@ -240,7 +240,8 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 		return err
 	}
 	if u.ExtraTime > t.Usage.ExtraTime {
-		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime)
+		process, lane := processLane(ctx, r.store, t)
+		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, lane)
 	}
 	return nil
 }
@@ -544,6 +545,10 @@ func (r *Runner) record(ctx context.Context, taskID, step string, detail map[str
 		log.Printf("task %s: timeline %s: %v", taskID, step, err)
 	}
 }
+
+// Timeline is the runner's task timeline, which every writer of a task's
+// timeline shares: its appends are serialized per task.
+func (r *Runner) Timeline() *Timeline { return r.timeline }
 
 // RecordStep appends a workflow-side step (a received signal) to the
 // timeline.
@@ -1021,6 +1026,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		}
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
+	taskEnded(ctx, r.timeline, r.store, r.forgejo, t, final)
 	return nil
 }
 

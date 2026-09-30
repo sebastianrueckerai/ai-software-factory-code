@@ -150,7 +150,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		}
 	}
 	if number == 0 {
-		t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, t)
+		t, ref, err := FileTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, []string{"human"}, t)
 		if err != nil {
 			return err
 		}

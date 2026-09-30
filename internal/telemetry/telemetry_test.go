@@ -268,7 +268,7 @@ func TestTaskAnalyticsExportAsDeltas(t *testing.T) {
 	ctx := context.Background()
 	m.TaskOutcome.Add(ctx, 1)
 	m.TaskCost.Record(ctx, 0.2)
-	m.Intervened(ctx, "approve")
+	m.Intervened(ctx, "approve", "none", "none")
 	m.BuildVMCost.Add(ctx, 0.01)
 	sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()

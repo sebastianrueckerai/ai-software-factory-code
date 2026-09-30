@@ -268,6 +268,9 @@ func (s *emptyStore) Costs(context.Context, time.Time, time.Time) (policy.Costs,
 	return policy.Costs{}, nil
 }
 func (s *emptyStore) SweepHolds(context.Context) (int, error) { return 0, nil }
+func (s *emptyStore) OpenCardsByLane(context.Context) ([]factoryd.OpenCard, error) {
+	return nil, nil
+}
 
 // config check and the loader judge one way (stage11-design.md section 3):
 // every refusal fixture of TestProcessRefusals, and the valid tree, give
@@ -312,5 +315,30 @@ func TestConfigCheckAndLoaderAgree(t *testing.T) {
 				t.Fatalf("config check says\n%s\nthe loader\n%s", got, want)
 			}
 		})
+	}
+}
+
+// config check never consults a database (D1c): a head that drops the
+// lane plan, which the running factoryd refuses while cards sit there,
+// passes, and the check says who judges the open cards.
+func TestConfigCheckSkipsOpenCards(t *testing.T) {
+	dir := tree(t)
+	spec := filepath.Join(dir, "processes", "spec.yaml")
+	b, err := os.ReadFile(spec) // #nosec G304 -- the test's own temporary tree
+	if err != nil {
+		t.Fatal(err)
+	}
+	noPlan := strings.Replace(string(b), "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, foundation: true, integration: true}\n", "", 1)
+	noPlan = strings.Replace(noPlan, "dependencies: {wait_until: done, on_failed: human}\n", "", 1)
+	if strings.Contains(noPlan, "name: plan") || strings.Contains(noPlan, "dependencies:") {
+		t.Fatalf("spec.yaml still holds the plan lane:\n%s", noPlan)
+	}
+	write(t, spec, noPlan)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if want := dir + ": ok, 4 projects, 2 processes, 0 templates\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
+		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 }

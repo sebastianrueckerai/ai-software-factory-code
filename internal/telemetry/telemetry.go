@@ -153,10 +153,12 @@ type Metrics struct {
 	HumanIntervention    metric.Int64Counter
 }
 
-// Intervened counts one human intervention of kind; a nil m counts none.
-func (m *Metrics) Intervened(ctx context.Context, kind string) {
+// Intervened counts one human intervention of kind in a task of process
+// and lane; a nil m counts none.
+func (m *Metrics) Intervened(ctx context.Context, kind, process, lane string) {
 	if m != nil {
-		m.HumanIntervention.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", kind)))
+		m.HumanIntervention.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", kind),
+			attribute.String("process", process), attribute.String("lane", lane)))
 	}
 }
 
@@ -165,7 +167,7 @@ func (m *Metrics) Intervened(ctx context.Context, kind string) {
 func (m *Metrics) Tasks(meter metric.Meter) error {
 	var err error
 	if m.TaskCost, err = meter.Float64Histogram("factory.task.cost", metric.WithUnit("EUR"),
-		metric.WithDescription("a finished task's spend by the alias of its last session and its outcome"),
+		metric.WithDescription("a finished task's spend by the alias of its last session, its outcome, process and lane"),
 		metric.WithExplicitBucketBoundaries(CostBuckets...)); err != nil {
 		return err
 	}
@@ -174,10 +176,10 @@ func (m *Metrics) Tasks(meter metric.Meter) error {
 		name string
 		desc string
 	}{
-		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts and merge rule"},
+		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts, merge rule, process and lane"},
 		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks the daily pass marked reverted"},
-		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement and round"},
-		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind"},
+		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement, round, process and lane"},
+		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind, process and lane"},
 	} {
 		if *c.to, err = meter.Int64Counter(c.name, metric.WithDescription(c.desc)); err != nil {
 			return err

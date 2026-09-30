@@ -1602,7 +1602,8 @@ func TestBoardShowsARollInTheHumanLaneUntilItsCard(t *testing.T) {
 	}
 }
 
-// interventions reads factory.human.intervention by kind.
+// interventions reads factory.human.intervention by kind, process and
+// lane.
 func (r *rig) interventions(t *testing.T) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -1617,7 +1618,9 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 			}
 			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
 				kind, _ := dp.Attributes.Value(attribute.Key("kind"))
-				out[kind.AsString()] = dp.Value
+				process, _ := dp.Attributes.Value(attribute.Key("process"))
+				lane, _ := dp.Attributes.Value(attribute.Key("lane"))
+				out[kind.AsString()+" "+process.AsString()+" "+lane.AsString()] = dp.Value
 			}
 		}
 	}
@@ -1650,7 +1653,7 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	for range 2 {
 		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
 	}
-	want := map[string]int64{"alert_verdict_click": 1}
+	want := map[string]int64{"alert_verdict_click none none": 1}
 	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("interventions = %v, want %v", got, want)
 	}

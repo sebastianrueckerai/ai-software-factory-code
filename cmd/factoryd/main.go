@@ -241,6 +241,7 @@ func main() {
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Policy: func() policy.Document { return policyLoader.Current().Document }, Projects: store, Metrics: metrics,
+		Timeline: runner.Timeline(),
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
 	// runs and its rolls are watched, its writers log into the console
@@ -283,7 +284,7 @@ func main() {
 	// commit, read with a read:package token, open the roll's pull request
 	registry := rollRegistry(forgejo.BaseURL)
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
-	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
+	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Registry:  registry}
 	go roller.Run(ctx)
@@ -301,13 +302,13 @@ func main() {
 		}
 		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	})
-	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, policyLoader.Budget)))
+	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, runner.Timeline(), policyLoader.Budget)))
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it)
 	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: mustEnv("SIGNOZ_WEBHOOK_PASSWORD"),
-		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Budget: policyLoader.Budget})
+		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
@@ -420,7 +421,7 @@ type taskCreator interface {
 // the issue exists to back it. A repository no active project names, and a
 // project on agents none, are refused with 422. The base is always the default branch's
 // head: neither the branch nor the sha is a caller's choice.
-func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, budget func() policy.Budget) http.HandlerFunc {
+func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows factoryd.Workflows, tl *factoryd.Timeline, budget func() policy.Budget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Objective  string  `json:"objective"`
@@ -473,7 +474,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		if in.ReproCommand != "" {
 			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
 		}
-		task, ref, err := factoryd.FileAgentTask(r.Context(), store, forgejo, workflows, p, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
+		task, ref, err := factoryd.FileAgentTask(r.Context(), store, forgejo, workflows, tl, p, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard", BudgetEUR: in.BudgetEUR,
 			Objective: in.Objective, SHA: sha, Source: "api", ReproCommand: in.ReproCommand,
 			// the intake token's holder files as the bot, with a writer's standing

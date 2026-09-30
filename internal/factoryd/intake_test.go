@@ -90,6 +90,8 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 				t.Errorf("issue list query %q, want every open issue", r.URL.RawQuery)
 			}
 			servePage(w, r, 50, openIssues...)
+		case strings.HasSuffix(r.URL.Path, "/timeline") && r.Method == http.MethodGet:
+			io.WriteString(w, `[]`)
 		case strings.Count(r.URL.Path, "/") == 4: // /api/v1/repos/{owner}/{repo}
 			io.WriteString(w, `{"default_branch":"main"}`)
 		default:

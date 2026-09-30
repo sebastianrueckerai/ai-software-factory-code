@@ -101,6 +101,16 @@ func (s *fakeStore) ReportOf(ctx context.Context, parent, source string) (Task, 
 	return Task{}, false, nil
 }
 
+func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Parent == plan && t.Source == SourcePlan {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil

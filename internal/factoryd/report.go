@@ -25,6 +25,9 @@ const (
 	SourcePresort = "presort"
 )
 
+// SourcePlan is a card an accepted plan filed; its parent is the plan task.
+const SourcePlan = "plan"
+
 // maxReport bounds a report kept on its task and posted on the issue.
 const maxReport = 16 << 10
 

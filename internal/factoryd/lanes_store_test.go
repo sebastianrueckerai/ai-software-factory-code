@@ -183,3 +183,38 @@ func TestProcessBackfilledOnLoad(t *testing.T) {
 		t.Fatalf("processes = %v, want %v", got, want)
 	}
 }
+
+// OpenCardsByLane reads the open cards with a lane, each with the project
+// whose file in force names its repository: finished cards, rolls and
+// repositories of no project are left out.
+func TestOpenCardsByLane(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RecordPolicy(ctx, "open-cards", fixtureVersion(t).Tree); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, lane, process, issue_number) VALUES
+		('t-plan', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 14),
+		('t-backlog', 1, 0, 'backlog', 'linkshort/linkshort', 'agent', 'webhook', 'backlog', NULL, 1),
+		('t-done', 1, 0, 'done', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 2),
+		('t-failed', 1, 0, 'failed', 'linkshort/linkshort', 'agent', 'webhook', 'ready', 'spec', 3),
+		('t-roll', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'roll', NULL, NULL, 4),
+		('t-stray', 1, 0, 'queued', 'x/y', 'agent', 'webhook', 'ready', 'maintenance', 5)`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.OpenCardsByLane(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []OpenCard{{Project: "linkshort", Lane: "backlog", Issue: 1}, {Project: "linkshort", Lane: "plan", Process: "spec", Issue: 14}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("open cards = %+v, want %+v", got, want)
+	}
+}

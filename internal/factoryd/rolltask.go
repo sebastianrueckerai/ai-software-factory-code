@@ -244,9 +244,11 @@ type Roller struct {
 	Registry  *Registry
 	Store     RollerStore
 	Workflows Workflows
-	Repo      Repo
-	Token     string // reads the repository's Actions
-	Budget    func() policy.Budget
+	// Timeline records the events of the tasks it files.
+	Timeline *Timeline
+	Repo     Repo
+	Token    string // reads the repository's Actions
+	Budget   func() policy.Budget
 	// LinkHosts are policy.yaml's link_hosts: links in the carried
 	// subjects and titles may point there or at the Forgejo host
 	LinkHosts func() []string
@@ -548,7 +550,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 		return err
 	}
 	title, body, _ := strings.Cut(req.Summary, "\n\n")
-	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, p, title, body, nil, Task{
+	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 		ID: req.TaskID, RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0),
 		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
 	})

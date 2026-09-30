@@ -681,7 +681,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": model,
 		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": len(earlier) + 1}))
-	r.countReview(ctx, rv, len(earlier)+1)
+	process, lane := processLane(ctx, r.store, t)
+	r.countReview(ctx, rv, len(earlier)+1, process, lane)
 	return rv, nil
 }
 
@@ -736,7 +737,9 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 // approvals whitelist approved that head; a refusal is commented and
 // returned, not an error: the workflow keeps waiting. A pull request found
 // merged (a retry after a merge whose answer was lost, or a human's merge)
-// is a merge, credited to whoever merged it. Any other failure is retried;
+// is a merge, credited to whoever merged it; the event pull_request_merged
+// is Merge's for factory-merge's merges and intake's for a human's. Any
+// other failure is retried;
 // the last attempt reports it (timeline, comment) as Failed instead, so the
 // workflow keeps the approval and tries again later.
 func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
@@ -857,6 +860,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
+	r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
 	return MergeResult{Merged: true}, nil
 }
 
@@ -869,6 +873,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
 		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
+		r.timeline.recordEvent(ctx, t.ID, EventPullRequestMerged, map[string]any{"pr": pr, "by": MergeUser})
 		return MergeResult{Merged: true}
 	}
 	by := cmp.Or(st.MergedBy, "an unknown user")

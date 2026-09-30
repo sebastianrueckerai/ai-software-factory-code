@@ -87,6 +87,13 @@ type memPolicy struct {
 	records  int
 	costs    [][2]time.Time
 	sweeps   int
+	cards    []OpenCard
+}
+
+func (m *memPolicy) OpenCardsByLane(context.Context) ([]OpenCard, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.cards), nil
 }
 
 func (m *memPolicy) SweepHolds(context.Context) (int, error) {
@@ -719,7 +726,7 @@ func TestConfigAlarm(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=0,merge_rule=human,model_alias=none,project=sf-ai-software-factory-infra,state=done": 1,
+		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-infra,state=done": 1,
 	})
 	if !slices.Equal(fj.closed, []int64{41}) || len(fj.comments) != 1 ||
 		!strings.Contains(fj.comments[0], "#41 factoryd loaded commit cacacacacaca (version 13)") {
@@ -735,5 +742,62 @@ func TestConfigAlarm(t *testing.T) {
 	// nothing open: a second resolve does nothing
 	if err := alarm.Resolve(ctx, policy.Version{ID: 14, Commit: "cbcb"}); err != nil || len(fj.closed) != 1 {
 		t.Fatalf("second resolve = %v, closed %v", err, fj.closed)
+	}
+}
+
+// A head that takes a lane from under open cards is refused the loader's
+// way (D1, D1b): logged, raised, the version in force stays. The process
+// file lost the lane (D1), or the project moved to a process without it
+// (D1b). Once the cards left the lane, the same head loads.
+func TestLoaderRefusesRemovedLaneWithOpenCards(t *testing.T) {
+	ctx := context.Background()
+	fixture, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := func(file, old, new string) map[string][]byte {
+		t.Helper()
+		files := maps.Clone(fixture)
+		if !strings.Contains(string(files[file]), old) {
+			t.Fatalf("%s lacks %q", file, old)
+		}
+		files[file] = []byte(strings.Replace(string(files[file]), old, new, 1))
+		return files
+	}
+	noPlan := edit("processes/spec.yaml", "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, foundation: true, integration: true}\n", "")
+	noPlan["processes/spec.yaml"] = []byte(strings.Replace(string(noPlan["processes/spec.yaml"]), "dependencies: {wait_until: done, on_failed: human}\n", "", 1))
+	for name, tc := range map[string]struct {
+		head map[string][]byte
+		want string
+	}{
+		"D1": {noPlan, "processes/spec.yaml: lanes: lane plan is gone from process spec, which project linkshort follows: it holds 2 open cards (#1, #14); move or close them first"},
+		"D1b": {edit("projects/linkshort.yaml", "process: spec", "process: maintenance"),
+			"projects/linkshort.yaml: process maintenance has no lane plan, which holds 2 open cards of project linkshort (#1, #14); move or close them first"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			src, store, rej := &memSource{}, &memPolicy{}, &rejections{}
+			store.cards = []OpenCard{
+				{Project: "linkshort", Lane: "plan", Process: "spec", Issue: 14},
+				{Project: "linkshort", Lane: "ready", Process: "spec", Issue: 2},
+				{Project: "linkshort", Lane: "plan", Process: "spec", Issue: 1},
+				{Project: "demo-app", Lane: "backlog", Process: "maintenance", Issue: 3},
+			}
+			l := &PolicyLoader{Source: src, Store: store, Rejected: rej.raise}
+			src.push("c1", fixture)
+			if err := l.Boot(ctx); err != nil {
+				t.Fatal(err)
+			}
+			src.push("c2", tc.head)
+			if err := l.Load(ctx); err == nil || err.Error() != tc.want {
+				t.Fatalf("load = %v\nwant %s", err, tc.want)
+			}
+			if cur := l.Current(); cur.Commit != "c1" || store.records != 1 || !slices.Equal(rej.calls, []string{"c2 1 true"}) {
+				t.Fatalf("current %s, %d records, rejections %v: want c1 to stay and c2 raised", cur.Commit, store.records, rej.calls)
+			}
+			store.cards = store.cards[1:2]
+			if err := l.Load(ctx); err != nil || l.Current().Commit != "c2" {
+				t.Fatalf("after the cards left the lane: %v, current %s", err, l.Current().Commit)
+			}
+		})
 	}
 }

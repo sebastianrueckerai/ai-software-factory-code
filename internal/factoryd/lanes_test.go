@@ -3,10 +3,13 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -413,7 +416,7 @@ func TestFileTaskEntersReady(t *testing.T) {
 	p := seedProject("sf/r")
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	got, ref, err := FileAgentTask(ctx, store, f, wf, p, "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
+	got, ref, err := FileAgentTask(ctx, store, f, wf, nil, p, "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
 	if err != nil || ref.Number != 40 {
 		t.Fatal(ref, err)
 	}
@@ -426,7 +429,7 @@ func TestFileTaskEntersReady(t *testing.T) {
 	}
 	p.Process, p.Lanes = "gated", approversLanes
 	store, wf = newFakeStore(), &fakeWorkflows{}
-	got, _, err = FileAgentTask(ctx, store, f, wf, p, "It fires", "body", []string{"bug"}, Task{ID: "t-alert", Source: SourceAlert})
+	got, _, err = FileAgentTask(ctx, store, f, wf, nil, p, "It fires", "body", []string{"bug"}, Task{ID: "t-alert", Source: SourceAlert})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +440,7 @@ func TestFileTaskEntersReady(t *testing.T) {
 		t.Fatalf("labels %v, started %v", *labels, wf.started)
 	}
 	p.Lanes = nil
-	if _, _, err := FileAgentTask(ctx, store, f, wf, p, "x", "y", nil, Task{ID: "t-none"}); err == nil ||
+	if _, _, err := FileAgentTask(ctx, store, f, wf, nil, p, "x", "y", nil, Task{ID: "t-none"}); err == nil ||
 		err.Error() != "project sf-r follows no process with a lane ready" {
 		t.Fatalf("no ready lane: %v", err)
 	}
@@ -449,7 +452,7 @@ func TestRollHasNoLane(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	got, _, err := FileAgentTask(ctx, store, f, wf, seedProject("sf/r"), "roll abc", "body", nil, Task{ID: "t-roll", Source: SourceRoll})
+	got, _, err := FileAgentTask(ctx, store, f, wf, nil, seedProject("sf/r"), "roll abc", "body", nil, Task{ID: "t-roll", Source: SourceRoll})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +460,7 @@ func TestRollHasNoLane(t *testing.T) {
 		!slices.Equal(*labels, []string{"state/queued"}) || !slices.Equal(wf.started, []string{"t-roll"}) {
 		t.Fatalf("roll = %+v, labels %v, started %v", got, *labels, wf.started)
 	}
-	got, _, err = FileTask(ctx, store, f, wf, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+	got, _, err = FileTask(ctx, store, f, Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"}, Task{ID: "t-h", Kind: "human", Source: SourceConfig})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -678,4 +681,134 @@ func TestMoveKeepsOneLaneLabel(t *testing.T) {
 	if got := issueLabels(t, in.Forgejo, 26); !slices.Equal(got, []string{"agent", "state/queued"}) || card(store, 26).Lane != "ready" {
 		t.Fatalf("labels = %v, card %+v", got, card(store, 26))
 	}
+}
+
+// withTimeline serves issue number's timeline as entries in front of in's
+// Forgejo stub, a page of two at a time.
+func withTimeline(t *testing.T, in *Intake, number int64, entries ...string) {
+	t.Helper()
+	stub, err := url.Parse(in.Forgejo.BaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(stub)
+	path := "/api/v1/repos/sf/ai-software-factory-code/issues/" + strconv.FormatInt(number, 10) + "/timeline"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == path {
+			servePage(w, r, 2, entries...)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	in.Forgejo.BaseURL = srv.URL
+}
+
+// labelEntry is a timeline entry of label name added (or removed) by user.
+func labelEntry(user, name string, added bool) string {
+	body := ""
+	if added {
+		body = "1"
+	}
+	return `{"type":"label","user":{"login":"` + user + `"},"label":{"name":"` + name + `"},"body":"` + body + `"}`
+}
+
+// The heal pass reads a backlog card's lane label off its issue's timeline:
+// the latest entry that added it by a user other than the bot (the bot's
+// state/* mirror and its own label writes skipped) is judged as that
+// user's move. A writer's starts the card and records its entry by them;
+// an outsider's latest add is refused as its webhook would be; a label only
+// the bot added moves nothing.
+func TestHealPromotesFromAddingLabelEvent(t *testing.T) {
+	ctx := context.Background()
+	heal := func(in *Intake, labels ...string) {
+		t.Helper()
+		issue := webhookIssue{Index: 30, Poster: webhookUser{UserName: "factory-agent"}}
+		for _, l := range labels {
+			issue.Labels = append(issue.Labels, webhookLabel{Name: l})
+		}
+		if err := in.intakeIssue(ctx, "heal pass", "sf/ai-software-factory-code", "", issue, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	child := Task{ID: "t-c", Kind: "agent", Status: "backlog", Lane: "backlog", Process: "spec", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 30, Parent: "t-plan", Source: SourcePlan}
+
+	in, store, requests := laneIntake(t, "spec", specLanes)
+	objects := &fakeObjectStore{}
+	in.Timeline = &Timeline{Objects: objects}
+	store.tasks["t-c"] = child
+	withTimeline(t, in, 30,
+		labelEntry("factory-agent", "backlog", true),
+		labelEntry("factory-agent", "state/backlog", true),
+		`{"type":"comment","user":{"login":"mallory"},"body":"1"}`,
+		labelEntry("outsider", "agent", true),
+		labelEntry("sebastian", "agent", true),
+		labelEntry("mallory", "agent", false),
+		labelEntry("factory-agent", "agent", true),
+		labelEntry("factory-agent", "state/queued", true),
+	)
+	heal(in, "backlog", "state/backlog", "agent")
+	if got := store.tasks["t-c"]; got.Status != "queued" || got.Lane != "ready" || !slices.Equal(workflowsOf(in).started, []string{"t-c"}) {
+		t.Fatalf("card = %+v, started %v: want sebastian's move into ready", got, workflowsOf(in).started)
+	}
+	if got := events(t, objects, "t-c"); !slices.Equal(got, []string{"card_entered_lane ready sebastian"}) {
+		t.Fatalf("events = %v", got)
+	}
+	if got := comments(*requests); len(got) != 0 {
+		t.Fatalf("comments = %q", got)
+	}
+
+	in, store, requests = laneIntake(t, "spec", specLanes)
+	store.tasks["t-c"] = child
+	withTimeline(t, in, 30,
+		labelEntry("sebastian", "agent", true),
+		labelEntry("sebastian", "agent", false),
+		labelEntry("outsider", "agent", true),
+		labelEntry("factory-agent", "state/backlog", true),
+	)
+	heal(in, "backlog", "state/backlog", "agent")
+	want := "factoryd: lane ready takes a card from writers of sf/ai-software-factory-code; outsider is none. The card stays in backlog."
+	if got := store.tasks["t-c"]; got.Status != "backlog" || len(workflowsOf(in).started) != 0 || !slices.Equal(comments(*requests), []string{want}) {
+		t.Fatalf("card = %+v, started %v, comments %q: want the outsider's move refused", got, workflowsOf(in).started, comments(*requests))
+	}
+
+	in, store, requests = laneIntake(t, "spec", specLanes)
+	store.tasks["t-c"] = child
+	withTimeline(t, in, 30, labelEntry("factory-agent", "plan", true), labelEntry("factory-agent", "state/backlog", true))
+	heal(in, "backlog", "state/backlog", "plan")
+	if got := store.tasks["t-c"]; got.Status != "backlog" || len(workflowsOf(in).started) != 0 || len(comments(*requests)) != 0 {
+		t.Fatalf("card = %+v, started %v, comments %q: want no move", got, workflowsOf(in).started, comments(*requests))
+	}
+}
+
+// events are the event lines of task id's timeline: the event and its
+// lane and by where it has them.
+func events(t *testing.T, objects *fakeObjectStore, id string) []string {
+	t.Helper()
+	b, err := objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if line == "" {
+			continue
+		}
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatal(err)
+		}
+		if e["step"] != StepEvent {
+			continue
+		}
+		fields := []string{e["event"].(string)}
+		for _, k := range []string{"lane", "by", "state", "pr", "cards"} {
+			if v, ok := e[k]; ok {
+				fields = append(fields, fmt.Sprint(v))
+			}
+		}
+		out = append(out, strings.Join(fields, " "))
+	}
+	return out
 }

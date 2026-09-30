@@ -1245,6 +1245,33 @@ func (f *Forgejo) IssueClosedBy(ctx context.Context, owner, repo string, number 
 	return closer, nil
 }
 
+// LabelAdder is the user of the latest entry on issue number's timeline
+// that added one of labels, skip's aside (the bot, whose state/* mirror is
+// most of them); "" when none did. Forgejo's entry of type label carries
+// body "1" for an addition and "" for a removal.
+func (f *Forgejo) LabelAdder(ctx context.Context, owner, repo string, number int64, labels []string, skip string) (string, error) {
+	events, err := GetPages[struct {
+		Type string `json:"type"`
+		User struct {
+			UserName string `json:"login"`
+		} `json:"user"`
+		Label *struct {
+			Name string `json:"name"`
+		} `json:"label"`
+		Body string `json:"body"`
+	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/timeline?", owner, repo, number))
+	if err != nil {
+		return "", err
+	}
+	adder := ""
+	for _, e := range events {
+		if e.Type == "label" && e.Body == "1" && e.Label != nil && slices.Contains(labels, e.Label.Name) && e.User.UserName != skip {
+			adder = e.User.UserName
+		}
+	}
+	return adder, nil
+}
+
 // OpenIssues lists owner/repo's open issues, not pull requests.
 func (f *Forgejo) OpenIssues(ctx context.Context, owner, repo string) ([]webhookIssue, error) {
 	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&", owner, repo))

@@ -29,6 +29,16 @@ type PolicyStore interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 	// SweepHolds books the holds whose caller never released them.
 	SweepHolds(ctx context.Context) (int, error)
+	// OpenCardsByLane are the open cards that sit in a lane.
+	OpenCardsByLane(ctx context.Context) ([]OpenCard, error)
+}
+
+// OpenCard is an open card in a lane: the project its repository belongs
+// to, its lane, the process its row follows ("" before the loader filled
+// it) and its issue.
+type OpenCard struct {
+	Project, Lane, Process string
+	Issue                  int64
 }
 
 // ConfigSource reads the configuration tree (ruling 183): the head commit
@@ -121,7 +131,8 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 
 // Load reads the head commit and records its tree if the commit changed
 // since the last call. It logs every failure itself; a failure to read is
-// tried again at the next call, a refused tree is not.
+// tried again at the next call, a refused tree is not, unless open cards in
+// a lane it drops refused it (CheckOpenLanes).
 func (l *PolicyLoader) Load(ctx context.Context) error {
 	head, err := l.Source.Head(ctx)
 	if err != nil {
@@ -139,6 +150,17 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 		return l.readFailed(ctx, "read commit "+head, err)
 	}
 	tree, err := CheckTree(files, l.LadderModels)
+	held := false
+	if err == nil {
+		cards, cerr := l.Store.OpenCardsByLane(ctx)
+		if cerr != nil {
+			log.Printf("config: commit %s: open cards per lane: %v", head, cerr)
+			return fmt.Errorf("open cards per lane: %w", cerr)
+		}
+		if lines := CheckOpenLanes(tree, cards); len(lines) > 0 {
+			err, held = errors.New(strings.Join(lines, "\n")), true
+		}
+	}
 	if err != nil {
 		stays := "no version is current"
 		if loaded {
@@ -151,9 +173,13 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 				return err
 			}
 		}
-		l.mu.Lock()
-		l.seen = head
-		l.mu.Unlock()
+		if !held {
+			// open cards leave their lane without a new commit: a held head
+			// is judged again at the next call
+			l.mu.Lock()
+			l.seen = head
+			l.mu.Unlock()
+		}
 		return err
 	}
 	v, inserted, err := l.Store.RecordPolicy(ctx, head, tree)
@@ -226,6 +252,50 @@ func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
 		return policy.Tree{}, err
 	}
 	return tree, nil
+}
+
+// CheckOpenLanes is the loader's one judgement the tree alone cannot make
+// (D1, D1b): no open card may sit in a lane that the process its project
+// follows in tree lacks. One line per project and lane, on the process file
+// when the card's own process lost the lane, else on the project file.
+func CheckOpenLanes(tree policy.Tree, cards []OpenCard) []string {
+	type key struct {
+		project, lane, process string
+		moved                  bool
+	}
+	held := map[key][]int64{}
+	for _, c := range cards {
+		pc, ok := tree.Projects[c.Project]
+		if !ok || pc.Process == "" {
+			continue
+		}
+		if _, ok := laneOf(tree.Processes[pc.Process].Lanes, c.Lane); ok {
+			continue
+		}
+		k := key{c.Project, c.Lane, pc.Process, c.Process != "" && c.Process != pc.Process}
+		held[k] = append(held[k], c.Issue)
+	}
+	var lines []string
+	for k, issues := range held {
+		slices.Sort(issues)
+		refs := make([]string, len(issues))
+		for i, n := range issues {
+			refs[i] = fmt.Sprintf("#%d", n)
+		}
+		count := fmt.Sprintf("%d open card", len(issues))
+		if len(issues) > 1 {
+			count += "s"
+		}
+		if k.moved {
+			lines = append(lines, fmt.Sprintf("%s: process %s has no lane %s, which holds %s of project %s (%s); move or close them first",
+				policy.ProjectFile(k.project), k.process, k.lane, count, k.project, strings.Join(refs, ", ")))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s: lanes: lane %s is gone from process %s, which project %s follows: it holds %s (%s); move or close them first",
+			policy.ProcessFile(k.process), k.lane, k.process, k.project, count, strings.Join(refs, ", ")))
+	}
+	slices.Sort(lines)
+	return lines
 }
 
 // fitsLadder holds every class a starting lane of any process names
@@ -447,6 +517,40 @@ func (s *PGStore) RecordPolicy(ctx context.Context, commit string, tree policy.T
 	return policy.Record(ctx, s.db, commit, tree)
 }
 
+// OpenCardsByLane reads every open card with a lane; its project is the
+// one whose file in force names its repository, and a card of no project
+// is left out.
+func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
+	ps, err := s.Projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	project := map[string]string{}
+	for _, p := range ps {
+		if p.File {
+			project[p.Repository] = p.Name
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT repository, lane, COALESCE(process, ''), issue_number FROM tasks
+		WHERE lane IS NOT NULL AND status NOT IN ('done', 'failed', 'closed') ORDER BY issue_number`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cards []OpenCard
+	for rows.Next() {
+		var repository string
+		var c OpenCard
+		if err := rows.Scan(&repository, &c.Lane, &c.Process, &c.Issue); err != nil {
+			return nil, err
+		}
+		if c.Project = project[repository]; c.Project != "" {
+			cards = append(cards, c)
+		}
+	}
+	return cards, rows.Err()
+}
+
 func (s *PGStore) PolicyVersion(ctx context.Context, id int64) (policy.Version, bool, error) {
 	return policy.VersionByID(ctx, s.db, id)
 }
@@ -498,6 +602,7 @@ type ConfigBook interface {
 	// lane and no process yet.
 	BackfillProcess(ctx context.Context, repository, process string) error
 	projectLookup
+	taskReader
 }
 
 // ConfigAlarm raises a refused commit of the configuration tree (ruling
@@ -537,7 +642,7 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 	body := fmt.Sprintf("factoryd refused the configuration tree %s/ at commit %s (%s). %s\n\nReasons (`factoryd config check %s` shows the same):\n\n%s\n\n"+
 		"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue.\n\nfiled by factoryd",
 		a.Dir, commit, link, stays, a.Dir, fenced(reason.Error()))
-	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, Task{
+	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, []string{"human"}, Task{
 		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
 		Source: SourceConfig, Author: a.Forgejo.BotUser,
 	})

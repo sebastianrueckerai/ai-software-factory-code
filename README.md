@@ -139,8 +139,13 @@ poster; the default entry (no lane label, or `bug`) enters ready from
 anyone under `writers` and from an approver only under `approvers`. On a
 backlog card, a lane label added, or a lane label removed so that none is
 left, judges the event's sender, and so does a label event that brings in
-an issue with no card yet (its lane label judges poster and sender); the heal pass and the bot know no sender
-and move nothing. A refused entry lands in the backlog: factoryd takes
+an issue with no card yet (its lane label judges poster and sender); the
+bot's own label events move nothing. The heal pass knows no sender: for a
+backlog card whose issue carries a starting lane's label it reads the
+issue's timeline and judges the latest entry that added that label
+(`type` `label`, `body` `1`) by a user other than the bot; it never infers
+a removal, so a backlog card with no lane label stays. A refused entry
+lands in the backlog: factoryd takes
 the starting lane labels off, puts `backlog` on and comments once why
 (`factoryd: lane ready takes a card from writers of <repo>; <user> is
 none. The card stays in backlog.`). A card that enters a starting lane
@@ -590,6 +595,17 @@ issues is gated with `workflow.GetVersion` (see the version constants in
 replays histories recorded on the cluster (`internal/factoryd/testdata`).
 `GET /tasks/{id}/timeline` serves `sessions/<id>/timeline.jsonl`.
 
+The events (`internal/factoryd/events.go`) are timeline lines of step
+`event` on the task they concern: `card_created` (intake's new row,
+`FileAgentTask`'s card), `card_entered_lane` with `lane` and `by` (at
+creation, a label's move, the heal pass's move; the same function then
+starts the lane's task or the backlog's write-up), `task_ended` with
+`state` (`Finish`, a closed backlog card, a closed human-lane issue),
+`pull_request_merged` with `pr` and `by` (`Merge` for factory-merge's
+merges, intake for a human's merge in Forgejo) and `all_children_done`
+with `cards` on the plan task when the last of its cards turns done,
+which also comments on the plan's issue.
+
 ## Configuration, policy and costs
 
 factoryd's configuration is the directory `factory/` of the infra
@@ -641,7 +657,12 @@ row (about five minutes) raise one `config_rejected` alert of source
 when no valid version exists at all, and the gateway refuses every call
 while the version in force does not validate. `config check` judges a
 tree with the loader's own function (`factoryd.CheckTree`, the ladder
-from `MODEL` and `STRONGER_MODEL` included). `GET /policy` and the
+from `MODEL` and `STRONGER_MODEL` included); the loader alone then
+refuses a tree that takes a lane from under open cards (a process file
+that drops the lane, or a project moved to a process without it), since
+only it reads the open cards (`CheckOpenLanes`, `OpenCardsByLane`), and
+judges such a commit again at every poll, so it loads once the cards
+left the lane. `config check` says so in its last line. `GET /policy` and the
 console's configuration page show the version in force, read-only, each
 file linked at its commit.
 
@@ -1630,7 +1651,11 @@ first count and the counts before a restart are in a day's bar, which an
 increase over a cumulative series drops. A panel sums them over the
 factoryd pods:
 
-- `factory.task.outcome{project,state,model_alias,attempts,merge_rule}`:
+The four task metrics below also carry `process` and `lane` from the
+task row (`none` where it holds none: a roll, a human-lane task, the
+console's alert verdict click); a report task carries its parent's.
+
+- `factory.task.outcome{project,state,model_alias,attempts,merge_rule,process,lane}`:
   once per task on every path that ends it (`Complete`, which `Finish`
   and the heal pass's failure of a malformed task go through, a closed
   backlog card, a closed human-lane issue, a resolved config task), so it
@@ -1640,17 +1665,17 @@ factoryd pods:
   and `human` without one), `model_alias` is the alias of the task's last
   session (`tasks.model_alias`, set with each `sessions` row; `none` for
   a task that ran none: a roll, a human-lane task), `attempts` its sessions.
-- `factory.task.cost{model_alias,outcome}`: the task's `spent_eur` at
+- `factory.task.cost{model_alias,outcome,process,lane}`: the task's `spent_eur` at
   `Finish`, in EUR, buckets 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5 and
   10; `outcome` is `merged` for a done task with a pull request, else the
   final state. Spend settled after `Finish` (LiteLLM's late batches) is
   not in it.
-- `factory.review.verdict{verdict,strict_improvement,round}`: every
+- `factory.review.verdict{verdict,strict_improvement,round,process,lane}`: every
   model review answer, `verdict` approve, concerns or `none` (refused,
   failed or invalid), `strict_improvement` true, false or `unset`, `round`
   the review's round on the task. A roll's review asks no model and is
   not counted.
-- `factory.human.intervention{kind}`: from the Forgejo intake when its
+- `factory.human.intervention{kind,process,lane}`: from the Forgejo intake when its
   event row is new (a redelivery or the heal pass's re-read counts
   nothing), so the console's actions (it acts as the human in Forgejo) and
   the same actions taken in Forgejo count alike: `approve` (a writer's

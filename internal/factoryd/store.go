@@ -284,6 +284,8 @@ type Store interface {
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
 	// ReportOf is parent's report task of source.
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
+	// PlanCards are the cards plan filed (source plan).
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
 	// its branch does not carry yet (RollCommit).
 	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
@@ -405,6 +407,10 @@ func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 
 func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
 	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
+}
+
+func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 ORDER BY id`, plan, SourcePlan)
 }
 
 func defaultKind(kind string) string {

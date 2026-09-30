@@ -53,7 +53,7 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s judged alert %d %s", user, id, v)
-	c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionAlertVerdict)
+	c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionAlertVerdict, "none", "none")
 	back := "/alerts"
 	if r.PostFormValue("back") == "/" {
 		back = "/"

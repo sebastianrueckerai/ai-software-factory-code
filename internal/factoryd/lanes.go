@@ -227,8 +227,9 @@ func (in *Intake) move(ctx context.Context, via string, p Project, t Task, name 
 	}
 	log.Printf("%s: issue #%d on %s: %s moved task %s to lane %s", via, t.IssueNumber, t.Repository, sender, t.ID, name)
 	in.keepLaneLabel(ctx, via, t.Repository, t.IssueNumber, names, name)
-	mirrorTaskState(ctx, in.Forgejo, t, "queued")
-	return in.Workflows.Start(ctx, t.ID)
+	t.Lane, t.Status = name, "queued"
+	mirrorTaskState(ctx, in.Forgejo, t, t.Status)
+	return in.enterLane(ctx, p, t, sender, defaultBranch)
 }
 
 // fileEntry is the entry of agent task t, which factoryd files as the bot
