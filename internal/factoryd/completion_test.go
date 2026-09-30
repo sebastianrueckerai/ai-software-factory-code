@@ -193,9 +193,10 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 	check := func(pass int, want map[string]float64) {
 		t.Helper()
 		n, err := c.SettleSpend(context.Background())
-		// pass 1 settles t1 and t2 inside the window and old and cut past
-		// it; pass 2 finds old and cut settled
-		if wantN := map[int]int{1: 4, 2: 2}[pass]; err != nil || n != wantN {
+		// the count is of changed spend: pass 1 raises t1 and sets old and
+		// cut past the window, t2 has no keys; pass 2 raises t1 again and
+		// finds old and cut settled
+		if wantN := map[int]int{1: 3, 2: 1}[pass]; err != nil || n != wantN {
 			t.Fatalf("pass %d: SettleSpend = (%d, %v), want (%d, nil)", pass, n, err, wantN)
 		}
 		for id, w := range want {

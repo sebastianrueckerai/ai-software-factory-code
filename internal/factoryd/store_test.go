@@ -312,14 +312,15 @@ func (s *fakeStore) RecentlyFinishedTasks(ctx context.Context, within time.Durat
 	return ids, nil
 }
 
-func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64) error {
+func (s *fakeStore) SettleSpend(ctx context.Context, id string, reported float64) (bool, error) {
 	t, ok := s.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s: not found", id)
+		return false, fmt.Errorf("task %s: not found", id)
 	}
+	changed := reported > t.SpentEUR
 	t.SpentEUR = max(t.SpentEUR, reported)
 	s.tasks[id] = t
-	return nil
+	return changed, nil
 }
 
 func (s *fakeStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error) {
@@ -333,15 +334,16 @@ func (s *fakeStore) UnsettledTasks(ctx context.Context, olderThan time.Duration)
 	return ids, nil
 }
 
-func (s *fakeStore) SettleSpendFinal(ctx context.Context, id string, reported float64) error {
+func (s *fakeStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {
 	t, ok := s.tasks[id]
 	if !ok || s.settled[id] {
-		return fmt.Errorf("task %s: not found", id)
+		return false, fmt.Errorf("task %s: not found", id)
 	}
+	changed := reported != t.SpentEUR
 	t.SpentEUR = reported
 	s.tasks[id] = t
 	s.settled[id] = true
-	return nil
+	return changed, nil
 }
 
 func (s *fakeStore) InsertSession(ctx context.Context, sess Session) error {
@@ -783,7 +785,7 @@ func TestPGStore(t *testing.T) {
 		id       string
 		reported float64
 	}{{"s-done", 0.75}, {"s-failed", 0.25}, {"s-done", 0.625}, {"s-done", 0.875}} {
-		if err := s.SettleSpend(ctx, step.id, step.reported); err != nil {
+		if _, err := s.SettleSpend(ctx, step.id, step.reported); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -821,7 +823,7 @@ func TestPGStore(t *testing.T) {
 	for _, step := range []struct {
 		reported, want float64
 	}{{1, 1.25}, {1.125, 1.375}, {0.9, 1.375}} {
-		if err := s.SettleSpend(ctx, "s-tool", step.reported); err != nil {
+		if _, err := s.SettleSpend(ctx, "s-tool", step.reported); err != nil {
 			t.Fatal(err)
 		}
 		if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != step.want {
@@ -829,7 +831,7 @@ func TestPGStore(t *testing.T) {
 		}
 	}
 	// a difference below a nano-euro is float noise and books nothing
-	if err := s.SettleSpend(ctx, "s-tool", 1.125+5e-10); err != nil {
+	if _, err := s.SettleSpend(ctx, "s-tool", 1.125+5e-10); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s.Task(ctx, "s-tool"); got.SpentEUR != 1.375 {
@@ -840,7 +842,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("s-tool settlement rows = %q (%v), want 0.25 0.125", toolSettled, err)
 	}
 	// 2e-9 above the booked 1.125 is a real raise: one row of it
-	if err := s.SettleSpend(ctx, "s-tool", 1.125+2e-9); err != nil {
+	if _, err := s.SettleSpend(ctx, "s-tool", 1.125+2e-9); err != nil {
 		t.Fatal(err)
 	}
 	var n int
@@ -849,7 +851,7 @@ func TestPGStore(t *testing.T) {
 		n != 3 || math.Abs(last-2e-9) > 1e-12 {
 		t.Fatalf("after 2e-9: %d settlement rows, last %v (%v); want 3, 2e-9", n, last, err)
 	}
-	if err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
 	}
 	// the final settlement (ruling 196): a task past the window, two
@@ -869,7 +871,7 @@ func TestPGStore(t *testing.T) {
 	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-cut", "s-old"}) {
 		t.Fatalf("unsettled past 2h = (%v, %v), want [s-cut s-old]", ids, err)
 	}
-	if err := s.SettleSpendFinal(ctx, "s-cut", 0.2751); err != nil {
+	if _, err := s.SettleSpendFinal(ctx, "s-cut", 0.2751); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s.Task(ctx, "s-cut"); math.Abs(got.SpentEUR-0.2751) > 1e-9 {
@@ -882,11 +884,11 @@ func TestPGStore(t *testing.T) {
 	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-old"}) {
 		t.Fatalf("unsettled after the final settlement = (%v, %v), want [s-old]", ids, err)
 	}
-	if err := s.SettleSpendFinal(ctx, "s-cut", 0.1); !errors.Is(err, ErrNotFound) {
+	if _, err := s.SettleSpendFinal(ctx, "s-cut", 0.1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a second final settlement = %v, want ErrNotFound (settled once)", err)
 	}
 	// LiteLLM's figure equal to the booked spend marks the task settled with no row
-	if err := s.SettleSpendFinal(ctx, "s-old", 0.5); err != nil {
+	if _, err := s.SettleSpendFinal(ctx, "s-old", 0.5); err != nil {
 		t.Fatal(err)
 	}
 	var oldRows int
@@ -1368,5 +1370,68 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
 	if want := []AlertCount{{"alert", "open", 1}, {"screening", "noise", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
+	}
+}
+
+// Settlement sets spent_eur to the task's ledger sum instead of adding its
+// delta: a task whose spend predates the ledger holds LiteLLM's figure in
+// spent_eur and no model row, so an added delta counted that spend twice
+// (41 tasks at the final pass of 2026-09-29 20:38:20Z). Each call reports
+// whether it changed the task's spend.
+func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "pre-final", BudgetEUR: 2, SpentEUR: 0.5, Status: "done"},
+		{ID: "pre-window", BudgetEUR: 2, SpentEUR: 0.5, Status: "done"},
+		{ID: "same", BudgetEUR: 2, SpentEUR: 0.25, Status: "done"},
+	} {
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id IN ('pre-final', 'pre-window', 'same');
+		INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('same', 'model', 'coding-cheap', 0.25)`); err != nil {
+		t.Fatal(err)
+	}
+	spent := func(id string) float64 {
+		t.Helper()
+		got, _, err := s.Task(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.SpentEUR
+	}
+
+	// no model row: the whole 0.5 is booked as the settlement, and spent_eur
+	// is that row, not 0.5 + 0.5
+	if changed, err := s.SettleSpendFinal(ctx, "pre-final", 0.5); err != nil || !changed {
+		t.Fatalf("SettleSpendFinal(pre-final) = (%v, %v), want (true, nil)", changed, err)
+	}
+	if got := spent("pre-final"); math.Abs(got-0.5) > 1e-9 {
+		t.Fatalf("pre-final spent = %v, want 0.5 (its ledger sum)", got)
+	}
+	// inside the window likewise: 0.625 booked, spent 0.625, not 1.125
+	if changed, err := s.SettleSpend(ctx, "pre-window", 0.625); err != nil || !changed {
+		t.Fatalf("SettleSpend(pre-window) = (%v, %v), want (true, nil)", changed, err)
+	}
+	if got := spent("pre-window"); math.Abs(got-0.625) > 1e-9 {
+		t.Fatalf("pre-window spent = %v, want 0.625 (its ledger sum)", got)
+	}
+	// the same figure again books nothing and changes nothing
+	if changed, err := s.SettleSpend(ctx, "pre-window", 0.625); err != nil || changed {
+		t.Fatalf("second SettleSpend(pre-window) = (%v, %v), want (false, nil)", changed, err)
+	}
+	// LiteLLM's figure equal to the booked model spend: settled, unchanged
+	if changed, err := s.SettleSpendFinal(ctx, "same", 0.25); err != nil || changed {
+		t.Fatalf("SettleSpendFinal(same) = (%v, %v), want (false, nil)", changed, err)
+	}
+	if got := spent("same"); math.Abs(got-0.25) > 1e-9 {
+		t.Fatalf("same spent = %v, want 0.25", got)
 	}
 }

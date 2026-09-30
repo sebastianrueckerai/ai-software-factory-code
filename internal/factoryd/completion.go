@@ -77,7 +77,7 @@ const SpendSettleWindow = policy.HoldTTL + time.Hour
 // gateway could not book (an abandoned stream) still counts; a task past
 // the window is set to LiteLLM's figure once, down as well as up, since a
 // call the gate cut was booked at its hold (ruling 196). It lists LiteLLM's
-// keys once per pass and returns how many tasks it settled.
+// keys once per pass and returns how many tasks' spend it changed.
 func (c *Completion) SettleSpend(ctx context.Context) (int, error) {
 	ids, err := c.Store.RecentlyFinishedTasks(ctx, SpendSettleWindow)
 	if err != nil {
@@ -91,18 +91,22 @@ func (c *Completion) SettleSpend(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	errs := []error{}
+	changed, errs := 0, []error{}
 	for _, id := range ids {
-		if err := c.Store.SettleSpend(ctx, id, spend[id]); err != nil {
+		if ok, err := c.Store.SettleSpend(ctx, id, spend[id]); err != nil {
 			errs = append(errs, fmt.Errorf("task %s: %w", id, err))
+		} else if ok {
+			changed++
 		}
 	}
 	for _, id := range final {
-		if err := c.Store.SettleSpendFinal(ctx, id, spend[id]); err != nil {
+		if ok, err := c.Store.SettleSpendFinal(ctx, id, spend[id]); err != nil {
 			errs = append(errs, fmt.Errorf("task %s: final: %w", id, err))
+		} else if ok {
+			changed++
 		}
 	}
-	return len(ids) + len(final) - len(errs), errors.Join(errs...)
+	return changed, errors.Join(errs...)
 }
 
 // SettleLoop runs a SettleSpend pass every interval until ctx ends. It has
@@ -120,7 +124,7 @@ func (c *Completion) SettleLoop(ctx context.Context, every time.Duration) {
 				log.Printf("settle spend: %v", err)
 			}
 			if n > 0 {
-				log.Printf("settle spend: pass settled %d tasks finished within %s", n, SpendSettleWindow)
+				log.Printf("settle spend: pass changed the spend of %d tasks", n)
 			}
 		}
 	}
