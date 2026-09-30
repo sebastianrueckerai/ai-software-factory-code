@@ -411,7 +411,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	// the request as priced: 2 started hours of cx23 + IPv4 + 20 GB
 	r := e.cs.reqs[0]
 	if r.TaskID != "42" || r.Repo != "sf/app" || r.Session != "s-1" || r.Location != "fsn1" || r.LeaseMinutes != 90 || r.VolumeGB != 20 ||
-		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 {
+		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 || r.MonthEUR != 50 {
 		t.Fatalf("reserve request = %+v", r)
 	}
 	sr := e.hz.serverReq

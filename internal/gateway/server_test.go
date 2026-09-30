@@ -25,7 +25,7 @@ var coder = []string{"coder"}
 func testPolicy(id int64, dayEUR float64) policy.Version {
 	return policy.Version{ID: id, Commit: fmt.Sprintf("c-%d", id), Tree: policy.Tree{Document: policy.Document{
 		Version: 1,
-		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR},
+		Budget:  policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: dayEUR, MonthEUR: 50},
 		Limits: policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute,
 			StrongerAfter: 1},
 		Risk:            policy.Risk{Classes: []policy.RiskClass{{Name: "normal", Outcome: policy.OutcomeRequiresApproval}}, Default: "normal"},
@@ -68,10 +68,11 @@ type memStore struct {
 	ledger []ledgerRow
 	holds  map[int64]policy.Hold
 	nextID int64
-	// day is today's ledger total before this test's calls
-	day      float64
-	pol      *policy.Version // nil = none loaded
-	polReads int
+	// day is today's ledger total before this test's calls, month the
+	// month's before today
+	day, month float64
+	pol        *policy.Version // nil = none loaded
+	polReads   int
 }
 
 func newMemStore(tasks ...Task) *memStore {
@@ -111,7 +112,8 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 			taskHeld += h.EUR
 		}
 	}
-	taskHeadroom, dayHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal
+	taskHeadroom, dayHeadroom, monthHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal
+	free := policy.Free{Task: taskHeadroom - taskHeld, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld}
 	var h policy.Hold
 	var err error
 	if r.Kind == policy.KindTool {
@@ -126,16 +128,16 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 				requests, used = requests+1, used+o.EUR
 			}
 		}
-		h, err = policy.FitTool(taskHeadroom-taskHeld, dayHeadroom-dayHeld, requests, used, r)
+		h, err = policy.FitTool(free, requests, used, r)
 	} else {
-		h, err = policy.Fit(taskHeadroom-taskHeld, dayHeadroom-dayHeld, r)
+		h, err = policy.Fit(free, r)
 	}
 	if err != nil {
 		return h, err
 	}
 	m.nextID++
 	h.ID = m.nextID
-	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom)
+	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom, monthHeadroom)
 	m.holds[h.ID] = h
 	return h, nil
 }
@@ -355,6 +357,7 @@ func TestChatCompletions(t *testing.T) {
 		noPolicy    bool    // no policy version loaded yet
 		oldPolicy   bool    // the version in force is a row from before the tree
 		dayTotal    float64 // today's ledger total before the call (policy day cap 20)
+		monthTotal  float64 // the month's ledger total before today (policy month cap 50)
 
 		wantStatus      int
 		wantDecision    string
@@ -429,6 +432,30 @@ func TestChatCompletions(t *testing.T) {
 			wantStatus:   http.StatusPaymentRequired,
 			wantDecision: "refused_day_cap",
 			wantErrType:  "budget_exceeded",
+		},
+		{
+			name:         "the month cap reached refuses 402",
+			wantNoMint:   true,
+			monthTotal:   49,
+			dayTotal:     1,
+			task:         &runningTask,
+			reqBody:      chatBody("coding-cheap"),
+			wantStatus:   http.StatusPaymentRequired,
+			wantDecision: "refused_month_cap",
+			wantErrType:  "budget_exceeded",
+		},
+		{
+			name:            "the key is capped at the month headroom when it is the smallest",
+			monthTotal:      47,
+			dayTotal:        1,
+			task:            &runningTask,
+			reqBody:         chatBody("coding-cheap"),
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.1"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantMintBudget:  ptr(2.0),
+			wantSpent:       ptr(2.1),
+			wantUpstreamHit: 1,
 		},
 		{
 			name:            "the key is capped at the day headroom when it is the smaller",
@@ -901,7 +928,7 @@ func TestChatCompletions(t *testing.T) {
 			if tt.oldPolicy {
 				store.pol = &policy.Version{ID: 1, Commit: "e3b0c442"}
 			}
-			store.day = tt.dayTotal
+			store.day, store.month = tt.dayTotal, tt.monthTotal
 			minter := &fakeMinter{err: tt.mintErr}
 
 			url := stub.URL

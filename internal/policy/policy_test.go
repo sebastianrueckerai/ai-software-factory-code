@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +23,7 @@ budget:
   task_default_eur: 2
   task_max_eur: 5
   day_eur: 20
+  month_eur: 50
 classes:
   coder:
     models: [coding-cheap, coding-frontier]
@@ -51,7 +53,7 @@ func TestParseValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Budget != (Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20}) {
+	if d.Budget != (Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50}) {
 		t.Fatalf("budget = %+v", d.Budget)
 	}
 	want := Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}
@@ -70,8 +72,10 @@ func TestParseRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ doc, want string }{
 		"empty":           {"", "empty document"},
 		"unknown top key": {valid + "surprise: {}\n", "field surprise not found"},
-		"unknown budget key": {strings.Replace(valid, "day_eur: 20", "day_eur: 20\n  month_eur: 1", 1),
-			"field month_eur not found"},
+		"unknown budget key": {strings.Replace(valid, "day_eur: 20", "day_eur: 20\n  week_eur: 1", 1),
+			"field week_eur not found"},
+		"negative month cap":  {strings.Replace(valid, "month_eur: 50", "month_eur: -1", 1), "budget.month_eur must not be negative (0 stops all spend)"},
+		"no month cap":        {strings.Replace(valid, "  month_eur: 50\n", "", 1), "month_eur"},
 		"no envelope":         {valid[:strings.Index(valid, "envelope_default")], "envelope_default.server_types"},
 		"envelope zero cap":   {strings.Replace(valid, "monthly_eur: 10", "monthly_eur: 0", 1), "envelope_default.monthly_eur"},
 		"envelope no count":   {strings.Replace(valid, "max_count: 2", "max_count: 0", 1), "envelope_default.max_count"},
@@ -82,7 +86,7 @@ func TestParseRejects(t *testing.T) {
 		"negative day cap":    {strings.Replace(valid, "day_eur: 20", "day_eur: -1", 1), "must not be negative"},
 		"zero task max":       {strings.Replace(valid, "task_max_eur: 5", "task_max_eur: 0", 1), "must be positive"},
 		"default above max":   {strings.Replace(valid, "task_default_eur: 2", "task_default_eur: 6", 1), "exceeds task_max_eur"},
-		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1}\nlimits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}\n", "no capability classes"},
+		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1, month_eur: 1}\nlimits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}\n", "no capability classes"},
 		"class no models":     {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
 		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
@@ -123,7 +127,7 @@ func TestParseRejects(t *testing.T) {
 const withTools = `
 version: 1
 limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
-budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
+budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
     models: [coding-cheap]
@@ -200,18 +204,20 @@ func TestFitTool(t *testing.T) {
 	r := HoldRequest{TaskID: "t", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.03, Cap: ToolCap{MaxRequests: 3, MaxEUR: 0.1}}
 	var ref *Refusal
 	for name, tc := range map[string]struct {
-		taskFree, dayFree, usedEUR float64
-		requests                   int
-		want                       string
+		free     Free
+		usedEUR  float64
+		requests int
+		want     string
 	}{
-		"fits":           {1, 1, 0.07, 2, ""},
-		"requests used":  {1, 1, 0, 3, "refused_tool_requests"},
-		"euros used":     {1, 1, 0.071, 2, "refused_tool_eur"},
-		"task headroom":  {0.029, 1, 0, 0, "refused_budget"},
-		"day headroom":   {1, 0.029, 0, 0, "refused_day_cap"},
-		"exact headroom": {0.03, 0.03, 0, 0, ""},
+		"fits":           {Free{Task: 1, Day: 1, Month: 1}, 0.07, 2, ""},
+		"requests used":  {Free{Task: 1, Day: 1, Month: 1}, 0, 3, "refused_tool_requests"},
+		"euros used":     {Free{Task: 1, Day: 1, Month: 1}, 0.071, 2, "refused_tool_eur"},
+		"task headroom":  {Free{Task: 0.029, Day: 1, Month: 1}, 0, 0, "refused_budget"},
+		"day headroom":   {Free{Task: 1, Day: 0.029, Month: 1}, 0, 0, "refused_day_cap"},
+		"month headroom": {Free{Task: 1, Day: 1, Month: 0.029}, 0, 0, "refused_month_cap"},
+		"exact headroom": {Free{Task: 0.03, Day: 0.03, Month: 0.03}, 0, 0, ""},
 	} {
-		h, err := FitTool(tc.taskFree, tc.dayFree, tc.requests, tc.usedEUR, r)
+		h, err := FitTool(tc.free, tc.requests, tc.usedEUR, r)
 		switch {
 		case tc.want == "" && (err != nil || h.EUR != 0.03):
 			t.Errorf("%s: (%+v, %v), want a hold of 0.03", name, h, err)
@@ -223,16 +229,39 @@ func TestFitTool(t *testing.T) {
 
 func TestFitResource(t *testing.T) {
 	r := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384}
-	h, err := FitResource(0.05, 1, r)
+	h, err := FitResource(Free{Task: 0.05, Day: 1, Month: 1}, r)
 	if err != nil || h.EUR != 0.0384 || h.Kind != KindResource {
 		t.Fatalf("fit = %+v, %v", h, err)
 	}
 	var ref *Refusal
-	if _, err := FitResource(0.03, 1, r); !errors.As(err, &ref) || ref.Decision != "refused_budget" {
+	if _, err := FitResource(Free{Task: 0.03, Day: 1, Month: 1}, r); !errors.As(err, &ref) || ref.Decision != "refused_budget" {
 		t.Fatalf("task headroom 0.03 err = %v, want refused_budget", err)
 	}
-	if _, err := FitResource(1, 0.01, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
+	if _, err := FitResource(Free{Task: 1, Day: 0.01, Month: 1}, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
 		t.Fatalf("day headroom 0.01 err = %v, want refused_day_cap", err)
+	}
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.0383}, r); !errors.As(err, &ref) || ref.Decision != "refused_month_cap" ||
+		!strings.Contains(ref.Reason, "budget.month_eur") {
+		t.Fatalf("month headroom 0.0383 err = %v, want refused_month_cap naming budget.month_eur", err)
+	}
+}
+
+func TestHeadroomBound(t *testing.T) {
+	for _, tc := range []struct {
+		task, day, month float64
+		want             float64
+		bound            string
+	}{
+		{1, 3, 2, 1, "refused_budget"},
+		{5, 1, 2, 1, "refused_day_cap"},
+		{5, 3, 2, 2, "refused_month_cap"},
+		{1, 1, 1, 1, "refused_budget"},
+		{2, 1, 1, 1, "refused_day_cap"},
+		{2, 2, 1, 1, "refused_month_cap"},
+	} {
+		if got, bound := HeadroomBound(tc.task, tc.day, tc.month); got != tc.want || bound != tc.bound {
+			t.Errorf("HeadroomBound(%g, %g, %g) = (%g, %s), want (%g, %s)", tc.task, tc.day, tc.month, got, bound, tc.want, tc.bound)
+		}
 	}
 }
 
@@ -242,8 +271,22 @@ func TestDayCapZeroStopsSpend(t *testing.T) {
 		t.Fatalf("day_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
 	}
 	var r *Refusal
-	if _, err := Fit(1, 0, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
+	if _, err := Fit(Free{Task: 1, Day: 0, Month: 1}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
 		t.Fatalf("Fit under a day cap of 0 = %v, want refused_day_cap", err)
+	}
+}
+
+func TestMonthCapZeroStopsSpend(t *testing.T) {
+	d, err := Parse([]byte(strings.Replace(valid, "month_eur: 50", "month_eur: 0", 1)))
+	if err != nil || d.Budget.MonthEUR != 0 {
+		t.Fatalf("month_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
+	}
+	var r *Refusal
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, WantOut: 1}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
+		t.Fatalf("Fit under a month cap of 0 = %v, want refused_month_cap", err)
+	}
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0}, HoldRequest{EUR: 0.0001}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
+		t.Fatalf("FitResource under a month cap of 0 = %v, want refused_month_cap", err)
 	}
 }
 
@@ -253,6 +296,7 @@ func TestFit(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		task, day       float64
+		month           float64 // 0: 5
 		want, maxOutput int
 		wantOut         int
 		wantEUR         float64
@@ -260,10 +304,12 @@ func TestFit(t *testing.T) {
 	}{
 		{name: "headroom 0.01 buys 2250 output tokens", task: 0.01, day: 5, wantOut: 2250, wantEUR: 0.01},
 		{name: "the day binds", task: 5, day: 0.01, wantOut: 2250, wantEUR: 0.01},
+		{name: "the month binds", task: 5, day: 5, month: 0.01, wantOut: 2250, wantEUR: 0.01},
 		{name: "the caller's smaller limit stands", task: 0.01, day: 5, want: 2000, wantOut: 2000, wantEUR: 0.009},
 		{name: "the alias's output limit binds", task: 0.01, day: 5, maxOutput: 1500, wantOut: 1500, wantEUR: 0.007},
 		{name: "750 tokens is below the minimum call", task: 0.004, day: 5, refused: "refused_budget"},
 		{name: "750 tokens under the day cap", task: 5, day: 0.004, refused: "refused_day_cap"},
+		{name: "750 tokens under the month cap", task: 5, day: 5, month: 0.004, refused: "refused_month_cap"},
 		{name: "a small call that fits whole", task: 0.004, day: 5, want: 16, wantOut: 16, wantEUR: 0.001064},
 		{name: "a small call that does not fit", task: 0.00105, day: 5, want: 16, refused: "refused_budget"},
 		{name: "the input alone exceeds the headroom", task: 0.0005, day: 5, refused: "refused_budget"},
@@ -271,7 +317,7 @@ func TestFit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := p
 			pr.MaxOutput = tc.maxOutput
-			h, err := Fit(tc.task, tc.day, HoldRequest{InTokens: 1000, Price: pr, WantOut: tc.want})
+			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5)}, HoldRequest{InTokens: 1000, Price: pr, WantOut: tc.want})
 			if tc.refused != "" {
 				var r *Refusal
 				if !errors.As(err, &r) || r.Decision != tc.refused {
@@ -416,7 +462,7 @@ func TestAllowsModel(t *testing.T) {
 const withFactoryModels = `
 version: 1
 limits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
-budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20}
+budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
     models: [coding-cheap]
@@ -468,7 +514,7 @@ func TestFactoryModel(t *testing.T) {
 }
 
 func TestClampBudget(t *testing.T) {
-	b := Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20}
+	b := Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50}
 	for requested, want := range map[float64]float64{0: 2, -1: 2, 0.01: 0.01, 3: 3, 5: 5, 9: 5} {
 		if got := b.ClampBudget(requested); got != want {
 			t.Errorf("ClampBudget(%g) = %g, want %g", requested, got, want)

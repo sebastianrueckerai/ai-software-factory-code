@@ -53,6 +53,10 @@ type fakeStore struct {
 	alertsMu     sync.Mutex
 	alerts       []Alert
 	rolls        []RollRequest
+	// monthSpend is MonthSpend's answer, monthRefusals MonthCapRefusal's
+	// by task
+	monthSpend    MonthSpend
+	monthRefusals map[string]string
 }
 
 func newFakeStore() *fakeStore {
@@ -441,9 +445,19 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	if a.Kind == AlertScreening && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertScreening && b.TaskID == a.TaskID }) {
 		return 0, nil
 	}
+	if a.Kind == AlertMonthCap && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertMonthCap && b.Fingerprint == a.Fingerprint }) {
+		return 0, nil
+	}
 	a.ID = int64(len(s.alerts) + 1)
 	s.alerts = append(s.alerts, a)
 	return a.ID, nil
+}
+
+func (s *fakeStore) MonthSpend(ctx context.Context) (MonthSpend, error) { return s.monthSpend, nil }
+
+func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
+	reason, ok := s.monthRefusals[taskID]
+	return reason, ok, nil
 }
 
 func (s *fakeStore) SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error {
@@ -1433,5 +1447,70 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 	}
 	if got := spent("same"); math.Abs(got-0.25) > 1e-9 {
 		t.Fatalf("same spent = %v, want 0.25", got)
+	}
+}
+
+// The month is the UTC calendar month over the ledger, standing lines left
+// out; its refusals are the gateway's refused_month_cap audit rows.
+// Hand-derived: 30 on the previous month's last day and a standing 10 do
+// not count, 0.03 on the 1st and 0.01 today do: 0.04.
+func TestPGStoreMonthCap(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts, ledger, audit;
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
+			('old', date_trunc('month', now() AT TIME ZONE 'UTC')::date - 1, 'model', 'x', 30),
+			('first', date_trunc('month', now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.03),
+			('standing:sf/app', (now() AT TIME ZONE 'UTC')::date, 'standing', 'resource/1', 10),
+			('today', (now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.01);
+		INSERT INTO audit (task_id, decision, reason, ts) VALUES
+			('u', 'refused_month_cap', 'last month', date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 second'),
+			('t', 'refused_day_cap', 'the day', now())`); err != nil {
+		t.Fatal(err)
+	}
+	month := time.Now().UTC().Format("2006-01")
+	m, err := s.MonthSpend(ctx)
+	if err != nil || m.Month != month || math.Abs(m.EUR-0.04) > 1e-12 || m.Refused {
+		t.Fatalf("MonthSpend = (%+v, %v), want %s, 0.04 EUR, no refusal", m, err, month)
+	}
+	if _, ok, err := s.MonthCapRefusal(ctx, "u", time.Now().Add(-40*24*time.Hour)); err != nil || !ok {
+		t.Fatalf("last month's refusal of u = %v, %v, want found", ok, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason) VALUES ('t', 'refused_month_cap', 'the month')`); err != nil {
+		t.Fatal(err)
+	}
+	if m, err := s.MonthSpend(ctx); err != nil || !m.Refused {
+		t.Fatalf("MonthSpend after a refusal = (%+v, %v), want refused", m, err)
+	}
+	if reason, ok, err := s.MonthCapRefusal(ctx, "t", time.Now().Add(-time.Minute)); err != nil || !ok || reason != "the month" {
+		t.Fatalf("t's refusal since a minute ago = (%q, %v, %v), want the month", reason, ok, err)
+	}
+	if _, ok, err := s.MonthCapRefusal(ctx, "t", time.Now().Add(time.Minute)); err != nil || ok {
+		t.Fatalf("t's refusal since a minute ahead = %v, %v, want none", ok, err)
+	}
+	if _, ok, err := s.MonthCapRefusal(ctx, "v", time.Now().Add(-time.Minute)); err != nil || ok {
+		t.Fatalf("v's refusal = %v, %v, want none", ok, err)
+	}
+	// one alert per month and percent
+	first, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "50", Fingerprint: month + "/50"})
+	if err != nil || first == 0 {
+		t.Fatalf("first 50 percent alert = %d, %v", first, err)
+	}
+	if again, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "50", Fingerprint: month + "/50"}); err != nil || again != 0 {
+		t.Fatalf("second 50 percent alert = %d, %v, want 0", again, err)
+	}
+	if next, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "80", Fingerprint: month + "/80"}); err != nil || next == 0 {
+		t.Fatalf("80 percent alert = %d, %v", next, err)
+	}
+	// SigNoz alerts share a fingerprint freely
+	for range 2 {
+		if id, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", Fingerprint: month + "/50"}); err != nil || id == 0 {
+			t.Fatalf("SigNoz alert = %d, %v", id, err)
+		}
 	}
 }

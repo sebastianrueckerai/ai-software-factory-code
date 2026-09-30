@@ -219,6 +219,9 @@ type Store interface {
 	// SetAgentSummary records the agent's last message of its latest
 	// pushed session.
 	SetAgentSummary(ctx context.Context, id, summary string) error
+	// MonthCapRefusal is the reason of the task's newest refused_month_cap
+	// audit row since since, if any.
+	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error)
 	// PromoteSuggested starts a suggested improvement (a writer's agent
 	// label): queued at base sha, in the intake gate from now; false when
 	// the task was not suggested.
@@ -511,6 +514,30 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET sha = $2 WHERE id = $1`, id, sha)
 	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
+	var reason string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT reason FROM audit WHERE task_id = $1 AND decision = $2 AND ts >= $3 ORDER BY ts DESC, id DESC LIMIT 1`,
+		taskID, policy.RefusedMonthCap, since).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return reason, err == nil, err
+}
+
+// MonthSpend is the UTC calendar month's variable spend over the ledger,
+// standing lines left out, as the gateway's month headroom counts it, and
+// whether the gateway refused a call at the month cap this month.
+func (s *PGStore) MonthSpend(ctx context.Context) (MonthSpend, error) {
+	var m MonthSpend
+	err := s.db.QueryRowContext(ctx,
+		`SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM'),
+		        `+policy.MonthSpentSQL+`::float8,
+		        EXISTS (SELECT 1 FROM audit WHERE decision = $1 AND ts >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')`,
+		policy.RefusedMonthCap).Scan(&m.Month, &m.EUR, &m.Refused)
+	return m, err
 }
 
 func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {

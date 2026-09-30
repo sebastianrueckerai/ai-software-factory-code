@@ -307,8 +307,9 @@ func (e Envelope) validate(key string) error {
 	return nil
 }
 
-// Budget caps spend in EUR: per task (default and maximum at intake) and
-// per UTC day over all tasks together; a day cap of 0 stops all spend.
+// Budget caps spend in EUR: per task (default and maximum at intake), per
+// UTC day and per UTC calendar month over all tasks together; a day or
+// month cap of 0 stops all spend.
 type Budget struct {
 	// TaskDefaultEUR is a task's budget when its intake asks for none.
 	TaskDefaultEUR float64 `yaml:"task_default_eur" json:"task_default_eur"`
@@ -316,6 +317,9 @@ type Budget struct {
 	TaskMaxEUR float64 `yaml:"task_max_eur" json:"task_max_eur"`
 	// DayEUR caps all tasks together per UTC day; 0 stops all spend.
 	DayEUR float64 `yaml:"day_eur" json:"day_eur"`
+	// MonthEUR caps all tasks together per UTC calendar month; 0 stops all
+	// spend.
+	MonthEUR float64 `yaml:"month_eur" json:"month_eur"`
 }
 
 // Class is a capability class a task can hold: the model aliases it may
@@ -456,6 +460,9 @@ func (d Document) Validate() error {
 	}
 	if b.DayEUR < 0 {
 		return errors.New("policy: budget.day_eur must not be negative (0 stops all spend)")
+	}
+	if b.MonthEUR < 0 {
+		return errors.New("policy: budget.month_eur must not be negative (0 stops all spend)")
 	}
 	if b.TaskDefaultEUR > b.TaskMaxEUR {
 		return fmt.Errorf("policy: budget.task_default_eur %g exceeds task_max_eur %g", b.TaskDefaultEUR, b.TaskMaxEUR)

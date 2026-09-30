@@ -36,6 +36,7 @@ type HoldRequest struct {
 	Price    Price
 	WantOut  int // the caller's output limit; 0 = none
 	DayEUR   float64
+	MonthEUR float64
 	// EUR is a tool call's worst case, held as is, and Cap the task's caps
 	// on the tool.
 	EUR float64
@@ -43,10 +44,10 @@ type HoldRequest struct {
 }
 
 // Hold is headroom taken for one call: EUR at the worst case of InTokens
-// and MaxOut output tokens. Headroom is the smaller of the task's and the
-// day's headroom before any hold, the figure a key's max_budget takes;
-// Bound names which one it is, as the refusal it would cause
-// (refused_budget or refused_day_cap).
+// and MaxOut output tokens. Headroom is the smallest of the task's, the
+// day's and the month's headroom before any hold, the figure a key's
+// max_budget takes; Bound names which one it is, as the refusal it would
+// cause (refused_budget, refused_day_cap or refused_month_cap).
 type Hold struct {
 	ID       int64
 	TaskID   string
@@ -58,27 +59,42 @@ type Hold struct {
 	Bound    string
 }
 
-// HeadroomBound is the smaller of the task's and the day's headroom and the
-// refusal it causes when spent.
-func HeadroomBound(task, day float64) (float64, string) {
-	if day < task {
+// HeadroomBound is the smallest of the task's, the day's and the month's
+// headroom and the refusal it causes when spent.
+func HeadroomBound(task, day, month float64) (float64, string) {
+	switch {
+	case month < min(task, day):
+		return month, RefusedMonthCap
+	case day < task:
 		return day, "refused_day_cap"
 	}
 	return task, "refused_budget"
 }
 
+// RefusedMonthCap is the refusal of a call the month's headroom cannot fit.
+const RefusedMonthCap = "refused_month_cap"
+
 // Refusal is a call the headroom or a tool cap cannot fit.
 type Refusal struct {
-	Decision string // refused_budget, refused_day_cap, refused_tool_requests, refused_tool_eur or refused_task_status
+	Decision string // refused_budget, refused_day_cap, refused_month_cap, refused_tool_requests, refused_tool_eur or refused_task_status
 	Reason   string
+}
+
+// refusal is the headroom refusal decision with reason; the month cap's
+// names the key a human raises.
+func refusal(decision, reason string) *Refusal {
+	if decision == RefusedMonthCap {
+		reason += "; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	}
+	return &Refusal{Decision: decision, Reason: reason}
 }
 
 func (r *Refusal) Error() string { return r.Reason }
 
-// Fit clamps a call's output limit to what the free task and day headroom
-// can pay for, or refuses it.
-func Fit(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
-	free, decision := HeadroomBound(taskFree, dayFree)
+// Fit clamps a call's output limit to what the free task, day and month
+// headroom can pay for, or refuses it.
+func Fit(f Free, r HoldRequest) (Hold, error) {
+	free, decision := HeadroomBound(f.Task, f.Day, f.Month)
 	inEUR := float64(r.InTokens) * r.Price.In
 	outFit := 0
 	if left := free - inEUR; left > 0 {
@@ -93,9 +109,9 @@ func Fit(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
 		maxOut = min(maxOut, r.WantOut)
 	}
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
-		return Hold{}, &Refusal{Decision: decision, Reason: fmt.Sprintf(
-			"free headroom %.6f EUR (task %.6f, day %.6f) fits %d output tokens after at most %d input tokens, below the minimum call of %d",
-			free, taskFree, dayFree, max(outFit, 0), r.InTokens, MinCallTokens)}
+		return Hold{}, refusal(decision, fmt.Sprintf(
+			"free headroom %.6f EUR (task %.6f, day %.6f, month %.6f) fits %d output tokens after at most %d input tokens, below the minimum call of %d",
+			free, f.Task, f.Day, f.Month, max(outFit, 0), r.InTokens, MinCallTokens))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, MaxOut: maxOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
@@ -103,8 +119,8 @@ func Fit(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
 
 // FitTool admits a tool call at its worst case if the task has requests
 // and euros left on the tool (used so far: requests, usedEUR, holds
-// included) and the free task and day headroom pay for it.
-func FitTool(taskFree, dayFree float64, requests int, usedEUR float64, r HoldRequest) (Hold, error) {
+// included) and the free headroom pays for it.
+func FitTool(f Free, requests int, usedEUR float64, r HoldRequest) (Hold, error) {
 	if requests >= r.Cap.MaxRequests {
 		return Hold{}, &Refusal{Decision: "refused_tool_requests", Reason: fmt.Sprintf(
 			"%s: %d of the task's %d requests used", r.Ref, requests, r.Cap.MaxRequests)}
@@ -113,16 +129,17 @@ func FitTool(taskFree, dayFree float64, requests int, usedEUR float64, r HoldReq
 		return Hold{}, &Refusal{Decision: "refused_tool_eur", Reason: fmt.Sprintf(
 			"%s: %.6f EUR used and a worst case of %.6f EUR exceed the task's cap of %.6f EUR on it", r.Ref, usedEUR, r.EUR, r.Cap.MaxEUR)}
 	}
-	return FitResource(taskFree, dayFree, r)
+	return FitResource(f, r)
 }
 
-// FitResource admits r.EUR as is if the free task and day headroom pay for
-// it: a tool call's worst case, or a commissioned resource's reservation.
-func FitResource(taskFree, dayFree float64, r HoldRequest) (Hold, error) {
-	free, decision := HeadroomBound(taskFree, dayFree)
+// FitResource admits r.EUR as is if the free task, day and month headroom
+// pay for it: a tool call's worst case, or a commissioned resource's
+// reservation.
+func FitResource(f Free, r HoldRequest) (Hold, error) {
+	free, decision := HeadroomBound(f.Task, f.Day, f.Month)
 	if r.EUR > free {
-		return Hold{}, &Refusal{Decision: decision, Reason: fmt.Sprintf(
-			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (task %.6f, day %.6f)", r.Ref, r.EUR, free, taskFree, dayFree)}
+		return Hold{}, refusal(decision, fmt.Sprintf(
+			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (task %.6f, day %.6f, month %.6f)", r.Ref, r.EUR, free, f.Task, f.Day, f.Month))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, EUR: r.EUR}, nil
 }
@@ -139,7 +156,7 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	if err := LockHeadroom(ctx, tx); err != nil {
 		return Hold{}, err
 	}
-	free, err := FreeHeadroom(ctx, tx, r.TaskID, r.DayEUR)
+	free, err := FreeHeadroom(ctx, tx, r.TaskID, r.DayEUR, r.MonthEUR)
 	if err != nil {
 		return Hold{}, err
 	}
@@ -156,16 +173,16 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 			r.TaskID, r.Ref).Scan(&requests, &usedEUR); err != nil {
 			return Hold{}, err
 		}
-		h, err = FitTool(free.Task, free.Day, requests, usedEUR, r)
+		h, err = FitTool(free, requests, usedEUR, r)
 	case KindResource:
-		h, err = FitResource(free.Task, free.Day, r)
+		h, err = FitResource(free, r)
 	default:
-		h, err = Fit(free.Task, free.Day, r)
+		h, err = Fit(free, r)
 	}
 	if err != nil {
 		return Hold{}, err
 	}
-	h.Headroom, h.Bound = HeadroomBound(free.TaskHeadroom, free.DayHeadroom)
+	h.Headroom, h.Bound = HeadroomBound(free.TaskHeadroom, free.DayHeadroom, free.MonthHeadroom)
 	if h.ID, err = InsertHold(ctx, tx, h, HoldTTL); err != nil {
 		return Hold{}, err
 	}
@@ -178,27 +195,34 @@ func LockHeadroom(ctx context.Context, tx *sql.Tx) error {
 	return err
 }
 
-// Free is a task's and the day's headroom: before any hold, and free
-// (after every outstanding hold).
+// Free is a task's, the day's and the month's headroom: before any hold,
+// and free (after every outstanding hold).
 type Free struct {
-	TaskHeadroom, DayHeadroom float64
-	Task, Day                 float64
+	TaskHeadroom, DayHeadroom, MonthHeadroom float64
+	Task, Day, Month                         float64
 }
 
-// FreeHeadroom reads the task's and the UTC day's headroom inside tx
-// (under LockHeadroom). A task that is neither running nor in review is
-// refused: settlement relies on a finished task taking no new hold.
-func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR float64) (Free, error) {
+// MonthSpentSQL is the UTC calendar month's spend over the ledger; a
+// standing line is its project's monthly cost, not variable spend.
+const MonthSpentSQL = `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', now() AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+
+// FreeHeadroom reads the task's, the UTC day's and the UTC calendar
+// month's headroom inside tx (under LockHeadroom). Every outstanding hold
+// counts against the day and the month. A task that is neither running
+// nor in review is refused: settlement relies on a finished task taking no
+// new hold.
+func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR, monthEUR float64) (Free, error) {
 	var f Free
 	var status string
-	var taskHeld, dayHeld float64
+	var taskHeld, allHeld float64
 	err := tx.QueryRowContext(ctx,
 		`SELECT status, (budget_eur - spent_eur)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
 		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
+		        ($3 - `+MonthSpentSQL+`)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
-		 FROM tasks WHERE id = $1`, taskID, dayEUR,
-	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &dayHeld)
+		 FROM tasks WHERE id = $1`, taskID, dayEUR, monthEUR,
+	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &f.MonthHeadroom, &allHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Free{}, fmt.Errorf("hold: no task row for %s", taskID)
 	}
@@ -208,7 +232,7 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR float64
 	if !slices.Contains(holdStatuses, status) {
 		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, status)}
 	}
-	f.Task, f.Day = f.TaskHeadroom-taskHeld, f.DayHeadroom-dayHeld
+	f.Task, f.Day, f.Month = f.TaskHeadroom-taskHeld, f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
 	return f, nil
 }
 

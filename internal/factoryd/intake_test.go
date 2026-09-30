@@ -132,7 +132,9 @@ func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig Tas
 }
 
 // testBudget is a policy budget whose default differs from the deployed one.
-func testBudget() policy.Budget { return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20} }
+func testBudget() policy.Budget {
+	return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20, MonthEUR: 50}
+}
 
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
 	t.Helper()

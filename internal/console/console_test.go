@@ -315,7 +315,7 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
-		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20},
+		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},

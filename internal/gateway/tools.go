@@ -228,7 +228,8 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	}
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: c.task.ID, Kind: policy.KindTool, Ref: tool, EUR: worst, Cap: toolCap,
-		DayEUR: c.pv.Document.Budget.DayEUR,
+		DayEUR:   c.pv.Document.Budget.DayEUR,
+		MonthEUR: c.pv.Document.Budget.MonthEUR,
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {

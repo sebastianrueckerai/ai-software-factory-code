@@ -55,7 +55,7 @@ func TestPGStore(t *testing.T) {
 
 	// a hold and its release book the task and the ledger together
 	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "coding-cheap",
-		InTokens: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6}, WantOut: 1024, DayEUR: 20})
+		InTokens: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6}, WantOut: 1024, DayEUR: 20, MonthEUR: 50})
 	if err != nil || h.MaxOut != 1024 || h.Headroom != 8 {
 		t.Fatalf("TakeHold = (%+v, %v), want 1024 tokens under headroom 8", h, err)
 	}

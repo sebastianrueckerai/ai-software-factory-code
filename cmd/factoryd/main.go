@@ -93,8 +93,9 @@ func main() {
 	}
 	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics}
 	// a ladder model outside the coder class would be refused mid-task
+	configSource := &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir}
 	policyLoader := &factoryd.PolicyLoader{
-		Source: &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir},
+		Source: configSource,
 		Store:  store, LadderModels: ladder.Aliases(), Rejected: configAlarm.Raise, Loaded: configAlarm.Resolve,
 		ReadFailing: configAlarm.ReadFailing}
 	if err := policyLoader.Boot(context.Background()); err != nil {
@@ -270,6 +271,8 @@ func main() {
 	go completion.SettleLoop(ctx, time.Minute)
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
+	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current}
+	go monthAlarm.Loop(ctx, time.Minute)
 	go ciSpawner.Run(ctx)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics}
 	go ciRuns.Run(ctx)

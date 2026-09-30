@@ -353,7 +353,9 @@ func TestRecordHandlerServesASessionRecord(t *testing.T) {
 	}
 }
 
-func testBudget() policy.Budget { return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20} }
+func testBudget() policy.Budget {
+	return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20, MonthEUR: 50}
+}
 
 // The task budget comes from the policy in force: its default when none is
 // asked for, never above its maximum; every API task holds the coder class.

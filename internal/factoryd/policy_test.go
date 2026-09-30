@@ -24,6 +24,7 @@ budget:
   task_default_eur: 2
   task_max_eur: 5
   day_eur: 20
+  month_eur: 50
 limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 classes:
   coder:

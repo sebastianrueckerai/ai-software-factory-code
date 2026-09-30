@@ -340,7 +340,7 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 	com, err := cloud.Store.Reserve(ctx, cloudres.CommissionRequest{
 		TaskID: c.task.ID, Repo: c.task.Repository, Session: session, ServerType: in.ServerType,
 		Purpose: strings.TrimSpace(in.Purpose), LeaseMinutes: in.LeaseMinutes, VolumeGB: in.VolumeGB,
-		Location: cloudLocation, Quote: q, Envelope: env, DayEUR: c.pv.Document.Budget.DayEUR, Now: cloud.now(),
+		Location: cloudLocation, Quote: q, Envelope: env, DayEUR: c.pv.Document.Budget.DayEUR, MonthEUR: c.pv.Document.Budget.MonthEUR, Now: cloud.now(),
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {

@@ -262,7 +262,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: task.ID, Kind: policy.KindModel, Ref: ref,
 		InTokens: len(body) + inTokenSlack, Price: price, WantOut: chatReq.WantOut,
-		DayEUR: pv.Document.Budget.DayEUR,
+		DayEUR:   pv.Document.Budget.DayEUR,
+		MonthEUR: pv.Document.Budget.MonthEUR,
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
@@ -496,7 +497,7 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 // keyFor returns the virtual key of the task's current run, policy version
 // and UTC day, or mints one: limited to the aliases the task's classes
 // allow (so LiteLLM refuses any other target) and capped at the hold's
-// headroom, the smaller of the task's and the day's. The key counts the
+// headroom, the smallest of the task's, the day's and the month's. The key counts the
 // call as in flight until doneWith.
 func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID string, models []string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
 	want := liveKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout), bound: hold.Bound}
@@ -847,7 +848,8 @@ func contentType(r *http.Request) string {
 	return "application/json"
 }
 
-// refuseSpend writes a 402 refusal: the task's budget or the day cap. The
+// refuseSpend writes a 402 refusal: the task's budget, the day or the
+// month cap. The
 // gateway refuses with 402; LiteLLM's 429 + budget_exceeded is only the
 // backstop mapped onto it.
 func (s *Server) refuseSpend(w http.ResponseWriter, pid *int64, task Task, kind, decision, alias, reason string) {

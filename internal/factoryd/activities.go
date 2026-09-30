@@ -305,7 +305,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))
-	began := rfc3339(time.Now())
+	startedAt := time.Now()
+	began := rfc3339(startedAt)
 	r.record(ctx, t.ID, "session_start", map[string]any{
 		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
 		"poster_info": s.posterInfo})
@@ -322,6 +323,17 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	res := sessionResult(s, out)
+	if res.Outcome != OutcomePushed {
+		// no later session could spend: a human raises the cap or waits
+		// for the month to end
+		reason, refused, err := r.store.MonthCapRefusal(ctx, t.ID, startedAt)
+		if err != nil {
+			return SessionResult{}, err
+		}
+		if refused {
+			res.Outcome, res.Reason = OutcomeEscalate, monthCapReached+reason
+		}
+	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {

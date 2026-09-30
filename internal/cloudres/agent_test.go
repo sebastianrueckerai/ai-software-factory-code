@@ -152,7 +152,7 @@ func commissionReq(t *testing.T, task, typ string, minutes, gb int) CommissionRe
 		t.Fatal(err)
 	}
 	return CommissionRequest{TaskID: task, Repo: "sf/app", Session: "s-1", ServerType: typ, Purpose: "load test",
-		LeaseMinutes: minutes, VolumeGB: gb, Location: "fsn1", Quote: q, Envelope: testEnvelope, DayEUR: 20, Now: time.Now()}
+		LeaseMinutes: minutes, VolumeGB: gb, Location: "fsn1", Quote: q, Envelope: testEnvelope, DayEUR: 20, MonthEUR: 50, Now: time.Now()}
 }
 
 func scalar[T any](t *testing.T, db *sql.DB, q string, args ...any) T {

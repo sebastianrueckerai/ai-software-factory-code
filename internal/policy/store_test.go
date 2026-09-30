@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,7 +229,7 @@ func TestHolds(t *testing.T) {
 		('a', 0.02, 0.01, 'running'), ('b', 1, 0, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", InTokens: 1000, Price: testPrice, DayEUR: 20}
+	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", InTokens: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50}
 
 	// task a: 0.01 free; 1000 input tokens cost 0.001, 0.009 buys 2250 output tokens
 	h, err := TakeHold(ctx, db, req)
@@ -314,7 +315,7 @@ func TestHolds(t *testing.T) {
 	}
 	// a cost that is not a finite non-negative number books the hold
 	for _, bad := range []float64{math.NaN(), math.Inf(1), -0.5} {
-		h, err := TakeHold(ctx, db, HoldRequest{TaskID: "b", Kind: KindModel, Ref: "z", Price: testPrice, WantOut: 1000, DayEUR: 20})
+		h, err := TakeHold(ctx, db, HoldRequest{TaskID: "b", Kind: KindModel, Ref: "z", Price: testPrice, WantOut: 1000, DayEUR: 20, MonthEUR: 50})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -349,7 +350,7 @@ func TestToolHolds(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('a', 0.1, 'running'), ('b', 1, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.02, DayEUR: 20,
+	req := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.02, DayEUR: 20, MonthEUR: 50,
 		Cap: ToolCap{MaxRequests: 2, MaxEUR: 0.05}}
 	var r *Refusal
 	h1, err := TakeHold(ctx, db, req)
@@ -426,40 +427,90 @@ func TestToolHolds(t *testing.T) {
 
 var zeroEUR = 0.0
 
-// Many concurrent calls of two tasks against a day with room for exactly
-// four: exactly four get a hold.
+// Many concurrent calls of two tasks against a day, then a month, with
+// room for exactly four: exactly four get a hold, the rest the cap's
+// refusal.
 func TestHoldsConcurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		dayEUR, monthEUR float64
+		decision         string
+	}{
+		{"day", 0.032, 50, "refused_day_cap"},
+		{"month", 20, 0.032, "refused_month_cap"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testDB(t)
+			ctx := context.Background()
+			if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('a', 1, 'running'), ('b', 1, 'running')`); err != nil {
+				t.Fatal(err)
+			}
+			// each call: 0 input, 2000 tokens at 4e-6 = 0.008; the cap has 0.032
+			var mu sync.Mutex
+			var wg sync.WaitGroup
+			granted, refused := 0, 0
+			for i := range 16 {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					task := []string{"a", "b"}[i%2]
+					_, err := TakeHold(ctx, db, HoldRequest{TaskID: task, Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 2000, DayEUR: tc.dayEUR, MonthEUR: tc.monthEUR})
+					mu.Lock()
+					defer mu.Unlock()
+					var r *Refusal
+					switch {
+					case err == nil:
+						granted++
+					case errors.As(err, &r) && r.Decision == tc.decision:
+						refused++
+					default:
+						t.Error(err)
+					}
+				}()
+			}
+			wg.Wait()
+			if granted != 4 || refused != 12 {
+				t.Fatalf("granted %d, refused %d, want 4 and 12", granted, refused)
+			}
+		})
+	}
+}
+
+// The month is the UTC calendar month over the ledger, standing lines left
+// out, less every outstanding hold. Hand-derived: 30 EUR on the previous
+// month's last day and 10 EUR of a standing line do not count; 0.03 on the
+// 1st and 0.01 today do, so a cap of 0.05 leaves 0.01, and another task's
+// hold of 0.005 leaves 0.005 free: 1250 output tokens at 4e-6.
+func TestMonthHeadroom(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('a', 1, 'running'), ('b', 1, 'running')`); err != nil {
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES ('m', 5, 0, 'running'), ('o', 5, 0, 'running');
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
+			('old', date_trunc('month', now() AT TIME ZONE 'UTC')::date - 1, 'model', 'x', 30),
+			('first', date_trunc('month', now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.03),
+			('standing:sf/app', (now() AT TIME ZONE 'UTC')::date, 'standing', 'resource/1', 10),
+			('today', (now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.01);
+		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('o', 'model', 'x', 0.005, now() + interval '1 hour')`); err != nil {
 		t.Fatal(err)
 	}
-	// each call: 0 input, 2000 tokens at 4e-6 = 0.008; the day has 0.032
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	granted, refused := 0, 0
-	for i := range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			task := []string{"a", "b"}[i%2]
-			_, err := TakeHold(ctx, db, HoldRequest{TaskID: task, Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 2000, DayEUR: 0.032})
-			mu.Lock()
-			defer mu.Unlock()
-			var r *Refusal
-			switch {
-			case err == nil:
-				granted++
-			case errors.As(err, &r):
-				refused++
-			default:
-				t.Error(err)
-			}
-		}()
+	req := HoldRequest{TaskID: "m", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05}
+	h, err := TakeHold(ctx, db, req)
+	if err != nil || h.MaxOut != 1250 || !near(h.EUR, 0.005) || !near(h.Headroom, 0.01) || h.Bound != RefusedMonthCap {
+		t.Fatalf("month-bound hold = (%+v, %v), want 1250 tokens, 0.005 EUR, headroom 0.01 bound by the month", h, err)
 	}
-	wg.Wait()
-	if granted != 4 || refused != 12 {
-		t.Fatalf("granted %d, refused %d, want 4 and 12", granted, refused)
+	var r *Refusal
+	if _, err := TakeHold(ctx, db, req); !errors.As(err, &r) || r.Decision != RefusedMonthCap || !strings.Contains(r.Reason, "budget.month_eur") {
+		t.Fatalf("hold past the month = %v, want refused_month_cap naming budget.month_eur", err)
+	}
+	// a resource reservation and a tool call meet the same month
+	res := HoldRequest{TaskID: "m", Kind: KindResource, Ref: "cx23", EUR: 0.0001, DayEUR: 20, MonthEUR: 0.05}
+	if _, err := TakeHold(ctx, db, res); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
+		t.Fatalf("reservation past the month = %v, want refused_month_cap", err)
+	}
+	// 0 stops all spend
+	if _, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1, DayEUR: 20, MonthEUR: 0}); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
+		t.Fatalf("hold under a month cap of 0 = %v, want refused_month_cap", err)
 	}
 }
 
@@ -479,7 +530,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 	for _, id := range []string{"run", "rev", "done", "failed", "closing", "wait", "queued"} {
 		for _, kind := range []string{KindTool, KindModel} {
-			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20,
+			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50,
 				EUR: 0.001, Cap: ToolCap{MaxRequests: 5, MaxEUR: 1}}
 			_, err := TakeHold(ctx, db, req)
 			var r *Refusal

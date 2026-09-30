@@ -44,12 +44,12 @@ the agents work on.
   model (403 `refused_capability`). The call is then metered, see "Policy
   and costs": its output limit is clamped so its worst case fits the free
   headroom, the worst case is held, and the real cost is booked after the
-  call (402 `refused_budget` or `refused_day_cap` when it cannot fit). The
-  per-task LiteLLM virtual key is limited to the classes' aliases and
-  capped at the smaller headroom; a new run, policy version or UTC day
+  call (402 `refused_budget`, `refused_day_cap` or `refused_month_cap`
+  when it cannot fit). The per-task LiteLLM virtual key is limited to the
+  classes' aliases and capped at the smallest headroom; a new run, policy version or UTC day
   mints a new key and blocks the old one once the calls still using it
   are done. A LiteLLM budget refusal is labelled by the headroom the key
-  was capped at (`refused_budget` or `refused_day_cap`). Every decision has an audit row
+  was capped at (`refused_budget`, `refused_day_cap` or `refused_month_cap`). Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
   output limit and hold. factoryd's own model calls (the session
   supervisor, the gate supervisor, the model review, the audit) take the same route:
@@ -645,13 +645,14 @@ decided without a supervisor call. The activity bound of `RunSession` is the age
 them.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
-`day_eur` for the UTC day over all tasks) and `classes` (per capability
+`day_eur` for the UTC day and `month_eur` for the UTC calendar month over
+all tasks) and `classes` (per capability
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
 session and gate supervisor, `audit_model` for the audit; a class without one gets no such call).
 The gateway never reads the files, only the version in force in
-Postgres. `day_eur: 0` stops all spend. Because the decoder is strict,
+Postgres. `day_eur: 0` or `month_eur: 0` stops all spend. Because the decoder is strict,
 a new key lands in infra first and the factoryd that reads it rolls
 right after: the running factoryd refuses the commit, keeps its version
 and files the issue, and the new one loads the head at boot.
@@ -662,8 +663,9 @@ headers, which are read only behind that token), the task status (an
 agent's task running; factoryd's running or in review, checked with the
 hold), the alias (an agent's must be in its classes' `models`, factoryd's
 must be the class's alias for the purpose; else 403 `refused_capability`),
-the task headroom (else 402 `refused_budget`) and the day headroom (else
-402 `refused_day_cap`). `review-frontier` and `supervisor` are not in
+the task headroom (else 402 `refused_budget`), the day headroom (else
+402 `refused_day_cap`) and the month headroom (else 402
+`refused_month_cap`). `review-frontier` and `supervisor` are not in
 `coder`'s `models`: the agent cannot call them.
 
 Intake gives every agent task the capability class `coder`
@@ -684,7 +686,8 @@ table is used for up to three TTLs, then every call is refused. A call's input i
 token covers at least one byte). Under one Postgres advisory lock, in one
 transaction, the headroom left after spend and every outstanding hold is
 computed (task: budget minus spent; day: `day_eur` minus today's ledger
-total), the output limit (`max_tokens` or `max_completion_tokens`) is
+total; month: `month_eur` minus the ledger total since the 1st, UTC;
+standing lines count for neither), the output limit (`max_tokens` or `max_completion_tokens`) is
 clamped to what that pays for, and a `holds` row takes the worst case.
 Fewer than 1024 output tokens (a floor any model needs room to fill,
 reasoning or answer) is refused unless the caller asked for fewer. After the
@@ -852,7 +855,7 @@ any other status with `refused_task_status` in its own transaction. Prices not i
 response live in the policy's `prices`. A refusal (`refused_capability`,
 `refused_task_status`, `refused_arguments`, `refused_price`,
 `refused_tool_requests`, `refused_tool_eur`, `refused_budget`,
-`refused_day_cap`) comes back as an MCP tool error that says the policy
+`refused_day_cap`, `refused_month_cap`) comes back as an MCP tool error that says the policy
 refused and the tool did not run; a provider failure (`error_tool`) says
 the tool failed. Every call has an audit row with the decision, the tool
 (`audit.tool`), the policy version and, when admitted, the hold.

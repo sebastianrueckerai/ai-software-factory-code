@@ -298,17 +298,22 @@ func (c *ForgejoConfig) Files(ctx context.Context, commit string) (map[string][]
 	}
 	files := map[string][]byte{}
 	for _, e := range blobs {
-		var segs []string
-		for _, seg := range strings.Split(c.Dir+"/"+e.Path, "/") {
-			segs = append(segs, url.PathEscape(seg))
-		}
-		b, err := c.call(ctx, "raw/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(commit))
+		b, err := c.File(ctx, commit, e.Path)
 		if err != nil {
 			return nil, err
 		}
 		files[e.Path] = b
 	}
 	return files, nil
+}
+
+// File reads name, relative to Dir, at commit.
+func (c *ForgejoConfig) File(ctx context.Context, commit, name string) ([]byte, error) {
+	var segs []string
+	for _, seg := range strings.Split(c.Dir+"/"+name, "/") {
+		segs = append(segs, url.PathEscape(seg))
+	}
+	return c.call(ctx, "raw/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(commit))
 }
 
 type treeEntry struct {

@@ -310,3 +310,30 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 		t.Fatalf("agent summary after a silent session = %q, want %q", got, last)
 	}
 }
+
+// A session the gateway refused at the month cap waits on a human with the
+// refusal as its reason: no later session could spend, whatever it tried.
+func TestRunSessionParksAtTheMonthCap(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	store.monthRefusals = map[string]string{"t1": refusal}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		resultLine(false, "the model call failed: 402 budget_exceeded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeEscalate || res.Reason != monthCapReached+refusal {
+		t.Fatalf("result = %+v, want escalate with the month cap's refusal", res)
+	}
+	if got := escalationSource(res.Reason); got != "month_cap" {
+		t.Fatalf("escalation source = %q, want month_cap", got)
+	}
+	// a session the month cap did not refuse ends as before
+	runner, _, _ = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		resultLine(false, "the model call failed: 402 budget_exceeded"))
+	if err != nil || res.Outcome != OutcomeNoPush {
+		t.Fatalf("result without a month cap refusal = %+v, %v, want no_push", res, err)
+	}
+}

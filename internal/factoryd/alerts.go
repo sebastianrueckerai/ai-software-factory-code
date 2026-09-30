@@ -25,6 +25,10 @@ const (
 	// AlertScreening is the screening stage's suspect verdict (ruling 182):
 	// real when a human closes the issue, noise when one lets it run.
 	AlertScreening = "screening"
+	// AlertMonthCap is the month's variable spend at 50, 80 and 100 percent
+	// of budget.month_eur, one row each per UTC month (fingerprint
+	// month/percent); the cap's also files a human-lane issue.
+	AlertMonthCap = "month_cap"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.
@@ -41,7 +45,7 @@ const (
 type Alert struct {
 	ID         int64
 	Kind       string
-	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor or cap (the session cap's card)
+	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor, cap (the session cap's card) or month_cap; month_cap: the percent
 	TaskID     string
 	RaisedAt   time.Time
 	BoundS     int // gate_bound only
@@ -71,6 +75,8 @@ func escalationSource(reason string) string {
 		return "agent"
 	case strings.HasPrefix(reason, capReached):
 		return "cap"
+	case strings.HasPrefix(reason, monthCapReached):
+		return SourceMonthCap
 	}
 	return "supervisor"
 }
@@ -87,9 +93,9 @@ func (s *PGStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	err = s.db.QueryRowContext(ctx,
 		`INSERT INTO alerts (kind, source, task_id, bound_s, verdict, resolved_by, resolved_at, detail, fingerprint)
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, 0), NULLIF($5, ''), NULLIF($6, ''), CASE WHEN $5 <> '' THEN now() END, $7::jsonb, NULLIF($8, ''))
-		 ON CONFLICT (task_id) WHERE kind = 'screening' DO NOTHING RETURNING id`, a.Kind, a.Source, a.TaskID, a.BoundS, a.Verdict, a.ResolvedBy, detail, a.Fingerprint).Scan(&id)
+		 ON CONFLICT DO NOTHING RETURNING id`, a.Kind, a.Source, a.TaskID, a.BoundS, a.Verdict, a.ResolvedBy, detail, a.Fingerprint).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil // a screening alert of the task exists: a retry's
+		return 0, nil // the task's screening alert, or the month's month_cap alert at the percent, exists
 	}
 	return id, err
 }

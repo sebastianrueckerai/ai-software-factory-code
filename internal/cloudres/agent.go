@@ -181,6 +181,7 @@ type CommissionRequest struct {
 	Quote        Quote
 	Envelope     policy.Envelope // the project's: its file's, else the policy's default
 	DayEUR       float64
+	MonthEUR     float64
 	Now          time.Time
 }
 
@@ -332,11 +333,11 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 		}
 	}
 
-	free, err := policy.FreeHeadroom(ctx, tx, r.TaskID, r.DayEUR)
+	free, err := policy.FreeHeadroom(ctx, tx, r.TaskID, r.DayEUR, r.MonthEUR)
 	if err != nil {
 		return Commission{}, err
 	}
-	hold, err := policy.FitResource(free.Task, free.Day, policy.HoldRequest{
+	hold, err := policy.FitResource(free, policy.HoldRequest{
 		TaskID: r.TaskID, Kind: policy.KindResource, Ref: r.ServerType, EUR: r.Quote.ReservationEUR})
 	if err != nil {
 		return Commission{}, err
