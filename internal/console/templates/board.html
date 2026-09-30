@@ -1,4 +1,4 @@
-{{define "board"}}<div id="board" hx-get="/board{{with .Project}}?project={{.}}{{end}}" hx-trigger="every 10s" hx-swap="outerHTML">
+{{define "board"}}<div id="board" hx-get="/board{{with .Project}}?project={{.}}{{end}}" hx-trigger="every 3s" hx-swap="outerHTML">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <section aria-labelledby="human-lane">

@@ -768,7 +768,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		`href="/tasks/t-q/timeline"`, "spent 0.0005 / 5.0000 EUR",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
-		`hx-get="/board"`, `hx-trigger="every 10s"`, `<script src="/static/htmx.min.js"`,
+		`hx-get="/board"`, `hx-trigger="every 3s"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
