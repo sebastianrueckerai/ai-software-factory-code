@@ -191,6 +191,28 @@ func TestAlertsDigestRunning(t *testing.T) {
 	}
 }
 
+// A Deployment whose pod template already names the new digest but whose
+// pod is still starting or crash-looping is not the rollout being waited on
+// either: the digest alone is not enough, RolledOut must hold too.
+func TestAlertsDigestRunningNotRolledOut(t *testing.T) {
+	_, _, kube, h, token := alertsRig(t)
+	digest := "sha256:" + strings.Repeat("b", 64)
+	kube.deploys["demo-prod"] = []DeploymentState{
+		{Name: "linkshort", Generation: 4, ObservedGeneration: 4, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 0,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + digest}},
+	}
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+digest, token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("= %d %s", rec.Code, rec.Body)
+	}
+	want := ProjectAlert{Name: "rollout_not_ready", Namespace: "demo-prod", Source: "factoryd",
+		Summary: "deployment linkshort runs " + digest + " but is not rolled out: 0 of 1 updated replicas available"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("alerts = %+v, want [%+v]", got, want)
+	}
+}
+
 // Two digests for the same namespace must not share a cached answer, or a
 // stale "[]" from a first, matching digest would hide a later mismatch.
 func TestAlertsCacheKeyHasDigest(t *testing.T) {

@@ -68,10 +68,12 @@ const alertsCacheFor = 30 * time.Second
 // the bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
 // project too), the namespace one of the project's (403 otherwise). With no
 // digest, a Deployment lags only when its own rollout has not finished. With
-// a digest (a staging rollout's wait), a namespace with no Deployment or a
-// Deployment whose images do not all end in @digest lags too. The answer is
-// a JSON array, [] when nothing fires, cached 30 s per project, namespace
-// and digest; a source that cannot be read answers 502, never [].
+// a digest (a staging rollout's wait), a namespace lags when it holds no
+// Deployment, when a Deployment's images do not all end in @digest, or when
+// they do but its rollout has not finished either — the digest alone does
+// not mean the new pod is up. The answer is a JSON array, [] when nothing
+// fires, cached 30 s per project, namespace and digest; a source that
+// cannot be read answers 502, never [].
 func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys DeploymentLister) http.Handler {
 	type entry struct {
 		at   time.Time
@@ -154,6 +156,9 @@ func namespaceAlerts(ctx context.Context, alerts AlertSource, deploys Deployment
 		if running, ok := digestRunning(d.Images, digest); !ok {
 			out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
 				Summary: "deployment " + d.Name + " runs " + running + ", not " + digest})
+		} else if ok, why := d.RolledOut(); !ok {
+			out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
+				Summary: "deployment " + d.Name + " runs " + digest + " but is not rolled out: " + why})
 		}
 	}
 	return out, nil
