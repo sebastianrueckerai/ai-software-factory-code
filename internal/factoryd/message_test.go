@@ -325,3 +325,34 @@ func TestNoHalfWay(t *testing.T) {
 		t.Fatalf("result = (%+v, %v), want no trip", res, err)
 	}
 }
+
+// A stuck end is commented on the issue with the stuck finding (review
+// minor 2); a second call sees the session's earlier message (minor 4).
+func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := commands(0, 24) +
+		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeRetryStronger || len(f.chats) != 2 {
+		t.Fatalf("result = (%+v, %v) after %d calls, want retry_stronger after 2", res, err, len(f.chats))
+	}
+	var in SupervisorInput
+	msgs := f.chats[1]["messages"].([]any)
+	json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &in)
+	if !slices.Equal(in.Messages, []string{"use the store's New"}) {
+		t.Fatalf("second call's messages = %q, want the first message", in.Messages)
+	}
+	if first := f.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string); strings.Contains(first, "use the store's New") {
+		t.Fatal("the first call already saw the message")
+	}
+	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[2], "**retry_stronger**") ||
+		!strings.Contains(hub.comments[2], "stuck after the supervisor's message: repetition") {
+		t.Fatalf("comments = %q, want two messages and the stuck end", hub.comments)
+	}
+}

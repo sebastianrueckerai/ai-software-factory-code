@@ -522,7 +522,8 @@ tick or the worker's checkpoint never trips it, silence is the stall's.
 The check-in (ruling 216) trips at every `check_in` of the task's agent
 time (`policy.Time`), counted from the task's start, so it continues
 across sessions; its detail is "scheduled check-in, no detector
-tripped", and it is not counted against `limits.supervisor_calls`. The
+tripped", and it is not counted against `limits.supervisor_calls`;
+none comes in a session's first 10 minutes. The
 wall-clock cap ends the session. Every other trip asks the supervisor, the `supervisor_model` of
 the task's class, through the gateway on the task's account (purpose
 `supervisor`): its answer limit is clamped to the free headroom, the
@@ -535,11 +536,16 @@ runs on), `message` (its guidance goes into the running session through
 the nudge's path, the detector resets, the session runs on) or
 `escalate`; an invalid answer or a failed call escalates. A message the
 worker cannot take (501, network) stops the session with the guidance as
-the next session's finding (`redirect`). The stuck rule: after a
-delivered message, the next detector trip with no file written since
-ends the session without a call as `retry_stronger` (the next rung; the
-same model at the top), with the finding `stuck after the supervisor's
-message: <kind>: <detail>`. At most
+the next session's finding (`redirect`). A delivered message starts
+every progress detector afresh (the diff's baseline and the nudges
+stay), and the next call reads the session's earlier messages. The stuck
+rule: after a delivered message, the next detector trip with no file
+written since, or a flip_flop or churn trip at all (circles of writes,
+ruling 224), ends the session without a call as `retry_stronger` (the
+next rung; the same model at the top), with the finding `stuck after the
+supervisor's message: <kind>: <detail>`, and an issue comment says so.
+The stall (`no_progress`: a long command is silence) and the clock are
+no evidence and ask the supervisor as before. At most
 `limits.supervisor_calls` (3) calls per session, each bounded by
 `limits.supervisor_timeout` (6 min); the next trip escalates
 without one. Nothing it answers changes a cap, a budget or the ladder. A

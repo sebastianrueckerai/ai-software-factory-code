@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"fmt"
 	"reflect"
 	"strings"
@@ -944,5 +945,121 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 	s2.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(3))
 	if trip := s2.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(3)); trip == nil || trip.decided != nil {
 		t.Fatalf("trip after a write = %+v, want one for the supervisor", trip)
+	}
+}
+
+// A message starts every progress detector afresh: a detector that did
+// not trip keeps no count from before the message (review I1).
+func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 24, MaxCalls: 6,
+		NoWriteAfter: 5 * time.Minute, CheckIn: 45 * time.Minute}
+	// (a) 24 reads in 4 minutes trip repetition; after the message at 4:06
+	// the first model call at 5:00 is no no_write trip
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	var trip *Trip
+	for i := range 24 {
+		trip = s.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint(i)}), minute(float64(i)/6))
+	}
+	if trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	s.Messaged(minute(4.1))
+	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(5)); trip != nil {
+		t.Fatalf("model call at 5:00 after the message tripped: %+v", trip)
+	}
+	// (b) a check-in at 45 min with 20 reads since the last write, a
+	// message: 23 reads give no trip, the 24th is stuck
+	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s2.Event(fileEvent("a.go", "1"), minute(42))
+	for i := range 20 {
+		s2.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint(i)}), minute(42+float64(i)/10))
+	}
+	if trip := s2.Tick(minute(45)); trip == nil || trip.Kind != TripCheckIn {
+		t.Fatalf("trip = %+v, want the check-in", trip)
+	}
+	s2.Messaged(minute(45))
+	for i := range 23 {
+		if trip := s2.Event(toolEvent("read", map[string]any{"filePath": fmt.Sprint("m", i)}), minute(45.5)); trip != nil {
+			t.Fatalf("read %d after the message tripped: %+v", i+1, trip)
+		}
+	}
+	trip = s2.Event(toolEvent("read", map[string]any{"filePath": "m23"}), minute(45.5))
+	if trip == nil || trip.Kind != TripRepetition || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("24th read: %+v, want repetition decided retry_stronger", trip)
+	}
+	// the trace counters start afresh too: a repeated call counted before
+	// the message does not trip same_call after it
+	s3, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s3.Event(diffEvent(3, 0), minute(1))
+	for i := range 3 {
+		s3.Event(cmdEvent("go test ./...", 1, "FAIL"), minute(1))
+		s3.Event(toolEvent("read", map[string]any{"filePath": "x"}), minute(1))
+		s3.Event(fileEvent("a.go", fmt.Sprint(i)), minute(1))
+	}
+	if d := s3.traces; len(d.calls) == 0 || len(d.runs) == 0 || len(d.failed) == 0 || len(d.contents) == 0 || d.churn == 0 || d.streak == 0 {
+		t.Fatalf("trace counters before the message are empty: %+v", d)
+	}
+	s3.traces.nudged = map[string]int{"kept": 1}
+	s3.tripped = cmp.Or(s3.tripped, &Trip{Kind: TripCheckIn})
+	s3.Messaged(minute(2))
+	if d := s3.traces; len(d.calls) != 0 || len(d.runs) != 0 || len(d.failed) != 0 || len(d.contents) != 0 || d.churn != 0 || d.streak != 0 ||
+		d.lastDiff == "" || d.maxDiff != 3 || d.nudged["kept"] != 1 {
+		t.Fatalf("trace counters after the message: %+v", d)
+	}
+}
+
+// Silence after a message is no circle: a command running over 5 minutes
+// trips no_progress, which the supervisor is asked about (review I2).
+func TestNoProgressAfterMessageAsks(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	s.Messaged(minute(1))
+	trip := s.Tick(minute(6.5))
+	if trip == nil || trip.Kind != TripNoProgress || trip.decided != nil {
+		t.Fatalf("trip = %+v, want no_progress for the supervisor", trip)
+	}
+}
+
+// Ruling 224: flip_flop and churn after a delivered message are circles,
+// not progress, although they write: they end the session too.
+func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	s.Messaged(minute(1))
+	s.Event(fileEvent("a.go", "h1"), minute(2))
+	s.Event(fileEvent("a.go", "h2"), minute(3))
+	trip := s.Event(fileEvent("a.go", "h1"), minute(4))
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("trip = %+v, want flip_flop decided retry_stronger", trip)
+	}
+	// without a message the supervisor is asked
+	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s2.Event(fileEvent("a.go", "h1"), minute(2))
+	s2.Event(fileEvent("a.go", "h2"), minute(3))
+	if trip := s2.Event(fileEvent("a.go", "h1"), minute(4)); trip == nil || trip.decided != nil {
+		t.Fatalf("trip = %+v, want flip_flop for the supervisor", trip)
+	}
+}
+
+// No check-in in a session's first 10 minutes: anchor t0, 45m, a session
+// from t0+40m skips t0+45m and checks in at t0+90m.
+func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
+	s, _ := NewSupervisor(cfg, minute(0), minute(40))
+	if trip := s.Tick(minute(89.99)); trip != nil {
+		t.Fatalf("tripped at 89.99: %+v", trip)
+	}
+	if trip := s.Tick(minute(90)); trip == nil || trip.Kind != TripCheckIn {
+		t.Fatalf("trip = %+v, want the check-in at t0+90m", trip)
+	}
+	// a point exactly 10 minutes after the start is kept
+	s2, _ := NewSupervisor(cfg, minute(0), minute(35))
+	if trip := s2.Tick(minute(45)); trip == nil || trip.Kind != TripCheckIn {
+		t.Fatalf("trip = %+v, want the check-in at t0+45m", trip)
 	}
 }

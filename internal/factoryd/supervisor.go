@@ -223,13 +223,15 @@ type TripReport struct {
 // SupervisorInput is everything the supervisor reads: the brief, the trip,
 // the digest and the tail of the session record.
 type SupervisorInput struct {
-	Brief   harness.TaskBrief `json:"brief"`
-	Trip    TripReport        `json:"trip"`
-	Digest  ProgressDigest    `json:"digest"`
-	Record  string            `json:"record"` // the session record's last events, JSONL
-	Model   string            `json:"model"`
-	Calls   int               `json:"supervisor_call"`
-	MaxCall int               `json:"supervisor_calls_per_session"`
+	Brief  harness.TaskBrief `json:"brief"`
+	Trip   TripReport        `json:"trip"`
+	Digest ProgressDigest    `json:"digest"`
+	Record string            `json:"record"` // the session record's last events, JSONL
+	Model  string            `json:"model"`
+	Calls  int               `json:"supervisor_call"`
+	// Messages: the guidance this session's earlier messages delivered
+	Messages []string `json:"messages,omitempty"`
+	MaxCall  int      `json:"supervisor_calls_per_session"`
 }
 
 // maxRecordTail bounds the session record the supervisor reads.
@@ -237,7 +239,7 @@ const maxRecordTail = 24 << 10
 
 const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. You are asked when a cheap detector tripped (the session may be going in circles) or at a scheduled check-in (detector "check_in": no detector tripped; judge whether the session is on track). Read the brief, the trip, the progress digest (commands with outcomes over time, files with edit counts, the last error signatures, the diff against the base so far) and the tail of the session record, then choose exactly one action:
 - "continue": the agent makes real progress; the trip is a false alarm or the check-in finds the session on track. The session runs on untouched.
-- "message": the agent is off track: circling, stuck on a wrong approach, or missing something the brief or the record shows. Your guidance goes into the running session as a message the agent reads next; it keeps its context and its work. Give concrete guidance: what to stop doing and what to do instead. If the agent writes no file after your message before a detector trips again, the session ends and a stronger model resumes from the work in progress.
+- "message": the agent is off track: circling, stuck on a wrong approach, or missing something the brief or the record shows. Your guidance goes into the running session as a message the agent reads next; it keeps its context and its work. Give concrete guidance: what to stop doing and what to do instead. If the agent writes no file after your message before a detector trips again, or writes in circles, the session ends and a new session resumes from the work in progress. Your earlier messages in this session are in messages: do not repeat one that did not work.
 - "escalate": the task cannot be completed as specified (contradictory, impossible, needs a human decision or access the agent does not have). A human is asked. Give the reason.
 You cannot raise a time limit, a budget or a model; only a human can.
 Answer with one JSON object and nothing else: {"action": "continue|message|escalate", "guidance": "...", "reason": "..."}. guidance is required for message, reason for escalate; each under 1000 characters.`

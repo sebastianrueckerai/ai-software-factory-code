@@ -105,8 +105,9 @@ type Supervisor struct {
 	findings    []string
 	tripped     *Trip
 	// messaged: a supervisor's message was delivered and no file written
-	// since; the next detector trip ends the session (the stuck rule)
-	messaged bool
+	// since; the next detector trip ends the session (the stuck rule).
+	// messagedOnce: a message was delivered in this session.
+	messaged, messagedOnce bool
 
 	// no_write's anchor: the last write, or its last continue
 	noWriteFrom time.Time
@@ -122,16 +123,20 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	cfg = cfg.withDefaults()
 	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
 		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now}
-	s.scheduleCheckIn(now)
+	s.scheduleCheckIn(now.Add(checkInQuiet - 1))
 	return s, nil
 }
 
-// scheduleCheckIn sets the next check-in to the first interval after now.
-func (s *Supervisor) scheduleCheckIn(now time.Time) {
+// checkInQuiet: no check-in in a session's first minutes; the session has
+// barely begun.
+const checkInQuiet = 10 * time.Minute
+
+// scheduleCheckIn sets the next check-in to the first interval after t.
+func (s *Supervisor) scheduleCheckIn(t time.Time) {
 	if s.cfg.CheckIn <= 0 {
 		return
 	}
-	s.checkAt = s.anchor.Add((now.Sub(s.anchor)/s.cfg.CheckIn + 1) * s.cfg.CheckIn)
+	s.checkAt = s.anchor.Add((t.Sub(s.anchor)/s.cfg.CheckIn + 1) * s.cfg.CheckIn)
 }
 
 func (s *Supervisor) checkIn(now time.Time) *Trip {
@@ -267,17 +272,40 @@ func (s *Supervisor) Findings() []string {
 	return append([]string(nil), s.findings...)
 }
 
-// Messaged resumes the session after the supervisor's message reached it,
-// as Resume does, and arms the stuck rule until the next write.
+// Messaged resumes the session after the supervisor's message reached it
+// and arms the stuck rule until the next write. Every progress detector
+// starts afresh at the message, so the stuck rule judges only what the
+// agent did after it; the diff's baseline and the nudges stay.
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
-	s.messaged = true
+	s.sinceChange = 0
+	s.noWriteFrom = now
+	d := s.traces
+	clear(d.runs)
+	clear(d.failed)
+	clear(d.calls)
+	clear(d.contents)
+	d.churn, d.streakKey, d.streak = 0, "", 0
+	s.messaged, s.messagedOnce = true, true
+}
+
+// stuck is the stuck rule: after a delivered message, a detector trip with
+// no write since, or a circle of writes (flip_flop, churn; ruling 224).
+// Silence (no_progress: a long command) and the clock are no evidence.
+func (s *Supervisor) stuck(t *Trip) bool {
+	switch t.Kind {
+	case TripCheckIn, TripWallClock, TripNoProgress:
+		return false
+	case TripFlipFlop, TripChurn:
+		return s.messagedOnce
+	}
+	return s.messaged
 }
 
 func (s *Supervisor) trip(t *Trip) *Trip {
 	s.traces.nudge = nil // the trip decides; a nudge earned with it is not sent
 	t.Findings = append([]string(nil), s.findings...)
-	if s.messaged && t.decided == nil && t.Kind != TripCheckIn && t.Kind != TripWallClock {
+	if t.decided == nil && s.stuck(t) {
 		stuck := fmt.Sprintf("stuck after the supervisor's message: %s: %s", t.Kind, t.Detail)
 		t.Findings = append(t.Findings, stuck)
 		t.decided = &Decision{Action: ActionRetryStronger, Reason: stuck}

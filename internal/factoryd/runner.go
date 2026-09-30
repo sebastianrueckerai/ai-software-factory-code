@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -386,8 +387,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	defer func() { out.findings = sup.Findings() }()
 	digest := newDigestBuilder(time.Now())
+	// messages: the guidance this session's delivered messages carried
+	var messages []string
 	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
-		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls)
+		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages))
 	}}
 	// stopAt is when workerStop closed: the whole stop, an in-flight
 	// supervisor call included, ends within r.stopWait of it
@@ -574,6 +577,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if err == nil || errors.Is(err, harness.ErrNotRunning) {
 				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 				sup.Messaged(time.Now())
+				messages = append(messages, d.Guidance)
 				return false, nil
 			}
 			out.decision = &Decision{Action: ActionRedirect, Guidance: d.Guidance}
@@ -582,6 +586,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		default:
 			out.decision = &d
 			stop(trip)
+		}
+		if trip.decided != nil && d.Action == ActionRetryStronger {
+			note = "The agent is stuck after the supervisor's message: the session ends without a supervisor call, and a new session resumes from the work in progress."
 		}
 		if out.result != nil && out.result.Success && out.commit != "" {
 			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the supervisor call; the task goes to verification.", out.commit)
@@ -688,16 +695,17 @@ func factoryModel(d policy.Document, t Task, purpose string) string {
 
 // askSupervisor builds the supervisor's input and calls it through the
 // gateway on the task's account.
-func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int) Decision {
+func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int, messages []string) Decision {
 	return r.supervisor.Decide(ctx, t.ID, factoryModel(s.policy, t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
 		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
 			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
-		Trip:    TripReport{Detector: trip.Kind, Detail: trip.Detail},
-		Digest:  digest.digest(),
-		Record:  recorder.Tail(maxRecordTail),
-		Model:   s.model,
-		Calls:   call,
-		MaxCall: maxCalls,
+		Trip:     TripReport{Detector: trip.Kind, Detail: trip.Detail},
+		Digest:   digest.digest(),
+		Record:   recorder.Tail(maxRecordTail),
+		Model:    s.model,
+		Calls:    call,
+		MaxCall:  maxCalls,
+		Messages: messages,
 	})
 }
 
