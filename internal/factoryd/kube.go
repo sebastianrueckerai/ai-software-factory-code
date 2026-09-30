@@ -629,6 +629,7 @@ type DeploymentState struct {
 	StatusReplicas     int32 // every pod of every ReplicaSet
 	UpdatedReplicas    int32
 	AvailableReplicas  int32
+	Images             []string // the pod template's containers, in spec order
 }
 
 // RolledOut is kubectl rollout status's test: the controller saw the
@@ -658,6 +659,13 @@ func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]De
 			} `json:"metadata"`
 			Spec struct {
 				Replicas *int32 `json:"replicas"`
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							Image string `json:"image"`
+						} `json:"containers"`
+					} `json:"spec"`
+				} `json:"template"`
 			} `json:"spec"`
 			Status struct {
 				ObservedGeneration int64 `json:"observedGeneration"`
@@ -676,9 +684,13 @@ func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]De
 		if d.Spec.Replicas != nil {
 			replicas = *d.Spec.Replicas
 		}
+		var images []string
+		for _, c := range d.Spec.Template.Spec.Containers {
+			images = append(images, c.Image)
+		}
 		out = append(out, DeploymentState{Name: d.Metadata.Name, Generation: d.Metadata.Generation,
 			ObservedGeneration: d.Status.ObservedGeneration, Replicas: replicas, StatusReplicas: d.Status.Replicas,
-			UpdatedReplicas: d.Status.UpdatedReplicas, AvailableReplicas: d.Status.AvailableReplicas})
+			UpdatedReplicas: d.Status.UpdatedReplicas, AvailableReplicas: d.Status.AvailableReplicas, Images: images})
 	}
 	return out, nil
 }

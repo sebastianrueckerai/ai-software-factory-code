@@ -139,6 +139,82 @@ func TestProjectAlertsAnswer(t *testing.T) {
 	}
 }
 
+// With a digest asked and no Deployment in the namespace, the rollout has
+// nothing to wait on: rollout_not_ready fires (a promotion never passes on
+// an app that never deployed).
+func TestAlertsDigestNoDeployment(t *testing.T) {
+	_, _, _, h, token := alertsRig(t)
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest=sha256:"+strings.Repeat("b", 64), token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("= %d %s", rec.Code, rec.Body)
+	}
+	want := ProjectAlert{Name: "rollout_not_ready", Namespace: "demo-staging", Source: "factoryd", Summary: "no deployment in demo-staging"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("alerts = %+v, want [%+v]", got, want)
+	}
+}
+
+// A Deployment whose pod template still names the old image is not the
+// rollout being waited on, whatever RolledOut says about it.
+func TestAlertsDigestNotRunning(t *testing.T) {
+	_, _, kube, h, token := alertsRig(t)
+	running := "sha256:" + strings.Repeat("a", 64)
+	asked := "sha256:" + strings.Repeat("b", 64)
+	kube.deploys["demo-prod"] = []DeploymentState{
+		{Name: "linkshort", Generation: 1, ObservedGeneration: 1, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + running}},
+	}
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+asked, token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("= %d %s", rec.Code, rec.Body)
+	}
+	want := ProjectAlert{Name: "rollout_not_ready", Namespace: "demo-prod", Source: "factoryd",
+		Summary: "deployment linkshort runs " + running + ", not " + asked}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("alerts = %+v, want [%+v]", got, want)
+	}
+}
+
+// Every image ending in @digest: the rollout being waited on is live.
+func TestAlertsDigestRunning(t *testing.T) {
+	_, _, kube, h, token := alertsRig(t)
+	digest := "sha256:" + strings.Repeat("c", 64)
+	kube.deploys["demo-prod"] = []DeploymentState{
+		{Name: "linkshort", Generation: 1, ObservedGeneration: 1, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + digest}},
+	}
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+digest, token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("running the asked digest = %d %s", rec.Code, rec.Body)
+	}
+}
+
+// Two digests for the same namespace must not share a cached answer, or a
+// stale "[]" from a first, matching digest would hide a later mismatch.
+func TestAlertsCacheKeyHasDigest(t *testing.T) {
+	_, _, kube, h, token := alertsRig(t)
+	digest := "sha256:" + strings.Repeat("d", 64)
+	kube.deploys["demo-prod"] = []DeploymentState{
+		{Name: "linkshort", Generation: 1, ObservedGeneration: 1, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + digest}},
+	}
+	same := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+digest, token)
+	if strings.TrimSpace(same.Body.String()) != "[]" {
+		t.Fatalf("running the asked digest = %s", same.Body)
+	}
+	other := "sha256:" + strings.Repeat("e", 64)
+	mismatch := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+other, token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(mismatch.Body.Bytes(), &got); err != nil {
+		t.Fatalf("= %s", mismatch.Body)
+	}
+	if len(got) != 1 || got[0].Name != "rollout_not_ready" {
+		t.Fatalf("a different digest reused the first digest's cached answer: %+v", got)
+	}
+}
+
 // A source that cannot be read never answers [] (a promotion would pass).
 func TestProjectAlertsFailClosed(t *testing.T) {
 	_, alerts, _, h, token := alertsRig(t)

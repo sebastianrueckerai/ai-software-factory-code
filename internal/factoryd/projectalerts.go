@@ -64,11 +64,14 @@ type ProjectReader interface {
 // alertsCacheFor is how long one namespace's answer serves.
 const alertsCacheFor = 30 * time.Second
 
-// ProjectAlertsHandler serves GET /projects/{name}/alerts?namespace=: the
-// bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
-// project too), the namespace one of the project's (403 otherwise). The
-// answer is a JSON array, [] when nothing fires, cached 30 s per project
-// and namespace; a source that cannot be read answers 502, never [].
+// ProjectAlertsHandler serves GET /projects/{name}/alerts?namespace=&digest=:
+// the bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
+// project too), the namespace one of the project's (403 otherwise). With no
+// digest, a Deployment lags only when its own rollout has not finished. With
+// a digest (a staging rollout's wait), a namespace with no Deployment or a
+// Deployment whose images do not all end in @digest lags too. The answer is
+// a JSON array, [] when nothing fires, cached 30 s per project, namespace
+// and digest; a source that cannot be read answers 502, never [].
 func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys DeploymentLister) http.Handler {
 	type entry struct {
 		at   time.Time
@@ -78,6 +81,7 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 	cache := map[string]entry{}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name, ns := r.PathValue("name"), r.URL.Query().Get("namespace")
+		digest := r.URL.Query().Get("digest")
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		p, ok, err := projects.Project(r.Context(), name)
 		if err != nil {
@@ -94,12 +98,12 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 			http.Error(w, "namespace "+strconv.Quote(ns)+" is not one of project "+name+"'s", http.StatusForbidden)
 			return
 		}
-		key := name + "/" + ns
+		key := name + "/" + ns + "/" + digest
 		mu.Lock()
 		e, hit := cache[key]
 		mu.Unlock()
 		if !hit || time.Since(e.at) >= alertsCacheFor {
-			list, err := namespaceAlerts(r.Context(), alerts, deploys, ns)
+			list, err := namespaceAlerts(r.Context(), alerts, deploys, ns, digest)
 			if err != nil {
 				log.Printf("project %q alerts for %q: %v", name, ns, err) // #nosec G706 -- %q escapes every control character
 				http.Error(w, "cannot read the alerts: "+err.Error(), http.StatusBadGateway)
@@ -116,7 +120,7 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 	})
 }
 
-func namespaceAlerts(ctx context.Context, alerts AlertSource, deploys DeploymentLister, ns string) ([]ProjectAlert, error) {
+func namespaceAlerts(ctx context.Context, alerts AlertSource, deploys DeploymentLister, ns, digest string) ([]ProjectAlert, error) {
 	firing, err := alerts.FiringAlerts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("signoz: %w", err)
@@ -133,13 +137,46 @@ func namespaceAlerts(ctx context.Context, alerts AlertSource, deploys Deployment
 	if err != nil {
 		return nil, fmt.Errorf("deployments: %w", err)
 	}
+	if digest == "" {
+		for _, d := range ds {
+			if ok, why := d.RolledOut(); !ok {
+				out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
+					Summary: "deployment " + d.Name + ": " + why})
+			}
+		}
+		return out, nil
+	}
+	if len(ds) == 0 {
+		out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
+			Summary: "no deployment in " + ns})
+	}
 	for _, d := range ds {
-		if ok, why := d.RolledOut(); !ok {
+		if running, ok := digestRunning(d.Images, digest); !ok {
 			out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
-				Summary: "deployment " + d.Name + ": " + why})
+				Summary: "deployment " + d.Name + " runs " + running + ", not " + digest})
 		}
 	}
 	return out, nil
+}
+
+// digestRunning reports whether every one of a Deployment's images ends in
+// @digest; when one does not, it also gives what that image runs instead
+// (or "no image" / "no digest" when there is none to compare).
+func digestRunning(images []string, digest string) (string, bool) {
+	if len(images) == 0 {
+		return "no image", false
+	}
+	suffix := "@" + digest
+	for _, img := range images {
+		if strings.HasSuffix(img, suffix) {
+			continue
+		}
+		if _, after, found := strings.Cut(img, "@"); found {
+			return after, false
+		}
+		return "no digest", false
+	}
+	return "", true
 }
 
 // SigNoz reads the alerts SigNoz v0.143.0 holds firing: GET /api/v1/alerts

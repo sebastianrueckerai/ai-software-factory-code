@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -85,14 +87,17 @@ func TestKubeDeployments(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/apis/apps/v1/namespaces/demo-staging/deployments" {
 			t.Errorf("%s %s", r.Method, r.URL.Path)
 		}
-		io.WriteString(w, `{"items":[{"metadata":{"name":"demo-app","generation":5},"spec":{"replicas":2},
+		io.WriteString(w, `{"items":[{"metadata":{"name":"demo-app","generation":5},
+			"spec":{"replicas":2,"template":{"spec":{"containers":[
+				{"image":"git.aisoftwarefactory.world/sf/demo-app@sha256:`+strings.Repeat("a", 64)+`"}]}}},
 			"status":{"observedGeneration":5,"replicas":3,"updatedReplicas":2,"availableReplicas":2}},
 			{"metadata":{"name":"one","generation":1},"spec":{},"status":{}}]}`)
 	})
 	got, err := k.Deployments(context.Background(), "demo-staging")
-	want := []DeploymentState{{Name: "demo-app", Generation: 5, ObservedGeneration: 5, Replicas: 2, StatusReplicas: 3, UpdatedReplicas: 2, AvailableReplicas: 2},
+	want := []DeploymentState{{Name: "demo-app", Generation: 5, ObservedGeneration: 5, Replicas: 2, StatusReplicas: 3, UpdatedReplicas: 2, AvailableReplicas: 2,
+		Images: []string{"git.aisoftwarefactory.world/sf/demo-app@sha256:" + strings.Repeat("a", 64)}},
 		{Name: "one", Generation: 1, Replicas: 1}}
-	if err != nil || len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("Deployments = %+v, %v", got, err)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("Deployments = %+v, %v; want %+v", got, err, want)
 	}
 }
