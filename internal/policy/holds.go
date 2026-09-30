@@ -302,17 +302,26 @@ func KnownCost(cost *float64) *float64 {
 	return cost
 }
 
-// SweepHolds books every expired model and tool hold at its full amount
-// and returns how many it booked. A resource reservation is never swept:
-// accrual books its resource's hours and drops it, so a sweep would book
-// the same hours twice.
+// SweepHolds books every expired model and tool hold at its full amount,
+// writes each one's audit row (decision swept: the call's caller, cut by a
+// restart, never wrote one) and returns how many it booked. The row's kind
+// and alias come from the ref: purpose/alias for a factoryd call, the alias
+// for an agent's, the tool's name for a tool call. A resource reservation
+// is never swept: accrual books its resource's hours and drops it, so a
+// sweep would book the same hours twice.
 func SweepHolds(ctx context.Context, db *sql.DB) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
-		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING task_id, kind, ref, eur),
+		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING id, task_id, kind, ref, eur),
 		      t AS (UPDATE tasks SET spent_eur = spent_eur + g.eur
 		            FROM (SELECT task_id, sum(eur) AS eur FROM gone GROUP BY task_id) g WHERE tasks.id = g.task_id),
-		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT task_id, kind, ref, eur FROM gone WHERE eur > 0)
+		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT task_id, kind, ref, eur FROM gone WHERE eur > 0),
+		      a AS (INSERT INTO audit (task_id, decision, reason, kind, model_alias, tool, spend_eur, hold_eur)
+		            SELECT task_id, 'swept', 'hold ' || id || ' expired unreleased; booked at its full amount',
+		                   CASE WHEN kind = 'model' AND strpos(ref, '/') > 0 THEN split_part(ref, '/', 1) ELSE 'agent' END,
+		                   CASE WHEN kind = 'model' THEN substr(ref, strpos(ref, '/') + 1) ELSE '' END,
+		                   CASE WHEN kind = 'tool' THEN ref ELSE '' END,
+		                   eur, eur FROM gone)
 		 SELECT count(*) FROM gone`).Scan(&n)
 	return n, err
 }
