@@ -11,12 +11,13 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/agent-worker ./cmd
 # opencode's first run npm-installs @opencode-ai/plugin (pinned to its own
 # version) into $HOME/.config/opencode if that directory is empty -- proven
 # by direct reproduction: a cold HOME on a reachable network installs it in
-# ~65s; on no network at all it is silently skipped, not fast-failed, which
-# is why the sandbox (default-deny egress) must never hit this path live.
-# package.json/package-lock.json here are opencode's own self-installed
-# lockfile, copied verbatim, so `npm ci` reproduces byte-for-byte what
-# opencode would install itself, without ever running the opencode binary
-# against a network it can't have.
+# ~65s; on no network at all it is silently skipped, not fast-failed. The
+# sandbox reaches registry.npmjs.org (for the project's npm scripts), so a
+# live first run would spend those 65s of the session installing; the bake
+# below fills the directory first, so it never does. package.json and
+# package-lock.json here are opencode's own self-installed lockfile, copied
+# verbatim, so `npm ci` reproduces byte-for-byte what opencode would install
+# itself, pinned at build time rather than resolved by a session.
 FROM node:22-bookworm-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS opencode-plugin
 ARG OPENCODE_VERSION
 WORKDIR /opencode-home/.config/opencode
@@ -47,12 +48,13 @@ RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp
       && rm /tmp/go.tar.gz
 # Node 24 (the active LTS line), npm with it: the project checks run npm
 # scripts. The sha256 is the tarball's line in nodejs.org's signed
-# SHASUMS256.txt for this version.
-ADD https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /tmp/node.tar.xz
-RUN echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
+# SHASUMS256.txt for this version. One layer: no image keeps the archive.
+RUN curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
+      && echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
       && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
       && rm /tmp/node.tar.xz \
-      && node --version && npm --version
+      && node --version && npm --version \
+      && rm -r /tmp/node-compile-cache
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
 # Pre-baked opencode provider packages (see the opencode-plugin stage above).
 # HOME here is NOT the runtime HOME -- the pod mounts an emptyDir over

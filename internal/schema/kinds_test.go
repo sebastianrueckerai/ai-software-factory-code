@@ -60,7 +60,8 @@ func kindConstants(t *testing.T, pattern string) map[string]string {
 
 // Every migration that adds a kind rewrites the whole check, so of two
 // parallel ones only the last applied keeps its kind: after all migrations,
-// every alert kind and every approval kind factoryd names is accepted.
+// every alert kind, alert verdict and approval kind factoryd names is
+// accepted.
 func TestKindChecksAccept(t *testing.T) {
 	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds"))
 	if err != nil {
@@ -77,6 +78,11 @@ func TestKindChecksAccept(t *testing.T) {
 	for name, kind := range kindConstants(t, `^Alert[A-Z]`) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO alerts (kind, source, task_id) VALUES ($1, 'kinds', $2)`, kind, "t-"+kind); err != nil {
 			t.Errorf("alert kind %s (%q): %v", name, kind, err)
+		}
+	}
+	for name, verdict := range kindConstants(t, `^Verdict[A-Z]`) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO alerts (kind, source, task_id, verdict, resolved_at) VALUES ('escalation', 'kinds', $1, $2, now())`, "v-"+verdict, verdict); err != nil {
+			t.Errorf("alert verdict %s (%q): %v", name, verdict, err)
 		}
 	}
 	for name, kind := range kindConstants(t, `^Approval[A-Z]`) {
