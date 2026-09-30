@@ -409,7 +409,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:5aed6a7ece50549bccbc6b4823fa1ef7b61dba4e40d75e72fff201548d45d377
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:f2bc773c42feb76cccb3c017006fe51cb6a7eaebf1fcb22f259ad3fca73d09e6
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -485,7 +485,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:ed497f2268b568f197ae1193fd539ff46a47b0b8f5b8cb880363567f4477966c
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:86abfc3db5a0391e3cf22241f5dd1e1d7b4d435a631961538ab16f08590d73a0
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
