@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 // SourceAlert is the source of a task filed from a SigNoz alert.
@@ -163,7 +164,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		return nil
 	}
 	if !Final(t.Status) {
-		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced("value="+oneLine(a.Annotations["value"]))
+		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Inbound("value="+oneLine(a.Annotations["value"])))
 		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
@@ -285,7 +286,7 @@ func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
 	}
 	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from SigNoz alert %s",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), oneLine(a.Fingerprint))
-	return title, b.String()
+	return sanitize.Inbound(title), sanitize.Inbound(b.String())
 }
 
 // The final reasons of a task whose issue a human closed; the merge state
