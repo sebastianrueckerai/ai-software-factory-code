@@ -6,62 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os/exec"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 )
-
-// forgejo15 runs a disposable Forgejo 15.0.9 container (the chart's pin)
-// with a site admin and returns its base URL and the admin's login; it
-// skips when no container runtime answers.
-func forgejo15(t *testing.T) (string, AdminAuth) {
-	t.Helper()
-	var runtime string
-	for _, rt := range []string{"docker", "podman"} {
-		if _, err := exec.LookPath(rt); err == nil && exec.Command(rt, "info").Run() == nil {
-			runtime = rt
-			break
-		}
-	}
-	if runtime == "" {
-		t.Skip("no container runtime answers (docker or podman): the Forgejo 15.0.9 container cannot start")
-	}
-	out, err := exec.Command(runtime, "run", "-d", "--rm", "-p", "127.0.0.1::3000",
-		"-e", "FORGEJO__security__INSTALL_LOCK=true", "-e", "FORGEJO__database__DB_TYPE=sqlite3", "codeberg.org/forgejo/forgejo:15.0.9").CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s run: %v\n%s", runtime, err, out)
-	}
-	id := strings.TrimSpace(string(out))
-	t.Cleanup(func() { exec.Command(runtime, "stop", id).Run() }) // #nosec G104 -- --rm removes it; a failed stop leaves a container, not a wrong result
-	out, err = exec.Command(runtime, "port", id, "3000").CombinedOutput()
-	if err != nil {
-		t.Fatalf("%s port: %v\n%s", runtime, err, out)
-	}
-	base := "http://" + strings.TrimSpace(strings.Split(string(out), "\n")[0])
-	deadline := time.Now().Add(time.Minute)
-	for {
-		resp, err := http.Get(base + "/api/v1/version")
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Forgejo at %s did not answer within a minute: %v", base, err)
-		}
-		time.Sleep(time.Second)
-	}
-	a := AdminAuth{User: "t102admin", Password: "t102-admin-" + fmt.Sprint(time.Now().UnixNano())}
-	out, err = exec.Command(runtime, "exec", "-u", "git", id, "forgejo", "admin", "user", "create", "--admin",
-		"--username", a.User, "--password", a.Password, "--email", "t102admin@example.org", "--must-change-password=false").CombinedOutput()
-	if err != nil {
-		t.Fatalf("create the site admin: %v\n%s", err, out)
-	}
-	return base, a
-}
 
 // The merge queue's sync (stage11-design.md 1.4, its one unverified
 // assumption): the bot, a write collaborator of a private project
@@ -72,7 +20,7 @@ func forgejo15(t *testing.T) (string, AdminAuth) {
 // request moves it, moves nothing when up to date, answers a retried
 // move, and reports the conflict.
 func TestUpdateBranchAsBotOnFork(t *testing.T) {
-	base, a := forgejo15(t)
+	base, a := startForgejo(t)
 	ctx := context.Background()
 	admin := (&Forgejo{BaseURL: base}).adminCall(a)
 	must := func(_ []byte, err error) {

@@ -125,7 +125,7 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 	if spot.Ahead > 0 {
 		return spot.Ahead, r.store.SetGate(ctx, t.ID, GateMergeQueue, spot.EnteredAt)
 	}
-	r.record(ctx, t.ID, "queue_turn", map[string]any{"project": t.Repository, "entered": rfc3339(spot.EnteredAt)})
+	r.record(ctx, t.ID, "queue_turn", gateEnd(t, GateMergeQueue, map[string]any{"project": t.Repository, "entered": rfc3339(spot.EnteredAt)}))
 	return 0, nil
 }
 

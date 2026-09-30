@@ -234,6 +234,14 @@ func TestQueueOneAtATime(t *testing.T) {
 		if got := steps("a2"); !slices.Equal(got, []string{"queue_entered", "queue_turn"}) {
 			t.Fatalf("a2's queue steps = %v", got)
 		}
+		// the turn ends the gate merge-queue of a task that waited
+		for id, want := range map[string]any{"a1": nil, "a2": rfc3339(store.queue[0].at)} {
+			lines := timelineLines(t, r, id)
+			i := slices.IndexFunc(lines, func(l map[string]any) bool { return l["step"] == "queue_turn" })
+			if lines[i]["started"] != want {
+				t.Fatalf("%s's queue_turn started %v, want %v", id, lines[i]["started"], want)
+			}
+		}
 	})
 
 	t.Run("workflow", func(t *testing.T) {

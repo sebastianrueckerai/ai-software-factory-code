@@ -42,7 +42,7 @@ var StepGates = map[string]string{
 	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
 	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
-	"audit": GateAudit, "dependencies_done": GateDependencies,
+	"audit": GateAudit, "dependencies_done": GateDependencies, "queue_turn": GateMergeQueue,
 }
 
 // activityGates are the gates the activities open: the task's row is in

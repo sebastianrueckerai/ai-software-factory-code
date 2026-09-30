@@ -491,7 +491,8 @@ the queue (`queue_left`) and signals `queue_turn` to the new head, and so
 does `Finish`; the heal pass signals every head still in gate
 `merge-queue` once a minute (a head at its turn gets no signal, so a long
 approval wait adds nothing to its history). Timeline steps:
-`queue_entered`, `queue_turn`, `queue_synced`, `queue_left`.
+`queue_entered`, `queue_turn` (which ends the gate `merge-queue` of a
+task that waited), `queue_synced`, `queue_left`.
 
 ## Supervision
 
