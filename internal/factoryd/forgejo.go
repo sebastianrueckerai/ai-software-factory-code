@@ -1436,11 +1436,24 @@ func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranc
 	if newBranch != "" {
 		req["new_branch"] = newBranch
 	}
-	payload, err := json.Marshal(req)
-	if err != nil {
-		return "", err
+	return postContents(ctx, f.call, Repo{Owner: owner, Name: repo}, req)
+}
+
+// CreateFiles commits files, keyed by path, as one commit on branch with
+// token, every file created: into an empty repository too, whose branch
+// it starts. It returns the commit's sha.
+func (f *Forgejo) CreateFiles(ctx context.Context, token string, repo Repo, branch, message string, files map[string][]byte) (string, error) {
+	ops := make([]map[string]string, 0, len(files))
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		ops = append(ops, map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString(files[path])})
 	}
-	body, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/contents", owner, repo), payload, http.StatusCreated)
+	return postContents(ctx, f.tokenCall(token), repo, map[string]any{"branch": branch, "message": message, "files": ops})
+}
+
+// postContents is repoChangeFiles: one commit of req's files.
+func postContents(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), r Repo, req map[string]any) (string, error) {
+	owner, repo := r.Owner, r.Name
+	body, err := call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/contents", owner, repo), mustJSON(req), http.StatusCreated)
 	if err != nil {
 		return "", err
 	}

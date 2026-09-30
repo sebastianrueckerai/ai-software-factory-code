@@ -5,6 +5,7 @@ merge_rule: human
 objects: factory
 agents: coder
 process: spec
+template: ts-go
 namespaces: [linkshort-staging]
 environments:
   - {namespace: linkshort-staging, path: deploy/staging}

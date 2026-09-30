@@ -202,3 +202,31 @@ var Refusals = map[string]Refusal{
 	"nested_process": {Change: func(f map[string][]byte) { f["processes/x/spec.yaml"] = f[spec] },
 		Want: []string{`processes/x/spec.yaml: unknown file "processes/x/spec.yaml": the tree holds policy.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
 }
+
+const (
+	link = "projects/linkshort.yaml"
+	ci   = "templates/ts-go/.forgejo/workflows/ci.yml"
+)
+
+// TemplateRefusals are the refusals of the templates and of what a
+// project file names in them (P4 to P6, T1, T2), by subtest name.
+var TemplateRefusals = map[string]Refusal{
+	"template_unknown": {Exact: true, Change: in(link, "template: ts-go\n", "template: ts-go2\n"),
+		Want: []string{`projects/linkshort.yaml: template "ts-go2": no directory templates/ts-go2/ (templates: ts-go)`}},
+	"template_on_seed": {Exact: true, Change: in("projects/ai-software-factory-code.yaml", "process: maintenance\n", "process: maintenance\ntemplate: ts-go\n"),
+		Want: []string{"projects/ai-software-factory-code.yaml: objects seed: template is registration's, which a seed project's infra repository owns"}},
+	"template_env_path": {Exact: true, Change: in(link, "path: deploy/staging}", "path: deploy/stage}"),
+		Want: []string{"projects/linkshort.yaml: environment linkshort-staging: path deploy/stage is not in templates/ts-go"}},
+	"template_required_file": {Exact: true, Change: func(f map[string][]byte) { delete(f, "templates/ts-go/.forgejo/workflows/pr.yml") },
+		Want: []string{"templates/ts-go: .forgejo/workflows/pr.yml is required: a template carries the pull request checks"}},
+	"template_render": {Exact: true, Change: in(ci, "IMAGE: [[.Image]]", "IMAGE: [[.Imagee]]"),
+		Want: []string{`templates/ts-go/.forgejo/workflows/ci.yml: template: ci.yml:14:11: executing "ci.yml" at <.Imagee>: can't evaluate field Imagee in type policy.TemplateData`}},
+	"template_parse": {Exact: true, Change: in(ci, "branches: [main]", "branches: [[main]]"),
+		Want: []string{`templates/ts-go/.forgejo/workflows/ci.yml: template: ci.yml:12: function "main" not defined`}},
+	"template_dir_name": {Exact: true, Change: func(f map[string][]byte) { f["templates/TS/AGENTS.md"] = []byte("x\n") },
+		Want: []string{"templates/TS/AGENTS.md: the template's directory name: lowercase letters, digits and dashes, at most 37"}},
+	"template_loose_file": {Exact: true, Change: func(f map[string][]byte) { f["templates/AGENTS.md"] = []byte("x\n") },
+		Want: []string{`templates/AGENTS.md: unknown file "templates/AGENTS.md": the tree holds policy.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
+	"template_not_text": {Exact: true, Change: func(f map[string][]byte) { f["templates/ts-go/logo.png"] = []byte{0x89, 'P', 'N', 'G', 0xff} },
+		Want: []string{"templates/ts-go/logo.png: not UTF-8 text: a template holds text files"}},
+}

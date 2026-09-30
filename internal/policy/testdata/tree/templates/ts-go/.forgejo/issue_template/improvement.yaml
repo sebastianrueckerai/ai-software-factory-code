@@ -1,0 +1,11 @@
+name: Improvement
+about: A change you would like. It waits in the backlog until a writer moves it to ready.
+labels: ["improvement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+      description: The change, and what it makes better for whom.
+    validations:
+      required: true

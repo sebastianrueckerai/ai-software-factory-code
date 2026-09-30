@@ -1,0 +1,142 @@
+# Pull requests run on the factory's untrusted runners: a fresh gVisor pod,
+# no credential beyond the per-run job token, default-deny egress (the Go
+# module proxy, the npm registry and, for the image job, the job's own
+# build VM). No secrets.* anywhere in this file. Registration seeded it from
+# the template ts-go; agents cannot change .forgejo/.
+#
+# Three jobs: checks, job-env-audit, and changes with image. Each reads
+# which files exist at the pull request's base and head: a file absent at
+# both skips its part with one line and passes (an empty repository is
+# green), a file present at base and absent at head is red.
+name: pr
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+jobs:
+  checks:
+    # One ordered job: the web app is built before the Go tests, which
+    # embed web/dist.
+    runs-on: pr-untrusted
+    env:
+      BASE: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: fetch the base
+        run: git fetch -q --depth=1 origin "$BASE"
+      - name: web
+        run: |
+          set -euo pipefail
+          if [ ! -f web/package.json ]; then
+            if git cat-file -e "$BASE:web/package.json" 2>/dev/null; then echo "web/package.json was deleted"; exit 1; fi
+            echo "no web/package.json: nothing to build"; exit 0
+          fi
+          cd web
+          npm ci --ignore-scripts
+          npm run lint
+          npm test
+          npm run build
+      - name: go
+        run: |
+          set -euo pipefail
+          if [ ! -f go.mod ]; then
+            if git cat-file -e "$BASE:go.mod" 2>/dev/null; then echo "go.mod was deleted"; exit 1; fi
+            echo "no go.mod: no Go to check"; exit 0
+          fi
+          go vet ./...
+          test -z "$(gofmt -l $(git ls-files '*.go') </dev/null)"
+          gosec ./...
+          go test -race ./...
+      - name: migration names
+        # a new .sql file under a migrations/ directory is named by UTC
+        # timestamp; files added before this rule keep their names
+        run: |
+          set -euo pipefail
+          bad=0
+          for f in $(git diff --name-only --diff-filter=A "$BASE" HEAD); do
+            case "/$f" in */migrations/*.sql) ;; *) continue ;; esac
+            if ! basename "$f" | grep -qxE '[0-9]{14}_[a-z0-9_]+\.sql'; then
+              echo "$f: a new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number"; bad=1
+            fi
+          done
+          if [ "$bad" = 0 ]; then echo "every added migration is named by timestamp"; fi
+          exit "$bad"
+  job-env-audit:
+    runs-on: pr-untrusted
+    steps:
+      - name: print job environment variable NAMES only
+        run: env | cut -d= -f1 | sort
+      # The per-run job token (FORGEJO_TOKEN = GITHUB_TOKEN, plus the runtime
+      # token) is the only credential a PR job may hold. forgejo-runner sets
+      # ACTIONS_ID_TOKEN_REQUEST_TOKEN and _URL on every job, empty unless the
+      # workflow enables enable-openid-connect, which Forgejo overrides to off
+      # on a fork's pull request.
+      - name: assert no registry or repository write credential
+        run: |
+          bad=$(env | cut -d= -f1 | grep -Ei '(TOKEN|PASSWORD|PASSWD|SECRET|CREDENTIALS?|AUTH|(^|_)PAT|(^|_)KEY)$|REGISTRY|DOCKER' \
+            | grep -Evx 'FORGEJO_TOKEN|GITHUB_TOKEN|GITEA_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN' || true)
+          if [ -n "$bad" ]; then echo "credential-shaped variables: $bad"; exit 1; fi
+          if [ -e "$HOME/.docker/config.json" ] || [ -e "$HOME/.git-credentials" ]; then echo "credential file in HOME"; exit 1; fi
+          if [ -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then echo "the job can request an OIDC ID token"; exit 1; fi
+          echo "only the per-run job token is present"
+      - name: assert the job token reads but cannot push
+        run: |
+          set -eu
+          auth="Authorization: Basic $(printf 'x-access-token:%s' "$FORGEJO_TOKEN" | base64 -w0)"
+          url="$FORGEJO_SERVER_URL/$FORGEJO_REPOSITORY.git"
+          probe="refs/heads/job-token-probe-$FORGEJO_RUN_ID"
+          g() { GIT_TERMINAL_PROMPT=0 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$auth" git "$@"; }
+          git init -q /tmp/probe && cd /tmp/probe
+          git -c user.name=probe -c user.email=probe@invalid commit -q --allow-empty -m probe
+          if g push -q "$url" "HEAD:$probe" >/tmp/push.log 2>&1; then
+            g push -q "$url" ":$probe" || true
+            echo "the job token pushed $probe (deleted again): it has repository write access"; exit 1
+          fi
+          echo "push refused:"; head -n 3 /tmp/push.log | sed "s/$FORGEJO_TOKEN/***/g"
+          g ls-remote --exit-code "$url" refs/heads/main >/dev/null
+          if g ls-remote --exit-code "$url" "$probe" >/dev/null; then echo "$probe exists"; exit 1; fi
+          echo "the job token reads the repository and cannot write it"
+  changes:
+    # Every pull request of a repository with a Dockerfile builds its image:
+    # the Dockerfile is the agents' own, so no list here could name its
+    # inputs.
+    runs-on: pr-untrusted
+    outputs:
+      build: ${{ steps.select.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: is there an image to build
+        id: select
+        run: |
+          set -euo pipefail
+          base=${{ github.event.pull_request.base.sha }}
+          git fetch -q --depth=1 origin "$base"
+          if [ -f Dockerfile ]; then
+            echo "build image: true"
+            echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git cat-file -e "$base:Dockerfile" 2>/dev/null; then echo "Dockerfile was deleted"; exit 1; fi
+          echo "no Dockerfile: no image"
+          echo "build=false" >> "$GITHUB_OUTPUT"
+  image:
+    # Builds only, never pushes. Forgejo hands a job to a runner before its
+    # `if` is evaluated, so the label carries the same test: with nothing to
+    # build, an ordinary runner skips the job and no build VM is made.
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
+    runs-on: ${{ needs.changes.outputs.build == 'true' && 'pr-untrusted-build' || 'pr-untrusted' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: wait for the build VM's buildkitd
+        run: |
+          set -u
+          echo "buildkitd at $BUILDKIT_HOST, mTLS, server name $BUILDKIT_TLS_SERVERNAME"
+          deadline=$(( $(date +%s) + 180 ))
+          until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 3 minutes"; exit 1; fi
+            sleep 3
+          done
+      - name: build the image
+        run: |
+          buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
+            build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+            --output type=oci,dest=/dev/null

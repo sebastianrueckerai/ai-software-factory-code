@@ -72,7 +72,7 @@ func TestConfigCheck(t *testing.T) {
 	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
 		t.Fatalf("valid tree: exit %d: %s", code, stderr.String())
 	}
-	if want := dir + ": ok, 4 projects, 2 processes, 0 templates\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
+	if want := dir + ": ok, 4 projects, 2 processes, 1 template\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 
@@ -282,6 +282,9 @@ func TestConfigCheckAndLoaderAgree(t *testing.T) {
 	}
 	cases := map[string]func(map[string][]byte){"valid": func(map[string][]byte) {}}
 	for name, r := range policytest.Refusals {
+		cases[name] = r.Change
+	}
+	for name, r := range policytest.TemplateRefusals {
 		cases[name] = r.Change
 	}
 	for name, change := range cases {

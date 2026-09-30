@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: [[index .Namespaces "deploy/staging"]]
+resources: [../base]
+images:
+- name: [[.Image]]
+  # all zeros until ci.yml's first roll commits a built image
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000

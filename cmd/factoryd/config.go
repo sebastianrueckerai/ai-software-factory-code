@@ -48,7 +48,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: rejected:\n%v\n", args[2], err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "%s: ok, %s, %s, %s\n", args[2], count(len(tree.Projects), "project"), count(len(tree.Processes), "process"), count(0, "template"))
+		fmt.Fprintf(stdout, "%s: ok, %s, %s, %s\n", args[2], count(len(tree.Projects), "project"), count(len(tree.Processes), "process"), count(len(tree.Templates), "template"))
 		fmt.Fprintln(stdout, "open cards per lane: checked by the running factoryd only")
 		return 0
 	case len(args) >= 2 && args[0] == "config" && args[1] == "explain":

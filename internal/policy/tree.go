@@ -12,6 +12,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,9 @@ type Tree struct {
 	Projects map[string]ProjectConfig `json:"projects"`
 	// Processes are processes/<name>.yaml by name.
 	Processes map[string]Process `json:"processes"`
+	// Templates are templates/<name>/ by name: each file's text by its
+	// slash path inside the template's directory.
+	Templates map[string]map[string]string `json:"templates,omitempty"`
 }
 
 // The tree's files, relative to its directory.
@@ -50,6 +54,9 @@ func (t Tree) Validate() error {
 	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
 		errs = append(errs, inFile(ProcessFile(name), t.Processes[name].Validate()))
 	}
+	for _, name := range slices.Sorted(maps.Keys(t.Templates)) {
+		errs = append(errs, checkTemplate(name, t.Templates[name]))
+	}
 	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
 		p := t.Projects[name]
 		errs = append(errs, inFile(ProjectFile(name), errors.Join(p.Validate(name), t.Document.checkBounds(name, p))))
@@ -62,11 +69,12 @@ func (t Tree) Validate() error {
 // processes/<name>.yaml and projects/<name>.yaml, each a single YAML
 // document whose first line references its schema, without unknown keys,
 // with every required key, valid by its schema and by the Go rules, and
-// what each file names in another valid. Files under schema/ are skipped;
+// what each file names in another valid; and templates/<name>/, text
+// files that render with sample data. Files under schema/ are skipped;
 // any other file is an error. Every file's errors are reported, one line
 // each, "<file>: <block>: <reason>".
 func ParseTree(files map[string][]byte) (Tree, error) {
-	t := Tree{Projects: map[string]ProjectConfig{}, Processes: map[string]Process{}}
+	t := Tree{Projects: map[string]ProjectConfig{}, Processes: map[string]Process{}, Templates: map[string]map[string]string{}}
 	var errs []error
 	if _, ok := files[FilePolicy]; !ok {
 		errs = append(errs, fmt.Errorf("%s is missing", FilePolicy))
@@ -90,12 +98,31 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 			t.Processes[stem], err = parseFile(b, name, kindProcess, Process.Validate)
 		case path.Dir(name) == DirProjects && path.Ext(name) == ".yaml":
 			t.Projects[stem], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(stem) })
+		case strings.HasPrefix(name, DirTemplates+"/") && strings.Count(name, "/") >= 2:
+			dir, file, _ := strings.Cut(strings.TrimPrefix(name, DirTemplates+"/"), "/")
+			switch {
+			case !projectFileName.MatchString(dir):
+				err = errors.New("the template's directory name: lowercase letters, digits and dashes, at most 37")
+			case !utf8.Valid(b):
+				err = errors.New("not UTF-8 text: a template holds text files")
+			default:
+				if t.Templates[dir] == nil {
+					t.Templates[dir] = map[string]string{}
+				}
+				t.Templates[dir][file] = string(b)
+			}
 		default:
 			err = fmt.Errorf("unknown file %q: the tree holds %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/ and %s/", name, FilePolicy, DirProcesses, DirProjects, DirSchema)
 		}
 		if err != nil {
 			broken = true
 			errs = append(errs, inFile(name, err))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(t.Templates)) {
+		if err := checkTemplate(name, t.Templates[name]); err != nil {
+			broken = true
+			errs = append(errs, err)
 		}
 	}
 	if policyOK {
@@ -216,6 +243,9 @@ func (t Tree) checkLinks() error {
 				errs = append(errs, fmt.Errorf("%s: audit: process %s lists no audit stage", file, pc.Process))
 			}
 		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
+		errs = append(errs, t.checkProjectTemplate(name, t.Projects[name]))
 	}
 	for _, name := range processes {
 		errs = append(errs, BuildGraph(name, t.Processes[name], t.Document).Check())

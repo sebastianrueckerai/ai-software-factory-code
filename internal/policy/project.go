@@ -173,6 +173,9 @@ type ProjectConfig struct {
 	// Process names the file processes/<name>.yaml the project's cards
 	// pass; required with agents coder, not allowed with agents none.
 	Process string `yaml:"process,omitempty" json:"process,omitempty"`
+	// Template names the directory templates/<name>/ registration seeds
+	// the empty repository's main with; a factory project's only.
+	Template string `yaml:"template,omitempty" json:"template,omitempty"`
 	// Audit runs the process's audit stage on the project's pull
 	// requests (ruling 188); absent: it does not.
 	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`

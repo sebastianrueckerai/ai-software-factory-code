@@ -1,0 +1,146 @@
+# main: the checks of pr.yml; with a Dockerfile, build and push the image by
+# digest and roll staging; with deploy/prod/kustomization.yaml, wait 15
+# minutes, ask the factory whether an alert fires in staging, and on none
+# roll prod. Every roll is a commit by factory-ci on the deploy branch
+# (.forgejo/roll.sh, pushed with the deploy key); Flux tracks deploy. On a
+# repository without a Dockerfile every job after the checks skips, so the
+# seed commit's run is green. Registration seeded this file from the
+# template ts-go; agents cannot change .forgejo/.
+name: ci
+on:
+  push:
+    branches: [main]
+env:
+  IMAGE: [[.Image]]
+  # the same registry by its in-cluster address; the runner cannot reach
+  # the public host
+  REGISTRY: forgejo-http.forgejo.svc.cluster.local:3000
+  FACTORY_URL: http://factoryd.factory.svc.cluster.local:8080
+  GIT_SSH_HOST: forgejo-ssh.forgejo.svc.cluster.local
+  GIT_SSH_PORT: "22"
+  GIT_SSH_REPO: [[.Repository]]
+jobs:
+  checks:
+    if: github.event.head_commit.author.name != 'factory-ci' || github.event.head_commit.author.email != 'factory-ci@aisoftwarefactory.world'
+    runs-on: pr-untrusted
+    outputs:
+      image: ${{ steps.deploy.outputs.image }}
+      prod: ${{ steps.deploy.outputs.prod }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: web
+        run: |
+          set -euo pipefail
+          if [ ! -f web/package.json ]; then echo "no web/package.json: nothing to build"; exit 0; fi
+          cd web
+          npm ci --ignore-scripts
+          npm run lint
+          npm test
+          npm run build
+      - name: go
+        run: |
+          set -euo pipefail
+          if [ ! -f go.mod ]; then echo "no go.mod: no Go to check"; exit 0; fi
+          go vet ./...
+          test -z "$(gofmt -l $(git ls-files '*.go') </dev/null)"
+          gosec ./...
+          go test -race ./...
+      - name: what main deploys
+        id: deploy
+        run: |
+          set -euo pipefail
+          if [ -f Dockerfile ]; then echo "image=true" >> "$GITHUB_OUTPUT"; else echo "no Dockerfile: no image"; fi
+          if [ -f deploy/prod/kustomization.yaml ]; then echo "prod=true" >> "$GITHUB_OUTPUT"; else echo "no deploy/prod/kustomization.yaml: staging only"; fi
+  image:
+    # Forgejo hands a job to a runner before its `if` is evaluated, so the
+    # label carries the same test: without a Dockerfile no build VM is made.
+    needs: checks
+    if: needs.checks.outputs.image == 'true'
+    runs-on: ${{ needs.checks.outputs.image == 'true' && 'pr-untrusted-build' || 'pr-untrusted' }}
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: wait for the build VM's buildkitd
+        run: |
+          set -u
+          echo "buildkitd at $BUILDKIT_HOST, mTLS, server name $BUILDKIT_TLS_SERVERNAME"
+          deadline=$(( $(date +%s) + 180 ))
+          until buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" debug workers; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 3 minutes"; exit 1; fi
+            sleep 3
+          done
+      - name: build on the VM, push from here
+        id: push
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d -p /workspace)
+          buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
+            build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \
+            --output "type=oci,dest=$work/layout,tar=false"
+          # Forgejo's token challenge names the public host, which the
+          # runner cannot reach: fetch the token in-cluster and hand crane
+          # the bearer directly.
+          token=$(curl -fsS -u "$REGISTRY_USER:$REGISTRY_PASSWORD" \
+            "http://$REGISTRY/v2/token?service=container_registry&scope=repository:$GIT_SSH_REPO:pull,push" \
+            | sed -nE 's/.*"token": *"([^"]+)".*/\1/p')
+          if [ -z "$token" ]; then echo "no registry token for $REGISTRY_USER"; exit 1; fi
+          export DOCKER_CONFIG=$work/docker
+          mkdir -p "$DOCKER_CONFIG"
+          printf '{"auths":{"%s":{"registrytoken":"%s"}}}' "$REGISTRY" "$token" > "$DOCKER_CONFIG/config.json"
+          ref=$(crane push --insecure "$work/layout" "$REGISTRY/$GIT_SSH_REPO:${GITHUB_SHA::7}")
+          rm -r "$DOCKER_CONFIG"
+          digest=${ref##*@}
+          if ! echo "$digest" | grep -qxE 'sha256:[0-9a-f]{64}'; then echo "crane named no digest: $ref"; exit 1; fi
+          echo "pushed $IMAGE@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+  staging:
+    needs: image
+    if: needs.image.outputs.digest != ''
+    runs-on: pr-untrusted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: roll staging
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          FACTORY_SSH_HOST_KEY: ${{ secrets.FACTORY_SSH_HOST_KEY }}
+        run: bash .forgejo/roll.sh staging "${{ needs.image.outputs.digest }}"
+  promote:
+    needs: [checks, image, staging]
+    if: needs.checks.outputs.prod == 'true'
+    runs-on: pr-untrusted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: wait 15 minutes on staging
+        run: sleep 900
+      - name: ask the factory whether an alert fires in [[index .Namespaces "deploy/staging"]]
+        env:
+          FACTORY_READ_TOKEN: ${{ secrets.FACTORY_READ_TOKEN }}
+        run: |
+          set -uo pipefail
+          url="$FACTORY_URL/projects/[[.Name]]/alerts?namespace=[[index .Namespaces "deploy/staging"]]"
+          code=$(curl -sS -m 30 -o alerts.json -w '%{http_code}' -H "Authorization: Bearer $FACTORY_READ_TOKEN" "$url")
+          if [ $? -ne 0 ]; then echo "the factory did not answer at $url"; exit 1; fi
+          if [ "$code" != 200 ]; then
+            echo "the factory answered $code at $url; without a 200 there is no promotion"
+            head -c 2000 alerts.json; echo; exit 1
+          fi
+          body=$(tr -d ' \n\r\t' < alerts.json)
+          case "$body" in
+            ""|"[]"|"null") echo "no alert fires in staging" ;;
+            *) echo "alerts fire in staging, prod stays:"; cat alerts.json; echo; exit 1 ;;
+          esac
+      - name: roll prod
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+          FACTORY_SSH_HOST_KEY: ${{ secrets.FACTORY_SSH_HOST_KEY }}
+          ROLL_NOTE: 15 minutes on staging without an alert
+        run: bash .forgejo/roll.sh prod "${{ needs.image.outputs.digest }}"
