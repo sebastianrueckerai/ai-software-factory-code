@@ -1089,6 +1089,23 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 // targetURL is a commit status's target_url, e.g.
 // "/sf/repo/actions/runs/7/jobs/0"; Forgejo redirects it to the run's
 // latest attempt, which this follows before asking for that attempt's log.
+//
+// httpsJar wraps a cookiejar so every lookup and store believes the URL is
+// https, regardless of the scheme actually dialed.
+type httpsJar struct{ http.CookieJar }
+
+func (j httpsJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	v := *u
+	v.Scheme = "https"
+	j.CookieJar.SetCookies(&v, cookies)
+}
+
+func (j httpsJar) Cookies(u *url.URL) []*http.Cookie {
+	v := *u
+	v.Scheme = "https"
+	return j.CookieJar.Cookies(&v)
+}
+
 func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -1100,7 +1117,12 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	}
 	client := &http.Client{
 		Timeout: 15 * time.Second,
-		Jar:     jar,
+		// Production's ROOT_URL is https, so Forgejo marks the session
+		// cookie Secure; cookiejar withholds a Secure cookie from a plain
+		// http request, and BaseURL is always http (the in-cluster
+		// address). httpsJar makes every jar lookup believe it is https,
+		// so the cookie set at login is the one sent back.
+		Jar: httpsJar{jar},
 		// Forgejo's job page redirects to its attempt with an absolute URL
 		// built from its own ROOT_URL, which is PublicURL's host, not
 		// BaseURL's (the Forgejo struct's own split): left alone, the
@@ -1126,6 +1148,9 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 		return nil, fmt.Errorf("forgejo job log %s: login: %w", targetURL, err)
 	}
 	res.Body.Close()
+	if res.Request.URL.Path == "/user/login" {
+		return nil, fmt.Errorf("forgejo job log %s: login refused", targetURL)
+	}
 
 	viewReq, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+targetURL, nil)
 	if err != nil {
@@ -1151,7 +1176,7 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("forgejo job log %s: status %d: %s", targetURL, res.StatusCode, body)
+		return nil, fmt.Errorf("forgejo job log %s: status %d", targetURL, res.StatusCode)
 	}
 	return body, nil
 }

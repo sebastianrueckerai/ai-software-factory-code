@@ -39,7 +39,11 @@ func startForgejo(t *testing.T) (string, AdminAuth) {
 	runtime := containerRuntime(t)
 	out, err := exec.Command(runtime, "run", "-d", "--rm", "-p", "127.0.0.1::3000",
 		"-e", "FORGEJO__security__INSTALL_LOCK=true", "-e", "FORGEJO__database__DB_TYPE=sqlite3",
-		"-e", "FORGEJO__actions__ENABLED=true", forgejoImage).CombinedOutput()
+		"-e", "FORGEJO__actions__ENABLED=true",
+		// Production's ROOT_URL is https (k8s/platform/forgejo/helmrelease.yaml),
+		// which makes Forgejo mark its session cookie Secure by default; an http
+		// ROOT_URL here would hide that and let JobLog's httpsJar go untested.
+		"-e", "FORGEJO__server__ROOT_URL=https://git.example.org/", forgejoImage).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s run %s: %v\n%s", runtime, forgejoImage, err, out)
 	}

@@ -22,6 +22,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
@@ -493,6 +494,64 @@ func TestLogTailCapped(t *testing.T) {
 	}
 	if got := logTail([]byte(log)); got != want {
 		t.Fatalf("logTail = %q (%d bytes), want %q (%d bytes)", got, len(got), want, len(want))
+	}
+}
+
+// logTail strips each surviving line's leading Forgejo Actions timestamp
+// before the byte cap ever sees it, freeing that budget for the line's own
+// text (M2, review-task115.md).
+func TestLogTailStripsTimestamp(t *testing.T) {
+	log := "2026-09-30T22:50:22.9434409Z go test ./...\n2026-09-30T22:50:23.1234567Z ok\n"
+	want := "go test ./...\nok"
+	if got := logTail([]byte(log)); got != want {
+		t.Fatalf("logTail = %q, want %q", got, want)
+	}
+}
+
+// logTail's hard cut for a single line past the byte cap moves forward to
+// a UTF-8 rune boundary rather than splitting one in half (M3,
+// review-task115.md): 1666 "€" (3 bytes each) plus "ab" is 5000 bytes; the
+// naive tail[904:] would begin mid-rune (904 falls inside the 302nd "€"),
+// so the cut advances to byte 906, the last 1364 "€" plus "ab" (4094
+// bytes).
+func TestLogTailRuneSafeCut(t *testing.T) {
+	line := strings.Repeat("€", 1666) + "ab"
+	if len(line) != 5000 {
+		t.Fatalf("test setup: line is %d bytes, want 5000", len(line))
+	}
+	want := strings.Repeat("€", 1364) + "ab"
+	if len(want) != 4094 {
+		t.Fatalf("test setup: want is %d bytes, want 4094", len(want))
+	}
+	got := logTail([]byte(line))
+	if got != want {
+		t.Fatalf("logTail = %q (%d bytes), want %q (%d bytes)", got, len(got), want, len(want))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("logTail = %q is not valid UTF-8", got)
+	}
+}
+
+// The WaitChecks closure only fetches a failed status's log when its
+// target lands under the task's own owner/repo/actions/runs/: a crafted
+// target_url could otherwise send the bot's broadly-collaborating session
+// fetching another project's log (M1, review-task115.md).
+func TestWaitChecksRejectsForeignLogTarget(t *testing.T) {
+	foreign := [4]string{"failure", "pr / test", "https://evil.example/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	fj := &prForgejo{statuses: []string{statusBody("failure", foreign)}}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatalf("%v", err)
+	}
+	if len(res.Findings) != 1 || strings.Contains(res.Findings[0], "\n") {
+		t.Fatalf("findings = %q, want the finding with no log tail", res.Findings)
+	}
+	for _, c := range fj.calls {
+		if strings.Contains(c, "/user/login") {
+			t.Fatalf("calls = %v, want no login attempt for a target outside the task's own repo", fj.calls)
+		}
 	}
 }
 

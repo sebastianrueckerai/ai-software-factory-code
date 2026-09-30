@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/interceptor"
@@ -914,7 +915,21 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
 		res := checksResult(cs, r.forgejo.PublicURL, func(target string) ([]byte, error) {
-			return r.forgejo.JobLog(ctx, target)
+			// The bot collaborates on every project repository, so its
+			// session can read any of their logs; a status could name one
+			// outside this task's own run and pull another project's log
+			// (M1, review-task115.md).
+			prefix := "/" + repo.Owner + "/" + repo.Name + "/actions/runs/"
+			if !strings.HasPrefix(target, prefix) {
+				err := fmt.Errorf("target %q outside %s", target, prefix)
+				log.Printf("task %s: job log %s: %v", t.ID, target, err)
+				return nil, err
+			}
+			body, err := r.forgejo.JobLog(ctx, target)
+			if err != nil {
+				log.Printf("task %s: job log %s: %v", t.ID, target, err)
+			}
+			return body, err
 		})
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
@@ -1030,24 +1045,49 @@ const (
 	jobLogMaxBytes = 4096
 )
 
-// logTail is log's last jobLogMaxLines lines, cut down to at most
-// jobLogMaxBytes by dropping whole lines from the front: the kept text
-// always starts at a line, never mid-line. A single line past the byte cap
-// on its own is cut hard, since no line boundary can satisfy it.
+// logTail is log's last jobLogMaxLines lines, each with its leading
+// Forgejo Actions timestamp stripped, cut down to at most jobLogMaxBytes by
+// dropping whole lines from the front: the kept text always starts at a
+// line, never mid-line. A single line past the byte cap on its own is cut
+// hard at the nearest UTF-8 rune boundary, since no line boundary can
+// satisfy it.
 func logTail(log []byte) string {
 	lines := strings.Split(strings.TrimRight(string(log), "\n"), "\n")
 	if len(lines) > jobLogMaxLines {
 		lines = lines[len(lines)-jobLogMaxLines:]
 	}
+	for i, line := range lines {
+		lines[i] = stripLogTimestamp(line)
+	}
 	tail := strings.Join(lines, "\n")
 	for len(tail) > jobLogMaxBytes {
 		_, rest, ok := strings.Cut(tail, "\n")
 		if !ok {
-			return tail[len(tail)-jobLogMaxBytes:]
+			cut := len(tail) - jobLogMaxBytes
+			for cut < len(tail) && !utf8.RuneStart(tail[cut]) {
+				cut++
+			}
+			return tail[cut:]
 		}
 		tail = rest
 	}
 	return tail
+}
+
+// stripLogTimestamp removes line's leading RFC3339Nano timestamp and
+// space, Forgejo's raw Actions log format (e.g.
+// "2026-09-30T22:50:22.9434409Z go test ./..."), which otherwise spends
+// about 1.1 KiB of jobLogMaxBytes across a full 40-line tail on timestamps
+// alone (M2, review-task115.md). A line without one is kept as-is.
+func stripLogTimestamp(line string) string {
+	ts, rest, ok := strings.Cut(line, " ")
+	if !ok {
+		return line
+	}
+	if _, err := time.Parse(time.RFC3339Nano, ts); err != nil {
+		return line
+	}
+	return rest
 }
 
 // PullRequestMerged tells a merge (which closes the issue through "Closes
