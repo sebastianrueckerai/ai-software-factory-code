@@ -4,19 +4,20 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 # an unprivileged, gVisor-isolated pod — no docker CLI, no socket, no
 # registry or repository credential baked in or mounted. Everything a
 # pull_request job needs (a Go + C toolchain — go test -race needs cgo, git,
-# node for JS actions, buildctl to drive the job's build VM, crane to read
+# Node for JS actions and npm, buildctl to drive the job's build VM, crane to read
 # the build cache) ships
 # pre-installed so the job itself never has to reach past the egress
 # allowlist for tooling.
 ARG FORGEJO_RUNNER_VERSION=13.2.0
 ARG BUILDKIT_VERSION=0.33.0
 ARG GO_VERSION=1.25.9
+ARG NODE_VERSION=24.21.0
 ARG GOSEC_VERSION=2.29.0
 ARG CRANE_VERSION=0.22.1
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends \
-           git openssh-client bash nodejs curl tar ca-certificates gcc libc6-dev \
+           git openssh-client bash curl tar xz-utils ca-certificates gcc libc6-dev \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash runner
 
@@ -45,6 +46,16 @@ ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz
 RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp/go.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/go.tar.gz -C /usr/local \
       && rm /tmp/go.tar.gz
+
+# Node 24 (the active LTS line), npm with it: forgejo-runner runs
+# JavaScript actions (actions/checkout) with the node on PATH, and the project
+# checks run npm scripts. The sha256 is the tarball's line in nodejs.org's signed
+# SHASUMS256.txt for this version.
+ADD https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /tmp/node.tar.xz
+RUN echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
+      && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+      && rm /tmp/node.tar.xz \
+      && node --version && npm --version
 
 # gosec: pr.yml's static security scan (design decision #6 — chosen over
 # govulncheck so the job's egress allowlist never needs vuln.go.dev).

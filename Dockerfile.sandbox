@@ -28,8 +28,9 @@ FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 ARG OPENCODE_VERSION
 ARG GO_VERSION=1.25.9
+ARG NODE_VERSION=24.21.0
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
-      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client \
+      && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client xz-utils \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash worker
 # release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
@@ -44,6 +45,14 @@ ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz
 RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp/go.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/go.tar.gz -C /usr/local \
       && rm /tmp/go.tar.gz
+# Node 24 (the active LTS line), npm with it: the project checks run npm
+# scripts. The sha256 is the tarball's line in nodejs.org's signed
+# SHASUMS256.txt for this version.
+ADD https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /tmp/node.tar.xz
+RUN echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
+      && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+      && rm /tmp/node.tar.xz \
+      && node --version && npm --version
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
 # Pre-baked opencode provider packages (see the opencode-plugin stage above).
 # HOME here is NOT the runtime HOME -- the pod mounts an emptyDir over
