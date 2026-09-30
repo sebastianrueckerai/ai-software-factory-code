@@ -57,4 +57,4 @@ form.move button { margin: .25rem .25rem 0 0; padding: .15rem .5rem; }
 .filter button { margin: 0; }
 .column:has(.approval.plan) { grid-column: span 2; }
 .plan-cards { font-size: .8rem; }
-.plan-cards td { overflow-wrap: anywhere; }
+.plan-cards td { overflow-wrap: break-word; }
