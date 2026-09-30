@@ -686,8 +686,9 @@ transaction, the headroom left after spend and every outstanding hold is
 computed (task: budget minus spent; day: `day_eur` minus today's ledger
 total), the output limit (`max_tokens` or `max_completion_tokens`) is
 clamped to what that pays for, and a `holds` row takes the worst case.
-Fewer than 1024 output tokens (GLM reasons before it answers) is refused
-unless the caller asked for fewer. After the call one transaction
+Fewer than 1024 output tokens (a floor any model needs room to fill,
+reasoning or answer) is refused unless the caller asked for fewer. After the
+call one transaction
 deletes the hold and books the real cost onto `tasks.spent_eur` and the
 ledger; an unknown cost (no cost header, a broken stream, a value that
 is not a finite non-negative number) books the hold, and a failed call
@@ -702,9 +703,9 @@ empty within the hold). A hold whose caller
 died expires after an hour and factoryd's sweep books it in full and
 writes its audit row (decision `swept`, kind and alias from the hold's
 ref); a late release books only what the real cost exceeds it by.
-Settlement leaves a task alone while it has an open hold. Output limits
-bound reasoning:
-verified on GLM (reasoning counts inside `max_tokens`); Qwen's thinking
+Settlement leaves a task alone while it has an open hold. Output limits bound
+reasoning: verified on the earlier reasoning models (reasoning counts inside
+`max_tokens`); Qwen's thinking
 does not, so the dashscope deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
@@ -1666,6 +1667,9 @@ body `audit <decision>`, severity INFO, attributes `task.id`,
 `audit.decision`, `audit.kind` (`agent`, factoryd's purpose, or `factoryd`), `audit.reason`, `audit.model_alias`, `audit.tool`,
 `audit.spend_eur`, `audit.policy_version`, `audit.output_limit`,
 `audit.hold_eur`, `audit.over_hold`; a nil or empty column is left out.
+`spend_eur` on an audit row is the task's running total after the call (the
+per-call cost is the difference to the previous row of the same task); swept
+and accrued rows carry the event's own amount.
 `task.id` and `audit.decision` are the gateway's own (the verified
 token's task, a constant) and go out as they are. Every other string goes
 through the scrubber first (the upstream-body rule is the gateway's, the rest `internal/redact`): a PEM block becomes `[pem redacted]`; the

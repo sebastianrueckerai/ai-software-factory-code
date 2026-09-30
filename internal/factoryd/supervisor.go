@@ -279,10 +279,10 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 // Chat is one JSON-mode call of alias through the gateway on the task's
 // account for purpose, with system as the system prompt and input,
 // indented JSON, as the user message, cut after timeout (the task's
-// limits.supervisor_timeout: GLM reasons before it answers); deployment
-// is the one that answered, as the gateway names it. A gateway refusal is
-// a *policy.Refusal in the chain; alias "" (the policy names none) makes
-// no call.
+// limits.supervisor_timeout: a reasoning model thinks before it answers);
+// deployment is the one that answered, as the gateway names it. A gateway
+// refusal is a *policy.Refusal in the chain; alias "" (the policy names
+// none) makes no call.
 func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose string, timeout time.Duration, system string, input any) (content, deployment string, err error) {
 	if alias == "" {
 		return "", "", fmt.Errorf("the policy names no %s model for the task's capability classes", purpose)

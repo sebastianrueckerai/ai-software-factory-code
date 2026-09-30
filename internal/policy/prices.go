@@ -185,10 +185,6 @@ func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 					return Price{}, fmt.Errorf("off_peak_pricing: %w", err)
 				}
 			}
-		case k == "search_context_cost_per_query" && string(mi["litellm_provider"]) == `"groq"`:
-			// Groq bills it only for its browser_search tool, which the
-			// gateway refuses; other providers (Perplexity's sonar) search on
-			// every call
 		case strings.Contains(k, "multiplier"):
 			return Price{}, fmt.Errorf("unbounded multiplier %s", k)
 		case strings.Contains(k, "cost") || strings.Contains(k, "pric"):

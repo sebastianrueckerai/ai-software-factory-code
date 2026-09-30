@@ -30,10 +30,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// TokenBudget is the caller-side answer-token budget for one task. GLM is
-// reasoning-always-on (200+ reasoning tokens even for trivial prompts), so
-// the completion output limit must be answer plus explicit headroom or the
-// answer truncates mid-flight (Stage 5 gate item).
+// TokenBudget is the caller-side answer-token budget for one task. A model
+// may spend part of the completion output on reasoning before it answers,
+// so the output limit must be answer plus explicit headroom or the answer
+// truncates mid-flight (Stage 5 gate item).
 type TokenBudget struct {
 	AnswerTokens   int
 	HeadroomTokens int
@@ -44,7 +44,7 @@ func (b TokenBudget) OutputLimit() (int, error) {
 		return 0, fmt.Errorf("token budget: AnswerTokens must be positive, is %d", b.AnswerTokens)
 	}
 	if b.HeadroomTokens <= 0 {
-		return 0, fmt.Errorf("token budget: HeadroomTokens must be positive (GLM always reasons), is %d", b.HeadroomTokens)
+		return 0, fmt.Errorf("token budget: HeadroomTokens must be positive (a call needs room for its output), is %d", b.HeadroomTokens)
 	}
 	return b.AnswerTokens + b.HeadroomTokens, nil
 }
