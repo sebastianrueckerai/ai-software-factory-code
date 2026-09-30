@@ -935,6 +935,8 @@ type PullRequestRef struct {
 	// Mergeable is Forgejo's verdict that the head merges into the base
 	// without conflict.
 	Mergeable bool
+	// MergeBase is the base commit Forgejo last merged the head against.
+	MergeBase string
 }
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
@@ -945,6 +947,7 @@ type wirePR struct {
 	Merged    bool   `json:"merged"`
 	Mergeable bool   `json:"mergeable"`
 	MergeSHA  string `json:"merge_commit_sha"`
+	MergeBase string `json:"merge_base"`
 	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
@@ -962,7 +965,7 @@ type wirePR struct {
 
 func (w wirePR) ref() PullRequestRef {
 	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
-		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA}
+		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
 	}
@@ -1364,6 +1367,22 @@ func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo strin
 	// that moved, which no retry fixes
 	if err != nil && !errors.Is(err, ErrRefused) && strings.Contains(err.Error(), ": status 409: ") {
 		return fmt.Errorf("%w: %v", ErrRefused, err)
+	}
+	return err
+}
+
+// ErrUpdateConflict is an update of a pull request's branch whose base
+// conflicts with it.
+var ErrUpdateConflict = errors.New("the branch conflicts with its base")
+
+// UpdatePullRequest merges the base into pull request number's head
+// branch as the bot, which owns the fork the branch is on (Forgejo's
+// repoUpdatePullRequest, style merge); a conflict answers 409, which do
+// takes for transient.
+func (f *Forgejo) UpdatePullRequest(ctx context.Context, owner, repo string, number int64) error {
+	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/update?style=merge", owner, repo, number), nil, http.StatusOK)
+	if err != nil && strings.Contains(err.Error(), ": status 409: ") {
+		return fmt.Errorf("%w: %v", ErrUpdateConflict, err)
 	}
 	return err
 }
