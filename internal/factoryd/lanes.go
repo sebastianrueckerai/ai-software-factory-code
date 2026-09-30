@@ -80,10 +80,10 @@ func laneLabelled(names []string, lane string) bool {
 	return slices.Contains(names, LabelAgent) || slices.Contains(names, "bug")
 }
 
-// mayMove reports whether user may put a card of repository into a lane
+// MayMove reports whether user may put a card of repository into a lane
 // moved by movedBy: writers write the repository, approvers are the
 // policy's.
-func (in *Intake) mayMove(ctx context.Context, repository, user, movedBy string) (bool, error) {
+func (in *Intake) MayMove(ctx context.Context, repository, user, movedBy string) (bool, error) {
 	if movedBy == policy.MovedByApprovers {
 		return slices.Contains(in.Policy().Approvers, user), nil
 	}
@@ -155,7 +155,7 @@ func (in *Intake) enterOnCreation(ctx context.Context, p Project, task Task, nam
 		return task, refusal(lane, task.Repository, task.Author), nil
 	}
 	if byLabel && sender != "" && sender != task.Author {
-		if ok, err := in.mayMove(ctx, task.Repository, sender, lane.MovedBy); err != nil {
+		if ok, err := in.MayMove(ctx, task.Repository, sender, lane.MovedBy); err != nil {
 			return Task{}, "", err
 		} else if !ok {
 			return task, refusal(lane, task.Repository, sender), nil
@@ -213,7 +213,7 @@ func (in *Intake) move(ctx context.Context, via string, p Project, t Task, name 
 		in.refuseEntry(ctx, via, t.Repository, t.IssueNumber, names, "factoryd: lane plan takes no card of a plan: plans do not nest. The card stays in backlog.")
 		return nil
 	}
-	allowed, err := in.mayMove(ctx, t.Repository, sender, lane.MovedBy)
+	allowed, err := in.MayMove(ctx, t.Repository, sender, lane.MovedBy)
 	if err != nil {
 		return err
 	}

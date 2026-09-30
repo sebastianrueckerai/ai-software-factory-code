@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,22 +19,34 @@ import (
 type approvalCard struct {
 	factoryd.ApprovalRequest
 	IssueURL string
+	Issue    int64
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
 	Resource cloudres.ResourceSpec
-	CSRF     string
-	Approver bool
+	// a plan: its revision, the spec's first lines, the summary and the
+	// cards in filing order
+	PlanSpec    factoryd.PlanSpec
+	SpecLines   string
+	PlanSummary string
+	PlanRows    []factoryd.PlanRow
+	Problem     string // why the human's last action on the card was refused
+	CSRF        string
+	Approver    bool
 }
 
-func (c *Console) approvalCard(a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
+// specLines are the plan card's first lines of a spec.
+const specLines = 5
+
+func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
-	if t, ok := tasks[a.TaskID]; ok && t.IssueNumber > 0 {
-		k.IssueURL = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber)
+	t, ok := tasks[a.TaskID]
+	if ok && t.IssueNumber > 0 {
+		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
 	var err error
 	switch a.Kind {
@@ -42,11 +55,37 @@ func (c *Console) approvalCard(a factoryd.ApprovalRequest, tasks map[string]fact
 		err = json.Unmarshal(a.Spec, &k.Merge)
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
+	case factoryd.ApprovalPlan:
+		if lines := strings.Split(t.Objective, "\n"); len(lines) > specLines {
+			k.SpecLines = strings.Join(append(lines[:specLines], "…"), "\n")
+		} else {
+			k.SpecLines = t.Objective
+		}
+		if err = c.planOf(ctx, &k); err != nil {
+			k.Problem = "the plan could not be read; see the factoryd log"
+		}
 	}
 	if err != nil {
-		log.Printf("console: approval request %d: spec: %v", a.ID, err)
+		log.Printf("console: approval request %d: %v", a.ID, err)
 	}
 	return k
+}
+
+// planOf fills plan card k from its request's revision.
+func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
+	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
+		return fmt.Errorf("spec: %w", err)
+	}
+	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.PlanSpec.Revision)
+	if err != nil || !ok {
+		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
+	}
+	var p factoryd.Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return fmt.Errorf("revision %d of %s: %w", rev.Revision, k.TaskID, err)
+	}
+	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
+	return nil
 }
 
 // pending finds the pending approval request the path names.

@@ -16,6 +16,7 @@
 <form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
 </header>
 <main>
+<p id="flash" class="problem" role="alert" hidden></p>
 {{end}}
 
 {{define "foot"}}</main>
@@ -23,10 +24,14 @@
 </html>
 {{end}}
 
-{{define "card"}}<article class="card">
+{{define "card"}}<article class="card"{{if .Moves}} draggable="true" data-card="{{.ID}}"{{end}}>
 <h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
-<p class="meta"><span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .GateText}} · <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
+<p class="meta">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}<span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .GateText}} · <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
+{{if .PlanIssue}}<p class="meta">part of plan #{{.PlanIssue}}</p>{{end}}
 {{if .WaitingOn}}<p class="waiting">waiting on {{.WaitingOn}}</p>{{end}}
+{{with .Plan}}<ul class="children" aria-label="The plan's cards">{{range .Cards}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>
+{{if .CSRF}}<form method="post" action="/tasks/{{$.ID}}/start-plan" hx-post="/tasks/{{$.ID}}/start-plan" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><button type="submit" aria-label="Start plan #{{$.IssueNumber}}: {{.Backlog}} in backlog">Start plan ({{.Backlog}} in backlog)</button></form>{{end}}{{end}}
+{{range .Moves}}<form method="post" action="/cards/{{$.ID}}/lane" hx-post="/cards/{{$.ID}}/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="{{.Lane}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="lane" value="{{.Lane}}"><button type="submit" aria-label="Move #{{$.IssueNumber}} to lane {{.Lane}}">→ {{.Title}}</button></form>{{end}}
 <p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
 </article>{{end}}
 

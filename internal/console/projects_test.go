@@ -25,10 +25,12 @@ func (f *fakeProjects) Projects(context.Context) ([]factoryd.Project, error) { r
 func projectRows() []factoryd.Project {
 	return []factoryd.Project{
 		{Name: "ai-software-factory-code", Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", File: true,
+			Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes,
 			Namespaces: []string{"factory"}, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}},
 		{Name: "ai-software-factory-infra", Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none", File: true,
 			Tokens: policy.SeedTokens{Read: policy.SecretConfig}},
 		{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", File: true,
+			Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes,
 			Namespaces:   []string{"demo-staging", "demo-prod"},
 			Environments: []factoryd.Environment{{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"}},
 			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", GitToken: "secret-git-token", MergeToken: "secret-merge-token"},

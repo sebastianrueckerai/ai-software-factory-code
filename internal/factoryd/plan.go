@@ -412,6 +412,24 @@ func cardMarker(taskID, key string) string {
 	return fmt.Sprintf("<!-- factoryd plan %s card %s -->", taskID, key)
 }
 
+// PlanRow is one card of a plan as the console's plan card shows it.
+type PlanRow struct {
+	Key, Role, Title, Size string
+	DependsOn              []string
+}
+
+// PlanRows are p's cards in filing order, each with its dependencies, the
+// edges factoryd adds included, as the plan comment lists them.
+func PlanRows(p Plan) []PlanRow {
+	edges := planEdges(p)
+	order := planOrder(p, edges)
+	rows := make([]PlanRow, len(order))
+	for i, c := range order {
+		rows[i] = PlanRow{Key: c.Key, Role: c.Role, Title: c.Title, Size: c.Size, DependsOn: dependsOn(order, edges, c.Key)}
+	}
+	return rows
+}
+
 // cell is s as one Markdown table cell.
 func cell(s string) string {
 	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", `\|`)

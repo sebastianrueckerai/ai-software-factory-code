@@ -46,3 +46,12 @@ form.inline button { margin: 0 .25rem .25rem 0; }
 .project { margin-bottom: 2rem; }
 .gate { font-weight: 600; }
 .gates meter { width: 12rem; }
+.badge { display: inline-block; padding: 0 .35rem; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: .75rem; }
+.spec { white-space: pre-wrap; border-left: 3px solid var(--line); padding-left: .5rem; font-size: .85rem; }
+.children { margin: .25rem 0; padding-left: 1.2rem; font-size: .85rem; }
+form.move button { margin: .25rem .25rem 0 0; padding: .15rem .5rem; }
+.card[draggable=true] { cursor: grab; }
+.filter { display: flex; gap: .5rem; align-items: center; }
+.filter label { margin: 0; }
+.filter select { width: auto; }
+.filter button { margin: 0; }

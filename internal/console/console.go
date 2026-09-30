@@ -23,6 +23,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -56,6 +57,10 @@ type Tasks interface {
 	// first, then those finished after since, each with its latest
 	// escalation's reason.
 	BoardTasks(ctx context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error)
+	// PlanRevision is revision n of plan task id's plan, the newest for 0.
+	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
+	// PlanCards are the cards plan task plan filed.
+	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
 }
 
 // Config wires the console. ForgejoURL serves the code exchange and API
@@ -85,7 +90,15 @@ type Config struct {
 	Resources    Resources
 	Alerts       Alerts
 	Projects     Projects
-	HTTP         *http.Client // nil = 15 s timeout
+	// MayMove is intake's moved_by judgement (factoryd.Intake.MayMove):
+	// whether user may put a card of repository into a lane moved by
+	// movedBy. The console asks it only to offer and pre-check a move.
+	MayMove func(ctx context.Context, repository, user, movedBy string) (bool, error)
+	// AcceptPlan and RejectPlan signal a plan task's workflow
+	// (factoryd.AcceptPlan, factoryd.RejectPlan).
+	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
+	RejectPlan func(ctx context.Context, taskID, by, why string) error
+	HTTP       *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics
@@ -142,6 +155,11 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /tasks/new", c.auth(c.newTaskForm))
 	c.mux.Handle("POST /tasks", c.auth(c.createTask))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
+	c.mux.Handle("POST /cards/{id}/lane", c.auth(c.moveCard))
+	c.mux.Handle("POST /tasks/{id}/start-plan", c.auth(c.spend("start a plan", c.startPlan)))
+	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.spend("accept a plan", c.acceptPlan)))
+	c.mux.Handle("POST /tasks/{id}/plan/changes", c.auth(c.planChanges))
+	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.costs))
 	c.mux.Handle("GET /policy", c.auth(c.policy))
@@ -269,12 +287,19 @@ func (c *Console) writer(ctx context.Context, user string) (bool, error) {
 // approver reports whether the session's human may authorize spend: a name
 // on the policy's approvers (ruling 128). Unreadable policy: no.
 func (c *Console) approver(r *http.Request) bool {
+	v, _ := c.inForce(r)
+	return slices.Contains(v.Document.Approvers, current(r).user)
+}
+
+// inForce is the policy version being enforced; unreadable, an empty one
+// (no approvers, no processes) and false.
+func (c *Console) inForce(r *http.Request) (policy.Version, bool) {
 	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
 	if err != nil || !ok {
-		log.Printf("console: current policy for the approvers: loaded %v, %v", ok, err)
-		return false
+		log.Printf("console: the policy in force: loaded %v, %v", ok, err)
+		return policy.Version{}, false
 	}
-	return slices.Contains(v.Document.Approvers, current(r).user)
+	return v, true
 }
 
 // spend refuses a spend action to anyone but the policy's approvers.

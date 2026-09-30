@@ -362,6 +362,13 @@ func main() {
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
+		MayMove: webhookIntake.MayMove,
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
+			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
+		},
+		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
+			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
+		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
 		Alerts:     store,
 		Projects:   store,

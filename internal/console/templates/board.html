@@ -1,4 +1,5 @@
-{{define "board"}}<div id="board" hx-get="/board" hx-trigger="every 10s" hx-swap="outerHTML">
+{{define "board"}}<div id="board" hx-get="/board{{with .Project}}?project={{.}}{{end}}" hx-trigger="every 10s" hx-swap="outerHTML">
+{{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <section aria-labelledby="human-lane">
 <h2 id="human-lane">Human lane</h2>
@@ -28,7 +29,7 @@
 <section aria-labelledby="agent-lane">
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
-{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{len $col.Cards}}</span></h3>
+{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{len $col.Cards}}</span></h3>
 {{range $col.Cards}}{{template "card" .}}{{end}}
 </section>
 {{end}}</div>
@@ -36,7 +37,7 @@
 </div>{{end}}
 
 {{define "approval"}}<article class="card approval" aria-labelledby="approval-{{.ID}}">
-{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
+{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
 <dl class="facts">
 <dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
 <dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
@@ -73,5 +74,34 @@
 <label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
 </fieldset>{{end}}
 <button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>
-</form>
+</form>{{end}}
 </article>{{end}}
+
+{{define "plan"}}<h4 id="approval-{{.ID}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
+<p class="spec">{{.SpecLines}}</p>
+<p>{{.PlanSummary}}</p>
+<table><caption>The plan's cards, in filing order</caption>
+<thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
+<tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
+</table>
+{{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
+<p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
+{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="revision" value="{{.PlanSpec.Revision}}">
+<input type="hidden" name="sha256" value="{{.PlanSpec.SHA256}}">
+<p class="meta">factoryd files one card per planned card in the backlog; Start plan moves them to ready.</p>
+<button type="submit" aria-label="Accept revision {{.PlanSpec.Revision}} of plan #{{.Issue}}">Accept plan</button>
+</form>{{else}}<p class="meta">Only the policy's approvers may accept a plan.</p>{{end}}
+<form method="post" action="/tasks/{{.TaskID}}/plan/changes">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="changes-{{.ID}}">Changes you ask for, posted on the issue as you</label>
+<textarea id="changes-{{.ID}}" name="text" rows="3" required></textarea>
+<button type="submit" aria-label="Request changes to plan #{{.Issue}}">Request changes</button>
+</form>
+<form method="post" action="/tasks/{{.TaskID}}/plan/reject">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="reject-{{.ID}}">Reason to reject the plan</label>
+<textarea id="reject-{{.ID}}" name="note" rows="2" required></textarea>
+<button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>
+</form>{{end}}

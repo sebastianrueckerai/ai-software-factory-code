@@ -63,6 +63,7 @@ type fakeForgejo struct {
 	reviews    []map[string]string
 	failReview bool
 	closed     []string // "path state"
+	labelled   []string // "path [label ids]"
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -110,8 +111,28 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		pages := map[string][]factoryd.RepoLabel{
 			"1": {{ID: 1, Name: "agent"}, {ID: 2, Name: "human"}},
 			"2": {{ID: 7, Name: "priority/p1"}, {ID: 9, Name: "state/done"}},
+			"3": {{ID: 3, Name: "backlog"}},
 		}
 		json.NewEncoder(w).Encode(append([]factoryd.RepoLabel{}, pages[r.URL.Query().Get("page")]...))
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/linkshort/linkshort/labels":
+		pages := map[string][]factoryd.RepoLabel{
+			"1": {{ID: 21, Name: "agent"}, {ID: 22, Name: "human"}},
+			"2": {{ID: 23, Name: "backlog"}, {ID: 24, Name: "plan"}},
+		}
+		json.NewEncoder(w).Encode(append([]factoryd.RepoLabel{}, pages[r.URL.Query().Get("page")]...))
+	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/labels"):
+		var body struct {
+			Labels []int64 `json:"labels"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		f.labelled = append(f.labelled, fmt.Sprintf("%s %v", r.URL.Path, body.Labels))
+		w.Write([]byte(`[]`))
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/linkshort/linkshort/issues":
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.issues = append(f.issues, body)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"number": 42})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/sf/code/issues":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -144,7 +165,30 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-type fakeTasks struct{ tasks []factoryd.BoardTask }
+type fakeTasks struct {
+	tasks []factoryd.BoardTask
+	plans map[string][]factoryd.PlanRevision // by task, oldest first
+}
+
+func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
+	revs := s.plans[id]
+	for i := len(revs) - 1; i >= 0; i-- {
+		if n == 0 || revs[i].Revision == n {
+			return revs[i], true, nil
+		}
+	}
+	return factoryd.PlanRevision{}, false, nil
+}
+
+func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Parent == plan && t.Source == factoryd.SourcePlan {
+			out = append(out, t.Task)
+		}
+	}
+	return out, nil
+}
 
 func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	for _, t := range s.tasks {
@@ -303,8 +347,26 @@ func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by st
 }
 
 type fakeLedger struct {
-	from, to time.Time
-	costs    policy.Costs
+	from, to  time.Time
+	costs     policy.Costs
+	processes map[string]policy.Process
+}
+
+// testProcesses are the shipped two processes; spec lists its lanes out of
+// the board's order, which the board does not follow.
+func testProcesses() map[string]policy.Process {
+	stages := []policy.Stage{
+		{Name: "screening", OnFindings: "human", When: "outsider"},
+		{Name: "checks", OnFindings: "agent", Enabled: true},
+		{Name: "merge", OnFindings: "human", Enabled: true},
+	}
+	return map[string]policy.Process{
+		"maintenance": {Lanes: []policy.Lane{{Name: "backlog", WriteUp: "analyzer"}, {Name: "ready", Class: "coder", MovedBy: "writers"}},
+			Stages: stages, Merge: policy.Merge{Queue: "none"}},
+		"spec": {Lanes: []policy.Lane{{Name: "ready", Class: "coder", MovedBy: "writers"}, {Name: "backlog"},
+			{Name: "plan", Class: "planner", MovedBy: "writers", Plan: &policy.PlanShape{MaxCards: 12, Foundation: true, Integration: true}}},
+			Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, Stages: stages, Merge: policy.Merge{Queue: "project"}},
+	}
 }
 
 func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
@@ -326,11 +388,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
-			Processes: map[string]policy.Process{"maintenance": {Stages: []policy.Stage{
-				{Name: "screening", OnFindings: "human", When: "outsider"},
-				{Name: "checks", OnFindings: "agent", Enabled: true},
-				{Name: "merge", OnFindings: "human", Enabled: true},
-			}}}}}, true, nil
+			Processes: l.processes}}, true, nil
 }
 
 type rig struct {
@@ -344,8 +402,11 @@ type rig struct {
 	resources *fakeResources
 	alerts    *fakeAlerts
 	projects  *fakeProjects
-	signalErr error
-	metrics   *sdkmetric.ManualReader
+	// repoWriters are the writers of each project's repository, which
+	// MayMove reads for a lane moved by writers
+	repoWriters map[string][]string
+	signalErr   error
+	metrics     *sdkmetric.ManualReader
 }
 
 var monthly = 8.99
@@ -357,7 +418,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{},
+	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{processes: testProcesses()},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
 				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
@@ -373,7 +434,8 @@ func newRig(t *testing.T) *rig {
 					`{"item":"the audit gave no verdict","why":"the answer is not one JSON object: EOF"}]}}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
-		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader}
+		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
+		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	c, err := New(Config{
 		Metrics:   metrics,
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
@@ -387,6 +449,28 @@ func newRig(t *testing.T) *rig {
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))
 			return r.signalErr
+		},
+		MayMove: func(_ context.Context, repository, user, movedBy string) (bool, error) {
+			if movedBy == policy.MovedByApprovers {
+				return user == "sebastian", nil
+			}
+			return slices.Contains(r.repoWriters[repository], user), nil
+		},
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
+			newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0)
+			if newest.Revision != revision || newest.SHA256 != sha {
+				return factoryd.ErrStalePlan{Newest: newest.Revision}
+			}
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, by))
+			return nil
+		},
+		RejectPlan: func(_ context.Context, taskID, by, why string) error {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_rejected %s by %s: %s", taskID, by, why))
+			return nil
 		},
 	})
 	if err != nil {
@@ -617,7 +701,7 @@ func TestPagesRequireASession(t *testing.T) {
 func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	form := url.Values{"title": {"x"}, "lane": {"agent"}, "project": {"ai-software-factory-code"}}
+	form := url.Values{"title": {"x"}, "lane": {"ready"}, "project": {"ai-software-factory-code"}}
 	for name, tok := range map[string]string{"missing": "", "wrong": "nope"} {
 		f := url.Values{}
 		for k, v := range form {
@@ -661,7 +745,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		t.Fatalf("GET / = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	cols := []string{"Queued", "Running", "Waiting on a human", "In review", "Done", "Failed"}
+	cols := []string{"Ready", "Running", "Waiting on a human", "In review", "Done", "Failed"}
 	objs := []string{"queued work", "closing work", "stuck work", "review work", "done work", "failed work"}
 	for i, col := range cols {
 		start := strings.Index(body, ">"+col+" <span")
@@ -698,6 +782,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 
 func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	r := newRig(t)
+	withLinkshort(r)
 	ck, s := r.loggedIn(t)
 	form := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck).Body.String()
 	if !strings.Contains(form, `<option value="priority/p1">`) || strings.Contains(form, "priority/p0") {
@@ -709,17 +794,32 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	if !strings.Contains(form, picker) || strings.Contains(form, "infra") {
 		t.Fatalf("form's projects: %s", form)
 	}
+	// section 5: the lane select holds backlog and the starting lanes of
+	// the projects' processes, ready by default, and the human lane
+	for _, want := range []string{
+		`<option value="backlog" data-projects="ai-software-factory-code demo-app linkshort">Backlog</option>`,
+		`<option value="plan" data-projects="linkshort">Plan</option>`,
+		`<option value="ready" data-projects="ai-software-factory-code demo-app linkshort" selected>Ready</option>`,
+		`<option value="human">Human lane</option>`,
+	} {
+		if !strings.Contains(form, want) {
+			t.Errorf("the lane select lacks %q", want)
+		}
+	}
 	for _, tc := range []struct {
-		lane, priority string
-		labels         []any
+		project, lane, priority string
+		labels                  []any
+		filed                   string
 	}{
-		{"agent", "", []any{1.0}},
-		{"human", "priority/p1", []any{2.0, 7.0}},
+		{"ai-software-factory-code", "ready", "", []any{1.0}, "41"},
+		{"ai-software-factory-code", "human", "priority/p1", []any{2.0, 7.0}, "41"},
+		{"ai-software-factory-code", "backlog", "", []any{3.0}, "41"},
+		{"linkshort", "plan", "", []any{24.0}, "42"},
 	} {
 		r.fg.issues, r.fg.calls = nil, nil
-		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {" Fix the cache "}, "body": {"details"},
+		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {"details"},
 			"lane": {tc.lane}, "priority": {tc.priority}}), ck)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=41" {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed {
 			t.Fatalf("%s: POST /tasks = %d to %q: %s", tc.lane, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]
@@ -733,10 +833,12 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		}
 	}
 	for name, f := range map[string]url.Values{
-		"no title":     {"title": {"  "}, "lane": {"agent"}},
+		"no title":     {"title": {"  "}, "lane": {"ready"}},
 		"bad lane":     {"title": {"x"}, "lane": {"robot"}},
-		"bad priority": {"title": {"x"}, "lane": {"agent"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}},
-		"no project":   {"title": {"x"}, "lane": {"agent"}},
+		"old lane":     {"title": {"x"}, "lane": {"agent"}, "project": {"ai-software-factory-code"}},
+		"no plan lane": {"title": {"x"}, "lane": {"plan"}, "project": {"ai-software-factory-code"}},
+		"bad priority": {"title": {"x"}, "lane": {"ready"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}},
+		"no project":   {"title": {"x"}, "lane": {"ready"}},
 		"agents none":  {"title": {"x"}, "lane": {"human"}, "project": {"ai-software-factory-infra"}},
 	} {
 		r.fg.issues = nil
@@ -1322,21 +1424,16 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	}
 }
 
-// A card in waiting-deps sits in the Queued column and reads the issues it
+// A card in waiting-deps sits in its lane's column and reads the issues it
 // waits on.
 func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Objective: "links api",
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Lane: "ready", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	start := strings.Index(body, ">Queued <span")
-	if start < 0 {
-		t.Fatal("column Queued missing")
-	}
-	col := body[start : start+strings.Index(body[start:], "</section>")]
-	if !strings.Contains(col, "links api") || !strings.Contains(col, `<p class="waiting">waiting on #3, #5</p>`) {
-		t.Fatalf("Queued column = %s, want the card waiting on #3, #5", col)
+	if c := col(t, body, "Ready"); !strings.Contains(c, "links api") || !strings.Contains(c, `<p class="waiting">waiting on #3, #5</p>`) {
+		t.Fatalf("Ready column = %s, want the card waiting on #3, #5", c)
 	}
 }
 

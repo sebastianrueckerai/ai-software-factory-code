@@ -1,4 +1,12 @@
 {{template "head" .}}
 {{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
+<form method="get" action="/" class="filter">
+<label for="project-filter">Project</label>
+<select id="project-filter" name="project">
+<option value=""{{if not .Project}} selected{{end}}>every project</option>
+{{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
+{{end}}</select>
+<button type="submit">Show</button>
+</form>
 {{template "board" .}}
 {{template "foot"}}

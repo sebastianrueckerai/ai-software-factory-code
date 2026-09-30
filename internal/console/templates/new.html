@@ -11,11 +11,11 @@
 <input id="title" name="title" type="text" maxlength="255" required>
 <label for="body">Description</label>
 <textarea id="body" name="body" rows="10"></textarea>
-<fieldset>
-<legend>Lane</legend>
-<label><input type="radio" name="lane" value="agent" checked> Agent</label>
-<label><input type="radio" name="lane" value="human"> Human</label>
-</fieldset>
+<label for="lane">Lane</label>
+<select id="lane" name="lane">
+{{range .Lanes}}<option value="{{.Name}}" data-projects="{{.Projects}}"{{if eq .Name "ready"}} selected{{end}}>{{.Title}}</option>
+{{end}}<option value="human">Human lane</option>
+</select>
 <label for="priority">Priority</label>
 <select id="priority" name="priority">
 <option value="">none</option>
