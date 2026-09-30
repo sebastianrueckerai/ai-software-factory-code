@@ -37,10 +37,10 @@ func (c *Console) approvalCard(a factoryd.ApprovalRequest, tasks map[string]fact
 	}
 	var err error
 	switch a.Kind {
-	case "merge":
+	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
 		err = json.Unmarshal(a.Spec, &k.Merge)
-	case "resource":
+	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	}
 	if err != nil {
@@ -77,7 +77,7 @@ func (c *Console) pending(w http.ResponseWriter, r *http.Request) (factoryd.Appr
 func (c *Console) decided(w http.ResponseWriter, r *http.Request, a factoryd.ApprovalRequest, status, note string) bool {
 	err := c.cfg.Approvals.DecideApproval(r.Context(), a.ID, a.Kind, status, current(r).user, note)
 	switch {
-	case errors.Is(err, factoryd.ErrNotFound) && a.Kind == "merge":
+	case errors.Is(err, factoryd.ErrNotFound) && a.Kind == factoryd.ApprovalMerge:
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", a.ID, current(r).user, status)
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", a.ID, err)
@@ -100,11 +100,11 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 	}
 	user := current(r).user
 	switch a.Kind {
-	case "resource":
+	case factoryd.ApprovalResource:
 		if !c.decided(w, r, a, "approved", "approved for the task") {
 			return
 		}
-	case "merge":
+	case factoryd.ApprovalMerge:
 		var spec factoryd.MergeSpec
 		if err := json.Unmarshal(a.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			http.Error(w, "the merge request names no head commit", http.StatusInternalServerError)
@@ -141,11 +141,11 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch a.Kind {
-	case "resource":
+	case factoryd.ApprovalResource:
 		if !c.decided(w, r, a, "denied", note) {
 			return
 		}
-	case "merge":
+	case factoryd.ApprovalMerge:
 		repo, err := factoryd.SplitRepo(a.Project)
 		if err != nil {
 			log.Printf("console: approval request %d: %v", a.ID, err)

@@ -286,6 +286,13 @@ type Store interface {
 	SetTaskSHA(ctx context.Context, id, sha string) error
 }
 
+// Approval kinds: a task's pull request through its gates, a commissioning
+// request (cloudres files these).
+const (
+	ApprovalMerge    = "merge"
+	ApprovalResource = "resource"
+)
+
 // ApprovalRequest is a decision the factory waits on a human for (ruling
 // 116): kind merge is a task's pull request through its gates (Spec a
 // MergeSpec), kind resource a commissioning request (Task 53). Status:
@@ -857,7 +864,7 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 		return 0, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	if a.Kind == "merge" {
+	if a.Kind == ApprovalMerge {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = 'superseded by a newer request'
 			 WHERE task_id = $1 AND kind = 'merge' AND status = 'pending'`, a.TaskID, FactoryDecider); err != nil {

@@ -718,7 +718,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	id, err := r.store.OpenApproval(ctx, ApprovalRequest{
-		Kind: "merge", TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec,
+		Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec,
 		Reason: fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
 	})
 	if err != nil {
@@ -793,7 +793,7 @@ func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr i
 
 // note tells the console's merge card why the approval has not merged.
 func (r *Runner) note(ctx context.Context, t Task, note string) {
-	if err := r.store.NoteApproval(ctx, t.ID, "merge", note); err != nil {
+	if err := r.store.NoteApproval(ctx, t.ID, ApprovalMerge, note); err != nil {
 		log.Printf("task %s: note the approval request: %v", t.ID, err)
 	}
 }
@@ -843,7 +843,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
+	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
@@ -855,7 +855,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 // approval, or a human, at whatever head they merged.
 func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, approver string, st PullRequestRef) MergeResult {
 	if st.MergedBy == MergeUser {
-		if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
+		if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 		}
 		r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "merged_by": MergeUser}))
@@ -866,7 +866,7 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 	if st.HeadSHA != commit {
 		note += ", not the gated " + commit
 	}
-	if err := r.store.ResolveApprovals(ctx, t.ID, "merge", "approved", by, note); err != nil {
+	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", by, note); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "merged", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": st.HeadSHA, "gated": commit, "merged_by": by}))
@@ -922,7 +922,7 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 		return err
 	}
 	if !slices.ContainsFunc(pending, func(a ApprovalRequest) bool {
-		return a.Kind == "merge" && a.TaskID == taskID && a.PRNumber == pr
+		return a.Kind == ApprovalMerge && a.TaskID == taskID && a.PRNumber == pr
 	}) {
 		return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
 	}
