@@ -409,6 +409,24 @@ func TestAlertIssueBodyFencesTheValues(t *testing.T) {
 	}
 }
 
+// A hidden comment or a closing keyword in the telemetry's text reaches the
+// issue neutralised, like every other untrusted text (Task 89's sanitiser).
+func TestAlertIssueBodyIsSanitised(t *testing.T) {
+	a := SigNozAlert{Labels: map[string]string{"alertname": "x", "namespace": "demo-staging", "route": " (fixes) #12"},
+		Annotations: map[string]string{"value": "1", "summary": "(closes) #7  done"}, StartsAt: at(firedAt), Fingerprint: "fp"}
+	_, body := alertIssue(a, "demo-app", "demo-staging")
+	for _, bad := range []string{"<!-- hidden -->", "(fixes) #12", "(closes) #7"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("body carries %q: %q", bad, body)
+		}
+	}
+	for _, want := range []string{"route= (fixes) #12", "summary=(closes) #7 done"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %q: %q", want, body)
+		}
+	}
+}
+
 func TestAlertVerdict(t *testing.T) {
 	for _, c := range []struct{ final, reason, want string }{
 		{"done", "pull request merged by factory-merge on the merge rule auto", VerdictReal},
