@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -19,6 +20,9 @@ const forgejoImage = "codeberg.org/forgejo/forgejo:15.0.9"
 // container runtime answers.
 func startForgejo(t *testing.T) (string, AdminAuth) {
 	t.Helper()
+	if os.Getenv("FACTORYD_FORGEJO_TEST") == "" {
+		t.Skip("set FACTORYD_FORGEJO_TEST=1 to run the Forgejo container tests (main CI's dind cannot pull and port-map the image)")
+	}
 	var runtime string
 	for _, rt := range []string{"docker", "podman"} {
 		if _, err := exec.LookPath(rt); err == nil && exec.Command(rt, "info").Run() == nil {
