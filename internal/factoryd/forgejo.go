@@ -1147,7 +1147,7 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("forgejo job log %s: login: %w", targetURL, err)
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.Request.URL.Path == "/user/login" {
 		return nil, fmt.Errorf("forgejo job log %s: login refused", targetURL)
 	}
@@ -1160,7 +1160,7 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
 	}
-	view.Body.Close()
+	_ = view.Body.Close()
 
 	logsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, view.Request.URL.String()+"/logs", nil)
 	if err != nil {
