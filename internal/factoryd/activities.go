@@ -1026,6 +1026,8 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		}
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
+	// after the final state, never ahead of an end that may not come; a
+	// crash between the two loses only this record
 	taskEnded(ctx, r.timeline, r.store, r.forgejo, t, final)
 	return nil
 }

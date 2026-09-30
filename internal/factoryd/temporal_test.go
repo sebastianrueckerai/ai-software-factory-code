@@ -58,7 +58,12 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	m, reader := testMetrics(t)
 	completion := newCompletion(store, fjURL, llURL)
 	completion.Metrics = m
-	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent", Metrics: m}, completion)
+	objects := &fakeObjectStore{}
+	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent", Metrics: m,
+		Timeline: &Timeline{Objects: objects}}, completion)
+	if got := events(t, objects, "tbroken"); !slices.Equal(got, []string{"task_ended failed"}) {
+		t.Fatalf("the failed task's events = %v", got)
+	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
 		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=no-slash,state=failed":                  1,
 		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done": 1,

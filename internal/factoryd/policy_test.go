@@ -794,6 +794,14 @@ func TestLoaderRefusesRemovedLaneWithOpenCards(t *testing.T) {
 			if cur := l.Current(); cur.Commit != "c1" || store.records != 1 || !slices.Equal(rej.calls, []string{"c2 1 true"}) {
 				t.Fatalf("current %s, %d records, rejections %v: want c1 to stay and c2 raised", cur.Commit, store.records, rej.calls)
 			}
+			reads := src.reads
+			if err := l.Load(ctx); err == nil || err.Error() != tc.want {
+				t.Fatalf("the held head again = %v", err)
+			}
+			if cur := l.Current(); cur.Commit != "c1" || store.records != 1 || len(rej.calls) != 1 || src.reads != reads {
+				t.Fatalf("held head again: current %s, %d records, rejections %v, %d tree reads: want it held quietly, the tree not read again",
+					cur.Commit, store.records, rej.calls, src.reads-reads)
+			}
 			store.cards = store.cards[1:2]
 			if err := l.Load(ctx); err != nil || l.Current().Commit != "c2" {
 				t.Fatalf("after the cards left the lane: %v, current %s", err, l.Current().Commit)

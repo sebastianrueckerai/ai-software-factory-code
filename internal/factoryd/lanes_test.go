@@ -812,3 +812,41 @@ func events(t *testing.T, objects *fakeObjectStore, id string) []string {
 	}
 	return out
 }
+
+// A refusal comments only once its backlog label is restored: a failed
+// restore leaves the starting label, the next heal pass judges the same
+// adder again and retries the restore without a second comment.
+func TestFailedRestoreCommentsOnce(t *testing.T) {
+	in, store, requests := laneIntake(t, "spec", specLanes)
+	store.tasks["t-c"] = Task{ID: "t-c", Kind: "agent", Status: "backlog", Lane: "backlog", Process: "spec", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 30, Parent: "t-plan", Source: SourcePlan}
+	withTimeline(t, in, 30, labelEntry("outsider", "agent", true))
+	stub, err := url.Parse(in.Forgejo.BaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, refuse := httputil.NewSingleHostReverseProxy(stub), 1
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/issues/30/labels") && refuse > 0 {
+			refuse--
+			http.Error(w, "refused", http.StatusForbidden)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	in.Forgejo.BaseURL = srv.URL
+	want := "factoryd: lane ready takes a card from writers of sf/ai-software-factory-code; outsider is none. The card stays in backlog."
+	for i, wantComments := range [][]string{nil, {want}} {
+		issue := webhookIssue{Index: 30, Poster: webhookUser{UserName: "factory-agent"}, Labels: []webhookLabel{{Name: "backlog"}, {Name: "agent"}}}
+		if err := in.intakeIssue(context.Background(), "heal pass", "sf/ai-software-factory-code", "", issue, ""); err != nil {
+			t.Fatal(err)
+		}
+		if got := comments(*requests); !slices.Equal(got, wantComments) {
+			t.Fatalf("pass %d: comments = %q, want %q", i+1, got, wantComments)
+		}
+	}
+	if got := store.tasks["t-c"]; got.Status != "backlog" {
+		t.Fatalf("card = %+v", got)
+	}
+}

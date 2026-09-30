@@ -102,7 +102,7 @@ func refusal(lane policy.Lane, repository, user string) string {
 
 // refuseEntry lands issue number of repository, labelled names, in the
 // backlog as the bot: the labels that asked for a starting lane off,
-// backlog on, and one comment why.
+// backlog on, and one comment why, posted only once the labels are.
 func (in *Intake) refuseEntry(ctx context.Context, via, repository string, number int64, names []string, why string) {
 	kept := slices.DeleteFunc(slices.Clone(names), func(n string) bool { return slices.Contains(startingLabels, n) })
 	if !slices.Contains(kept, LabelBacklog) {
@@ -114,7 +114,10 @@ func (in *Intake) refuseEntry(ctx context.Context, via, repository string, numbe
 		return
 	}
 	if err := in.Forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, kept); err != nil {
+		// the starting label stays, so the next pass judges the entry again
+		// and comments once the restore took
 		log.Printf("%s: issue #%d on %s: restore the backlog label: %v", via, number, repository, err)
+		return
 	}
 	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, why); err != nil {
 		log.Printf("%s: issue #%d on %s: comment the refused entry: %v", via, number, repository, err)

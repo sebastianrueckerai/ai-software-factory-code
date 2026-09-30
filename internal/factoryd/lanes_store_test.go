@@ -185,8 +185,9 @@ func TestProcessBackfilledOnLoad(t *testing.T) {
 }
 
 // OpenCardsByLane reads the open cards with a lane, each with the project
-// whose file in force names its repository: finished cards, rolls and
-// repositories of no project are left out.
+// whose file in force names its repository and the process it follows (a
+// row with none yet takes the project's in force): finished cards, rolls
+// and repositories of no project are left out.
 func TestOpenCardsByLane(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -213,7 +214,7 @@ func TestOpenCardsByLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []OpenCard{{Project: "linkshort", Lane: "backlog", Issue: 1}, {Project: "linkshort", Lane: "plan", Process: "spec", Issue: 14}}
+	want := []OpenCard{{Project: "linkshort", Lane: "backlog", Process: "spec", Issue: 1}, {Project: "linkshort", Lane: "plan", Process: "spec", Issue: 14}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("open cards = %+v, want %+v", got, want)
 	}

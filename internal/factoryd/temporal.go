@@ -134,7 +134,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				log.Printf("heal pass: task %s failed: %v", t.ID, err)
 				if err := completion.Complete(ctx, t.ID, "failed"); err != nil {
 					log.Printf("heal pass: fail task %s: %v", t.ID, err)
+					continue
 				}
+				taskEnded(ctx, in.Timeline, store, in.Forgejo, t, "failed")
 				continue
 			}
 			if status == "queued" {

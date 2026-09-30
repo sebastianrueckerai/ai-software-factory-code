@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,8 +35,7 @@ type PolicyStore interface {
 }
 
 // OpenCard is an open card in a lane: the project its repository belongs
-// to, its lane, the process its row follows ("" before the loader filled
-// it) and its issue.
+// to, its lane, the process it follows and its issue.
 type OpenCard struct {
 	Project, Lane, Process string
 	Issue                  int64
@@ -75,6 +75,11 @@ type PolicyLoader struct {
 	seen    string // the commit last handled, valid or not
 	settled string // the loaded commit Loaded last succeeded for
 	failed  int    // failed reads in a row
+	// held is the valid head open cards refused, its tree and the lines it
+	// was refused with: judged again at each call without a second read
+	held      string
+	heldTree  policy.Tree
+	heldLines string
 }
 
 // readFailureStreak is how many failed reads in a row, polled every 30 s,
@@ -132,7 +137,9 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 // Load reads the head commit and records its tree if the commit changed
 // since the last call. It logs every failure itself; a failure to read is
 // tried again at the next call, a refused tree is not, unless open cards in
-// a lane it drops refused it (CheckOpenLanes).
+// a lane it drops refused it (CheckOpenLanes): that head's tree is kept and
+// its cards read again at each call, logged and raised only when the lines
+// change.
 func (l *PolicyLoader) Load(ctx context.Context) error {
 	head, err := l.Source.Head(ctx)
 	if err != nil {
@@ -140,44 +147,43 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 	}
 	l.mu.Lock()
 	seen, cur, loaded := l.seen, l.current, l.loaded
+	held, heldTree, heldLines := l.held, l.heldTree, l.heldLines
 	l.failed = 0
 	l.mu.Unlock()
 	if head == seen {
 		return l.settle(ctx, head)
 	}
-	files, err := l.Source.Files(ctx, head)
-	if err != nil {
-		return l.readFailed(ctx, "read commit "+head, err)
-	}
-	tree, err := CheckTree(files, l.LadderModels)
-	held := false
-	if err == nil {
-		cards, cerr := l.Store.OpenCardsByLane(ctx)
-		if cerr != nil {
-			log.Printf("config: commit %s: open cards per lane: %v", head, cerr)
-			return fmt.Errorf("open cards per lane: %w", cerr)
+	var tree policy.Tree
+	if head == held {
+		tree = heldTree
+	} else {
+		files, err := l.Source.Files(ctx, head)
+		if err != nil {
+			return l.readFailed(ctx, "read commit "+head, err)
 		}
-		if lines := CheckOpenLanes(tree, cards); len(lines) > 0 {
-			err, held = errors.New(strings.Join(lines, "\n")), true
-		}
-	}
-	if err != nil {
-		stays := "no version is current"
-		if loaded {
-			stays = fmt.Sprintf("version %d (commit %s) stays current", cur.ID, cur.Commit)
-		}
-		log.Printf("CONFIG REJECTED: commit %s: %v; %s", head, err, stays)
-		if l.Rejected != nil {
-			if rerr := l.Rejected(ctx, head, err, cur, loaded); rerr != nil {
-				log.Printf("config: raise the rejection of commit %s: %v", head, rerr)
-				return err
+		tree, err = CheckTree(files, l.LadderModels)
+		if err != nil {
+			if l.reject(ctx, head, err, cur, loaded) {
+				l.mu.Lock()
+				l.seen = head
+				l.mu.Unlock()
 			}
+			return err
 		}
-		if !held {
-			// open cards leave their lane without a new commit: a held head
-			// is judged again at the next call
+	}
+	cards, err := l.Store.OpenCardsByLane(ctx)
+	if err != nil {
+		log.Printf("config: commit %s: open cards per lane: %v", head, err)
+		return fmt.Errorf("open cards per lane: %w", err)
+	}
+	if lines := CheckOpenLanes(tree, cards); len(lines) > 0 {
+		err := errors.New(strings.Join(lines, "\n"))
+		if head == held && err.Error() == heldLines {
+			return err
+		}
+		if l.reject(ctx, head, err, cur, loaded) {
 			l.mu.Lock()
-			l.seen = head
+			l.held, l.heldTree, l.heldLines = head, tree, err.Error()
 			l.mu.Unlock()
 		}
 		return err
@@ -189,6 +195,7 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 	}
 	l.mu.Lock()
 	l.current, l.loaded, l.seen = v, true, head
+	l.held, l.heldTree, l.heldLines = "", policy.Tree{}, ""
 	l.mu.Unlock()
 	how := "loaded"
 	if !inserted {
@@ -196,6 +203,24 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 	}
 	log.Printf("config: version %d %s, commit %s", v.ID, how, v.Commit)
 	return l.settle(ctx, head)
+}
+
+// reject logs head refused for reason and raises it, and reports whether
+// the raise took. A tree refused on its own is not judged again; one open
+// cards refused is (Load keeps it as held).
+func (l *PolicyLoader) reject(ctx context.Context, head string, reason error, cur policy.Version, loaded bool) bool {
+	stays := "no version is current"
+	if loaded {
+		stays = fmt.Sprintf("version %d (commit %s) stays current", cur.ID, cur.Commit)
+	}
+	log.Printf("CONFIG REJECTED: commit %s: %v; %s", head, reason, stays)
+	if l.Rejected != nil {
+		if err := l.Rejected(ctx, head, reason, cur, loaded); err != nil {
+			log.Printf("config: raise the rejection of commit %s: %v", head, err)
+			return false
+		}
+	}
+	return true
 }
 
 // settle runs Loaded once for head when head is the version in force.
@@ -518,17 +543,18 @@ func (s *PGStore) RecordPolicy(ctx context.Context, commit string, tree policy.T
 }
 
 // OpenCardsByLane reads every open card with a lane; its project is the
-// one whose file in force names its repository, and a card of no project
-// is left out.
+// one whose file in force names its repository, a card of no project is
+// left out, and a card the loader has not given a process yet follows its
+// project's in force.
 func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
 	ps, err := s.Projects(ctx)
 	if err != nil {
 		return nil, err
 	}
-	project := map[string]string{}
+	project := map[string]Project{}
 	for _, p := range ps {
 		if p.File {
-			project[p.Repository] = p.Name
+			project[p.Repository] = p
 		}
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT repository, lane, COALESCE(process, ''), issue_number FROM tasks
@@ -544,9 +570,12 @@ func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
 		if err := rows.Scan(&repository, &c.Lane, &c.Process, &c.Issue); err != nil {
 			return nil, err
 		}
-		if c.Project = project[repository]; c.Project != "" {
-			cards = append(cards, c)
+		p, ok := project[repository]
+		if !ok {
+			continue
 		}
+		c.Project, c.Process = p.Name, cmp.Or(c.Process, p.Process)
+		cards = append(cards, c)
 	}
 	return cards, rows.Err()
 }

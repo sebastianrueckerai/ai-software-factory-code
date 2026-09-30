@@ -600,7 +600,8 @@ The events (`internal/factoryd/events.go`) are timeline lines of step
 `FileAgentTask`'s card), `card_entered_lane` with `lane` and `by` (at
 creation, a label's move, the heal pass's move; the same function then
 starts the lane's task or the backlog's write-up), `task_ended` with
-`state` (`Finish`, a closed backlog card, a closed human-lane issue),
+`state` (`Finish`, the heal pass's failure of a malformed task, a closed
+backlog card, a closed human-lane issue),
 `pull_request_merged` with `pr` and `by` (`Merge` for factory-merge's
 merges, intake for a human's merge in Forgejo) and `all_children_done`
 with `cards` on the plan task when the last of its cards turns done,
@@ -661,8 +662,9 @@ from `MODEL` and `STRONGER_MODEL` included); the loader alone then
 refuses a tree that takes a lane from under open cards (a process file
 that drops the lane, or a project moved to a process without it), since
 only it reads the open cards (`CheckOpenLanes`, `OpenCardsByLane`), and
-judges such a commit again at every poll, so it loads once the cards
-left the lane. `config check` says so in its last line. `GET /policy` and the
+judges such a commit again at every poll from the tree it read once,
+logging and raising it only when its lines change, so it loads once the
+cards left the lane. `config check` says so in its last line. `GET /policy` and the
 console's configuration page show the version in force, read-only, each
 file linked at its commit.
 
