@@ -37,7 +37,14 @@ func testDB(t *testing.T) *sql.DB {
 		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `TRUNCATE policy_activations, policy_versions, ledger, holds, tasks CASCADE`); err != nil {
+	// the gateway's audit table, the columns the sweep writes
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS audit (
+		id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), task_id text NOT NULL, decision text NOT NULL,
+		reason text NOT NULL, model_alias text NOT NULL DEFAULT '', tool text NOT NULL DEFAULT '', spend_eur numeric,
+		hold_eur numeric, kind text NOT NULL DEFAULT 'agent')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `TRUNCATE policy_activations, policy_versions, ledger, holds, tasks, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -485,5 +492,55 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE task_id NOT IN ('run', 'rev')`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("holds of non-working tasks = %d (%v)", n, err)
+	}
+}
+
+// A call cut by a restart never releases its hold: the sweep books it and
+// writes the call's audit row, decision swept, so every booked call has
+// one (#276's security-audit call, cut by the roll of 28afe1f at 23:18:15Z,
+// had none). Kind and alias come from the hold's ref: purpose/alias for a
+// factoryd call, the alias for an agent's, the tool's name for a tool call.
+func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('s', 5, 'failed')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES
+		('s', 'model', 'audit/coding-frontier', 0.146422, now() - interval '1 second'),
+		('s', 'model', 'coding-cheap', 0.004, now() - interval '1 second'),
+		('s', 'tool', 'web_scrape', 0.02, now() - interval '1 second'),
+		('s', 'model', 'coding-cheap', 0.5, now() + interval '1 hour'),
+		('s', 'resource', 'cx23', 0.0096, now() - interval '1 second')`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := SweepHolds(ctx, db); err != nil || n != 3 {
+		t.Fatalf("sweep = (%d, %v), want 3: the open hold and the resource reservation stay", n, err)
+	}
+	var got []string
+	rows, err := db.QueryContext(ctx, `SELECT kind || ' ' || decision || ' ' || model_alias || ' ' || tool || ' ' || spend_eur::text || ' ' || hold_eur::text || ' ' || (reason <> '')::text
+		FROM audit WHERE task_id = 's' ORDER BY spend_eur`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var l string
+		if err := rows.Scan(&l); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, l)
+	}
+	want := []string{
+		"agent swept coding-cheap  0.004 0.004 true",
+		"agent swept  web_scrape 0.02 0.02 true",
+		"audit swept coding-frontier  0.146422 0.146422 true",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("audit rows = %q, want %q", got, want)
+	}
+	var spent float64
+	if err := db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 's'`).Scan(&spent); err != nil || !near(spent, 0.170422) {
+		t.Fatalf("spent = %v (%v), want 0.170422, the three swept holds", spent, err)
 	}
 }

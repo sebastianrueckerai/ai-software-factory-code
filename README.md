@@ -699,9 +699,11 @@ path: model, supervisor and review, tool and resource accrual log
 after the booking carries it in `audit.over_hold` whatever its decision
 (`allowed`, `error_upstream`, a 402 refusal, `error_tool`, `accrued`;
 empty within the hold). A hold whose caller
-died expires after an hour and factoryd's sweep books it in full; a late
-release books only what the real cost exceeds it by. Settlement leaves a
-task alone while it has an open hold. Output limits bound reasoning:
+died expires after an hour and factoryd's sweep books it in full and
+writes its audit row (decision `swept`, kind and alias from the hold's
+ref); a late release books only what the real cost exceeds it by.
+Settlement leaves a task alone while it has an open hold. Output limits
+bound reasoning:
 verified on GLM (reasoning counts inside `max_tokens`); Qwen's thinking
 does not, so the dashscope deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
