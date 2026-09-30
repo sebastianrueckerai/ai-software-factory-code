@@ -979,7 +979,7 @@ func loopFailure(i int) string {
 
 func supervisedTask(id string) Task {
 	return Task{ID: id, Status: "running", Objective: "make loopcheck pass", Repository: "sf/repo", BudgetEUR: 0.3, SpentEUR: 0.05, IssueNumber: 7,
-		RequiredCapabilities: AgentCapabilities}
+		RequiredCapabilities: []string{policy.ClassCoder}}
 }
 
 // The third identical failure trips same_failure; the supervisor (through

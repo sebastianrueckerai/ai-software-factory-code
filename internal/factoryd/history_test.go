@@ -235,7 +235,7 @@ func TestTaskHistoryCarriesNoCredential(t *testing.T) {
 func taskHistoryHits(t *testing.T, summary string) []string {
 	t.Helper()
 	task := Task{ID: "t1", Status: "queued", Kind: "agent", Objective: "Add a make check target", Repository: "sf/repo", SHA: histBase,
-		IssueNumber: 4, Source: "api", Author: "sebastian", AuthorWriter: true, RequiredCapabilities: AgentCapabilities, BudgetEUR: 2}
+		IssueNumber: 4, Source: "api", Author: "sebastian", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	pinned := testPolicyVersion()

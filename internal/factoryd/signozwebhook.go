@@ -205,16 +205,17 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
-	labels, kind := []string{"bug"}, "agent"
-	if p.Agents == policy.AgentsNone {
-		labels, kind = []string{"bug", "human"}, "human"
-	}
-	t, ref, err := FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, labels, Task{
-		ID: row.TaskID, Kind: kind, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
+	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
 		// factoryd files as the bot; the brief marks the text as telemetry
-		Author: in.Forgejo.BotUser,
-	})
+		Author: in.Forgejo.BotUser}
+	var ref IssueRef
+	if p.Agents == policy.AgentsNone {
+		t.Kind = "human"
+		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, in.Workflows, repo, title, body, []string{"bug", "human"}, t)
+	} else {
+		t, ref, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, p, title, body, []string{"bug"}, t)
+	}
 	if err != nil {
 		return err
 	}

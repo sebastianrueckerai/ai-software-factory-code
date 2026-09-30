@@ -110,16 +110,16 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	if err := in.ResyncIssues(ctx); err != nil {
 		log.Printf("heal pass: issues: %v", err)
 	}
-	for _, status := range []string{"suggested", "queued", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
+	for _, status := range []string{"backlog", "queued", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)
 			continue
 		}
 		for _, t := range tasks {
-			if t.Kind == "human" || status == "suggested" {
+			if t.Kind == "human" || status == "backlog" {
 				// no workflow: only a close to take in
-				if status == "waiting-human" || status == "suggested" {
+				if status == "waiting-human" || status == "backlog" {
 					if err := in.Resync(ctx, t); err != nil {
 						log.Printf("heal pass: resync task %s: %v", t.ID, err)
 					}

@@ -72,7 +72,7 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
 	}
-	if t.Kind == "agent" && t.Status != "suggested" && t.Gate == "" {
+	if t.Kind == "agent" && t.Status != "backlog" && t.Gate == "" {
 		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
 	s.tasks[t.ID] = t
@@ -222,18 +222,28 @@ func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 	if !ok || t.Kind != "agent" || t.Status != "queued" {
 		return false, nil
 	}
-	t.Kind, t.Status, t.Gate, t.GateSince = "human", "waiting-human", "", nil
+	t.Kind, t.Status, t.Gate, t.GateSince, t.Lane, t.Process = "human", "waiting-human", "", nil, "", ""
 	s.tasks[id] = t
 	return true, nil
 }
 
-func (s *fakeStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {
+func (s *fakeStore) BackfillProcess(ctx context.Context, repository, process string) error {
+	for id, t := range s.tasks {
+		if t.Repository == repository && t.Lane != "" && t.Process == "" && !Final(t.Status) {
+			t.Process = process
+			s.tasks[id] = t
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
 	t, ok := s.tasks[id]
-	if !ok || t.Status != "suggested" {
+	if !ok || t.Status != "backlog" {
 		return false, nil
 	}
 	now := time.Now()
-	t.Status, t.SHA, t.Gate, t.GateSince = "queued", sha, GateIntake, &now
+	t.Status, t.Lane, t.RequiredCapabilities, t.SHA, t.Gate, t.GateSince = "queued", lane, []string{class}, sha, GateIntake, &now
 	s.tasks[id] = t
 	return true, nil
 }
@@ -246,7 +256,8 @@ var testSeeded = map[string]string{policy.SecretCIRegistrar: "registrar-tok", po
 // token merging.
 func seedProject(repository string) Project {
 	return Project{Name: strings.ReplaceAll(repository, "/", "-"), Repository: repository, MergeRule: "human", Objects: "seed", Agents: "coder",
-		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}
+		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge},
+		Process: "maintenance", Lanes: maintenanceLanes}
 }
 
 // ProjectByRepository: with no projects set, every repository is a seed
@@ -1168,7 +1179,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 }
 
 // Migration 0026 on a real Postgres: the author and the agent's summary
-// on the row, a suggested task outside every gate until promoted, closed
+// on the row, a backlog card outside every gate until it enters a lane, closed
 // as a final state, the info_request alert kind, projects by repository.
 func TestPGStoreIntakeAuto(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -1181,23 +1192,24 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests, alerts`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-sug", Status: "suggested", Objective: "o", Repository: "sf/r", Kind: "agent",
-		IssueNumber: 7, Source: "webhook", Author: "outsider"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-sug", Status: "backlog", Objective: "o", Repository: "sf/r", Kind: "agent",
+		IssueNumber: 7, Source: "webhook", Author: "outsider", Lane: "backlog", Process: "maintenance"}); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := s.Task(ctx, "t-sug")
-	if err != nil || got.Author != "outsider" || got.AuthorWriter || got.Gate != "" || got.GateSince != nil {
-		t.Fatalf("suggested row = %+v, %v; want author outsider, outside account, no gate", got, err)
+	if err != nil || got.Author != "outsider" || got.AuthorWriter || got.Gate != "" || got.GateSince != nil || len(got.RequiredCapabilities) != 0 {
+		t.Fatalf("backlog row = %+v, %v; want author outsider, outside account, no gate, no class", got, err)
 	}
-	if ok, err := s.PromoteSuggested(ctx, "t-sug", "abc"); err != nil || !ok {
-		t.Fatalf("promote: %v %v", ok, err)
+	if ok, err := s.EnterLane(ctx, "t-sug", "ready", "coder", "abc"); err != nil || !ok {
+		t.Fatalf("enter: %v %v", ok, err)
 	}
-	if ok, err := s.PromoteSuggested(ctx, "t-sug", "def"); err != nil || ok {
-		t.Fatalf("second promote: %v %v, want false", ok, err)
+	if ok, err := s.EnterLane(ctx, "t-sug", "ready", "coder", "def"); err != nil || ok {
+		t.Fatalf("second entry: %v %v, want false", ok, err)
 	}
 	got, _, _ = s.Task(ctx, "t-sug")
-	if got.Status != "queued" || got.SHA != "abc" || got.Gate != GateIntake || got.GateSince == nil {
-		t.Fatalf("promoted row = %+v; want queued at abc in the intake gate", got)
+	if got.Status != "queued" || got.Lane != "ready" || got.Process != "maintenance" || !slices.Equal(got.RequiredCapabilities, []string{"coder"}) ||
+		got.SHA != "abc" || got.Gate != GateIntake || got.GateSince == nil {
+		t.Fatalf("entered row = %+v; want queued in lane ready as coder at abc in the intake gate", got)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-w", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent",
 		IssueNumber: 8, Source: "webhook", Author: "sebastian", AuthorWriter: true}); err != nil {
@@ -1340,7 +1352,7 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, alerts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	parent := Task{ID: "t-parent", RiskClass: "standard", BudgetEUR: 2, Status: "suggested", Objective: "o", Repository: "sf/r", IssueNumber: 5, Source: "webhook"}
+	parent := Task{ID: "t-parent", RiskClass: "standard", BudgetEUR: 2, Status: "backlog", Objective: "o", Repository: "sf/r", IssueNumber: 5, Source: "webhook"}
 	if err := s.CreateTask(ctx, parent); err != nil {
 		t.Fatal(err)
 	}

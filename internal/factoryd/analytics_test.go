@@ -193,13 +193,13 @@ func TestAnswersCountAsInterventions(t *testing.T) {
 }
 
 // The endings outside a workflow count their outcome as Finish does: a
-// suggestion whose issue a writer closed, and a human-lane task whose issue
+// backlog card whose issue a writer closed, and a human-lane task whose issue
 // closed.
 func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
 	in.Metrics = m
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", IssueNumber: 30, Kind: "agent", Author: "visitor"}
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", IssueNumber: 30, Kind: "agent", Author: "visitor"}
 	store.tasks["t-h"] = Task{ID: "t-h", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 31, Kind: "human"}
 	for _, issue := range []int{30, 31, 31} {
 		b, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": issue, "user": map[string]string{"login": "visitor"}},

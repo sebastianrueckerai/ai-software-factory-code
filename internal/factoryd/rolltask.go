@@ -229,6 +229,7 @@ type RollerStore interface {
 	DeleteRollRequest(ctx context.Context, sha string) error
 	SettleRollRequests(ctx context.Context) error
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
+	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 }
 
 // Roller opens the roll of the code repository (ruling 178): for the
@@ -535,12 +536,19 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 // task exists leaves a request the next settle forgets, then the issue,
 // the task and its workflow.
 func (r *Roller) file(ctx context.Context, req RollRequest) error {
+	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no project has the repository %s", r.Repo)
+	}
 	req.TaskID = NewTaskID()
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
 	title, body, _ := strings.Cut(req.Summary, "\n\n")
-	t, ref, err := FileTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Repo, title, body, nil, Task{
+	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, p, title, body, nil, Task{
 		ID: req.TaskID, RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0),
 		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
 	})

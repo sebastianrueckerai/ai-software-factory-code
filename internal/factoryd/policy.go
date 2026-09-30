@@ -494,6 +494,9 @@ type ConfigBook interface {
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// BackfillProcess sets process on repository's open cards that have a
+	// lane and no process yet.
+	BackfillProcess(ctx context.Context, repository, process string) error
 	projectLookup
 }
 
@@ -552,10 +555,20 @@ func (a *ConfigAlarm) ReadFailing(ctx context.Context, err error) error {
 	return ierr
 }
 
-// Resolve is PolicyLoader.Loaded: a valid commit loaded, so every open
-// rejection is fixed. Each issue gets a comment naming the commit and is
-// closed as the bot, its task ends done, and its alert is judged real.
+// Resolve is PolicyLoader.Loaded: a valid commit loaded. The open cards
+// the lanes migration left without a process take their project's, and
+// every open rejection is fixed: each issue gets a comment naming the
+// commit and is closed as the bot, its task ends done, and its alert is
+// judged real.
 func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
+	for _, c := range v.Projects {
+		if c.Process == "" {
+			continue
+		}
+		if err := a.Store.BackfillProcess(ctx, c.Repository, c.Process); err != nil {
+			return fmt.Errorf("process of the open cards of %s: %w", c.Repository, err)
+		}
+	}
 	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err

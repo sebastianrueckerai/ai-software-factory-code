@@ -75,10 +75,15 @@ type Task struct {
 	// RevertedAt is when the daily revert pass found the task's merged
 	// work undone (RevertPass); nil while it holds.
 	RevertedAt *time.Time
+	// Lane is the card's lane (backlog, plan, ready); "" for the human
+	// lane, rolls and report tasks. Process is the process it follows,
+	// "" where it has no lane or the loader has not filled it yet.
+	Lane, Process string
 }
 
-// Report tells a report task (ruling 185): a parent's write-up.
-func (t Task) Report() bool { return t.Parent != "" }
+// Report tells a report task (ruling 185) by its source: a plan's cards
+// have a parent too and are no report.
+func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourcePresort }
 
 // Standing is the issue author's standing (ruling 152); "" for a task
 // from before authors were kept.
@@ -225,10 +230,10 @@ type Store interface {
 	// MonthCapRefusal is the reason of the task's newest refused_month_cap
 	// audit row since since, if any.
 	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error)
-	// PromoteSuggested starts a suggested improvement (a writer's agent
-	// label): queued at base sha, in the intake gate from now; false when
-	// the task was not suggested.
-	PromoteSuggested(ctx context.Context, id, sha string) (bool, error)
+	// EnterLane moves backlog card id into starting lane lane: queued at
+	// base sha with the lane's class as its capabilities, in the intake
+	// gate from now; false when the card was not in the backlog.
+	EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error)
 	// ToHumanLane makes queued agent task id a human-lane task waiting on
 	// a human; false when it was not a queued agent task.
 	ToHumanLane(ctx context.Context, id string) (bool, error)
@@ -374,20 +379,21 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task)
+		                    author, author_writer, parent_task, lane, process)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
-		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN $16 ELSE '' END,
-		         CASE WHEN $11 = 'agent' AND $7 <> 'suggested' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''))
+		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN $16 ELSE '' END,
+		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
+		         NULLIF($20, ''), NULLIF($21, ''))
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's two constant clauses
 	_, err = s.db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process)
 	return err
 }
 
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL DO NOTHING`); err != nil {
+	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'presort') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)
@@ -411,7 +417,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number, half_way_done,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at`
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -420,7 +426,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.HalfWayDone,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt); err != nil {
+		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -561,7 +567,7 @@ func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error
 }
 
 func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, lane = NULL, process = NULL
 		WHERE id = $1 AND kind = 'agent' AND status = 'queued'`, id)
 	if err != nil {
 		return false, err
@@ -570,9 +576,16 @@ func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 	return n == 1, err
 }
 
-func (s *PGStore) PromoteSuggested(ctx context.Context, id, sha string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'queued', sha = $2, gate = $3, gate_since = now()
-		WHERE id = $1 AND status = 'suggested'`, id, sha, GateIntake)
+func (s *PGStore) BackfillProcess(ctx context.Context, repository, process string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET process = $2
+		WHERE repository = $1 AND lane IS NOT NULL AND process IS NULL AND status NOT IN ('done', 'failed', 'closed')`, repository, process)
+	return err
+}
+
+func (s *PGStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'queued', lane = $2, required_capabilities = jsonb_build_array($3::text),
+		sha = $4, gate = $5, gate_since = now()
+		WHERE id = $1 AND status = 'backlog'`, id, lane, class, sha, GateIntake)
 	if err != nil {
 		return false, err
 	}
@@ -624,7 +637,7 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET gate = $2, gate_since = $3
-		WHERE id = $1 AND status NOT IN ('done', 'failed', 'closed', 'suggested')`, id, gate, since)
+		WHERE id = $1 AND status NOT IN ('done', 'failed', 'closed', 'backlog')`, id, gate, since)
 	return err
 }
 

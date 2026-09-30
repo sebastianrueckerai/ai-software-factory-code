@@ -134,13 +134,14 @@ type fakeTaskCreator struct {
 	err     error
 	created []factoryd.Task
 	// projects by repository; nil: every repository is a seed project
-	// agents work on
+	// agents work on, following a process whose ready writers move
 	projects map[string]factoryd.Project
 }
 
 func (s *fakeTaskCreator) ProjectByRepository(_ context.Context, repository string) (factoryd.Project, bool, error) {
 	if s.projects == nil {
-		return factoryd.Project{Name: "p", Repository: repository, Objects: "seed", Agents: "coder", File: true}, true, nil
+		return factoryd.Project{Name: "p", Repository: repository, Objects: "seed", Agents: "coder", File: true, Process: "maintenance",
+			Lanes: []policy.Lane{{Name: policy.LaneBacklog}, {Name: policy.LaneReady, Class: policy.ClassCoder, MovedBy: policy.MovedByWriters}}}, true, nil
 	}
 	p, ok := s.projects[repository]
 	return p, ok, nil

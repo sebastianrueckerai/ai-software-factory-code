@@ -118,7 +118,8 @@ func newAlertRig(t *testing.T) *alertRig {
 	ns := &fakeNamespaces{labels: map[string]string{"demo-staging": "demo-app", "demo-prod": "demo-app", "stray": "gone",
 		"foreign": "demo-app", "legacy": "old"}}
 	projects := &memProjects{m: map[string]Project{
-		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"}},
+		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"},
+			Process: "maintenance", Lanes: maintenanceLanes},
 		// a row without a file: its project was removed from the configuration
 		"old": {Name: "old", Repository: "sf/old", GitToken: "git-tok", Namespaces: []string{"legacy"}},
 	}}
@@ -517,7 +518,7 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	r.ns.labels["factory"], r.ns.labels["platform"] = "ai-software-factory-code", "ai-software-factory-infra"
 	m := r.in.Projects.(*memProjects).m
 	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
-		File: true, Namespaces: []string{"factory"}}
+		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
 	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
 		File: true, Namespaces: []string{"platform", "forgejo"}}
 

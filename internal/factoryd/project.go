@@ -43,6 +43,10 @@ type Project struct {
 	Envelope policy.Envelope
 	// Tokens name a seed project's seeded secrets.
 	Tokens policy.SeedTokens
+	// Process names the process the project's cards follow and Lanes are
+	// its lanes, both in the version in force; "" and none on agents none.
+	Process string
+	Lanes   []policy.Lane
 	// File is whether the configuration holds projects/<name>.yaml: a row
 	// without one is kept for its tokens and nothing acts on it.
 	File      bool
@@ -105,6 +109,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 		p.Name, p.Repository, p.MergeRule, p.Objects, p.Agents = name, c.Repository, c.MergeRule, c.Objects, c.Agents
 		p.Notify, p.Namespaces, p.Environments, p.Secrets, p.Egress = c.Notify, c.Namespaces, c.Environments, c.Secrets, c.Egress
 		p.Quota, p.Envelope, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), true
+		p.Process, p.Lanes = c.Process, v.Processes[c.Process].Lanes
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens
 		}

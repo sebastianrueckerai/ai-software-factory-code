@@ -1045,11 +1045,11 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		task Task
 		want TaskConfig
 	}{
-		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", RequiredCapabilities: AgentCapabilities},
+		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
 				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape}},
-		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", RequiredCapabilities: AgentCapabilities},
+		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone}},
 		"presort report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort,
@@ -1082,6 +1082,57 @@ func TestTaskConfigFromProcess(t *testing.T) {
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil || !strings.Contains(err.Error(), "task t1: a report task with no class") {
 		t.Fatalf("error = %v, want the report task with no class refused", err)
+	}
+}
+
+// TaskConfig reads the row's lane: its class and session come from that
+// lane of the process; a roll has no lane and runs ready's class; a lane
+// the process lacks is refused.
+func TestTaskConfigReadsRowLane(t *testing.T) {
+	pinned := fixtureVersion(t)
+	spec, maintenance := pinned.Processes["spec"], pinned.Processes["maintenance"]
+	for name, tc := range map[string]struct {
+		task                          Task
+		process, lane, class, session string
+	}{
+		"plan":  {Task{Repository: "linkshort/linkshort", Lane: "plan", Process: "spec"}, "spec", "plan", "planner", policy.SessionPlan},
+		"ready": {Task{Repository: "linkshort/linkshort", Lane: "ready", Process: "spec"}, "spec", "ready", policy.ClassCoder, policy.SessionCode},
+		"roll":  {Task{Repository: "demo-app/demo-app", Source: SourceRoll}, "maintenance", "", policy.ClassCoder, policy.SessionCode},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.task.ID, tc.task.Kind, tc.task.Status = "t1", "agent", "queued"
+			r, _, _ := newActivityRunner(t, tc.task, &prForgejo{})
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+			got := getInto[TaskConfig](t, val, err)
+			p := map[string]policy.Process{"spec": spec, "maintenance": maintenance}[tc.process]
+			if got.Process != tc.process || got.Lane != tc.lane || got.Class != tc.class || got.Session != tc.session ||
+				!reflect.DeepEqual(got.Stages, p.Stages) || got.Queue != p.Merge.Queue {
+				t.Fatalf("TaskConfig = %+v, want process %s lane %q class %s session %s", got, tc.process, tc.lane, tc.class, tc.session)
+			}
+		})
+	}
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "plan", Process: "maintenance"}, &prForgejo{})
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil ||
+		!strings.Contains(err.Error(), "task t1: process maintenance has no lane plan in configuration version 7") {
+		t.Fatalf("error = %v, want the missing lane refused", err)
+	}
+}
+
+// A row with no process yet (open before the lanes migration, not reached
+// by the loader's backfill) follows its project's process in the pinned
+// version; a row's own process wins over the project's.
+func TestTaskConfigNullProcess(t *testing.T) {
+	pinned := fixtureVersion(t)
+	for process, want := range map[string]string{"": "spec", "maintenance": "maintenance"} {
+		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "running", Repository: "linkshort/linkshort", Lane: "ready", Process: process}, &prForgejo{})
+		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+		val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+		if got := getInto[TaskConfig](t, val, err); got.Process != want || !reflect.DeepEqual(got.Stages, pinned.Processes[want].Stages) ||
+			got.Queue != pinned.Processes[want].Merge.Queue {
+			t.Fatalf("row process %q: TaskConfig = %+v, want process %s", process, got, want)
+		}
 	}
 }
 

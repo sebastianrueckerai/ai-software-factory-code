@@ -609,7 +609,7 @@ func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 // endpoint fails the test on any call): the card reads the note.
 func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "in-review", Repository: codeRepo, Kind: "agent",
-		RequiredCapabilities: AgentCapabilities}, newFakeKube(), &fakeObjectStore{})
+		RequiredCapabilities: []string{"coder"}}, newFakeKube(), &fakeObjectStore{})
 	var rv Review
 	out, err := execActivity(t, runner, ActivityModelReview, "t-roll", PullRequest{Number: 9}, "r1", GateResults{})
 	if err != nil || out.Get(&rv) != nil {

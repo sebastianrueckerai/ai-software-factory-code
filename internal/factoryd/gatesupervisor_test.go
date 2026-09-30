@@ -53,7 +53,7 @@ func newGateCase(t *testing.T, activity, answer string, routes map[string]string
 	t.Helper()
 	c := &gateCase{kube: newFakeKube(), objects: &fakeObjectStore{}, model: &fakeLiteLLM{content: answer}}
 	c.runner, _, c.store = newTestRunner(t, Task{ID: "t1", Status: "in-review", Objective: "fix the short link", Repository: "sf/r",
-		IssueNumber: 3, PRNumber: 9, RequiredCapabilities: AgentCapabilities}, c.kube, c.objects)
+		IssueNumber: 3, PRNumber: 9, RequiredCapabilities: []string{policy.ClassCoder}}, c.kube, c.objects)
 	c.runner.supervisor = testSupervisorModel(c.model.srv(t).URL)
 	c.runner.cfg.LastFailure = func(_ context.Context, workflowID, activityID string) (string, error) {
 		if workflowID != testWorkflowID || activityID != "7" {

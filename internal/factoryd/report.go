@@ -15,23 +15,23 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// Report tasks (ruling 185) are analyzer sessions in report mode on their
-// parent's issue: the read token only, no push, the last message posted on
-// the issue. Their sources:
+// Report tasks (ruling 185) are sessions of a report class in report mode
+// on their parent's issue: the read token only, no push, the last message
+// posted on the issue. Their sources:
 const (
 	// SourceScreening reads an issue before the coder starts (ruling 182).
 	SourceScreening = "screening"
-	// SourcePresort writes up a suggested improvement.
+	// SourcePresort writes up a backlog card (the backlog lane's write_up).
 	SourcePresort = "presort"
 )
 
 // maxReport bounds a report kept on its task and posted on the issue.
 const maxReport = 16 << 10
 
-// openReport opens parent's report task of source at sha, once per parent
-// and source, and starts its workflow unless it has finished.
-func openReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, parent Task, source, sha string) (Task, error) {
-	t, err := store.OpenReportTask(ctx, Task{ID: NewTaskID(), Priority: parent.Priority, RequiredCapabilities: []string{policy.ClassAnalyzer},
+// openReport opens parent's report task of source and class at sha, once
+// per parent and source, and starts its workflow unless it has finished.
+func openReport(ctx context.Context, store Store, workflows Workflows, budget policy.Budget, parent Task, source, class, sha string) (Task, error) {
+	t, err := store.OpenReportTask(ctx, Task{ID: NewTaskID(), Priority: parent.Priority, RequiredCapabilities: []string{class},
 		RiskClass: "standard", BudgetEUR: budget.ClampBudget(0), Status: "queued", Objective: parent.Objective, Repository: parent.Repository,
 		SHA: sha, Kind: "agent", Source: source, Author: parent.Author, AuthorWriter: parent.AuthorWriter, Parent: parent.ID})
 	if err != nil {
@@ -53,7 +53,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	if err != nil {
 		return ReportResult{}, err
 	}
-	if t.Parent == "" {
+	if !t.Report() {
 		return ReportResult{}, terminalError("task %s is no report task", taskID)
 	}
 	parent, _, err := r.task(ctx, t.Parent)
@@ -171,7 +171,7 @@ func (r *Runner) Screen(ctx context.Context, taskID string) (ScreenResult, error
 	if err != nil {
 		return ScreenResult{}, err
 	}
-	child, err := openReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, t, SourceScreening, t.SHA)
+	child, err := openReport(ctx, r.store, r.cfg.Workflows, r.cfg.Policy().Document.Budget, t, SourceScreening, policy.ClassAnalyzer, t.SHA)
 	if err != nil {
 		return ScreenResult{}, err
 	}

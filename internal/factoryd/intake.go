@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -23,9 +24,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
-// Intake is the Forgejo webhook endpoint: every issue becomes a task row
-// by its lane label (ruling 148: an agent task, which starts its workflow,
-// a human-lane task, or a suggested improvement), every PR/issue comment
+// Intake is the Forgejo webhook endpoint: every issue becomes a card of
+// the lane its labels ask for (a starting lane's task, which starts its
+// workflow, a backlog card, or a human-lane task), every PR/issue comment
 // or review becomes an intake event, and the events a task workflow waits
 // on (merge, changes requested, issue closed, an answer) are signalled to
 // it. It implements http.Handler directly; main wires it at POST
@@ -36,8 +37,9 @@ type Intake struct {
 	Workflows Workflows
 	BotUser   string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
-	// Budget is the policy in force's budget section: a new task's budget.
-	Budget func() policy.Budget
+	// Policy is the policy in force: a new task's budget, the approvers
+	// who may move a card into a lane moved by the approvers.
+	Policy func() policy.Document
 	// Projects are where the heal pass looks for open issues no webhook
 	// turned into a task: every active project's repository.
 	Projects interface {
@@ -273,7 +275,7 @@ var BootLabels = map[string]string{
 	"improvement":          "#0e8a16",
 	LabelNoise:             "#bfbfbf",
 	LabelReal:              "#d93f0b",
-	"state/suggested":      "#c5def5",
+	"state/backlog":        "#c5def5",
 	"state/queued":         "#ededed",
 	"state/running":        "#1f6feb",
 	"state/waiting-human":  "#d4a72c",
@@ -329,10 +331,6 @@ func ReproCommand(body string) string {
 	return ""
 }
 
-// AgentCapabilities are the capability classes every agent task gets at
-// intake, through POST /tasks or an issue alike.
-var AgentCapabilities = []string{policy.ClassCoder}
-
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.
 func (in *Intake) handlePush(ctx context.Context, body []byte) error {
@@ -359,7 +357,7 @@ func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string
 	if p.Action == "closed" {
 		return in.handleIssueClosed(ctx, p)
 	}
-	// only a label event's sender starts a suggestion (a writer's agent label)
+	// only a label event's sender moves a backlog card
 	sender := ""
 	if eventType == "issue_label" {
 		sender = p.Sender.UserName
@@ -400,84 +398,48 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// Issue lanes (ruling 148): what an issue's labels make of it.
-const (
-	LaneAgent     = "agent"     // an agent task, started at once
-	LaneHuman     = "human"     // the human lane: no agent run
-	LaneSuggested = "suggested" // an improvement: a row, no run until a writer's agent label
-)
-
-// IssueLane is the lane of an issue with labels names: human wins, then
-// agent or bug (a bug from anyone is fixed), then improvement; an issue
-// with none of the four counts as a bug.
-func IssueLane(names []string) string {
-	switch {
-	case slices.Contains(names, "human"):
-		return LaneHuman
-	case slices.Contains(names, "agent") || slices.Contains(names, "bug"):
-		return LaneAgent
-	case slices.Contains(names, "improvement"):
-		return LaneSuggested
-	}
-	return LaneAgent
-}
-
 // outsiderLabels are the labels intake reads off an outside account's new
 // issue: Forgejo 15 applies whatever labels its new-issue form posts, from
-// anyone, so the writers' lane and priority labels (agent, human,
+// anyone, so the writers' lane and priority labels (agent, plan, human,
 // priority/*, severity/*) count only from a writer; bug and improvement
 // are the templates' own.
 func outsiderLabels(names []string) []string {
 	var out []string
 	for _, n := range names {
-		if _, weighted := priorityLabelWeight[n]; n != "agent" && n != "human" && !weighted {
+		if _, weighted := priorityLabelWeight[n]; n != LabelAgent && n != LabelPlan && n != LaneHuman && !weighted {
 			out = append(out, n)
 		}
 	}
 	return out
 }
 
-// intakeIssue turns an issue of repo into a task row of its lane (every
-// issue of a project on agents none is the human lane's), idempotent per
-// (repository, issue number): a redelivery, a later label
-// event or a heal pass finds the task already linked and no-ops, except
-// that a suggested improvement labelled agent (or bug) by a writer
-// (sender) starts. defaultBranch is the repository's when the caller knows
-// it (a webhook payload), else read. via names the path in the log.
+// intakeIssue turns an issue of repo into a card of the lane its labels
+// ask for (every issue of a project on agents none is the human lane's),
+// idempotent per (repository, issue number): a redelivery, a later label
+// event or a heal pass finds the task already linked, and only a label
+// event's sender moves a backlog card into a starting lane. An issue the
+// bot filed with no task linked is ignored. defaultBranch is the
+// repository's when the caller knows it (a webhook payload), else read.
+// via names the path in the log.
 func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch string, issue webhookIssue, sender string) error {
-	if issue.Poster.UserName == in.BotUser {
-		return nil // the bot's own issues never spawn a second task
-	}
 	p, ok, err := in.Store.ProjectByRepository(ctx, repo)
 	if err != nil {
 		return fmt.Errorf("project of %s: %w", repo, err)
 	}
 	if !ok || !p.Active() {
-		log.Printf("%s: issue #%d on %s: no active project has this repository: ignored", via, issue.Index, repo)
+		if issue.Poster.UserName != in.BotUser {
+			log.Printf("%s: issue #%d on %s: no active project has this repository: ignored", via, issue.Index, repo)
+		}
 		return nil
 	}
 	names := labelNames(issue.Labels)
-	lane := IssueLane(names)
-	if p.Agents == policy.AgentsNone {
-		lane = LaneHuman
-	}
 	if t, ok, err := in.Store.TaskByIssue(ctx, repo, issue.Index); err != nil {
 		return fmt.Errorf("task by issue: %w", err)
 	} else if ok {
-		switch {
-		// a redelivery retries a workflow start that failed the first time
-		case t.Kind == "agent" && t.Status == "queued":
-			if moved, err := in.humanLaneWithoutAgents(ctx, t); err != nil || moved {
-				return err
-			}
-			return in.Workflows.Start(ctx, t.ID)
-		case t.Status == "suggested" && lane == LaneAgent:
-			return in.promote(ctx, via, t, defaultBranch, sender)
-		case t.Status == "suggested" && p.Agents == policy.AgentsCoder:
-			// a presort a crash kept from opening opens now
-			return in.presort(ctx, t, defaultBranch)
-		}
-		return nil
+		return in.labelled(ctx, via, p, t, names, defaultBranch, sender)
+	}
+	if issue.Poster.UserName == in.BotUser {
+		return nil // the bot's own issues never spawn a second task
 	}
 
 	poster := issue.Poster.UserName
@@ -487,20 +449,18 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	if kept := outsiderLabels(names); !writer && len(kept) != len(names) && p.Agents == policy.AgentsCoder {
 		// off the issue too, so no later writer's event reads them
-		names, lane = kept, IssueLane(kept)
+		names = kept
 		if parts, err := SplitRepo(repo); err != nil {
 			return err
 		} else if err := in.Forgejo.ReplaceIssueLabels(ctx, parts.Owner, parts.Name, issue.Index, kept); err != nil {
 			log.Printf("%s: issue #%d on %s: drop an outside account's writer labels: %v", via, issue.Index, repo, err)
 		}
 	}
-	id := NewTaskID()
 	task := Task{
-		ID:           id,
+		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    in.Budget().ClampBudget(0),
-		Status:       "queued",
+		BudgetEUR:    in.Policy().Budget.ClampBudget(0),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
@@ -509,43 +469,66 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		CreatedAt:    issue.CreatedAt,
 		Author:       poster,
 		AuthorWriter: writer,
+		ReproCommand: ReproCommand(issue.Body),
 	}
-	switch lane {
-	case LaneAgent:
-		task.RequiredCapabilities = AgentCapabilities
-		task.ReproCommand = ReproCommand(issue.Body)
-		if task.SHA, err = in.baseSHA(ctx, repo, defaultBranch); err != nil {
-			return err
-		}
-	case LaneSuggested:
-		// an agent task without a run: its base is read when it starts
-		task.RequiredCapabilities = AgentCapabilities
-		task.ReproCommand = ReproCommand(issue.Body)
-		task.Status = "suggested"
-	default:
+	if p.Agents == policy.AgentsNone || IssueLane(names, p.Lanes) == LaneHuman {
 		// no runner ever claims the human lane: it waits on a human from
 		// the start (architecture 5.6's board column) and closing its
 		// issue finishes it
-		task.Kind, task.Status = "human", "waiting-human"
+		task.Kind, task.Status, task.ReproCommand = "human", "waiting-human", ""
+	} else if task, err = in.enterOnCreation(ctx, via, p, task, names, defaultBranch); err != nil {
+		return err
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
 		return fmt.Errorf("create task: %w", err)
 	}
-	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, lane, id)
+	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
 	switch task.Status {
 	case "queued":
-		return in.Workflows.Start(ctx, id)
-	case "suggested":
-		return in.presort(ctx, task, defaultBranch)
+		return in.Workflows.Start(ctx, task.ID)
+	case "backlog":
+		return in.writeUp(ctx, p, task, defaultBranch)
 	}
 	return nil
 }
 
-// presort opens suggestion t's analyzer report task at the branch head
-// (ruling 185): its write-up lands on the issue while the row stays
-// suggested, and a writer's agent label later hands it to the coder.
-func (in *Intake) presort(ctx context.Context, t Task, defaultBranch string) error {
+// labelled acts on a label event, or a heal pass's read, of the issue of
+// card t: a backlog card whose labels now ask for a starting lane enters
+// it through the label added or removed, a queued card's workflow start
+// that failed is retried, and a backlog write-up a crash kept from opening
+// opens. Every other card's labels change nothing.
+func (in *Intake) labelled(ctx context.Context, via string, p Project, t Task, names []string, defaultBranch, sender string) error {
+	switch {
+	case t.Kind == "agent" && t.Status == "queued":
+		// a redelivery retries a workflow start that failed the first time
+		if moved, err := in.humanLaneWithoutAgents(ctx, t); err != nil || moved {
+			return err
+		}
+		return in.Workflows.Start(ctx, t.ID)
+	case t.Status != "backlog" || p.Agents != policy.AgentsCoder:
+		return nil
+	}
+	switch name := IssueLane(names, p.Lanes); {
+	case name == policy.LaneBacklog:
+		return in.writeUp(ctx, p, t, defaultBranch)
+	case name == LaneHuman:
+		return nil
+	case laneLabelled(names, name):
+		return in.enterOnLabelAdded(ctx, via, p, t, name, names, defaultBranch, sender)
+	default:
+		return in.enterOnLabelRemoved(ctx, via, p, t, names, defaultBranch, sender)
+	}
+}
+
+// writeUp opens backlog card t's write-up at the branch head (ruling 185)
+// when project p's backlog lane names a write_up class: its report lands
+// on the issue while the card stays in the backlog.
+func (in *Intake) writeUp(ctx context.Context, p Project, t Task, defaultBranch string) error {
+	backlog, _ := laneOf(p.Lanes, policy.LaneBacklog)
+	if backlog.WriteUp == "" {
+		return nil
+	}
 	if _, ok, err := in.Store.ReportOf(ctx, t.ID, SourcePresort); err != nil || ok {
 		return err
 	}
@@ -553,7 +536,7 @@ func (in *Intake) presort(ctx context.Context, t Task, defaultBranch string) err
 	if err != nil {
 		return err
 	}
-	_, err = openReport(ctx, in.Store, in.Workflows, in.Budget(), t, SourcePresort, sha)
+	_, err = openReport(ctx, in.Store, in.Workflows, in.Policy().Budget, t, SourcePresort, backlog.WriteUp, sha)
 	return err
 }
 
@@ -586,10 +569,10 @@ func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (stri
 	return sha, nil
 }
 
-// FileTask files task t the way the API, the alert intake and the
-// configuration loader do (task 42): the issue on repo first, as the bot,
-// labelled labels and its state, then the task row linked to it. An agent
-// task is queued and its workflow started (a failed start is logged and
+// FileTask files task t the way the API, the alert intake, the roller
+// and the configuration loader do (task 42): the issue on repo first, as
+// the bot, labelled labels and its state, then the task row linked to it.
+// A queued agent task's workflow is started (a failed start is logged and
 // healed by the next HealPass); a task of kind human waits on a human
 // from the start and has no workflow. No row exists without its issue.
 func FileTask(ctx context.Context, store interface {
@@ -597,8 +580,6 @@ func FileTask(ctx context.Context, store interface {
 }, forgejo *Forgejo, workflows Workflows, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if t.Kind == "human" {
 		t.Status = "waiting-human"
-	} else {
-		t.Kind, t.Status, t.RequiredCapabilities = "agent", "queued", AgentCapabilities
 	}
 	ref, err := forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
 	if err != nil {
@@ -611,7 +592,7 @@ func FileTask(ctx context.Context, store interface {
 	if err := store.CreateTask(ctx, t); err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	if t.Kind == "agent" {
+	if t.Status == "queued" {
 		if err := workflows.Start(ctx, t.ID); err != nil {
 			log.Printf("task %s: start workflow: %v", t.ID, err)
 		}
@@ -619,26 +600,16 @@ func FileTask(ctx context.Context, store interface {
 	return t, ref, nil
 }
 
-// promote starts suggested task t on a writer's agent label (ruling 148).
-// The heal pass knows no sender and leaves it to the label's webhook.
-func (in *Intake) promote(ctx context.Context, via string, t Task, defaultBranch, sender string) error {
-	// the bot's own label events (the state mirror) start nothing
-	if sender == "" || sender == in.BotUser {
-		return nil
-	}
-	if ok, err := in.trusted(ctx, t.Repository, sender); err != nil || !ok {
-		return err
-	}
-	sha, err := in.baseSHA(ctx, t.Repository, defaultBranch)
+// FileAgentTask files agent task t on project p's repository through
+// FileTask, entering its process by fileEntry.
+func FileAgentTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, workflows Workflows, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {
-		return err
+		return Task{}, IssueRef{}, err
 	}
-	if ok, err := in.Store.PromoteSuggested(ctx, t.ID, sha); err != nil || !ok {
-		return err
-	}
-	log.Printf("%s: issue #%d on %s: %s started suggested task %s", via, t.IssueNumber, t.Repository, sender, t.ID)
-	mirrorTaskState(ctx, in.Forgejo, t, "queued")
-	return in.Workflows.Start(ctx, t.ID)
+	return FileTask(ctx, store, forgejo, workflows, p.Repo(), title, body, labels, t)
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {
@@ -677,17 +648,17 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	switch {
 	case t.Kind == "human":
 		return in.finishHumanTask(ctx, t, closer)
-	case t.Status == "suggested":
-		return in.closeSuggestion(ctx, t)
+	case t.Status == "backlog":
+		return in.closeBacklogCard(ctx, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
 }
 
-// closeSuggestion: a suggestion whose issue closed ends closed, no
+// closeBacklogCard: a backlog card whose issue closed ends closed, no
 // workflow ever started.
-func (in *Intake) closeSuggestion(ctx context.Context, t Task) error {
-	if err := in.Store.TransitionTask(ctx, t.ID, []string{"suggested"}, "closed"); err != nil {
+func (in *Intake) closeBacklogCard(ctx context.Context, t Task) error {
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"backlog"}, "closed"); err != nil {
 		return err
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
@@ -773,8 +744,8 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 // human-lane task has none.
 func (in *Intake) agentTask(ctx context.Context, id string) (Task, bool, error) {
 	t, ok, err := in.Store.Task(ctx, id)
-	// a suggestion runs nothing until a writer's agent label starts it
-	return t, ok && t.Kind == "agent" && t.Status != "suggested", err
+	// a backlog card runs nothing until it enters a starting lane
+	return t, ok && t.Kind == "agent" && t.Status != "backlog", err
 }
 
 // taskOfHead is the task whose pull request has head ref in headRepo: a
@@ -1049,7 +1020,7 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
-	if t.Kind == "human" || t.Status == "suggested" {
+	if t.Kind == "human" || t.Status == "backlog" {
 		if t.IssueNumber == 0 {
 			return nil
 		}

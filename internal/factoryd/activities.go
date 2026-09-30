@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -132,7 +133,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 		return err
 	}
 	// a report task comments on its parent's issue
-	if t.IssueNumber == 0 && t.Parent == "" {
+	if t.IssueNumber == 0 && !t.Report() {
 		return terminalError("task %s has no linked issue", taskID)
 	}
 	return r.timeline.Append(ctx, taskID, "intake", map[string]any{"source": t.Source, "issue": t.IssueNumber, "started": rfc3339(t.CreatedAt)})
@@ -633,9 +634,12 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 	return nil
 }
 
-// TaskConfig reads the task's project in the pinned version and returns
-// its process with lane ready; a report task (a parent's) runs its own
-// class's session, the analyzer's, in the same process.
+// TaskConfig reads the task's row and its process in the pinned version:
+// the row's process, else (a row the loader's backfill has not reached)
+// the process the task's project follows in that version, and the class
+// of the row's lane. A report task runs its own class, the write-up's or
+// the screening's, with no lane; a roll has no lane and runs ready's
+// class, whose program is the lifecycle.
 func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (TaskConfig, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -645,25 +649,28 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 	if err != nil {
 		return TaskConfig{}, err
 	}
-	_, project, _ := v.ProjectOf(t.Repository)
-	p, ok := v.Processes[project.Process]
+	name := t.Process
+	if name == "" {
+		_, project, _ := v.ProjectOf(t.Repository)
+		name = project.Process
+	}
+	p, ok := v.Processes[name]
 	if !ok {
 		return TaskConfig{}, terminalError("task %s: repository %s follows no process in configuration version %d", t.ID, t.Repository, v.ID)
 	}
-	tc := TaskConfig{Process: project.Process, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
-	for _, l := range p.Lanes {
-		if l.Name == policy.LanePlan {
-			tc.PlanShape = l.Plan
-		}
-		if l.Name == policy.LaneReady {
-			tc.Lane, tc.Class = l.Name, l.Class
-		}
+	tc := TaskConfig{Process: name, Lane: t.Lane, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
+	if plan, ok := p.Lane(policy.LanePlan); ok {
+		tc.PlanShape = plan.Plan
 	}
-	if t.Report() {
-		if len(t.RequiredCapabilities) == 0 {
-			return TaskConfig{}, terminalError("task %s: a report task with no class", t.ID)
-		}
-		tc.Lane, tc.Class = "", t.RequiredCapabilities[0]
+	switch lane, ok := p.Lane(cmp.Or(t.Lane, policy.LaneReady)); {
+	case t.Report() && len(t.RequiredCapabilities) == 0:
+		return TaskConfig{}, terminalError("task %s: a report task with no class", t.ID)
+	case t.Report():
+		tc.Class = t.RequiredCapabilities[0]
+	case !ok:
+		return TaskConfig{}, terminalError("task %s: process %s has no lane %s in configuration version %d", t.ID, name, t.Lane, v.ID)
+	default:
+		tc.Class = lane.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
 	return tc, nil

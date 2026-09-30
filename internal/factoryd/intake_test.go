@@ -75,6 +75,14 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub, malformed body just yields nil labels
 			labels[r.URL.Path] = payload.Labels
 			io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodPost:
+			var payload struct {
+				Body string `json:"body"`
+			}
+			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub
+			requests = append(requests, "comment "+r.URL.Path+": "+payload.Body)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1}`)
 		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/issues/") && strings.Count(r.URL.Path, "/") == 7:
 			io.WriteString(w, `{"state":"open"}`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues" && r.Method == http.MethodGet:
@@ -136,11 +144,17 @@ func testBudget() policy.Budget {
 	return policy.Budget{TaskDefaultEUR: 1.5, TaskMaxEUR: 4, DayEUR: 20, MonthEUR: 50}
 }
 
+// testPolicy is intake's policy: testBudget, and alice the one approver
+// (sebastian writes the code repository and approves nothing).
+func testPolicy() policy.Document {
+	return policy.Document{Budget: testBudget(), Approvers: []string{"alice"}}
+}
+
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
 	t.Helper()
 	forgejo, requests := intakeForgejoStub(t)
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy}
 	return in, store, requests
 }
 
@@ -282,7 +296,7 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 7); !slices.Contains(labels, "state/queued") {
 		t.Fatalf("labels = %v, want state/queued", labels)
 	}
-	if want := "webhook intake: issue #7 on sf/ai-software-factory-code by sebastian: agent task " + task.ID; !strings.Contains(logs.String(), want) {
+	if want := "webhook intake: issue #7 on sf/ai-software-factory-code by sebastian: ready task " + task.ID; !strings.Contains(logs.String(), want) {
 		t.Fatalf("log = %q, want a line containing %q", logs.String(), want)
 	}
 }
@@ -338,7 +352,7 @@ func TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly(t *testing.T) {
 	t.Cleanup(srv.Close)
 	forgejo := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"}
 	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy}
 	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Add Z", "body")
 	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
 	if rr.Code != http.StatusOK {
@@ -372,35 +386,6 @@ func TestIntakeIssueBotAuthoredIsIgnored(t *testing.T) {
 	}
 }
 
-// Ruling 148's label matrix, whoever filed the issue: human wins, then
-// agent or bug start an agent task, improvement is suggested, and an
-// issue with none of the four counts as a bug.
-func TestIssueLane(t *testing.T) {
-	for _, tc := range []struct {
-		labels []string
-		want   string
-	}{
-		{nil, LaneAgent},
-		{[]string{"question"}, LaneAgent},
-		{[]string{"priority/p1"}, LaneAgent},
-		{[]string{"bug"}, LaneAgent},
-		{[]string{"agent"}, LaneAgent},
-		{[]string{"improvement"}, LaneSuggested},
-		{[]string{"improvement", "question"}, LaneSuggested},
-		{[]string{"improvement", "bug"}, LaneAgent},
-		{[]string{"improvement", "agent"}, LaneAgent},
-		{[]string{"human"}, LaneHuman},
-		{[]string{"human", "agent"}, LaneHuman},
-		{[]string{"human", "bug"}, LaneHuman},
-		{[]string{"human", "improvement"}, LaneHuman},
-		{[]string{"bug", "agent"}, LaneAgent},
-	} {
-		if got := IssueLane(tc.labels); got != tc.want {
-			t.Errorf("IssueLane(%q) = %s, want %s", tc.labels, got, tc.want)
-		}
-	}
-}
-
 // Each lane end to end through the webhook, from an outside account and a
 // writer: the row's status, kind, author standing and whether its
 // workflow starts.
@@ -416,14 +401,14 @@ func TestIntakeIssueLanes(t *testing.T) {
 	}{
 		{"outsider", nil, "queued", "agent", false, true, "state/queued"},
 		{"outsider", []string{"bug"}, "queued", "agent", false, true, "state/queued"},
-		{"outsider", []string{"improvement"}, "suggested", "agent", false, false, "state/suggested"},
+		{"outsider", []string{"improvement"}, "backlog", "agent", false, false, "state/backlog"},
 		{"sebastian", []string{"question"}, "queued", "agent", true, true, "state/queued"},
-		{"sebastian", []string{"improvement"}, "suggested", "agent", true, false, "state/suggested"},
+		{"sebastian", []string{"improvement"}, "backlog", "agent", true, false, "state/backlog"},
 		{"sebastian", []string{"human"}, "waiting-human", "human", true, false, "state/waiting-human"},
 		// Forgejo applies any label an outsider's new-issue form posts:
 		// the writers' lane labels do not count from them
 		{"outsider", []string{"human"}, "queued", "agent", false, true, "state/queued"},
-		{"outsider", []string{"improvement", "agent"}, "suggested", "agent", false, false, "state/suggested"},
+		{"outsider", []string{"improvement", "agent"}, "backlog", "agent", false, false, "state/backlog"},
 	} {
 		t.Run(fmt.Sprintf("%s %v", tc.poster, tc.labels), func(t *testing.T) {
 			in, store, _ := newTestIntake(t)
@@ -439,8 +424,8 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 			}
-			// a suggestion's second row is its presort (ruling 185)
-			if want := map[bool]int{true: 2, false: 1}[tc.status == "suggested"]; len(store.tasks) != want {
+			// a backlog card's second row is its write-up (ruling 185)
+			if want := map[bool]int{true: 2, false: 1}[tc.status == "backlog"]; len(store.tasks) != want {
 				t.Fatalf("tasks = %d, want %d", len(store.tasks), want)
 			}
 			task, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 5)
@@ -450,8 +435,8 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if started := slices.Contains(workflowsOf(in).started, task.ID); started != tc.started {
 				t.Fatalf("started = %v, want %v", started, tc.started)
 			}
-			if tc.status == "suggested" && (task.SHA != "" || task.Gate != "") {
-				t.Fatalf("suggested task = %+v, want no base and no gate before it starts", task)
+			if tc.status == "backlog" && (task.SHA != "" || task.Gate != "") {
+				t.Fatalf("backlog card = %+v, want no base and no gate before it starts", task)
 			}
 			labels = issueLabels(t, in.Forgejo, 5)
 			if !slices.Contains(labels, tc.stateLabel) {
@@ -465,9 +450,9 @@ func TestIntakeIssueLanes(t *testing.T) {
 	}
 }
 
-// A suggested improvement starts on a writer's agent label, never on an
+// A backlog improvement starts on a writer's agent label, never on an
 // outside account's, and the heal pass (no sender) leaves it be.
-func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
+func TestIntakeBacklogCardStartsOnAWritersAgentLabel(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
 	postWebhook(in, "issues", opened, sign(webhookSecret, opened))
@@ -495,7 +480,7 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 			t.Fatalf("status = %d", rr.Code)
 		}
 	}
-	if store.tasks[id].Status != "suggested" || !slices.Equal(workflowsOf(in).started, []string{presort.ID}) {
+	if store.tasks[id].Status != "backlog" || !slices.Equal(workflowsOf(in).started, []string{presort.ID}) {
 		t.Fatalf("task = %+v, started %q: an outside account's or no sender's label starts nothing", store.tasks[id], workflowsOf(in).started)
 	}
 	b := labelled("sebastian")
@@ -503,7 +488,7 @@ func TestIntakeSuggestedStartsOnAWritersAgentLabel(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	got := store.tasks[id]
-	if got.Status != "queued" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{presort.ID, id}) {
+	if got.Status != "queued" || got.Lane != "ready" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{presort.ID, id}) {
 		t.Fatalf("task = %+v, started %q: want queued at the branch head with its workflow started", got, workflowsOf(in).started)
 	}
 	if labels := issueLabels(t, in.Forgejo, 12); !slices.Contains(labels, "state/queued") {
@@ -1045,8 +1030,8 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	presort, _, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
 	if len(store.tasks) != 6 || presort.ID == "" || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
 		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" ||
-		bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter || wish.Status != "suggested" {
-		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 suggested with its presort", store.tasks)
+		bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter || wish.Status != "backlog" {
+		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 in the backlog with its presort", store.tasks)
 	}
 	// the second pass starts the still-queued workflows again, as the
 	// webhook's redelivery would (Temporal refuses a running one); #12's
@@ -1437,13 +1422,13 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	}
 }
 
-// A suggestion takes only a writer's agent label as its start (review
+// A backlog card takes only a writer's agent label as its start (review
 // I1): comments by its author or a writer are neither recorded nor
 // signalled (a signal would start its workflow), and a writer's close
 // ends it closed without one.
-func TestIntakeSuggestionRunsNothingUntilItStarts(t *testing.T) {
+func TestIntakeBacklogCardRunsNothingUntilItStarts(t *testing.T) {
 	in, store, _ := newTestIntake(t)
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", IssueNumber: 30, Kind: "agent", Author: "visitor"}
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", IssueNumber: 30, Kind: "agent", Author: "visitor"}
 	for i, user := range []string{"visitor", "sebastian"} {
 		b, _ := json.Marshal(map[string]any{
 			"action":     "created",
@@ -1462,15 +1447,15 @@ func TestIntakeSuggestionRunsNothingUntilItStarts(t *testing.T) {
 	}
 	b := closed("visitor")
 	postWebhook(in, "issues", b, sign(webhookSecret, b))
-	if got := store.tasks["t-s"].Status; got != "suggested" {
-		t.Fatalf("after the author's close: %s, want suggested (an outsider's close decides nothing)", got)
+	if got := store.tasks["t-s"].Status; got != "backlog" {
+		t.Fatalf("after the author's close: %s, want backlog (an outsider's close decides nothing)", got)
 	}
 	b = closed("sebastian")
 	if rr := postWebhook(in, "issues", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 		t.Fatalf("close: status %d", rr.Code)
 	}
 	if w := workflowsOf(in); len(w.signals) != 0 || len(w.started) != 0 || len(store.intakeEvents) != 0 {
-		t.Fatalf("signals %q, starts %q, events %d: want none for a suggestion", w.signals, w.started, len(store.intakeEvents))
+		t.Fatalf("signals %q, starts %q, events %d: want none for a backlog card", w.signals, w.started, len(store.intakeEvents))
 	}
 	if got := store.tasks["t-s"]; got.Status != "closed" || got.FinishedAt == nil {
 		t.Fatalf("task = %+v, want closed", got)
@@ -1480,20 +1465,20 @@ func TestIntakeSuggestionRunsNothingUntilItStarts(t *testing.T) {
 	}
 }
 
-// The heal pass takes in a suggestion's close the webhook missed, and
+// The heal pass takes in a backlog card's close the webhook missed, and
 // starts nothing.
-func TestHealPassClosesASuggestion(t *testing.T) {
+func TestHealPassClosesABacklogCard(t *testing.T) {
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
 	store := newFakeStore()
 	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "suggested", Kind: "agent", IssueNumber: 30}
+	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", Kind: "agent", IssueNumber: 30}
 	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
 	if got := store.tasks["t-s"].Status; got != "closed" || len(workflowsOf(in).started) != 0 || len(workflowsOf(in).signals) != 0 {
 		t.Fatalf("status %s, started %q, signals %q", got, workflowsOf(in).started, workflowsOf(in).signals)
 	}
 }
 
-// An improvement issue stays suggested and opens an analyzer report task
+// An improvement issue stays in the backlog and opens an analyzer report task
 // on it at the branch head, whose workflow starts (ruling 185); a
 // redelivery or heal pass opens no second one.
 func TestIntakeImprovementIsPresorted(t *testing.T) {
@@ -1505,7 +1490,7 @@ func TestIntakeImprovementIsPresorted(t *testing.T) {
 		}
 	}
 	wish, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
-	if !ok || wish.Status != "suggested" {
+	if !ok || wish.Status != "backlog" {
 		t.Fatalf("wish = %+v", wish)
 	}
 	presort, ok, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
@@ -1554,7 +1539,7 @@ func TestIntakeAgentsNoneIsTheHumanLane(t *testing.T) {
 	store.projects = []Project{{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", MergeRule: "human", Objects: "seed",
 		Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}}}
 	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"},
-		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy}
 	on := func(repo string, number int64, labels ...string) []byte {
 		return bytes.Replace(issueOpenedBody(number, "sebastian", labels, "Rotate the key", "please"), []byte("sf/ai-software-factory-code"), []byte(repo), 1)
 	}
@@ -1702,7 +1687,7 @@ func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {
 	store.projects = []Project{{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", MergeRule: "human", Objects: "seed",
 		Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}}}
 	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded, CIOrgToken: "org-read-tok"},
-		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Budget: testBudget}
+		Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy}
 	ctx := context.Background()
 	for _, n := range []int64{31, 32} {
 		task := Task{ID: fmt.Sprintf("t-%d", n), Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-infra",

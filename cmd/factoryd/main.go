@@ -240,7 +240,7 @@ func main() {
 	intakeToken := mustEnv("INTAKE_TOKEN")
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Budget: policyLoader.Budget, Projects: store, Metrics: metrics,
+		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Policy: func() policy.Document { return policyLoader.Current().Document }, Projects: store, Metrics: metrics,
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
 	// runs and its rolls are watched, its writers log into the console
@@ -473,7 +473,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 		if in.ReproCommand != "" {
 			issueBody += "\n\nReproduction, run against the pull request head before approval:\n\n```repro\n" + in.ReproCommand + "\n```"
 		}
-		task, ref, err := factoryd.FileTask(r.Context(), store, forgejo, workflows, repoParts, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
+		task, ref, err := factoryd.FileAgentTask(r.Context(), store, forgejo, workflows, p, factoryd.FirstLine(in.Objective), issueBody, []string{"agent"}, factoryd.Task{
 			ID: id, Priority: in.Priority, RiskClass: "standard", BudgetEUR: in.BudgetEUR,
 			Objective: in.Objective, SHA: sha, Source: "api", ReproCommand: in.ReproCommand,
 			// the intake token's holder files as the bot, with a writer's standing

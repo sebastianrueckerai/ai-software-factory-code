@@ -65,7 +65,7 @@ type verdictForm struct {
 
 // columns are the agent lane, in board order; closing counts as running.
 var columns = []struct{ Title, Status string }{
-	{"Suggested", "suggested"}, {"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"},
+	{"Backlog", "backlog"}, {"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"},
 	{"Waiting on the author", "waiting-poster"}, {"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"},
 	{"Closed", "closed"},
 }
