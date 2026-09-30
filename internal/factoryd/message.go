@@ -92,3 +92,15 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 	}
 	return sup.nudgeUndelivered(n, err)
 }
+
+// message sends the supervisor's guidance into the running session and
+// records it on the timeline.
+func (r *Runner) message(ctx context.Context, t Task, s sessionSpec, ns, pod, text string) error {
+	err := r.messageWorker(ctx, ns, pod, s.messageToken, text)
+	detail := map[string]any{"session": s.id}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	r.record(ctx, t.ID, "message", detail)
+	return err
+}

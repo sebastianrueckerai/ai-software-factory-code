@@ -2,11 +2,13 @@ package factoryd
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,17 +132,21 @@ func TestRunSessionNudgeFallsBackToTheRedirect(t *testing.T) {
 }
 
 // A nudge that cannot be delivered asks the supervisor, as a same_call
-// trip; the supervisor's redirect stops the session.
+// trip; the supervisor's message cannot be delivered either, so the
+// session stops with it as the guidance.
 func TestRunSessionUndeliveredNudgeAsksTheSupervisor(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read b.go instead"}`}
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"read b.go instead"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 	worker := &fakeWorkerEndpoint{status: http.StatusBadGateway}
 	worker.start(t, runner)
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, threeReads()+resultLine(false, "stopped"))
 	if err != nil || res.Outcome != OutcomeRedirect || res.Trip != string(TripSameCall) {
-		t.Fatalf("result = (%+v, %v), want the supervisor's redirect on same_call", res, err)
+		t.Fatalf("result = (%+v, %v), want the stop on same_call", res, err)
+	}
+	if !slices.Contains(res.Findings, "supervisor guidance: read b.go instead") {
+		t.Fatalf("findings = %q, want the message as the guidance", res.Findings)
 	}
 	if len(f.chats) != 1 {
 		t.Fatalf("supervisor calls = %d, want 1", len(f.chats))
@@ -185,5 +191,137 @@ func TestRunSessionNudgeAfterTheSessionEndedIsANoOp(t *testing.T) {
 	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
 	if !strings.Contains(string(tl), `"error":"no session is running"`) {
 		t.Fatalf("timeline = %s", tl)
+	}
+}
+
+func reads(from, n int) string {
+	var s string
+	for i := from; i < from+n; i++ {
+		s += envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(),
+			Detail: map[string]any{"tool": "read", "status": "completed", "args": map[string]any{"filePath": fmt.Sprint("/w/", i, ".go")}}}) + "\n"
+	}
+	return s
+}
+
+func commands(from, n int) string {
+	var s string
+	for i := from; i < from+n; i++ {
+		s += envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": fmt.Sprint("ls ", i), "exit": 0}}) + "\n"
+	}
+	return s
+}
+
+// The supervisor's message reaches the running worker through the
+// nudge's path; the pod runs on and the tripped detector is reset, so a
+// third read makes no second trip.
+func TestMessageKeepsSessionRunning(t *testing.T) {
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	runner.cfg.Supervisor.RepetitionEvents = 2
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := reads(0, 2) + reads(2, 1) +
+		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if len(worker.texts) != 1 || worker.texts[0] != "POST /message use the store's New" {
+		t.Fatalf("worker got %q", worker.texts)
+	}
+	if len(f.chats) != 1 {
+		t.Fatalf("supervisor calls = %d, want 1", len(f.chats))
+	}
+	if len(kube.deletedPods) != 1 {
+		t.Fatalf("deleted pods = %v, want only the cleanup delete", kube.deletedPods)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**message**") || !strings.Contains(hub.comments[0], "use the store's New") {
+		t.Fatalf("comments = %q", hub.comments)
+	}
+}
+
+// After a delivered message, 24 commands without a write trip repetition:
+// the session ends as retry_stronger without a second supervisor call.
+func TestTripAfterMessageWithoutWriteIsStuck(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := commands(0, 24) + commands(24, 24) + pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want retry_stronger on repetition with c-wip", res, err)
+	}
+	if len(f.chats) != 1 {
+		t.Fatalf("supervisor calls = %d, want still 1", len(f.chats))
+	}
+	found := false
+	for _, l := range res.Findings {
+		found = found || strings.HasPrefix(l, "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change")
+	}
+	if !found {
+		t.Fatalf("findings = %q", res.Findings)
+	}
+}
+
+// A write after the message: the next trip asks the supervisor again.
+func TestTripAfterMessageWithWriteAsks(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := commands(0, 24) +
+		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		commands(24, 24) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want pushed", res, err)
+	}
+	if len(f.chats) != 2 {
+		t.Fatalf("supervisor calls = %d, want 2", len(f.chats))
+	}
+}
+
+// A message the worker cannot take (501) falls back to the stop, with the
+// guidance as the next session's finding.
+func TestUndeliveredMessageStops(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	runner.cfg.Supervisor.RepetitionEvents = 2
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	worker := &fakeWorkerEndpoint{status: http.StatusNotImplemented}
+	worker.start(t, runner)
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, reads(0, 2)+resultLine(false, "stopped"))
+	if err != nil || res.Outcome != OutcomeRedirect || res.Trip != string(TripRepetition) {
+		t.Fatalf("result = (%+v, %v), want the stop on repetition", res, err)
+	}
+	if !slices.Contains(res.Findings, "supervisor guidance: use the store's New") {
+		t.Fatalf("findings = %q, want the guidance", res.Findings)
+	}
+}
+
+// No half-way check-in: a session at 60% of its agent time and 60% of its
+// budget, with no check-in configured, asks no supervisor.
+func TestNoHalfWay(t *testing.T) {
+	task := supervisedTask("t2")
+	task.SpentEUR = 0.18 // of 0.3
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	runner.cfg.Supervisor.RepetitionEvents = 1000
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(false, "x")
+	// the activity deadline is 10 minutes out: 15 of 25 minutes are used
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", AgentTime: 25 * time.Minute}, nil, logs)
+	if err != nil || res.Trip != "" {
+		t.Fatalf("result = (%+v, %v), want no trip", res, err)
 	}
 }

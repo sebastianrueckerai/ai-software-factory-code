@@ -363,9 +363,9 @@ const workerTerminationGrace = 60
 
 // runSession runs one worker pod in the task namespace until it yields a
 // result, hits the wall-clock cap (deadline), or dies. Every other trip
-// asks the supervisor model; continue lets the session run on, any other
-// decision stops it. A stopped worker commits and pushes its work in
-// progress before it exits. progress receives the event count and
+// asks the supervisor model; continue and a delivered message let the
+// session run on, any other decision stops it. A stopped worker commits
+// and pushes its work in progress before it exits. progress receives the event count and
 // findings so far, for the activity heartbeat.
 // out is a named result so the deferred findings reach the caller on
 // every return.
@@ -384,8 +384,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	// the half-way check-in fires once per task: the flag lives on the task
-	sup.halfWayDone = t.HalfWayDone
 	defer func() { out.findings = sup.Findings() }()
 	digest := newDigestBuilder(time.Now())
 	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
@@ -513,11 +511,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	// onTrip returns true when the session ends, with the session's error.
 	onTrip := func(trip *Trip) (bool, error) {
-		if trip.Kind == TripHalfWay {
-			if err := r.store.MarkHalfWay(ctx, t.ID); err != nil {
-				log.Printf("task %s: record the half-way check-in: %v", t.ID, err)
-			}
-		}
 		if trip.Kind == TripWallClock {
 			stop(trip)
 			return true, ctx.Err()
@@ -576,6 +569,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
 			return false, nil
+		case d.Action == ActionMessage:
+			err := r.message(ctx, t, s, ns, podName, d.Guidance)
+			if err == nil || errors.Is(err, harness.ErrNotRunning) {
+				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
+				sup.Messaged(time.Now())
+				return false, nil
+			}
+			out.decision = &Decision{Action: ActionRedirect, Guidance: d.Guidance}
+			stop(trip)
+			note = fmt.Sprintf("The message could not be delivered (%v): the session stopped, and the next one starts with the guidance.", err)
 		default:
 			out.decision = &d
 			stop(trip)
@@ -604,9 +607,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopAt = time.Now()
 			return out, shutdown()
 		case <-tick.C:
-			if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
-				sup.SetSpend(cur.SpentEUR, cur.BudgetEUR)
-			}
 			if trip := sup.Tick(time.Now()); trip != nil {
 				if end, err := onTrip(trip); end {
 					return out, err
@@ -696,7 +696,6 @@ func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recor
 		Digest:  digest.digest(),
 		Record:  recorder.Tail(maxRecordTail),
 		Model:   s.model,
-		TopRung: s.model == r.cfg.Models.Stronger,
 		Calls:   call,
 		MaxCall: maxCalls,
 	})
@@ -712,8 +711,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 	}
 	detail["session"] = s.id
 	r.record(ctx, t.ID, "supervisor", detail)
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest {
-		return // the agent's question: the workflow's escalation or info_request alert
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripCheckIn {
+		return // the agent's question (the workflow's escalation or info_request alert) or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "supervisor",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}

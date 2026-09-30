@@ -62,7 +62,6 @@ func TestSupervisorNoProgressBoundary(t *testing.T) {
 
 func TestSupervisorWallClockCapWinsOverProgress(t *testing.T) {
 	s := mustSupervisor(t, 5*time.Minute, 30*time.Minute, 1000)
-	s.halfWayDone = true
 	t0 := time.Unix(0, 0)
 	// Events keep flowing: no-progress never fires, but the cap does.
 	for m := 0; m <= 30; m++ {
@@ -132,7 +131,6 @@ func TestSupervisorWallClockSpansSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.halfWayDone = true
 	if trip := s.Tick(taskStart.Add(29*time.Minute + 59*time.Second)); trip != nil {
 		t.Fatalf("tripped before the task cap: %+v", trip)
 	}
@@ -478,46 +476,6 @@ func TestResetClearsOnlyTheTrippedDetector(t *testing.T) {
 	}
 }
 
-func TestSupervisorHalfWayByTimeFiresOncePerTask(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 100, MaxCalls: 3}
-	start := time.Unix(0, 0)
-	// a second session: 8 of the 20 minutes were used before it
-	s, err := NewSupervisor(cfg, start, start.Add(8*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if trip := s.Tick(start.Add(10*time.Minute - time.Second)); trip != nil {
-		t.Fatalf("tripped before half way: %+v", trip)
-	}
-	trip := s.Tick(start.Add(10 * time.Minute))
-	if trip == nil || trip.Kind != TripHalfWay || !s.HalfWayDone() {
-		t.Fatalf("trip = %+v, want half_way at 10 of 20 minutes", trip)
-	}
-	s.Resume(start.Add(10 * time.Minute))
-	if trip := s.Tick(start.Add(15 * time.Minute)); trip != nil {
-		t.Fatalf("half way fired twice: %+v", trip)
-	}
-	// the next session of the same task starts with the flag the workflow carried
-	s2, _ := NewSupervisor(cfg, start, start.Add(12*time.Minute))
-	s2.halfWayDone = true
-	if trip := s2.Tick(start.Add(12 * time.Minute)); trip != nil {
-		t.Fatalf("half way fired again in the next session: %+v", trip)
-	}
-}
-
-func TestSupervisorHalfWayByBudget(t *testing.T) {
-	s := mustSupervisor(t, time.Hour, time.Hour, 100)
-	t0 := time.Unix(0, 0)
-	s.SetSpend(0.149, 0.3)
-	if trip := s.Tick(t0.Add(time.Minute)); trip != nil {
-		t.Fatalf("tripped below half the budget: %+v", trip)
-	}
-	s.SetSpend(0.15, 0.3)
-	if trip := s.Tick(t0.Add(2 * time.Minute)); trip == nil || trip.Kind != TripHalfWay || !strings.Contains(trip.Detail, "50%") {
-		t.Fatalf("trip = %+v, want half_way naming 50%% of the budget", trip)
-	}
-}
-
 func TestSupervisorRoutesEventsThroughTheTraceDetectors(t *testing.T) {
 	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
 	t0 := time.Unix(0, 0)
@@ -614,15 +572,15 @@ func TestSameFailureFirstCheckpointIsNoChange(t *testing.T) {
 func minute(m float64) time.Time { return time.Unix(0, 0).Add(time.Duration(m * float64(time.Minute))) }
 
 // no_write with the policy's default wait (5 min): only an agent's event
-// trips it, the wait after the last write or edit tool call; a command, a
-// shell edit's diff, a checkpoint or silence never do.
+// trips it, the wait after the last write; a command, an unchanged
+// checkpoint or silence never do (a changed diff is a write:
+// TestShellWriteCountsAsWrite).
 func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
 	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3},
 		time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.halfWayDone = true
 	for _, step := range []struct {
 		at float64
 		ev *harness.Event
@@ -632,7 +590,7 @@ func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
 		{6, ptr(diffEvent(3, 1))},
 		{7 - 1.0/60, &harness.Event{Kind: harness.EventModelCall}},
 		{7.5, nil},
-		{7 + 40.0/60, ptr(diffEvent(4, 1))},
+		{7 + 40.0/60, ptr(diffEvent(3, 1))},
 	} {
 		var trip *Trip
 		if step.ev == nil {
@@ -666,7 +624,6 @@ func TestNoWriteExcludesACommandsRunningTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.halfWayDone = true
 	if trip := s.Event(fileEvent("a_test.go", "1"), minute(2)); trip != nil {
 		t.Fatalf("write tripped: %+v", trip)
 	}
@@ -730,7 +687,7 @@ func TestReadOnlySessionTakesNoWriteDetectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	// nine reads over eight minutes: three times the repetition count and
-	// eight times the no_write wait, short of the half-way check-in at 10
+	// eight times the no_write wait
 	for i := range 9 {
 		ev := toolEvent("read", map[string]any{"path": fmt.Sprintf("f%d.go", i)})
 		if trip := s.Event(ev, start.Add(time.Duration(i)*time.Minute)); trip != nil {
@@ -892,5 +849,100 @@ func TestNudgeNotSentIsNotSpent(t *testing.T) {
 	}
 	if trip := s2.Event(read(), t0); trip != nil || s2.TakeNudge() == nil {
 		t.Fatalf("the next run after a dropped nudge: trip %+v, want its nudge", trip)
+	}
+}
+
+// The check-in trips at every CheckIn interval counted from the task's
+// anchor, across sessions: anchor t0, 45m, a session from t0+50m trips at
+// t0+90m and t0+135m and not between.
+func TestCheckInEveryInterval(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
+	s, err := NewSupervisor(cfg, minute(0), minute(50))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []float64{50, 89.99, 90, 100, 134.99, 135, 179.99} {
+		trip := s.Tick(minute(m))
+		want := m == 90 || m == 135
+		if (trip != nil) != want {
+			t.Fatalf("minute %.2f: trip = %+v, want a check-in: %v", m, trip, want)
+		}
+		if trip == nil {
+			continue
+		}
+		if trip.Kind != TripCheckIn || trip.Detail != "scheduled check-in, no detector tripped" {
+			t.Fatalf("minute %.2f: trip = %+v", m, trip)
+		}
+		s.Resume(minute(m))
+	}
+	// an event on the interval trips it too
+	s2, _ := NewSupervisor(cfg, minute(0), minute(50))
+	if trip := s2.Event(harness.Event{Kind: harness.EventModelCall}, minute(90)); trip == nil || trip.Kind != TripCheckIn {
+		t.Fatalf("event at t0+90m: trip = %+v, want check_in", trip)
+	}
+	// no interval, no check-in
+	cfg.CheckIn = 0
+	s3, _ := NewSupervisor(cfg, minute(0), minute(50))
+	if trip := s3.Tick(minute(135)); trip != nil {
+		t.Fatalf("CheckIn 0 tripped: %+v", trip)
+	}
+}
+
+// A file written through a shell shows only as a changed checkpoint diff:
+// it counts as a write for repetition and no_write. The first checkpoint
+// is the baseline.
+func TestShellWriteCountsAsWrite(t *testing.T) {
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 100, MaxCalls: 3},
+		minute(0), minute(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Event(cmdEvent("ls", 0, ""), minute(1))
+	s.Event(diffEvent(3, 0), minute(2)) // 1 file +3: the baseline
+	s.Event(cmdEvent("cat <<EOF > a.go", 0, ""), minute(3))
+	s.Event(cmdEvent("go build", 0, ""), minute(4))
+	if s.sinceChange != 3 || !s.noWriteFrom.Equal(minute(0)) {
+		t.Fatalf("before the change: sinceChange %d, no_write anchor %s; want 3 and minute 0", s.sinceChange, s.noWriteFrom)
+	}
+	s.Event(diffEvent(9, 0), minute(5)) // 1 file +9
+	if s.sinceChange != 0 || !s.noWriteFrom.Equal(minute(5)) {
+		t.Fatalf("after the change: sinceChange %d, no_write anchor %s; want 0 and minute 5", s.sinceChange, s.noWriteFrom)
+	}
+}
+
+// A delivered message arms the stuck rule: the next detector trip without
+// a write since ends the session as retry_stronger, decided already; a
+// write disarms it; a check-in never ends it.
+func TestSupervisorStuckAfterMessage(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 3,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1)); trip == nil || trip.decided != nil {
+		t.Fatalf("first trip = %+v, want repetition for the supervisor", trip)
+	}
+	s.Messaged(minute(2))
+	if trip := s.Tick(minute(45)); trip == nil || trip.Kind != TripCheckIn || trip.decided != nil {
+		t.Fatalf("check-in after the message = %+v, want a check-in for the supervisor", trip)
+	}
+	s.Resume(minute(45))
+	s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(46))
+	trip := s.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(46))
+	if trip == nil || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("trip = %+v, want repetition decided retry_stronger", trip)
+	}
+	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+		t.Fatalf("finding = %q", last)
+	}
+
+	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s2.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	s2.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	s2.Messaged(minute(1))
+	s2.Event(fileEvent("a.go", "1"), minute(2))
+	s2.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(3))
+	if trip := s2.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(3)); trip == nil || trip.decided != nil {
+		t.Fatalf("trip after a write = %+v, want one for the supervisor", trip)
 	}
 }

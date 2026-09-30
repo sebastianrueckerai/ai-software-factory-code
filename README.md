@@ -18,7 +18,7 @@ the agents work on.
   (read on the repository, write on the bot's fork, nothing else) and
   service account (so its own LiteLLM key), one gVisor pod, supervision
   (wall-clock cap, stall, reading without writing, same failure, same
-  call, flip-flop, churn and half-way detectors; see `supervise.go`
+  call, flip-flop, churn and no-write detectors, the check-in; see `supervise.go`
   below) and
   a session record in S3; `sessions/<task>/timeline.jsonl` records the
   task's whole path. Spend settlement against LiteLLM and the orphan
@@ -513,14 +513,17 @@ hide a failure), same call (the same tool with the same arguments
 nudges first), flip-flop (a file returns
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
-half way (half the agent time `limits.agent_time` or half the budget;
-once per task, recorded on the task row), and no write (rulings 141,
-161): an agent event, a tool call, command or model call, arriving
-`no_write` seconds after the last write, edit or patch tool call or the
-session's start (the policy's `supervisor` section, read at each session
-start, 300 by default); a tick or the worker's checkpoint never trips it,
-silence is the stall's. The wall-clock cap ends the
-session. Every other trip asks the supervisor, the `supervisor_model` of
+and no write (rulings 141, 161): an agent event, a tool call, command or
+model call, arriving `no_write` seconds after the last write (a write,
+edit or patch tool call, or a checkpoint whose diff changed: a file
+written through the shell) or the session's start (the policy's
+`supervisor` section, read at each session start, 300 by default); a
+tick or the worker's checkpoint never trips it, silence is the stall's.
+The check-in (ruling 216) trips at every `check_in` of the task's agent
+time (`policy.Time`), counted from the task's start, so it continues
+across sessions; its detail is "scheduled check-in, no detector
+tripped", and it is not counted against `limits.supervisor_calls`. The
+wall-clock cap ends the session. Every other trip asks the supervisor, the `supervisor_model` of
 the task's class, through the gateway on the task's account (purpose
 `supervisor`): its answer limit is clamped to the free headroom, the
 worst case is held, its cost is booked as a `model` ledger row with ref
@@ -528,9 +531,15 @@ worst case is held, its cost is booked as a `model` ledger row with ref
 call the gateway refuses escalates.
 It reads the brief, the trip, a progress digest and the session record's
 tail, and answers one of `continue` (the detector resets, the session
-runs on), `redirect` (new session, same rung, its guidance as findings),
-`retry_stronger` (the next rung; at the top rung a redirect) or
-`escalate`; an invalid answer or a failed call escalates. At most
+runs on), `message` (its guidance goes into the running session through
+the nudge's path, the detector resets, the session runs on) or
+`escalate`; an invalid answer or a failed call escalates. A message the
+worker cannot take (501, network) stops the session with the guidance as
+the next session's finding (`redirect`). The stuck rule: after a
+delivered message, the next detector trip with no file written since
+ends the session without a call as `retry_stronger` (the next rung; the
+same model at the top), with the finding `stuck after the supervisor's
+message: <kind>: <detail>`. At most
 `limits.supervisor_calls` (3) calls per session, each bounded by
 `limits.supervisor_timeout` (6 min); the next trip escalates
 without one. Nothing it answers changes a cap, a budget or the ladder. A

@@ -80,8 +80,7 @@ func TestParseDecision(t *testing.T) {
 		want     Decision
 	}{
 		{"continue", `{"action":"continue","reason":"tests are converging"}`, Decision{Action: ActionContinue, Reason: "tests are converging"}},
-		{"redirect", ` {"action":"redirect","guidance":"stop editing the script; read the test"} `, Decision{Action: ActionRedirect, Guidance: "stop editing the script; read the test"}},
-		{"retry", `{"action":"retry_stronger"}`, Decision{Action: ActionRetryStronger}},
+		{"message", ` {"action":"message","guidance":"stop editing the script; read the test"} `, Decision{Action: ActionMessage, Guidance: "stop editing the script; read the test"}},
 		{"escalate", `{"action":"escalate","reason":"the check can never pass"}`, Decision{Action: ActionEscalate, Reason: "the check can never pass"}},
 		{"fenced", "```json\n{\"action\":\"continue\"}\n```", Decision{Action: ActionContinue}},
 	} {
@@ -95,7 +94,9 @@ func TestParseDecision(t *testing.T) {
 		"unknown field":      `{"action":"continue","budget_eur":10}`,
 		"two objects":        `{"action":"continue"}{"action":"escalate"}`,
 		"trailing text":      `{"action":"continue"} because`,
-		"redirect no advice": `{"action":"redirect"}`,
+		"message no advice":  `{"action":"message"}`,
+		"redirect":           `{"action":"redirect","guidance":"read the test"}`,
+		"retry_stronger":     `{"action":"retry_stronger","guidance":"read the test"}`,
 		"escalate no reason": `{"action":"escalate"}`,
 		"empty":              ``,
 		"array":              `[{"action":"continue"}]`,
@@ -105,8 +106,8 @@ func TestParseDecision(t *testing.T) {
 			t.Fatalf("%s: %+v, want escalate with an invalid-answer reason", name, got)
 		}
 	}
-	long := parseDecision(`{"action":"redirect","guidance":"` + strings.Repeat("g", 5000) + `"}`)
-	if long.Action != ActionRedirect || len(long.Guidance) > maxDecisionText+len("…") {
+	long := parseDecision(`{"action":"message","guidance":"` + strings.Repeat("g", 5000) + `"}`)
+	if long.Action != ActionMessage || len(long.Guidance) > maxDecisionText+len("…") {
 		t.Fatalf("long guidance = %d bytes, want capped at %d", len(long.Guidance), maxDecisionText)
 	}
 }
@@ -211,10 +212,10 @@ func testInput() SupervisorInput {
 // gateway-factoryd token, the task and the purpose, the policy's alias
 // and answer plus headroom as the output limit, which the gateway clamps.
 func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
-	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"read the script first"}`}
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"read the script first"}`}
 	m := testSupervisorModel(f.srv(t).URL)
 	d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput())
-	if d != (Decision{Action: ActionRedirect, Guidance: "read the script first"}) {
+	if d != (Decision{Action: ActionMessage, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
 	if len(f.chats) != 1 || f.auth[0] != "Bearer gw-token" || f.tasks[0] != "t1" || f.purposes[0] != "supervisor" {
@@ -276,5 +277,26 @@ func TestSessionSupervisionCapsCallsPerSession(t *testing.T) {
 	d, called := s.onTrip(context.Background(), trip)
 	if called || calls != 3 || d.Action != ActionEscalate || !strings.Contains(d.Reason, "same_call") {
 		t.Fatalf("4th trip: %+v called=%v calls=%d, want escalate without a call", d, called, calls)
+	}
+}
+
+// Check-ins are not counted against supervisor_calls: with the calls used
+// up, a check-in is still asked and a detector trip after it escalates.
+func TestSessionSupervisionCheckInsNotCounted(t *testing.T) {
+	calls := 0
+	s := &sessionSupervision{max: 1, decide: func(context.Context, *Trip, int) Decision {
+		calls++
+		return Decision{Action: ActionContinue}
+	}}
+	checkIn := &Trip{Kind: TripCheckIn, Detail: "scheduled check-in, no detector tripped"}
+	s.onTrip(context.Background(), checkIn)
+	if _, called := s.onTrip(context.Background(), &Trip{Kind: TripSameCall}); !called {
+		t.Fatal("the detector trip after a check-in was not asked")
+	}
+	if _, called := s.onTrip(context.Background(), checkIn); !called || calls != 3 {
+		t.Fatalf("check-in with the calls used up: called=%v, calls=%d; want asked, 3 calls", called, calls)
+	}
+	if d, called := s.onTrip(context.Background(), &Trip{Kind: TripSameCall}); called || d.Action != ActionEscalate {
+		t.Fatalf("second detector trip: %+v called=%v, want escalate without a call", d, called)
 	}
 }

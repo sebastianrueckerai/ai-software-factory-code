@@ -18,15 +18,19 @@ import (
 )
 
 // The supervisor (architecture 6.6) is a model factoryd asks after a
-// detector trips. It picks one action. No action carries a cap, a budget
-// or a model name: retry_stronger means the workflow's next ladder rung.
+// detector trips or at a check-in. It picks continue, message or escalate.
+// redirect and retry_stronger are factoryd's own decisions, never the
+// model's: redirect stops the session when a message or nudge cannot be
+// delivered, retry_stronger (the workflow's next ladder rung) ends a
+// session stuck after a message.
 type SupervisorAction string
 
 const (
 	ActionContinue      SupervisorAction = "continue"
+	ActionMessage       SupervisorAction = "message"
+	ActionEscalate      SupervisorAction = "escalate"
 	ActionRedirect      SupervisorAction = "redirect"
 	ActionRetryStronger SupervisorAction = "retry_stronger"
-	ActionEscalate      SupervisorAction = "escalate"
 )
 
 type Decision struct {
@@ -40,7 +44,7 @@ type Decision struct {
 const maxDecisionText = 2000
 
 // parseDecision validates the model's answer: exactly one JSON object with
-// a known action, guidance for redirect, a reason for escalate, no other
+// a known action, guidance for message, a reason for escalate, no other
 // field. A markdown fence around it is tolerated. Anything else escalates.
 func parseDecision(content string) Decision {
 	invalid := func(why string) Decision {
@@ -52,10 +56,10 @@ func parseDecision(content string) Decision {
 	}
 	d.Guidance, d.Reason = textutil.Truncate(strings.TrimSpace(d.Guidance), maxDecisionText), textutil.Truncate(strings.TrimSpace(d.Reason), maxDecisionText)
 	switch d.Action {
-	case ActionContinue, ActionRetryStronger:
-	case ActionRedirect:
+	case ActionContinue:
+	case ActionMessage:
 		if d.Guidance == "" {
-			return invalid("redirect without guidance")
+			return invalid("message without guidance")
 		}
 	case ActionEscalate:
 		if d.Reason == "" {
@@ -224,7 +228,6 @@ type SupervisorInput struct {
 	Digest  ProgressDigest    `json:"digest"`
 	Record  string            `json:"record"` // the session record's last events, JSONL
 	Model   string            `json:"model"`
-	TopRung bool              `json:"top_rung"` // retry_stronger then acts as redirect
 	Calls   int               `json:"supervisor_call"`
 	MaxCall int               `json:"supervisor_calls_per_session"`
 }
@@ -232,13 +235,12 @@ type SupervisorInput struct {
 // maxRecordTail bounds the session record the supervisor reads.
 const maxRecordTail = 24 << 10
 
-const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. A cheap detector tripped: the session may be going in circles. Read the brief, the detector's finding, the progress digest (commands with outcomes over time, files with edit counts, the last error signatures, the diff against the base so far) and the tail of the session record, then choose exactly one action:
-- "continue": the agent makes real progress and the trip is a false alarm. The session runs on.
-- "redirect": the agent is stuck on a wrong approach. The session stops, its work in progress is kept, and a new session on the same model resumes with your guidance. Give concrete guidance: what to stop doing and what to do instead.
-- "retry_stronger": the approach is sound but the model is not capable enough. A new session on the next stronger model resumes from the work in progress. When top_rung is true there is no stronger model and this acts as redirect, so give guidance.
+const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. You are asked when a cheap detector tripped (the session may be going in circles) or at a scheduled check-in (detector "check_in": no detector tripped; judge whether the session is on track). Read the brief, the trip, the progress digest (commands with outcomes over time, files with edit counts, the last error signatures, the diff against the base so far) and the tail of the session record, then choose exactly one action:
+- "continue": the agent makes real progress; the trip is a false alarm or the check-in finds the session on track. The session runs on untouched.
+- "message": the agent is off track: circling, stuck on a wrong approach, or missing something the brief or the record shows. Your guidance goes into the running session as a message the agent reads next; it keeps its context and its work. Give concrete guidance: what to stop doing and what to do instead. If the agent writes no file after your message before a detector trips again, the session ends and a stronger model resumes from the work in progress.
 - "escalate": the task cannot be completed as specified (contradictory, impossible, needs a human decision or access the agent does not have). A human is asked. Give the reason.
-You cannot raise a time limit, a budget or a model beyond the next rung; only a human can.
-Answer with one JSON object and nothing else: {"action": "continue|redirect|retry_stronger|escalate", "guidance": "...", "reason": "..."}. guidance is required for redirect, reason for escalate; each under 1000 characters.`
+You cannot raise a time limit, a budget or a model; only a human can.
+Answer with one JSON object and nothing else: {"action": "continue|message|escalate", "guidance": "...", "reason": "..."}. guidance is required for message, reason for escalate; each under 1000 characters.`
 
 // SupervisorModel is factoryd's model client: every call it makes (the
 // session supervisor, the gate supervisor, the model review) goes to the
@@ -350,7 +352,8 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 }
 
 // sessionSupervision caps the supervisor calls of one session: the trip
-// after the last allowed call escalates without asking.
+// after the last allowed call escalates without asking. Check-ins are
+// asked always and not counted.
 type sessionSupervision struct {
 	max    int
 	calls  int
@@ -358,6 +361,9 @@ type sessionSupervision struct {
 }
 
 func (s *sessionSupervision) onTrip(ctx context.Context, trip *Trip) (Decision, bool) {
+	if trip.Kind == TripCheckIn {
+		return s.decide(ctx, trip, s.calls), true
+	}
 	if s.calls >= s.max {
 		return Decision{Action: ActionEscalate, Reason: fmt.Sprintf(
 			"%s tripped again after %d supervisor calls in this session: %s", trip.Kind, s.calls, trip.Detail)}, false

@@ -521,11 +521,8 @@ func testRunnerConfig() RunnerConfig {
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		ChecksPoll:           time.Millisecond,
-		// the test activity environment's deadline is 10 minutes out, so
-		// testPolicyYAML's agent time of 10 minutes puts the half-way point
-		// 3 minutes into each session
-		Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
-		Policy:     testPolicyVersion,
+		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Policy:               testPolicyVersion,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
 			return testPolicyVersion(), id == testPolicyVersion().ID, nil
 		},
@@ -999,14 +996,14 @@ func supervisedTask(id string) Task {
 }
 
 // The third identical failure trips same_failure; the supervisor (through
-// the gateway on the task's account) says retry_stronger; the worker is stopped, pushes
+// the gateway on the task's account) says escalate; the worker is stopped, pushes
 // its work in progress, and the decision lands in the session record, the
 // timeline and on the issue.
 func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
-	f := &fakeLiteLLM{content: `{"action":"retry_stronger","guidance":"the check needs a file the agent never created"}`}
+	f := &fakeLiteLLM{content: `{"action":"escalate","reason":"the check needs a file the agent never created"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
@@ -1017,12 +1014,11 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeRetryStronger || res.Commit != "c-wip" {
-		t.Fatalf("result = %+v, want retry_stronger with the work in progress", res)
+	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" || !strings.HasPrefix(res.Reason, "the check needs a file the agent never created") {
+		t.Fatalf("result = %+v, want escalate with the reason and the work in progress", res)
 	}
-	joined := strings.Join(res.Findings, "\n")
-	if !strings.Contains(joined, "supervisor guidance: the check needs a file") || !strings.Contains(joined, "c-wip") {
-		t.Fatalf("findings = %v, want the guidance and the pushed work", res.Findings)
+	if joined := strings.Join(res.Findings, "\n"); !strings.Contains(joined, "c-wip") {
+		t.Fatalf("findings = %v, want the pushed work", res.Findings)
 	}
 	if len(f.chats) != 1 || f.chats[0]["model"] != "supervisor" || f.tasks[0] != "t2" || f.purposes[0] != "supervisor" {
 		t.Fatalf("calls = %d, tasks %v, purposes %v; want one supervisor call through the gateway on t2", len(f.chats), f.tasks, f.purposes)
@@ -1037,7 +1033,7 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 		var ev harness.Event
 		json.Unmarshal([]byte(l), &ev)
 		kinds = append(kinds, string(ev.Kind))
-		if ev.Kind == harness.EventSupervisor && (ev.Detail["detector"] != "same_failure" || ev.Detail["decision"] != "retry_stronger" ||
+		if ev.Kind == harness.EventSupervisor && (ev.Detail["detector"] != "same_failure" || ev.Detail["decision"] != "escalate" ||
 			!strings.Contains(fmt.Sprint(ev.Detail["digest"]), "3 commands (3 failed)")) {
 			t.Fatalf("supervisor event = %v", ev.Detail)
 		}
@@ -1046,10 +1042,10 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 		t.Fatalf("record kinds = %v", kinds)
 	}
 	timeline := string(objGet(objects, "sessions/t2/timeline.jsonl"))
-	if !strings.Contains(timeline, `"step":"supervisor"`) || !strings.Contains(timeline, `"decision":"retry_stronger"`) {
+	if !strings.Contains(timeline, `"step":"supervisor"`) || !strings.Contains(timeline, `"decision":"escalate"`) {
 		t.Fatalf("timeline = %s", timeline)
 	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**retry_stronger**") || !strings.Contains(hub.comments[0], "same_failure") {
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**escalate**") || !strings.Contains(hub.comments[0], "same_failure") {
 		t.Fatalf("comments = %v", hub.comments)
 	}
 	if snap := store.sessions[res.SessionID]; len(snap.Findings) == 0 {
@@ -1156,31 +1152,6 @@ func TestRunSessionResultCarriesFindings(t *testing.T) {
 	}
 }
 
-// The half-way check-in is once per task: it fires in the session that
-// crosses the point, is recorded on the task, and no later session (a new
-// attempt, a retried activity, a restarted workflow) fires it again.
-func TestRunSessionHalfWayIsOncePerTask(t *testing.T) {
-	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	// the test activity deadline is 10 minutes out: with a 20 minute cap the
-	// session starts past half way
-	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 20 * time.Minute })
-	f := &fakeLiteLLM{content: `{"action":"continue"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
-
-	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(false, "x")
-	for i := 1; i <= 2; i++ {
-		kube := newFakeKube() // runSession scripts pods by creation index
-		kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
-		runner.kube = kube
-		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: i, Model: "m"}, nil, logs); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if len(f.chats) != 1 || !store.tasks["t2"].HalfWayDone {
-		t.Fatalf("%d supervisor calls, half_way_done = %v; want one call in the first session, recorded on the task", len(f.chats), store.tasks["t2"].HalfWayDone)
-	}
-}
-
 // Every line of a log that arrives in pieces is recorded intact.
 func TestRunSessionRecordsEveryLineOfATricklingLog(t *testing.T) {
 	objects := &fakeObjectStore{}
@@ -1202,26 +1173,6 @@ func TestRunSessionRecordsEveryLineOfATricklingLog(t *testing.T) {
 		if err := json.Unmarshal([]byte(l), &ev); err != nil || ev.Detail["n"] != float64(i) {
 			t.Fatalf("event %d = %.80s (%v)", i, l, err)
 		}
-	}
-}
-
-func TestRunSessionRedirectCarriesGuidance(t *testing.T) {
-	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	runner.cfg.Supervisor.RepetitionEvents = 2
-	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"write the file instead of reading"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
-
-	logs := envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "args": map[string]any{"filePath": "a"}}}) + "\n" +
-		envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(), Detail: map[string]any{"tool": "read", "args": map[string]any{"filePath": "b"}}}) + "\n"
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Outcome != OutcomeRedirect || res.Trip != string(TripRepetition) || !slices.Contains(res.Findings, "supervisor guidance: write the file instead of reading") {
-		t.Fatalf("result = %+v", res)
-	}
-	if alerts := store.alertRows(); len(alerts) != 1 || alerts[0].Verdict != VerdictReal || alerts[0].Detail["action"] != "redirect" {
-		t.Fatalf("alerts = %+v, want the trip judged real by the redirect", alerts)
 	}
 }
 
@@ -1606,7 +1557,7 @@ func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
-	f := &fakeLiteLLM{content: `{"action":"redirect","guidance":"stop"}`}
+	f := &fakeLiteLLM{content: `{"action":"escalate","reason":"stop"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
 	runner.stopWait = 10 * time.Second
 
@@ -1616,9 +1567,9 @@ func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeRedirect || res.Commit != "c-wip" ||
+	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" ||
 		!slices.Contains(res.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") {
-		t.Fatalf("result = %+v, want the redirect with the pushed work in progress", res)
+		t.Fatalf("result = %+v, want the escalation with the pushed work in progress", res)
 	}
 	record := strings.TrimSpace(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")))
 	if n := strings.Count(record, `"kind":"command"`); n != 3 || strings.Count(record, `"kind":"pushed"`) != 1 {

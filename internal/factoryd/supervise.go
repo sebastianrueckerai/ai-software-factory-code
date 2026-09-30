@@ -96,15 +96,17 @@ func (c SupervisorConfig) validate() error {
 type Supervisor struct {
 	cfg      SupervisorConfig
 	deadline time.Time
-	halfAt   time.Time
+	anchor   time.Time // the task's start: check-ins count from it
+	checkAt  time.Time // the next check-in; zero = none
 	lastSeen time.Time
 
 	sinceChange int
 	traces      *traceDetectors
-	halfWayDone bool    // fires once per task: the workflow carries it across sessions
-	spent       float64 // the task's spend as a fraction of its budget
 	findings    []string
 	tripped     *Trip
+	// messaged: a supervisor's message was delivered and no file written
+	// since; the next detector trip ends the session (the stuck rule)
+	messaged bool
 
 	// no_write's anchor: the last write, or its last continue
 	noWriteFrom time.Time
@@ -112,14 +114,32 @@ type Supervisor struct {
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
 // wall-clock cap (the agent time earlier sessions used lies before now),
-// so resumed sessions share the first session's cap and its half-way point.
+// so resumed sessions share the first session's cap and its check-in times.
 func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Supervisor, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	cfg = cfg.withDefaults()
-	return &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), halfAt: taskStarted.Add(cfg.WallClockCap / 2),
-		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now}, nil
+	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
+		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now}
+	s.scheduleCheckIn(now)
+	return s, nil
+}
+
+// scheduleCheckIn sets the next check-in to the first interval after now.
+func (s *Supervisor) scheduleCheckIn(now time.Time) {
+	if s.cfg.CheckIn <= 0 {
+		return
+	}
+	s.checkAt = s.anchor.Add((now.Sub(s.anchor)/s.cfg.CheckIn + 1) * s.cfg.CheckIn)
+}
+
+func (s *Supervisor) checkIn(now time.Time) *Trip {
+	if s.checkAt.IsZero() || now.Before(s.checkAt) {
+		return nil
+	}
+	s.scheduleCheckIn(now)
+	return s.trip(&Trip{Kind: TripCheckIn, Detail: "scheduled check-in, no detector tripped"})
 }
 
 // Event observes one harness event. A nil return means the session may run on.
@@ -129,16 +149,18 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	s.lastSeen = at
 	s.noteFinding(ev)
-	switch ev.Kind {
-	case harness.EventToolCall, harness.EventCommand:
+	switch {
+	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
 		s.sinceChange++
 		if ev.Kind == harness.EventCommand {
 			// the command's running time is the machine's, not the agent's
 			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
 		}
-	case harness.EventFileChange:
+	case ev.Kind == harness.EventFileChange, s.traces.diffMoved(ev):
+		// a file written through a shell shows only as a changed diff
 		s.sinceChange = 0
 		s.noWriteFrom = at
+		s.messaged = false
 	}
 	// every detector sees every event, whichever trips
 	traced := s.traces.observe(ev)
@@ -155,7 +177,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if agent && !s.cfg.ReadOnly && at.Sub(s.noWriteFrom) >= s.cfg.NoWriteAfter {
 		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("agent events for %s without a file write or edit", at.Sub(s.noWriteFrom).Round(time.Second))})
 	}
-	return s.halfWay(at)
+	return s.checkIn(at)
 }
 
 // commandDuration is how long a command event's command ran (duration_ms).
@@ -165,7 +187,7 @@ func commandDuration(ev harness.Event) time.Duration {
 }
 
 // Tick is the heartbeat check between (or instead of) events: it catches a
-// harness that went silent, the half-way point and the wall-clock cap.
+// harness that went silent, the check-in and the wall-clock cap.
 func (s *Supervisor) Tick(now time.Time) *Trip {
 	if s.tripped != nil {
 		return s.tripped
@@ -173,7 +195,7 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if !now.Before(s.deadline) {
 		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}
-	if trip := s.halfWay(now); trip != nil {
+	if trip := s.checkIn(now); trip != nil {
 		return trip
 	}
 	if silent := now.Sub(s.lastSeen); silent >= s.cfg.NoProgressAfter {
@@ -203,30 +225,6 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason()}})
 }
 
-// SetSpend tells the supervisor the task's spend so far.
-func (s *Supervisor) SetSpend(spentEUR, budgetEUR float64) {
-	if budgetEUR > 0 {
-		s.spent = spentEUR / budgetEUR
-	}
-}
-
-func (s *Supervisor) halfWay(now time.Time) *Trip {
-	if s.halfWayDone {
-		return nil
-	}
-	var detail string
-	switch {
-	case !now.Before(s.halfAt):
-		detail = fmt.Sprintf("the task passed half its wall-clock cap of %s", s.cfg.WallClockCap)
-	case s.spent >= 0.5:
-		detail = fmt.Sprintf("the task spent %.0f%% of its budget", s.spent*100)
-	default:
-		return nil
-	}
-	s.halfWayDone = true
-	return s.trip(&Trip{Kind: TripHalfWay, Detail: detail})
-}
-
 // TakeNudge is the nudge the last event earned, once.
 func (s *Supervisor) TakeNudge() *Nudge {
 	n := s.traces.nudge
@@ -249,9 +247,6 @@ func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
 	return s.trip(t)
 }
 
-// HalfWayDone reports whether the half-way check-in has fired for the task.
-func (s *Supervisor) HalfWayDone() bool { return s.halfWayDone }
-
 // Resume clears the trip after the supervisor answered continue and resets
 // the detector that tripped; the time the supervisor took is not silence.
 func (s *Supervisor) Resume(now time.Time) {
@@ -272,9 +267,21 @@ func (s *Supervisor) Findings() []string {
 	return append([]string(nil), s.findings...)
 }
 
+// Messaged resumes the session after the supervisor's message reached it,
+// as Resume does, and arms the stuck rule until the next write.
+func (s *Supervisor) Messaged(now time.Time) {
+	s.Resume(now)
+	s.messaged = true
+}
+
 func (s *Supervisor) trip(t *Trip) *Trip {
 	s.traces.nudge = nil // the trip decides; a nudge earned with it is not sent
 	t.Findings = append([]string(nil), s.findings...)
+	if s.messaged && t.decided == nil && t.Kind != TripCheckIn && t.Kind != TripWallClock {
+		stuck := fmt.Sprintf("stuck after the supervisor's message: %s: %s", t.Kind, t.Detail)
+		t.Findings = append(t.Findings, stuck)
+		t.decided = &Decision{Action: ActionRetryStronger, Reason: stuck}
+	}
 	s.tripped = t
 	return t
 }
@@ -315,7 +322,8 @@ const (
 	TripSameCall    TripKind = "same_call"
 	TripFlipFlop    TripKind = "flip_flop"
 	TripChurn       TripKind = "churn"
-	TripHalfWay     TripKind = "half_way"
+	// TripCheckIn: no detector, the scheduled check-in (SupervisorConfig.CheckIn)
+	TripCheckIn TripKind = "check_in"
 	// progress detectors (ruling 141), their waits in the policy
 	TripNoWrite TripKind = "no_write"
 )
@@ -464,17 +472,24 @@ func (d *traceDetectors) detect(ev harness.Event) *Trip {
 			if size > d.maxDiff {
 				d.maxDiff, d.churn = size, 0
 			}
-			// edits made through a shell show only here; the first
-			// checkpoint is the baseline
-			if key := fmt.Sprint(ev.Detail["diff"]); key != d.lastDiff {
-				if d.lastDiff != "" {
-					d.changed()
-				}
-				d.lastDiff = key
+			if d.diffMoved(ev) {
+				d.changed()
 			}
+			d.lastDiff = fmt.Sprint(ev.Detail["diff"])
 		}
 	}
 	return nil
+}
+
+// diffMoved: ev is a checkpoint whose diff differs from the last one's,
+// the trace of edits made through a shell. The first checkpoint is the
+// baseline.
+func (d *traceDetectors) diffMoved(ev harness.Event) bool {
+	if ev.Kind != harness.EventCheckpoint {
+		return false
+	}
+	_, ok := diffSize(ev)
+	return ok && d.lastDiff != "" && fmt.Sprint(ev.Detail["diff"]) != d.lastDiff
 }
 
 // masksExitStatus: the command's exit code need not be its test's.
