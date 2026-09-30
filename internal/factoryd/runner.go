@@ -209,7 +209,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.Policy == nil || cfg.PolicyVersion == nil {
 		return nil, fmt.Errorf("runner: the policy in force and the version reader are required")
 	}
-	if err := (&Runner{cfg: cfg}).supervisorConfig(cfg.Policy().Document).validate(); err != nil {
+	d := cfg.Policy().Document
+	if err := (&Runner{cfg: cfg}).supervisorConfig(d, d.Limits.AgentTime, d.Limits.CheckIn).validate(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
 	if cfg.Gates == nil || cfg.LastFailure == nil || cfg.Workflows == nil {
@@ -302,6 +303,10 @@ type sessionSpec struct {
 	cache string
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
+	// agentTime and checkIn are the task's resolved values (policy.Time):
+	// supervisorConfig's WallClockCap and CheckIn, and the session's
+	// deadline; a report session's are its policy's limits, unresolved.
+	agentTime, checkIn time.Duration
 	// report is a report session's guide (ruling 185); "" for a coding
 	// session
 	report string
@@ -372,7 +377,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	supCfg := r.supervisorConfig(s.policy)
+	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
 	if err != nil {
@@ -640,12 +645,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 }
 
 // supervisorConfig is the session supervisor's configuration with the
-// agent time, the call count and the progress detectors of d, the task's
-// pinned policy.
-func (r *Runner) supervisorConfig(d policy.Document) SupervisorConfig {
+// agent time and check-in (the task's resolved policy.Time), the call
+// count and the progress detectors of d, the task's pinned policy.
+func (r *Runner) supervisorConfig(d policy.Document, agentTime, checkIn time.Duration) SupervisorConfig {
 	c := r.cfg.Supervisor
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
-	c.WallClockCap, c.MaxCalls = d.Limits.AgentTime, d.Limits.SupervisorCalls
+	c.WallClockCap, c.MaxCalls = agentTime, d.Limits.SupervisorCalls
+	c.CheckIn = checkIn
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
 	c.SameCall = d.Limits.SameCallAfter()
 	return c

@@ -1052,14 +1052,14 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
-				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape}},
+				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute}},
 		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute}},
 		"presort report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort,
 			RequiredCapabilities: []string{policy.ClassAnalyzer}},
 			TaskConfig{Process: "maintenance", Class: policy.ClassAnalyzer, Session: policy.SessionReport,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _, _ := newActivityRunner(t, tc.task, &prForgejo{})
@@ -1086,6 +1086,44 @@ func TestTaskConfigFromProcess(t *testing.T) {
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil || !strings.Contains(err.Error(), "task t1: a report task with no class") {
 		t.Fatalf("error = %v, want the report task with no class refused", err)
+	}
+}
+
+// TaskConfig resolves the task's agent time and check-in from its class,
+// process and project (policy.Document.TimeOf), the most specific level
+// that sets a field winning, each field on its own.
+func TestTaskConfigCarriesTime(t *testing.T) {
+	classes := map[string]policy.Class{"coder": {Session: policy.SessionCode,
+		Time: &policy.Time{AgentTime: 2 * time.Hour, CheckIn: ptr(45 * time.Minute)}}}
+	process := policy.Process{Lanes: []policy.Lane{{Name: policy.LaneReady, Class: "coder"}},
+		Time: &policy.Time{AgentTime: 3 * time.Hour}}
+	project := policy.ProjectConfig{Repository: "org/repo", Process: "p", Time: &policy.Time{AgentTime: 90 * time.Minute}}
+	v := policy.Version{ID: 1, Tree: policy.Tree{
+		Document:  policy.Document{Limits: policy.Limits{AgentTime: 20 * time.Minute}, Classes: classes},
+		Processes: map[string]policy.Process{"p": process}, Projects: map[string]policy.ProjectConfig{"proj": project}}}
+
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Lane: "ready"}, &prForgejo{})
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, true, nil }
+	val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(1))
+	got := getInto[TaskConfig](t, val, err)
+	if got.AgentTime != 90*time.Minute || got.CheckIn != 45*time.Minute {
+		t.Fatalf("AgentTime, CheckIn = %s, %s; want 1h30m0s, 45m0s (the project's agent time over the process's, the class's check-in since neither process nor project set one)",
+			got.AgentTime, got.CheckIn)
+	}
+}
+
+// A session's deadline is now plus its resolved agent time (SessionInput's,
+// over the pinned policy's limits), never later than the activity's own
+// deadline less sessionGrace.
+func TestSessionDeadlineFromInput(t *testing.T) {
+	agentTime := cmp.Or(2*time.Hour, 20*time.Minute) // in.AgentTime, s.policy.Limits.AgentTime
+	before := time.Now()
+	got := sessionDeadline(before.Add(365*24*time.Hour), agentTime)
+	if want := before.Add(2 * time.Hour); got.Before(want) || got.After(want.Add(time.Second)) {
+		t.Fatalf("deadline = %s, want ~%s (now plus the input's 2h agent time, not the policy limits' 20m)", got, want)
+	}
+	if got := sessionDeadline(before.Add(time.Minute), agentTime); !got.Equal(before.Add(time.Minute - sessionGrace)) {
+		t.Fatalf("deadline = %s, want %s (the activity's own deadline, earlier than now plus agent time)", got, before.Add(time.Minute-sessionGrace))
 	}
 }
 

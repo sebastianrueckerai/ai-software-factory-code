@@ -64,6 +64,9 @@ type SupervisorConfig struct {
 	// repetition; the next run trips same_call (limits, 0 = the policy's
 	// defaults).
 	NudgeAfter, Nudges int
+	// CheckIn is the task's resolved check_in (policy.Time); 0 = no
+	// check-in.
+	CheckIn time.Duration
 }
 
 func (c SupervisorConfig) validate() error {

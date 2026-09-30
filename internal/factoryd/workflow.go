@@ -149,6 +149,12 @@ type TaskConfig struct {
 	Queue        string
 	Dependencies *policy.Dependencies
 	PlanShape    *policy.PlanShape
+	// AgentTime and CheckIn are policy.Document.TimeOf's answer for the
+	// task's class, process and project; zero for a run from before this
+	// resolution existed, which keeps WorkflowConfig.WallClockCap and the
+	// session's own policy limits.
+	AgentTime time.Duration
+	CheckIn   time.Duration
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -186,6 +192,10 @@ type SessionInput struct {
 	// its limits from it; 0 (a workflow from before the pin) reads the
 	// version in force.
 	PolicyVersion int64
+	// AgentTime and CheckIn are TaskConfig's, the task's resolved values;
+	// zero falls back to the pinned policy's limits.
+	AgentTime time.Duration
+	CheckIn   time.Duration
 }
 
 type SessionResult struct {
@@ -345,6 +355,9 @@ func (t *taskRun) program() (string, error) {
 		return t.finish("failed", "task config: "+errMessage(err))
 	}
 	t.cfg.Task, t.cfg.Stages = tc, tc.Stages
+	if tc.AgentTime != 0 {
+		t.cfg.WallClockCap = tc.AgentTime
+	}
 	switch tc.Session {
 	case policy.SessionCode, policy.SessionReport:
 		return t.lifecycle()
@@ -759,7 +772,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
 			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
-			PolicyVersion: t.cfg.PolicyVersion,
+			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt

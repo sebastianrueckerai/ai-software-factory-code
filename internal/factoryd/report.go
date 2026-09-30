@@ -118,6 +118,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return "", "", false, err
 	}
+	s.agentTime, s.checkIn = s.policy.Limits.AgentTime, s.policy.Limits.CheckIn
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -137,7 +138,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.cache, err = r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
 		return "", "", false, err
 	}
-	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))
+	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
 	began := rfc3339(time.Now())
 	r.record(ctx, t.ID, "session_start", map[string]any{"session": s.id, "model": s.model, "mode": "report", "start_ref": s.startRef, "findings": s.findings})
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))

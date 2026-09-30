@@ -696,8 +696,9 @@ func TestNoWriteRejectsANegativeWait(t *testing.T) {
 // A session's progress detectors, agent time and calls are its policy's.
 func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
 	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24}}}
-	c := r.supervisorConfig(policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
-		Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}})
+	d := policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
+		Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}}
+	c := r.supervisorConfig(d, d.Limits.AgentTime, d.Limits.CheckIn)
 	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute || c.MaxCalls != 2 {
 		t.Fatalf("config = %+v, want no_write 1m, agent time 45m and 2 calls from the policy, the rest as configured", c)
 	}
@@ -827,10 +828,10 @@ func TestNudgeLimitsFromThePinnedPolicy(t *testing.T) {
 	var d policy.Document
 	d.Limits.NudgeAfter, d.Limits.Nudges = 5, 2
 	r := &Runner{}
-	if c := r.supervisorConfig(d); c.NudgeAfter != 5 || c.Nudges != 2 {
+	if c := r.supervisorConfig(d, d.Limits.AgentTime, d.Limits.CheckIn); c.NudgeAfter != 5 || c.Nudges != 2 {
 		t.Fatalf("config = %d after, %d nudges; want 5, 2", c.NudgeAfter, c.Nudges)
 	}
-	if c := r.supervisorConfig(policy.Document{}); c.NudgeAfter != 3 || c.Nudges != 1 {
+	if c := r.supervisorConfig(policy.Document{}, 0, 0); c.NudgeAfter != 3 || c.Nudges != 1 {
 		t.Fatalf("defaults = %d after, %d nudges; want 3, 1", c.NudgeAfter, c.Nudges)
 	}
 }

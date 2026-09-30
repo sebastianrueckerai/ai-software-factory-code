@@ -240,7 +240,7 @@ func TestLimitsJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2,"same_call":5}`; string(b) != want {
+	if want := `{"sessions":3,"agent_time":"20m0s","check_in":"0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2,"same_call":5}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Limits

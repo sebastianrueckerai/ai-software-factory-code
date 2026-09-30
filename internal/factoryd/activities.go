@@ -270,6 +270,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, err
 	}
+	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	if s.spec, s.cardRole, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, err
 	}
@@ -318,7 +319,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.cache, err = r.setupNamespace(ctx, t, base, push); err != nil {
 		return SessionResult{}, err
 	}
-	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-sessionGrace), time.Now().Add(s.policy.Limits.AgentTime))
+	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
 	startedAt := time.Now()
 	began := rfc3339(startedAt)
 	r.record(ctx, t.ID, "session_start", map[string]any{
@@ -574,6 +575,14 @@ func earliest(a, b time.Time) time.Time {
 	return b
 }
 
+// sessionDeadline is a session's overall deadline: the earlier of
+// activityDeadline (with sessionGrace to record the outcome after) and now
+// plus agentTime, the task's resolved agent time (SessionInput.AgentTime,
+// or the pinned policy's limits when the task carries none).
+func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.Time {
+	return earliest(activityDeadline.Add(-sessionGrace), time.Now().Add(agentTime))
+}
+
 // OpenPullRequest opens the task's pull request from its branch on the
 // bot's fork into main, as the bot, or reuses the one already open for the
 // branch (the idempotency key: a retried or repeated call never opens a
@@ -666,8 +675,8 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		return TaskConfig{}, err
 	}
 	name := t.Process
+	_, project, _ := v.ProjectOf(t.Repository)
 	if name == "" {
-		_, project, _ := v.ProjectOf(t.Repository)
 		name = project.Process
 	}
 	p, ok := v.Processes[name]
@@ -691,6 +700,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = lane.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
+	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
 	return tc, nil
 }
 

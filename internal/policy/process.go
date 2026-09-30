@@ -24,6 +24,10 @@ type Process struct {
 	Stages []Stage `yaml:"stages" json:"stages"`
 	// Merge is how the project's pull requests merge.
 	Merge Merge `yaml:"merge" json:"merge"`
+	// Time overrides limits.agent_time and limits.check_in (and the
+	// class's, if set) for tasks of this process; a project's Time wins
+	// over it.
+	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
 }
 
 // Lane is one lane of a process.
@@ -269,6 +273,11 @@ func (p Process) Validate() error {
 	}
 	if !slices.Contains(Queues, p.Merge.Queue) {
 		bad("merge", "queue %q, want one of %v", p.Merge.Queue, Queues)
+	}
+	if p.Time != nil {
+		if err := p.Time.validate(); err != nil {
+			bad("time", "%v", err)
+		}
 	}
 	return errors.Join(append(errs, validateStages(p.Stages))...)
 }

@@ -64,8 +64,14 @@ type Limits struct {
 	// more.
 	Sessions int `yaml:"sessions" json:"sessions"`
 	// AgentTime is the agent's working time across all sessions of a task,
-	// such as 20m; waiting on checks or on a reviewer does not count.
+	// such as 20m; waiting on checks or on a reviewer does not count. A
+	// class, process or project may set its own (Time), the most specific
+	// wins.
 	AgentTime time.Duration `yaml:"agent_time" json:"agent_time"`
+	// CheckIn is how long a session runs before it must check in with the
+	// supervisor, at least 10m, or 0 for no check-in. Absent: 0. A class,
+	// process or project may set its own (Time), the most specific wins.
+	CheckIn time.Duration `yaml:"check_in,omitempty" json:"check_in,omitempty"`
 	// SupervisorCalls is how many supervisor model calls one session may
 	// make; the next trip escalates without one.
 	SupervisorCalls int `yaml:"supervisor_calls" json:"supervisor_calls"`
@@ -131,6 +137,7 @@ func (l Limits) StepCap() int {
 type limitsJSON struct {
 	Sessions          int    `json:"sessions"`
 	AgentTime         string `json:"agent_time"`
+	CheckIn           string `json:"check_in"`
 	SupervisorCalls   int    `json:"supervisor_calls"`
 	SupervisorTimeout string `json:"supervisor_timeout"`
 	StrongerAfter     int    `json:"stronger_after"`
@@ -141,7 +148,7 @@ type limitsJSON struct {
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -154,7 +161,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
-	}{{j.AgentTime, &out.AgentTime}, {j.SupervisorTimeout, &out.SupervisorTimeout}} {
+	}{{j.AgentTime, &out.AgentTime}, {j.CheckIn, &out.CheckIn}, {j.SupervisorTimeout, &out.SupervisorTimeout}} {
 		if d.s == "" {
 			continue
 		}
@@ -171,12 +178,22 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 // MaxSupervisorTimeout is the longest supervisor_timeout a policy may set.
 const MaxSupervisorTimeout = 15 * time.Minute
 
+// MaxAgentTime is the longest agent_time a policy, class, process or
+// project may set.
+const MaxAgentTime = 72 * time.Hour
+
+// MinCheckIn is the shortest check_in a policy, class, process or project
+// may set, besides 0 for no check-in.
+const MinCheckIn = 10 * time.Minute
+
 func (l Limits) validate() error {
 	switch {
 	case l.Sessions <= 0:
 		return fmt.Errorf("policy: limits.sessions must be positive, is %d", l.Sessions)
-	case l.AgentTime < time.Minute:
-		return fmt.Errorf("policy: limits.agent_time must be at least 1m, is %s", l.AgentTime)
+	case l.AgentTime < time.Minute || l.AgentTime > MaxAgentTime:
+		return fmt.Errorf("policy: limits.agent_time must lie between 1m and %s, is %s", MaxAgentTime, l.AgentTime)
+	case l.CheckIn != 0 && (l.CheckIn < MinCheckIn || l.CheckIn > l.AgentTime):
+		return fmt.Errorf("policy: limits.check_in must be 0 or lie between %s and agent_time (%s), is %s", MinCheckIn, l.AgentTime, l.CheckIn)
 	case l.SupervisorCalls <= 0:
 		return fmt.Errorf("policy: limits.supervisor_calls must be positive, is %d", l.SupervisorCalls)
 	case l.SupervisorTimeout < 30*time.Second || l.SupervisorTimeout > MaxSupervisorTimeout:
@@ -196,6 +213,96 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())
 	}
 	return nil
+}
+
+// Time overrides limits.agent_time and limits.check_in for one class
+// (policy.yaml), process (processes/<name>.yaml, key time) or project
+// (projects/<name>.yaml, key time). Either field may be left unset to
+// defer to the next less specific level.
+type Time struct {
+	// AgentTime overrides limits.agent_time when set (non-zero).
+	AgentTime time.Duration `yaml:"agent_time,omitempty" json:"agent_time,omitempty"`
+	// CheckIn overrides limits.check_in when set; a set 0 means no
+	// check-in, distinct from leaving it unset.
+	CheckIn *time.Duration `yaml:"check_in,omitempty" json:"check_in,omitempty"`
+}
+
+func (t Time) validate() error {
+	if t.AgentTime != 0 && (t.AgentTime < time.Minute || t.AgentTime > MaxAgentTime) {
+		return fmt.Errorf("time: agent_time must lie between 1m and %s, is %s", MaxAgentTime, t.AgentTime)
+	}
+	if t.CheckIn != nil {
+		c := *t.CheckIn
+		switch {
+		case c == 0:
+		case c < MinCheckIn:
+			return fmt.Errorf("time: check_in must be 0 or at least %s, is %s", MinCheckIn, c)
+		case t.AgentTime != 0 && c > t.AgentTime:
+			return fmt.Errorf("time: check_in %s exceeds agent_time %s", c, t.AgentTime)
+		}
+	}
+	return nil
+}
+
+// timeJSON is Time with its durations as strings, as in the YAML.
+type timeJSON struct {
+	AgentTime string  `json:"agent_time,omitempty"`
+	CheckIn   *string `json:"check_in,omitempty"`
+}
+
+func (t Time) MarshalJSON() ([]byte, error) {
+	j := timeJSON{}
+	if t.AgentTime != 0 {
+		j.AgentTime = t.AgentTime.String()
+	}
+	if t.CheckIn != nil {
+		s := t.CheckIn.String()
+		j.CheckIn = &s
+	}
+	return json.Marshal(j)
+}
+
+func (t *Time) UnmarshalJSON(b []byte) error {
+	var j timeJSON
+	if err := json.Unmarshal(b, &j); err != nil {
+		return err
+	}
+	var out Time
+	if j.AgentTime != "" {
+		v, err := time.ParseDuration(j.AgentTime)
+		if err != nil {
+			return fmt.Errorf("time: %w", err)
+		}
+		out.AgentTime = v
+	}
+	if j.CheckIn != nil {
+		v, err := time.ParseDuration(*j.CheckIn)
+		if err != nil {
+			return fmt.Errorf("time: %w", err)
+		}
+		out.CheckIn = &v
+	}
+	*t = out
+	return nil
+}
+
+// TimeOf resolves agent_time and check_in for a task of the given class,
+// process and project: limits, then the class, then the process, then the
+// project, most specific wins, each field on its own.
+func (d Document) TimeOf(class string, proc Process, p ProjectConfig) (agentTime, checkIn time.Duration) {
+	agentTime, checkIn = d.Limits.AgentTime, d.Limits.CheckIn
+	for _, t := range []*Time{d.Classes[class].Time, proc.Time, p.Time} {
+		if t == nil {
+			continue
+		}
+		if t.AgentTime != 0 {
+			agentTime = t.AgentTime
+		}
+		if t.CheckIn != nil {
+			checkIn = *t.CheckIn
+		}
+	}
+	return agentTime, checkIn
 }
 
 // DetectorNoWrite is the progress detector (rulings 141, 161): agent
@@ -345,6 +452,9 @@ type Class struct {
 	// AuditModel is the alias factoryd's security audit calls on the
 	// task's account (ruling 188).
 	AuditModel string `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
+	// Time overrides limits.agent_time and limits.check_in for tasks of
+	// this class; a process or project's Time wins over it.
+	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
 }
 
 // The purposes factoryd calls a model for on a task's account.
@@ -524,6 +634,11 @@ func (d Document) Validate() error {
 		}
 		if slices.Contains(c.Models, "") {
 			return fmt.Errorf("policy: class %s lists an empty model", name)
+		}
+		if c.Time != nil {
+			if err := c.Time.validate(); err != nil {
+				return fmt.Errorf("policy: class %s: %w", name, err)
+			}
 		}
 		for tool, tc := range c.Tools {
 			if slices.Contains(FreeTools, tool) {

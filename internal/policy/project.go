@@ -212,6 +212,11 @@ type ProjectConfig struct {
 	// Tokens name the seeded secrets factoryd reaches a seed project's
 	// repository with; a factory project's are registration's own.
 	Tokens *SeedTokens `yaml:"tokens,omitempty" json:"tokens,omitempty"`
+	// Time overrides limits.agent_time and limits.check_in (and the
+	// class's or process's, if set) for the project's tasks: most
+	// specific wins, a project's own file over the process, the process
+	// over the class.
+	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
@@ -367,6 +372,11 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.Standing != nil {
 		if err := p.Standing.Validate(); err != nil {
+			bad("%v", err)
+		}
+	}
+	if p.Time != nil {
+		if err := p.Time.validate(); err != nil {
 			bad("%v", err)
 		}
 	}

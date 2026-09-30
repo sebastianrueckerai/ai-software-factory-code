@@ -698,3 +698,70 @@ func TestRequestInfoIsAFreeTool(t *testing.T) {
 		t.Fatal("request_info: want allowed for coder only")
 	}
 }
+
+func ptr[T any](v T) *T { return &v }
+
+// TimeOf resolves agent_time and check_in field by field, the most
+// specific level that sets a field winning: project over process over
+// class over limits.
+func TestTimeMostSpecificWins(t *testing.T) {
+	d := Document{Limits: Limits{AgentTime: 20 * time.Minute}, Classes: map[string]Class{
+		"coder": {Time: &Time{AgentTime: 2 * time.Hour, CheckIn: ptr(45 * time.Minute)}},
+	}}
+	process := Process{Time: &Time{AgentTime: 3 * time.Hour}}
+	project := ProjectConfig{Time: &Time{AgentTime: 90 * time.Minute, CheckIn: ptr(30 * time.Minute)}}
+
+	if agentTime, checkIn := d.TimeOf("coder", process, project); agentTime != 90*time.Minute || checkIn != 30*time.Minute {
+		t.Errorf("class+process+project: TimeOf = %s, %s, want 90m, 30m", agentTime, checkIn)
+	}
+	if agentTime, checkIn := d.TimeOf("coder", process, ProjectConfig{}); agentTime != 3*time.Hour || checkIn != 45*time.Minute {
+		t.Errorf("without project: TimeOf = %s, %s, want 3h, 45m", agentTime, checkIn)
+	}
+	if agentTime, checkIn := d.TimeOf("coder", Process{}, ProjectConfig{}); agentTime != 2*time.Hour || checkIn != 45*time.Minute {
+		t.Errorf("without process and project: TimeOf = %s, %s, want 2h, 45m", agentTime, checkIn)
+	}
+	if agentTime, checkIn := d.TimeOf("researcher", Process{}, ProjectConfig{}); agentTime != 20*time.Minute || checkIn != 0 {
+		t.Errorf("class without Time: TimeOf = %s, %s, want the limits, 20m, 0", agentTime, checkIn)
+	}
+}
+
+// agent_time lies between 1m and 72h, check_in is 0 (no check-in) or
+// between 10m and agent_time (when both are set).
+func TestTimeValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		time Time
+		ok   bool
+	}{
+		"unset":                     {Time{}, true},
+		"agent_time 1m":             {Time{AgentTime: time.Minute}, true},
+		"agent_time 72h":            {Time{AgentTime: 72 * time.Hour}, true},
+		"agent_time 72h1m refused":  {Time{AgentTime: 72*time.Hour + time.Minute}, false},
+		"agent_time under 1m":       {Time{AgentTime: 30 * time.Second}, false},
+		"check_in 0 accepted":       {Time{CheckIn: ptr(time.Duration(0))}, true},
+		"check_in 5m refused":       {Time{CheckIn: ptr(5 * time.Minute)}, false},
+		"check_in 10m":              {Time{CheckIn: ptr(10 * time.Minute)}, true},
+		"check_in above agent_time": {Time{AgentTime: 10 * time.Minute, CheckIn: ptr(20 * time.Minute)}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := tc.time.validate(); tc.ok != (err == nil) {
+				t.Fatalf("validate() = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+	base := Limits{Sessions: 1, AgentTime: 20 * time.Minute, SupervisorCalls: 1, SupervisorTimeout: time.Minute}
+	for name, tc := range map[string]struct {
+		limits Limits
+		ok     bool
+	}{
+		"valid":            {base, true},
+		"agent_time 72h1m": {func() Limits { l := base; l.AgentTime = 72*time.Hour + time.Minute; return l }(), false},
+		"check_in 0":       {func() Limits { l := base; l.CheckIn = 0; return l }(), true},
+		"check_in 5m":      {func() Limits { l := base; l.CheckIn = 5 * time.Minute; return l }(), false},
+	} {
+		t.Run("limits "+name, func(t *testing.T) {
+			if err := tc.limits.validate(); tc.ok != (err == nil) {
+				t.Fatalf("validate() = %v, want ok=%v", err, tc.ok)
+			}
+		})
+	}
+}
