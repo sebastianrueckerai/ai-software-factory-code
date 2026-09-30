@@ -610,6 +610,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if !ok {
 				if out.result == nil {
 					out.noResult = ended("pod exited without a result")
+					if diag, dErr := r.kube.PodDiagnosis(ctx, ns, podName); dErr == nil && diag.Reason == "Evicted" {
+						out.noResult = "evicted: " + diag.Message
+					}
 				}
 				return out, nil
 			}

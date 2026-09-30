@@ -280,6 +280,8 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 				t.Errorf("log query = %v, want tailLines=100, limitBytes=65536 and no follow", q)
 			}
 			io.WriteString(w, "a\nb\n")
+		case "/api/v1/namespaces/factory-agents-t1/pods/worker-evicted":
+			io.WriteString(w, `{"status":{"phase":"Failed","reason":"Evicted","message":"The node was low on resource: ephemeral-storage."}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -299,6 +301,11 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 		Containers: []ContainerState{{Name: "worker", State: "waiting", Reason: "ImagePullBackOff", Message: "Back-off pulling image", Restarts: 2}}}
 	if err != nil || fmt.Sprint(d) != fmt.Sprint(want) {
 		t.Fatalf("PodDiagnosis = %+v, %v", d, err)
+	}
+	evicted, err := k.PodDiagnosis(context.Background(), "factory-agents-t1", "worker-evicted")
+	if err != nil || evicted.Phase != "Failed" || evicted.Reason != "Evicted" ||
+		evicted.Message != "The node was low on resource: ephemeral-storage." {
+		t.Fatalf("evicted PodDiagnosis = %+v, %v", evicted, err)
 	}
 	if tail, err := k.PodLogTail(context.Background(), "factory-agents-t1", "worker-s1", 100); err != nil || tail != "a\nb\n" {
 		t.Fatalf("PodLogTail = %q, %v", tail, err)

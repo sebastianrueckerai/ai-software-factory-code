@@ -82,9 +82,13 @@ type Kube interface {
 	DeletePersistentVolume(ctx context.Context, name string) error
 }
 
-// PodDiagnosis is what the gate supervisor reads of a sandbox pod.
+// PodDiagnosis is what the gate supervisor reads of a sandbox pod. Reason
+// and Message are the pod's own status fields, set by the kubelet for an
+// end outside the container's own exit, eviction included.
 type PodDiagnosis struct {
 	Phase      string           `json:"phase"`
+	Reason     string           `json:"reason,omitempty"`
+	Message    string           `json:"message,omitempty"`
 	Conditions []PodCondition   `json:"conditions"`
 	Containers []ContainerState `json:"containers,omitempty"`
 }
@@ -361,6 +365,8 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 	var pod struct {
 		Status struct {
 			Phase             string         `json:"phase"`
+			Reason            string         `json:"reason"`
+			Message           string         `json:"message"`
 			Conditions        []PodCondition `json:"conditions"`
 			ContainerStatuses []struct {
 				Name         string `json:"name"`
@@ -376,7 +382,7 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
 		return PodDiagnosis{}, err
 	}
-	d := PodDiagnosis{Phase: pod.Status.Phase, Conditions: pod.Status.Conditions}
+	d := PodDiagnosis{Phase: pod.Status.Phase, Reason: pod.Status.Reason, Message: pod.Status.Message, Conditions: pod.Status.Conditions}
 	for _, c := range pod.Status.ContainerStatuses {
 		cs := ContainerState{Name: c.Name, Restarts: c.RestartCount, State: "running"}
 		switch {

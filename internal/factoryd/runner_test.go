@@ -73,14 +73,15 @@ func (r ctxReader) Read([]byte) (int, error) {
 }
 
 type fakePod struct {
-	ns, name   string
-	phase      string
-	logs       string
-	logsReady  chan struct{} // closed when scriptPods has assigned the body
-	spec       map[string]any
-	opens      int  // log streams opened
-	deleted    bool // deletion requested, grace period running
-	conditions []PodCondition
+	ns, name        string
+	phase           string
+	reason, message string // status.reason, status.message (Evicted's)
+	logs            string
+	logsReady       chan struct{} // closed when scriptPods has assigned the body
+	spec            map[string]any
+	opens           int  // log streams opened
+	deleted         bool // deletion requested, grace period running
+	conditions      []PodCondition
 }
 
 func newFakeKube() *fakeKube {
@@ -280,7 +281,7 @@ func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (Po
 	if !ok {
 		return PodDiagnosis{}, ErrNotFound
 	}
-	return PodDiagnosis{Phase: p.phase, Conditions: p.conditions}, nil
+	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions}, nil
 }
 
 // PodLogTail serves the scripted body's last lines.
@@ -1272,6 +1273,25 @@ func TestRunSessionPodDeathIsNoPush(t *testing.T) {
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4", Attempt: 1, Model: "m"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
 	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "pod exited without a result" {
+		t.Fatalf("result = (%+v, %v)", res, err)
+	}
+}
+
+// The pod's own diagnosis, read before its deletion, tells an eviction
+// apart from any other death: the next session's findings name the cause
+// instead of the generic "pod exited without a result".
+func TestEvictionRecorded(t *testing.T) {
+	task := Task{ID: "t4e", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+	kube := newFakeKube()
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.reason, p.message = "Evicted", "The node was low on resource: ephemeral-storage."
+	}
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4e", Attempt: 1, Model: "m"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
+	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
 		t.Fatalf("result = (%+v, %v)", res, err)
 	}
 }

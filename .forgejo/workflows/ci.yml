@@ -46,6 +46,8 @@ jobs:
           docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true .
+          docker run --rm --entrypoint sh git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
+            -c "gcc --version && make --version && python3 --version"
           docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
   image-runner:
     needs: test
