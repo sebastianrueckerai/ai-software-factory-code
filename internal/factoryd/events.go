@@ -1,11 +1,13 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
 	"maps"
 	"slices"
+	"sync"
 )
 
 // The events (stage11-design.md section 2): the fixed list a later triggers
@@ -52,6 +54,11 @@ func enterLane(ctx context.Context, tl *Timeline, wf Workflows, t Task, by strin
 	return nil
 }
 
+// allDoneMu holds taskEnded's check and record of all_children_done
+// together: the last two cards ending side by side both find every card
+// done (one factoryd replica).
+var allDoneMu sync.Mutex
+
 // taskEnded records task t's end in state final, the hook the cards that
 // depend on it wait for; when t is the last of a plan's cards to turn done,
 // the plan records all_children_done and its issue says so.
@@ -59,6 +66,16 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, map[string]any{"state": final})
 	if t.Source != SourcePlan || t.Parent == "" || final != "done" {
 		return
+	}
+	allDoneMu.Lock()
+	defer allDoneMu.Unlock()
+	if tl != nil {
+		if b, err := tl.Objects.Get(ctx, "sessions/"+t.Parent+"/timeline.jsonl"); err != nil || bytes.Contains(b, []byte(`"event":"`+EventAllChildrenDone+`"`)) {
+			if err != nil {
+				log.Printf("task %s: timeline of plan %s: %v", t.ID, t.Parent, err)
+			}
+			return
+		}
 	}
 	cards, err := store.PlanCards(ctx, t.Parent)
 	if err != nil {

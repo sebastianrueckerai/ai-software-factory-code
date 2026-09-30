@@ -118,6 +118,12 @@ func TestEventsRecorded(t *testing.T) {
 		if got := events(t, objects, "t-plan"); !slices.Equal(got, []string{"all_children_done 2"}) {
 			t.Fatalf("plan events = %v", got)
 		}
+		// the last two cards ending side by side both find every card done
+		last, _, _ := store.Task(ctx, "t-c2")
+		taskEnded(ctx, r.timeline, r.store, r.forgejo, last, "done")
+		if got := events(t, objects, "t-plan"); !slices.Equal(got, []string{"all_children_done 2"}) {
+			t.Fatalf("plan events = %v", got)
+		}
 		if !slices.Equal(fj.comments, []string{"factoryd: all 2 cards of this plan are done."}) {
 			t.Fatalf("comments = %q", fj.comments)
 		}
