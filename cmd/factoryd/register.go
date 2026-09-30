@@ -1,18 +1,19 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/openbao"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -23,34 +24,29 @@ func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 // parseRegistration reads register-project's flags: the project's name
-// (its settings are its file's), the site admin and --rotate.
-func parseRegistration(args []string) (name, admin string, rotate bool, err error) {
+// (its settings are its file's) and --rotate.
+func parseRegistration(args []string) (name string, rotate bool, err error) {
 	fs := flag.NewFlagSet("register-project", flag.ContinueOnError)
 	fs.StringVar(&name, "name", "", "the project: its file projects/<name>.yaml says objects factory")
-	fs.StringVar(&admin, "admin-user", "sebastian", "the Forgejo site admin; the password is read from stdin")
 	fs.BoolVar(&rotate, "rotate", false, "mint the project's tokens again")
 	if err := fs.Parse(args); err != nil {
-		return "", "", false, err
+		return "", false, err
 	}
 	if name == "" || fs.NArg() > 0 {
-		return "", "", false, errors.New("register-project --name <project> [--admin-user <user>] [--rotate]; the settings are projects/<name>.yaml's")
+		return "", false, errors.New("register-project --name <project> [--rotate]; the settings are projects/<name>.yaml's")
 	}
-	return name, admin, rotate, nil
+	return name, rotate, nil
 }
 
-// registerProject is `factoryd register-project`: Registrar.Register with
-// the Forgejo admin's password from stdin, then the gateway YAML the infra
+// registerProject is `factoryd register-project`: Registrar.Register, with
+// the Forgejo admin's login from OpenBao, then the gateway YAML the infra
 // commit adds for the project's hostnames.
-func registerProject(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, reg *factoryd.Registrar) error {
-	name, adminUser, rotate, err := parseRegistration(args)
+func registerProject(ctx context.Context, args []string, stdout io.Writer, reg *factoryd.Registrar) error {
+	name, rotate, err := parseRegistration(args)
 	if err != nil {
 		return err
 	}
-	password, err := bufio.NewReader(stdin).ReadString('\n')
-	if password = strings.TrimSpace(password); password == "" {
-		return errors.Join(errors.New("the Forgejo admin's password is read from stdin"), err)
-	}
-	p, err := reg.Register(ctx, name, factoryd.AdminAuth{User: adminUser, Password: password}, rotate)
+	p, err := reg.Register(ctx, name, rotate)
 	if err != nil {
 		return err
 	}
@@ -96,7 +92,7 @@ func registerMain(args []string) {
 		}
 		return v.Document
 	})
-	if err := registerProject(ctx, args, os.Stdin, os.Stdout, reg); err != nil {
+	if err := registerProject(ctx, args, os.Stdout, reg); err != nil {
 		log.Fatalf("register-project: %v", err)
 	}
 }
@@ -129,5 +125,7 @@ func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube f
 		HostKey: func(ctx context.Context) (string, error) {
 			return factoryd.ScanHostKey(ctx, env("FORGEJO_SSH_ADDR", "forgejo-ssh.forgejo.svc.cluster.local:22"), 10*time.Second)
 		},
-		ProjectsUser: env("FORGEJO_PROJECTS_USER", "factory-projects")}
+		ProjectsUser: env("FORGEJO_PROJECTS_USER", "factory-projects"),
+		OpenBao: &openbao.Client{BaseURL: env("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"), AuthRole: "factoryd",
+			TokenFile: openbao.TokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}}}
 }

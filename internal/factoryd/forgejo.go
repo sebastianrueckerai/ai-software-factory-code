@@ -53,7 +53,7 @@ type Forgejo struct {
 	// project repositories and nothing of the factory's own. It keeps a
 	// project's webhook, collaborators, branch protection, deploy key,
 	// Actions secrets and runners; the organisation and the repository
-	// come from register-project with the site admin's login.
+	// come from registration with the site admin's login from OpenBao.
 	ProjectsToken string
 	// Seeded are the tokens the seed makes, by their secret's name
 	// (policy.SeedSecrets), which a seed project's file names (ruling 179):

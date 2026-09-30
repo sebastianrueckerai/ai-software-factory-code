@@ -836,7 +836,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	token := r.forgejo.Access(p).Merge
 	if !ok || token == "" {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
-			": its project file names none, or register-project has not run"), nil
+			": its project file names none, or its registration has not run"), nil
 	}
 	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by %s", t.ID, t.IssueNumber, approver, MergeUser)
 	if approver == AutoApprover {

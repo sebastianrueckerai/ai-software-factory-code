@@ -32,8 +32,8 @@ func (f *Forgejo) tokenCall(token string) func(context.Context, string, string, 
 	}
 }
 
-// AdminAuth is the Forgejo site admin's login, given to register-project
-// at run time and never stored.
+// AdminAuth is the Forgejo site admin's login, read from OpenBao for one
+// registration and never stored.
 type AdminAuth struct{ User, Password string }
 
 func (f *Forgejo) adminCall(a AdminAuth) func(context.Context, string, string, []byte, int) ([]byte, error) {

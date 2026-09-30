@@ -84,7 +84,7 @@ func TestHostKeySecretFollowsForgejo(t *testing.T) {
 	key := "ssh-ed25519 AAAAone"
 	rig.reg.HostKey = func(context.Context) (string, error) { return key, nil }
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}

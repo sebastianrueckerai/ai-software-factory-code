@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/openbao"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -62,7 +63,7 @@ type SSHSigner interface {
 var (
 	_ CloudProvider = (*hcloud.Client)(nil)
 	_ CloudStore    = cloudres.AgentStore{}
-	_ SSHSigner     = (*OpenBao)(nil)
+	_ SSHSigner     = (*openbao.Client)(nil)
 )
 
 // Cloud is the commissioning connector: the agent project's API, the

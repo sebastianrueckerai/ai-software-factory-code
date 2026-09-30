@@ -10,15 +10,15 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// register-project takes the project's name only: its settings are its
-// file's.
+// register-project takes the project's name and --rotate only: its
+// settings are its file's, the admin's login is OpenBao's.
 func TestParseRegistration(t *testing.T) {
-	name, admin, rotate, err := parseRegistration([]string{"--name", "demo-app", "--rotate"})
-	if err != nil || name != "demo-app" || admin != "sebastian" || !rotate {
-		t.Fatalf("= %q, %q, %v, %v", name, admin, rotate, err)
+	name, rotate, err := parseRegistration([]string{"--name", "demo-app", "--rotate"})
+	if err != nil || name != "demo-app" || !rotate {
+		t.Fatalf("= %q, %v, %v", name, rotate, err)
 	}
-	for _, args := range [][]string{{}, {"--name", "x", "--merge-rule", "auto"}, {"--name", "x", "extra"}} {
-		if _, _, _, err := parseRegistration(args); err == nil {
+	for _, args := range [][]string{{}, {"--name", "x", "--merge-rule", "auto"}, {"--name", "x", "extra"}, {"--name", "x", "--admin-user", "sebastian"}} {
+		if _, _, err := parseRegistration(args); err == nil {
 			t.Errorf("parseRegistration(%q) accepted", args)
 		}
 	}

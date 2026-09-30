@@ -13,10 +13,4 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <button type="submit">Merge</button>
 </form>{{end}}
-{{if .CanRegister}}<form method="post" action="/projects/{{.Name}}/register" hx-post="/projects/{{.Name}}/register" hx-target="#status" hx-swap="outerHTML" hx-sync="closest section:replace" hx-indicator="find button">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
-<label for="password">Password of the Forgejo site admin {{.User}}</label>
-<input id="password" name="password" type="password" autocomplete="off" required hx-preserve="true">
-<button type="submit">Create repository</button>
-</form>{{end}}
 </section>{{end}}

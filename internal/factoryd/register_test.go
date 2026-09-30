@@ -11,6 +11,8 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -20,6 +22,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/openbao"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -52,6 +55,7 @@ type forgejoState struct {
 	emails        map[string]string
 	teamUnits     map[string]string
 	seeds         []seedCommit
+	orgBasic      string // the basic auth, user:password, of the organisation's create
 }
 
 // seedCommit is one contents call: its branch, message, credential and
@@ -104,6 +108,8 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				t.Errorf("create org %v", body)
 			}
 			s.org, s.orgOwner = true, "factory-projects"
+			u, pw, _ := r.BasicAuth()
+			s.orgBasic = u + ":" + pw
 			w.WriteHeader(http.StatusCreated)
 		case admin && p == "/api/v1/users/factory-projects/orgs/demo-app/permissions":
 			fmt.Fprintf(w, `{"is_owner":%v}`, s.orgOwner == "factory-projects")
@@ -518,7 +524,26 @@ func (s *memProjects) ForgetReadToken(_ context.Context, name, hash string) erro
 	return nil
 }
 
+// fakeKV is OpenBao's kv-v2 as the Registrar reads it.
+type fakeKV struct {
+	mu    sync.Mutex
+	data  map[string]string
+	err   error
+	reads int
+}
+
+func (k *fakeKV) KV(_ context.Context, path string) (map[string]string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.reads++
+	if path != AdminSecret {
+		return nil, fmt.Errorf("no secret at %s", path)
+	}
+	return maps.Clone(k.data), k.err
+}
+
 type registerRig struct {
+	kv    *fakeKV
 	fj    *forgejoState
 	kube  *fakeProjectKube
 	store *memProjects
@@ -532,15 +557,14 @@ func newRegisterRig(t *testing.T) *registerRig {
 	kube := newFakeProjectKube()
 	store := &memProjects{m: map[string]Project{"demo-app": demoProject()}}
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
-	reg := &Registrar{Forgejo: f, Kube: kube, Store: store,
+	kv := &fakeKV{data: map[string]string{"username": "sebastian", "password": "admin-pw"}}
+	reg := &Registrar{Forgejo: f, Kube: kube, Store: store, OpenBao: kv,
 		Policy:     func() policy.Document { return policy.Document{Approvers: []string{"sebastian"}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: "https://git.aisoftwarefactory.world",
 		RegistryHost: "git.aisoftwarefactory.world", MergeUser: "factory-merge", ProjectsUser: "factory-projects"}
-	return &registerRig{fj: fj, kube: kube, store: store, reg: reg, logs: captureLog(t)}
+	return &registerRig{kv: kv, fj: fj, kube: kube, store: store, reg: reg, logs: captureLog(t)}
 }
-
-var admin = AdminAuth{User: "sebastian", Password: "admin-pw"}
 
 // register-project on an empty Forgejo and cluster: the admin makes the
 // organisation (owned by factory-projects), the repository, the CI user in
@@ -549,7 +573,7 @@ var admin = AdminAuth{User: "sebastian", Password: "admin-pw"}
 func TestRegisterIsIdempotent(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -582,7 +606,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 
 	rig.fj.branches["main"] = "c0ffee"
 	rig.logs.Reset()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(rig.logs.String(), "project demo-app: branch deploy: created\n") || rig.fj.branches["deploy"] != "c0ffee" ||
@@ -593,7 +617,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	stored := rig.store.m["demo-app"]
 
 	rig.logs.Reset()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	for _, line := range strings.Split(strings.TrimSpace(rig.logs.String()), "\n") {
@@ -610,11 +634,11 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	for name, p := range map[string]Project{"infra": {Name: "infra", Repository: "sf/infra", Objects: "seed", File: true},
 		"gone": {Name: "gone", Repository: "gone/gone", Objects: "factory"}} {
 		rig.store.m[name] = p
-		if _, err := rig.reg.Register(ctx, name, admin, false); err == nil || !strings.Contains(err.Error(), "registration makes a factory project's objects") {
+		if _, err := rig.reg.Register(ctx, name, false); err == nil || !strings.Contains(err.Error(), "registration makes a factory project's objects") {
 			t.Fatalf("registering %s = %v", name, err)
 		}
 	}
-	if _, err := rig.reg.Register(ctx, "nothing", admin, false); !errors.Is(err, ErrNotFound) {
+	if _, err := rig.reg.Register(ctx, "nothing", false); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("registering a project no file names = %v", err)
 	}
 }
@@ -623,7 +647,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 func TestRegistrationObjects(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.branches["main"] = "c0ffee"
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	fj, k := rig.fj, rig.kube
@@ -740,15 +764,18 @@ func TestRegistrationObjects(t *testing.T) {
 	}
 }
 
-// A factory project's file before register-project: its Forgejo objects
-// wait, its cluster objects come at once, its Flux source once the tokens
-// exist.
+// A factory project's file whose registration cannot read the Forgejo
+// admin's login from OpenBao: the registration fails and says why, its
+// Forgejo objects wait, its cluster objects come at once, its Flux source
+// once the tokens exist.
 func TestProjectFileWaitsForRegistration(t *testing.T) {
 	rig := newRegisterRig(t)
+	rig.kv.err = errors.New("openbao kv factory/forgejo-admin: openbao answered 403: permission denied")
 	p := demoProject()
 	rig.store.m[p.Name] = p
-	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
-		t.Fatal(err)
+	err := rig.reg.Reconcile(context.Background(), p)
+	if err == nil || !strings.Contains(err.Error(), "registration: the Forgejo admin's login: openbao kv factory/forgejo-admin: openbao answered 403") {
+		t.Fatalf("err = %v", err)
 	}
 	logs := rig.logs.String()
 	for _, want := range []string{"repository demo-app/demo-app: " + string(Waiting), "demo-staging secret forgejo-registry: " + string(Waiting),
@@ -760,6 +787,125 @@ func TestProjectFileWaitsForRegistration(t *testing.T) {
 	if len(rig.fj.writes) != 0 {
 		t.Fatalf("wrote %v", rig.fj.writes)
 	}
+	if got := rig.reg.RegistrationError("demo-app"); !strings.HasPrefix(got, "the Forgejo admin's login: openbao kv factory/forgejo-admin") {
+		t.Fatalf("RegistrationError = %q", got)
+	}
+	rig.kv.err = nil
+	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if got := rig.reg.RegistrationError("demo-app"); got != "" {
+		t.Fatalf("after a registration that worked, RegistrationError = %q", got)
+	}
+}
+
+// Registration reads the Forgejo site admin's login from OpenBao's kv-v2
+// factory/forgejo-admin through the OpenBao client and uses it as basic
+// auth on the site admin's calls.
+func TestAdminFromOpenBao(t *testing.T) {
+	var reads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/auth/kubernetes/login":
+			io.WriteString(w, `{"auth":{"client_token":"tok-1","lease_duration":3600}}`)
+		case "GET /v1/factory/data/forgejo-admin":
+			reads = append(reads, r.Header.Get("X-Vault-Token"))
+			io.WriteString(w, `{"data":{"data":{"username":"sebastian","password":"pw"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("sa-jwt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rig := newRegisterRig(t)
+	rig.reg.OpenBao = &openbao.Client{BaseURL: srv.URL, AuthRole: "factoryd", TokenFile: tokenFile, HTTP: srv.Client()}
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if rig.fj.orgBasic != "sebastian:pw" || !slices.Equal(reads, []string{"tok-1"}) {
+		t.Fatalf("organisation created with %q; kv reads %v", rig.fj.orgBasic, reads)
+	}
+}
+
+// A reconcile of a factory project whose row has no tokens registers it
+// first: organisation, repository, CI user, team, the row's three tokens
+// (and the registry token into its Actions secrets), then the Forgejo
+// steps from the seed on, with the minted tokens in the cluster's.
+func TestReconcileRegistersUnregisteredProject(t *testing.T) {
+	rig := newRegisterRig(t)
+	p := seededProject()
+	rig.store.m[p.Name] = p
+	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	logs := rig.logs.String()
+	order := []string{"organisation demo-app: created", "repository demo-app/demo-app: created", "user ci-demo-app: created", "team ci: created",
+		"token pull of ci-demo-app: minted", "token git-demo-app of factory-projects: minted", "token project-demo-app of factory-merge: minted",
+		"seed: created 5eed from template ts-go", "demo-staging secret forgejo-registry: created", "flux gitrepository: created"}
+	at := -1
+	for _, want := range order {
+		i := strings.Index(logs, "project demo-app: "+want)
+		if i < at {
+			t.Fatalf("%q missing or out of order:\n%s", want, logs)
+		}
+		at = i
+	}
+	row := rig.store.m["demo-app"]
+	if row.PullToken != "ci-demo-app-pull" || row.GitToken != "factory-projects-git-demo-app" || row.MergeToken != "factory-merge-project-demo-app" {
+		t.Fatalf("row tokens %q %q %q", row.PullToken, row.GitToken, row.MergeToken)
+	}
+	if len(rig.fj.minted) != 4 || rig.kv.reads != 1 {
+		t.Fatalf("minted %v, kv reads %d", rig.fj.minted, rig.kv.reads)
+	}
+}
+
+// A registered project's reconcile, alone or in ReconcileAll, never reads
+// the credential.
+func TestRegisteredProjectReadsNoCredential(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	rig.kv.reads = 0
+	stored := rig.store.m["demo-app"]
+	if err := rig.reg.Reconcile(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	rig.reg.ReconcileAll(ctx)
+	if rig.kv.reads != 0 {
+		t.Fatalf("kv reads %d, want 0", rig.kv.reads)
+	}
+}
+
+// The admin's password reaches no log line, no error and no kept state,
+// on a registration that works and on ones that fail.
+func TestAdminPasswordNeverLogged(t *testing.T) {
+	const password = "pw-7f3a-never-logged"
+	var said []string
+	for _, c := range []struct {
+		name  string
+		setup func(rig *registerRig)
+	}{
+		{"works", func(*registerRig) {}},
+		{"foreign organisation", func(rig *registerRig) { rig.fj.org, rig.fj.orgOwner = true, "mallory" }},
+		{"no username", func(rig *registerRig) { delete(rig.kv.data, "username") }},
+	} {
+		rig := newRegisterRig(t)
+		rig.kv.data["password"] = password
+		c.setup(rig)
+		_, err := rig.reg.Register(context.Background(), "demo-app", false)
+		if c.name != "works" && err == nil {
+			t.Fatalf("%s: registered", c.name)
+		}
+		said = append(said, c.name, rig.logs.String(), fmt.Sprint(err), rig.reg.RegistrationError("demo-app"), fmt.Sprintf("%+v", rig.store.m["demo-app"]))
+	}
+	if all := strings.Join(said, "\n"); strings.Contains(all, password) {
+		t.Fatalf("the password was said:\n%s", all)
+	}
 }
 
 // A merge rule change reaches main's protection, a quota change the
@@ -768,7 +914,7 @@ func TestProjectFileWaitsForRegistration(t *testing.T) {
 func TestRegistrationFollowsSettings(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -809,7 +955,7 @@ func TestReconcileRemovesCollaboratorsItDoesNotKeep(t *testing.T) {
 	ctx := context.Background()
 	rig.fj.users["alice"] = true
 	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian", "alice"}} }
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +989,7 @@ func TestReconcileRemovesCollaboratorsItDoesNotKeep(t *testing.T) {
 func TestDeployKeyHeals(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -887,7 +1033,7 @@ func TestProjectEgressReachesOnlyTheFilesHosts(t *testing.T) {
 func TestReadTokenRace(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -923,7 +1069,7 @@ func TestReconcileSkipsARowWithoutAFile(t *testing.T) {
 func TestRegisterRefusesAForeignOrganisation(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.org, rig.fj.orgOwner = true, "mallory"
-	_, err := rig.reg.Register(context.Background(), "demo-app", admin, false)
+	_, err := rig.reg.Register(context.Background(), "demo-app", false)
 	if err == nil || !strings.Contains(err.Error(), "factory-projects does not own it") {
 		t.Fatalf("err = %v", err)
 	}
@@ -936,11 +1082,11 @@ func TestRegisterRefusesAForeignOrganisation(t *testing.T) {
 func TestRegisterRotates(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	n := len(rig.fj.minted)
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, true); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", true); err != nil {
 		t.Fatal(err)
 	}
 	if len(rig.fj.minted)-n != 4 || len(rig.fj.tokens) != 4 {
@@ -953,7 +1099,7 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.users["ci-demo-app"] = true
 	rig.fj.emails = map[string]string{"ci-demo-app": "mallory@example.com"}
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err == nil ||
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err == nil ||
 		!strings.Contains(err.Error(), "a user ci-demo-app exists that registration did not make") {
 		t.Fatalf("foreign user = %v", err)
 	}
@@ -964,7 +1110,7 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 	rig = newRegisterRig(t)
 	rig.fj.team = []string{}
 	rig.fj.teamUnits = map[string]string{"repo.code": "write", "repo.packages": "write"}
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err == nil ||
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err == nil ||
 		!strings.Contains(err.Error(), "a team ci exists in demo-app with more than package write") {
 		t.Fatalf("foreign team = %v", err)
 	}
@@ -979,7 +1125,7 @@ func TestRegisterRefusesForeignCIUserOrTeam(t *testing.T) {
 func TestMainPushedMakesDeploy(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Contains(rig.fj.hooks[0]["events"].([]any), any("push")) {
@@ -1023,7 +1169,7 @@ func TestReconcileGoesOnWhenDeployProtectionRefusesTheBranch(t *testing.T) {
 	rig.reg.HostKey = func(context.Context) (string, error) { return key, nil }
 	rig.fj.branches["main"] = "c0ffee"
 	ctx := context.Background()
-	p, err := rig.reg.Register(ctx, "demo-app", admin, false)
+	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1065,7 +1211,7 @@ func TestReconcileGoesOnWhenDeployProtectionRefusesTheBranch(t *testing.T) {
 func TestReconcileLoopSetsBackAHandEdit(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	rig.logs.Reset()

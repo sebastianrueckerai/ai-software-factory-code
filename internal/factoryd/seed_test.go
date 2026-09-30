@@ -30,7 +30,7 @@ func seededProject() Project {
 func TestSeedRendersTemplate(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.store.m["demo-app"] = seededProject()
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
 		t.Fatalf("%v\n%s", err, rig.logs)
 	}
 	if len(rig.fj.seeds) != 1 {
@@ -62,7 +62,7 @@ func TestSeedSkipsExistingMain(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.store.m["demo-app"] = seededProject()
 	rig.fj.branches["main"] = "c0ffee"
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
 		t.Fatalf("%v\n%s", err, rig.logs)
 	}
 	if len(rig.fj.seeds) != 0 {
@@ -72,7 +72,7 @@ func TestSeedSkipsExistingMain(t *testing.T) {
 		t.Errorf("log lacks the seed line:\n%s", rig.logs)
 	}
 	rig = newRegisterRig(t)
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	if len(rig.fj.seeds) != 0 || !strings.Contains(rig.logs.String(), "project demo-app: seed: waiting: no template; main's first push starts the project\n") {
@@ -85,7 +85,7 @@ func TestSeedSkipsExistingMain(t *testing.T) {
 func TestSeedSkipsProtectedMain(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	rig.store.m["demo-app"] = seededProject()
@@ -108,7 +108,7 @@ func TestSeedSkipsProtectedMain(t *testing.T) {
 func TestSeedBeforeProtection(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.store.m["demo-app"] = seededProject()
-	if _, err := rig.reg.Register(context.Background(), "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
 		t.Fatalf("%v\n%s", err, rig.logs)
 	}
 	seed := slices.Index(rig.fj.writes, "POST /api/v1/repos/demo-app/demo-app/contents by token projects-tok")
@@ -134,7 +134,7 @@ func TestSeedBeforeProtection(t *testing.T) {
 func TestReadyAtAfterCleanReconcile(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err != nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
 	if got := rig.store.m["demo-app"]; !got.ReadyAt.IsZero() {
@@ -172,7 +172,7 @@ func TestReadyAtAfterCleanReconcile(t *testing.T) {
 	rig = newRegisterRig(t)
 	rig.fj.branches["main"] = "c0ffee"
 	rig.kube.fail = "/namespaces/demo-prod/ciliumnetworkpolicies/"
-	if _, err := rig.reg.Register(ctx, "demo-app", admin, false); err == nil {
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err == nil {
 		t.Fatal("the failing apply passed")
 	}
 	if !rig.store.m["demo-app"].ReadyAt.IsZero() {

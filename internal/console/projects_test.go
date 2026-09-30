@@ -1,20 +1,16 @@
 package console
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html"
-	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"reflect"
 	"regexp"
 	"slices"
@@ -354,6 +350,7 @@ type statusRig struct {
 	force   *inForce
 	main    bool
 	mainErr error
+	regErr  string
 	ck      *http.Cookie
 	csrf    string
 }
@@ -367,6 +364,12 @@ func newStatusRig(t *testing.T) *statusRig {
 			t.Errorf("MainExists(%v)", repo)
 		}
 		return s.main, s.mainErr
+	}
+	r.c.cfg.RegistrationError = func(name string) string {
+		if name != "linkshort" {
+			t.Errorf("RegistrationError(%q)", name)
+		}
+		return s.regErr
 	}
 	s.ck, _ = r.loggedIn(t)
 	s.csrf = r.c.sessions[s.ck.Value].csrf
@@ -391,8 +394,8 @@ var openPull = map[string]any{"number": 12, "state": "open", "merged": false, "h
 
 // Each step's state and detail come from the source section 5's table
 // names: the pull request read with factoryd's config token, the version
-// in force, the project row and main, the registration and merge kept in
-// memory, and ready_at.
+// in force, the project row and main, the merge kept in memory, the
+// registration's last error, and ready_at.
 func TestStatusStepsFromSources(t *testing.T) {
 	minted := factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"}
 	ready := minted
@@ -421,29 +424,20 @@ func TestStatusStepsFromSources(t *testing.T) {
 		{"merged, not loaded", func(s *statusRig) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": true, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
 		}, []string{"done", "running", "waiting", "waiting"}, []string{"Merged; the factory loads it within 30 seconds."}, []string{`action="/projects/linkshort/merge"`}},
-		{"loaded", func(s *statusRig) { s.force.load("linkshort") }, []string{"done", "done", "waiting", "waiting"},
+		{"loaded", func(s *statusRig) { s.force.load("linkshort") }, []string{"done", "done", "running", "waiting"},
 			[]string{"projects/linkshort.yaml is in the configuration version 4.", "Loaded in version 4 (commit c9d98bb0aa11).",
-				`type="password" autocomplete="off"`, `>Create repository</button>`, `hx-post="/projects/linkshort/register"`, `hx-preserve="true"`}, nil},
-		{"registering", func(s *statusRig) {
-			s.force.load("linkshort")
-			s.c.runs["linkshort"] = &projectRun{registering: "sebastian"}
-		}, []string{"done", "done", "running", "waiting"}, []string{"Registering with the login of sebastian."}, []string{`type="password"`}},
+				"The reconcile registers it within a minute of the load."}, []string{`<form method="post" action="/projects/linkshort/`}},
 		{"registration failed", func(s *statusRig) {
 			s.force.load("linkshort")
-			s.c.runs["linkshort"] = &projectRun{regErr: "organisation linkshort: forgejo: status 401"}
-		}, []string{"done", "done", "failed", "waiting"}, []string{"Registration failed: organisation linkshort: forgejo: status 401", `type="password"`}, nil},
+			s.regErr = "organisation linkshort: forgejo: status 401"
+		}, []string{"done", "done", "failed", "waiting"},
+			[]string{"Registration failed: organisation linkshort: forgejo: status 401. The reconcile tries again at least hourly."}, nil},
 		{"minted, main missing", func(s *statusRig) { s.force.load("linkshort"); s.row(minted) }, []string{"done", "done", "running", "waiting"},
 			[]string{"Organisation, repository, CI user and tokens made; waiting for main&#39;s first commit."}, []string{`type="password"`}},
 		{"main unreadable", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.mainErr = errors.New("boom") }, []string{"done", "done", "failed", "waiting"},
 			[]string{"Cannot read the repository&#39;s main; the factoryd log says why."}, nil},
 		{"created, reconciling", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true }, []string{"done", "done", "done", "running"},
 			[]string{"linkshort/linkshort with main.", "Waiting for a reconcile that finds every object in place; one runs at least hourly."}, []string{`type="password"`}},
-		{"reconcile failed", func(s *statusRig) {
-			s.force.load("linkshort")
-			s.row(minted)
-			s.main = true
-			s.c.runs["linkshort"] = &projectRun{regErr: "webhook: forgejo: status 500"}
-		}, []string{"done", "done", "done", "failed"}, []string{"The reconcile failed: webhook: forgejo: status 500"}, nil},
 		{"ready", func(s *statusRig) { s.force.load("linkshort"); s.row(ready); s.main = true }, []string{"done", "done", "done", "done"},
 			[]string{`<a href="/board?project=linkshort">Ready since 2026-10-02 09:30 UTC: open the board</a>`}, []string{`type="password"`, "hx-trigger"}},
 	} {
@@ -461,7 +455,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			for i, tip := range []string{
 				"The project&#39;s file as a pull request on the infra repository, filed as you; the factory checked it as its loader will.",
 				"An approver merges the file into infra&#39;s main; the factory loads it within 30 seconds.",
-				"The Forgejo site admin&#39;s login registers the project: organisation, repository from the template, CI user, tokens. The password is used once and never stored.",
+				"The factory registers the project with the Forgejo site admin&#39;s login from OpenBao: organisation, repository from the template, CI user, tokens. No one types a password.",
 				"Webhook, labels, bot fork, deploy branch, namespaces, network policy and the Flux Kustomization are in place.",
 			} {
 				if tips[i] != tip {
@@ -540,90 +534,31 @@ func TestMergeAsHumanShowsRefusal(t *testing.T) {
 	}
 }
 
-// The registration's password lives on the goroutine's stack: after the
-// call nothing the console keeps, and nothing it logs, holds it.
-func TestRegisterPasswordNotKept(t *testing.T) {
-	s := newStatusRig(t)
-	s.force.load("linkshort")
-	const password = "correct-horse-battery-staple"
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	done := make(chan factoryd.AdminAuth, 1)
-	s.c.cfg.Register = func(_ context.Context, name string, a factoryd.AdminAuth) error {
-		done <- a
-		return errors.New("organisation linkshort: forgejo: status 401")
-	}
-	rec := s.do(post("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {password}}), s.ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("register = %d: %s", rec.Code, rec.Body.String())
-	}
-	if a := <-done; a != (factoryd.AdminAuth{User: "sebastian", Password: password}) {
-		t.Fatalf("Register got %+v", a)
-	}
-	waitRun(t, s.c, "linkshort")
-	s.c.mu.Lock()
-	kept := fmt.Sprintf("%+v %+v", *s.c.runs["linkshort"], s.c.cfg)
-	for _, se := range s.c.sessions {
-		kept += fmt.Sprintf(" %+v", se)
-	}
-	s.c.mu.Unlock()
-	if strings.Contains(kept, password) || !strings.Contains(kept, "status 401") {
-		t.Errorf("the console's state after the call: %s", kept)
-	}
-	if strings.Contains(logs.String(), password) || strings.Contains(s.status(t), password) {
-		t.Error("the password was logged or rendered")
-	}
-	if rec := s.do(post("/projects/linkshort/register", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusBadRequest {
-		t.Errorf("register without a password = %d, want 400", rec.Code)
-	}
-}
-
-// A closed tab does not cut a half-made registration: the call runs on a
-// context detached from the request.
-func TestRegisterSurvivesClosedRequest(t *testing.T) {
-	s := newStatusRig(t)
-	s.force.load("linkshort")
-	release, ended := make(chan struct{}), make(chan error, 1)
-	s.c.cfg.Register = func(ctx context.Context, name string, a factoryd.AdminAuth) error {
-		<-release
-		ended <- ctx.Err()
-		return ctx.Err()
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	rec := s.do(post("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}).WithContext(ctx), s.ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("register = %d", rec.Code)
-	}
-	cancel()
-	if _, states, _ := steps(s.status(t)); states[2] != "running" {
-		t.Errorf("while registering, step 3 = %s", states[2])
-	}
-	if rec := s.do(post("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}), s.ck); rec.Code != http.StatusConflict {
-		t.Errorf("a second registration while one runs = %d, want 409", rec.Code)
-	}
-	close(release)
-	if err := <-ended; err != nil {
-		t.Fatalf("the registration's context ended with the request: %v", err)
-	}
-	waitRun(t, s.c, "linkshort")
-	if _, states, _ := steps(s.status(t)); states[2] != "waiting" {
-		t.Errorf("after a registration without error and no tokens yet, step 3 = %s", states[2])
-	}
-}
-
-func waitRun(t *testing.T, c *Console, name string) {
-	t.Helper()
-	for range 200 {
-		c.mu.Lock()
-		running := c.runs[name].registering != ""
-		c.mu.Unlock()
-		if !running {
-			return
+// No render of the new project's panel asks for a password or offers a
+// registration: the reconcile registers (ruling 219); the old route is gone.
+func TestNewProjectPanelHasNoPassword(t *testing.T) {
+	minted := factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"}
+	for _, setup := range []func(s *statusRig){
+		func(s *statusRig) {},
+		func(s *statusRig) { s.infra.set(openPull) },
+		func(s *statusRig) { s.force.load("linkshort") },
+		func(s *statusRig) { s.force.load("linkshort"); s.regErr = "boom" },
+		func(s *statusRig) { s.force.load("linkshort"); s.row(minted) },
+		func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true },
+	} {
+		s := newStatusRig(t)
+		setup(s)
+		req := httptest.NewRequest(http.MethodGet, "/projects/linkshort/status", nil)
+		req.Header.Set("HX-Request", "true")
+		for _, body := range []string{s.status(t), s.do(req, s.ck).Body.String()} {
+			if strings.Contains(body, `type="password"`) || strings.Contains(body, "/register") || strings.Contains(body, "Create repository") {
+				t.Errorf("the panel offers a registration:\n%s", body)
+			}
 		}
-		time.Sleep(5 * time.Millisecond)
+		if rec := s.do(post("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}), s.ck); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("POST /projects/linkshort/register = %d", rec.Code)
+		}
 	}
-	t.Fatal("the registration did not end")
 }
 
 // A button's request htmx sends swaps only a 2xx answer, so a refused
@@ -631,13 +566,15 @@ func waitRun(t *testing.T, c *Console, name string) {
 // while a button's request runs.
 func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
 	s := newStatusRig(t)
-	s.force.load("linkshort")
+	s.infra.set(openPull)
 	page := s.status(t)
 	for _, want := range []string{"Hover a step, or focus it, for what it does.", `hx-sync="closest section:replace"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page lacks %q", want)
 		}
 	}
+	s.infra.set(nil)
+	s.force.load("linkshort")
 	hx := func(path string, form url.Values) *httptest.ResponseRecorder {
 		req := post(path, form)
 		req.Header.Set("HX-Request", "true")
@@ -649,23 +586,12 @@ func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
 		want string
 	}{
 		{"/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}, "No open pull request from project-linkshort."},
-		{"/projects/linkshort/register", url.Values{"csrf": {s.csrf}}, "The Forgejo site admin&#39;s password is required."},
 	} {
 		rec := hx(c.path, c.form)
 		body := rec.Body.String()
 		if rec.Code != http.StatusOK || !strings.HasPrefix(body, `<section id="status"`) || !strings.Contains(body, `<p class="problem" role="alert">`+c.want+`</p>`) {
 			t.Errorf("htmx POST %s = %d:\n%s", c.path, rec.Code, body)
 		}
-	}
-	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
-	s.c.cfg.Register = func(context.Context, string, factoryd.AdminAuth) error { <-release; return nil }
-	if rec := hx("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}); rec.Code != http.StatusOK {
-		t.Fatalf("register = %d", rec.Code)
-	}
-	body := hx("/projects/linkshort/register", url.Values{"csrf": {s.csrf}, "password": {"pw"}}).Body.String()
-	if !strings.Contains(body, `role="alert">The registration of linkshort is running.</p>`) {
-		t.Errorf("a second registration's panel:\n%s", body)
 	}
 	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusConflict {
 		t.Errorf("a plain POST's refusal = %d, want 409", rec.Code)
@@ -676,7 +602,7 @@ func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
 	s.force.mu.Unlock()
 	s.infra.mergeStatus = http.StatusTeapot
 	s.infra.mergeBody = "{"
-	body = hx("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}).Body.String()
+	body := hx("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}).Body.String()
 	if !strings.Contains(body, "Forgejo refused the merge: {") {
 		t.Errorf("a refusal without a message:\n%s", body)
 	}

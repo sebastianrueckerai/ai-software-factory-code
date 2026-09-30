@@ -14,6 +14,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/openbao"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
@@ -70,8 +71,8 @@ func main() {
 		Registry: registry,
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: registry, Provider: hetzner,
 			OwnerDone: gateway.TaskOwnerDone(store), NodeIPs: sshSources, Interval: cloudres.AgentInterval},
-		Signer: &gateway.OpenBao{BaseURL: cfg.OpenBaoURL, AuthRole: "factory-gateway", SSHRole: "factory-agent",
-			TokenFile: gateway.OpenBaoTokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
+		Signer: &openbao.Client{BaseURL: cfg.OpenBaoURL, AuthRole: "factory-gateway", SSHRole: "factory-agent",
+			TokenFile: openbao.TokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
 		Sources: sshSources,
 		Audit:   store,
 	}

@@ -36,8 +36,9 @@ type ProjectKube interface {
 // factory-projects, with the repository <name>/<name>, the team ci holding
 // the user ci-<name> with package write, and nothing else. What only the
 // Forgejo site admin can do (the organisation, the repository, the CI
-// user, every token) happens in Register, run by a human; Reconcile keeps
-// the rest with factory-projects' token (write:repository, unlimited: a
+// user, every token) happens in the reconcile of a project whose row has
+// no tokens yet, with the admin's login read from OpenBao for that run
+// only (ruling 212); Reconcile keeps the rest with factory-projects' token (write:repository, unlimited: a
 // repository-limited token never passes Forgejo's admin checks, and this
 // user owns project organisations and nothing in sf). In the cluster: each
 // namespace with its label, quota, limit range, default-deny network
@@ -63,9 +64,22 @@ type Registrar struct {
 	// HostKey scans Forgejo's SSH host key from inside the cluster (ruling
 	// 165); nil: no FACTORY_SSH_HOST_KEY.
 	HostKey func(ctx context.Context) (string, error)
+	// OpenBao holds the Forgejo site admin's login at AdminSecret.
+	OpenBao SecretReader
 
 	mu sync.Mutex
+	// regErrs is each project's last failed registration, by name.
+	regErrs sync.Map
 }
+
+// SecretReader reads a kv-v2 secret's fields (openbao.Client).
+type SecretReader interface {
+	KV(ctx context.Context, path string) (map[string]string, error)
+}
+
+// AdminSecret is the kv-v2 secret with the Forgejo site admin's username
+// and password, seeded by infra's seed-secrets.sh.
+const AdminSecret = "factory/forgejo-admin" // #nosec G101 -- a secret's path, not a credential value
 
 // Project objects' fixed names.
 const (
@@ -102,8 +116,8 @@ const (
 	SecretSSHHostKey = "FACTORY_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
 )
 
-// Waiting is an object that needs register-project first.
-const Waiting Change = "waiting: register-project creates it with the Forgejo admin's login"
+// Waiting is an object that needs the project's registration first.
+const Waiting Change = "waiting: registration makes it with the Forgejo admin's login from OpenBao"
 
 type reconcileRun struct {
 	r    *Registrar
@@ -207,9 +221,14 @@ func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 
 // Reconcile brings p's objects to its file. A row without a file is left
 // alone. A seed project's objects are read and reported (seed); a factory
-// project's are kept: a failed Forgejo step skips the Forgejo steps after
-// it, the cluster steps run regardless.
+// project's are kept, registered first while its row lacks a token: a
+// failed Forgejo step skips the Forgejo steps after it, the cluster steps
+// run regardless.
 func (r *Registrar) Reconcile(ctx context.Context, p Project) error {
+	return r.reconcile(ctx, p, false)
+}
+
+func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error {
 	if !p.File {
 		log.Printf("project %s: no file projects/%s.yaml in the configuration: nothing reconciled, its row keeps its tokens", p.Name, p.Name)
 		return nil
@@ -220,6 +239,9 @@ func (r *Registrar) Reconcile(ctx context.Context, p Project) error {
 	if p.Objects == policy.ObjectsSeed {
 		run.seed(ctx)
 		return errors.Join(run.errs...)
+	}
+	if rotate || p.PullToken == "" || p.GitToken == "" || p.MergeToken == "" {
+		run.register(ctx, rotate)
 	}
 	run.forgejo(ctx)
 	run.cluster(ctx)
@@ -855,11 +877,31 @@ func (run *reconcileRun) generatedSecret(ctx context.Context, ns, entry string, 
 	})
 }
 
-// Register is registration by a human with the Forgejo admin's login
-// (factoryd register-project) of the factory project name, whose file the
-// configuration holds: it gives the project its row, makes what only the
-// admin can (ruling 164), and reconciles. A second run changes nothing.
-func (r *Registrar) Register(ctx context.Context, name string, a AdminAuth, rotate bool) (Project, error) {
+// RegistrationError is why project name's last registration failed; ""
+// when it worked or none ran since factoryd started.
+func (r *Registrar) RegistrationError(name string) string {
+	msg, _ := r.regErrs.Load(name)
+	s, _ := msg.(string)
+	return s
+}
+
+// register makes what only the site admin can (ruling 164).
+func (run *reconcileRun) register(ctx context.Context, rotate bool) {
+	r, name := run.r, run.p.Name
+	err := r.admin(ctx, &run.p, rotate)
+	if err != nil {
+		r.regErrs.Store(name, err.Error())
+	} else {
+		r.regErrs.Delete(name)
+	}
+	run.fail("registration", err)
+}
+
+// Register is factoryd register-project: the factory project name, whose
+// file the configuration holds, gets its row and its reconcile, which
+// registers it when its row lacks a token or rotate is set (every token
+// minted again). A second run changes nothing.
+func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Project, error) {
 	p, err := r.stored(ctx, name)
 	if err != nil {
 		return p, err
@@ -875,13 +917,11 @@ func (r *Registrar) Register(ctx context.Context, name string, a AdminAuth, rota
 	if p, err = r.stored(ctx, name); err != nil {
 		return p, err
 	}
-	if err := r.admin(ctx, a, &p, rotate); err != nil {
-		return p, err
+	err = r.reconcile(ctx, p, rotate)
+	if stored, serr := r.stored(ctx, name); serr == nil {
+		p = stored
 	}
-	if p, err = r.stored(ctx, name); err != nil {
-		return p, err
-	}
-	return p, r.Reconcile(ctx, p)
+	return p, err
 }
 
 // admin makes, with the site admin's login, the organisation owned by
@@ -890,7 +930,11 @@ func (r *Registrar) Register(ctx context.Context, name string, a AdminAuth, rota
 // registry Actions secrets and its read:package for the pull secret,
 // factory-projects' read:repository and factory-merge's write:repository
 // limited to the repository. A token p already has is kept unless rotate.
-func (r *Registrar) admin(ctx context.Context, a AdminAuth, p *Project, rotate bool) error {
+func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
+	a, err := r.adminAuth(ctx)
+	if err != nil {
+		return err
+	}
 	f, repo, org, ci := r.Forgejo, p.Repo(), p.Name, p.CIUser()
 	logged := func(object string, c Change, err error) error {
 		if err != nil {
@@ -960,7 +1004,32 @@ func (r *Registrar) admin(ctx context.Context, a AdminAuth, p *Project, rotate b
 		log.Printf("project %s: tokens: no change", p.Name)
 		return nil
 	}
-	return r.Store.SetProjectTokens(ctx, p.Name, t)
+	if err := r.Store.SetProjectTokens(ctx, p.Name, t); err != nil {
+		return err
+	}
+	for have, minted := range map[*string]string{&p.PullToken: t.PullToken, &p.GitToken: t.GitToken, &p.MergeToken: t.MergeToken} {
+		if minted != "" {
+			*have = minted
+		}
+	}
+	return nil
+}
+
+// adminAuth reads the site admin's login from OpenBao; the caller holds it
+// for one registration and never logs it.
+func (r *Registrar) adminAuth(ctx context.Context) (AdminAuth, error) {
+	if r.OpenBao == nil {
+		return AdminAuth{}, errors.New("the Forgejo admin's login: no OpenBao client")
+	}
+	kv, err := r.OpenBao.KV(ctx, AdminSecret)
+	if err != nil {
+		return AdminAuth{}, fmt.Errorf("the Forgejo admin's login: %w", err)
+	}
+	a := AdminAuth{User: kv["username"], Password: kv["password"]}
+	if a.User == "" || a.Password == "" {
+		return AdminAuth{}, fmt.Errorf("the Forgejo admin's login: %s lacks username or password", AdminSecret)
+	}
+	return a, nil
 }
 
 func (r *Registrar) stored(ctx context.Context, name string) (Project, error) {

@@ -110,9 +110,10 @@ type Config struct {
 	CheckProject func(ctx context.Context, name string, file []byte) (refused []string, err error)
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
-	// Register is Registrar.Register with the Forgejo site admin's login.
-	Register func(ctx context.Context, name string, admin factoryd.AdminAuth) error
-	HTTP     *http.Client // nil = 15 s timeout
+	// RegistrationError is Registrar.RegistrationError: why the project's
+	// last registration failed, "" when none did.
+	RegistrationError func(name string) string
+	HTTP              *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics
@@ -192,7 +193,6 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /projects", c.auth(c.spend("add a project", c.createProject)))
 	c.mux.Handle("GET /projects/{name}/status", c.auth(c.projectStatus))
 	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
-	c.mux.Handle("POST /projects/{name}/register", c.auth(c.spend("register a project", c.registerProject)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil
 }

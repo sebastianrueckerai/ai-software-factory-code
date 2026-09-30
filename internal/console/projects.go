@@ -66,21 +66,15 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 }
 
 // projectRun is what the status panel keeps in memory of a new project:
-// the last merge Forgejo refused, and the registration running (as whom)
-// or its last error. Never the password.
+// the last merge Forgejo refused.
 type projectRun struct {
-	merge       string
-	registering string
-	regErr      string
+	merge string
 }
 
 var (
 	newProjectName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,35}[a-z0-9]$`)
 	treeName       = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$`)
 )
-
-// registerTimeout bounds a registration no request waits for.
-const registerTimeout = 15 * time.Minute
 
 type newProject struct {
 	Name, Process, Template, MergeRule string
@@ -211,10 +205,10 @@ type step struct {
 }
 
 type statusPanel struct {
-	Name, User, CSRF      string
-	Steps                 []step
-	Final                 bool
-	CanMerge, CanRegister bool
+	Name, User, CSRF string
+	Steps            []step
+	Final            bool
+	CanMerge         bool
 	// Error is why the button just pressed did nothing.
 	Error string
 }
@@ -230,7 +224,7 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 	merged := step{Name: "Approved and merged", State: stepWaiting,
 		Tip: "An approver merges the file into infra's main; the factory loads it within 30 seconds."}
 	created := step{Name: "Repository created", State: stepWaiting,
-		Tip:    "The Forgejo site admin's login registers the project: organisation, repository from the template, CI user, tokens. The password is used once and never stored.",
+		Tip:    "The factory registers the project with the Forgejo site admin's login from OpenBao: organisation, repository from the template, CI user, tokens. No one types a password.",
 		Detail: "After the merge."}
 	ready := step{Name: "Board ready", State: stepWaiting,
 		Tip:    "Webhook, labels, bot fork, deploy branch, namespaces, network policy and the Flux Kustomization are in place.",
@@ -292,25 +286,20 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 			created.State, created.Detail = stepFailed, "Cannot read the repository's main; the factoryd log says why."
 		case row.Minted() && hasMain:
 			created.State, created.Detail = stepDone, row.Repository+" with main."
-		case run.registering != "":
-			created.State, created.Detail = stepRunning, "Registering with the login of "+run.registering+"."
-		case run.regErr != "":
-			created.State, created.Detail = stepFailed, "Registration failed: "+run.regErr
 		case row.Minted():
 			created.State, created.Detail = stepRunning, "Organisation, repository, CI user and tokens made; waiting for main's first commit."
 		default:
-			created.Detail = "Waiting for an approver to enter the Forgejo site admin's password."
+			if regErr := c.cfg.RegistrationError(name); regErr != "" {
+				created.State, created.Detail = stepFailed, "Registration failed: "+regErr+". The reconcile tries again at least hourly."
+			} else {
+				created.State, created.Detail = stepRunning, "The reconcile registers it within a minute of the load."
+			}
 		}
-		out.CanRegister = approver && (created.State == stepWaiting || created.State == stepFailed && run.regErr != "")
 		switch {
 		case !row.ReadyAt.IsZero():
 			ready.State, ready.Detail, ready.Link = stepDone,
 				"Ready since "+row.ReadyAt.UTC().Format("2006-01-02 15:04")+" UTC: open the board", "/board?project="+url.QueryEscape(name)
 		case created.State != stepDone:
-		case run.registering != "":
-			ready.State, ready.Detail = stepRunning, "The registration's reconcile is running."
-		case run.regErr != "":
-			ready.State, ready.Detail = stepFailed, "The reconcile failed: "+run.regErr
 		default:
 			ready.State, ready.Detail = stepRunning, "Waiting for a reconcile that finds every object in place; one runs at least hourly."
 		}
@@ -418,46 +407,5 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	} else {
 		log.Printf("console: %s merged %s#%d", current(r).user, c.cfg.InfraRepo, pr.Number)
 	}
-	c.acted(w, r, name)
-}
-
-// registerProject runs Registrar.Register with the site admin's login the
-// approver typed, on a context detached from the request, so a closed tab
-// does not cut a half-made registration. The password is the goroutine's
-// argument only; the panel keeps the last error.
-func (c *Console) registerProject(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	if !newProjectName.MatchString(name) {
-		http.NotFound(w, r)
-		return
-	}
-	password := r.PostFormValue("password")
-	if password == "" {
-		c.refuse(w, r, name, "The Forgejo site admin's password is required.", http.StatusBadRequest)
-		return
-	}
-	user := current(r).user
-	c.mu.Lock()
-	run := c.run(name)
-	if run.registering != "" {
-		c.mu.Unlock()
-		c.refuse(w, r, name, "The registration of "+name+" is running.", http.StatusConflict)
-		return
-	}
-	run.registering, run.regErr = user, ""
-	c.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), registerTimeout)
-	go func(password string) {
-		defer cancel()
-		err := c.cfg.Register(ctx, name, factoryd.AdminAuth{User: user, Password: password})
-		log.Printf("console: registration of %s by %s ended (failed: %v)", name, user, err != nil)
-		c.mu.Lock()
-		run.registering, run.regErr = "", ""
-		if err != nil {
-			run.regErr = err.Error()
-		}
-		c.mu.Unlock()
-	}(password)
-	log.Printf("console: %s started the registration of %s", user, name)
 	c.acted(w, r, name)
 }

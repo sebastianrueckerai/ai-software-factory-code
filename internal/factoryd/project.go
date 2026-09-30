@@ -62,7 +62,7 @@ type Project struct {
 	ReadyAt time.Time
 
 	// ReadTokenHash and HookSecretHash are sha256 hex of FACTORY_READ_TOKEN
-	// and of the webhook secret last set. The tokens register-project
+	// and of the webhook secret last set. The tokens registration
 	// mints, never shown: ci-<name>'s read:package (PullToken, the image
 	// pull secret), factory-projects' read:repository limited to the
 	// repository (GitToken, Flux's source) and factory-merge's
@@ -76,7 +76,7 @@ type Project struct {
 	MergeToken  string
 }
 
-// Minted reports whether register-project has run: the organisation, the
+// Minted reports whether registration has run: the organisation, the
 // repository and the tokens exist.
 func (p Project) Minted() bool { return p.GitToken != "" }
 

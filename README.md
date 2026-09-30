@@ -1365,9 +1365,11 @@ team it made itself (the user's address `ci-<name>@factory.local`, the team
 package write and nothing else on no repository); any other `ci-<name>` or
 `ci` makes it stop with the reason.
 
-`factoryd register-project --name <name>` (a human, with the Forgejo site
-admin's login on stdin; the project's file says `objects: factory`) gives
-the project its row and does what only the admin can: the organisation, the repository
+The reconcile of a factory project (its file says `objects: factory`) whose
+row lacks a token registers it first (ruling 212): with the Forgejo site
+admin's login, read from OpenBao's kv-v2 `factory/forgejo-admin` (role
+`factoryd`, the projected token of audience `openbao`) into memory for that
+run and never logged or stored, it does what only the admin can: the organisation, the repository
 (private, `main`), the user `ci-<name>` (random password, discarded) in the
 team, and the tokens, each minted with `?sudo=`: `ci-<name>`'s
 `write:package` (`registry`) straight into the Actions secrets
@@ -1377,7 +1379,9 @@ namespaces' image pull secret), `factory-projects`' `read:repository` limited
 to the repository (`git-<name>`, row `git_token`, Flux's source) and
 `factory-merge`'s `write:repository` limited to it (`project-<name>`, row
 `merge_token`, the Merge activity's on this project). An existing token is
-kept unless `--rotate`, which revokes and mints them all again. These tokens
+kept unless `factoryd register-project --name <name> --rotate`, which
+revokes and mints them all again. A failed registration logs its line, the
+console's panel shows its error, and the next reconcile tries again. These tokens
 are plaintext in Postgres and so in its backups: the namespaces and Flux need
 them back after a rebuild; each reaches one project only.
 
@@ -1427,8 +1431,8 @@ ready"), which nothing clears; for a factory project:
   `host_key_hash`, so a rebuild that makes new host keys updates every project
   and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
   2222). As the bot: its private fork
-  `factory-agent/<name>` and the boot labels. A project whose file exists
-  waits for `register-project` here.
+  `factory-agent/<name>` and the boot labels. A project whose registration
+  failed waits here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
   pod security `restricted`; RoleBinding `factoryd` (ClusterRole
   `factoryd-project`); the CiliumNetworkPolicy `project`, a default deny that
@@ -1458,13 +1462,13 @@ ready"), which nothing clears; for a factory project:
   `flux-system`.
 
 ```
-kubectl -n factory exec -i deploy/factoryd -- factoryd register-project --name demo-app
+kubectl -n factory exec deploy/factoryd -- factoryd register-project --name demo-app [--rotate]
 ```
 
-with the admin's password on stdin, once `projects/demo-app.yaml` is on the
-infra repository's main and loaded, makes the above (a second run changes
-nothing), reconciles, and prints the edge gateway listeners and Certificates
-for the infra commit (ruling 155). The console's `/projects` lists every
+once `projects/demo-app.yaml` is on the infra repository's main and loaded,
+reconciles the project (registering it when its row lacks a token, every
+token again with `--rotate`; a second run changes nothing) and prints the
+edge gateway listeners and Certificates for the infra commit (ruling 155). The console's `/projects` lists every
 project read-only with its file's settings, the envelope with its use and
 the standing monthly line, and a link to the file.
 
@@ -1479,10 +1483,10 @@ branch `project-<name>` and opens its pull request. The status panel
 1. the pull request, read with the `forgejo-config` token;
 2. the merge, with a Merge button that merges as the human and shows
    Forgejo's refusal, and the version in force holding the file;
-3. the repository: an approver types the site admin's password and
-   `Registrar.Register` runs in the background on a context detached from the
-   request. The password is never stored or logged; the last error stays in
-   memory;
+3. the repository: no click; the reconcile that loads the new version
+   registers the project (ruling 219), and the step shows the row's tokens
+   and `main`, or the last registration error (`Registrar.RegistrationError`,
+   in memory);
 4. `ready_at`, with a link to the project's board.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080

@@ -1,4 +1,4 @@
-package gateway
+package openbao
 
 import (
 	"context"
@@ -21,9 +21,11 @@ type fakeBao struct {
 	signs     []map[string]string
 	tokens    []string
 	forbidOne bool
+	kvTokens  []string
+	kvAnswer  string
 }
 
-func newFakeBao(t *testing.T) (*fakeBao, *OpenBao) {
+func newFakeBao(t *testing.T) (*fakeBao, *Client) {
 	t.Helper()
 	f := &fakeBao{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +50,15 @@ func newFakeBao(t *testing.T) (*fakeBao, *OpenBao) {
 			}
 			f.signs = append(f.signs, body)
 			io.WriteString(w, `{"data":{"serial_number":"1","signed_key":"ssh-ed25519-cert-v01@openssh.com AAAACERT\n"}}`)
+		case "GET /v1/factory/data/forgejo-admin":
+			f.kvTokens = append(f.kvTokens, r.Header.Get("X-Vault-Token"))
+			if f.forbidOne {
+				f.forbidOne = false
+				w.WriteHeader(http.StatusForbidden)
+				io.WriteString(w, `{"errors":["permission denied"]}`)
+				return
+			}
+			io.WriteString(w, f.kvAnswer)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -55,7 +66,7 @@ func newFakeBao(t *testing.T) (*fakeBao, *OpenBao) {
 	t.Cleanup(srv.Close)
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	os.WriteFile(tokenFile, []byte("sa-jwt\n"), 0o600)
-	return f, &OpenBao{BaseURL: srv.URL, AuthRole: "factory-gateway", SSHRole: "factory-agent", TokenFile: tokenFile, HTTP: srv.Client()}
+	return f, &Client{BaseURL: srv.URL, AuthRole: "factory-gateway", SSHRole: "factory-agent", TokenFile: tokenFile, HTTP: srv.Client()}
 }
 
 func TestOpenBaoSignsWithKubernetesLogin(t *testing.T) {
@@ -108,5 +119,45 @@ func TestOpenBaoLogsInAgainAfterAForbiddenSign(t *testing.T) {
 	}
 	if strings.Join(f.tokens, ",") != "tok-1,tok-1,tok-2" {
 		t.Fatalf("tokens = %v", f.tokens)
+	}
+}
+
+// KV reads a kv-v2 secret's fields at <mount>/data/<rest>, logged in as
+// the client's role; a 403 logs in again once.
+func TestOpenBaoReadsKV(t *testing.T) {
+	f, bao := newFakeBao(t)
+	bao.AuthRole = "factoryd"
+	f.kvAnswer = `{"data":{"data":{"username":"sebastian","password":"pw"},"metadata":{"version":1}}}`
+	ctx := context.Background()
+	got, err := bao.KV(ctx, "factory/forgejo-admin")
+	if err != nil || len(got) != 2 || got["username"] != "sebastian" || got["password"] != "pw" {
+		t.Fatalf("KV = %v, %v", got, err)
+	}
+	f.mu.Lock()
+	f.forbidOne = true
+	f.mu.Unlock()
+	if _, err := bao.KV(ctx, "factory/forgejo-admin"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.logins) != 2 || f.logins[0]["role"] != "factoryd" || strings.Join(f.kvTokens, ",") != "tok-1,tok-1,tok-2" {
+		t.Fatalf("logins %v, tokens %v", f.logins, f.kvTokens)
+	}
+}
+
+// An answer that is not a map of strings is an error that never quotes
+// the answer: it may hold the secret.
+func TestOpenBaoKVErrorHidesTheAnswer(t *testing.T) {
+	f, bao := newFakeBao(t)
+	f.kvAnswer = `{"data":{"data":{"username":"sebastian","password":["s3cret-value"]}}}`
+	_, err := bao.KV(context.Background(), "factory/forgejo-admin")
+	if err == nil || strings.Contains(err.Error(), "s3cret-value") {
+		t.Fatalf("err = %v", err)
+	}
+	f.kvAnswer = `{"data":{}}`
+	if _, err := bao.KV(context.Background(), "factory/forgejo-admin"); err == nil {
+		t.Fatal("an answer without data accepted")
+	}
+	if _, err := bao.KV(context.Background(), "nomount"); err == nil {
+		t.Fatal("a path without a mount accepted")
 	}
 }

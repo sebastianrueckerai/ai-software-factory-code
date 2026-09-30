@@ -422,6 +422,11 @@ spec:
         # in-cluster Forgejo: the public host resolves to the edge gateway, which the egress policy does not admit
         - name: FORGEJO_URL
           value: http://forgejo-http.forgejo.svc.cluster.local:3000
+        # the Forgejo site admin's login for registration (role factoryd);
+        # plain HTTP in the cluster: Cilium's WireGuard encrypts pod traffic
+        # between nodes
+        - name: OPENBAO_URL
+          value: http://openbao.platform.svc.cluster.local:8200
         - name: LITELLM_URL
           value: http://litellm.platform.svc.cluster.local:4000
         - name: FORGEJO_BOT_USER
@@ -523,6 +528,15 @@ spec:
         resources:
           requests: {cpu: 50m, memory: 64Mi}
           limits: {cpu: 500m, memory: 256Mi}
+        volumeMounts:
+        - {name: openbao-token, mountPath: /var/run/secrets/openbao, readOnly: true}
+      volumes:
+      # a ServiceAccount token only OpenBao's Kubernetes auth accepts
+      # (role factoryd, audience openbao)
+      - name: openbao-token
+        projected:
+          sources:
+          - serviceAccountToken: {path: token, audience: openbao, expirationSeconds: 3600}
 ---
 apiVersion: v1
 kind: Service
@@ -612,8 +626,8 @@ spec:
     - ports: [{port: "8080", protocol: TCP}]
 ---
 # factoryd holds the LiteLLM master key, the bot password, the S3 keys and
-# the Hetzner CI token, so its egress is default-deny with exactly its
-# callees. Postgres admits
+# the Hetzner CI token, and reads the Forgejo admin's login from OpenBao, so
+# its egress is default-deny with exactly its callees. Postgres admits
 # every sf-cluster instance on 5432 so a failover to another primary keeps
 # working; the S3 FQDN must match S3_ENDPOINT above.
 apiVersion: cilium.io/v2
@@ -643,6 +657,7 @@ spec:
         - matchName: signoz.platform.svc.cluster.local
         - matchName: forgejo-ssh.forgejo.svc.cluster.local
         - matchName: factory-gateway.factory.svc.cluster.local
+        - matchName: openbao.platform.svc.cluster.local
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -664,6 +679,14 @@ spec:
         app.kubernetes.io/name: litellm
     toPorts:
     - ports: [{port: "4000", protocol: TCP}]
+  # OpenBao: the Forgejo site admin's login at registration
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: openbao
+        component: server
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
   # a running agent session's message endpoint (harness.MessagePort), for
   # the loop nudge; the task namespace's worker policy admits only factoryd
   - toEndpoints:
