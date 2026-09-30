@@ -2,14 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy/policytest"
 )
 
 // tree copies the policy package's fixture tree into a temporary
@@ -236,5 +240,77 @@ func TestExplainRefusesKind(t *testing.T) {
 		if code := run(args, &stdout, &errOut); code != 2 {
 			t.Errorf("%v: exit %d, want 2", args, code)
 		}
+	}
+}
+
+// treeSource is a ConfigSource at one commit.
+type treeSource map[string][]byte
+
+func (s treeSource) Head(context.Context) (string, error) { return "c1", nil }
+func (s treeSource) Files(context.Context, string) (map[string][]byte, error) {
+	return maps.Clone(s), nil
+}
+
+// emptyStore is a PolicyStore that holds no version yet.
+type emptyStore struct{ recorded []string }
+
+func (s *emptyStore) RecordPolicy(_ context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
+	s.recorded = append(s.recorded, commit)
+	return policy.Version{ID: 1, Commit: commit, Tree: tree}, true, nil
+}
+func (s *emptyStore) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	return policy.Version{}, false, nil
+}
+func (s *emptyStore) PolicyVersion(context.Context, int64) (policy.Version, bool, error) {
+	return policy.Version{}, false, nil
+}
+func (s *emptyStore) Costs(context.Context, time.Time, time.Time) (policy.Costs, error) {
+	return policy.Costs{}, nil
+}
+func (s *emptyStore) SweepHolds(context.Context) (int, error) { return 0, nil }
+
+// config check and the loader judge one way (stage11-design.md section 3):
+// every refusal fixture of TestProcessRefusals, and the valid tree, give
+// the same verdict and the same lines through both.
+func TestConfigCheckAndLoaderAgree(t *testing.T) {
+	fixture, err := policy.ReadDir("../../internal/policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(map[string][]byte){"valid": func(map[string][]byte) {}}
+	for name, r := range policytest.Refusals {
+		cases[name] = r.Change
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			files := maps.Clone(fixture)
+			change(files)
+			dir := t.TempDir()
+			if code := run([]string{"schema", "--out", filepath.Join(dir, "schema")}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+				t.Fatalf("schema exit %d", code)
+			}
+			for f, b := range files {
+				write(t, filepath.Join(dir, f), string(b))
+			}
+			var stdout, stderr bytes.Buffer
+			code := run([]string{"config", "check", dir}, &stdout, &stderr)
+
+			store := &emptyStore{}
+			loader := &factoryd.PolicyLoader{Source: treeSource(files), Store: store, LadderModels: ladder().Aliases()}
+			loadErr := loader.Load(context.Background())
+
+			if name == "valid" {
+				if code != 0 || loadErr != nil || !slices.Equal(store.recorded, []string{"c1"}) {
+					t.Fatalf("check exit %d (%s), load %v, recorded %v: want both to accept", code, stderr.String(), loadErr, store.recorded)
+				}
+				return
+			}
+			if code != 1 || loadErr == nil || len(store.recorded) != 0 {
+				t.Fatalf("check exit %d, load %v, recorded %v: want both to refuse", code, loadErr, store.recorded)
+			}
+			if got, want := stderr.String(), dir+": rejected:\n"+loadErr.Error()+"\n"; got != want {
+				t.Fatalf("config check says\n%s\nthe loader\n%s", got, want)
+			}
+		})
 	}
 }
