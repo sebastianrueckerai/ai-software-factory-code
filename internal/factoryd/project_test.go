@@ -176,7 +176,7 @@ func TestPGProjects(t *testing.T) {
 		cols = append(cols, c)
 	}
 	rows.Close()
-	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "updated_at"}; !slices.Equal(cols, want) {
+	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "ready_at", "updated_at"}; !slices.Equal(cols, want) {
 		t.Fatalf("projects columns = %v, want %v", cols, want)
 	}
 	var envelopes bool

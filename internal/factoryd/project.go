@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"maps"
@@ -47,11 +48,18 @@ type Project struct {
 	// its lanes, both in the version in force; "" and none on agents none.
 	Process string
 	Lanes   []policy.Lane
+	// Template names the template registration seeds an empty repository
+	// with; TemplateFiles are its files in the same configuration version.
+	Template      string
+	TemplateFiles map[string]string
 	// File is whether the configuration holds projects/<name>.yaml: a row
 	// without one is kept for its tokens and nothing acts on it.
 	File      bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ReadyAt is when a reconcile first found every object in place; zero:
+	// not yet.
+	ReadyAt time.Time
 
 	// ReadTokenHash and HookSecretHash are sha256 hex of FACTORY_READ_TOKEN
 	// and of the webhook secret last set. The tokens register-project
@@ -113,6 +121,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens
 		}
+		p.Template, p.TemplateFiles = c.Template, v.Templates[c.Template]
 		byName[name] = p
 	}
 	out := slices.Collect(maps.Values(byName))
@@ -178,6 +187,8 @@ type ProjectStore interface {
 	// that stored its hash sets the Actions secret.
 	ClaimReadToken(ctx context.Context, name, hash string) (bool, error)
 	ForgetReadToken(ctx context.Context, name, hash string) error
+	// SetProjectReady sets ready_at unless it is set.
+	SetProjectReady(ctx context.Context, name string) error
 }
 
 // ProjectTokens: an empty field leaves the stored one.
@@ -185,7 +196,7 @@ type ProjectTokens struct {
 	ReadTokenHash, HookSecretHash, HostKeyHash, PullToken, GitToken, MergeToken string
 }
 
-const projectColumns = `name, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at`
+const projectColumns = `name, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at, ready_at`
 
 // Projects are the current configuration's projects with their rows, and
 // the rows no file names.
@@ -202,10 +213,12 @@ func (s *PGStore) Projects(ctx context.Context) ([]Project, error) {
 	var ps []Project
 	for rows.Next() {
 		var p Project
+		var ready sql.NullTime
 		if err := rows.Scan(&p.Name, &p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.PullToken, &p.GitToken, &p.MergeToken,
-			&p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.CreatedAt, &p.UpdatedAt, &ready); err != nil {
 			return nil, err
 		}
+		p.ReadyAt = ready.Time
 		ps = append(ps, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -270,6 +283,11 @@ func (s *PGStore) ClaimReadToken(ctx context.Context, name, hash string) (bool, 
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+func (s *PGStore) SetProjectReady(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE projects SET ready_at = now() WHERE name = $1 AND ready_at IS NULL`, name)
+	return err
 }
 
 // ForgetReadToken clears the stored hash when it is still hash, so the

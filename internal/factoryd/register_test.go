@@ -51,6 +51,15 @@ type forgejoState struct {
 	projectsAdmin bool     // factory-projects sees the repository as admin
 	emails        map[string]string
 	teamUnits     map[string]string
+	seeds         []seedCommit
+}
+
+// seedCommit is one contents call: its branch, message, credential and
+// each file's operation and decoded content by path.
+type seedCommit struct {
+	branch, message, by string
+	ops                 map[string]string
+	files               map[string]string
 }
 
 func newForgejoState() *forgejoState {
@@ -270,6 +279,21 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			}
 			s.branches[body["new_branch_name"].(string)] = head
 			w.WriteHeader(http.StatusCreated)
+		case p == repo+"/contents" && r.Method == http.MethodPost:
+			c := seedCommit{branch: body["branch"].(string), message: body["message"].(string), by: by, ops: map[string]string{}, files: map[string]string{}}
+			for _, f := range body["files"].([]any) {
+				f := f.(map[string]any)
+				b, _ := base64.StdEncoding.DecodeString(f["content"].(string))
+				c.ops[f["path"].(string)], c.files[f["path"].(string)] = f["operation"].(string), string(b)
+			}
+			if _, ok := s.branches[c.branch]; ok {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			s.seeds = append(s.seeds, c)
+			s.branches[c.branch] = "5eed"
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"commit":{"sha":"5eed"}}`)
 		case p == repo+"/keys" && r.Method == http.MethodGet:
 			list(nonNil(s.keys))
 		case p == repo+"/keys" && r.Method == http.MethodPost:
@@ -336,6 +360,7 @@ type fakeProjectKube struct {
 	secrets map[string]map[string]string
 	deploys map[string][]DeploymentState
 	changes []string
+	fail    string // an apply whose path holds it fails
 }
 
 func newFakeProjectKube() *fakeProjectKube {
@@ -345,6 +370,9 @@ func newFakeProjectKube() *fakeProjectKube {
 func (k *fakeProjectKube) Apply(_ context.Context, path string, obj map[string]any) (Change, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.fail != "" && strings.Contains(path, k.fail) {
+		return "", errors.New("the API server refused")
+	}
 	b, _ := json.Marshal(obj)
 	old, ok := k.objects[path]
 	k.objects[path] = string(b)
@@ -455,6 +483,16 @@ func (s *memProjects) SetProjectTokens(_ context.Context, name string, t Project
 		}
 	}
 	s.m[name] = p
+	return nil
+}
+
+func (s *memProjects) SetProjectReady(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.m[name]; p.ReadyAt.IsZero() {
+		p.ReadyAt = time.Now()
+		s.m[name] = p
+	}
 	return nil
 }
 

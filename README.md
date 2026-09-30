@@ -1271,14 +1271,24 @@ them back after a rebuild; each reaches one project only.
 
 factoryd reconciles every project at boot and at every new configuration
 version (a file changed, the approvers), one log line per object (`project
-<name>: <object>: created|updated|no change|waiting: ...`); for a factory
-project:
+<name>: <object>: created|updated|no change|waiting: ...`); the first
+reconcile of a factory project whose every line is created, updated, no
+change, ensured or ready sets the row's `ready_at` (the console's "Board
+ready"), which nothing clears; for a factory project:
 
 - Forgejo, with the projects token: the webhook to factoryd (every issue and
   pull request event and pushes, JSON, the intake secret; the row keeps the secret's
   sha256, so a re-seeded secret reaches the hook), `factory-agent`,
   `factory-merge` and the policy's approvers as write collaborators (Forgejo
-  keeps only writers in a whitelist), `main`'s protection: the code
+  keeps only writers in a whitelist); the seed: when the repository has no
+  `main` and the project file names a `template`, the files of
+  `templates/<template>/` of the configuration version in force, rendered
+  with Go's `text/template` (delimiters `[[` `]]`, `missingkey=error`, data
+  name, repository, image and each environment's namespace by path), as
+  `main`'s first commit by `factory-projects` through the contents API,
+  message `Seed from template <template> (registration)`; a repository with
+  `main` is never seeded, and without a template the line waits for the
+  first push; `main`'s protection: the code
   repository's (push whitelist the approvers and `factory-merge`, merge
   whitelist the same, approvals whitelist the approvers, apply to admins,
   stale approvals dismissed, rejected reviews block), `required_approvals` 0

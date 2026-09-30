@@ -109,10 +109,21 @@ type reconcileRun struct {
 	r    *Registrar
 	p    Project
 	errs []error
+	// unclean: a line waited, failed or reported anything but in place
+	unclean bool
 }
 
 func (run *reconcileRun) line(object string, c Change) {
+	run.unclean = run.unclean || !cleanLine(c)
 	log.Printf("project %s: %s: %s", run.p.Name, object, c)
+}
+
+// cleanLine reports whether c leaves its object in place: created,
+// updated, no change, ensured or ready (stage11-design.md section 5,
+// "Board ready").
+func cleanLine(c Change) bool {
+	verb, _, _ := strings.Cut(string(c), " ")
+	return c == Unchanged || slices.Contains([]string{string(Created), string(Updated), "ensured", "ready"}, verb)
 }
 
 // fail records err for object and reports whether there was one.
@@ -122,6 +133,7 @@ func (run *reconcileRun) fail(object string, err error) bool {
 	}
 	log.Printf("project %s: %s: %v", run.p.Name, object, err)
 	run.errs = append(run.errs, fmt.Errorf("%s: %w", object, err))
+	run.unclean = true
 	return true
 }
 
@@ -211,6 +223,9 @@ func (r *Registrar) Reconcile(ctx context.Context, p Project) error {
 	}
 	run.forgejo(ctx)
 	run.cluster(ctx)
+	if !run.unclean {
+		run.fail("ready_at", r.Store.SetProjectReady(ctx, p.Name))
+	}
 	return errors.Join(run.errs...)
 }
 
@@ -310,6 +325,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 		do     func() (Change, error)
 	}{
 		{"collaborators", func() (Change, error) { return run.pruneCollaborators(ctx) }},
+		{"seed", func() (Change, error) { return run.seedFromTemplate(ctx) }},
 		{"protection main", func() (Change, error) {
 			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser))
 		}},
@@ -364,6 +380,38 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 		}
 		run.line("actions secret "+name, c)
 	}
+}
+
+// seedFromTemplate commits the project's template, rendered, as main's
+// first commit by factory-projects (stage11-design.md section 6). It runs
+// before main's protection exists; a repository with main is never seeded,
+// so no project is seeded twice.
+func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
+	f, p := run.r.Forgejo, run.p
+	has, err := f.ProjectBranchExists(ctx, p.Repo(), "main")
+	switch {
+	case err != nil:
+		return "", err
+	case has:
+		return Unchanged, nil
+	case p.Template == "":
+		return "waiting: no template; main's first push starts the project", nil
+	case p.TemplateFiles == nil:
+		return "", fmt.Errorf("template %q is not in the configuration version in force", p.Template)
+	}
+	data := policy.TemplateData{Name: p.Name, Repository: p.Repository, Image: run.r.RegistryHost + "/" + p.Repository, Namespaces: map[string]string{}}
+	for _, e := range p.Environments {
+		data.Namespaces[e.Path] = e.Namespace
+	}
+	files, err := policy.RenderTemplate(p.TemplateFiles, data)
+	if err != nil {
+		return "", err
+	}
+	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Seed from template "+p.Template+" (registration)", files)
+	if err != nil {
+		return "", err
+	}
+	return Change(fmt.Sprintf("created %s from template %s", sha, p.Template)), nil
 }
 
 // webhook keeps the hook to factoryd; the row keeps the sha256 of the
