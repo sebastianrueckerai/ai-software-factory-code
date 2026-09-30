@@ -573,8 +573,9 @@ const (
 	versionKeepWork workflow.Version = 1
 )
 
-// minSession is the least agent time a session starts with: pod start and
-// the first build take one to two minutes.
+// minSession is the least agent time a session starts with, or the whole
+// agent time when that is shorter: pod start and the first build take one
+// to two minutes.
 const minSession = 5 * time.Minute
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
@@ -629,6 +630,8 @@ type verdict struct {
 	stronger      bool
 	// escalate is the gate supervisor's reason for a human
 	escalate string
+	// requested: the findings are a writer's change request
+	requested bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -641,38 +644,51 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
-	apply := func(v verdict) {
+	// least is the agent time a session needs to start (versionKeepWork)
+	least := min(minSession, t.cfg.WallClockCap)
+	// apply takes a verification's findings for the next session. A
+	// writer's change request with no session left is the human's answer
+	// (versionKeepWork, ruling 225): it buys the session, answered.
+	apply := func(v verdict) (answered bool) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
 		findings, reason = v.findings, v.reason
+		if t.keepWork >= versionKeepWork && v.requested &&
+			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
+			t.grant(&u)
+			return true
+		}
+		return false
 	}
 	// verifyAtCap takes the branch's head past the base through verify
 	// when no verification judged it (versionKeepWork): head "" for none.
-	verifyAtCap := func() (head string, v verdict) {
+	verifyAtCap := func() (head string, v verdict, answered bool) {
 		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &head); err != nil {
-			return "", verdict{final: "failed", reason: "branch head: " + errMessage(err)}
+			return "", verdict{final: "failed", reason: "branch head: " + errMessage(err)}, false
 		}
 		if head == "" || slices.Contains(t.judged, head) || head == t.rerunHead || head == t.syncedHead {
-			return head, verdict{}
+			return head, verdict{}, false
 		}
-		t.lastRound, startRef = true, head
-		v = t.verify(head)
-		if v.final == "" {
-			apply(v)
+		// the cap card, not the approval card, takes the findings
+		t.lastRound, startRef = false, head
+		if v = t.verify(head); v.final == "" {
+			answered = apply(v)
 		}
-		return head, v
+		return head, v, answered
 	}
 	// timeCap is the agent-time cap (versionKeepWork): a branch with nothing
 	// past the base fails; else findings on its head go to the cap card,
 	// whose answer buys time.
 	timeCap := func() (final, why string) {
-		head, v := verifyAtCap()
+		head, v, answered := verifyAtCap()
 		switch {
 		case v.final != "":
 			return v.final, v.reason
 		case head == "":
 			return "failed", "wall-clock cap reached"
+		case answered:
+			return "", ""
 		}
 		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
 		if final != "" {
@@ -796,17 +812,21 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v18 < versionSessionCap {
 				break
 			}
+			answered := false
 			if t.keepWork >= versionKeepWork {
-				if _, v := verifyAtCap(); v.final != "" {
+				var v verdict
+				if _, v, answered = verifyAtCap(); v.final != "" {
 					return t.finish(v.final, v.reason)
 				}
 			}
-			final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
-			if final != "" {
-				return t.finish(final, why)
+			if !answered {
+				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings = append(findings, answer...)
+				t.grant(&u)
 			}
-			findings = append(findings, answer...)
-			t.grant(&u)
 		}
 		if drained {
 			if final, why, ok := t.decided(); ok {
@@ -819,7 +839,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
-		if t.keepWork >= versionKeepWork && remaining < minSession {
+		if t.keepWork >= versionKeepWork && remaining < least {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
@@ -1074,7 +1094,7 @@ func (t *taskRun) verify(commit string) verdict {
 	if final != "" {
 		return verdict{final: final, reason: why}
 	}
-	return verdict{findings: requested, reason: "changes requested"}
+	return verdict{findings: requested, reason: "changes requested", requested: true}
 }
 
 // gate takes a commit with green checks through the gates, the model
@@ -1213,7 +1233,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 			return verdict{final: final, reason: why}
 		}
 		if findings := t.drainChanges(); len(findings) > 0 {
-			return verdict{findings: findings, reason: "changes requested"}
+			return verdict{findings: findings, reason: "changes requested", requested: true}
 		}
 		if t.rolling && t.drainFolds() {
 			return verdict{reason: "newer images folded in"}
@@ -1414,7 +1434,7 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 		case final != "":
 			return verdict{final: final, reason: why}, true, nil
 		case len(changes) > 0:
-			return verdict{findings: changes, reason: "changes requested"}, true, nil
+			return verdict{findings: changes, reason: "changes requested", requested: true}, true, nil
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}, true, nil

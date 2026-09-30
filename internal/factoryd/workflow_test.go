@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/activity"
 	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
@@ -469,10 +471,11 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	}
 }
 
-// A change request on the last round, after a pushed commit, is the
+// Before versionKeepWork a change request on the last round, after a pushed commit, is the
 // cap's last finding on the card; the answer buys a session with it.
 func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("keep-work", workflow.DefaultVersion, versionKeepWork).Return(workflow.DefaultVersion)
 	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
 	h.onSessions(pushed("s3", "c3"), pushed("s4", "c4"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -676,32 +679,81 @@ func wallClock(session, commit string) SessionResult {
 	return SessionResult{Outcome: OutcomeWallClock, SessionID: session, Commit: commit, Summary: "supervision trip: wall_clock"}
 }
 
-// onVerify answers OpenPullRequest with PR #9, recording each commit in
-// order into steps as "pr <commit> after <n> cards", and WaitChecks green.
-func (h *workflowHarness) onVerify(steps *[]string) {
+// onVerify records into steps, in order, each OpenPullRequest as "pr
+// <commit> after <n> cards" (PR #9), each RequestApproval as "approval
+// <commit>" and each RunSession as "session <attempt> after <n> cards"
+// (answered by results in order, none registered for nil); WaitChecks answers checks in order, the
+// last repeating, green when none are given.
+func (h *workflowHarness) onVerify(steps *[]string, results []SessionResult, checks ...ChecksResult) {
+	if len(checks) == 0 {
+		checks = []ChecksResult{{State: ChecksSuccess}}
+	}
 	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, sha string) (PullRequest, error) {
 			*steps = append(*steps, fmt.Sprintf("pr %s after %d cards", sha, len(h.escalated)))
 			return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil
 		})
-	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(ChecksResult{State: ChecksSuccess}, nil)
+	h.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			*steps = append(*steps, "approval "+in.Commit)
+			return nil
+		})
+	n := 0
+	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			n++
+			return checks[min(n, len(checks))-1], nil
+		})
+	if results == nil {
+		return
+	}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			*steps = append(*steps, fmt.Sprintf("session %d after %d cards", in.Attempt, len(h.escalated)))
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
 }
+
+var gosecRed = ChecksResult{State: ChecksFailure, Findings: []string{"gosec G706"}}
 
 // A session stopped at the cap with pushed work: the branch's head goes
 // through verification instead of failing the task.
 func TestCapWithCommitsGoesToVerification(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.branchHead = "c1"
-	h.onSessions(wallClock("s1", "c1"))
 	var steps []string
-	h.onVerify(&steps)
+	h.onVerify(&steps, []SessionResult{wallClock("s1", "c1")})
 	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	if !slices.Equal(steps, []string{"pr c1 after 0 cards"}) || len(h.sessions) != 1 || h.branchReads != 1 {
-		t.Fatalf("pull requests = %v, sessions = %d, branch reads = %d; want pr c1 after one session and one read", steps, len(h.sessions), h.branchReads)
+	if want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "approval c1"}; !slices.Equal(steps, want) || h.branchReads != 1 {
+		t.Fatalf("steps = %v, branch reads = %d; want %v and one read", steps, h.branchReads, want)
+	}
+}
+
+// A session activity timed out at the cap: the same, the head c1 goes
+// through verification.
+func TestCapTimeoutWithCommitsGoesToVerification(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	var steps []string
+	h.onVerify(&steps, nil)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{}, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
+		})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	// the timeout is tried MaximumAttempts (3) times, all one session
+	if want := []string{"pr c1 after 0 cards", "approval c1"}; !slices.Equal(steps, want) || len(h.sessions) != 3 || h.branchReads != 1 {
+		t.Fatalf("steps = %v, session tries = %d, branch reads = %d; want %v after three tries and one read", steps, len(h.sessions), h.branchReads, want)
 	}
 }
 
@@ -716,89 +768,175 @@ func TestCapWithoutCommitsFails(t *testing.T) {
 }
 
 // With 20m of agent time and 16m used, 4m are left: no session starts,
-// the cap reads the branch. 15m used leaves 5m: a session starts.
+// the cap reads the branch. 15m used leaves 5m: a session starts. An
+// agent time of 3m, unused, starts a session too; with 1m used, 2m are
+// left: none.
 func TestNoSessionUnderFiveMinutes(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 16 * time.Minute, Attempts: 1}}
-	h.onSessions(pushed("s2", "c2"))
+	for name, tc := range map[string]struct {
+		cap, used time.Duration
+		sessions  int
+	}{
+		"20m, 16m used": {20 * time.Minute, 16 * time.Minute, 0},
+		"20m, 15m used": {20 * time.Minute, 15 * time.Minute, 1},
+		"3m, none used": {3 * time.Minute, 0, 1},
+		"3m, 1m used":   {3 * time.Minute, time.Minute, 0},
+	} {
+		cfg := testWorkflowConfig
+		cfg.WallClockCap = tc.cap
+		h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: tc.used, Attempts: 1}}
+		var steps []string
+		h.onVerify(&steps, []SessionResult{pushed("s2", "c2")})
+		h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.sessions) != 0 || h.branchReads != 1 {
-		t.Fatalf("final = %q, finals = %v, sessions = %d, branch reads = %d; want no session, one read", final, h.finals, len(h.sessions), h.branchReads)
-	}
-
-	h = newWorkflowHarness(t)
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 15 * time.Minute, Attempts: 1}}
-	h.onSessions(pushed("s2", "c2"))
-	var steps []string
-	h.onVerify(&steps)
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-	if final := h.run(t); final != "done" || len(h.sessions) != 1 {
-		t.Fatalf("final = %q, sessions = %d with 5m left, want done after one", final, len(h.sessions))
-	}
-}
-
-// A head a verification already judged is not verified again at the cap:
-// a run that adopts PR #9 at c1 with the whole 20m used verifies c1, the
-// reviewer asks for changes, and with no time left the cap card goes to a
-// human, whose answer buys an attempt and a 10m slice.
-func TestTimeCapWithJudgedHeadOpensTheCard(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.branchHead = "c1"
-	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
-	h.onSessions(pushed("s2", "c2"))
-	var steps []string
-	h.onVerify(&steps)
-	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
-	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
-	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, finals = %v", final, h.finals)
-	}
-	if want := []string{"pr c1 after 0 cards", "pr c2 after 1 cards"}; !slices.Equal(steps, want) {
-		t.Fatalf("steps = %v, want %v", steps, want)
-	}
-	change := "reviewer sebastian requested changes: keep the old flag"
-	if want := []string{capReached + "\nlast: changes requested\n- " + change}; !slices.Equal(h.escalated, want) {
-		t.Fatalf("escalations = %q, want %q", h.escalated, want)
-	}
-	if len(h.sessions) != 1 || h.branchReads != 1 || !slices.Equal(h.sessions[0].Findings, []string{change}) {
-		t.Fatalf("sessions = %+v, branch reads = %d; want one with the change request, one read", h.sessions, h.branchReads)
-	}
-	if h.usage[0] != (TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 10 * time.Minute, ExtraAttempts: 1}) {
-		t.Fatalf("usage = %+v, want the answer's grant first", h.usage)
+		final := h.run(t)
+		if len(h.sessions) != tc.sessions || h.branchReads != 1-tc.sessions {
+			t.Fatalf("%s: sessions = %d, branch reads = %d; want %d and %d", name, len(h.sessions), h.branchReads, tc.sessions, 1-tc.sessions)
+		}
+		if want := map[int]string{0: "failed", 1: "done"}[tc.sessions]; final != want {
+			t.Fatalf("%s: final = %q, finals = %v; want %s", name, final, h.finals, want)
+		}
 	}
 }
 
 // The last session stops with work in progress (a redirect with c2): at
-// the session cap c2 goes through verification before the cap card, and
-// the change request it gets is the card's last finding.
+// the session cap c2 goes through verification; its red checks go to the
+// one cap card, not to an approval card, and the answer's session gets
+// them.
 func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.branchHead = "c2"
-	h.onSessions(
-		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
-		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
-		SessionResult{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
-		pushed("s4", "c4"))
 	var steps []string
-	h.onVerify(&steps)
-	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
-	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "alias it", Comment: 602})
+	h.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")}, gosecRed, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	if want := []string{"pr c2 after 0 cards", "pr c4 after 1 cards"}; !slices.Equal(steps, want) {
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards",
+		"session 4 after 1 cards", "pr c4 after 1 cards", "approval c4"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	change := "reviewer sebastian requested changes: keep the old flag"
-	if want := []string{capReached + "\nlast: changes requested\n- supervisor:repetition, attempt 3: f3\n- " + change}; !slices.Equal(h.escalated, want) {
+	if want := []string{capReached + "\nlast: checks findings went back to the agent\n- supervisor:repetition, attempt 3: f3\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
-	if len(h.sessions) != 4 || h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{change}) {
-		t.Fatalf("sessions = %+v, want a fourth from c2 with the change request", h.sessions)
+	if h.sessions[3].StartRef != "c2" || !slices.Equal(h.sessions[3].Findings, []string{"gosec G706"}) {
+		t.Fatalf("fourth session = %+v, want it from c2 with the checks finding", h.sessions[3])
+	}
+}
+
+// At the agent-time cap an unverified head's red checks go to the one cap
+// card, not to an approval card; the session after the answer gets them.
+func TestTimeCapFindingsGoToTheOneCard(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c2")}, gosecRed, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"pr c1 after 0 cards", "session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if want := []string{capReached + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if !slices.Equal(h.sessions[0].Findings, []string{"gosec G706"}) {
+		t.Fatalf("session findings = %q, want the checks finding", h.sessions[0].Findings)
+	}
+}
+
+// A run restarted with a change request pending on its PR's head c1 and
+// the whole 20m used: c1 counts as judged, so the cap card opens with no
+// second verification of c1.
+func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	change := "reviewer sebastian requested changes: rename it"
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Findings: []string{change},
+		Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c2")})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if want := []string{capReached + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+}
+
+// Ruling 225: a writer's change request on the merge card with no session
+// left is the human's answer. It buys the one extra session, which gets
+// the change request, and no cap card follows: at the last regular
+// attempt, at the session cap and with no agent time left.
+func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
+	change := "reviewer sebastian requested changes: keep the old flag"
+	for name, tc := range map[string]struct {
+		state   RunState
+		head    string
+		results []SessionResult
+		want    []string
+		usage   TaskUsage // after the grant
+	}{
+		"last regular attempt": {
+			state:   RunState{Status: "running", Usage: TaskUsage{Attempts: 2}},
+			results: []SessionResult{pushed("s3", "c3"), pushed("s4", "c4")},
+			want: []string{"session 3 after 0 cards", "pr c3 after 0 cards", "approval c3",
+				"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"},
+			usage: TaskUsage{Attempts: 3, ExtraAttempts: 1},
+		},
+		"session cap": {
+			head: "c3",
+			results: []SessionResult{
+				{Outcome: OutcomeNoPush, SessionID: "s1"},
+				{Outcome: OutcomeNoPush, SessionID: "s2"},
+				{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c3", Trip: "repetition"},
+				pushed("s4", "c4")},
+			want: []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c3 after 0 cards", "approval c3",
+				"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"},
+			usage: TaskUsage{Attempts: 3, ExtraAttempts: 1},
+		},
+		"no agent time left": {
+			state:   RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c3", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}},
+			results: []SessionResult{pushed("s2", "c4")},
+			want:    []string{"pr c3 after 0 cards", "approval c3", "session 2 after 0 cards", "pr c4 after 0 cards", "approval c4"},
+			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 10 * time.Minute, ExtraAttempts: 1},
+		},
+	} {
+		h := newWorkflowHarness(t)
+		h.state, h.branchHead = tc.state, tc.head
+		var steps []string
+		h.onVerify(&steps, tc.results)
+		h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+		h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		if !slices.Equal(steps, tc.want) || len(h.escalated) != 0 {
+			t.Fatalf("%s: steps = %v, escalations = %q; want %v and none", name, steps, h.escalated, tc.want)
+		}
+		if last := h.sessions[len(h.sessions)-1]; !slices.Equal(last.Findings, []string{change}) {
+			t.Fatalf("%s: last session findings = %q, want the change request", name, last.Findings)
+		}
+		if !slices.Contains(h.usage, tc.usage) {
+			t.Fatalf("%s: usage = %+v, want %+v recorded", name, h.usage, tc.usage)
+		}
 	}
 }
 

@@ -254,7 +254,7 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 			return nil, verdict{final: final, reason: why}, true
 		}
 		if changes := t.drainChanges(); len(changes) > 0 {
-			return nil, verdict{findings: changes, reason: "changes requested"}, true
+			return nil, verdict{findings: changes, reason: "changes requested", requested: true}, true
 		}
 	}
 	var sync SyncResult
