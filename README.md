@@ -1197,12 +1197,37 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   gets 403) and may still deny,
   request changes, reject and release. Forgejo's approvals whitelist on
   main stays the merge authority.
-- `/`: the agent lane by task status (done and failed for 7 days, at most
-  300 tasks, open ones first), the human lane (approval requests,
-  escalations with their reason, read from the escalation's intake event,
-  and an answer box, human tasks); htmx polls `/board` every 10 s. A card
-  shows the task's time in all (from the issue's `created_at`) and the gate
-  it is in with the gate's age, from the row's `gate` and `gate_since`.
+- `/`: the agent lane (done and failed for 7 days, at most 300 tasks, open
+  ones first) in columns: the lanes of the shown projects' processes in
+  the fixed order backlog, plan, ready (a starting lane holds its `queued`
+  and `waiting-deps` cards), then Running, Waiting on a human, Waiting on
+  the author, In review, Done, Failed, Closed, where a card carries its
+  lane badge. `?project=<name>` (a select at the top) shows one project.
+  The human lane: approval requests, escalations with their reason, read
+  from the escalation's intake event, and an answer box, human tasks. htmx
+  polls `/board` every 10 s. A card shows the task's time in all (from the
+  issue's `created_at`) and the gate it is in with the gate's age, from the
+  row's `gate` and `gate_since`; a plan's card `part of plan #n`.
+- Moving a card: a backlog card has one button per starting lane of its
+  process the viewer may use (`→ Plan`, `→ Ready`; intake's
+  `Intake.MayMove`, the `moved_by` rule; a plan's card never into plan),
+  `POST /cards/{id}/lane` adding the lane's label (`plan`, `agent`) with
+  the human's token; intake judges the label event. A refusal is a 403
+  with one sentence (`Lane ready takes cards from writers of <repo>.`).
+  `console.js` drops a dragged backlog card on a lane column by submitting
+  the same form. The new-task form's lane select (backlog, the chosen
+  project's starting lanes, ready by default, or the human lane) sets
+  `backlog`, `plan`, `agent` or `human` on the issue.
+- The plan card: a pending approval of kind `plan` shows the spec's first
+  lines, the summary and the cards (key, role, title, size, depends on,
+  factoryd's edges included); "Accept plan" (approvers:
+  `POST /tasks/{id}/plan/accept`, `AcceptPlan`, then `Plan revision <n>
+  accepted.` as the human; a stale revision shows `the plan changed to
+  revision <m>; reload` on the card), "Request changes" (a comment as the
+  human) and "Reject" (`RejectPlan`) for every writer. A done plan lists
+  its cards by issue and state, and "Start plan (n in backlog)" for
+  approvers (`POST /tasks/{id}/start-plan`) labels each backlog card
+  `agent` as the human and answers the count.
 - `/tasks/{id}/timeline`: a gates table above the raw steps, one row per
   step that ended a gate (`factoryd.StepGates`, each carrying `started`)
   with its attempt, start, duration, outcome and a `<meter>` against the
