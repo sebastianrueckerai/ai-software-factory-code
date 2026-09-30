@@ -62,6 +62,7 @@ type fakeStore struct {
 	createFails int
 	deps        map[string][]string // task → the tasks it depends on
 	planKeys    map[string]string   // task → its plan key
+	queue       []queueEntry        // the merge queues, oldest first
 }
 
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {

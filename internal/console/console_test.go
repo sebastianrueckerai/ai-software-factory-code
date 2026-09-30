@@ -1340,6 +1340,20 @@ func TestBoardCardShowsWaitingOn(t *testing.T) {
 	}
 }
 
+// A card waiting in its project's merge queue reads how many entries are
+// ahead of it and since when it waits.
+func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	since := time.Now().Add(-(6*time.Minute + 30*time.Second))
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
+		Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if want := `<span class="gate">merge queue, 2 ahead,</span> for 6 min`; !strings.Contains(body, want) {
+		t.Fatalf("board lacks %q", want)
+	}
+}
+
 // The timeline page opens with a table of the gates: each step that ended
 // a gate is a row from its start, the task's open gate a row "open for N
 // min", CI jobs rows under their checks, and every bar is scaled to the

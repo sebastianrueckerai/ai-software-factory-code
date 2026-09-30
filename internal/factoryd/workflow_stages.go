@@ -76,14 +76,19 @@ func (t *taskRun) stages(commit string) verdict {
 				continue
 			}
 		case policy.StageApproval:
-			earlier := t.reviews
-			if reviewed {
-				earlier = t.reviews[:len(t.reviews)-1]
+			if !t.queued() {
+				return t.approval(commit, g, review, reviewed, capped, card)
 			}
-			if len(capped) > 0 {
-				card = append(append(capped, t.history...), card...)
+			findings, v, stop := t.queueTurn(&commit, &g, &review)
+			if !stop && len(findings) > 0 {
+				i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+				v, stop = t.onFindings(t.cfg.Stages[i], findings, &capped, &card)
 			}
-			return t.approve(commit, g, review, slices.Clone(earlier), card)
+			if !stop {
+				v = t.approval(commit, g, review, reviewed, capped, card)
+			}
+			t.leaveQueue(cmp.Or(v.reason, v.final))
+			return v
 		}
 		if why := t.skipReason(s); why != "" {
 			t.recordSkip(s.Name, why)
@@ -101,39 +106,62 @@ func (t *taskRun) stages(commit string) verdict {
 		if len(findings) == 0 {
 			continue
 		}
-		switch s.OnFindings {
-		case policy.FindingsFail:
-			return verdict{final: "failed", reason: s.Name + ": " + strings.Join(findings, "; ")}
-		case policy.FindingsAgent:
-			if t.rolling {
-				// no agent answers a roll: roll() fails on them unless a
-				// fold moved the head
-				return verdict{findings: findings, reason: s.Name + " failed"}
-			}
-			t.remember(s.Name, 0, findings)
-			limit := ""
-			switch {
-			case t.lastRound:
-				limit = capReached
-			case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
-				limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
-			}
-			if limit != "" {
-				capped = appendNew(capped, limit)
-				t.recordFindings(s.Name, "card", 0, findings)
-				continue
-			}
-			t.recordFindings(s.Name, "agent", 0, findings)
-			t.returns[s.Name]++
-			return verdict{findings: findings, stronger: t.returns[s.Name] > t.cfg.StrongerAfter,
-				reason: s.Name + " findings went back to the agent"}
-		default:
-			for _, f := range findings {
-				card = append(card, s.Name+": "+f)
-			}
+		if v, stop := t.onFindings(s, findings, &capped, &card); stop {
+			return v
 		}
 	}
 	return verdict{final: "failed", reason: "the workflow has no approval stage"}
+}
+
+// approval takes the head through the approval stage: the card holds the
+// findings capped for a human (with the history) and every other card
+// finding; reviewed: the last review ran in this pass.
+func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card []string) verdict {
+	earlier := t.reviews
+	if reviewed {
+		earlier = t.reviews[:len(t.reviews)-1]
+	}
+	if len(capped) > 0 {
+		card = append(append(capped, t.history...), card...)
+	}
+	return t.approve(commit, g, review, slices.Clone(earlier), card)
+}
+
+// onFindings sends stage s's findings where its on_findings says: stop
+// with the task's verdict (fail, or back to the agent), or onto the card,
+// capped when the agent may take no more.
+func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]string) (verdict, bool) {
+	switch s.OnFindings {
+	case policy.FindingsFail:
+		return verdict{final: "failed", reason: s.Name + ": " + strings.Join(findings, "; ")}, true
+	case policy.FindingsAgent:
+		if t.rolling {
+			// no agent answers a roll: roll() fails on them unless a
+			// fold moved the head
+			return verdict{findings: findings, reason: s.Name + " failed"}, true
+		}
+		t.remember(s.Name, 0, findings)
+		limit := ""
+		switch {
+		case t.lastRound:
+			limit = capReached
+		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
+			limit = fmt.Sprintf("%s reached its max_returns of %d: its findings go to a human", s.Name, *s.MaxReturns)
+		}
+		if limit != "" {
+			*capped = appendNew(*capped, limit)
+			t.recordFindings(s.Name, "card", 0, findings)
+			return verdict{}, false
+		}
+		t.recordFindings(s.Name, "agent", 0, findings)
+		t.returns[s.Name]++
+		return verdict{findings: findings, stronger: t.returns[s.Name] > t.cfg.StrongerAfter,
+			reason: s.Name + " findings went back to the agent"}, true
+	}
+	for _, f := range findings {
+		*card = append(*card, s.Name+": "+f)
+	}
+	return verdict{}, false
 }
 
 // recordFindings keeps findings meant for the agent on the timeline, sent

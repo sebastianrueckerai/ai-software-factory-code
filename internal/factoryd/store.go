@@ -302,6 +302,11 @@ type Store interface {
 	RollHead(ctx context.Context, taskID string) (string, error)
 	// SetTaskSHA sets the commit a roll task's branch was cut from.
 	SetTaskSHA(ctx context.Context, id, sha string) error
+	// The merge queue (queue.go).
+	EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error)
+	QueueHead(ctx context.Context, project string) (string, bool, error)
+	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
+	WaitingQueueHeads(ctx context.Context) ([]string, error)
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning

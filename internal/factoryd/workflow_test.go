@@ -157,6 +157,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
+		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },
+		ActivitySyncWithMain: func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
+			return SyncResult{}, nil
+		},
+		ActivityLeaveQueue: func(ctx context.Context, taskID, why string) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

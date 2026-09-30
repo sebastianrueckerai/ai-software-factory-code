@@ -68,7 +68,9 @@ func forgejo15(t *testing.T) (string, AdminAuth) {
 // repository whose main is protected, updates a pull request whose head is
 // a branch of its own fork with style merge; the head then holds main's
 // commit. An up-to-date branch's update moves nothing; a main that
-// conflicts with the branch answers 409.
+// conflicts with the branch answers 409. SyncWithMain on the same pull
+// request moves it, moves nothing when up to date, answers a retried
+// move, and reports the conflict.
 func TestUpdateBranchAsBotOnFork(t *testing.T) {
 	base, a := forgejo15(t)
 	ctx := context.Background()
@@ -147,6 +149,43 @@ func TestUpdateBranchAsBotOnFork(t *testing.T) {
 	if same, err := bot.PullRequestState(ctx, up.Owner, up.Name, pr.Number); err != nil || same.HeadSHA != after.HeadSHA {
 		t.Fatalf("update of an up-to-date branch moved the head %s -> %s (%v)", after.HeadSHA, same.HeadSHA, err)
 	}
+
+	// the activity on the same pull request: main moves again
+	store := newFakeStore()
+	store.CreateTask(ctx, Task{ID: "q1", Status: "in-review", Repository: up.String(), PRNumber: pr.Number})
+	r, err := NewRunner(testRunnerConfig(), store, newFakeKube(), bot, &Completion{Store: store, Forgejo: bot}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	create(admin, up, "main", "third.go", "package third\n")
+	main2, err := bot.BranchHeadSHA(ctx, up.Owner, up.Name, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	synced, err := r.SyncWithMain(ctx, "q1", pr.Number, after.HeadSHA)
+	if err != nil || synced.From != after.HeadSHA || synced.Main != main2 || synced.To == synced.From || synced.Conflict != "" {
+		t.Fatalf("SyncWithMain = %+v, %v: want a move from %s with main %s", synced, err, after.HeadSHA, main2)
+	}
+	if parents, err := bot.CommitParents(ctx, fork.Owner, fork.Name, synced.To); err != nil || !slices.Equal(parents, []string{after.HeadSHA, main2}) {
+		t.Fatalf("the synced head's parents = %v %v", parents, err)
+	}
+	if again, err := r.SyncWithMain(ctx, "q1", pr.Number, synced.To); err != nil || again.To != synced.To {
+		t.Fatalf("SyncWithMain of the synced head = %+v, %v: want no move", again, err)
+	}
+	// a retry whose first attempt's answer was lost still answers the move
+	if retry, err := r.SyncWithMain(ctx, "q1", pr.Number, after.HeadSHA); err != nil || retry.To != synced.To {
+		t.Fatalf("SyncWithMain retried = %+v, %v: want the move to %s", retry, err, synced.To)
+	}
+	var moves []string
+	for _, l := range timelineLines(t, r, "q1") {
+		if l["step"] == "queue_synced" {
+			moves = append(moves, fmt.Sprintf("%v %v %v", l["from"], l["to"], l["main"]))
+		}
+	}
+	if move := after.HeadSHA + " " + synced.To + " " + main2; !slices.Equal(moves, []string{move, move}) {
+		t.Fatalf("queue_synced steps = %q, want the move twice (the call and its retry)", moves)
+	}
+
 	create(admin, up, "main", "clash.txt", "main's line\n")
 	create(bot.call, fork, "task-1", "clash.txt", "the branch's line\n")
 	err = bot.UpdatePullRequest(ctx, up.Owner, up.Name, pr.Number)
@@ -154,4 +193,11 @@ func TestUpdateBranchAsBotOnFork(t *testing.T) {
 		t.Fatalf("update against a conflicting main: %v, want ErrUpdateConflict", err)
 	}
 	t.Logf("conflicting main: %v", err)
+	head, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.SyncWithMain(ctx, "q1", pr.Number, head); err != nil || res.Conflict == "" {
+		t.Fatalf("SyncWithMain against a conflicting main = %+v, %v: want the conflict", res, err)
+	}
 }

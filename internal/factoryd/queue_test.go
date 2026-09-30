@@ -1,0 +1,521 @@
+package factoryd
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/mock"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+)
+
+// queueEntry is one row of fakeStore's merge queues.
+type queueEntry struct {
+	project, task string
+	at            time.Time
+}
+
+func (s *fakeStore) EnterQueue(ctx context.Context, project, taskID string) (QueueSpot, error) {
+	i := slices.IndexFunc(s.queue, func(e queueEntry) bool { return e.task == taskID })
+	spot := QueueSpot{New: i < 0}
+	if i < 0 {
+		s.queue = append(s.queue, queueEntry{project, taskID, time.Now()})
+		i = len(s.queue) - 1
+	}
+	e := s.queue[i]
+	spot.EnteredAt = e.at
+	for _, o := range s.queue[:i] {
+		if o.project == e.project {
+			spot.Ahead++
+		}
+	}
+	return spot, nil
+}
+
+func (s *fakeStore) QueueHead(ctx context.Context, project string) (string, bool, error) {
+	for _, e := range s.queue {
+		if e.project == project {
+			return e.task, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (s *fakeStore) LeaveQueue(ctx context.Context, taskID string) (string, bool, error) {
+	i := slices.IndexFunc(s.queue, func(e queueEntry) bool { return e.task == taskID })
+	if i < 0 {
+		return "", false, nil
+	}
+	project := s.queue[i].project
+	s.queue = slices.Delete(s.queue, i, i+1)
+	return project, true, nil
+}
+
+func (s *fakeStore) WaitingQueueHeads(ctx context.Context) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, e := range s.queue {
+		if !seen[e.project] && s.tasks[e.task].Gate == GateMergeQueue {
+			out = append(out, e.task)
+		}
+		seen[e.project] = true
+	}
+	return out, nil
+}
+
+// queueHarness is a gate harness on a process with merge queue project:
+// ahead answers EnterQueue by its call (from 1, on the workflow's clock),
+// sync answers SyncWithMain; the calls are recorded.
+type queueHarness struct {
+	*gateHarness
+	ahead  func(call int) int
+	sync   func(from string) SyncResult
+	enters []time.Duration // when each EnterQueue ran, since the start
+	syncs  []string        // SyncWithMain's from
+	leaves []string        // LeaveQueue's why
+	checks []string        // the heads WaitChecks ran on
+	reruns []string        // RerunChecks' heads
+}
+
+func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
+	q := &queueHarness{ahead: func(int) int { return 0 }, sync: func(from string) SyncResult { return SyncResult{From: from, To: from} }}
+	q.gateHarness = newGateHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, setup...)
+	q.taskConfig = &TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: queue}
+	env := q.env
+	env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (int, error) {
+		q.enters = append(q.enters, env.Now().Sub(q.started))
+		return q.ahead(len(q.enters)), nil
+	})
+	env.OnActivity(ActivitySyncWithMain, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
+			q.syncs = append(q.syncs, from)
+			q.steps = append(q.steps, "sync "+from)
+			return q.sync(from), nil
+		})
+	env.OnActivity(ActivityLeaveQueue, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, why string) error {
+		q.leaves = append(q.leaves, why)
+		q.steps = append(q.steps, "leave")
+		return nil
+	})
+	env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
+	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+		q.checks = append(q.checks, sha)
+		return checks(sha), nil
+	})
+	env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		q.reruns = append(q.reruns, sha)
+		return sha + "-rerun", nil
+	})
+	return q
+}
+
+func green(string) ChecksResult { return ChecksResult{State: ChecksSuccess} }
+
+// Two tasks of one project: the second waits behind the first in gate
+// merge-queue (the card reads "merge queue, 1 ahead, for n min") and
+// starts its turn at the first's queue_left, which signals queue_turn; a
+// lost signal costs at most the 5-minute re-check.
+func TestQueueOneAtATime(t *testing.T) {
+	t.Run("store", func(t *testing.T) {
+		ctx := context.Background()
+		s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue, sessions, intake_events, approval_requests`); err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"a1", "a2", "b1"} {
+			repo := "linkshort/linkshort"
+			if id == "b1" {
+				repo = "sf/other"
+			}
+			if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		enter := func(project, id string, ahead int, fresh bool) {
+			t.Helper()
+			spot, err := s.EnterQueue(ctx, project, id)
+			if err != nil || spot.Ahead != ahead || spot.New != fresh || spot.EnteredAt.IsZero() {
+				t.Fatalf("EnterQueue(%s) = %+v, %v; want %d ahead, new %v", id, spot, err, ahead, fresh)
+			}
+		}
+		enter("linkshort/linkshort", "a1", 0, true)
+		enter("linkshort/linkshort", "a2", 1, true)
+		enter("sf/other", "b1", 0, true)
+		enter("linkshort/linkshort", "a1", 0, false)
+		enter("linkshort/linkshort", "a2", 1, false)
+		if err := s.SetGate(ctx, "a2", GateMergeQueue, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		board, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ahead := map[string]int{}
+		for _, b := range board {
+			ahead[b.ID] = b.QueueAhead
+		}
+		if want := map[string]int{"a1": 0, "a2": 1, "b1": 0}; fmt.Sprint(ahead) != fmt.Sprint(want) {
+			t.Fatalf("board's queue ahead = %v, want %v", ahead, want)
+		}
+		if head, ok, err := s.QueueHead(ctx, "linkshort/linkshort"); head != "a1" || !ok || err != nil {
+			t.Fatalf("QueueHead = %q %v %v", head, ok, err)
+		}
+		if heads, err := s.WaitingQueueHeads(ctx); len(heads) != 0 || err != nil {
+			t.Fatalf("waiting heads before a1 leaves = %v %v: a1 holds its turn", heads, err)
+		}
+		if project, left, err := s.LeaveQueue(ctx, "a1"); project != "linkshort/linkshort" || !left || err != nil {
+			t.Fatalf("LeaveQueue(a1) = %q %v %v", project, left, err)
+		}
+		if _, left, err := s.LeaveQueue(ctx, "a1"); left || err != nil {
+			t.Fatalf("second LeaveQueue(a1) left %v %v", left, err)
+		}
+		if head, _, _ := s.QueueHead(ctx, "linkshort/linkshort"); head != "a2" {
+			t.Fatalf("head after a1 left = %q", head)
+		}
+		if heads, err := s.WaitingQueueHeads(ctx); !slices.Equal(heads, []string{"a2"}) || err != nil {
+			t.Fatalf("waiting heads = %v %v, want [a2]", heads, err)
+		}
+		enter("linkshort/linkshort", "a2", 0, false)
+	})
+
+	t.Run("activities", func(t *testing.T) {
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		ctx := context.Background()
+		if ahead, err := r.EnterQueue(ctx, "a1"); ahead != 0 || err != nil {
+			t.Fatalf("a1 ahead %d %v", ahead, err)
+		}
+		if ahead, err := r.EnterQueue(ctx, "a2"); ahead != 1 || err != nil {
+			t.Fatalf("a2 ahead %d %v", ahead, err)
+		}
+		if a2 := store.tasks["a2"]; a2.Gate != GateMergeQueue || !a2.GateSince.Equal(store.queue[1].at) {
+			t.Fatalf("a2's gate = %q since %v, want merge-queue since it entered %v", a2.Gate, a2.GateSince, store.queue[1].at)
+		}
+		if a1 := store.tasks["a1"]; a1.Gate == GateMergeQueue {
+			t.Fatal("the head is in gate merge-queue")
+		}
+		// a re-check keeps the gate's start
+		if _, err := r.EnterQueue(ctx, "a2"); err != nil || !store.tasks["a2"].GateSince.Equal(store.queue[1].at) {
+			t.Fatalf("re-check moved the gate's start: %v", err)
+		}
+		if err := r.LeaveQueue(ctx, "a1", "pull request merged by factory-merge"); err != nil {
+			t.Fatal(err)
+		}
+		wf := r.cfg.Workflows.(*fakeWorkflows)
+		if want := []string{"a2 queue_turn  #0: "}; !slices.Equal(wf.signals, want) {
+			t.Fatalf("signals = %q, want %q", wf.signals, want)
+		}
+		if ahead, err := r.EnterQueue(ctx, "a2"); ahead != 0 || err != nil {
+			t.Fatalf("a2 after a1 left: ahead %d %v", ahead, err)
+		}
+		steps := func(id string) []string {
+			var out []string
+			for _, l := range timelineLines(t, r, id) {
+				if strings.HasPrefix(l["step"].(string), "queue_") {
+					out = append(out, l["step"].(string))
+				}
+			}
+			return out
+		}
+		if got := steps("a1"); !slices.Equal(got, []string{"queue_entered", "queue_turn", "queue_left"}) {
+			t.Fatalf("a1's queue steps = %v", got)
+		}
+		if got := steps("a2"); !slices.Equal(got, []string{"queue_entered", "queue_turn"}) {
+			t.Fatalf("a2's queue steps = %v", got)
+		}
+	})
+
+	t.Run("workflow", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, green)
+		turn := false
+		q.ahead = func(int) int {
+			if turn {
+				return 0
+			}
+			return 1
+		}
+		q.onSessions(pushed("s1", "c1"))
+		q.env.RegisterDelayedCallback(func() {
+			turn = true
+			q.env.SignalWorkflow(SignalQueueTurn, TaskSignal{})
+		}, 3*time.Minute)
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q", final)
+		}
+		if want := []time.Duration{0, 3 * time.Minute}; !slices.Equal(q.enters, want) {
+			t.Fatalf("EnterQueue at %v, want %v: the second at the first's queue_left", q.enters, want)
+		}
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+			t.Fatalf("steps = %v, want %v", q.steps, want)
+		}
+		if q.requested[0].Sub(q.started) != 3*time.Minute {
+			t.Fatalf("approval requested at %v, want at the turn", q.requested[0].Sub(q.started))
+		}
+	})
+
+	t.Run("recheck", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, green)
+		q.ahead = func(call int) int { return max(0, 3-call) }
+		q.onSessions(pushed("s1", "c1"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q", final)
+		}
+		if want := []time.Duration{0, 5 * time.Minute, 10 * time.Minute}; !slices.Equal(q.enters, want) {
+			t.Fatalf("EnterQueue at %v, want %v", q.enters, want)
+		}
+	})
+}
+
+// timelineLines are the timeline records of task id.
+func timelineLines(t *testing.T, r *Runner, id string) []map[string]any {
+	t.Helper()
+	b, err := r.timeline.Objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// At its turn main is merged into the head: the checks run again on the
+// head the sync made, and the approval and the merge are pinned to it;
+// policy, review and audit are not run again. Red checks there go back
+// to the agent with the prefix, never re-run as a head the agent left,
+// and the task leaves the queue; its next head queues again.
+func TestSyncRerunsChecksOnNewHead(t *testing.T) {
+	t.Run("green", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, green)
+		q.sync = func(from string) SyncResult { return SyncResult{From: from, To: "m1", Main: "main1"} }
+		q.onSessions(pushed("s1", "c1"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q", final)
+		}
+		if !slices.Equal(q.checks, []string{"c1", "m1"}) {
+			t.Fatalf("checks ran on %v, want [c1 m1]", q.checks)
+		}
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+			t.Fatalf("steps = %v, want %v", q.steps, want)
+		}
+		if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) || !q.approvals[0].Gates.ChecksPassed {
+			t.Fatalf("merges = %v, checks passed %v", q.merges, q.approvals[0].Gates.ChecksPassed)
+		}
+	})
+
+	t.Run("red", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, func(sha string) ChecksResult {
+			if sha == "m1" {
+				return ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed on m1"}}
+			}
+			return ChecksResult{State: ChecksSuccess}
+		})
+		q.sync = func(from string) SyncResult {
+			if from == "c1" {
+				return SyncResult{From: from, To: "m1", Main: "main1"}
+			}
+			return SyncResult{From: from, To: from}
+		}
+		q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q", final)
+		}
+		if len(q.reruns) != 0 {
+			t.Fatalf("RerunChecks ran on %v: the synced head is factoryd's own", q.reruns)
+		}
+		if want := []string{"after main was merged in: TestX failed on m1"}; len(q.sessions) != 2 || !slices.Equal(q.sessions[1].Findings, want) {
+			t.Fatalf("sessions %d, second's findings %q, want %q", len(q.sessions), q.sessions[1].Findings, want)
+		}
+		if len(q.leaves) != 2 || q.leaves[0] != "checks findings went back to the agent" {
+			t.Fatalf("leaves = %q", q.leaves)
+		}
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "leave", "policy", "repro c2", "review c2", "sync c2", "approval c2", "merge", "leave"}; !slices.Equal(q.steps, want) {
+			t.Fatalf("steps = %v, want %v", q.steps, want)
+		}
+	})
+
+	// the agent leaves the synced head as it is: its red checks go back
+	// again, not re-run as a head the agent could not act on
+	t.Run("red, untouched", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, func(sha string) ChecksResult {
+			if sha == "m1" {
+				return ChecksResult{State: ChecksFailure, Findings: []string{"TestX failed on m1"}}
+			}
+			return ChecksResult{State: ChecksSuccess}
+		})
+		q.sync = func(from string) SyncResult {
+			if from == "c1" {
+				return SyncResult{From: from, To: "m1", Main: "main1"}
+			}
+			return SyncResult{From: from, To: from}
+		}
+		q.onSessions(pushed("s1", "c1"), pushed("s2", "m1"), pushed("s3", "c3"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q", final)
+		}
+		if len(q.reruns) != 0 || !slices.Equal(q.checks, []string{"c1", "m1", "m1", "c3"}) {
+			t.Fatalf("reruns %v, checks on %v: want no re-run of the synced head", q.reruns, q.checks)
+		}
+		if want := []string{"TestX failed on m1"}; len(q.sessions) != 3 || !slices.Equal(q.sessions[2].Findings, want) {
+			t.Fatalf("sessions %d, third's findings %q, want %q", len(q.sessions), q.sessions[2].Findings, want)
+		}
+	})
+}
+
+// A main that conflicts with the head (409 on the update) is backlog 70's
+// conflict: the agent gets the "merge main" finding and the task leaves
+// the queue.
+func TestSyncConflictGoesToAgent(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green)
+	q.sync = func(from string) SyncResult {
+		if from == "c1" {
+			return SyncResult{From: from, Main: "main1", Conflict: "the branch conflicts with its base: status 409"}
+		}
+		return SyncResult{From: from, To: from}
+	}
+	q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	want := conflictVerdict("the branch conflicts with its base: status 409")
+	if len(q.sessions) != 2 || !slices.Equal(q.sessions[1].Findings, want.findings) {
+		t.Fatalf("second session's findings = %q, want %q", q.sessions[1].Findings, want.findings)
+	}
+	if len(q.leaves) != 2 || q.leaves[0] != want.reason {
+		t.Fatalf("leaves = %q, want the first %q", q.leaves, want.reason)
+	}
+	if !slices.Equal(q.checks, []string{"c1", "c2"}) || !slices.Equal(q.merges, []string{"9 c2 sebastian"}) {
+		t.Fatalf("checks %v, merges %v", q.checks, q.merges)
+	}
+}
+
+// Every way out of the turn leaves the queue: the merge, a return to the
+// agent, a failure, a close while waiting; Finish leaves it too and wakes
+// the new head.
+func TestQueueReleasedOnEveryExit(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		ahead  func(int) int
+		signal func(q *queueHarness)
+		final  string
+		leaves []string
+	}{
+		{"merge", nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"pull request merged by factory-merge after sebastian's approval"}},
+		{"back to the agent", nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+			q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"changes requested", "pull request merged by factory-merge after sebastian's approval"}},
+		{"failure", nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+		}, "failed", []string{"pull request closed without merge"}},
+		{"close while waiting", func(int) int { return 2 }, func(q *queueHarness) {
+			q.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		}, "failed", []string{ReasonIssueClosed + " without merge"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			q := newQueueHarness(t, policy.QueueProject, green)
+			if c.ahead != nil {
+				q.ahead = c.ahead
+			}
+			q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+			q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			c.signal(q)
+			if final := q.run(t); final != c.final {
+				t.Fatalf("final = %q (%v), want %q", final, q.finals, c.final)
+			}
+			if !slices.Equal(q.leaves, c.leaves) {
+				t.Fatalf("leaves = %q, want %q", q.leaves, c.leaves)
+			}
+		})
+	}
+
+	t.Run("finish", func(t *testing.T) {
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		ctx := context.Background()
+		for _, id := range []string{"a1", "a2"} {
+			if _, err := r.EnterQueue(ctx, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := r.Finish(ctx, "a1", "done", "pull request merged"); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.queue) != 1 || store.queue[0].task != "a2" {
+			t.Fatalf("queue after a1's Finish = %+v", store.queue)
+		}
+		if wf := r.cfg.Workflows.(*fakeWorkflows); !slices.Contains(wf.signals, "a2 queue_turn  #0: ") {
+			t.Fatalf("signals = %q: the new head is not woken", wf.signals)
+		}
+	})
+}
+
+// With merge queue none the approval stage is today's: no queue activity
+// runs, and the steps are the ones before the queue existed.
+func TestQueueNoneUnchanged(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueNone, green)
+	q.onSessions(pushed("s1", "c1"))
+	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(q.enters)+len(q.syncs)+len(q.leaves) != 0 {
+		t.Fatalf("queue activities ran: enters %v, syncs %v, leaves %v", q.enters, q.syncs, q.leaves)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(q.steps, want) {
+		t.Fatalf("steps = %v, want %v", q.steps, want)
+	}
+}
+
+// The heal pass signals queue_turn to every queue's head still waiting in
+// gate merge-queue (a lost signal), never to a head at its turn or to an
+// entry behind a head.
+func TestHealSignalsQueueHead(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Projects = codeRepoOnly{}
+	ctx := context.Background()
+	for _, tk := range []Task{
+		{ID: "a1", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue},
+		{ID: "a2", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue},
+		{ID: "b1", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateApproval},
+		{ID: "b2", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateMergeQueue},
+	} {
+		store.CreateTask(ctx, tk)
+		store.SetGate(ctx, tk.ID, tk.Gate, time.Now())
+		store.EnterQueue(ctx, tk.Repository, tk.ID)
+	}
+	HealPass(ctx, store, in.Workflows, in, &Completion{Store: store})
+	var turns []string
+	for _, s := range workflowsOf(in).signals {
+		if strings.Contains(s, " "+SignalQueueTurn+" ") {
+			turns = append(turns, s)
+		}
+	}
+	if want := []string{"a1 queue_turn  #0: "}; !slices.Equal(turns, want) {
+		t.Fatalf("queue_turn signals = %q, want %q", turns, want)
+	}
+}

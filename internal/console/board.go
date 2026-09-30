@@ -76,8 +76,10 @@ type card struct {
 	PRURL    string
 	Reason   string // an escalation's reason
 	// Total is the task's time so far, or in all once it finished; GateAge
-	// how long it has been in its gate.
+	// how long it has been in its gate, which GateText names as the card
+	// reads it.
 	Total, GateAge  string
+	GateText        string
 	EscalationAlert int64  // the escalation's open alert
 	WaitingOn       string // a card in waiting-deps: the issues it waits on
 }
@@ -119,7 +121,7 @@ func (c *Console) card(t factoryd.Task) card {
 		k.Total = minutes(end.Sub(t.CreatedAt))
 	}
 	if t.Gate != "" && t.GateSince != nil {
-		k.GateAge = minutes(time.Since(*t.GateSince))
+		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	return k
 }
@@ -182,6 +184,9 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		byID[t.ID] = t
 		k := c.card(t)
 		k.WaitingOn = bt.WaitingOn
+		if t.Gate == factoryd.GateMergeQueue {
+			k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
+		}
 		// a roll task has no agent: the human lane until its card (ruling 178)
 		if t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !carded[t.ID] {
 			if !factoryd.Final(t.Status) {

@@ -323,6 +323,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
+	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -360,7 +361,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // (the bot merge's own pr_merged, the issue's close): they change nothing
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
-	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded} {
+	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -529,6 +530,12 @@ const (
 	// waits in waiting-deps until every card it depends on is done; one
 	// that ended failed or closed asks a human first.
 	versionDepWait workflow.Version = 1
+	// versionMergeQueue (change id "merge-queue", stage11-design.md 1.4):
+	// a process with merge queue project enters the project's merge queue
+	// at the approval stage and holds the turn through the approval and
+	// the merge; at its turn main is merged into the head and the checks
+	// run again on a head that moved; every way out leaves the queue.
+	versionMergeQueue workflow.Version = 1
 )
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
@@ -551,6 +558,7 @@ type taskRun struct {
 	v22, v23          workflow.Version
 	processes         workflow.Version
 	depWait           workflow.Version
+	mergeQueue        workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

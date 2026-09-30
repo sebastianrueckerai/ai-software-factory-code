@@ -74,6 +74,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityGateAudit:                   r.GateAudit,
 		ActivityTaskConfig:                  r.TaskConfig,
 		ActivityDependencies:                r.Dependencies,
+		ActivityEnterQueue:                  r.EnterQueue,
+		ActivitySyncWithMain:                r.SyncWithMain,
+		ActivityLeaveQueue:                  r.LeaveQueue,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -1001,6 +1004,9 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		}
 	}
 	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {
+		return err
+	}
+	if err := r.leaveQueue(ctx, taskID, "the task ended "+final); err != nil {
 		return err
 	}
 	if v := alertVerdict(final, reason); v != "" {

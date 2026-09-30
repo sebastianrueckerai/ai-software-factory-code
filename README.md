@@ -466,6 +466,33 @@ reproduction command gets a `gate_reproduction` step saying so. The second pull 
 
 The first pull request merged this way added this sentence.
 
+### The merge queue (merge: {queue: project}, change id `merge-queue`)
+
+A process with `merge: {queue: project}` merges one pull request of a
+project at a time. At the approval stage the task enters the project's
+queue (`merge_queue`, the project being its repository, oldest entry
+first) before the card or the `auto` decision, and holds the turn
+through the approval wait and the merge. Behind others, its status stays
+`in-review`, its gate is `merge-queue` since it entered (the card reads
+`merge queue, 2 ahead, for 6 min`), and the workflow waits for
+`queue_turn` or 5 minutes, then asks again. At its turn `SyncWithMain`
+merges main into the head branch as the bot, which owns the fork
+(`POST /repos/{owner}/{repo}/pulls/{index}/update?style=merge`, proven on
+Forgejo 15.0.9 by `TestUpdateBranchAsBotOnFork`), unless the pull
+request's merge base is main's head; Forgejo recomputes the merge base in
+the background, so a stale one costs an update that moves nothing. A
+head that moved (`queue_synced {from, to, main}`) runs the checks stage
+again, recorded as factoryd's own move like a re-run's head; policy,
+review and audit do not run again. Red checks there go back to the agent
+prefixed `after main was merged in:`, a 409 takes backlog 70's conflict
+path, and both leave the queue; green, the approval request and the
+merge are pinned to the synced head. Every way out of the turn leaves
+the queue (`queue_left`) and signals `queue_turn` to the new head, and so
+does `Finish`; the heal pass signals every head still in gate
+`merge-queue` once a minute (a head at its turn gets no signal, so a long
+approval wait adds nothing to its history). Timeline steps:
+`queue_entered`, `queue_turn`, `queue_synced`, `queue_left`.
+
 ## Supervision
 
 `internal/factoryd/supervise.go` watches every session's event stream.
