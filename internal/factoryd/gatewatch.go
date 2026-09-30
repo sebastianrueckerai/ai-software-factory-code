@@ -66,7 +66,7 @@ var activityGates = map[string]string{
 // not name: they take the policy's default bound. Naming one there would
 // change the configuration tree's schema, which only an infra commit
 // follows.
-var defaultBoundActivities = []string{ActivityDependencies}
+var defaultBoundActivities = []string{ActivityDependencies, ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

@@ -38,8 +38,8 @@ const (
 	ActivityLeaveQueue   = "LeaveQueue"
 )
 
-// queuePrefix heads the findings of checks that turned red on the head
-// the queue's sync made.
+// queuePrefix heads the findings of red checks on the head the queue's
+// sync made, in every round that checks that head.
 const queuePrefix = "after main was merged in: "
 
 // QueueSpot is a task's place in its project's merge queue.
@@ -126,6 +126,9 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		return spot.Ahead, r.store.SetGate(ctx, t.ID, GateMergeQueue, spot.EnteredAt)
 	}
 	r.record(ctx, t.ID, "queue_turn", gateEnd(t, GateMergeQueue, map[string]any{"project": t.Repository, "entered": rfc3339(spot.EnteredAt)}))
+	if t.Gate == GateMergeQueue {
+		return 0, r.store.SetGate(ctx, t.ID, "", time.Now())
+	}
 	return 0, nil
 }
 
@@ -225,7 +228,7 @@ func (t *taskRun) queued() bool {
 // queueTurn waits, at no cost, for the task's turn in its project's merge
 // queue, then merges main into its head (SyncWithMain) and runs the checks
 // stage again on a head that moved, recorded as factoryd's own move like a
-// re-run's. findings are the red checks on the synced head, prefixed; stop
+// re-run's. findings are the red checks on the synced head; stop
 // ends the stages with v (a terminal signal, a change request, a
 // conflict, a failed activity). The caller leaves the queue.
 func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
@@ -264,13 +267,9 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	if sync.To == *head {
 		return nil, verdict{}, false
 	}
-	*head, t.rerunHead = sync.To, sync.To
+	*head, t.rerunHead, t.syncedHead = sync.To, sync.To, sync.To
 	g.ChecksPassed = false
-	findings, v, stop = t.runStage(policy.StageChecks, head, g, review)
-	for i, f := range findings {
-		findings[i] = queuePrefix + f
-	}
-	return findings, v, stop
+	return t.runStage(policy.StageChecks, head, g, review)
 }
 
 // leaveQueue takes the task out of its project's merge queue on its way

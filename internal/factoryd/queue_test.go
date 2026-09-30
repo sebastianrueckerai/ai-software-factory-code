@@ -130,7 +130,7 @@ func TestQueueOneAtATime(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer s.Close()
-		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, merge_queue, sessions, intake_events, approval_requests`); err != nil {
+		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range []string{"a1", "a2", "b1"} {
@@ -218,6 +218,9 @@ func TestQueueOneAtATime(t *testing.T) {
 		}
 		if ahead, err := r.EnterQueue(ctx, "a2"); ahead != 0 || err != nil {
 			t.Fatalf("a2 after a1 left: ahead %d %v", ahead, err)
+		}
+		if a2 := store.tasks["a2"]; a2.Gate != "" {
+			t.Fatalf("a2 at its turn is in gate %q, want none", a2.Gate)
 		}
 		steps := func(id string) []string {
 			var out []string
@@ -385,7 +388,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 		if len(q.reruns) != 0 || !slices.Equal(q.checks, []string{"c1", "m1", "m1", "c3"}) {
 			t.Fatalf("reruns %v, checks on %v: want no re-run of the synced head", q.reruns, q.checks)
 		}
-		if want := []string{"TestX failed on m1"}; len(q.sessions) != 3 || !slices.Equal(q.sessions[2].Findings, want) {
+		if want := []string{"after main was merged in: TestX failed on m1"}; len(q.sessions) != 3 || !slices.Equal(q.sessions[2].Findings, want) {
 			t.Fatalf("sessions %d, third's findings %q, want %q", len(q.sessions), q.sessions[2].Findings, want)
 		}
 	})

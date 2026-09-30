@@ -315,10 +315,16 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		case ChecksTimeout:
 			return nil, verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}, true
 		case ChecksFailure:
-			if len(checks.Findings) == 0 {
-				return []string{"the checks failed on " + commit}, verdict{}, false
+			findings := checks.Findings
+			if len(findings) == 0 {
+				findings = []string{"the checks failed on " + commit}
 			}
-			return checks.Findings, verdict{}, false
+			if commit == t.syncedHead {
+				for i, f := range findings {
+					findings[i] = queuePrefix + f
+				}
+			}
+			return findings, verdict{}, false
 		}
 	case policy.StagePolicy:
 		if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy); err != nil {

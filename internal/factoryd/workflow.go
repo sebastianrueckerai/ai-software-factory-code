@@ -559,6 +559,7 @@ type taskRun struct {
 	processes         workflow.Version
 	depWait           workflow.Version
 	mergeQueue        workflow.Version
+	syncedHead        string // the head the merge queue's last sync made (versionMergeQueue)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
