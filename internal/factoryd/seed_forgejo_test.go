@@ -15,26 +15,31 @@ import (
 // forgejoImage is the Forgejo the chart pins.
 const forgejoImage = "codeberg.org/forgejo/forgejo:15.0.9"
 
+// containerRuntime is docker or podman, whichever answers; it skips the
+// test when neither does (main CI's dind cannot pull and port-map images).
+func containerRuntime(t *testing.T) string {
+	t.Helper()
+	if os.Getenv("FACTORYD_FORGEJO_TEST") == "" {
+		t.Skip("set FACTORYD_FORGEJO_TEST=1 to run the Forgejo container tests (main CI's dind cannot pull and port-map the image)")
+	}
+	for _, rt := range []string{"docker", "podman"} {
+		if _, err := exec.LookPath(rt); err == nil && exec.Command(rt, "info").Run() == nil {
+			return rt
+		}
+	}
+	t.Skip("no container runtime answers (docker or podman): the Forgejo 15.0.9 container cannot start")
+	return ""
+}
+
 // startForgejo runs a disposable Forgejo 15.0.9 container with a site
 // admin and returns its base URL and the admin's login; it skips when no
 // container runtime answers.
 func startForgejo(t *testing.T) (string, AdminAuth) {
 	t.Helper()
-	if os.Getenv("FACTORYD_FORGEJO_TEST") == "" {
-		t.Skip("set FACTORYD_FORGEJO_TEST=1 to run the Forgejo container tests (main CI's dind cannot pull and port-map the image)")
-	}
-	var runtime string
-	for _, rt := range []string{"docker", "podman"} {
-		if _, err := exec.LookPath(rt); err == nil && exec.Command(rt, "info").Run() == nil {
-			runtime = rt
-			break
-		}
-	}
-	if runtime == "" {
-		t.Skip("no container runtime answers (docker or podman): the Forgejo 15.0.9 container cannot start")
-	}
+	runtime := containerRuntime(t)
 	out, err := exec.Command(runtime, "run", "-d", "--rm", "-p", "127.0.0.1::3000",
-		"-e", "FORGEJO__security__INSTALL_LOCK=true", "-e", "FORGEJO__database__DB_TYPE=sqlite3", forgejoImage).CombinedOutput()
+		"-e", "FORGEJO__security__INSTALL_LOCK=true", "-e", "FORGEJO__database__DB_TYPE=sqlite3",
+		"-e", "FORGEJO__actions__ENABLED=true", forgejoImage).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%s run %s: %v\n%s", runtime, forgejoImage, err, out)
 	}

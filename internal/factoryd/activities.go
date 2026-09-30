@@ -913,7 +913,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			return ChecksResult{}, err
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
-		res := checksResult(cs, r.forgejo.PublicURL)
+		res := checksResult(cs, r.forgejo.PublicURL, func(target string) ([]byte, error) {
+			return r.forgejo.JobLog(ctx, target)
+		})
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
 		}
@@ -982,8 +984,12 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 }
 
 // checksResult maps a combined status onto a verdict; empty means still
-// pending (no status reported yet counts as pending, not as success).
-func checksResult(cs CombinedStatus, baseURL string) ChecksResult {
+// pending (no status reported yet counts as pending, not as success). For
+// each failed status, logOf's answer (nil skips fetching entirely, an
+// error just leaves the finding without a tail: a log factoryd cannot read
+// must not sink the whole check) has its last 40 lines, at most 4 KiB,
+// appended to the finding (backlog 85, design 4.4).
+func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string) ([]byte, error)) ChecksResult {
 	if len(cs.Statuses) == 0 {
 		return ChecksResult{}
 	}
@@ -997,14 +1003,51 @@ func checksResult(cs CombinedStatus, baseURL string) ChecksResult {
 				continue
 			}
 			target := s.TargetURL
-			if strings.HasPrefix(target, "/") {
-				target = strings.TrimSuffix(baseURL, "/") + target
+			display := target
+			if strings.HasPrefix(display, "/") {
+				display = strings.TrimSuffix(baseURL, "/") + display
 			}
-			res.Findings = append(res.Findings, fmt.Sprintf("check %q: %s — %s (%s)", s.Context, s.State, s.Description, target))
+			finding := fmt.Sprintf("check %q: %s — %s (%s)", s.Context, s.State, s.Description, display)
+			if logOf != nil && target != "" {
+				if log, err := logOf(target); err == nil {
+					if tail := logTail(log); tail != "" {
+						finding += "\n" + tail
+					}
+				}
+			}
+			res.Findings = append(res.Findings, finding)
 		}
 		return res
 	}
 	return ChecksResult{}
+}
+
+// jobLogMaxLines and jobLogMaxBytes bound the log tail a finding carries
+// (design 4.4): enough to show the failure, never enough to flood a
+// message.
+const (
+	jobLogMaxLines = 40
+	jobLogMaxBytes = 4096
+)
+
+// logTail is log's last jobLogMaxLines lines, cut down to at most
+// jobLogMaxBytes by dropping whole lines from the front: the kept text
+// always starts at a line, never mid-line. A single line past the byte cap
+// on its own is cut hard, since no line boundary can satisfy it.
+func logTail(log []byte) string {
+	lines := strings.Split(strings.TrimRight(string(log), "\n"), "\n")
+	if len(lines) > jobLogMaxLines {
+		lines = lines[len(lines)-jobLogMaxLines:]
+	}
+	tail := strings.Join(lines, "\n")
+	for len(tail) > jobLogMaxBytes {
+		_, rest, ok := strings.Cut(tail, "\n")
+		if !ok {
+			return tail[len(tail)-jobLogMaxBytes:]
+		}
+		tail = rest
+	}
+	return tail
 }
 
 // PullRequestMerged tells a merge (which closes the issue through "Closes

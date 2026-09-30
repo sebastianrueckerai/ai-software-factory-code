@@ -11,6 +11,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"slices"
 	"strings"
@@ -1073,6 +1074,86 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 		return CombinedStatus{}, fmt.Errorf("forgejo combined status %s/%s %s: %w", owner, repo, sha, err)
 	}
 	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
+}
+
+// JobLog fetches a finished job's raw log. Forgejo 15.0.9 has no /api/v1
+// route for it (its own swagger lists none, and the design's guessed
+// GET /api/v1/repos/{owner}/{repo}/actions/jobs/{job_id}/logs 404s); the
+// web route that serves it (routers/web/web.go: GET
+// .../actions/runs/{run}/jobs/{job}/attempt/{attempt}/logs, actions.Logs)
+// only recognizes a signed-in session — basic auth and a scoped token both
+// 404 on it, though the same credentials 200 the equivalent API calls
+// (verified live against a Forgejo 15.0.9 container: task-115-report.md).
+// factoryd logs in as the bot user, already a write collaborator on every
+// project repository (register.go's collaborator step), to reach it.
+// targetURL is a commit status's target_url, e.g.
+// "/sf/repo/actions/runs/7/jobs/0"; Forgejo redirects it to the run's
+// latest attempt, which this follows before asking for that attempt's log.
+func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
+	}
+	base, err := url.Parse(f.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
+	}
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+		Jar:     jar,
+		// Forgejo's job page redirects to its attempt with an absolute URL
+		// built from its own ROOT_URL, which is PublicURL's host, not
+		// BaseURL's (the Forgejo struct's own split): left alone, the
+		// client would leave the in-cluster address for the human-facing
+		// one. Every redirect is rewritten back onto BaseURL.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after %d redirects", len(via))
+			}
+			req.URL.Scheme, req.URL.Host = base.Scheme, base.Host
+			return nil
+		},
+	}
+
+	login, err := http.NewRequestWithContext(ctx, http.MethodPost, f.BaseURL+"/user/login",
+		strings.NewReader(url.Values{"user_name": {f.BotUser}, "password": {f.BotPassword}}.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	res, err := client.Do(login)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: login: %w", targetURL, err)
+	}
+	res.Body.Close()
+
+	viewReq, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	view, err := client.Do(viewReq)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
+	}
+	view.Body.Close()
+
+	logsReq, err := http.NewRequestWithContext(ctx, http.MethodGet, view.Request.URL.String()+"/logs", nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err = client.Do(logsReq)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxForgejoAnswer+1))
+	if err != nil {
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
+	}
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("forgejo job log %s: status %d: %s", targetURL, res.StatusCode, body)
+	}
+	return body, nil
 }
 
 // TreeEntries maps each of names to its object id as a top-level entry

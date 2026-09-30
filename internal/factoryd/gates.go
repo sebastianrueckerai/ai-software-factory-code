@@ -827,7 +827,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if checksResult(cs, "").State != ChecksSuccess {
+	if checksResult(cs, "", nil).State != ChecksSuccess {
 		return r.redHead(ctx, t, repo, pr, commit, approver, cs.State), nil
 	}
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)

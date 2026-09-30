@@ -179,6 +179,12 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				body = string(b)
 			}
 			io.WriteString(w, body)
+		case r.Method == "POST" && p == "/user/login",
+			r.Method == "GET" && strings.Contains(p, "/actions/runs/"):
+			// No session/log route modeled here: JobLog fails cleanly on the
+			// 404, so a failed status's finding carries no tail through this
+			// fake (checksResult's own tests cover the tail itself).
+			http.NotFound(w, r)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/"):
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
@@ -406,6 +412,87 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
 	if len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
+// checksResult appends a failed status's log tail to its finding: the last
+// 40 of 50 lines, none dropped for length (design 4.4).
+func TestChecksFindingCarriesLogTail(t *testing.T) {
+	var log strings.Builder
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&log, "line %d\n", i)
+	}
+	cs := CombinedStatus{State: "failure", Statuses: []CommitStatus{
+		{State: "failure", Context: "pr / test", TargetURL: "/sf/repo/actions/runs/7/jobs/0", Description: "Failure after 2m"},
+	}}
+	got := checksResult(cs, "https://git.example.org", func(target string) ([]byte, error) {
+		if target != "/sf/repo/actions/runs/7/jobs/0" {
+			t.Fatalf("logOf target = %q", target)
+		}
+		return []byte(log.String()), nil
+	})
+	var tail strings.Builder
+	for i := 11; i <= 50; i++ {
+		fmt.Fprintf(&tail, "line %d\n", i)
+	}
+	want := `check "pr / test": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` +
+		"\n" + strings.TrimRight(tail.String(), "\n")
+	if len(got.Findings) != 1 || got.Findings[0] != want {
+		t.Fatalf("finding = %q, want %q", got.Findings, want)
+	}
+}
+
+// checksResult never appends a tail a log fetch could not read (log fetch
+// failure must not sink an otherwise-known finding), and skips fetching
+// altogether when logOf is nil (gates.go's merge check: it never reads
+// findings, so it passes none).
+func TestChecksFindingSkipsUnreadableLog(t *testing.T) {
+	cs := CombinedStatus{State: "failure", Statuses: []CommitStatus{
+		{State: "failure", Context: "pr / test", TargetURL: "/sf/repo/actions/runs/7/jobs/0", Description: "Failure after 2m"},
+	}}
+	want := `check "pr / test": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
+	failing := checksResult(cs, "https://git.example.org", func(string) ([]byte, error) { return nil, errForgejoNotFound })
+	if len(failing.Findings) != 1 || failing.Findings[0] != want {
+		t.Fatalf("findings (failing fetch) = %q, want %q", failing.Findings, want)
+	}
+	withoutFetch := checksResult(cs, "https://git.example.org", nil)
+	if len(withoutFetch.Findings) != 1 || withoutFetch.Findings[0] != want {
+		t.Fatalf("findings (nil logOf) = %q, want %q", withoutFetch.Findings, want)
+	}
+}
+
+// logTail keeps 40 lines "line 1".."line 50" down to lines 11 to 50 when
+// they fit easily under the byte cap.
+func TestLogTailLineCap(t *testing.T) {
+	var log strings.Builder
+	for i := 1; i <= 50; i++ {
+		fmt.Fprintf(&log, "line %d\n", i)
+	}
+	var want strings.Builder
+	for i := 11; i <= 50; i++ {
+		fmt.Fprintf(&want, "line %d\n", i)
+	}
+	if got, want := logTail([]byte(log.String())), strings.TrimRight(want.String(), "\n"); got != want {
+		t.Fatalf("logTail = %q, want %q", got, want)
+	}
+}
+
+// logTail cuts a too-long tail down to the byte cap by dropping whole
+// lines from the front, never mid-line: 40 lines of 128 bytes (5120 bytes,
+// none dropped by the 40-line cap) need their first 8 lines (1024 bytes)
+// gone to reach 4095 bytes, the largest whole-line count at or under 4096.
+func TestLogTailCapped(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%3d ", i+1) + strings.Repeat("x", 123) // 127 bytes
+	}
+	log := strings.Join(lines, "\n") + "\n" // 40 * 128 = 5120 bytes
+	want := strings.Join(lines[8:], "\n")   // 32 lines: 32*127 + 31 = 4095 bytes
+	if len(want) != 4095 {
+		t.Fatalf("test setup: want is %d bytes, want 4095", len(want))
+	}
+	if got := logTail([]byte(log)); got != want {
+		t.Fatalf("logTail = %q (%d bytes), want %q (%d bytes)", got, len(got), want, len(want))
 	}
 }
 
