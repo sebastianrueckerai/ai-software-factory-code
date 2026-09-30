@@ -40,6 +40,8 @@ type gateForgejo struct {
 	head        string   // GET /pulls/9's head sha; "" = c1
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
+	status      string   // the combined status of every commit; "" = success
+	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
 	comments    []string
@@ -80,6 +82,10 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
 			}
 			json.NewEncoder(w).Encode(pr)
+		case r.Method == "GET" && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
+			f.statusReads = append(f.statusReads, strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status"))
+			state := cmp.Or(f.status, "success")
+			fmt.Fprintf(w, `{"state":%q,"statuses":[{"context":"ci / test","status":%q}]}`, state, state)
 		case r.Method == "GET" && p == "/issues/9/comments":
 			var out []map[string]any
 			for i, c := range f.comments {
@@ -510,6 +516,48 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
 		t.Fatal("no merge_conflict step")
 	}
+}
+
+// Merge takes only a green head (stage11-design.md section 3, I3): a red
+// or a pending one is refused with its own kind, never a conflict, before
+// any merge call; the card and the pull request say why, the approval
+// stays and the task waits in the approval gate.
+func TestMergeRefusesRedHead(t *testing.T) {
+	for _, status := range []string{"failure", "pending"} {
+		t.Run(status, func(t *testing.T) {
+			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}, status: status}
+			r, store, objects := newGateRunner(t, gateTask, fj)
+			store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+			from := time.Now()
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+			res := getInto[MergeResult](t, val, err)
+			const line = "the checks are red on c1: the merge waits for a green head"
+			if res != (MergeResult{Refusal: line, RedHead: true}) || len(fj.merges) != 0 || !slices.Equal(fj.statusReads, []string{"c1"}) {
+				t.Fatalf("result %+v, merges %d, status reads %v; want the red head refused before any merge", res, len(fj.merges), fj.statusReads)
+			}
+			if a := store.approvals[0]; a.Status != "pending" || a.DecisionNote != line {
+				t.Fatalf("approval = %+v, want pending with the card line", a)
+			}
+			if len(fj.comments) != 1 || fj.comments[0] != "factoryd: "+line+"." {
+				t.Fatalf("comments = %q", fj.comments)
+			}
+			step := timelineStep(t, objects, "t1", "merge_red_head")
+			if step["commit"] != "c1" || step["approver"] != "sebastian" || step["state"] != status {
+				t.Fatalf("merge_red_head step = %v", step)
+			}
+			if got, _, _ := store.Task(context.Background(), "t1"); got.Gate != GateApproval || got.GateSince.Before(from) {
+				t.Fatalf("the task is in %q since %v, want approval since the refusal", got.Gate, got.GateSince)
+			}
+		})
+	}
+	t.Run("success", func(t *testing.T) {
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, _, _ := newGateRunner(t, gateTask, fj)
+		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+		if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.merges) != 1 || !slices.Equal(fj.statusReads, []string{"c1"}) {
+			t.Fatalf("result %+v, merges %d, status reads %v; want the green head merged", res, len(fj.merges), fj.statusReads)
+		}
+	})
 }
 
 // A new session denies the task's pending merge approval as superseded but

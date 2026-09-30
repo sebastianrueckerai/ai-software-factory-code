@@ -8,7 +8,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -782,5 +785,85 @@ func TestWorkflowSameRedHeadRerunsTheChecksOnce(t *testing.T) {
 		if !slices.Equal(waited, c.want) || !slices.Equal(reran, []string{"c1"}) {
 			t.Fatalf("%s: waited on %v, re-ran %v; want %v and [c1]", c.name, waited, reran, c.want)
 		}
+	}
+}
+
+// A run's first activity is TaskConfig on its pinned version, and the
+// stages it runs are TaskConfig's, not the ones WorkflowConfig recorded.
+func TestProcessStagesComeFromTaskConfig(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	process := policy.Process{Stages: testStages()}
+	setStage(&process, "review", func(s *policy.Stage) { s.Enabled = false })
+	var activities []string
+	g.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		activities = append(activities, info.ActivityType.Name)
+	})
+	g.taskConfig = &TaskConfig{Process: "p", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode, Stages: process.Stages}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(activities) == 0 || activities[0] != ActivityTaskConfig || !slices.Equal(g.configPins, []int64{7}) {
+		t.Fatalf("activities %v, TaskConfig pins %v: want TaskConfig first, once, on version 7", activities, g.configPins)
+	}
+	if skipped := g.skipped(); !slices.Contains(skipped, "review: disabled") {
+		t.Fatalf("skipped = %v, want the review TaskConfig switched off", skipped)
+	}
+}
+
+// The session mode of TaskConfig's class chooses the program: report runs
+// the write-up whatever the row, code the lifecycle, plan is refused.
+func TestProgramBySessionMode(t *testing.T) {
+	for name, tc := range map[string]struct {
+		session  string
+		reports  int
+		sessions int
+		final    [2]string
+	}{
+		"report": {policy.SessionReport, 1, 0, [2]string{"done", "report kept on the task, no issue comment"}},
+		"code":   {policy.SessionCode, 0, 1, [2]string{"done", "pull request merged by factory-merge after sebastian's approval"}},
+		"plan":   {policy.SessionPlan, 0, 0, [2]string{"failed", "session plan is not built yet"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+			g.taskConfig = &TaskConfig{Session: tc.session, Stages: testStages()}
+			reports := 0
+			g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+					reports++
+					return ReportResult{}, nil
+				})
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			g.run(t)
+			if reports != tc.reports || len(g.sessions) != tc.sessions || g.finals[0] != tc.final {
+				t.Fatalf("reports %d, sessions %d, final %v; want %d, %d, %v", reports, len(g.sessions), g.finals[0], tc.reports, tc.sessions, tc.final)
+			}
+		})
+	}
+}
+
+// A run from before versionProcesses reads no TaskConfig: its stages are
+// the recorded ones and the row's parent makes it a report task.
+func TestRunBeforeProcessesKeepsItsStages(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
+		setStage(w, "review", func(s *policy.Stage) { s.Enabled = false })
+	}))
+	g.env.OnGetVersion("processes", workflow.DefaultVersion, versionProcesses).Return(workflow.DefaultVersion)
+	g.taskConfig = &TaskConfig{Session: policy.SessionReport}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || len(g.configPins) != 0 || len(g.sessions) != 1 {
+		t.Fatalf("final = %q, TaskConfig calls %v, sessions %d: want done by the lifecycle with no TaskConfig", final, g.configPins, len(g.sessions))
+	}
+	if skipped := g.skipped(); !slices.Contains(skipped, "review: disabled") {
+		t.Fatalf("skipped = %v, want the recorded stages' review switched off", skipped)
 	}
 }

@@ -43,10 +43,6 @@ func ProcessFile(name string) string { return DirProcesses + "/" + name + ".yaml
 // ProjectFile is the file of project name.
 func ProjectFile(name string) string { return DirProjects + "/" + name + ".yaml" }
 
-// Stages are the stages of process maintenance, which every task runs
-// until Task 95's TaskConfig reads the task's own process.
-func (t Tree) Stages() []Stage { return t.Processes["maintenance"].Stages }
-
 // Validate checks every file of a tree, as ParseTree does after decoding;
 // for a tree read back from Postgres.
 func (t Tree) Validate() error {

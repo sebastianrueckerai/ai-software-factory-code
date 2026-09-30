@@ -178,6 +178,9 @@ type MergeResult struct {
 	Failed  string
 	// Conflict: the refusal is a pull request that no longer merges into main
 	Conflict bool
+	// RedHead: the refusal is a head whose checks are not green; the
+	// approval stays, and only a change request sends the task back
+	RedHead bool
 }
 
 // AutoMergeNote tells on the pull request that factory-merge merges it
@@ -816,6 +819,13 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
 	}
+	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, commit)
+	if err != nil {
+		return MergeResult{}, err
+	}
+	if checksResult(cs, "").State != ChecksSuccess {
+		return r.redHead(ctx, t, repo, pr, commit, approver, cs.State), nil
+	}
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
 		return MergeResult{}, err
@@ -882,6 +892,18 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
 	return res
+}
+
+// redHead refuses the merge of a head whose checks are not green (every
+// merge passes here: an approval, the rule auto, a roll), whatever path
+// brought it to the card: the approval stays and waits for a new one.
+func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, state string) MergeResult {
+	line := fmt.Sprintf("the checks are red on %s: the merge waits for a green head", commit)
+	r.comment(ctx, t, repo, pr, "factoryd: "+line+".")
+	r.note(ctx, t, line)
+	r.record(ctx, t.ID, "merge_red_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "state": state}))
+	r.awaitApprovalAgain(ctx, t)
+	return MergeResult{Refusal: line, RedHead: true}
 }
 
 // mergeConflict is a merge refused because the pull request no longer

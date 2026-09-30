@@ -6,13 +6,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +30,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -1009,5 +1015,152 @@ func TestFinishClosesTheTasksOpenHumanAlerts(t *testing.T) {
 	rows := store.alertRows()
 	if rows[0].ResolvedAt == nil || rows[1].ResolvedAt == nil {
 		t.Fatalf("resolved_at = %v, %v, want set on the unjudged rows", rows[0].ResolvedAt, rows[1].ResolvedAt)
+	}
+}
+
+// fixtureVersion is the policy package's fixture tree (stage11-design.md
+// section 0) as version 7.
+func fixtureVersion(t *testing.T) policy.Version {
+	t.Helper()
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return policy.Version{ID: 7, Commit: "c7", Tree: tree}
+}
+
+// TaskConfig reads the task's project in the pinned version and takes its
+// process and lane ready; a report task runs its own class's session. The
+// version in force differs, and is never read.
+func TestTaskConfigFromProcess(t *testing.T) {
+	pinned := fixtureVersion(t)
+	current := pinned
+	current.ID, current.Processes = 8, nil
+	shape := policy.PlanShape{MaxCards: 12, Foundation: true, Integration: true}
+	for name, tc := range map[string]struct {
+		task Task
+		want TaskConfig
+	}{
+		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", RequiredCapabilities: AgentCapabilities},
+			TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
+				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape}},
+		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", RequiredCapabilities: AgentCapabilities},
+			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone}},
+		"presort report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort,
+			RequiredCapabilities: []string{policy.ClassAnalyzer}},
+			TaskConfig{Process: "maintenance", Class: policy.ClassAnalyzer, Session: policy.SessionReport,
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newActivityRunner(t, tc.task, &prForgejo{})
+			r.cfg.Policy = func() policy.Version { return current }
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+			if got := getInto[TaskConfig](t, val, err); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("TaskConfig =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+	for name, repo := range map[string]string{"no process": "sf/ai-software-factory-infra", "no project": "sf/other"} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: repo}, &prForgejo{})
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			_, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+			if want := "task t1: repository " + repo + " follows no process in configuration version 7"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+// processNameUses are the string literals of a Go file that name process
+// maintenance or spec: "maintenance" anywhere, a process file's name, and
+// "spec" anywhere but as a map literal's key or an index into a map other
+// than Processes (a Kubernetes object's spec).
+func processNameUses(t *testing.T, name string, src []byte) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, name, src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var uses []string
+	var stack []ast.Node
+	ast.Inspect(f, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		parent := ast.Node(nil)
+		if len(stack) > 0 {
+			parent = stack[len(stack)-1]
+		}
+		stack = append(stack, n)
+		lit, ok := n.(*ast.BasicLit)
+		if !ok || lit.Kind != token.STRING {
+			return true
+		}
+		s, err := strconv.Unquote(lit.Value)
+		if err != nil {
+			return true
+		}
+		flagged := s == "maintenance" || strings.HasSuffix(s, "maintenance.yaml") || strings.HasSuffix(s, "spec.yaml")
+		if s == "spec" {
+			flagged = true
+			switch p := parent.(type) {
+			case *ast.KeyValueExpr:
+				flagged = p.Key != n
+			case *ast.IndexExpr:
+				sel, isSel := p.X.(*ast.SelectorExpr)
+				flagged = isSel && sel.Sel.Name == "Processes"
+			}
+		}
+		if flagged {
+			uses = append(uses, fmt.Sprintf("%s: %s", fset.Position(lit.Pos()), lit.Value))
+		}
+		return true
+	})
+	return uses
+}
+
+// The engine names no process (stage11-design.md section 0): its program
+// follows the session mode and the stages of the task's process, never a
+// process's name.
+func TestEngineHasNoProcessName(t *testing.T) {
+	planted := `package x
+const p = "maintenance"
+func f(v V, pod map[string]any) {
+	_ = v.Processes["spec"]
+	_ = name == "spec"
+	read("processes/maintenance.yaml")
+	_ = map[string]any{"spec": 1}
+	_ = pod["spec"]
+}
+type T struct{ S int ` + "`json:\"spec\"`" + ` }
+`
+	if got := processNameUses(t, "planted.go", []byte(planted)); len(got) != 4 {
+		t.Fatalf("planted uses = %q, want the four process names and neither Kubernetes spec", got)
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, use := range processNameUses(t, name, src) {
+			t.Errorf("a process named in the engine: %s", use)
+		}
 	}
 }

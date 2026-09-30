@@ -361,6 +361,43 @@ func TestWorkflowMergeConflictGoesBackToTheAgent(t *testing.T) {
 	}
 }
 
+// A red head is no conflict: under an approval the wait goes on and a
+// human's change request sends the agent back with it; on the rule auto
+// the card says why. The agent never gets the merge-main finding.
+func TestWorkflowRedHeadWaitsForTheHuman(t *testing.T) {
+	const line = "the checks are red on c1: the merge waits for a green head"
+	red := MergeResult{Refusal: line, RedHead: true}
+	for _, tc := range []struct {
+		name  string
+		setup func(*gateHarness)
+		merge []MergeResult
+		why   []string
+	}{
+		{name: "approval", setup: func(*gateHarness) {}, merge: []MergeResult{red, {Merged: true}}},
+		{name: "auto", setup: autoGates, merge: []MergeResult{red, red, {Merged: true}}, why: []string{line}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t, tc.setup)
+			g.merge = tc.merge
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			g.signalAfter(2*time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "the checks are red: fix them", PR: 9})
+			g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" || len(g.sessions) != 2 {
+				t.Fatalf("final = %q, %d sessions, merges %v", final, len(g.sessions), g.merges)
+			}
+			if f := strings.Join(g.sessions[1].Findings, "\n"); !strings.Contains(f, "the checks are red: fix them") || strings.Contains(f, "no longer merges into main") {
+				t.Fatalf("second session's findings = %q, want the change request and no merge-main finding", f)
+			}
+			if tc.why != nil && !slices.Equal(g.approvals[0].WhyHuman, tc.why) {
+				t.Fatalf("card why = %q, want %q", g.approvals[0].WhyHuman, tc.why)
+			}
+		})
+	}
+}
+
 // Before the change id the conflict is a refusal: the wait goes on.
 func TestWorkflowBeforeMergeConflictKeepsWaiting(t *testing.T) {
 	g := newGateHarness(t)

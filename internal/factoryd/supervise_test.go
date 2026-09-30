@@ -677,17 +677,16 @@ func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
 }
 
 // The limits of the version in force when a task's workflow starts are
-// the task's: its session cap, agent time and stronger rung, its
-// workflow's stages, and the version it pinned.
+// the task's: its session cap, agent time and stronger rung, and the
+// version it pinned. The stages are its process's, which TaskConfig reads.
 func TestWorkflowConfigTakesTheLimits(t *testing.T) {
-	stages := testStages()
 	v := policy.Version{ID: 9, Tree: policy.Tree{Document: policy.Document{
 		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}},
-		Processes: map[string]policy.Process{"maintenance": {Stages: stages}}}}
+		Processes: map[string]policy.Process{"maintenance": {Stages: testStages()}}}}
 	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, AnswerSlice: time.Minute, ChecksTimeout: time.Hour,
 		Policy: func() policy.Version { return v }}}
 	want := WorkflowConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, MaxSessions: 5, WallClockCap: 30 * time.Minute,
-		AnswerSlice: time.Minute, ChecksTimeout: time.Hour, StrongerAfter: 2, PolicyVersion: 9, Stages: stages}
+		AnswerSlice: time.Minute, ChecksTimeout: time.Hour, StrongerAfter: 2, PolicyVersion: 9}
 	if got := r.WorkflowConfig(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("WorkflowConfig = %+v, want %+v", got, want)
 	}

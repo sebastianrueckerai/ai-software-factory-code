@@ -252,7 +252,6 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		ChecksTimeout: r.cfg.ChecksTimeout,
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,
-		Stages:        v.Stages(),
 	}
 }
 

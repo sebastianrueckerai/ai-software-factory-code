@@ -68,6 +68,9 @@ type workflowHarness struct {
 	closedAt    []time.Time // CloseNotReproduced calls
 	autoNotes   []string    // AutoMergeNote calls: "pr commit"
 	escalateErr error       // Escalate's error, nil = none
+	// taskConfig answers TaskConfig when set; configPins are its calls' pins
+	taskConfig *TaskConfig
+	configPins []int64
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -152,10 +155,26 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
 			return AuditResult{}, nil
 		},
+		ActivityTaskConfig: func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
 	h.env.OnActivity(ActivityEnsureIssue, mock.Anything, "t1").Return(nil)
+	// the real TaskConfig's answer for a task of process maintenance: a
+	// report task (h.state.Report, a parent's) runs the analyzer
+	h.env.OnActivity(ActivityTaskConfig, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) {
+			h.configPins = append(h.configPins, pin)
+			if h.taskConfig != nil {
+				return *h.taskConfig, nil
+			}
+			tc := TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: w.Config().Stages, Queue: policy.QueueNone}
+			if h.state.Report {
+				tc.Lane, tc.Class, tc.Session = "", policy.ClassAnalyzer, policy.SessionReport
+			}
+			return tc, nil
+		})
 	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -237,6 +238,9 @@ func taskHistoryHits(t *testing.T, summary string) []string {
 		IssueNumber: 4, Source: "api", Author: "sebastian", AuthorWriter: true, RequiredCapabilities: AgentCapabilities, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	pinned := testPolicyVersion()
+	pinned.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", Agents: policy.AgentsCoder, Process: "maintenance"}
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil }
 	fj := &histForgejo{nextID: 100}
 	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, PublicURL: "https://git.example", BotUser: "factory-agent", BotPassword: "bot-password-7f3a9c", Seeded: histSeeded}
 	runner.completion.Forgejo = runner.forgejo

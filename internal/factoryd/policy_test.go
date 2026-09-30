@@ -460,8 +460,8 @@ func TestPolicyLoaderBootRevalidatesTheStoredVersion(t *testing.T) {
 	if err := l.Boot(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if cur := l.Current(); cur.ID != 2 || len(cur.Stages()) != 5 || cur.Document.Classes["coder"].Session != policy.SessionCode {
-		t.Fatalf("current = %d with %d stages, want version 2 with the head's process", cur.ID, len(cur.Stages()))
+	if cur := l.Current(); cur.ID != 2 || len(cur.Processes["maintenance"].Stages) != 5 || cur.Document.Classes["coder"].Session != policy.SessionCode {
+		t.Fatalf("current = %d with %d stages, want version 2 with the head's process", cur.ID, len(cur.Processes["maintenance"].Stages))
 	}
 }
 
@@ -491,7 +491,7 @@ func TestPolicyHandler(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil || rr.Code != http.StatusOK {
 		t.Fatalf("GET /policy = %d %s", rr.Code, rr.Body.String())
 	}
-	if got.ID != 1 || got.Commit != "abc" || got.Document.Budget.TaskMaxEUR != 5 || len(got.Stages()) != 5 || got.LoadedAt.IsZero() {
+	if got.ID != 1 || got.Commit != "abc" || got.Document.Budget.TaskMaxEUR != 5 || len(got.Processes["maintenance"].Stages) != 5 || got.LoadedAt.IsZero() {
 		t.Fatalf("GET /policy = %+v", got)
 	}
 	for _, key := range []string{`"id"`, `"commit"`, `"loaded_at"`, `"activated_at"`, `"policy"`, `"projects"`, `"processes"`, `"task_default_eur"`, `"coder"`} {

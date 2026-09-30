@@ -15,6 +15,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -70,6 +71,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunReport:                   r.RunReport,
 		ActivityRollCommit:                  r.RollCommit,
 		ActivityGateAudit:                   r.GateAudit,
+		ActivityTaskConfig:                  r.TaskConfig,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -629,6 +631,39 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 		}
 	}
 	return nil
+}
+
+// TaskConfig reads the task's project in the pinned version and returns
+// its process with lane ready; a report task (a parent's) runs its own
+// class's session, the analyzer's, in the same process.
+func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (TaskConfig, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	v, err := r.pinnedVersion(ctx, pin)
+	if err != nil {
+		return TaskConfig{}, err
+	}
+	_, project, _ := v.ProjectOf(t.Repository)
+	p, ok := v.Processes[project.Process]
+	if !ok {
+		return TaskConfig{}, terminalError("task %s: repository %s follows no process in configuration version %d", t.ID, t.Repository, v.ID)
+	}
+	tc := TaskConfig{Process: project.Process, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
+	for _, l := range p.Lanes {
+		if l.Name == policy.LanePlan {
+			tc.PlanShape = l.Plan
+		}
+		if l.Name == policy.LaneReady {
+			tc.Lane, tc.Class = l.Name, l.Class
+		}
+	}
+	if t.Parent != "" && len(t.RequiredCapabilities) > 0 {
+		tc.Lane, tc.Class = "", t.RequiredCapabilities[0]
+	}
+	tc.Session = v.Document.Classes[tc.Class].Session
+	return tc, nil
 }
 
 // Reconcile reads where a task stands before a run acts, so that a run

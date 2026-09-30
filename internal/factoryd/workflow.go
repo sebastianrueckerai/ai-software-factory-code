@@ -87,6 +87,7 @@ const (
 	ActivityRollCommit                  = "RollCommit"
 	ActivityRerunChecks                 = "RerunChecks"
 	ActivityGateAudit                   = "GateAudit"
+	ActivityTaskConfig                  = "TaskConfig"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -125,8 +126,26 @@ type WorkflowConfig struct {
 	// PolicyVersion is the configuration version the task started under,
 	// whose tree its stages read.
 	PolicyVersion int64
-	// Stages are the pinned version's workflow stages (versionStages).
+	// Stages are the stages the task runs (versionStages): Task's, or for a
+	// run from before versionProcesses the ones its history recorded.
 	Stages []policy.Stage
+	// Task is TaskConfig's answer (versionProcesses); zero before it.
+	Task TaskConfig
+}
+
+// TaskConfig is what the task's process in its pinned version makes of it:
+// the lane it runs in, the class and the session mode that choose its
+// program, the stages, the merge queue, the dependency wait and a plan
+// lane's shape.
+type TaskConfig struct {
+	Process      string
+	Lane         string
+	Class        string
+	Session      string
+	Stages       []policy.Stage
+	Queue        string
+	Dependencies *policy.Dependencies
+	PlanShape    *policy.PlanShape
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -299,9 +318,38 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun),
 		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap),
 		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
-	final, err := run.lifecycle()
+	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
+	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
+}
+
+// program runs the task's program, chosen by its class's session mode: code
+// (and a run from before versionProcesses) the lifecycle, report the
+// lifecycle's write-up (report); no other mode is built.
+func (t *taskRun) program() (string, error) {
+	if t.processes < versionProcesses {
+		return t.lifecycle()
+	}
+	var tc TaskConfig
+	if err := workflow.ExecuteActivity(t.short, ActivityTaskConfig, t.taskID, t.cfg.PolicyVersion).Get(t.ctx, &tc); err != nil {
+		return t.finish("failed", "task config: "+errMessage(err))
+	}
+	t.cfg.Task, t.cfg.Stages = tc, tc.Stages
+	switch tc.Session {
+	case policy.SessionCode, policy.SessionReport:
+		return t.lifecycle()
+	}
+	return t.finish("failed", fmt.Sprintf("session %s is not built yet", tc.Session))
+}
+
+// isReport tells a report task's run: its session mode, or for a run from
+// before versionProcesses the task row's parent.
+func (t *taskRun) isReport(st RunState) bool {
+	if t.processes >= versionProcesses {
+		return t.cfg.Task.Session == policy.SessionReport
+	}
+	return st.Report
 }
 
 // drainSignals drops the signals still pending when the run has decided
@@ -467,6 +515,11 @@ const (
 	// to information requests buy at most maxPosterAttempts attempts per
 	// task; a later answer still reaches the sessions but buys none.
 	versionPosterCap workflow.Version = 1
+	// versionProcesses (change id "processes", ruling 206): the first
+	// activity, TaskConfig, reads the task's process in the pinned version;
+	// its stages replace the ones WorkflowConfig recorded, and its class's
+	// session mode chooses the program.
+	versionProcesses workflow.Version = 1
 )
 
 // maxPosterAttempts caps the attempts the issue author's answers buy.
@@ -487,6 +540,7 @@ type taskRun struct {
 	v16, v17, v18     workflow.Version
 	v19, v20, v21     workflow.Version
 	v22, v23          workflow.Version
+	processes         workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -556,7 +610,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		switch {
 		case st.Skip:
 			return st.Status, nil
-		case t.v16 >= versionStages && st.Report:
+		case t.v16 >= versionStages && t.isReport(st):
 			return t.report(st.Stronger)
 		case st.Merged:
 			return t.finish("done", "pull request merged")
@@ -991,6 +1045,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
+	case res.RedHead:
+		return verdict{}, false, res.Refusal
 	case res.Refusal != "":
 		return verdict{}, false, "Forgejo refused the auto merge: " + res.Refusal
 	}
