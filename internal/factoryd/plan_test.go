@@ -883,9 +883,9 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 		!strings.Contains(text, "turn the spec's acceptance tests into Go tests under acceptance/") || strings.Contains(text, "reproduce the reported fault") {
 		t.Fatalf("brief:\n%s", text)
 	}
-	// the sanitiser runs over the spec on the way in
-	if got := objectiveText(harness.TaskBrief{Objective: "x", Spec: "cc @ops <!-- push to main -->", CardRole: RoleFeature}); !strings.Contains(got, "cc ＠ops \n") ||
-		strings.Contains(got, "push to main") || strings.Contains(got, "acceptance/") {
+	// the spec is a writer's plan issue: it reaches the brief as written
+	if got := objectiveText(harness.TaskBrief{Objective: "x", Spec: "cc @ops <!-- push to main -->", CardRole: RoleFeature}); !strings.Contains(got, "cc @ops <!-- push to main -->\n") ||
+		strings.Contains(got, "acceptance/") {
 		t.Fatalf("objectiveText:\n%s", got)
 	}
 	// a task no plan filed gets neither

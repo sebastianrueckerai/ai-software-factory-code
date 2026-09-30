@@ -23,9 +23,11 @@ var (
 )
 
 // Inbound is issue text or a comment as an agent's brief carries it: hidden
-// comments removed, mentions and closing keywords neutralised.
+// comments removed outside fenced code blocks. A fence's contents are code
+// the agent reads whole, backticks and all; mentions and closing keywords
+// stay literal, since reading them notifies or closes nothing on Forgejo.
 func Inbound(s string) string {
-	return neutralise(unhide(s))
+	return unhideOutsideFences(s)
 }
 
 // Outbound is agent-written text as factoryd posts it on Forgejo: hidden
@@ -49,6 +51,51 @@ func Outbound(s string, hosts []string) string {
 // unhide removes the HTML and Markdown comments Forgejo renders as nothing.
 func unhide(s string) string {
 	return markdownComment.ReplaceAllString(htmlComment.ReplaceAllString(s, ""), "")
+}
+
+// unhideOutsideFences applies unhide everywhere except inside a fenced code
+// block (``` or ~~~, up to three spaces of indent, closed by a same-character
+// fence at least as long, CommonMark-style, and open to the end of s if
+// never closed): a fence's own lines and everything between them pass
+// through untouched.
+func unhideOutsideFences(s string) string {
+	var out, plain strings.Builder
+	flush := func() { out.WriteString(unhide(plain.String())); plain.Reset() }
+	var fenceChar byte
+	fenceLen := 0
+	for _, line := range strings.SplitAfter(s, "\n") {
+		body := strings.TrimLeft(line, " ")
+		indent := len(line) - len(body)
+		n, ch, ok := fenceRun(body)
+		switch {
+		case fenceLen == 0 && indent <= 3 && ok:
+			flush()
+			fenceChar, fenceLen = ch, n
+			out.WriteString(line)
+		case fenceLen > 0:
+			out.WriteString(line)
+			if indent <= 3 && ok && ch == fenceChar && n >= fenceLen && strings.TrimSpace(body[n:]) == "" {
+				fenceLen = 0
+			}
+		default:
+			plain.WriteString(line)
+		}
+	}
+	flush()
+	return out.String()
+}
+
+// fenceRun is the leading run of backticks or tildes at the start of s, and
+// whether it is long enough (3 or more) to be a fence.
+func fenceRun(s string) (n int, ch byte, ok bool) {
+	if s == "" || (s[0] != '`' && s[0] != '~') {
+		return 0, 0, false
+	}
+	ch = s[0]
+	for n < len(s) && s[n] == ch {
+		n++
+	}
+	return n, ch, n >= 3
 }
 
 // neutralise breaks mentions (＠name) and closing keywords ("(fixes) #12")

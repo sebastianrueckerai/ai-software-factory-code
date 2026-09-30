@@ -519,14 +519,17 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // (the issue and every answer to an information request) stands between
 // markers with a random tag the author cannot know, after the lines
 // factoryd writes, so none of it can pass for the standing line or for
-// the brief's own sections (ruling 152). Every text of the issue and its
-// comments arrives sanitised (sanitize.Inbound).
+// the brief's own sections (ruling 152). Only that author's text (the
+// objective and the poster's answers) is sanitised (sanitize.Inbound), and
+// only when AuthorStanding is not a writer's: the spec (a writer's plan
+// issue), the human's answers (writers answer escalations) and the
+// findings (factoryd's, the reviewer's, CI's lines) pass as written.
 func objectiveText(brief harness.TaskBrief) string {
-	brief.Objective, brief.Spec = sanitize.Inbound(brief.Objective), sanitize.Inbound(brief.Spec)
-	for _, texts := range []*[]string{&brief.PosterInfo, &brief.Answers, &brief.Findings} {
-		*texts = slices.Clone(*texts)
-		for i, s := range *texts {
-			(*texts)[i] = sanitize.Inbound(s)
+	if brief.AuthorStanding != harness.StandingWriter {
+		brief.Objective = sanitize.Inbound(brief.Objective)
+		brief.PosterInfo = slices.Clone(brief.PosterInfo)
+		for i, s := range brief.PosterInfo {
+			brief.PosterInfo[i] = sanitize.Inbound(s)
 		}
 	}
 	texts := append([]string{brief.Objective, brief.Spec}, brief.PosterInfo...)

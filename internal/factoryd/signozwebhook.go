@@ -11,6 +11,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -73,6 +74,9 @@ type AlertIntake struct {
 	// Timeline records the events of the cards it files.
 	Timeline *Timeline
 	Budget   func() policy.Budget
+	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
+	// project's own environment hosts, allowed unmangled in a posted alert.
+	LinkHosts func() []string
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
@@ -166,7 +170,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		return nil
 	}
 	if !Final(t.Status) {
-		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Inbound("value="+oneLine(a.Annotations["value"])))
+		msg := "factoryd: the alert fired again at " + at + ".\n\n" + fenced(sanitize.Outbound("value="+oneLine(a.Annotations["value"]), in.hostsFor(p)))
 		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
@@ -203,7 +207,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return fmt.Errorf("base sha: %w", err)
 	}
-	title, body := alertIssue(a, p.Name, ns)
+	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
@@ -226,6 +230,25 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	}
 	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
+}
+
+// hostsFor is Outbound's hosts argument for an alert on project p: the
+// policy's link_hosts, the Forgejo host and p's own environment hosts
+// (the same hosts (*Runner).untrusted allows an agent's posted text).
+func (in *AlertIntake) hostsFor(p Project) []string {
+	var hosts []string
+	if in.LinkHosts != nil {
+		hosts = append(hosts, in.LinkHosts()...)
+	}
+	if u, err := url.Parse(in.Forgejo.PublicURL); err == nil && u.Hostname() != "" {
+		hosts = append(hosts, u.Hostname())
+	}
+	for _, e := range p.Environments {
+		if e.Hostname != "" {
+			hosts = append(hosts, e.Hostname)
+		}
+	}
+	return hosts
 }
 
 // project is the project owning namespace ns: its factory/project label,
@@ -261,8 +284,9 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 // alertIssue is the bug issue of alert a: title "alert: <name> on
 // <service> in <ns>" (no "on" without a service) and a body with the
 // firing time, the SigNoz link, the value and annotations and the labels,
-// the values one line each inside fences.
-func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
+// the values one line each inside fences. The text goes to Forgejo, so it
+// is sanitised Outbound: hosts is the links left unmangled.
+func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
 	name, on := oneLine(a.Labels["alertname"]), ""
 	if s := oneLine(cmp.Or(a.Labels["service"], a.Labels["service.name"], a.Labels["k8s.deployment.name"], a.Labels["deployment"])); s != "" {
 		on = " on service " + s
@@ -289,7 +313,7 @@ func alertIssue(a SigNozAlert, project, ns string) (title, body string) {
 	}
 	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from SigNoz alert %s",
 		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), oneLine(a.Fingerprint))
-	return sanitize.Inbound(title), sanitize.Inbound(b.String())
+	return sanitize.Outbound(title, hosts), sanitize.Outbound(b.String(), hosts)
 }
 
 // The final reasons of a task whose issue a human closed; the merge state
@@ -323,10 +347,10 @@ func namespaceOf(labels map[string]string) string {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
-// oneLine is s on one line, a mention broken by a zero-width space so
-// project text rings no bell.
+// oneLine is s on one line, whitespace collapsed; sanitize.Outbound, applied
+// to the whole issue or comment before it posts, neutralises any mention.
 func oneLine(s string) string {
-	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "@", "@\u200b")
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func safeLink(u string) bool {
