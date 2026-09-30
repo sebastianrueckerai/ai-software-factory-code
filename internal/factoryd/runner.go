@@ -1059,14 +1059,15 @@ func (r *Runner) sandboxPodSpec(t Task, env []map[string]any, gatewayToken bool)
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
 // address, and exactly four allows: the model gateway's port, Forgejo's
-// HTTP port, the Go module proxy and checksum database by name on 443
-// (ruling 99: the image carries the Go toolchain, and a registry joins by
-// name with the toolchain that needs it), and kube-dns for exactly those
+// HTTP port, the Go module proxy, its checksum database and the npm
+// registry by name on 443 (ruling 99: the image carries the Go toolchain
+// and Node, and a registry joins by name with the toolchain that needs
+// it), and kube-dns for exactly those
 // names. DNS is allowlisted by name because an open resolver is itself an
-// exfiltration channel. No other registry is reachable: opencode's first-run
+// exfiltration channel. No other registry is reachable. opencode's first-run
 // npm install (its @opencode-ai/plugin dependency) is baked into the image at
-// build time from opencode-plugin/'s checked-in lockfile, so the worker never
-// reaches npm at runtime — npm is unreachable here regardless. Workers reach
+// build time from opencode-plugin/'s checked-in lockfile, so opencode itself
+// never installs at runtime. Workers reach
 // Forgejo through its in-cluster service, not the public host: in-cluster
 // DNS answers that host with the gateway ClusterIP, which Cilium's toFQDNs
 // cannot authorize (the envoy fronting it answers 403), while the service
@@ -1081,7 +1082,7 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 	}
 	toFQDNs := []any{}
 	// storage.googleapis.com: proxy.golang.org redirects zip downloads there.
-	for _, host := range []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com"} {
+	for _, host := range []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org"} {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
 		dnsNames = append(dnsNames, map[string]any{"matchName": host})
 	}

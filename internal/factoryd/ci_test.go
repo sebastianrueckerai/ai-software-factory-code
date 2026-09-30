@@ -439,7 +439,7 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	for _, host := range []string{
 		"proxy.golang.org", "sum.golang.org", "data.forgejo.org",
-		"storage.googleapis.com",
+		"storage.googleapis.com", "registry.npmjs.org",
 	} {
 		if !strings.Contains(cnpStr, host) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)
@@ -461,6 +461,9 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "storage.googleapis.com") {
 		t.Fatalf("DNS rule missing storage.googleapis.com: %v", dnsRule)
+	}
+	if !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "matchName:registry.npmjs.org") || !strings.Contains(fmt.Sprint(dnsRule), "matchName:registry.npmjs.org") {
+		t.Fatalf("the npm registry is not on 443 by name: %v, DNS %v", fqdnRule, dnsRule)
 	}
 	// an ordinary job drives no build: no Docker Hub host at all
 	if strings.Contains(cnpStr, "docker.io") || strings.Contains(cnpStr, "docker.com") {
@@ -1208,6 +1211,9 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 		if !strings.Contains(project, want) || strings.Contains(code, want) {
 			t.Errorf("%s: in the project's egress %v, in the code's %v", want, strings.Contains(project, want), strings.Contains(code, want))
 		}
+	}
+	if !strings.Contains(project, "matchName:registry.npmjs.org") || !strings.Contains(code, "matchName:registry.npmjs.org") {
+		t.Errorf("the npm registry: in the project's egress %v, in the code's %v", strings.Contains(project, "registry.npmjs.org"), strings.Contains(code, "registry.npmjs.org"))
 	}
 	if kube.createdNs["factory-agents-ci-9"][CIProjectLabel] != "demo-app" || kube.createdNs["factory-agents-ci-7"][CIProjectLabel] != "" {
 		t.Errorf("namespace labels: %v / %v", kube.createdNs["factory-agents-ci-9"], kube.createdNs["factory-agents-ci-7"])

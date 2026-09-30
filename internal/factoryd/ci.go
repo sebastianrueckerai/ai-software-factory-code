@@ -703,8 +703,8 @@ const (
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
 // #5): the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
-// proxy and checksum database, and the host actions/checkout resolves
-// against. No Kubernetes API, no other namespace, no LiteLLM, no gateway.
+// proxy and checksum database, the npm registry, and the host
+// actions/checkout resolves against. No Kubernetes API, no other namespace, no LiteLLM, no gateway.
 // A build job additionally reaches its own VM's buildkitd, the read-only
 // build cache (its own policy refuses writes) and, since BuildKit fetches
 // registry tokens through the client session, Docker Hub's token service;
@@ -715,6 +715,7 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, project bool) map[string]any {
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
 		"storage.googleapis.com", // proxy.golang.org redirects zip downloads there
 		"data.forgejo.org",       // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
+		"registry.npmjs.org",     // npm ci
 	}
 	if vm != nil {
 		fqdns = append(fqdns, "auth.docker.io") // buildctl's session fetches the build VM's registry tokens

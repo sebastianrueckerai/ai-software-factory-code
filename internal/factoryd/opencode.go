@@ -631,7 +631,8 @@ func workGuide(tools []string) string {
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
-	return g + "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the module proxy. " +
+	return g + "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. The sandbox has no C compiler and no database: run go test without -race and skip the tests that need one; the pull request checks run both. No server, no SSH, no network beyond the Go module proxy and the npm registry. " +
+		"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number. " +
 		"End with a short last message: what you changed, and whether you recommend merging it and why."
 }
 

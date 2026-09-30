@@ -661,7 +661,9 @@ func TestBriefNamesTheAuthorsStandingAndPosterInformation(t *testing.T) {
 		"<<<ISSUE-T\nalert: x in demo-staging\nISSUE-T>>>\n\n" + noTools + workGuide(nil); got != want {
 		t.Fatalf("telemetry: %q, want %q", got, want)
 	}
-	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block"} {
+	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block",
+		"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number.",
+		"No server, no SSH, no network beyond the Go module proxy and the npm registry."} {
 		if !strings.Contains(workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}), s) {
 			t.Errorf("the brief does not ask for %s", s)
 		}
