@@ -297,7 +297,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v19: workflow.GetVersion(ctx, "audit", workflow.DefaultVersion, versionAudit),
 		v20: workflow.GetVersion(ctx, "review-verdict", workflow.DefaultVersion, versionReviewVerdict),
 		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun),
-		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap)}
+		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap),
+		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
 	final, err := run.lifecycle()
 	drainSignals(ctx)
 	return final, err
@@ -458,6 +459,10 @@ const (
 	// run once more on an empty commit, RerunChecks, before their
 	// findings go back to the agent; a re-run's head is not re-run.
 	versionChecksRerun workflow.Version = 1
+	// versionMergeConflict (change id "merge-conflict", backlog 70): a
+	// merge refused because the pull request no longer merges into main
+	// goes back to the agent, which merges main into the branch.
+	versionMergeConflict workflow.Version = 1
 	// versionPosterCap (change id "poster-cap", ruling 203): the answers
 	// to information requests buy at most maxPosterAttempts attempts per
 	// task; a later answer still reaches the sessions but buys none.
@@ -472,21 +477,22 @@ const maxPosterAttempts = 2
 const infoWait = 14 * 24 * time.Hour
 
 type taskRun struct {
-	ctx, short         workflow.Context
-	cfg                WorkflowConfig
-	taskID             string
-	v, v2, v3, v4, v5  workflow.Version
-	v6, v7, v8, v9     workflow.Version
-	v10, v11, v12      workflow.Version
-	v13, v14, v15      workflow.Version
-	v16, v17, v18      workflow.Version
-	v19, v20, v21, v22 workflow.Version
-	pr                 PullRequest
-	approvalRequested  time.Time // the current approval request's time (versionGateStarted)
-	answers            []string  // the human's answers, newest first (versionAnswers)
-	escalation         int64     // the escalation comment human answers must be newer than
-	infoRequest        int64     // the information request comment the author's answers must be newer than
-	posterInfo         []string  // the author's answers, oldest first (versionNeedsInfo)
+	ctx, short        workflow.Context
+	cfg               WorkflowConfig
+	taskID            string
+	v, v2, v3, v4, v5 workflow.Version
+	v6, v7, v8, v9    workflow.Version
+	v10, v11, v12     workflow.Version
+	v13, v14, v15     workflow.Version
+	v16, v17, v18     workflow.Version
+	v19, v20, v21     workflow.Version
+	v22, v23          workflow.Version
+	pr                PullRequest
+	approvalRequested time.Time // the current approval request's time (versionGateStarted)
+	answers           []string  // the human's answers, newest first (versionAnswers)
+	escalation        int64     // the escalation comment human answers must be newer than
+	infoRequest       int64     // the information request comment the author's answers must be newer than
+	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
 	// versionStages
 	standing  string         // the issue author's, for a stage's when
 	lastRound bool           // the session that pushed the commit in the stages is the task's last
@@ -983,6 +989,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
 	case res.Merged:
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
+	case res.Conflict && t.v23 >= versionMergeConflict:
+		return conflictVerdict(res.Refusal), true, ""
 	case res.Refusal != "":
 		return verdict{}, false, "Forgejo refused the auto merge: " + res.Refusal
 	}
@@ -1082,6 +1090,8 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
 		case res.Failed != "":
 			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
+		case res.Conflict && t.v23 >= versionMergeConflict:
+			return conflictVerdict(res.Refusal)
 		default:
 			// refused: a new approval wait
 			approver = ""
@@ -1099,6 +1109,17 @@ const maxMergeRetries = 6
 // mergeRetryAfter is how long a merge that failed (Forgejo unreachable,
 // not refusing) waits before the kept approval is tried again.
 const mergeRetryAfter = 10 * time.Minute
+
+// conflictVerdict sends a pull request that no longer merges into main
+// back to the agent. The worker bases its commit on the main commit the
+// merge brings in, so main's changes, .forgejo/ among them, stay main's.
+func conflictVerdict(refusal string) verdict {
+	return verdict{reason: "the pull request no longer merges into main", findings: []string{
+		"the pull request no longer merges into main: main moved under it (Forgejo: " + refusal + "). " +
+			"Merge main into the branch with `git merge origin/main` (the clone's origin/main is main at this session's start), " +
+			"resolve every conflict keeping both main's changes and this task's, run the tests of the packages you touched, and end the session. " +
+			"Do not rebase, and leave .forgejo/ as the merge brings it from main."}}
+}
 
 // mergeOptions: a merge is retried a few times; its last attempt reports
 // the failure (timeline, comment) instead of failing, and the workflow

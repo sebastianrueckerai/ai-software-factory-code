@@ -325,6 +325,57 @@ func TestWorkflowRefusedMergeKeepsWaiting(t *testing.T) {
 	}
 }
 
+// A merge refused because main moved under the pull request (a conflict)
+// goes back to the agent with the instruction to merge main into the
+// branch; the approval of the new head merges.
+func TestWorkflowMergeConflictGoesBackToTheAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*gateHarness)
+		steps []string
+	}{
+		{name: "approval", setup: func(*gateHarness) {},
+			steps: []string{"policy", "repro c1", "review c1", "approval c1", "merge", "policy", "repro c2", "review c2", "approval c2", "merge"}},
+		{name: "auto", setup: autoGates,
+			steps: []string{"policy", "repro c1", "review c1", "merge", "policy", "repro c2", "review c2", "merge"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t, tc.setup)
+			g.merge = []MergeResult{{Refusal: "forgejo POST .../merge: status 405: Please try again later", Conflict: true}, {Merged: true}}
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			g.signalAfter(3*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" || len(g.merges) != 2 {
+				t.Fatalf("final = %q after merges %v", final, g.merges)
+			}
+			if !slices.Equal(g.steps, tc.steps) {
+				t.Fatalf("steps = %v, want %v", g.steps, tc.steps)
+			}
+			if f := g.sessions[1].Findings; len(f) != 1 || !strings.Contains(f[0], "no longer merges into main") ||
+				!strings.Contains(f[0], "git merge origin/main") || !strings.Contains(f[0], "status 405") {
+				t.Fatalf("second session's findings = %q", f)
+			}
+		})
+	}
+}
+
+// Before the change id the conflict is a refusal: the wait goes on.
+func TestWorkflowBeforeMergeConflictKeepsWaiting(t *testing.T) {
+	g := newGateHarness(t)
+	g.env.OnGetVersion("merge-conflict", workflow.DefaultVersion, versionMergeConflict).Return(workflow.DefaultVersion)
+	g.merge = []MergeResult{{Refusal: "405", Conflict: true}, {Merged: true}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || len(g.merges) != 2 || len(g.sessions) != 1 {
+		t.Fatalf("final = %q after merges %v and %d sessions", final, g.merges, len(g.sessions))
+	}
+}
+
 // A refused merge followed by a human's merge in Forgejo stays valid.
 func TestWorkflowHumanMergeAfterARefusalIsDone(t *testing.T) {
 	g := newGateHarness(t)
