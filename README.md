@@ -613,7 +613,9 @@ session, for the cards it depends on (`task_deps`, which `CreateChildren`
 fills). None open: it starts. One ended `failed` or `closed`: the card
 waits for a human (`dependency #3 (links-api) ended failed: close this
 card, or answer to start it anyway`); an answer starts it with that
-line as a finding, a close ends it `closed`. Else it enters `waiting-deps`
+line as a finding and is kept on the timeline (`dependencies_started`,
+so a later run does not ask again), a close ends it `closed`, as does a
+close Reconcile finds before the card started. Else it enters `waiting-deps`
 in gate `dependencies` (the board reads `waiting on #3, #5`) and waits
 for the signal `dep_ended`, which `task_ended` sends to every card
 waiting on the task, or 10 minutes, then asks again. The heal pass starts

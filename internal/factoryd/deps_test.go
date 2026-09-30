@@ -207,6 +207,29 @@ func TestWaitStartsWhenDepsDone(t *testing.T) {
 	})
 }
 
+// A retry of Dependencies after the card's move to waiting-deps (its gate
+// failed) finishes the entry: the gate, the label and the wait's record.
+func TestDependenciesRetryFinishesEntry(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+	fj := &prForgejo{labels: map[int64][]string{7: {"agent", "state/queued"}}}
+	r, store, objects := newActivityRunner(t, card, fj)
+	store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 3})
+	store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityDependencies, "t-c"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _, _ := store.Task(ctx, "t-c")
+	if got.Gate != GateDependencies || !slices.Contains(fj.labels[7], "state/waiting-deps") {
+		t.Fatalf("card in gate %q with labels %v, want gate dependencies and state/waiting-deps", got.Gate, fj.labels[7])
+	}
+	if steps := depSteps(t, objects, "t-c"); !slices.Equal(steps, []string{"dependencies_wait [3]"}) {
+		t.Fatalf("timeline = %q, want the wait recorded once", steps)
+	}
+}
+
 // depSteps are task id's dependency steps: the wait with its issues, the
 // end with whether it carries the wait's start.
 func depSteps(t *testing.T, objects *fakeObjectStore, id string) []string {
@@ -262,7 +285,34 @@ func TestFailedDependencyOpensCard(t *testing.T) {
 			len(h.sessions[0].Answers) != 1 || !strings.HasSuffix(h.sessions[0].Answers[0], ": go ahead") {
 			t.Fatalf("sessions = %+v, want one with the reason as its finding and the answer", h.sessions)
 		}
+		started := 0
+		for _, s := range h.recorded {
+			if s.step == stepDepsStarted && s.detail["reason"] == reason {
+				started++
+			}
+		}
+		if started != 1 {
+			t.Fatalf("recorded = %+v, want one dependencies_started with the reason", h.recorded)
+		}
 	})
+	for _, status := range []string{"running", "waiting-human"} {
+		t.Run("started anyway, a later run in "+status, func(t *testing.T) {
+			// factoryd restarted in the first session, or before it: the
+			// timeline's answer starts the card, no second question
+			h := newWorkflowHarness(t)
+			failed(h)
+			h.state = RunState{Status: status, DepStarted: reason, Question: reason}
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q", final)
+			}
+			if len(h.escalated) != 0 || len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Findings, []string{reason}) {
+				t.Fatalf("escalated %q, sessions %+v; want no question and the reason as the finding", h.escalated, h.sessions)
+			}
+		})
+	}
 	t.Run("close ends", func(t *testing.T) {
 		h := newWorkflowHarness(t)
 		failed(h)
@@ -272,6 +322,31 @@ func TestFailedDependencyOpensCard(t *testing.T) {
 		}
 		if len(h.sessions) != 0 {
 			t.Fatalf("sessions = %+v, want none", h.sessions)
+		}
+	})
+	t.Run("closed while factoryd was down", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		failed(h)
+		h.state = RunState{Status: "waiting-deps", IssueClosed: true}
+		if final := h.run(t); final != "closed" || len(h.sessions) != 0 || len(h.escalated) != 0 {
+			t.Fatalf("final %q, sessions %d, escalated %q; want closed, nothing run", final, len(h.sessions), h.escalated)
+		}
+	})
+	t.Run("closed during the wait", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.taskConfig = depsConfig()
+		start := h.env.Now()
+		asked := 0
+		h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (DepState, error) {
+			asked++
+			return DepState{Waiting: []int64{5}}, nil
+		})
+		h.signalAfter(25*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final != "closed" || len(h.sessions) != 0 || len(h.escalated) != 0 {
+			t.Fatalf("final %q, sessions %d, escalated %q; want closed, nothing run", final, len(h.sessions), h.escalated)
+		}
+		if asked != 3 || h.finishAt.Sub(start) != 25*time.Minute {
+			t.Fatalf("asked %d times, finished at %s; want 3 asks (0, 10m, 20m) and the end at the close, 25m", asked, h.finishAt.Sub(start))
 		}
 	})
 	t.Run("healed asks again", func(t *testing.T) {

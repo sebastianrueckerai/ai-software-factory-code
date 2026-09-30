@@ -21,6 +21,11 @@ const (
 	ActivityDependencies = "Dependencies"
 )
 
+// stepDepsStarted is the timeline step of a human's answer that starts a
+// card despite a dependency that ended failed or closed; its reason is the
+// card's first finding.
+const stepDepsStarted = "dependencies_started"
+
 // depRecheck is how often a waiting card asks again without a dep_ended.
 const depRecheck = 10 * time.Minute
 
@@ -117,11 +122,14 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 	for _, d := range deps {
 		st.Waiting = append(st.Waiting, d.Issue)
 	}
-	if t.Status == "waiting-deps" {
-		return st, nil
+	if t.Status != "waiting-deps" {
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued"}, "waiting-deps"); err != nil {
+			return DepState{}, terminalError("task %s is %s, cannot wait on its dependencies: %v", taskID, t.Status, err)
+		}
 	}
-	if err := r.store.TransitionTask(ctx, taskID, []string{"queued"}, "waiting-deps"); err != nil {
-		return DepState{}, terminalError("task %s is %s, cannot wait on its dependencies: %v", taskID, t.Status, err)
+	// the gate last: a retry after the status moved finishes the entry
+	if t.Gate == GateDependencies {
+		return st, nil
 	}
 	if err := r.store.SetGate(ctx, taskID, GateDependencies, time.Now()); err != nil {
 		return DepState{}, err
@@ -176,15 +184,25 @@ func healDependencyWait(ctx context.Context, store Store, wf Workflows, t Task) 
 // dependencies block that no session has touched yet (versionDepWait).
 func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
 	return t.depWait >= versionDepWait && t.cfg.Task.Dependencies != nil && !st.Skip && !t.isReport(st) && !st.Roll &&
-		u.Attempts == 0 && st.PR.Number == 0 && !st.Screening && !st.Merged && !st.IssueClosed && st.Status != "closing"
+		u.Attempts == 0 && st.PR.Number == 0 && !st.Screening && !st.Merged && st.Status != "closing"
 }
 
 // awaitDependencies holds the card until its dependencies are done, at no
 // cost: it asks, waits for dep_ended or depRecheck, and asks again. A
 // dependency that ended failed or closed goes to a human (healed: asked
 // again as the healed question): an answer starts the card with the reason
-// as a finding, a close ends it closed.
-func (t *taskRun) awaitDependencies(healed bool) (final, why string, findings []string) {
+// as a finding, and the timeline keeps it (dependencies_started), so a
+// later run starts the card without asking again; a close ends it closed,
+// also one found closed by Reconcile.
+func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []string) {
+	switch {
+	case st.IssueClosed:
+		_, why, _ := t.issueClosed()
+		return "closed", why, nil
+	case st.DepStarted != "":
+		return "", "", []string{st.DepStarted}
+	}
+	healed := st.Status == "waiting-human"
 	for {
 		var d DepState
 		if err := workflow.ExecuteActivity(t.short, ActivityDependencies, t.taskID).Get(t.ctx, &d); err != nil {
@@ -199,6 +217,9 @@ func (t *taskRun) awaitDependencies(healed bool) (final, why string, findings []
 			final, why, answer := t.awaitHuman(ask, reason)
 			if final != "" {
 				return closedBeforeStart(final, why)
+			}
+			if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, stepDepsStarted, map[string]any{"reason": reason}).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("record dependencies_started", "task", t.taskID, "error", err)
 			}
 			return "", "", append([]string{reason}, answer...)
 		}

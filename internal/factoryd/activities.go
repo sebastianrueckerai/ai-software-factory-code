@@ -764,7 +764,8 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 }
 
 // stageMemory rebuilds what the stages remembered from the task's
-// timeline: the stage_findings steps (returns to the agent, the history)
+// timeline: the stage_findings steps (returns to the agent, the history),
+// a dependencies_started step (the card started despite a dependency)
 // and the model_review steps (the reviews), the last round.
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
@@ -773,9 +774,9 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 	}
 	for line := range strings.SplitSeq(string(b), "\n") {
 		var step struct {
-			Step, Stage, To, Verdict, Summary, Note string
-			Round, Attempt                          int
-			Findings                                []string
+			Step, Stage, To, Verdict, Summary, Note, Reason string
+			Round, Attempt                                  int
+			Findings                                        []string
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
 			continue
@@ -793,6 +794,8 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 				st.Returns[step.Stage]++
 			}
 			st.Round = max(st.Round, step.Round)
+		case stepDepsStarted:
+			st.DepStarted = step.Reason
 		case "model_review":
 			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
 			st.Round = max(st.Round, step.Round)

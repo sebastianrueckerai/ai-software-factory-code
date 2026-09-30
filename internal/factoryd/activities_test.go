@@ -821,7 +821,8 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 			`{"step":"model_review","note":"model review failed: timeout","round":2}`+"\n"+
 			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"+
 			`{"step":"stage_findings","stage":"supervisor:repetition","round":3,"attempt":4,"to":"agent","findings":["loop"]}`+"\n"+
-			`{"step":"stage_findings","stage":"session","round":3,"attempt":5,"to":"stronger","findings":["none"]}`+"\n"))
+			`{"step":"stage_findings","stage":"session","round":3,"attempt":5,"to":"stronger","findings":["none"]}`+"\n"+
+			`{"step":"dependencies_started","reason":"dependency #3 (links-api) ended failed: close this card, or answer to start it anyway"}`+"\n"))
 	val, err := execActivity(t, r, ActivityReconcile, "t1")
 	var st RunState
 	if err != nil || val.Get(&st) != nil {
@@ -833,6 +834,9 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	if want := []string{"review, round 1: a.go: x", "checks, round 2: red", "checks, round 3: red again",
 		"supervisor:repetition, attempt 4: loop", "session, attempt 5: none"}; !slices.Equal(st.History, want) {
 		t.Fatalf("history = %q", st.History)
+	}
+	if st.DepStarted != "dependency #3 (links-api) ended failed: close this card, or answer to start it anyway" {
+		t.Fatalf("DepStarted = %q", st.DepStarted)
 	}
 	if len(st.Reviews) != 2 || st.Reviews[0].Verdict != "concerns" || st.Reviews[0].Findings[0] != "a.go: x" || st.Reviews[1].Note != "model review failed: timeout" {
 		t.Fatalf("reviews = %+v", st.Reviews)

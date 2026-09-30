@@ -258,6 +258,9 @@ type RunState struct {
 	// Climbed: a session's findings went to the agent with the stronger
 	// rung (retry_stronger).
 	Climbed bool
+	// DepStarted: a human started the card despite a dependency that ended
+	// failed or closed (stepDepsStarted), with the reason (versionDepWait).
+	DepStarted string
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -612,7 +615,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
 		}
 		if t.waitsForDependencies(st, u) {
-			final, why, answer := t.awaitDependencies(st.Status == "waiting-human")
+			final, why, answer := t.awaitDependencies(st)
 			if final != "" {
 				return t.finish(final, why)
 			}
