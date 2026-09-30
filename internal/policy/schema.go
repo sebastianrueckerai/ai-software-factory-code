@@ -34,8 +34,14 @@ var (
 
 func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
-// minimums are the least values of integer fields, keyed Type.Field.
-var minimums = map[string]float64{"Limits.Steps": 1, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2}
+// minimums and maximums bound integer fields, keyed Type.Field.
+var (
+	minimums = map[string]float64{"Limits.Steps": 1, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "PlanShape.MaxCards": 2}
+	maximums = map[string]float64{"PlanShape.MaxCards": 20}
+)
+
+// itemCounts are the least and most items of list fields, keyed Type.Field.
+var itemCounts = map[string][2]int{"Process.Lanes": {2, 3}}
 
 // enums are the enumerated values of fields, keyed Type.Field: a string
 // field's values, a map field's keys, a slice field's items.
@@ -192,6 +198,12 @@ func schemaFor(t reflect.Type, docs map[string]string) (*jsonschema.Schema, erro
 			}
 			if m, ok := minimums[id]; ok {
 				p.Minimum = &m
+			}
+			if m, ok := maximums[id]; ok {
+				p.Maximum = &m
+			}
+			if n, ok := itemCounts[id]; ok {
+				p.MinItems, p.MaxItems = &n[0], &n[1]
 			}
 			s.Properties[key] = p
 			s.PropertyOrder = append(s.PropertyOrder, key)

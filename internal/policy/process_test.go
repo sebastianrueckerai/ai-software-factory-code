@@ -35,6 +35,9 @@ func TestProcessRefusals(t *testing.T) {
 		rev   = "  - {name: review, on_findings: agent, enabled: true}\n"
 	)
 	type change func(t *testing.T, f map[string][]byte)
+	// the rows whose error is exactly their lines, no other
+	exact := map[string]bool{"approval_required": true, "checks_disabled": true, "merge_when": true, "audit_without_review": true,
+		"audit_after_approval": true, "ready_session_only": true}
 	in := func(file, old, new string) change {
 		return func(t *testing.T, f map[string][]byte) { edit(t, f, file, old, new) }
 	}
@@ -187,6 +190,20 @@ func TestProcessRefusals(t *testing.T) {
 			[]string{`processes/spec.yaml: stages.migration: on_findings "maybe", want one of [agent human fail]`}},
 		"when_value": {in(spec, "when: outsider", "when: insider"),
 			[]string{`processes/spec.yaml: stages.screening: when "insider", want one of [outsider]`}},
+		"checks_disabled": {in(spec, "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent, enabled: false}"),
+			[]string{"processes/spec.yaml: stages.checks: must run for every task (enabled, no when)"}},
+		"merge_when": {in(spec, "{name: merge, on_findings: human, enabled: true}", "{name: merge, on_findings: human, enabled: true, when: outsider}"),
+			[]string{"processes/spec.yaml: stages.merge: must run for every task (enabled, no when)"}},
+		"audit_without_review": {in(spec, rev, ""),
+			[]string{"processes/spec.yaml: stages: stage audit must come between review and approval: it reads the reviewed head"}},
+		"audit_after_approval": {func(t *testing.T, f map[string][]byte) {
+			const audit = "  - {name: audit, on_findings: human, enabled: true}\n"
+			edit(t, f, spec, audit, "")
+			edit(t, f, spec, merge, audit+merge)
+		}, []string{"processes/spec.yaml: stages: stage approval must come right before merge",
+			"processes/spec.yaml: stages: stage audit must come between review and approval: it reads the reviewed head"}},
+		"ready_session_only": {in(spec, "{name: ready, class: coder", "{name: ready, class: analyzer"),
+			[]string{"processes/spec.yaml: lanes.ready: class analyzer has session report; lane ready needs a class with session code"}},
 		"nested_process": {func(t *testing.T, f map[string][]byte) { f["processes/x/spec.yaml"] = f[spec] },
 			[]string{`processes/x/spec.yaml: unknown file "processes/x/spec.yaml": the tree holds policy.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
 	} {
@@ -196,6 +213,9 @@ func TestProcessRefusals(t *testing.T) {
 			_, err := ParseTree(files)
 			if err == nil {
 				t.Fatal("the tree passes")
+			}
+			if exact[name] && err.Error() != strings.Join(tc.want, "\n") {
+				t.Errorf("ParseTree error =\n%v\nwant exactly:\n%s", err, strings.Join(tc.want, "\n"))
 			}
 			for _, want := range tc.want {
 				if !hasLines(err.Error(), want) {
@@ -285,5 +305,48 @@ func TestTreeValidateJudgesAStoredProcess(t *testing.T) {
 	tree.Processes["spec"] = spec
 	if err := tree.Validate(); err == nil || !hasLines(err.Error(), "processes/spec.yaml: lanes.plan: plan is required: it bounds the plan the planner answers") {
 		t.Fatalf("Validate = %v", err)
+	}
+}
+
+// What the floor leaves open passes: checks failing the task, a disabled
+// screening, a return cap on the review.
+func TestProcessAcceptsWhatTheFloorAllows(t *testing.T) {
+	files := fixtureTree(t)
+	for _, c := range [][2]string{
+		{"{name: checks, on_findings: agent", "{name: checks, on_findings: fail"},
+		{"{name: screening, on_findings: human, enabled: true", "{name: screening, on_findings: human, enabled: false"},
+		{"{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent, enabled: true, max_returns: 1}"},
+	} {
+		edit(t, files, "processes/spec.yaml", c[0], c[1])
+	}
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := tree.Processes["spec"]
+	checks, _ := spec.Stage(StageChecks)
+	screening, _ := spec.Stage(StageScreening)
+	review, _ := spec.Stage(StageReview)
+	if checks.OnFindings != FindingsFail || screening.Enabled || review.MaxReturns == nil || *review.MaxReturns != 1 {
+		t.Fatalf("checks %+v, screening %+v, review %+v", checks, screening, review)
+	}
+}
+
+// A stored tree from before sessions prints the session lines once and
+// nothing that follows from them.
+func TestTreeValidateWithoutSessionsSaysItOnce(t *testing.T) {
+	tree, err := ParseTree(fixtureTree(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range tree.Document.Classes {
+		c.Session = ""
+		tree.Document.Classes[name] = c
+	}
+	want := "policy.yaml: classes.analyzer: session is required, one of [code plan report]\n" +
+		"policy.yaml: classes.coder: session is required, one of [code plan report]\n" +
+		"policy.yaml: classes.planner: session is required, one of [code plan report]"
+	if err := tree.Validate(); err == nil || err.Error() != want {
+		t.Fatalf("Validate =\n%v\nwant:\n%s", err, want)
 	}
 }

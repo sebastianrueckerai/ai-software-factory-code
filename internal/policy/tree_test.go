@@ -413,6 +413,12 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if got := proc.Properties["lanes"].Items.Properties["name"].Enum; !reflect.DeepEqual(got, []any{"backlog", "plan", "ready"}) {
 		t.Errorf("lane name enum = %v", got)
 	}
+	if lanes := proc.Properties["lanes"]; lanes.MinItems == nil || *lanes.MinItems != 2 || lanes.MaxItems == nil || *lanes.MaxItems != 3 {
+		t.Errorf("lanes items = %v to %v, want 2 to 3", lanes.MinItems, lanes.MaxItems)
+	}
+	if mc := proc.Properties["lanes"].Items.Properties["plan"].Properties["max_cards"]; mc.Minimum == nil || *mc.Minimum != 2 || mc.Maximum == nil || *mc.Maximum != 20 {
+		t.Errorf("max_cards = %v to %v, want 2 to 20", mc.Minimum, mc.Maximum)
+	}
 	if got := proc.Properties["merge"].Properties["queue"].Enum; !reflect.DeepEqual(got, []any{"none", "project"}) {
 		t.Errorf("merge queue enum = %v", got)
 	}

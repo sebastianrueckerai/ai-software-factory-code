@@ -176,10 +176,15 @@ func (t Tree) checkLinks() error {
 				case !ok:
 					bad(block, "%s %q is not a class of policy.yaml (classes: %s)", ref.key, ref.class, strings.Join(classes, ", "))
 					continue
+				case c.Session == "":
+					// checkSessions refuses it once, in policy.yaml
+					continue
 				case c.Session != ref.want && ref.key == "class":
 					bad(block, "class %s has session %s; lane %s needs a class with session %s", ref.class, c.Session, l.Name, ref.want)
+					continue
 				case c.Session != ref.want:
 					bad(block, "write_up %s has session %s; a write-up needs a class with session %s", ref.class, c.Session, ref.want)
+					continue
 				}
 				if c.SupervisorModel == "" {
 					bad(block, "class %s names no supervisor_model, which the session supervisor calls", ref.class)

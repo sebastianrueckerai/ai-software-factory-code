@@ -53,3 +53,12 @@ func TestGraphOfTheFixtureProcessesPasses(t *testing.T) {
 		}
 	}
 }
+
+// An edge to a node the graph does not hold is refused, not followed.
+func TestGraphRefusesAnEdgeToNoNode(t *testing.T) {
+	g := Graph{Process: "x", Nodes: []Node{{ID: "ready", Name: "lane ready"}, {ID: "done", Name: "done", Kind: NodeDone}},
+		Edges: []Edge{{From: "ready", To: "done", Next: true}, {From: "ready", To: "queue", Label: "a conflict"}}}
+	if err := g.Check(); err == nil || err.Error() != `processes/x.yaml: graph: an edge names "queue", which is no node` {
+		t.Fatalf("Check = %v", err)
+	}
+}

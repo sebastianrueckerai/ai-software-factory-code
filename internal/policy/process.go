@@ -347,7 +347,7 @@ func validateStages(stages []Stage) error {
 	if i, p := at(StageMigration), at(StagePolicy); i >= 0 && p >= 0 && i < p {
 		bad("stages", "stage migration must come after policy, which finds the migrations")
 	}
-	if a := at(StageAudit); a >= 0 && (a < at(StageReview) || at(StageReview) < 0 || a > at(StageApproval)) {
+	if a, ap := at(StageAudit), at(StageApproval); a >= 0 && (a < at(StageReview) || at(StageReview) < 0 || ap >= 0 && a > ap) {
 		bad("stages", "stage audit must come between review and approval: it reads the reviewed head")
 	}
 	return errors.Join(errs...)

@@ -286,15 +286,34 @@ func (g Graph) out(id string) []Edge {
 	return out
 }
 
-func (g Graph) nodeOf(id string) Node {
+func (g Graph) nodeOf(id string) (Node, bool) {
 	i := slices.IndexFunc(g.Nodes, func(n Node) bool { return n.ID == id })
-	return g.Nodes[i]
+	if i < 0 {
+		return Node{}, false
+	}
+	return g.Nodes[i], true
+}
+
+// node is the node id of a graph whose edges Check found sound.
+func (g Graph) node(id string) Node {
+	n, _ := g.nodeOf(id)
+	return n
 }
 
 // Check refuses a node from which no path reaches done or a human card
 // (G1) and a cycle without a capped edge (G2).
 func (g Graph) Check() error {
 	var errs []error
+	for _, e := range g.Edges {
+		for _, id := range []string{e.From, e.To} {
+			if _, ok := g.nodeOf(id); !ok {
+				errs = append(errs, fmt.Errorf("%s: graph: an edge names %q, which is no node", g.file(), id))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	for _, n := range g.Nodes {
 		if n.Kind != NodeStep {
 			continue
@@ -303,7 +322,7 @@ func (g Graph) Check() error {
 		queue, ok := []string{n.ID}, false
 		for len(queue) > 0 && !ok {
 			for _, e := range g.out(queue[0]) {
-				if k := g.nodeOf(e.To).Kind; k == NodeDone || k == NodeHuman {
+				if k := g.node(e.To).Kind; k == NodeDone || k == NodeHuman {
 					ok = true
 				}
 				if !seen[e.To] {
@@ -320,7 +339,7 @@ func (g Graph) Check() error {
 	if cycle := g.uncappedCycle(); cycle != nil {
 		names := make([]string, len(cycle))
 		for i, id := range cycle {
-			names[i] = g.nodeOf(id).Name
+			names[i] = g.node(id).Name
 		}
 		errs = append(errs, fmt.Errorf("%s: graph: the cycle %s has no cap", g.file(), strings.Join(names, " -> ")))
 	}
@@ -399,7 +418,7 @@ func (g Graph) Explain(kind string) (string, error) {
 	var target func(id string) string
 	edge := func(e Edge) string { return e.Label + " -> " + target(e.To) + e.Note }
 	target = func(id string) string {
-		n := g.nodeOf(id)
+		n := g.node(id)
 		if s, ok := step[id]; ok {
 			if n.Ref == "" {
 				return fmt.Sprintf("step %d", s)
@@ -419,7 +438,7 @@ func (g Graph) Explain(kind string) (string, error) {
 	fmt.Fprintf(&sb, "process %s (%s), card kind %s\n", g.Process, g.file(), kind)
 	var later, caps []string
 	for _, id := range path {
-		n := g.nodeOf(id)
+		n := g.node(id)
 		lines := map[int][]string{}
 		maxLine := 0
 		for _, e := range g.out(id) {
