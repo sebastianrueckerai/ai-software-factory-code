@@ -68,8 +68,9 @@ type Registrar struct {
 	OpenBao SecretReader
 
 	mu sync.Mutex
-	// regErrs is each project's last failed registration, by name.
-	regErrs sync.Map
+	// reconcileErrs is each factory project's last failed reconcile, by
+	// name; a clean one deletes it.
+	reconcileErrs sync.Map
 }
 
 // SecretReader reads a kv-v2 secret's fields (openbao.Client).
@@ -240,13 +241,22 @@ func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error
 		run.seed(ctx)
 		return errors.Join(run.errs...)
 	}
-	if rotate || p.PullToken == "" || p.GitToken == "" || p.MergeToken == "" {
+	// the caller's copy may predate a registration queued ahead on the lock
+	if row, ok, err := r.Store.Project(ctx, p.Name); !run.fail("row", err) && ok {
+		run.p.PullToken, run.p.GitToken, run.p.MergeToken = row.PullToken, row.GitToken, row.MergeToken
+	}
+	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" {
 		run.register(ctx, rotate)
 	}
 	run.forgejo(ctx)
 	run.cluster(ctx)
 	if !run.unclean {
 		run.fail("ready_at", r.Store.SetProjectReady(ctx, p.Name))
+	}
+	if err := errors.Join(run.errs...); err != nil {
+		r.reconcileErrs.Store(p.Name, err.Error())
+	} else {
+		r.reconcileErrs.Delete(p.Name)
 	}
 	return errors.Join(run.errs...)
 }
@@ -877,24 +887,17 @@ func (run *reconcileRun) generatedSecret(ctx context.Context, ns, entry string, 
 	})
 }
 
-// RegistrationError is why project name's last registration failed; ""
-// when it worked or none ran since factoryd started.
-func (r *Registrar) RegistrationError(name string) string {
-	msg, _ := r.regErrs.Load(name)
+// ReconcileError is why factory project name's last reconcile failed; ""
+// when it was clean or none ran since factoryd started.
+func (r *Registrar) ReconcileError(name string) string {
+	msg, _ := r.reconcileErrs.Load(name)
 	s, _ := msg.(string)
 	return s
 }
 
 // register makes what only the site admin can (ruling 164).
 func (run *reconcileRun) register(ctx context.Context, rotate bool) {
-	r, name := run.r, run.p.Name
-	err := r.admin(ctx, &run.p, rotate)
-	if err != nil {
-		r.regErrs.Store(name, err.Error())
-	} else {
-		r.regErrs.Delete(name)
-	}
-	run.fail("registration", err)
+	run.fail("registration", run.r.admin(ctx, &run.p, rotate))
 }
 
 // Register is factoryd register-project: the factory project name, whose

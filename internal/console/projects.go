@@ -280,26 +280,31 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		if row.Minted() {
 			hasMain, mainErr = c.cfg.MainExists(ctx, row.Repo())
 		}
+		reconcileErr := ""
+		if row.ReadyAt.IsZero() {
+			reconcileErr = c.cfg.ReconcileError(name)
+		}
+		failed := "The reconcile failed: " + reconcileErr + ". It tries again at least hourly."
 		switch {
 		case mainErr != nil:
 			log.Printf("console: main of %s: %v", row.Repository, mainErr)
 			created.State, created.Detail = stepFailed, "Cannot read the repository's main; the factoryd log says why."
 		case row.Minted() && hasMain:
 			created.State, created.Detail = stepDone, row.Repository+" with main."
+		case reconcileErr != "":
+			created.State, created.Detail = stepFailed, failed
 		case row.Minted():
 			created.State, created.Detail = stepRunning, "Organisation, repository, CI user and tokens made; waiting for main's first commit."
 		default:
-			if regErr := c.cfg.RegistrationError(name); regErr != "" {
-				created.State, created.Detail = stepFailed, "Registration failed: "+regErr+". The reconcile tries again at least hourly."
-			} else {
-				created.State, created.Detail = stepRunning, "The reconcile registers it within a minute of the load."
-			}
+			created.State, created.Detail = stepRunning, "The reconcile registers it within a minute of the load."
 		}
 		switch {
 		case !row.ReadyAt.IsZero():
 			ready.State, ready.Detail, ready.Link = stepDone,
 				"Ready since "+row.ReadyAt.UTC().Format("2006-01-02 15:04")+" UTC: open the board", "/board?project="+url.QueryEscape(name)
 		case created.State != stepDone:
+		case reconcileErr != "":
+			ready.State, ready.Detail = stepFailed, failed
 		default:
 			ready.State, ready.Detail = stepRunning, "Waiting for a reconcile that finds every object in place; one runs at least hourly."
 		}

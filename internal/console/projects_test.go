@@ -346,13 +346,13 @@ func steps(body string) (names, states, tips []string) {
 
 type statusRig struct {
 	*rig
-	infra   *infraFake
-	force   *inForce
-	main    bool
-	mainErr error
-	regErr  string
-	ck      *http.Cookie
-	csrf    string
+	infra        *infraFake
+	force        *inForce
+	main         bool
+	mainErr      error
+	reconcileErr string
+	ck           *http.Cookie
+	csrf         string
 }
 
 func newStatusRig(t *testing.T) *statusRig {
@@ -365,11 +365,11 @@ func newStatusRig(t *testing.T) *statusRig {
 		}
 		return s.main, s.mainErr
 	}
-	r.c.cfg.RegistrationError = func(name string) string {
+	r.c.cfg.ReconcileError = func(name string) string {
 		if name != "linkshort" {
-			t.Errorf("RegistrationError(%q)", name)
+			t.Errorf("ReconcileError(%q)", name)
 		}
-		return s.regErr
+		return s.reconcileErr
 	}
 	s.ck, _ = r.loggedIn(t)
 	s.csrf = r.c.sessions[s.ck.Value].csrf
@@ -429,15 +429,28 @@ func TestStatusStepsFromSources(t *testing.T) {
 				"The reconcile registers it within a minute of the load."}, []string{`<form method="post" action="/projects/linkshort/`}},
 		{"registration failed", func(s *statusRig) {
 			s.force.load("linkshort")
-			s.regErr = "organisation linkshort: forgejo: status 401"
+			s.reconcileErr = "registration: organisation linkshort: forgejo: status 401"
 		}, []string{"done", "done", "failed", "waiting"},
-			[]string{"Registration failed: organisation linkshort: forgejo: status 401. The reconcile tries again at least hourly."}, nil},
+			[]string{"The reconcile failed: registration: organisation linkshort: forgejo: status 401. It tries again at least hourly."}, nil},
 		{"minted, main missing", func(s *statusRig) { s.force.load("linkshort"); s.row(minted) }, []string{"done", "done", "running", "waiting"},
 			[]string{"Organisation, repository, CI user and tokens made; waiting for main&#39;s first commit."}, []string{`type="password"`}},
+		{"minted, seed failed", func(s *statusRig) {
+			s.force.load("linkshort")
+			s.row(minted)
+			s.reconcileErr = "seed: forgejo: status 500"
+		}, []string{"done", "done", "failed", "waiting"}, []string{"The reconcile failed: seed: forgejo: status 500. It tries again at least hourly."}, nil},
 		{"main unreadable", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.mainErr = errors.New("boom") }, []string{"done", "done", "failed", "waiting"},
 			[]string{"Cannot read the repository&#39;s main; the factoryd log says why."}, nil},
 		{"created, reconciling", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true }, []string{"done", "done", "done", "running"},
 			[]string{"linkshort/linkshort with main.", "Waiting for a reconcile that finds every object in place; one runs at least hourly."}, []string{`type="password"`}},
+		{"reconcile failed", func(s *statusRig) {
+			s.force.load("linkshort")
+			s.row(minted)
+			s.main = true
+			s.reconcileErr = "webhook: forgejo: status 500"
+		}, []string{"done", "done", "done", "failed"}, []string{"The reconcile failed: webhook: forgejo: status 500. It tries again at least hourly."}, nil},
+		{"ready despite an old error", func(s *statusRig) { s.force.load("linkshort"); s.row(ready); s.main = true; s.reconcileErr = "old" },
+			[]string{"done", "done", "done", "done"}, nil, []string{"old"}},
 		{"ready", func(s *statusRig) { s.force.load("linkshort"); s.row(ready); s.main = true }, []string{"done", "done", "done", "done"},
 			[]string{`<a href="/board?project=linkshort">Ready since 2026-10-02 09:30 UTC: open the board</a>`}, []string{`type="password"`, "hx-trigger"}},
 	} {
@@ -542,7 +555,7 @@ func TestNewProjectPanelHasNoPassword(t *testing.T) {
 		func(s *statusRig) {},
 		func(s *statusRig) { s.infra.set(openPull) },
 		func(s *statusRig) { s.force.load("linkshort") },
-		func(s *statusRig) { s.force.load("linkshort"); s.regErr = "boom" },
+		func(s *statusRig) { s.force.load("linkshort"); s.reconcileErr = "boom" },
 		func(s *statusRig) { s.force.load("linkshort"); s.row(minted) },
 		func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true },
 	} {

@@ -787,15 +787,15 @@ func TestProjectFileWaitsForRegistration(t *testing.T) {
 	if len(rig.fj.writes) != 0 {
 		t.Fatalf("wrote %v", rig.fj.writes)
 	}
-	if got := rig.reg.RegistrationError("demo-app"); !strings.HasPrefix(got, "the Forgejo admin's login: openbao kv factory/forgejo-admin") {
-		t.Fatalf("RegistrationError = %q", got)
+	if got := rig.reg.ReconcileError("demo-app"); !strings.HasPrefix(got, "registration: the Forgejo admin's login: openbao kv factory/forgejo-admin") {
+		t.Fatalf("ReconcileError = %q", got)
 	}
 	rig.kv.err = nil
 	if err := rig.reg.Reconcile(context.Background(), p); err != nil {
 		t.Fatal(err)
 	}
-	if got := rig.reg.RegistrationError("demo-app"); got != "" {
-		t.Fatalf("after a registration that worked, RegistrationError = %q", got)
+	if got := rig.reg.ReconcileError("demo-app"); got != "" {
+		t.Fatalf("after a reconcile that worked, ReconcileError = %q", got)
 	}
 }
 
@@ -862,6 +862,48 @@ func TestReconcileRegistersUnregisteredProject(t *testing.T) {
 	}
 }
 
+// Two reconciles of one copy read before the registration stored its
+// tokens: the one queued behind the registering one reads the row under
+// the lock and mints nothing again.
+func TestQueuedReconcileDoesNotMintAgain(t *testing.T) {
+	rig := newRegisterRig(t)
+	stale := demoProject()
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rig.reg.Reconcile(context.Background(), stale) // #nosec G104 -- the counts below judge it
+		}()
+	}
+	wg.Wait()
+	if len(rig.fj.minted) != 4 || len(rig.fj.tokens) != 4 || rig.kv.reads != 1 {
+		t.Fatalf("minted %v, %d tokens live, kv reads %d; want 4, 4, 1", rig.fj.minted, len(rig.fj.tokens), rig.kv.reads)
+	}
+}
+
+// A factory project's last reconcile error stays until a clean reconcile:
+// the console shows it while the project is not ready.
+func TestReconcileErrorKeptUntilClean(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	rig.kube.fail = "demo-prod"
+	if err := rig.reg.Reconcile(ctx, demoProject()); err == nil {
+		t.Fatal("the failing namespace passed")
+	}
+	if got := rig.reg.ReconcileError("demo-app"); !strings.Contains(got, "demo-prod") || !strings.Contains(got, "the API server refused") {
+		t.Fatalf("ReconcileError = %q", got)
+	}
+	rig.kube.fail = ""
+	rig.fj.branches["main"] = "c0ffee"
+	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
+		t.Fatal(err)
+	}
+	if got := rig.reg.ReconcileError("demo-app"); got != "" {
+		t.Fatalf("after a clean reconcile, ReconcileError = %q", got)
+	}
+}
+
 // A registered project's reconcile, alone or in ReconcileAll, never reads
 // the credential.
 func TestRegisteredProjectReadsNoCredential(t *testing.T) {
@@ -901,7 +943,7 @@ func TestAdminPasswordNeverLogged(t *testing.T) {
 		if c.name != "works" && err == nil {
 			t.Fatalf("%s: registered", c.name)
 		}
-		said = append(said, c.name, rig.logs.String(), fmt.Sprint(err), rig.reg.RegistrationError("demo-app"), fmt.Sprintf("%+v", rig.store.m["demo-app"]))
+		said = append(said, c.name, rig.logs.String(), fmt.Sprint(err), rig.reg.ReconcileError("demo-app"), fmt.Sprintf("%+v", rig.store.m["demo-app"]))
 	}
 	if all := strings.Join(said, "\n"); strings.Contains(all, password) {
 		t.Fatalf("the password was said:\n%s", all)

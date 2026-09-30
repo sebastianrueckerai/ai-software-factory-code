@@ -382,8 +382,8 @@ func main() {
 		MainExists: func(ctx context.Context, repo factoryd.Repo) (bool, error) {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
 		},
-		RegistrationError: registrar.RegistrationError,
-		Metrics:           metrics,
+		ReconcileError: registrar.ReconcileError,
+		Metrics:        metrics,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

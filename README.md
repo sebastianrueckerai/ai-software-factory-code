@@ -1380,8 +1380,10 @@ to the repository (`git-<name>`, row `git_token`, Flux's source) and
 `factory-merge`'s `write:repository` limited to it (`project-<name>`, row
 `merge_token`, the Merge activity's on this project). An existing token is
 kept unless `factoryd register-project --name <name> --rotate`, which
-revokes and mints them all again. A failed registration logs its line, the
-console's panel shows its error, and the next reconcile tries again. These tokens
+revokes and mints them all again. The reconcile decides from the row read
+under its lock, so a reconcile queued behind a registering one mints
+nothing again. A failed registration logs its line, the console's panel
+shows the reconcile's error, and the next reconcile tries again. These tokens
 are plaintext in Postgres and so in its backups: the namespaces and Flux need
 them back after a rebuild; each reaches one project only.
 
@@ -1485,9 +1487,10 @@ branch `project-<name>` and opens its pull request. The status panel
    Forgejo's refusal, and the version in force holding the file;
 3. the repository: no click; the reconcile that loads the new version
    registers the project (ruling 219), and the step shows the row's tokens
-   and `main`, or the last registration error (`Registrar.RegistrationError`,
-   in memory);
-4. `ready_at`, with a link to the project's board.
+   and `main`, or the last reconcile error (`Registrar.ReconcileError`, in
+   memory, cleared by a clean reconcile);
+4. `ready_at`, with a link to the project's board, or that error once the
+   repository has `main`.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's

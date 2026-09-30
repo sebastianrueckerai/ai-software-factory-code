@@ -110,10 +110,10 @@ type Config struct {
 	CheckProject func(ctx context.Context, name string, file []byte) (refused []string, err error)
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
-	// RegistrationError is Registrar.RegistrationError: why the project's
-	// last registration failed, "" when none did.
-	RegistrationError func(name string) string
-	HTTP              *http.Client // nil = 15 s timeout
+	// ReconcileError is Registrar.ReconcileError: why the project's last
+	// reconcile failed, "" when it was clean.
+	ReconcileError func(name string) string
+	HTTP           *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics
