@@ -1210,7 +1210,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   row's `gate` and `gate_since`; a plan's card `part of plan #n`.
 - Moving a card: a backlog card has one button per starting lane of its
   process the viewer may use (`→ Plan`, `→ Ready`; intake's
-  `Intake.MayMove`, the `moved_by` rule; a plan's card never into plan),
+  `Intake.MayMove`, the `moved_by` rule, asked once a minute per
+  repository, user and `moved_by`, a failure kept too, so the poll never
+  waits on Forgejo per card; the lanes of the project's current process;
+  a plan's card never into plan),
   `POST /cards/{id}/lane` adding the lane's label (`plan`, `agent`) with
   the human's token; intake judges the label event. A refusal is a 403
   with one sentence (`Lane ready takes cards from writers of <repo>.`).
@@ -1226,8 +1229,11 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   revision <m>; reload` on the card), "Request changes" (a comment as the
   human) and "Reject" (`RejectPlan`) for every writer. A done plan lists
   its cards by issue and state, and "Start plan (n in backlog)" for
-  approvers (`POST /tasks/{id}/start-plan`) labels each backlog card
-  `agent` as the human and answers the count.
+  approvers who may move them into ready (`POST /tasks/{id}/start-plan`)
+  labels each backlog card `agent` as the human and answers the count. A
+  plan's escalation shows on its card only when newer than the pending
+  request. The card's forms keep the project filter; a browser's form is
+  answered with a redirect to the board, htmx with the board itself.
 - `/tasks/{id}/timeline`: a gates table above the raw steps, one row per
   step that ended a gate (`factoryd.StepGates`, each carrying `started`)
   with its attempt, start, duration, outcome and a `<meter>` against the

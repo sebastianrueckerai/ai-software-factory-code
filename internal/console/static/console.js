@@ -27,6 +27,14 @@ document.addEventListener("htmx:responseError", function (e) {
   flash.textContent = e.detail.xhr.responseText.trim() || "The factory refused: " + e.detail.xhr.status;
   flash.hidden = false;
 });
+// A refusal that answers the board (a plan revision gone stale) is
+// swapped in: its line stands on the card it concerns.
+document.addEventListener("htmx:beforeSwap", function (e) {
+  if (e.detail.xhr.status === 409 && e.detail.xhr.responseText.indexOf("<div id=\"board\"") === 0) {
+    e.detail.shouldSwap = true;
+    e.detail.isError = false;
+  }
+});
 document.addEventListener("htmx:beforeRequest", function (e) {
   var flash = document.getElementById("flash");
   if (flash && e.detail.elt.id !== "board") flash.hidden = true;

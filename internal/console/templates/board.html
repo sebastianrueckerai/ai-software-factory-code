@@ -36,7 +36,7 @@
 </section>
 </div>{{end}}
 
-{{define "approval"}}<article class="card approval" aria-labelledby="approval-{{.ID}}">
+{{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}">
 {{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
 <dl class="facts">
 <dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
@@ -81,27 +81,27 @@
 <p class="spec">{{.SpecLines}}</p>
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
-<div class="scroll"><table><caption>The plan's cards, in filing order</caption>
+<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
 <thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
-</table></div>
+</table>
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Filter}}">
 <input type="hidden" name="revision" value="{{.PlanSpec.Revision}}">
 <input type="hidden" name="sha256" value="{{.PlanSpec.SHA256}}">
 <p class="meta">factoryd files one card per planned card in the backlog; Start plan moves them to ready.</p>
 <button type="submit" aria-label="Accept revision {{.PlanSpec.Revision}} of plan #{{.Issue}}">Accept plan</button>
 </form>{{else}}<p class="meta">Only the policy's approvers may accept a plan.</p>{{end}}
-<form method="post" action="/tasks/{{.TaskID}}/plan/changes">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+<form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#board" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Filter}}">
 <label for="changes-{{.ID}}">Changes you ask for, posted on the issue as you</label>
 <textarea id="changes-{{.ID}}" name="text" rows="3" required></textarea>
 <button type="submit" aria-label="Request changes to plan #{{.Issue}}">Request changes</button>
 </form>
-<form method="post" action="/tasks/{{.TaskID}}/plan/reject">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+<form method="post" action="/tasks/{{.TaskID}}/plan/reject" hx-post="/tasks/{{.TaskID}}/plan/reject" hx-target="#board" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Filter}}">
 <label for="reject-{{.ID}}">Reason to reject the plan</label>
 <textarea id="reject-{{.ID}}" name="note" rows="2" required></textarea>
 <button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>

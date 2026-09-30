@@ -1,7 +1,6 @@
 package console
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -24,32 +24,50 @@ var laneLabels = map[string]string{policy.LaneBacklog: factoryd.LabelBacklog, po
 
 type mayMove func(ctx context.Context, repository, user, movedBy string) (bool, error)
 
-// mayMoveOnce is Config.MayMove asked once per repository, user and
-// moved_by: one board render asks it for every backlog card.
-func (c *Console) mayMoveOnce() mayMove {
-	seen := map[string]bool{}
-	return func(ctx context.Context, repository, user, movedBy string) (bool, error) {
-		key := repository + "\x00" + user + "\x00" + movedBy
-		if ok, found := seen[key]; found {
-			return ok, nil
-		}
-		ok, err := c.cfg.MayMove(ctx, repository, user, movedBy)
-		if err == nil {
-			seen[key] = ok
-		}
-		return ok, err
+// moveAsk bounds one MayMove on a board render, which must not stall on
+// Forgejo.
+const moveAsk = 5 * time.Second
+
+// answer is a remembered MayMove answer, a failure included.
+type answer struct {
+	ok  bool
+	err error
+	at  time.Time
+}
+
+// mayMoveCached is Config.MayMove for the board's buttons: an answer, a
+// failure too, is kept for writersTTL per repository, user and moved_by,
+// so a render and the polls after it ask Forgejo once for each.
+func (c *Console) mayMoveCached(ctx context.Context, repository, user, movedBy string) (bool, error) {
+	key := repository + "\x00" + user + "\x00" + movedBy
+	c.mu.Lock()
+	a, ok := c.moves[key]
+	c.mu.Unlock()
+	if ok && time.Since(a.at) < writersTTL {
+		return a.ok, a.err
 	}
+	ask, cancel := context.WithTimeout(ctx, moveAsk)
+	defer cancel()
+	a.ok, a.err = c.cfg.MayMove(ask, repository, user, movedBy)
+	a.at = time.Now()
+	c.mu.Lock()
+	if c.moves == nil {
+		c.moves = map[string]answer{}
+	}
+	c.moves[key] = a
+	c.mu.Unlock()
+	return a.ok, a.err
 }
 
-// processOf is the name and blocks of the process card t follows in
-// version v: its row's, else its project's (projects by repository).
-func processOf(v policy.Version, projects map[string]factoryd.Project, t factoryd.Task) (string, policy.Process) {
-	name := cmp.Or(t.Process, projects[t.Repository].Process)
-	return name, v.Processes[name]
+// processOf is the name and lanes of the process card t follows: its
+// project's current one (projects by repository), as intake reads it.
+func processOf(projects map[string]factoryd.Project, t factoryd.Task) (string, policy.Process) {
+	p := projects[t.Repository]
+	return p.Process, policy.Process{Lanes: p.Lanes}
 }
 
-// cardProcess is the process card t follows in the version in force;
-// false once the answer is written.
+// cardProcess is the process card t follows; false once the answer is
+// written.
 func (c *Console) cardProcess(w http.ResponseWriter, r *http.Request, t factoryd.Task) (string, policy.Process, bool) {
 	ps, err := c.coderProjects(r)
 	if err != nil {
@@ -61,8 +79,7 @@ func (c *Console) cardProcess(w http.ResponseWriter, r *http.Request, t factoryd
 	for _, p := range ps {
 		byRepo[p.Repository] = p
 	}
-	v, _ := c.inForce(r)
-	name, proc := processOf(v, byRepo, t)
+	name, proc := processOf(byRepo, t)
 	return name, proc, true
 }
 
@@ -111,9 +128,9 @@ func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, 
 	return t.IssueNumber
 }
 
-// planCards are accepted plan t's cards; Start plan for an approver while
-// any is in the backlog.
-func (c *Console) planCards(ctx context.Context, t factoryd.Task, approver bool, csrf, project string) (*planCards, error) {
+// planCards are accepted plan t's cards; Start plan while any is in the
+// backlog, for an approver who may move them into ready (mayStart).
+func (c *Console) planCards(ctx context.Context, t factoryd.Task, mayStart bool, csrf, project string) (*planCards, error) {
 	cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID)
 	if err != nil {
 		return nil, err
@@ -125,7 +142,7 @@ func (c *Console) planCards(ctx context.Context, t factoryd.Task, approver bool,
 			p.Backlog++
 		}
 	}
-	if approver && p.Backlog > 0 {
+	if mayStart && p.Backlog > 0 {
 		p.CSRF = csrf
 	}
 	return p, nil

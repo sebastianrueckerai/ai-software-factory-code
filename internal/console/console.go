@@ -115,6 +115,7 @@ type Console struct {
 	writers  []string
 	writersT time.Time
 	flight   singleflight.Group
+	moves    map[string]answer // the board's MayMove answers
 }
 
 type session struct {

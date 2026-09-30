@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -208,6 +209,11 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	}
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
+	if got := moveForms(body, "t-idea"); got != nil {
+		t.Errorf("alice's answer is kept for a minute: buttons %v, want none", got)
+	}
+	r.c.moves = nil
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
 	if got := moveForms(body, "t-idea"); !slices.Equal(got, []string{"plan"}) {
 		t.Errorf("alice, a writer of linkshort: buttons %v, want [plan] (ready is the approvers')", got)
 	}
@@ -339,13 +345,32 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	}
 	// a plan at the session cap reads the cap line on its card, which
 	// Request changes answers: no second card in Escalations
-	r.tasks.tasks[0].Escalation = "limit reached: 3 sessions"
+	requested := time.Now().Add(-time.Hour)
+	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
+	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(col(t, body, "Approvals"), `<p class="reason">limit reached: 3 sessions</p>`) ||
 		!strings.Contains(body, `Escalations <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not on its plan card alone:\n%s", body)
 	}
-	r.tasks.tasks[0].Escalation = ""
+	// a cap from before this revision's request, which a writer granted, is
+	// over
+	r.tasks.tasks[0].EscalatedAt = requested.Add(-time.Minute)
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, "limit reached") || !strings.Contains(body, `Escalations <span class="count">0</span>`) {
+		t.Errorf("an escalation older than the request shows:\n%s", col(t, body, "Approvals"))
+	}
+	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "", time.Time{}
+	for _, want := range []string{`hx-post="/tasks/t-plan/plan/accept" hx-target="#board"`, `hx-post="/tasks/t-plan/plan/changes" hx-target="#board"`,
+		`hx-post="/tasks/t-plan/plan/reject" hx-target="#board"`} {
+		if !strings.Contains(card, want) {
+			t.Errorf("plan card lacks %q", want)
+		}
+	}
+	if filtered := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Approvals"); strings.Count(filtered,
+		`<input type="hidden" name="project" value="linkshort">`) != 3 {
+		t.Errorf("the plan card's three forms do not keep the filter:\n%s", filtered)
+	}
 
 	ak, as := r.as(t, "alice")
 	alice := col(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "Approvals")
@@ -354,7 +379,7 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		t.Errorf("alice's plan card: accept hidden, changes and reject shown:\n%s", alice)
 	}
 	accept := func(ck *http.Cookie, csrf, rev, sha string) *httptest.ResponseRecorder {
-		return r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {csrf}, "revision": {rev}, "sha256": {sha}}), ck)
+		return r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {csrf}, "revision": {rev}, "sha256": {sha}, "project": {"linkshort"}}), ck)
 	}
 	r.fg.calls = nil
 	if rec := accept(ak, as.csrf, "2", "sha-2"); rec.Code != http.StatusForbidden || len(r.fg.calls) != 0 || len(r.fg.comments) != 0 {
@@ -368,10 +393,18 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	if c := col(t, rec.Body.String(), "Approvals"); !strings.Contains(c, `<p class="problem" role="alert">the plan changed to revision 2; reload</p>`) {
 		t.Errorf("the stale line is not on the plan card:\n%s", c)
 	}
+	req := post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"1"}, "sha256": {"sha-1"}})
+	req.Header.Set("HX-Request", "true")
+	if rec := r.do(req, ck); rec.Code != http.StatusConflict || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) ||
+		!strings.Contains(rec.Body.String(), "the plan changed to revision 2; reload") {
+		t.Errorf("a stale revision by htmx: %d, want 409 and the board with the line: %.200s", rec.Code, rec.Body)
+	}
 
+	// a browser's form: a redirect to the filtered board, so a reload
+	// resends nothing
 	rec = accept(ck, s.csrf, "2", "sha-2")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("accept: %d %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort" {
+		t.Fatalf("accept: %d to %q %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 2 sha-2 by sebastian") ||
 		!slices.Contains(r.fg.calls, "POST /api/v1/repos/linkshort/linkshort/issues/1/comments Bearer access-1") ||
@@ -381,13 +414,14 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 
 	r.fg.calls, r.fg.comments = nil, map[string]string{}
 	rec = r.do(post("/tasks/t-plan/plan/changes", url.Values{"csrf": {as.csrf}, "text": {"Split the web pages into two cards."}}), ak)
-	if rec.Code != http.StatusOK || r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Split the web pages into two cards." ||
+	if rec.Code != http.StatusSeeOther || r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Split the web pages into two cards." ||
 		!slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/linkshort/linkshort/issues/1/comments Bearer access-2"}) {
 		t.Errorf("request changes: %d, calls %v, comments %v", rec.Code, r.fg.calls, r.fg.comments)
 	}
 	r.fg.calls = nil
 	rec = r.do(post("/tasks/t-plan/plan/reject", url.Values{"csrf": {as.csrf}, "note": {"not this quarter"}}), ak)
-	if rec.Code != http.StatusOK || !slices.Equal(r.fg.calls, []string{"SIGNAL plan_rejected t-plan by alice: not this quarter"}) {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" ||
+		!slices.Equal(r.fg.calls, []string{"SIGNAL plan_rejected t-plan by alice: not this quarter"}) {
 		t.Errorf("reject: %d, calls %v", rec.Code, r.fg.calls)
 	}
 	for name, f := range map[string]url.Values{"changes": {"text": {" "}}, "reject": {"note": {""}}} {
@@ -463,5 +497,65 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 	}
 	if rec := start(ck, s.csrf, "t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-run is no accepted plan." {
 		t.Errorf("start plan on a card: %d %q", rec.Code, rec.Body)
+	}
+}
+
+// Review I1: the board asks MayMove once per repository, user and
+// moved_by, a failure included, and keeps the answer a minute: a render
+// with several backlog cards and the polls after it do not stall on
+// Forgejo, and the buttons stay hidden while the check fails.
+func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-idea", Kind: "agent", Status: "backlog", Lane: "backlog",
+		Process: "spec", Objective: "an idea", Repository: "linkshort/linkshort", IssueNumber: 8}})
+	ck, _ := r.loggedIn(t)
+	r.mayErr = errors.New("forgejo: 502")
+	var body string
+	for range 3 {
+		body = r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
+	}
+	want := []string{"linkshort/linkshort sebastian writers", "sf/code sebastian writers"}
+	if got := slices.Sorted(slices.Values(r.mayAsked)); !slices.Equal(got, want) {
+		t.Errorf("MayMove asked %v, want once each: %v", got, want)
+	}
+	if strings.Contains(body, `class="inline move"`) || strings.Contains(body, "Start plan") ||
+		!strings.Contains(body, "who may move a card could not be checked: the move buttons are hidden") {
+		t.Errorf("a failed check shows buttons or no problem line:\n%s", body)
+	}
+	r.mayErr, r.mayAsked = nil, nil
+	r.c.mu.Lock()
+	for k, a := range r.c.moves {
+		a.at = a.at.Add(-writersTTL)
+		r.c.moves[k] = a
+	}
+	r.c.mu.Unlock()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
+	if len(r.mayAsked) != 2 || moveForms(body, "t-c2") == nil {
+		t.Errorf("after a minute: asked %v, buttons %v; want asked again and the buttons back", r.mayAsked, moveForms(body, "t-c2"))
+	}
+}
+
+// Review M1, M2: Start plan shows only to an approver who may move the
+// plan's cards into ready; a card's lanes are its project's current
+// process, as intake reads them, whatever the row names.
+func TestStartPlanAndLanesFollowTheProject(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "backlog", Lane: "backlog",
+		Process: "maintenance", Objective: "filed under maintenance", Repository: "linkshort/linkshort", IssueNumber: 13}})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if got := moveForms(body, "t-old"); !slices.Equal(got, []string{"plan", "ready"}) {
+		t.Errorf("a card whose row names maintenance on a spec project: buttons %v, want [plan ready]", got)
+	}
+	if !strings.Contains(body, "Start plan (2 in backlog)") {
+		t.Fatal("sebastian, an approver and a writer, lacks Start plan")
+	}
+	r.repoWriters["linkshort/linkshort"] = nil
+	r.c.moves = nil
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, "Start plan") {
+		t.Error("an approver who does not write linkshort sees Start plan, which ready's moved_by refuses him")
 	}
 }

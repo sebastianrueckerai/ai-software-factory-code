@@ -405,6 +405,8 @@ type rig struct {
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
+	mayAsked    []string // "repository user moved_by" per MayMove
+	mayErr      error
 	signalErr   error
 	metrics     *sdkmetric.ManualReader
 }
@@ -451,6 +453,10 @@ func newRig(t *testing.T) *rig {
 			return r.signalErr
 		},
 		MayMove: func(_ context.Context, repository, user, movedBy string) (bool, error) {
+			r.mayAsked = append(r.mayAsked, repository+" "+user+" "+movedBy)
+			if r.mayErr != nil {
+				return false, r.mayErr
+			}
 			if movedBy == policy.MovedByApprovers {
 				return user == "sebastian", nil
 			}

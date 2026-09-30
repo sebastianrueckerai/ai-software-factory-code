@@ -32,6 +32,7 @@ type approvalCard struct {
 	PlanRows    []factoryd.PlanRow
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
+	Filter      string // the board's project filter, which the card's forms keep
 	CSRF        string
 	Approver    bool
 }

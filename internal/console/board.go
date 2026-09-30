@@ -195,11 +195,21 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	c.render(w, name, d)
 }
 
-// showBoard answers a board action with the board of the form's project
-// (the fragment to htmx, else the page) carrying note, and problems on the
-// approval cards of the tasks they name.
+// showBoard answers a board action with the board of the form's project:
+// to htmx the fragment carrying note, and problems on the approval cards
+// of the tasks they name; a browser's form a redirect to the board after a
+// success (a reload resends nothing), else the page.
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
-	d, err := c.boardOf(r, r.PostFormValue("project"))
+	project := r.PostFormValue("project")
+	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
+		back := "/"
+		if project != "" {
+			back += "?project=" + url.QueryEscape(project)
+		}
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	d, err := c.boardOf(r, project)
 	if errors.Is(err, errNoProject) {
 		d, err = c.boardOf(r, "")
 	}
@@ -285,12 +295,12 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		carded[a.TaskID] = true
 		planned[a.TaskID] = planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
 	}
-	escalations := map[string]string{}
+	escalations := map[string]factoryd.BoardTask{}
 	byID := map[string]factoryd.Task{}
 	for _, bt := range tasks {
 		byID[bt.ID] = bt.Task
 	}
-	may := c.mayMoveOnce()
+	unchecked := false
 	for _, bt := range tasks {
 		t := bt.Task
 		if !inView(t.Repository) {
@@ -315,11 +325,13 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		switch t.Status {
 		case "backlog":
 			i, ok = byLane[policy.LaneBacklog]
-			name, proc := processOf(v, byRepo, t)
+			name, proc := processOf(byRepo, t)
 			for _, lane := range policy.LaneNames {
-				why, err := moveRefusal(ctx, t, name, proc, lane, s.user, may)
-				if err != nil {
+				why, err := moveRefusal(ctx, t, name, proc, lane, s.user, c.mayMoveCached)
+				if err != nil && !unchecked {
+					unchecked = true
 					log.Printf("console: may %s move %s into %s: %v", s.user, t.ID, lane, err)
+					d.Problems = append(d.Problems, "who may move a card could not be checked: the move buttons are hidden")
 				}
 				if err == nil && why == "" {
 					k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf, Project: project})
@@ -335,7 +347,15 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 			}
 		}
 		if t.Lane == policy.LanePlan && t.Status == "done" {
-			if k.Plan, err = c.planCards(ctx, t, d.Approver, s.csrf, project); err != nil {
+			_, proc := processOf(byRepo, t)
+			ready, _ := proc.Lane(policy.LaneReady)
+			mayStart := d.Approver
+			if mayStart {
+				if mayStart, err = c.mayMoveCached(ctx, t.Repository, s.user, ready.MovedBy); err != nil {
+					log.Printf("console: may %s start plan %s: %v", s.user, t.ID, err)
+				}
+			}
+			if k.Plan, err = c.planCards(ctx, t, mayStart, s.csrf, project); err != nil {
 				log.Printf("console: the cards of plan %s: %v", t.ID, err)
 				d.Problems = append(d.Problems, "the cards of plan "+t.ID+" could not be read")
 			}
@@ -345,7 +365,7 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		}
 		// a waiting plan's card is its escalation: Request changes answers it
 		if t.Status == "waiting-human" && planned[t.ID] {
-			escalations[t.ID] = bt.Escalation
+			escalations[t.ID] = bt
 		} else if t.Status == "waiting-human" {
 			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
 			d.Escalations = append(d.Escalations, k)
@@ -354,8 +374,11 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 	for _, a := range pending {
 		if inView(a.Project) {
 			k := c.approvalCard(ctx, a, byID, s.csrf, d.Approver)
-			if a.Kind == factoryd.ApprovalPlan {
-				k.Escalation = escalations[a.TaskID]
+			k.Filter = project
+			// an escalation from before this revision's request (a cap a
+			// writer granted) no longer holds
+			if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
+				k.Escalation = e.Escalation
 			}
 			d.Approvals = append(d.Approvals, k)
 		}

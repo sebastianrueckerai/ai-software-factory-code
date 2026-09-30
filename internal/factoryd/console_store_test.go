@@ -55,6 +55,9 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	for _, tk := range tasks {
 		ids = append(ids, tk.ID)
 		reasons = append(reasons, tk.Escalation)
+		if escalated := tk.ID == "high"; escalated == tk.EscalatedAt.IsZero() || escalated && time.Since(tk.EscalatedAt) > time.Minute {
+			t.Errorf("%s escalated at %v", tk.ID, tk.EscalatedAt)
+		}
 	}
 	if want := []string{"high", "low", "recent"}; !slices.Equal(ids, want) {
 		t.Fatalf("BoardTasks = %v, want %v", ids, want)
