@@ -516,6 +516,18 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 		defer fj.mu.Unlock()
 		const repo = "/api/v1/repos/sf/ai-software-factory-infra"
 		path := strings.TrimPrefix(r.URL.Path, repo+"/")
+		if r.Method == http.MethodGet && path == "issues" {
+			// the open issues, one page
+			var open []map[string]any
+			for i, is := range fj.issues {
+				if n := int64(41 + i); r.URL.Query().Get("page") == "1" && !slices.Contains(fj.closed, n) {
+					title, body, _ := strings.Cut(is, "\n\n")
+					open = append(open, map[string]any{"number": n, "title": title, "body": body, "user": map[string]string{"login": "factory-agent"}})
+				}
+			}
+			json.NewEncoder(w).Encode(append([]map[string]any{}, open...)) // #nosec G104 -- test stub
+			return
+		}
 		if r.Method == http.MethodGet {
 			if r.Header.Get("Authorization") != "token cfg-tok" {
 				t.Errorf("GET %s without the config token", r.URL.Path)

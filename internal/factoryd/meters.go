@@ -86,7 +86,7 @@ func (i *openActivityInbound) ExecuteActivity(ctx context.Context, in *intercept
 
 // alertKinds are the alerts table's kinds, reported by
 // factory.alert.count with every verdict.
-var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening}
+var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening, AlertMonthCap}
 
 // RegisterAlertCount exports factory.alert.count{kind,verdict}, read from
 // the alerts table at each export: every kind and verdict, 0 when the table

@@ -240,9 +240,19 @@ func TestFitResource(t *testing.T) {
 	if _, err := FitResource(Free{Task: 1, Day: 0.01, Month: 1}, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
 		t.Fatalf("day headroom 0.01 err = %v, want refused_day_cap", err)
 	}
+	// a reservation the month cannot fit leaves euros for smaller calls
 	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.0383}, r); !errors.As(err, &ref) || ref.Decision != "refused_month_cap" ||
-		!strings.Contains(ref.Reason, "budget.month_eur") {
-		t.Fatalf("month headroom 0.0383 err = %v, want refused_month_cap naming budget.month_eur", err)
+		!strings.Contains(ref.Reason, "the reservation exceeds the month's remaining headroom (budget.month_eur)") || strings.Contains(ref.Reason, "is spent") {
+		t.Fatalf("month headroom 0.0383 err = %v, want refused_month_cap: the reservation exceeds the month's remaining headroom", err)
+	}
+	tool := HoldRequest{Kind: KindTool, Ref: ToolWebScrape, EUR: 0.03}
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.029}, tool); !errors.As(err, &ref) ||
+		!strings.Contains(ref.Reason, "the tool call's worst case exceeds the month's remaining headroom (budget.month_eur)") {
+		t.Fatalf("tool call past the month = %v, want its own reason", err)
+	}
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
+		!strings.Contains(ref.Reason, "the month cap budget.month_eur in policy.yaml is spent") {
+		t.Fatalf("model call past the month = %v, want the cap spent", err)
 	}
 }
 

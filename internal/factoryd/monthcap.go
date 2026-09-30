@@ -21,8 +21,8 @@ const monthCapReached = "the month cap is reached: the gateway refused this task
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
-// first refused_month_cap ("" for none): the gateway's headroom, or
-// LiteLLM's proxy-wide budget.
+// first refused_month_cap of a model call ("" for none): the gateway's
+// headroom, or LiteLLM's proxy-wide budget.
 type MonthSpend struct {
 	Month   string
 	EUR     float64
@@ -32,7 +32,7 @@ type MonthSpend struct {
 // MonthBook is what the month alarm reads and keeps.
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
-	MonthSpend(ctx context.Context) (MonthSpend, error)
+	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
@@ -69,8 +69,8 @@ func (a *MonthAlarm) Loop(ctx context.Context, every time.Duration) {
 }
 
 // Check raises every threshold the month has passed and has no alert for;
-// the cap counts as reached at its first refusal too, since a call is
-// refused before the ledger meets the cap. A cap of 0 stops all spend by
+// the cap counts as reached at the first model call it refused too, since
+// a call is refused before the ledger meets the cap. A cap of 0 stops all spend by
 // design and raises nothing.
 func (a *MonthAlarm) Check(ctx context.Context) error {
 	v := a.Current()
@@ -78,7 +78,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 	if limit <= 0 {
 		return nil
 	}
-	m, err := a.Store.MonthSpend(ctx)
+	m, err := a.Store.MonthSpend(ctx, time.Now())
 	if err != nil {
 		return err
 	}
@@ -135,12 +135,33 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		"The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; "+
 		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, "+
 		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
-	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, Task{
-		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
-		Source: SourceMonthCap, Author: a.Forgejo.BotUser,
-	})
+	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
+		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
+	// an issue filed by a check whose task row then failed is taken on,
+	// not filed again
+	open, err := a.Forgejo.OpenIssues(ctx, a.Repo.Owner, a.Repo.Name)
 	if err != nil {
 		return err
 	}
-	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": ref.Number})
+	var number int64
+	for _, is := range open {
+		if is.Title == title && is.Poster.UserName == a.Forgejo.BotUser {
+			number = is.Index
+		}
+	}
+	if number == 0 {
+		t, ref, err := FileTask(ctx, a.Store, a.Forgejo, nil, a.Repo, title, body, []string{"human"}, t)
+		if err != nil {
+			return err
+		}
+		return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": ref.Number})
+	}
+	t.Status, t.Repository, t.IssueNumber = "waiting-human", a.Repo.String(), number
+	if err := a.Forgejo.ReplaceIssueLabels(ctx, a.Repo.Owner, a.Repo.Name, number, []string{"human", "state/waiting-human"}); err != nil {
+		return err
+	}
+	if err := a.Store.CreateTask(ctx, t); err != nil {
+		return err
+	}
+	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
 }

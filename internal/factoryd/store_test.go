@@ -8,6 +8,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"maps"
 	"math"
+	"net/url"
 	"reflect"
 	"slices"
 	"sort"
@@ -453,7 +454,9 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	return a.ID, nil
 }
 
-func (s *fakeStore) MonthSpend(ctx context.Context) (MonthSpend, error) { return s.monthSpend, nil }
+func (s *fakeStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
+	return s.monthSpend, nil
+}
 
 func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	reason, ok := s.monthRefusals[taskID]
@@ -1451,51 +1454,62 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 }
 
 // The month is the UTC calendar month over the ledger, standing lines left
-// out; its refusals are the gateway's refused_month_cap audit rows.
-// Hand-derived: 30 on the previous month's last day and a standing 10 do
-// not count, 0.03 on the 1st and 0.01 today do: 0.04.
+// out, whatever the session's zone; the cap counts as reached at the
+// month's first refused_month_cap of a model call. Hand-derived at
+// 2026-10-01 05:00 UTC (2026-09-30 22:00 in Los Angeles): 30 on 2026-09-30
+// and a standing 10 do not count, 0.03 on 2026-10-01 and 0.01 on
+// 2026-10-02 do: 0.04.
 func TestPGStoreMonthCap(t *testing.T) {
-	dsn := schematest.DSN(t, "factoryd")
+	u, err := url.Parse(schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("timezone", "America/Los_Angeles")
+	u.RawQuery = q.Encode()
 	ctx := context.Background()
-	s, err := OpenStore(ctx, dsn)
+	s, err := OpenStore(ctx, u.String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts, ledger, audit;
 		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
-			('old', date_trunc('month', now() AT TIME ZONE 'UTC')::date - 1, 'model', 'x', 30),
-			('first', date_trunc('month', now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.03),
-			('standing:sf/app', (now() AT TIME ZONE 'UTC')::date, 'standing', 'resource/1', 10),
-			('today', (now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.01);
-		INSERT INTO audit (task_id, decision, reason, ts) VALUES
-			('u', 'refused_month_cap', 'last month', date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' - interval '1 second'),
-			('t', 'refused_day_cap', 'the day', now())`); err != nil {
+			('sep', '2026-09-30', 'model', 'x', 30),
+			('oct1', '2026-10-01', 'model', 'x', 0.03),
+			('standing:sf/app', '2026-10-01', 'standing', 'resource/1', 10),
+			('oct2', '2026-10-02', 'model', 'x', 0.01);
+		INSERT INTO audit (task_id, decision, reason, tool, ts) VALUES
+			('u', 'refused_month_cap', 'last month', '', '2026-09-30 23:59:59Z'),
+			('r', 'refused_month_cap', 'the reservation exceeds the month''s remaining headroom', 'commission_server', '2026-10-01 00:10:00Z'),
+			('t', 'refused_day_cap', 'the day', '', '2026-10-01 00:20:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	month := time.Now().UTC().Format("2006-01")
-	m, err := s.MonthSpend(ctx)
-	if err != nil || m.Month != month || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" {
-		t.Fatalf("MonthSpend = (%+v, %v), want %s, 0.04 EUR, no refusal", m, err, month)
+	at := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
+	m, err := s.MonthSpend(ctx, at)
+	if err != nil || m.Month != "2026-10" || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" {
+		t.Fatalf("MonthSpend = (%+v, %v), want 2026-10, 0.04 EUR, no model call refused", m, err)
 	}
-	if _, ok, err := s.MonthCapRefusal(ctx, "u", time.Now().Add(-40*24*time.Hour)); err != nil || !ok {
-		t.Fatalf("last month's refusal of u = %v, %v, want found", ok, err)
-	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason) VALUES ('t', 'refused_month_cap', 'the month')`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, ts) VALUES
+		('t', 'refused_month_cap', 'the month', '2026-10-01 00:30:00Z'), ('t', 'refused_month_cap', 'later', '2026-10-01 00:40:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if m, err := s.MonthSpend(ctx); err != nil || m.Refusal != "the month" {
-		t.Fatalf("MonthSpend after a refusal = (%+v, %v), want the month's refusal", m, err)
+	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "the month" {
+		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's first", m, err)
 	}
-	if reason, ok, err := s.MonthCapRefusal(ctx, "t", time.Now().Add(-time.Minute)); err != nil || !ok || reason != "the month" {
-		t.Fatalf("t's refusal since a minute ago = (%q, %v, %v), want the month", reason, ok, err)
+	if reason, ok, err := s.MonthCapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 35, 0, 0, time.UTC)); err != nil || !ok || reason != "later" {
+		t.Fatalf("t's refusal since 00:35 = (%q, %v, %v), want later", reason, ok, err)
 	}
-	if _, ok, err := s.MonthCapRefusal(ctx, "t", time.Now().Add(time.Minute)); err != nil || ok {
-		t.Fatalf("t's refusal since a minute ahead = %v, %v, want none", ok, err)
+	if _, ok, err := s.MonthCapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 45, 0, 0, time.UTC)); err != nil || ok {
+		t.Fatalf("t's refusal since 00:45 = %v, %v, want none", ok, err)
 	}
-	if _, ok, err := s.MonthCapRefusal(ctx, "v", time.Now().Add(-time.Minute)); err != nil || ok {
+	if reason, ok, err := s.MonthCapRefusal(ctx, "r", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || !ok || !strings.Contains(reason, "reservation") {
+		t.Fatalf("r's refusal = (%q, %v, %v), want the reservation's", reason, ok, err)
+	}
+	if _, ok, err := s.MonthCapRefusal(ctx, "v", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || ok {
 		t.Fatalf("v's refusal = %v, %v, want none", ok, err)
 	}
+	month := m.Month
 	// one alert per month and percent
 	first, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "50", Fingerprint: month + "/50"})
 	if err != nil || first == 0 {

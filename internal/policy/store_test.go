@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"math"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -511,6 +512,49 @@ func TestMonthHeadroom(t *testing.T) {
 	// 0 stops all spend
 	if _, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1, DayEUR: 20, MonthEUR: 0}); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
 		t.Fatalf("hold under a month cap of 0 = %v, want refused_month_cap", err)
+	}
+}
+
+// The day and the month are UTC whatever the session's zone. Hand-derived
+// at 2026-10-01 05:00 UTC, 2026-09-30 22:00 in Los Angeles: 30 EUR on
+// 2026-09-30 is neither today nor this month; 0.04 on 2026-10-01 is both,
+// so a month cap of 0.05 leaves 0.01, 2500 tokens at 4e-6. Read in the
+// session's zone, the 30 EUR would count and refuse the call.
+func TestHeadroomIsUTC(t *testing.T) {
+	testDB(t)
+	u, err := url.Parse(schematest.DSN(t, "policy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("timezone", "America/Los_Angeles")
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("pgx", u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	var zone string
+	if err := db.QueryRowContext(ctx, `SHOW TIME ZONE`).Scan(&zone); err != nil || zone != "America/Los_Angeles" {
+		t.Fatalf("session zone = %q, %v", zone, err)
+	}
+	at := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
+	defer func(was func() time.Time) { now = was }(now)
+	now = func() time.Time { return at.In(time.FixedZone("UTC-7", -7*3600)) }
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES ('z', 5, 0, 'running');
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('sep', '2026-09-30', 'model', 'x', 30), ('oct', '2026-10-01', 'model', 'x', 0.04)`); err != nil {
+		t.Fatal(err)
+	}
+	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05})
+	if err != nil || h.MaxOut != 2500 || h.Bound != RefusedMonthCap {
+		t.Fatalf("hold at 2026-10-01 05:00 UTC = (%+v, %v), want 2500 tokens bound by the month", h, err)
+	}
+	// the day: a cap of 1 leaves 0.96 of 2026-10-01; 2026-09-30's 30 is not today
+	h, err = TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1024, DayEUR: 1, MonthEUR: 50})
+	if err != nil || !near(h.Headroom, 0.96) || h.Bound != "refused_day_cap" {
+		t.Fatalf("day-bound hold = (%+v, %v), want headroom 0.96 bound by the day", h, err)
 	}
 }
 

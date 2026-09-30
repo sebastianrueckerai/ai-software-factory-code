@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -102,6 +103,54 @@ func TestMonthAlarm(t *testing.T) {
 	step(MonthSpend{Month: "2026-10", EUR: 50}, "2026-09/50", "2026-09/80", "2026-09/100", "2026-10/50", "2026-10/80", "2026-10/100")
 	if len(fj.issues) != 2 || !strings.Contains(fj.issues[1], "(2026-10)") {
 		t.Fatalf("issues = %q, want the October card", fj.issues)
+	}
+}
+
+// failingTasks fails the next task row creation, as a database error
+// right after the issue was filed.
+type failingTasks struct {
+	*fakeStore
+	failNext int
+}
+
+func (f *failingTasks) CreateTask(ctx context.Context, t Task) error {
+	if f.failNext > 0 {
+		f.failNext--
+		return errors.New("database gone")
+	}
+	return f.fakeStore.CreateTask(ctx, t)
+}
+
+// The cap's issue is filed once even when the task row after it fails:
+// the next check finds the open issue by its title and takes it on.
+func TestMonthAlarmFilesTheCapIssueOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 50)
+	book := &failingTasks{fakeStore: store, failNext: 1}
+	alarm.Store = book
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50.2}
+	if err := alarm.Check(ctx); err == nil {
+		t.Fatal("a failed task row raised nothing")
+	}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 || len(store.tasks) != 1 {
+		t.Fatalf("issues %d, tasks %d, want 1 and 1", len(fj.issues), len(store.tasks))
+	}
+	var task Task
+	for _, task = range store.tasks {
+	}
+	a, ok, _ := store.AlertByFingerprint(ctx, AlertMonthCap, "2026-09/100")
+	if !ok || task.IssueNumber != 41 || task.Source != SourceMonthCap || task.Status != "waiting-human" || a.TaskID != task.ID || a.Detail["issue"] != int64(41) {
+		t.Fatalf("task %+v, alert %+v", task, a)
+	}
+	if got := fj.labels[41]; !slices.Equal(got, []string{"human", "state/waiting-human"}) {
+		t.Errorf("labels = %v", got)
 	}
 }
 

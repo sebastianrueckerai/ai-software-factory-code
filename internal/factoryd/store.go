@@ -527,17 +527,21 @@ func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time
 	return reason, err == nil, err
 }
 
-// MonthSpend is the UTC calendar month's variable spend over the ledger,
-// standing lines left out, as the gateway's month headroom counts it, and
-// the month's first refused_month_cap reason.
-func (s *PGStore) MonthSpend(ctx context.Context) (MonthSpend, error) {
+// MonthSpend is the variable spend over the ledger in the UTC calendar
+// month of at, standing lines left out, as the gateway's month headroom
+// counts it, and the reason of the month's first refused_month_cap of a
+// model call: only a model call finds the cap spent, a reservation or a
+// tool call's worst case may be refused while euros remain.
+func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
 	err := s.db.QueryRowContext(ctx,
-		`SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM'),
-		        `+policy.MonthSpentSQL+`::float8,
-		        COALESCE((SELECT reason FROM audit WHERE decision = $1 AND ts >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		`SELECT to_char($2::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM'),
+		        `+policy.MonthSpentSQL("$2::timestamptz")+`::float8,
+		        COALESCE((SELECT reason FROM audit WHERE decision = $1 AND tool = ''
+		                    AND ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		                    AND ts < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
 		                  ORDER BY ts, id LIMIT 1), '')`,
-		policy.RefusedMonthCap).Scan(&m.Month, &m.EUR, &m.Refusal)
+		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &m.Refusal)
 	return m, err
 }
 

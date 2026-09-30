@@ -81,10 +81,20 @@ type Refusal struct {
 }
 
 // refusal is the headroom refusal decision with reason; the month cap's
-// names the key a human raises.
-func refusal(decision, reason string) *Refusal {
+// says what it refused and names the key a human raises. Only a model call
+// finds the cap spent: a reservation or a tool call's worst case may
+// exceed what is left while smaller calls still fit.
+func refusal(decision, kind, reason string) *Refusal {
 	if decision == RefusedMonthCap {
-		reason += "; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
+		switch kind {
+		case KindResource:
+			reason += "; the reservation exceeds the month's remaining headroom (budget.month_eur)"
+		case KindTool:
+			reason += "; the tool call's worst case exceeds the month's remaining headroom (budget.month_eur)"
+		default:
+			reason += "; the month cap budget.month_eur in policy.yaml is spent"
+		}
+		reason += ", and only a human raises it, by a commit"
 	}
 	return &Refusal{Decision: decision, Reason: reason}
 }
@@ -109,7 +119,7 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 		maxOut = min(maxOut, r.WantOut)
 	}
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
-		return Hold{}, refusal(decision, fmt.Sprintf(
+		return Hold{}, refusal(decision, KindModel, fmt.Sprintf(
 			"free headroom %.6f EUR (task %.6f, day %.6f, month %.6f) fits %d output tokens after at most %d input tokens, below the minimum call of %d",
 			free, f.Task, f.Day, f.Month, max(outFit, 0), r.InTokens, MinCallTokens))
 	}
@@ -138,7 +148,7 @@ func FitTool(f Free, requests int, usedEUR float64, r HoldRequest) (Hold, error)
 func FitResource(f Free, r HoldRequest) (Hold, error) {
 	free, decision := HeadroomBound(f.Task, f.Day, f.Month)
 	if r.EUR > free {
-		return Hold{}, refusal(decision, fmt.Sprintf(
+		return Hold{}, refusal(decision, r.Kind, fmt.Sprintf(
 			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (task %.6f, day %.6f, month %.6f)", r.Ref, r.EUR, free, f.Task, f.Day, f.Month))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, EUR: r.EUR}, nil
@@ -202,9 +212,15 @@ type Free struct {
 	Task, Day, Month                         float64
 }
 
-// MonthSpentSQL is the UTC calendar month's spend over the ledger; a
-// standing line is its project's monthly cost, not variable spend.
-const MonthSpentSQL = `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', now() AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+// MonthSpentSQL is the spend over the ledger in the UTC calendar month of
+// at, a timestamptz expression; a standing line is its project's monthly
+// cost, not variable spend.
+func MonthSpentSQL(at string) string {
+	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+}
+
+// now is the clock of the day's and the month's headroom.
+var now = time.Now
 
 // FreeHeadroom reads the task's, the UTC day's and the UTC calendar
 // month's headroom inside tx (under LockHeadroom). Every outstanding hold
@@ -218,10 +234,10 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, taskID string, dayEUR, monthE
 	err := tx.QueryRowContext(ctx,
 		`SELECT status, (budget_eur - spent_eur)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
-		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = (now() AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
-		        ($3 - `+MonthSpentSQL+`)::float8,
+		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = ($4::timestamptz AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
+		        ($3 - `+MonthSpentSQL("$4::timestamptz")+`)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
-		 FROM tasks WHERE id = $1`, taskID, dayEUR, monthEUR,
+		 FROM tasks WHERE id = $1`, taskID, dayEUR, monthEUR, now(),
 	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &f.MonthHeadroom, &allHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Free{}, fmt.Errorf("hold: no task row for %s", taskID)
