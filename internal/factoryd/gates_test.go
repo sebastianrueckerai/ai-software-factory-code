@@ -39,6 +39,7 @@ type gateForgejo struct {
 	mergedBy    string   // and by whom; "" = factory-merge
 	head        string   // GET /pulls/9's head sha; "" = c1
 	base        string   // and its base; "" = main
+	conflict    bool     // and it no longer merges into its base (mergeable false)
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
 	comments    []string
@@ -73,7 +74,8 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			pr := map[string]any{"number": 9, "state": map[bool]string{true: "closed", false: "open"}[f.merged], "merged": f.merged,
-				"head": map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
+				"mergeable": !f.conflict,
+				"head":      map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
 			if f.merged {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
 			}
@@ -486,6 +488,28 @@ func TestMergeRefusal(t *testing.T) {
 		t.Fatalf("result on a merged PR = %+v, comments %d", res, len(fj.comments))
 	}
 	startedWithin(t, objects, "merge_refused", from)
+}
+
+// A merge Forgejo refuses because the pull request no longer merges into
+// main (405 "Please try again later", mergeable false; #232's PR #237) is
+// a conflict: the PR is told the task goes back to the agent, and the
+// result says so, while a refusal of a mergeable PR stays a refusal.
+func TestMergeConflictIsNotARefusal(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{http.StatusMethodNotAllowed}, conflict: true}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || !res.Conflict || !strings.Contains(res.Refusal, "405") {
+		t.Fatalf("result = %+v, want a conflict", res)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "no longer merges into main") ||
+		!strings.Contains(fj.comments[0], "goes back to the agent") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("no merge_conflict step")
+	}
 }
 
 // A new session denies the task's pending merge approval as superseded but

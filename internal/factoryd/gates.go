@@ -176,6 +176,8 @@ type MergeResult struct {
 	By      string
 	Refusal string
 	Failed  string
+	// Conflict: the refusal is a pull request that no longer merges into main
+	Conflict bool
 }
 
 // AutoMergeNote tells on the pull request that factory-merge merges it
@@ -829,8 +831,12 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	}
 	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, msg)
 	if errors.Is(err, ErrRefused) {
-		if st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr); serr == nil && st.Merged {
+		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+		if serr == nil && st.Merged {
 			return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+		}
+		if serr == nil && st.State == "open" && !st.Mergeable {
+			return r.mergeConflict(ctx, t, repo, pr, commit, approver, err.Error()), nil
 		}
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, err.Error()), nil
 	}
@@ -875,6 +881,18 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
+	return res
+}
+
+// mergeConflict is a merge refused because the pull request no longer
+// merges into main: the workflow sends the task back to the agent
+// (versionMergeConflict), whose new session supersedes the card.
+func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
+	res := MergeResult{Refusal: textutil.Truncate(why, 500), Conflict: true}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf(
+		"factoryd: the merge of %s after %s's approval was refused: the pull request no longer merges into main (%s). The task goes back to the agent to merge main into the branch.",
+		commit, approver, res.Refusal))
+	r.record(ctx, t.ID, "merge_conflict", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	return res
 }
 
