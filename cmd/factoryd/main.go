@@ -377,6 +377,9 @@ func main() {
 		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
 			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
 		},
+		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
+			return runner.RetryPlanCard(ctx, taskID, by)
+		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
 		Alerts:     store,
 		Projects:   store,
