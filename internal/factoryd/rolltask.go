@@ -362,15 +362,27 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	return true, r.file(ctx, req)
 }
 
-// onlyK8s reports whether sha changes nothing outside k8s/ against its
-// first parent: a roll's own merge or a hand roll, whose images are
-// rebuilds of what is pinned whatever the build cache made of them.
+// onlyK8s reports whether sha changes nothing outside k8s/ against the
+// commit the last merged roll rolled, or, before any roll has merged,
+// against sha's first parent: a roll's own merge or a hand roll, whose
+// images are rebuilds of what is pinned whatever the build cache made of
+// them. Comparing against the last merged roll, not the first parent,
+// keeps a code merge whose main CI run a roll merge cancelled from being
+// mistaken for k8s-only: its tree already carries the code change, but
+// its first parent (the cancelled run's own commit) does too.
 func (r *Roller) onlyK8s(ctx context.Context, sha string) (bool, error) {
-	parents, err := r.Forgejo.CommitParents(ctx, r.Repo.Owner, r.Repo.Name, sha)
-	if err != nil || len(parents) == 0 {
+	base, ok, err := r.Store.LastMergedRoll(ctx, r.Repo.String())
+	if err != nil {
 		return false, err
 	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, parents[0], sha)
+	if !ok {
+		parents, err := r.Forgejo.CommitParents(ctx, r.Repo.Owner, r.Repo.Name, sha)
+		if err != nil || len(parents) == 0 {
+			return false, err
+		}
+		base = parents[0]
+	}
+	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, sha)
 	if err != nil {
 		return false, err
 	}

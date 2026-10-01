@@ -192,7 +192,8 @@ type rollForgejo struct {
 	commits     []map[string]any
 	synced      int
 	calls       []string
-	touched     map[string][]string // commit -> the files it changes against its first parent; unlisted: main.go
+	touched     map[string][]string // commit -> the files it changes against its first parent (the no-roll-merged fallback); unlisted: main.go
+	rolled      map[string][]string // commit -> the files it changes against the commit the last merged roll rolled; unlisted: touched, else main.go
 	forkParents map[string]string   // fork commit -> its parent
 	forkDiffs   map[string][]string // fork "base...head" -> the files it changes
 }
@@ -256,19 +257,25 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
 		case repo == codeRepo && strings.HasPrefix(p, "/compare/"):
 			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
-			switch {
-			case base == "parent-of-"+head:
-				files := f.touched[head]
-				if files == nil {
-					files = []string{"main.go"}
+			filesOf := func(names []string) []map[string]string {
+				if names == nil {
+					names = []string{"main.go"}
 				}
 				var out []map[string]string
-				for _, name := range files {
+				for _, name := range names {
 					out = append(out, map[string]string{"filename": name})
 				}
-				reply(map[string]any{"files": out})
-			case (base == commitHR || base == commitC0) && (head == commitC1 || head == commitC2):
-				reply(map[string]any{"commits": sinceHandRoll})
+				return out
+			}
+			switch {
+			case base == "parent-of-"+head:
+				reply(map[string]any{"files": filesOf(f.touched[head])})
+			case base == commitHR || base == commitC0:
+				files := f.rolled[head]
+				if files == nil {
+					files = f.touched[head]
+				}
+				reply(map[string]any{"commits": sinceHandRoll, "files": filesOf(files)})
 			default:
 				t.Errorf("compare %s", p)
 			}
@@ -644,6 +651,68 @@ func TestRollerSkipsACommitThatChangesOnlyK8s(t *testing.T) {
 	}
 }
 
+// A code merge C1 is followed by a roll merge R1 of C1, whose push cancels
+// C1's own main CI run (item 126): comparing R1 with the commit the last
+// merged roll rolled (C0), not with R1's first parent (C1, the cancelled
+// run's commit, whose code R1's tree already carries), finds C1's code
+// change, so R1's images, which hold it, are rolled.
+func TestRollerRollsACodeMergeWhoseRunTheRollMergeCancelled(t *testing.T) {
+	const commitR1 = "9191919191919191919191919191919191919191"
+	f := &rollForgejo{
+		runs: []map[string]any{pushRun(102, commitR1, "success"), pushRun(101, commitC1, "cancelled")},
+		// Against its first parent C1 (the cancelled run's own commit), R1
+		// looks k8s-only: C1's code is already in that tree. Against C0,
+		// the last merged roll, R1 also carries C1's code change.
+		touched: map[string][]string{commitR1: {"k8s/factoryd.yaml"}},
+		rolled:  map[string][]string{commitR1: {"internal/factoryd/x.go", "k8s/factoryd.yaml"}},
+		files:   map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/9191919": gwNewIdx,
+			"sf/opencode-worker/manifests/9191919": workerRebuilt,
+			"sf/ci-runner/manifests/9191919":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, wf := newTestRoller(t, f)
+	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitR1 || store.rolls[1].RunID != 102 || store.rolls[1].State != RollOpened || len(wf.started) != 1 {
+		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
+	}
+	if changes := store.rolls[1].Changes; len(changes) != 2 || changes["factoryd"] != sha256Of(gwNewIdx) || changes["gateway"] != sha256Of(gwNewIdx) {
+		t.Fatalf("changes %+v, want the gateway image only (worker and runner are rebuilds)", changes)
+	}
+}
+
+// A roll's own merge R2 of the commit the last merged roll rolled (C0)
+// changes nothing outside k8s/ against C0 either: the old skip of a roll's
+// own rebuild stays, now measured against the right base.
+func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
+	const commitR2 = "9292929292929292929292929292929292929292"
+	logs := captureLog(t)
+	f := &rollForgejo{runs: []map[string]any{pushRun(103, commitR2, "success")},
+		touched: map[string][]string{commitR2: {"k8s/factoryd.yaml"}}}
+	roller, store, wf := newTestRoller(t, f)
+	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
+	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 2 || store.rolls[1].SHA != commitR2 || store.rolls[1].RunID != 103 || store.rolls[1].State != RollSkipped || len(wf.started) != 0 {
+		t.Fatalf("rolls %+v, starts %v", store.rolls, wf.started)
+	}
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "GET /v2/") || strings.Contains(c, "/raw/") {
+			t.Fatalf("read images or manifests for a k8s-only commit: %v", f.calls)
+		}
+	}
+	if !strings.Contains(logs.String(), commitR2+" (run 103) changes nothing outside k8s/") {
+		t.Fatalf("log %q", logs.String())
+	}
+}
+
 // Every roll target is pinned exactly once in the repository's own
 // manifests: an edit there that breaks the roller fails here.
 func TestRollTargetsMatchTheManifests(t *testing.T) {
@@ -704,10 +773,11 @@ func TestRollerComparesTheImagesOfAnEmptyCommit(t *testing.T) {
 	}
 }
 
-// A code commit A whose run builds slowly, then B, which touches only
-// k8s/ against A (a roll's merge, a hand roll): B goes green first and is
-// skipped; A's run, finishing later with the lower id, is still judged and
-// opens the roll of A's code.
+// A code commit A whose run builds slowly, then B, a roll's own merge (a
+// hand roll) that changes nothing outside k8s/ against the commit the last
+// merged roll rolled: B goes green first and is skipped; A's run,
+// finishing later with the lower id, is still judged and opens the roll of
+// A's code.
 func TestRollerRollsACodeCommitWhoseRunFinishesAfterAK8sOnlyOne(t *testing.T) {
 	f := &rollForgejo{
 		runs:    []map[string]any{pushRun(101, commitC2, "success"), pushRun(100, commitC1, "running")},
