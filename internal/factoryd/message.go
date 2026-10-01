@@ -29,21 +29,48 @@ func messageTokenHash(token string) string {
 // but past the worker's own bound on the hand-over.
 var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout}
 
-// messageWorker posts text to the running worker's message endpoint
-// (harness.MessagePort), which hands it to the harness. The worker's 501
-// is harness.ErrNotSupported, its 409 (the session has ended)
-// harness.ErrNotRunning.
+// messageWorker posts text to the running worker's POST /message, which
+// hands it to the harness. The worker's 501 is harness.ErrNotSupported,
+// its 409 (the session has ended) harness.ErrNotRunning.
 func (r *Runner) messageWorker(ctx context.Context, ns, pod, token, text string) error {
+	return r.postWorker(ctx, ns, pod, token, "/message", map[string]string{"text": text})
+}
+
+// answerPush answers the worker asking for its push token, which it does
+// once every agent process in its pod is dead: write on the bot's fork,
+// minted at the first ask into minted (Forgejo takes one token of a name;
+// the session's end revokes it) and posted to the worker's POST /push.
+// The worker's 409 (no push waits) is harness.ErrNotRunning.
+func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, minted *string) error {
+	if s.report != "" {
+		return errors.New("a report session pushes nothing")
+	}
+	if *minted == "" {
+		tok, err := r.forgejo.MintToken(ctx, TokenName(t.ID), "write:repository", []Repo{r.forgejo.Fork(s.repo)})
+		if err != nil {
+			return fmt.Errorf("mint the push token: %w", err)
+		}
+		*minted = tok.Secret
+	}
+	return r.postWorker(ctx, ns, pod, s.messageToken, "/push", map[string]string{"token": *minted})
+}
+
+// postWorker posts body as JSON to path on the running worker's endpoint
+// (harness.MessagePort) with the session's bearer.
+func (r *Runner) postWorker(ctx context.Context, ns, pod, bearer, path string, body any) error {
 	ip, err := r.kube.PodIP(ctx, ns, pod)
 	if err != nil {
 		return fmt.Errorf("pod address: %w", err)
 	}
-	body, _ := json.Marshal(map[string]string{"text": text})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+"/message", bytes.NewReader(body))
+	b, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+path, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := workerMessages.Do(req)
 	if err != nil {

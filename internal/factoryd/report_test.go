@@ -27,7 +27,8 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
 		t.Fatal(err)
 	}
-	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "Touch slug.go; risk normal; 1 session; build it."}}) +
+	// a report pushes nothing: a push request from it gets no token
+	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "Touch slug.go; risk normal; 1 session; build it."}}) +
 		"\n" + resultLine(true, "Touch slug.go; risk normal; 1 session; build it.")
 	var res ReportResult
 	done := make(chan error)

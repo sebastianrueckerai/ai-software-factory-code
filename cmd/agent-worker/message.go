@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -29,16 +31,22 @@ func parseHash(hexed string) ([32]byte, error) {
 	return h, nil
 }
 
-// messageHandler is the one endpoint factoryd reaches in the pod: POST
-// /message {text} with the session's bearer, handed to send, the
-// harness's Message.
-func messageHandler(tokenSHA256 [32]byte, send func(context.Context, string) error) http.Handler {
+// messageHandler serves factoryd's two requests into the pod, each with
+// the session's bearer: POST /message {text}, handed to send, the
+// harness's Message, and POST /push {token}, which gate takes.
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(context.Context, string) error) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
+	authorized := func(w http.ResponseWriter, r *http.Request) bool {
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		sum := sha256.Sum256([]byte(token))
 		if !ok || subtle.ConstantTimeCompare(sum[:], tokenSHA256[:]) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
 			return
 		}
 		var in struct {
@@ -61,16 +69,82 @@ func messageHandler(tokenSHA256 [32]byte, send func(context.Context, string) err
 			http.Error(w, err.Error(), http.StatusBadGateway)
 		}
 	})
+	mux.HandleFunc("POST /push", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		var in struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Token == "" {
+			http.Error(w, "want {\"token\": \"...\"}", http.StatusBadRequest)
+			return
+		}
+		if !gate.take(in.Token) {
+			http.Error(w, "no push waits for a token", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	return mux
 }
 
+// pushGate hands factoryd's push token to the session's push: it takes a
+// token only while ask waits, which the push calls once every agent
+// process is dead, and only one.
+type pushGate struct {
+	mu     sync.Mutex
+	asking bool
+	token  chan string
+}
+
+func newPushGate() *pushGate { return &pushGate{token: make(chan string, 1)} }
+
+// take hands token to the waiting ask; false when none waits.
+func (g *pushGate) take(token string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.asking {
+		return false
+	}
+	g.asking = false
+	g.token <- token
+	return true
+}
+
+// ask writes the push request for commit on w, the stdout factoryd reads,
+// and waits at most wait for factoryd's POST /push.
+func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, error) {
+	g.mu.Lock()
+	g.asking = true
+	g.mu.Unlock()
+	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
+	fmt.Fprintln(w, string(line))
+	timeout := time.NewTimer(wait)
+	defer timeout.Stop()
+	select {
+	case token := <-g.token:
+		return token, nil
+	case <-timeout.C:
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.asking = false
+	select {
+	case token := <-g.token:
+		return token, nil
+	default:
+		return "", fmt.Errorf("no push token from factoryd within %s", wait)
+	}
+}
+
 // serveMessages listens on harness.MessagePort until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, send func(context.Context, string) error, log func(string, ...any)) (stop func(), err error) {
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(context.Context, string) error, log func(string, ...any)) (stop func(), err error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
 	if err != nil {
 		return nil, fmt.Errorf("message endpoint: %w", err)
 	}
-	srv := &http.Server{Handler: messageHandler(tokenSHA256, send), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: messageHandler(tokenSHA256, gate, send), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log("message endpoint: %v", err)

@@ -5,10 +5,18 @@ package harness
 // no callback endpoint, so the sandbox egress policy never needs a rule
 // back to the control plane, and the stream doubles as a log artifact.
 type WorkerEnvelope struct {
-	Type   string  `json:"type"` // "event", "result" or "repro"
-	Event  *Event  `json:"event,omitempty"`
-	Result *Result `json:"result,omitempty"`
-	Repro  *Repro  `json:"repro,omitempty"`
+	Type   string       `json:"type"` // "event", "result", "repro" or "push"
+	Event  *Event       `json:"event,omitempty"`
+	Result *Result      `json:"result,omitempty"`
+	Repro  *Repro       `json:"repro,omitempty"`
+	Push   *PushRequest `json:"push,omitempty"`
+}
+
+// PushRequest is the worker asking for its push token once every agent
+// process is dead and Commit is made: factoryd mints the token then and
+// posts it to the worker's POST /push on MessagePort.
+type PushRequest struct {
+	Commit string `json:"commit"`
 }
 
 // Repro is the worker's reproduction mode's report: the command's exit

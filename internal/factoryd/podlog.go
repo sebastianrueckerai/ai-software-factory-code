@@ -88,16 +88,17 @@ func (p *podLog) pump(ctx context.Context) {
 // followPodLog delivers a pod's log lines until the pod has exited and its
 // log is drained, or is gone. It reads ahead without waiting for the
 // consumer (a supervisor call may block the session loop while the pod is
-// deleted), up to maxLogBuffer. A follow stream can end while the
-// container still runs (the API server or kubelet drops it, a read
-// fails); the log is then reopened, and the lines already read, which a
-// reopened stream replays from the start, are skipped. This assumes the
-// kubelet has not rotated the container log in between. ctx ends it early.
-func followPodLog(ctx context.Context, kube Kube, ns, pod, taskID string) *podLog {
-	return followPodLogCap(ctx, kube, ns, pod, taskID, maxLogBuffer)
+// deleted), up to maxLogBuffer, and hands each line to tap (nil: none)
+// once, as it reads it. A follow stream can end while the container still
+// runs (the API server or kubelet drops it, a read fails); the log is then
+// reopened, and the lines already read, which a reopened stream replays
+// from the start, are skipped. This assumes the kubelet has not rotated
+// the container log in between. ctx ends it early.
+func followPodLog(ctx context.Context, kube Kube, ns, pod, taskID string, tap func([]byte)) *podLog {
+	return followPodLogCap(ctx, kube, ns, pod, taskID, maxLogBuffer, tap)
 }
 
-func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, capBytes int) *podLog {
+func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, capBytes int, tap func([]byte)) *podLog {
 	p := &podLog{lines: make(chan []byte), cap: capBytes}
 	p.cond = sync.NewCond(&p.mu)
 	go p.pump(ctx)
@@ -107,7 +108,12 @@ func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, cap
 		for {
 			stream, err := kube.PodLog(ctx, ns, pod)
 			if err == nil {
-				seen, err = readLogLines(stream, seen, p.push)
+				seen, err = readLogLines(stream, seen, func(line []byte) bool {
+					if tap != nil {
+						tap(line)
+					}
+					return p.push(line)
+				})
 				stream.Close() // #nosec G104 -- a read-only log stream; its close error changes nothing
 			}
 			if p.err() != nil {

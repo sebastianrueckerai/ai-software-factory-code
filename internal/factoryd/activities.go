@@ -314,18 +314,15 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}()
 	// least privilege (ruling 97): read on the task's repository and the
 	// bot's fork for the clone init container (a resumed branch's head is
-	// on the fork), write on the fork to push the branch, nothing else on sf
+	// on the fork), nothing else on sf; the write token on the fork is
+	// minted when the worker asks for it, its agent dead (answerPush)
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
-	if err != nil {
-		return SessionResult{}, err
-	}
-	push, err := r.forgejo.MintToken(ctx, TokenName(t.ID), "write:repository", []Repo{r.forgejo.Fork(repo)})
 	if err != nil {
 		return SessionResult{}, err
 	}
 	// freshNamespace deletes a leftover namespace first, and with it any
 	// pod a dead session left running
-	if s.cache, err = r.setupNamespace(ctx, t, base, push); err != nil {
+	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
 		return SessionResult{}, err
 	}
 	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,7 +23,7 @@ func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	for name, val := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo",
-		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "PUSH_TOKEN": "ptok", "GATEWAY_URL": "http://gw",
+		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
 		"MESSAGE_TOKEN_SHA256": testMessageHash,
 	} {
@@ -126,13 +127,13 @@ func TestGitRunRedactsToken(t *testing.T) {
 	}
 }
 
-// The worker container gets no read token and no repository URL: the
-// clone init container holds them. The push token it still gets leaves
-// the environment the agent inherits, and no git config file holds it.
+// The worker container starts with no Forgejo token: the clone init
+// container holds the read token, and the push token arrives on POST /push
+// once the agent is gone. A token the worker gets carries into no git
+// config file.
 func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
-		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b",
-		"PUSH_TOKEN": "pu5h-tok", "PUSH_URL": "https://example/fork.git",
+		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
 		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "MESSAGE_TOKEN_SHA256": testMessageHash,
 	} {
@@ -152,15 +153,12 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e.pushToken != "pu5h-tok" || e.repoToken != "" || e.repoURL != "" {
-		t.Fatalf("push token %q, read token %q, repository URL %q; want the push token only", e.pushToken, e.repoToken, e.repoURL)
-	}
-	if _, set := os.LookupEnv("PUSH_TOKEN"); set {
-		t.Fatal("PUSH_TOKEN still in the environment the agent inherits")
+	if e.pushToken != "" || e.repoToken != "" || e.repoURL != "" {
+		t.Fatalf("push token %q, read token %q, repository URL %q; want none", e.pushToken, e.repoToken, e.repoURL)
 	}
 
 	dst := filepath.Join(t.TempDir(), "repo")
-	if err := e.gitAuth(e.pushToken, "", "clone", src, dst); err != nil {
+	if err := e.gitAuth("pu5h-tok", "", "clone", src, dst); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := os.ReadFile(filepath.Join(dst, ".git", "config"))
@@ -353,7 +351,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			}
 			tc.agent(dir)
 
-			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil })
+			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -475,7 +473,7 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 			}
 			tc.agent(dir)
 
-			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil })
+			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
 			if tc.refused {
 				if err == nil || !strings.Contains(err.Error(), "refusing to push: .forgejo/") {
 					t.Fatalf("commitAndPush = %q, %v; want the workflow refusal", commit, err)
@@ -555,7 +553,7 @@ func TestCommitAndPushLeavesScratchReproTestsOut(t *testing.T) {
 			}
 			tc.agent(dir)
 
-			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil })
+			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -608,7 +606,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	run("-C", remote, "config", "http.receivepack", "true")
 	sha := run("-C", seed, "rev-parse", "HEAD")
 
-	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", repoToken: "r3ad-tok", pushToken: "s3cret-tok"}
+	e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: "factory/t1", repoToken: "r3ad-tok"}
 	var pushes, refused, spyHeaders int
 	git := &cgi.Handler{Path: backend, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -711,7 +709,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 			os.WriteFile(filepath.Join(own[0], ".git", "hooks", h), []byte("#!/bin/sh\n"+spy+" </dev/null\n"), 0o755)
 		}
 		return nil
-	})
+	}, fixedToken("s3cret-tok"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +867,7 @@ func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
 			}
 			tc.agent(dir)
 
-			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil })
+			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
 			remoteHead, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
 			if tc.wantRefuse != "" {
 				if err == nil {
@@ -1113,7 +1111,6 @@ func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 	env := func(mode, guide string) {
 		setRequiredEnv(t)
 		t.Setenv("PUSH_URL", "")
-		t.Setenv("PUSH_TOKEN", "")
 		t.Setenv("MODE", mode)
 		t.Setenv("REPORT_GUIDE", guide)
 	}
@@ -1132,5 +1129,73 @@ func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 	env("report", "")
 	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "REPORT_GUIDE") {
 		t.Fatalf("report mode without a guide: err = %v", err)
+	}
+}
+
+// fixedToken is factoryd answering every push request with tok at once.
+func fixedToken(tok string) func(string) (string, error) {
+	return func(string) (string, error) { return tok, nil }
+}
+
+// changedSession is a session's clone with one new file in the work tree,
+// and the bare fork its push goes to.
+func changedSession(t *testing.T) (dir string, e workerEnv, base, mainHead, fork string) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	fork = filepath.Join(t.TempDir(), "fork.git")
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	e = workerEnv{taskID: "t1", objective: "o", repoSHA: run("-C", seed, "rev-parse", "HEAD"), branch: "factory/t1", repoURL: remote, pushURL: fork}
+	dir = filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	e.repoURL = ""
+	var err error
+	if base, mainHead, err = prepareRepo(dir, e); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir, e, base, mainHead, fork
+}
+
+// A factoryd that never answers the push request (one that died without
+// its shutdown, ruling 231) costs the session its push: the worker waits
+// its bound, pushes nothing and says why.
+func TestNoPushTokenNoPush(t *testing.T) {
+	dir, e, base, mainHead, fork := changedSession(t)
+	gate := newPushGate()
+	var request bytes.Buffer
+	var events []harness.Event
+	res := deliver(harness.Result{Success: true, Summary: "done"}, false, func() (string, error) {
+		return commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
+			return gate.ask(commit, 50*time.Millisecond, &request)
+		})
+	}, e.branch, func(ev harness.Event) { events = append(events, ev) })
+	if res.Success || res.Summary != "push failed: no push token from factoryd within 50ms" {
+		t.Fatalf("result = %+v, want the push failed for want of a token", res)
+	}
+	if len(events) != 1 || events[0].Kind != harness.EventPushFailed {
+		t.Fatalf("events = %+v, want one push_failed", events)
+	}
+	if !strings.HasPrefix(request.String(), `{"type":"push","push":{"commit":"`) {
+		t.Fatalf("stdout = %q, want the push request", request.String())
+	}
+	if out, _ := exec.Command("git", "-C", fork, "rev-parse", "--verify", "-q", "refs/heads/factory/t1").Output(); len(out) != 0 {
+		t.Fatalf("fork branch = %s, want nothing pushed", out)
 	}
 }

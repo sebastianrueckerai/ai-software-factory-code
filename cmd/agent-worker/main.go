@@ -49,7 +49,7 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 	// The agent runs as the same uid; a non-dumpable worker keeps its
-	// /proc/<pid>/environ (which still holds the git token) unreadable to it.
+	// /proc/1 (its memory holds the push token at the end) unreadable to it.
 	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0); errno != 0 {
 		log("prctl PR_SET_DUMPABLE: %v", errno)
 		return 1
@@ -144,7 +144,8 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 
-	stopMessages, err := serveMessages(env.messageHash, oc.Message, log)
+	gate := newPushGate()
+	stopMessages, err := serveMessages(env.messageHash, gate, oc.Message, log)
 	if err != nil {
 		log("%v", err)
 		endBrief(err)
@@ -202,7 +203,9 @@ func run(log func(string, ...any)) int {
 	var pushErr error
 	res = deliver(res, stopped, func() (string, error) {
 		endPush := tel.phase("push")
-		commit, pushErr = commitAndPush(repoDir, env, base, mainHead, killOthers)
+		commit, pushErr = commitAndPush(repoDir, env, base, mainHead, killOthers, func(commit string) (string, error) {
+			return gate.ask(commit, pushWait, os.Stdout)
+		})
 		endPush(pushErr)
 		return commit, pushErr
 	}, env.branch, emit)
@@ -328,12 +331,15 @@ func killOthers() error {
 const (
 	bakedConfigDir = "/opt/opencode-home/.config/opencode"
 	workspace      = "/workspace"
+	// pushWait bounds the wait for factoryd's push token: the pod's 60 s
+	// grace period after a stop also holds the commit and the push
+	pushWait = 30 * time.Second
 )
 
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
 // the task's repository and the bot's fork, in the clone init container
 // only; pushURL/pushToken write the task branch to the fork, the only place
-// a worker can write (ruling 97).
+// a worker can write (ruling 97), with the token factoryd posts at the push.
 type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
 	repoURL, repoToken, pushURL, pushToken                    string
@@ -362,10 +368,8 @@ func loadEnv() (workerEnv, error) {
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
 	e.branch = str("BRANCH")
-	e.pushToken = str("PUSH_TOKEN")
 	messageHash := str("MESSAGE_TOKEN_SHA256")
 	// opencode inherits this process's environment
-	os.Unsetenv("PUSH_TOKEN")
 	os.Unsetenv("MESSAGE_TOKEN_SHA256")
 	e.pushURL = str("PUSH_URL")
 	e.gatewayURL = str("GATEWAY_URL")
@@ -382,7 +386,7 @@ func loadEnv() (workerEnv, error) {
 		e.report = str("REPORT_GUIDE")
 		required["REPORT_GUIDE"] = e.report
 	} else {
-		required["PUSH_URL"], required["PUSH_TOKEN"] = e.pushURL, e.pushToken
+		required["PUSH_URL"] = e.pushURL
 	}
 	for name, val := range required {
 		if val == "" {
@@ -562,11 +566,11 @@ const (
 // fetches the agent's HEAD, the start and mainHead (main at the clone) by
 // their ids, stages the agent's work tree on top under the worker's own
 // config (so no agent filter, hook or fsmonitor runs), commits any
-// leftovers, and pushes to the task URL if the result moved past base.
-// killAgent runs before the push, so no agent process is alive while a
-// token is in a git process's environment. Returns the pushed commit,
-// empty when there was nothing to push.
-func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error) (string, error) {
+// leftovers, and pushes to the task URL if the result moved past base,
+// with the token pushToken gets for the commit. killAgent runs before
+// pushToken, so no agent process is alive once a token is in the worker.
+// Returns the pushed commit, empty when there was nothing to push.
+func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error, pushToken func(commit string) (string, error)) (string, error) {
 	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
 		return "", err
@@ -629,6 +633,9 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 		return "", err
 	}
 	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {
+		return "", err
+	}
+	if e.pushToken, err = pushToken(head); err != nil {
 		return "", err
 	}
 	if err := e.gitAuth(e.pushToken, "", "--git-dir="+send, "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
@@ -770,9 +777,9 @@ type diffStat struct{ Files, Insertions, Deletions int }
 // indexes the agent's work tree into a fresh repo of the worker's own that
 // borrows those objects. Hooks and fsmonitor are off, diffs run without
 // external diff or textconv, system and global config are ignored, and
-// the token is not in the environment (loadEnv unset it). The agent runs
-// under the same uid and could still write to a fresh repo while it
-// exists; what it could plant there runs with the rights it already has.
+// no token is in the environment. The agent runs under the same uid and
+// could still write to a fresh repo while it exists; what it could plant
+// there runs with the rights it already has.
 type checkpointer struct {
 	e                 workerEnv
 	work, store, base string

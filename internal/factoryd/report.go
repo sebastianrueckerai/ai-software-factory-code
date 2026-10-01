@@ -139,7 +139,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		return "", "", false, err
 	}
-	if s.cache, err = r.setupNamespace(ctx, t, base, ForgejoToken{}); err != nil {
+	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
 		return "", "", false, err
 	}
 	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)

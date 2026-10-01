@@ -70,11 +70,12 @@ the agents work on.
   session's key, limited to those aliases. A refusal names its decision in
   the `X-Gateway-Decision` header. It also serves the agent's tools over MCP at
   `/mcp`, see "Tools".
-- `cmd/agent-worker`: pid 1 in the sandbox pod. Clones the base commit
-  from the repository with the read token before the agent starts (a
-  resumed task branch that only the fork holds is fetched from there),
-  runs `opencode serve` on 127.0.0.1 in its own process group without
-  either token and drives one session over its HTTP API the way
+- `cmd/agent-worker`: pid 1 in the sandbox pod. Its init container
+  (`MODE=clone`), the read token's only holder, clones the base commit
+  from the repository before the agent starts (a resumed task branch that
+  only the fork holds is fetched from there). The worker container starts
+  with no Forgejo token, runs `opencode serve` on 127.0.0.1 in its own
+  process group and drives one session over its HTTP API the way
   `opencode run --auto` drives its own (every permission ask answered
   "once"; the fixture `TestRecordOpencodeServeFixture` records), serves
   factoryd's `POST /message {text}` on port 8091 (bearer per session, the
@@ -86,8 +87,12 @@ the agents work on.
   the fixture `TestRecordOpencodeFixture` records from the pinned binary
   with `OPENCODE_RECORD_BIN` set, on every version bump), kills
   and reaps every other process when the agent is done, then fetches
-  the agent's commits into a clean repository and pushes `factory/<id>`
-  from there to the fork `factory-agent/<repo>` with the write token.
+  the agent's commits into a clean repository, commits there, and asks
+  for the push token on stdout (`{"type":"push"}`). factoryd mints the
+  write token on the fork then and posts it to the worker's
+  `POST /push {token}` on port 8091 (same bearer; 409 until the worker
+  asks, one token only); the worker waits 30 s at most and pushes
+  `factory/<id>` to the fork `factory-agent/<repo>`.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep
   and the Go 1.25 toolchain (ruling 99, the same pin as the runner
   image); its egress (`workerEgressSpec`) is default-deny plus the
@@ -318,9 +323,10 @@ instead of starting a fresh cap. A stopping factoryd stops a running
 `RunSession` gracefully: the worker pushes its work in progress, the
 session ends `stopped` and Temporal retries the attempt on the new pod,
 which continues from the pushed branch with the stop report as findings.
-A crashed factoryd loses nothing either: the retry removes the dead
-session's namespace, pod and credentials and starts a new session with
-the dead one as parent and its findings.
+A crashed factoryd answers no push request, so a running pod's
+unpushed work in progress is lost (ruling 231); the retry removes the
+dead session's namespace, pod and credentials and starts a new session
+with the dead one as parent and its findings.
 
 ## Gates, review, approval and merge (task 55, ruling 109)
 
@@ -553,7 +559,8 @@ stopping session's pod is deleted with a 60 s grace period (a log stream
 that breaks meanwhile, or at any time while the pod runs, is reopened
 and the lines already read are skipped): the worker ends the agent,
 commits and pushes its work in progress through the same clean push
-path, and the next session starts from it. Escalation moves the task to
+path, with the push token factoryd answers its request with during the
+grace period, and the next session starts from it. Escalation moves the task to
 `waiting-human`, comments the reason and the digest summary on the
 issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the

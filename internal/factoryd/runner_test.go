@@ -60,6 +60,8 @@ type fakeKube struct {
 	nsDelay      time.Duration                // every CreateNamespace takes this long
 	pvs          []PersistentVolume
 	deletedPVs   []string
+	tokenTaken   chan struct{} // closed when a worker endpoint took a push token
+	takeToken    sync.Once
 }
 
 // hangLogs as a pod's log body keeps the stream open until the reader's
@@ -80,8 +82,9 @@ type fakePod struct {
 	logs            string
 	logsReady       chan struct{} // closed when scriptPods has assigned the body
 	spec            map[string]any
-	opens           int  // log streams opened
-	deleted         bool // deletion requested, grace period running
+	opens           int           // log streams opened
+	deleted         bool          // deletion requested, grace period running
+	term            chan struct{} // closed at the deletion: the worker's SIGTERM
 	conditions      []PodCondition
 }
 
@@ -95,6 +98,7 @@ func newFakeKube() *fakeKube {
 		cnps:        map[string]map[string]any{},
 		createdNs:   map[string]map[string]string{},
 		objects:     map[string]map[string]any{},
+		tokenTaken:  make(chan struct{}),
 	}
 }
 
@@ -213,7 +217,7 @@ func (k *fakeKube) CreatePod(ctx context.Context, namespace, name string, pod ma
 	if _, ok := k.pods[namespace+"/"+name]; ok {
 		return ErrAlreadyExists
 	}
-	p := &fakePod{ns: namespace, name: name, phase: "Running", logsReady: make(chan struct{}), spec: pod}
+	p := &fakePod{ns: namespace, name: name, phase: "Running", logsReady: make(chan struct{}), spec: pod, term: make(chan struct{})}
 	k.pods[namespace+"/"+name] = p
 	k.podOrder = append(k.podOrder, p)
 	k.ops = append(k.ops, "create pod "+namespace+"/"+name)
@@ -234,9 +238,11 @@ func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error 
 	if k.onDeletePod != nil {
 		k.onDeletePod()
 	}
-	// a worker whose log is cut is still inside its grace period: the pod
-	// stays until the rest of its log has been read
-	if strings.Contains(p.logs, cutLogs) && p.phase == "Running" {
+	close(p.term)
+	// a worker whose log is cut or goes on after its SIGTERM is still
+	// inside its grace period: the pod stays until the rest of its log has
+	// been read
+	if (strings.Contains(p.logs, cutLogs) || strings.Contains(p.logs, sigtermLogs)) && p.phase == "Running" {
 		p.deleted = true
 		return nil
 	}
@@ -329,7 +335,7 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 		}
 		body = before + after
 	}
-	var r io.Reader = strings.NewReader(body)
+	r := heldLog(ctx, body, map[string]<-chan struct{}{sigtermLogs: p.term, tokenLogs: k.tokenTaken})
 	if rest, ok := strings.CutPrefix(body, trickleLogs); ok {
 		r = iotest.HalfReader(strings.NewReader(rest))
 	}
@@ -365,6 +371,48 @@ const trickleLogs = "<trickle>"
 // cutLogs in a log body breaks the first stream there while the container
 // runs on; a reopened stream serves the whole body.
 const cutLogs = "<cut>"
+
+// sigtermLogs in a log body holds the stream there until the pod's
+// deletion, then serves the rest: what the worker prints after its SIGTERM.
+const sigtermLogs = "<sigterm>"
+
+// tokenLogs in a log body holds the stream there until a worker endpoint
+// took a push token: the worker waits for it before it pushes.
+const tokenLogs = "<token>"
+
+// heldLog serves body, holding the stream at each marker of holds until
+// the marker's channel closes.
+func heldLog(ctx context.Context, body string, holds map[string]<-chan struct{}) io.Reader {
+	var parts []io.Reader
+	for {
+		at, marker := len(body), ""
+		for m := range holds {
+			if i := strings.Index(body, m); i >= 0 && i < at {
+				at, marker = i, m
+			}
+		}
+		parts = append(parts, strings.NewReader(body[:at]))
+		if marker == "" {
+			return io.MultiReader(parts...)
+		}
+		parts = append(parts, holdReader{ctx, holds[marker]})
+		body = body[at+len(marker):]
+	}
+}
+
+type holdReader struct {
+	ctx  context.Context
+	open <-chan struct{}
+}
+
+func (r holdReader) Read([]byte) (int, error) {
+	select {
+	case <-r.open:
+		return 0, io.EOF
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	}
+}
 
 // scriptPods assigns log bodies to the pods created from index start on,
 // in creation order, and unblocks their log streams.
@@ -677,9 +725,10 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, _ := newTestRunner(t, task, kube, objects)
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
 
 	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
-		pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
+		pushRequestLine("c0ffee") + "\n" + tokenLogs + pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
 	if err != nil {
 		t.Fatalf("RunSession: %v", err)
@@ -687,7 +736,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c0ffee" || !strings.HasPrefix(res.SessionID, "s-") {
 		t.Fatalf("result = %+v, want pushed c0ffee", res)
 	}
-	// read on the base repository and the fork to clone, write on the fork to push: nothing else
+	// read on the base repository and the fork to clone, write on the fork at the push: nothing else
 	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code,factory-agent/ai-software-factory-code") ||
 		!slices.Contains(hub.calls, "mint task-t1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
 		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
@@ -699,9 +748,8 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
 		t.Fatalf("pod env = %v, want the base SHA and the cheap model", env)
 	}
-	if env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" ||
-		env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
-		t.Fatalf("pod env = %v, want the push to the fork with the push token", env)
+	if env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" {
+		t.Fatalf("pod env = %v, want the push to the fork", env)
 	}
 	if _, ok := env["GIT_TOKEN"]; ok {
 		t.Fatal("GIT_TOKEN is still set: one way only")
@@ -716,7 +764,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if l := kube.createdNs[ns]; l["factory.ai/task"] != "t1" || l["pod-security.kubernetes.io/enforce"] != "restricted" {
 		t.Fatalf("task namespace labels = %v", l)
 	}
-	if sec := kube.secrets[ns+"/task-git"]; sec["REPO_TOKEN"] != "tok-task-t1-base" || sec["PUSH_TOKEN"] != "tok-task-t1" || len(sec) != 2 {
+	if sec := kube.secrets[ns+"/task-git"]; sec["REPO_TOKEN"] != "tok-task-t1-base" || len(sec) != 1 {
 		t.Fatalf("git token secret = %v", sec)
 	}
 	if typ := kube.secretTypes[ns+"/forgejo-registry"]; typ != "kubernetes.io/dockerconfigjson" {
@@ -839,8 +887,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 // The clone runs in an init container, the read token's only holder
 // (item 40): read on the task's repository and the bot's fork, where a
 // resumed session's branch head is. The worker container, where the agent
-// runs, gets neither the read token nor the repository URL to use it on;
-// it keeps the push token for the push.
+// runs, gets neither the read token nor the repository URL to use it on.
 func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
 	kube := newFakeKube()
@@ -890,8 +937,8 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 			t.Fatalf("worker container env has %s: %v", name, env)
 		}
 	}
-	if env["REPO_SHA"] != "abc123" || env["BRANCH"] != "factory/t1" || env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
-		t.Fatalf("worker container env = %v, want the start, the branch and the push token", env)
+	if env["REPO_SHA"] != "abc123" || env["BRANCH"] != "factory/t1" || env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/x.git" {
+		t.Fatalf("worker container env = %v, want the start, the branch and the fork", env)
 	}
 }
 
@@ -994,7 +1041,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	kube.namespaces["factory-agents-t1"] = map[string]string{"factory.ai/task": "t1"}
-	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running"}
+	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running", term: make(chan struct{})}
 	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}, {ID: 51, Name: "task-t1-base"}}
 
 	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7, Findings: []string{"changed a.go"}}
@@ -1296,8 +1343,8 @@ func TestRunSessionAdapterFailureIsNoPush(t *testing.T) {
 	if res.Outcome != OutcomeNoPush || res.Summary != "model refused" || !strings.Contains(strings.Join(res.Findings, "\n"), "model refused") {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(hub.revoked) != 2 {
-		t.Fatalf("revoked = %v: a failed session must still revoke", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101}) {
+		t.Fatalf("revoked = %v: a failed session must still revoke its read token, the one it minted", hub.revoked)
 	}
 }
 
@@ -1411,8 +1458,8 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 	if err != nil || res.Outcome != OutcomeWallClock {
 		t.Fatalf("result = (%+v, %v), want wall_clock", res, err)
 	}
-	if len(hub.revoked) != 2 {
-		t.Fatalf("revoked = %v", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101}) {
+		t.Fatalf("revoked = %v, want the read token, the one a session that never asked to push minted", hub.revoked)
 	}
 }
 
@@ -1432,8 +1479,8 @@ func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
 	if !errors.As(err, &app) || app.Message() != context.Canceled.Error() {
 		t.Fatalf("err = %v, want the cancel to reach the activity", err)
 	}
-	if len(hub.revoked) != 2 {
-		t.Fatalf("revoked = %v: the session's tokens must not survive", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101}) {
+		t.Fatalf("revoked = %v: the session's read token, the one it minted, must not survive", hub.revoked)
 	}
 	if _, ok := kube.namespaces["factory-agents-t6"]; ok {
 		t.Fatal("namespace survived the cancel")
@@ -1481,8 +1528,8 @@ func TestRunSessionWorkerStopPushesWorkInProgress(t *testing.T) {
 	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"outcome":"stopped"`) || !strings.Contains(timeline, "c-wip") {
 		t.Fatalf("timeline = %s, want the stopped session's end with its push", timeline)
 	}
-	if len(hub.revoked) != 2 {
-		t.Fatalf("revoked = %v: the session's tokens must not survive", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101}) {
+		t.Fatalf("revoked = %v: the session's read token, the one it minted, must not survive", hub.revoked)
 	}
 	if _, ok := kube.namespaces["factory-agents-t2"]; ok {
 		t.Fatal("namespace survived the stop")
@@ -1558,8 +1605,8 @@ func TestRunSessionSetupFailureDeletesNamespace(t *testing.T) {
 	if _, ok := kube.namespaces["factory-agents-t8"]; ok {
 		t.Fatal("half-built namespace survived a setup failure")
 	}
-	if len(hub.revoked) != 2 {
-		t.Fatalf("revoked = %v", hub.revoked)
+	if !slices.Equal(hub.revoked, []int64{101}) {
+		t.Fatalf("revoked = %v, want the read token revoked", hub.revoked)
 	}
 }
 
@@ -1723,7 +1770,7 @@ func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
 	kube.scriptPods(0, body.String())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pl := followPodLog(ctx, kube, "ns", "p", "t1")
+	pl := followPodLog(ctx, kube, "ns", "p", "t1", nil)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if phase, _, _ := kube.PodStatus(ctx, "ns", "p"); phase == "Succeeded" {
@@ -1755,7 +1802,7 @@ func TestFollowPodLogFailsLoudlyPastItsBuffer(t *testing.T) {
 	kube.scriptPods(0, strings.Repeat("0123456789\n", 1000))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pl := followPodLogCap(ctx, kube, "ns", "p", "t1", 5000)
+	pl := followPodLogCap(ctx, kube, "ns", "p", "t1", 5000, nil)
 	time.Sleep(200 * time.Millisecond)
 	n := 0
 	for range pl.lines {
@@ -1918,7 +1965,7 @@ func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
 	r := &Runner{cfg: cfg, kube: kube, store: newFakeStore()}
-	if _, err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}, ForgejoToken{}); err != nil {
+	if _, err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}); err != nil {
 		t.Fatal(err)
 	}
 	egress := fmt.Sprint(kube.cnps["factory-agents-t1/worker-egress"]["egress"])

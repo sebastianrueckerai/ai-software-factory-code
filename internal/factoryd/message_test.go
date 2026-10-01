@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,33 +13,52 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/testsuite"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// fakeWorkerEndpoint is a worker's message endpoint answering status.
+// fakeWorkerEndpoint is a worker's message endpoint answering status. It
+// records POST /message's text and POST /push's token; onPush runs at
+// each POST /push, and a token taken (204) lets a log held at tokenLogs
+// go on.
 type fakeWorkerEndpoint struct {
 	mu     sync.Mutex
 	status int
 	auth   []string
 	texts  []string
+	onPush func()
 }
 
 func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
-			Text string `json:"text"`
+			Text  string `json:"text"`
+			Token string `json:"token"`
 		}
 		b, _ := io.ReadAll(req.Body)
 		json.Unmarshal(b, &in)
 		f.mu.Lock()
 		f.auth = append(f.auth, req.Header.Get("Authorization"))
-		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text)
+		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token)
 		status := f.status
 		f.mu.Unlock()
+		if req.URL.Path == "/push" {
+			if f.onPush != nil {
+				f.onPush()
+			}
+			if kube, ok := r.kube.(*fakeKube); ok && status == http.StatusNoContent {
+				kube.takeToken.Do(func() { close(kube.tokenTaken) })
+			}
+		}
 		w.WriteHeader(status)
 	}))
 	t.Cleanup(srv.Close)
@@ -354,5 +374,234 @@ func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
 	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[2], "**retry_stronger**") ||
 		!strings.Contains(hub.comments[2], "stuck after the supervisor's message: repetition") {
 		t.Fatalf("comments = %q, want two messages and the stuck end", hub.comments)
+	}
+}
+
+func pushRequestLine(commit string) string {
+	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
+	return string(b)
+}
+
+// writeMints are the write tokens minted so far.
+func writeMints(h *forgejoHub) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, call := range h.calls {
+		if strings.Contains(call, " write:repository ") {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// The push token is minted when the worker asks for it, once every agent
+// process in the pod is dead, not at the session's start: write on the
+// bot's fork, posted to the worker's POST /push with the session's bearer.
+func TestPushTokenMintedAtThePushRequest(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	var atStart, atPost []string
+	kube.onCreatePod = func() { atStart = writeMints(hub) }
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent, onPush: func() { atPost = writeMints(hub) }}
+	worker.start(t, runner)
+
+	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "go test ./...", "exit": 0}}) + "\n" +
+		pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed c1")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
+	}
+	want := []string{"mint task-t1 write:repository factory-agent/x"}
+	if len(atStart) != 0 || !slices.Equal(atPost, want) || !slices.Equal(writeMints(hub), want) {
+		t.Fatalf("write mints at the pod's start %v, at the post %v, in all %v; want none, then %v", atStart, atPost, writeMints(hub), want)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t1"}) {
+		t.Fatalf("worker got %q, want the minted token on POST /push", worker.texts)
+	}
+	// the session's message bearer, the one whose hash the pod holds
+	token, ok := strings.CutPrefix(worker.auth[0], "Bearer ")
+	if hash := podEnv(kube.podAt(0))["MESSAGE_TOKEN_SHA256"]; !ok || len(token) < 26 || messageTokenHash(token) != hash {
+		t.Fatalf("POST /push carried %q, want the bearer of the pod's hash %q", worker.auth[0], hash)
+	}
+}
+
+// Neither the worker container nor its namespace's secret holds a push
+// token: the container's env takes no secret, and task-git holds the clone
+// init container's read token only.
+func TestWorkerContainerCarriesNoForgejoToken(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed c1")); err != nil {
+		t.Fatal(err)
+	}
+	worker := kube.podAt(0).spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	for _, e := range worker["env"].([]map[string]any) {
+		if name := e["name"].(string); e["valueFrom"] != nil || strings.HasSuffix(name, "_TOKEN") {
+			t.Errorf("worker container env %s = %v", name, e)
+		}
+	}
+	if keys := slices.Sorted(maps.Keys(kube.secrets["factory-agents-t1/task-git"])); !slices.Equal(keys, []string{"REPO_TOKEN"}) {
+		t.Fatalf("task-git keys = %v, want [REPO_TOKEN]", keys)
+	}
+}
+
+// stoppedWorker is what a worker prints after its SIGTERM: it commits its
+// work in progress, asks for the push token, pushes and reports.
+func stoppedWorker(task string) string {
+	return sigtermLogs + pushRequestLine("c-wip") + "\n" + tokenLogs + pushedLine("c-wip") + "\n" +
+		resultLine(false, "stopped; work in progress pushed to factory/"+task+" at c-wip") + "\n"
+}
+
+// watchStop serves a worker endpoint that takes the token and records, in
+// order, the pod's deletion (the worker's SIGTERM) and each POST /push.
+func watchStop(t *testing.T, runner *Runner, kube *fakeKube) (*fakeWorkerEndpoint, func() []string) {
+	var mu sync.Mutex
+	var order []string
+	note := func(what string) {
+		mu.Lock()
+		defer mu.Unlock()
+		order = append(order, what)
+	}
+	kube.onDeletePod = func() { note("delete pod") }
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent, onPush: func() { note("POST /push") }}
+	worker.start(t, runner)
+	return worker, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(order)
+	}
+}
+
+// A supervisor's stop deletes the pod; the stopped worker's push request
+// is answered within its grace period, and its work in progress reaches
+// the next session.
+func TestSupervisorStopAnswersThePushRequest(t *testing.T) {
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"escalate","reason":"the check needs a file the agent never created"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.stopWait = 10 * time.Second
+	worker, order := watchStop(t, runner, kube)
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + stoppedWorker("t2")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeEscalate || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want escalate with the work in progress c-wip", res, err)
+	}
+	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
+		t.Fatalf("order = %v, want the push token posted after the stop", got)
+	}
+	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
+		t.Fatalf("worker got %q, write mints %v", worker.texts, writeMints(hub))
+	}
+	if len(hub.revoked) != 2 {
+		t.Fatalf("revoked = %v, want the read and the push token revoked", hub.revoked)
+	}
+}
+
+// The wall clock stops the session the same way.
+func TestWallClockStopAnswersThePushRequest(t *testing.T) {
+	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+	runner.stopWait = 10 * time.Second
+	worker, order := watchStop(t, runner, kube)
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m"}, nil, stoppedWorker("t5"))
+	if err != nil || res.Outcome != OutcomeWallClock || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want wall_clock with the work in progress c-wip", res, err)
+	}
+	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
+		t.Fatalf("order = %v, want the push token posted after the stop", got)
+	}
+	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t5"}) || len(hub.revoked) != 2 {
+		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
+	}
+}
+
+// factoryd's own graceful shutdown stops the worker and answers its push
+// request before the activity returns for the retry.
+func TestShutdownAnswersThePushRequest(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.stopWait = 10 * time.Second
+	worker, order := watchStop(t, runner, kube)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	var last sessionProgress
+	var mu sync.Mutex
+
+	logs := loopFailure(1) + stoppedWorker("t2")
+	_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+		env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
+			mu.Lock()
+			defer mu.Unlock()
+			_ = details.Get(&last)
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the retryable stop", err)
+	}
+	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
+		t.Fatalf("order = %v, want the push token posted after the stop", got)
+	}
+	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t2"}) || len(hub.revoked) != 2 {
+		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
+		t.Fatalf("last heartbeat = %+v, want the pushed work in progress for the retry", last)
+	}
+}
+
+// A worker that finishes while the supervisor is asked gets its push token
+// at once: the log follower answers the request, not the session loop,
+// which waits for the supervisor's answer.
+func TestPushAnsweredDuringASupervisorCall(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	pushed := make(chan struct{})
+	var once sync.Once
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent, onPush: func() { once.Do(func() { close(pushed) }) }}
+	worker.start(t, runner)
+	var sawPush atomic.Bool
+	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		switch r.URL.Path {
+		case "/key/list":
+			io.WriteString(w, `{"keys":[],"total_pages":1}`)
+		case "/v1/chat/completions":
+			select {
+			case <-pushed:
+				sawPush.Store(true)
+			case <-time.After(3 * time.Second):
+			}
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"action":"continue"}`}}}})
+			w.Write(out)
+		}
+	}))
+	t.Cleanup(sup.Close)
+	runner.supervisor = testSupervisorModel(sup.URL)
+
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
+		pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t2 at c1")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
+	}
+	if !sawPush.Load() {
+		t.Fatal("the push request waited for the supervisor's answer")
 	}
 }

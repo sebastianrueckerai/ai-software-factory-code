@@ -425,7 +425,22 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
-	followed := followPodLog(sessCtx, r.kube, ns, podName, t.ID)
+	// the worker asks for its push token once its agent is dead; the log
+	// follower answers at once, as the session loop may be waiting on a
+	// supervisor call
+	var pushToken string
+	answer := func(line []byte) {
+		var env struct {
+			Push *harness.PushRequest `json:"push"`
+		}
+		if json.Unmarshal(line, &env) != nil || env.Push == nil {
+			return
+		}
+		if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+			log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
+		}
+	}
+	followed := followPodLog(sessCtx, r.kube, ns, podName, t.ID, answer)
 	lines := followed.lines
 	// ended names why the log ended without a result
 	ended := func(plain string) string {
@@ -790,9 +805,8 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 }
 
 // setupNamespace builds the session's sandbox: base is the read token of
-// the pod's clone or fetch init container, push the write token on the
-// bot's fork (the branch push).
-func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoToken) (string, error) {
+// the pod's clone or fetch init container.
+func (r *Runner) setupNamespace(ctx context.Context, t Task, base ForgejoToken) (string, error) {
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
 		return "", err
@@ -853,7 +867,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoT
 			return r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[t.ID]))
 		}},
 		{"git token secret", func() error {
-			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret, "PUSH_TOKEN": push.Secret})
+			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret})
 		}},
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, r.kube, r.cfg.FactoryNamespace, r.cfg.PullSecret, ns)
@@ -1008,9 +1022,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	} else {
 		fork := r.repoURL(r.forgejo.Fork(s.repo))
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": fork})
-		env = append(env, map[string]any{"name": "PUSH_URL", "value": fork},
-			map[string]any{"name": "PUSH_TOKEN", "valueFrom": map[string]any{
-				"secretKeyRef": map[string]any{"name": "task-git", "key": "PUSH_TOKEN"}}})
+		env = append(env, map[string]any{"name": "PUSH_URL", "value": fork})
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
@@ -1023,7 +1035,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	pod := r.sandboxPodSpec(t, s.cache, env, true)
 	// the clone init container alone holds the read token: the agent's
-	// container gets the clone in the workspace, and no token to read with
+	// container gets the clone in the workspace and no token (the push
+	// token reaches the worker on POST /push once the agent is dead)
 	spec := pod["spec"].(map[string]any)
 	clone := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	clone["name"] = "clone"

@@ -261,7 +261,9 @@ func taskHistoryHits(t *testing.T, summary string) []string {
 			failures = append(failures, info.ActivityType.Name+": "+err.Error())
 		}
 	})
-	logs := pushedLine(histCommit) + "\n" + resultLine(true, summary)
+	// the worker asks for the push token, which reaches the history nowhere
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	logs := pushRequestLine(histCommit) + "\n" + tokenLogs + pushedLine(histCommit) + "\n" + resultLine(true, summary)
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {

@@ -372,7 +372,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err != nil {
 		return ReproResult{}, err
 	}
-	cache, err := r.setupNamespace(ctx, t, base, ForgejoToken{})
+	cache, err := r.setupNamespace(ctx, t, base)
 	if err != nil {
 		return ReproResult{}, err
 	}
@@ -467,7 +467,7 @@ func NotReproduced(summary string) string {
 func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (harness.Repro, error) {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	lines := followPodLog(logCtx, r.kube, ns, podName, taskID)
+	lines := followPodLog(logCtx, r.kube, ns, podName, taskID, nil)
 	for {
 		select {
 		case <-ctx.Done():
