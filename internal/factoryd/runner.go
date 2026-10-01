@@ -964,7 +964,10 @@ func (r *Runner) agentNamespace(taskID string) string {
 	return r.cfg.AgentNamespacePrefix + taskID
 }
 
-func (r *Runner) branch(t Task) string { return "factory/" + t.ID }
+func (r *Runner) branch(t Task) string { return taskBranch(t) }
+
+// taskBranch is task t's branch on the bot's fork.
+func taskBranch(t Task) string { return "factory/" + t.ID }
 
 func (r *Runner) repoURL(repo Repo) string {
 	return strings.TrimSuffix(r.cfg.GitBaseURL, "/") + "/" + repo.String() + ".git"

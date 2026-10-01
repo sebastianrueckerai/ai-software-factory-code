@@ -683,11 +683,11 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
-// whether a merge closed it), a human-lane task is simply done. An issue's
-// author can close it without any repository access, so only a user
-// trusted to steer counts, and the bot account only where factoryd recorded
-// the close as its own (IntakeFactoryClosed): a leaked bot login ends no
-// task.
+// whether a merge closed it), a human-lane task is simply done, a failed
+// task's branch is deleted. An issue's author can close it without any
+// repository access, so only a user trusted to steer counts, and the bot
+// account only where factoryd recorded the close as its own
+// (IntakeFactoryClosed): a leaked bot login ends no task.
 func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
 	if closer == in.BotUser {
 		events, err := in.Store.IntakeEvents(ctx, t.ID)
@@ -708,9 +708,23 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		return in.finishHumanTask(ctx, t, closer)
 	case t.Status == "backlog":
 		return in.closeBacklogCard(ctx, t)
+	case t.Status == "failed":
+		return in.deleteFailedBranch(ctx, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
+}
+
+// deleteFailedBranch: Finish keeps a failed task's branch on the fork for a
+// retry; its issue's close gives it up. The workflow is over, so nothing is
+// signalled.
+func (in *Intake) deleteFailedBranch(ctx context.Context, t Task) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	fork := in.Forgejo.Fork(repo)
+	return in.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, taskBranch(t))
 }
 
 // closeBacklogCard: a backlog card whose issue closed ends closed, no

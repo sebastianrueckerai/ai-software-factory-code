@@ -59,6 +59,13 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case strings.HasSuffix(r.URL.Path, "/branches/main"):
 			io.WriteString(w, `{"commit":{"id":"sha-main-head"}}`)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Contains(r.URL.Path, "/branches/"):
+			if r.Method == http.MethodDelete {
+				requests = append(requests, "DELETE "+r.URL.Path)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			io.WriteString(w, `{"commit":{"id":"sha-branch-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
 			io.WriteString(w, `{"head":{"ref":"factory/t-pr","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
 		case strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodGet:
@@ -1292,6 +1299,52 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 		}
 		if got := len(workflowsOf(in).signals); got != want {
 			t.Fatalf("%s closed the issue: %d signals, want %d", closer, got, want)
+		}
+	}
+}
+
+// A trusted close of a failed card's issue deletes the card's branch on the
+// bot's fork, which Finish keeps for a retry, and signals nothing: the
+// workflow is over. A done card's branch went at its end; a running card's
+// close is its workflow's signal, as before.
+func TestClosingAFailedCardDeletesItsBranch(t *testing.T) {
+	branch := "DELETE /api/v1/repos/factory-agent/ai-software-factory-code/branches/factory/t1"
+	for _, tc := range []struct {
+		status, closer string
+		recorded       bool
+		deletes        []string
+		signals        []string
+	}{
+		{status: "failed", closer: "sebastian", deletes: []string{branch}},
+		{status: "failed", closer: "factory-agent", recorded: true, deletes: []string{branch}},
+		{status: "failed", closer: "factory-agent"},
+		{status: "failed", closer: "mallory"},
+		{status: "done", closer: "sebastian", signals: []string{"t1 issue_closed sebastian #0: "}},
+		{status: "running", closer: "sebastian", signals: []string{"t1 issue_closed sebastian #0: "}},
+	} {
+		in, store, requests := newTestIntake(t)
+		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: tc.status, Kind: "agent", IssueNumber: 4}
+		if tc.recorded {
+			recordFactoryClose(context.Background(), store, store.tasks["t1"])
+		}
+		body, _ := json.Marshal(map[string]any{
+			"action":     "closed",
+			"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "sebastian"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": tc.closer},
+		})
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%s closed by %s: status = %d", tc.status, tc.closer, rr.Code)
+		}
+		var deletes []string
+		for _, r := range *requests {
+			if strings.HasPrefix(r, "DELETE ") {
+				deletes = append(deletes, r)
+			}
+		}
+		if !slices.Equal(deletes, tc.deletes) || !slices.Equal(workflowsOf(in).signals, tc.signals) {
+			t.Errorf("%s task closed by %s (recorded %v): deletes %q, signals %q; want %q, %q",
+				tc.status, tc.closer, tc.recorded, deletes, workflowsOf(in).signals, tc.deletes, tc.signals)
 		}
 	}
 }
