@@ -257,8 +257,10 @@ combined status, which Forgejo records on the base repository
 its PR closed unmerged, the ladder exhausted) closes its open PR, found
 by number or, when none was recorded, by its branch on the fork, and
 then comments the reason on it once (the comment follows the close, so a
-retried close never repeats it). Every finished task's branch on the
-fork is deleted. Close and delete happen before the task turns final and
+retried close never repeats it). A done or closed task's branch on the
+fork is deleted; a failed task's stays for a retry until a writer, or
+factoryd's recorded close, closes its issue, which deletes it then.
+Close and delete happen before the task turns final and
 retry through a Forgejo outage, so no failed task keeps an open PR; one
 Forgejo refuses (a 4xx, which no retry fixes) is logged and the task
 completes anyway.
