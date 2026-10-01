@@ -279,6 +279,49 @@ func (c *Console) startPlan(w http.ResponseWriter, r *http.Request) {
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Start plan: %d %s of plan #%d labelled agent.", n, plural(n, "card"), t.IssueNumber), nil)
 }
 
+// retryCard files a failed card of a plan again (factoryd's
+// RetryPlanCard) and labels the replacement agent as the human: the label
+// event is its move into ready, which intake judges.
+func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.taskOf(w, r)
+	if !ok {
+		return
+	}
+	_, proc, ok := c.cardProcess(w, r, t)
+	if !ok {
+		return
+	}
+	user := current(r).user
+	ready, _ := proc.Lane(policy.LaneReady)
+	allowed, err := c.cfg.MayMove(r.Context(), t.Repository, user, ready.MovedBy)
+	if err != nil {
+		log.Printf("console: may %s retry %s: %v", user, t.ID, err)
+		http.Error(w, "cannot check who may move the card", http.StatusServiceUnavailable)
+		return
+	}
+	if !allowed {
+		http.Error(w, movedByRefusal(ready, t.Repository), http.StatusForbidden)
+		return
+	}
+	issue, err := c.cfg.RetryPlanCard(r.Context(), t.ID, user)
+	var no factoryd.ErrNoRetry
+	switch {
+	case errors.As(err, &no):
+		http.Error(w, no.Error(), http.StatusConflict)
+		return
+	case err != nil:
+		log.Printf("console: %s retries %s: %v", user, t.ID, err)
+		http.Error(w, "The card could not be retried; see the factoryd log.", http.StatusInternalServerError)
+		return
+	}
+	if _, err := c.addLabel(r, t, factoryd.LabelAgent, issue); err != nil {
+		c.forgejoFailed(w, r, fmt.Sprintf("label #%d agent (the replacement of #%d is filed)", issue, t.IssueNumber), err)
+		return
+	}
+	log.Printf("console: %s retried %s (%s#%d) as #%d", user, t.ID, t.Repository, t.IssueNumber, issue)
+	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Retried #%d as #%d; it starts in lane ready once factoryd picks it up.", t.IssueNumber, issue), nil)
+}
+
 func plural(n int, word string) string {
 	if n == 1 {
 		return word

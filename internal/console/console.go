@@ -98,6 +98,10 @@ type Config struct {
 	// (factoryd.AcceptPlan, factoryd.RejectPlan).
 	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
 	RejectPlan func(ctx context.Context, taskID, by, why string) error
+	// RetryPlanCard files failed plan card taskID again for by and returns
+	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
+	// is factoryd.ErrNoRetry.
+	RetryPlanCard func(ctx context.Context, taskID, by string) (int64, error)
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).
@@ -179,6 +183,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.spend("accept a plan", c.acceptPlan)))
 	c.mux.Handle("POST /tasks/{id}/plan/changes", c.auth(c.planChanges))
 	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
+	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.spend("retry a card", c.retryCard)))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.costs))
 	c.mux.Handle("GET /policy", c.auth(c.policy))

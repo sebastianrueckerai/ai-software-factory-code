@@ -408,6 +408,8 @@ type rig struct {
 	mayAsked    []string // "repository user moved_by" per MayMove
 	mayErr      error
 	signalErr   error
+	retried     []string // "task by user" per RetryPlanCard
+	retryErr    error
 	metrics     *sdkmetric.ManualReader
 }
 
@@ -477,6 +479,10 @@ func newRig(t *testing.T) *rig {
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_rejected %s by %s: %s", taskID, by, why))
 			return nil
+		},
+		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
+			r.retried = append(r.retried, taskID+" by "+by)
+			return 9, r.retryErr
 		},
 	})
 	if err != nil {
