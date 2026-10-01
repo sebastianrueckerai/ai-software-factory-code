@@ -212,7 +212,7 @@ func (s *fakeStore) SetTaskIssue(ctx context.Context, id string, issue int64) er
 func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Parent == plan && t.Source == SourcePlan {
+		if t.Parent == plan && t.Source == SourcePlan && t.PlanKey != "" {
 			out = append(out, t)
 		}
 	}
