@@ -1002,7 +1002,10 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 	s3.traces.nudged = map[string]int{"kept": 1}
 	s3.tripped = cmp.Or(s3.tripped, &Trip{Kind: TripCheckIn})
 	s3.Messaged(minute(2))
-	if d := s3.traces; len(d.calls) != 0 || len(d.runs) != 0 || len(d.failed) != 0 || len(d.contents) != 0 || d.churn != 0 || d.streak != 0 ||
+	// the command detectors clear; the alternation memory (contents, churn)
+	// stays, so a circle of writes spanning messages trips (ruling 224,
+	// TestSupervisorFlipFlopSpansTheMessage)
+	if d := s3.traces; len(d.calls) != 0 || len(d.runs) != 0 || len(d.failed) != 0 || len(d.contents) == 0 || d.churn == 0 || d.streak != 0 ||
 		d.lastDiff == "" || d.maxDiff != 3 || d.nudged["kept"] != 1 {
 		t.Fatalf("trace counters after the message: %+v", d)
 	}
@@ -1061,5 +1064,29 @@ func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
 	s2, _ := NewSupervisor(cfg, minute(0), minute(35))
 	if trip := s2.Tick(minute(45)); trip == nil || trip.Kind != TripCheckIn {
 		t.Fatalf("trip = %+v, want the check-in at t0+45m", trip)
+	}
+}
+
+// Ruling 224: a circle of writes is not progress. A message must not clear
+// the alternation memory, so an agent that flips a file back and forth
+// across messages trips flip_flop and the stuck rule ends the session
+// (round 2's drill 4: 38 minutes of message loops on one alternating file).
+func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 3,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute, Churn: 1000}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(fileEvent("stats_test.go", "versionA"), minute(1))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1)); trip == nil {
+		t.Fatal("no repetition trip before the message")
+	}
+	s.Messaged(minute(2))
+	s.Event(fileEvent("stats_test.go", "versionB"), minute(3))
+	trip := s.Event(fileEvent("stats_test.go", "versionA"), minute(4))
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("flip back across the message = %+v, want flip_flop decided retry_stronger", trip)
+	}
+	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: flip_flop: stats_test.go returned to a content it had before, after other content in between" {
+		t.Fatalf("finding = %q", last)
 	}
 }

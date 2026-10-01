@@ -273,9 +273,12 @@ func (s *Supervisor) Findings() []string {
 }
 
 // Messaged resumes the session after the supervisor's message reached it
-// and arms the stuck rule until the next write. Every progress detector
-// starts afresh at the message, so the stuck rule judges only what the
-// agent did after it; the diff's baseline and the nudges stay.
+// and arms the stuck rule until the next write. The command detectors
+// start afresh at the message; the alternation memory (contents, churn)
+// does not, so a circle of writes that spans messages still trips
+// flip_flop or churn and ends the session (ruling 224: circles of writes
+// are not progress; round 2's drill 4 looped for 38 minutes on the
+// cleared memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
 	s.sinceChange = 0
@@ -284,8 +287,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 	clear(d.runs)
 	clear(d.failed)
 	clear(d.calls)
-	clear(d.contents)
-	d.churn, d.streakKey, d.streak = 0, "", 0
+	d.streakKey, d.streak = "", 0
 	s.messaged, s.messagedOnce = true, true
 }
 
