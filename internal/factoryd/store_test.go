@@ -545,7 +545,7 @@ func (s *fakeStore) SetGate(ctx context.Context, id, gate string, since time.Tim
 func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
-	if a.Kind == AlertScreening && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertScreening && b.TaskID == a.TaskID }) {
+	if a.Kind == AlertScreening && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertScreening && b.TaskID == a.TaskID && b.Verdict == "" }) {
 		return 0, nil
 	}
 	if a.Kind == AlertMonthCap && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertMonthCap && b.Fingerprint == a.Fingerprint }) {
@@ -1484,6 +1484,14 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
 	if want := []AlertCount{{"alert", "open", 1}, {"screening", "noise", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
+	}
+	// a later answer's suspect verdict opens its own once the earlier one
+	// is judged (item 132), and a retry still finds it
+	if id, err := s.InsertAlert(ctx, Alert{Kind: AlertScreening, Source: "outside account", TaskID: "t-parent"}); err != nil || id == 0 {
+		t.Fatalf("screening alert after the judged one: id %d, %v", id, err)
+	}
+	if id, err := s.InsertAlert(ctx, Alert{Kind: AlertScreening, Source: "outside account", TaskID: "t-parent"}); err != nil || id != 0 {
+		t.Fatalf("second open screening alert: id %d, %v", id, err)
 	}
 }
 

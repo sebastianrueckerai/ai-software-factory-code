@@ -578,7 +578,7 @@ const (
 	// go through ScreenAnswer on a task whose author is not a writer and
 	// whose screening stage applies; a suspect one waits on a human as the
 	// screening stage's verdict does. A healed run screens the answers it
-	// rebuilt again, unless it waits on that human.
+	// rebuilt again.
 	versionScreenAnswers workflow.Version = 1
 )
 
@@ -759,13 +759,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.roll(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
 			// the screening's human, asked again; the answer runs the next
-			// session and covers every answer on the issue
+			// session, whose rebuilt answers are screened again
 			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitScreening(healedReason, cmp.Or(st.Question, screeningQuestion))
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings, t.screened = answer, len(t.posterInfo)
+			findings = answer
 			if st.WriteUp != "" && u.Attempts == 0 {
 				findings = append(findings, writeUpFinding(st.WriteUp))
 			}

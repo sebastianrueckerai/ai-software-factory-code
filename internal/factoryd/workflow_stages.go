@@ -476,7 +476,7 @@ func (t *taskRun) screen() (final, why string, findings []string) {
 // screenAnswers screens the answers of the issue's author the screening
 // has not read (versionScreenAnswers), on a task whose author is not a
 // writer and whose screening stage applies: one ScreenAnswer each, then
-// one card with every suspect one's reasons.
+// one card with every suspect one's reasons, each named by its answer.
 func (t *taskRun) screenAnswers() (final, why string, findings []string) {
 	if t.answerScreening < versionScreenAnswers || t.screened >= len(t.posterInfo) || t.standing == harness.StandingWriter {
 		return "", "", nil
@@ -490,7 +490,9 @@ func (t *taskRun) screenAnswers() (final, why string, findings []string) {
 	for ; t.screened < len(t.posterInfo); t.screened++ {
 		var res ScreenResult
 		err := workflow.ExecuteActivity(ctx, ActivityScreenAnswer, t.taskID, t.posterInfo[t.screened], t.cfg.PolicyVersion).Get(t.ctx, &res)
-		reasons = append(reasons, suspectReasons(res, err)...)
+		for _, r := range suspectReasons(res, err) {
+			reasons = append(reasons, fmt.Sprintf("answer %d (%q): %s", t.screened+1, textutil.Truncate(t.posterInfo[t.screened], 80), r))
+		}
 	}
 	return t.awaitSuspect(reasons)
 }

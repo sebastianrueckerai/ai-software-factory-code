@@ -95,7 +95,7 @@ func (s *PGStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 		 VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, 0), NULLIF($5, ''), NULLIF($6, ''), CASE WHEN $5 <> '' THEN now() END, $7::jsonb, NULLIF($8, ''))
 		 ON CONFLICT DO NOTHING RETURNING id`, a.Kind, a.Source, a.TaskID, a.BoundS, a.Verdict, a.ResolvedBy, detail, a.Fingerprint).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil // the task's screening alert, or the month's month_cap alert at the percent, exists
+		return 0, nil // the task's open screening alert, or the month's month_cap alert at the percent, exists
 	}
 	return id, err
 }
