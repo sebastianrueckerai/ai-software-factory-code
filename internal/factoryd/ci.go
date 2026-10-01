@@ -671,7 +671,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 			"containers": []any{map[string]any{
 				"name":    "runner",
 				"image":   s.cfg.RunnerImage,
-				"command": []any{"forgejo-runner"},
+				"command": []any{"sh", "-c", cacheUmaskSh, "forgejo-runner"},
 				"args": []any{
 					"one-job",
 					"--url", s.cfg.GitBaseURL,

@@ -441,6 +441,16 @@ var cacheMounts = []any{
 	map[string]any{"name": "modcache", "mountPath": "/modcache"},
 }
 
+// cacheUmaskSh runs a container command with umask 0000: gVisor's gofer
+// serves the cache volume to each sandbox on its own and checks an open
+// of a file another sandbox created against the group/other bits, so the
+// 0644 Go writes under umask 022 denies O_RDWR to the same uid in the
+// next pod sharing the claim, which cmd/go reports as `package X is not
+// in std` (debug-cache-race.md: 19/33 concurrent cold-cache pod-runs
+// failed; umask 0000 0/30, same speed). Run as `sh -c cacheUmaskSh argv0`
+// with the real command in argv0 and its args in args.
+const cacheUmaskSh = `umask 0000; exec "$0" "$@"`
+
 func cacheVolumes(claim string) []any {
 	return []any{
 		map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": claim}},
