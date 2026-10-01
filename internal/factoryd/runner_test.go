@@ -1556,6 +1556,25 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	}
 }
 
+func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
+	const prefix = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+	const suffix = ". Close this card and file it again with the wording changed, or answer to try once more."
+	summary := "AI_APICallError: InternalError.Algo.DataInspectionFailed: input check failed (status 400)"
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
+	if res.Outcome != OutcomeEscalate || res.Reason != prefix+summary+suffix {
+		t.Fatalf("content-filter refusal: %+v", res)
+	}
+	summary = "provider error: data_inspection_failed (status 400)"
+	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
+	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, prefix+summary) {
+		t.Fatalf("snake-case refusal: %+v", res)
+	}
+	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: "AI_APICallError: rate limited (status 429)"}})
+	if res.Outcome != OutcomeNoPush {
+		t.Fatalf("rate limit: %+v", res)
+	}
+}
+
 func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
 	s := sessionSpec{id: "s1"}
 	trip := &Trip{Kind: TripSameFailure, Detail: "x", Findings: []string{"ran y"}}
