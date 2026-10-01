@@ -385,12 +385,12 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if res.Outcome != OutcomePushed {
 		// no later session could spend: a human raises the cap or waits
 		// for the month to end
-		reason, refused, err := r.store.MonthCapRefusal(ctx, t.ID, startedAt)
+		refused, err := r.store.MonthCapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
 		}
-		if refused {
-			res.Outcome, res.Reason = OutcomeEscalate, monthCapReached+reason
+		if refused != nil {
+			res.Outcome, res.Reason = OutcomeEscalate, capRefused(*refused)
 		}
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,

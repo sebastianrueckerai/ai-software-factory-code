@@ -36,7 +36,7 @@ func testDB(t *testing.T) *sql.DB {
 	// the tasks table belongs to the binaries; these columns are all the
 	// headroom queries read
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tasks (
-		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL)`); err != nil {
+		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL, repository text NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
 	// the gateway's audit table, the columns the sweep writes
@@ -230,7 +230,7 @@ func TestHolds(t *testing.T) {
 		('a', 0.02, 0.01, 'running'), ('b', 1, 0, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", InTokens: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50}
+	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", InTokens: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
 
 	// task a: 0.01 free; 1000 input tokens cost 0.001, 0.009 buys 2250 output tokens
 	h, err := TakeHold(ctx, db, req)
@@ -316,7 +316,7 @@ func TestHolds(t *testing.T) {
 	}
 	// a cost that is not a finite non-negative number books the hold
 	for _, bad := range []float64{math.NaN(), math.Inf(1), -0.5} {
-		h, err := TakeHold(ctx, db, HoldRequest{TaskID: "b", Kind: KindModel, Ref: "z", Price: testPrice, WantOut: 1000, DayEUR: 20, MonthEUR: 50})
+		h, err := TakeHold(ctx, db, HoldRequest{TaskID: "b", Kind: KindModel, Ref: "z", Price: testPrice, WantOut: 1000, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -351,7 +351,7 @@ func TestToolHolds(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('a', 0.1, 'running'), ('b', 1, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.02, DayEUR: 20, MonthEUR: 50,
+	req := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.02, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
 		Cap: ToolCap{MaxRequests: 2, MaxEUR: 0.05}}
 	var r *Refusal
 	h1, err := TakeHold(ctx, db, req)
@@ -455,7 +455,7 @@ func TestHoldsConcurrent(t *testing.T) {
 				go func() {
 					defer wg.Done()
 					task := []string{"a", "b"}[i%2]
-					_, err := TakeHold(ctx, db, HoldRequest{TaskID: task, Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 2000, DayEUR: tc.dayEUR, MonthEUR: tc.monthEUR})
+					_, err := TakeHold(ctx, db, HoldRequest{TaskID: task, Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 2000, DayEUR: tc.dayEUR, MonthEUR: tc.monthEUR, ProjectEUR: inf})
 					mu.Lock()
 					defer mu.Unlock()
 					var r *Refusal
@@ -495,7 +495,7 @@ func TestMonthHeadroom(t *testing.T) {
 		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('o', 'model', 'x', 0.005, now() + interval '1 hour')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "m", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05}
+	req := HoldRequest{TaskID: "m", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05, ProjectEUR: inf}
 	h, err := TakeHold(ctx, db, req)
 	if err != nil || h.MaxOut != 1250 || !near(h.EUR, 0.005) || !near(h.Headroom, 0.01) || h.Bound != RefusedMonthCap {
 		t.Fatalf("month-bound hold = (%+v, %v), want 1250 tokens, 0.005 EUR, headroom 0.01 bound by the month", h, err)
@@ -505,13 +505,85 @@ func TestMonthHeadroom(t *testing.T) {
 		t.Fatalf("hold past the month = %v, want refused_month_cap naming budget.month_eur", err)
 	}
 	// a resource reservation and a tool call meet the same month
-	res := HoldRequest{TaskID: "m", Kind: KindResource, Ref: "cx23", EUR: 0.0001, DayEUR: 20, MonthEUR: 0.05}
+	res := HoldRequest{TaskID: "m", Kind: KindResource, Ref: "cx23", EUR: 0.0001, DayEUR: 20, MonthEUR: 0.05, ProjectEUR: inf}
 	if _, err := TakeHold(ctx, db, res); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
 		t.Fatalf("reservation past the month = %v, want refused_month_cap", err)
 	}
 	// 0 stops all spend
-	if _, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1, DayEUR: 20, MonthEUR: 0}); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
+	if _, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1, DayEUR: 20, MonthEUR: 0, ProjectEUR: inf}); !errors.As(err, &r) || r.Decision != RefusedMonthCap {
 		t.Fatalf("hold under a month cap of 0 = %v, want refused_month_cap", err)
+	}
+}
+
+// A project's month cap (budget.month_eur in its file) bounds its tasks
+// together: the cap less the month's ledger rows of the tasks of its
+// repository, standing lines and earlier months left out, less their
+// outstanding holds. Hand-derived: p/p's cap 1.00, its task o spent 0.90
+// this month (and 5 last month); a has budget 2, the day cap is 20 and the
+// month 50, so a's headroom is task 2, day 19.10, month 49.10, project
+// 0.10. Task b of q/q has no cap and the same numbers.
+func TestProjectCapBoundsHeadroom(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, repository) VALUES
+			('a', 2, 0, 'running', 'p/p'), ('o', 2, 0.9, 'running', 'p/p'), ('b', 2, 0, 'running', 'q/q');
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
+			('o', date_trunc('month', now() AT TIME ZONE 'UTC')::date - 1, 'model', 'x', 5),
+			('o', (now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.9),
+			('standing:p/p', (now() AT TIME ZONE 'UTC')::date, 'standing', 'resource/1', 3)`); err != nil {
+		t.Fatal(err)
+	}
+	free := func(r HoldRequest) Free {
+		t.Helper()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		f, err := FreeHeadroom(ctx, tx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	tool := HoldRequest{TaskID: "a", Kind: KindTool, Ref: ToolWebScrape, EUR: 0.2, Cap: ToolCap{MaxRequests: 3, MaxEUR: 1},
+		DayEUR: 20, MonthEUR: 50, Project: "p", ProjectEUR: 1}
+	f := free(tool)
+	if !near(f.TaskHeadroom, 2) || !near(f.DayHeadroom, 19.1) || !near(f.MonthHeadroom, 49.1) || !near(f.ProjectHeadroom, 0.1) ||
+		!near(f.Task, 2) || !near(f.Day, 19.1) || !near(f.Month, 49.1) || !near(f.Project, 0.1) {
+		t.Fatalf("a's headroom = %+v, want task 2, day 19.10, month 49.10, project 0.10", f)
+	}
+	if got, bound := HeadroomBound(f.Task, f.Day, f.Month, f.Project); !near(got, 0.1) || bound != RefusedProjectCap {
+		t.Fatalf("a's free headroom = (%g, %s), want 0.10 bound by the project's cap", got, bound)
+	}
+	var r *Refusal
+	if _, err := TakeHold(ctx, db, tool); !errors.As(err, &r) || r.Decision != RefusedProjectCap ||
+		r.Reason != "web_scrape: worst case 0.200000 EUR exceeds the free headroom 0.100000 EUR (task 2.000000, day 19.100000, month 49.100000, project 0.100000); "+
+			"the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/p.yaml), and only a human raises it, by a commit" {
+		t.Fatalf("a's call with a worst case of 0.20 = %v, want refused_project_cap", err)
+	}
+	other := tool
+	other.TaskID, other.Project, other.ProjectEUR = "b", "", inf
+	h, err := TakeHold(ctx, db, other)
+	if err != nil || !near(h.EUR, 0.2) || !near(h.Headroom, 2) || h.Bound != "refused_budget" {
+		t.Fatalf("b's call = (%+v, %v), want 0.20 held under headroom 2 bound by the task", h, err)
+	}
+	// o's hold counts against p/p's cap, b's (q/q) only against the day and
+	// month: 1000 input tokens and 1024 output tokens hold 0.005096
+	model := HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", InTokens: 1000, Price: testPrice, WantOut: 1024, DayEUR: 20, MonthEUR: 50, Project: "p", ProjectEUR: 1}
+	h, err = TakeHold(ctx, db, model)
+	if err != nil || h.MaxOut != 1024 || !near(h.EUR, 0.005096) || !near(h.Headroom, 0.1) || h.Bound != RefusedProjectCap {
+		t.Fatalf("o's hold = (%+v, %v), want 1024 tokens, 0.005096 EUR, headroom 0.10 bound by the project's cap", h, err)
+	}
+	if f := free(tool); !near(f.ProjectHeadroom, 0.1) || !near(f.Project, 0.094904) || !near(f.Day, 18.894904) || !near(f.Month, 48.894904) {
+		t.Fatalf("a's headroom after both holds = %+v, want project 0.094904, day 18.894904, month 48.894904", f)
+	}
+	// a cap of 0.90 is spent: a's model call is refused
+	model.TaskID, model.ProjectEUR = "a", 0.9
+	if _, err := TakeHold(ctx, db, model); !errors.As(err, &r) || r.Decision != RefusedProjectCap ||
+		!strings.HasSuffix(r.Reason, "; the project cap budget.month_eur in projects/p.yaml is spent, and only a human raises it, by a commit") {
+		t.Fatalf("a's model call under a spent cap = %v, want refused_project_cap naming projects/p.yaml", err)
 	}
 }
 
@@ -547,12 +619,12 @@ func TestHeadroomIsUTC(t *testing.T) {
 		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('sep', '2026-09-30', 'model', 'x', 30), ('oct', '2026-10-01', 'model', 'x', 0.04)`); err != nil {
 		t.Fatal(err)
 	}
-	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05})
+	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, DayEUR: 20, MonthEUR: 0.05, ProjectEUR: inf})
 	if err != nil || h.MaxOut != 2500 || h.Bound != RefusedMonthCap {
 		t.Fatalf("hold at 2026-10-01 05:00 UTC = (%+v, %v), want 2500 tokens bound by the month", h, err)
 	}
 	// the day: a cap of 1 leaves 0.96 of 2026-10-01; 2026-09-30's 30 is not today
-	h, err = TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1024, DayEUR: 1, MonthEUR: 50})
+	h, err = TakeHold(ctx, db, HoldRequest{TaskID: "z", Kind: KindModel, Ref: "m", Price: testPrice, WantOut: 1024, DayEUR: 1, MonthEUR: 50, ProjectEUR: inf})
 	if err != nil || !near(h.Headroom, 0.96) || h.Bound != "refused_day_cap" {
 		t.Fatalf("day-bound hold = (%+v, %v), want headroom 0.96 bound by the day", h, err)
 	}
@@ -574,7 +646,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 	for _, id := range []string{"run", "rev", "done", "failed", "closing", "wait", "queued"} {
 		for _, kind := range []string{KindTool, KindModel} {
-			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50,
+			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
 				EUR: 0.001, Cap: ToolCap{MaxRequests: 5, MaxEUR: 1}}
 			_, err := TakeHold(ctx, db, req)
 			var r *Refusal

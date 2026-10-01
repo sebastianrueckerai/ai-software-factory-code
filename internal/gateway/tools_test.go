@@ -448,6 +448,27 @@ func TestToolRefusedByDayAndTask(t *testing.T) {
 	}
 }
 
+// The scrape's worst case is 0.005 EUR; linkshort's file caps the project
+// at 0.002 a month.
+func TestToolRefusedByProjectCap(t *testing.T) {
+	task := running("coder")
+	task.Repository = "linkshort/linkshort"
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 10, MaxEUR: 0.2})
+	pv.Projects = map[string]policy.ProjectConfig{"linkshort": {Repository: "linkshort/linkshort", Budget: &policy.ProjectBudget{MonthEUR: 0.002}}}
+	e := newToolEnv(t, task, pv)
+	text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"})
+	if !isErr || !strings.Contains(text, policy.RefusedProjectCap) ||
+		!strings.Contains(text, "the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml)") {
+		t.Fatalf("under linkshort's cap = %q", text)
+	}
+	if len(e.providers.calls) != 0 {
+		t.Fatal("provider called")
+	}
+	if r := e.store.reqs[0]; r.Project != "linkshort" || r.ProjectEUR != 0.002 {
+		t.Fatalf("hold request = %+v, want linkshort's cap 0.002", r)
+	}
+}
+
 func TestToolRefusedWhenTaskNotRunning(t *testing.T) {
 	e := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "waiting-human", Classes: []string{"coder"}}, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	if text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"}); !isErr || !strings.Contains(text, "refused_task_status") {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The agent's escalate_to_human ends the session like a supervisor's
@@ -317,7 +318,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
-	store.monthRefusals = map[string]string{"t1": refusal}
+	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedMonthCap, Reason: refusal}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil {
@@ -335,5 +336,26 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil || res.Outcome != OutcomeNoPush {
 		t.Fatalf("result without a month cap refusal = %+v, %v, want no_push", res, err)
+	}
+}
+
+// A session the gateway refused at the project's month cap waits on a
+// human with the refusal, which names the file a human raises the cap in.
+func TestProjectCapRefusalEscalates(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "add the stats page", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	refusal := "free headroom -0.000100 EUR (task 1.900000, day 19.000000, month 49.000000, project -0.000100) fits 0 output tokens after at most 4000 input tokens, below the minimum call of 1024; " +
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedProjectCap, Reason: refusal}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		resultLine(false, "the model call failed: 402 budget_exceeded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "the project's month cap is reached: the gateway refused this task's spend (refused_project_cap): " + refusal; res.Outcome != OutcomeEscalate || res.Reason != want {
+		t.Fatalf("result = %+v, want escalate with %q", res, want)
+	}
+	if got := escalationSource(res.Reason); got != "project_cap" {
+		t.Fatalf("escalation source = %q, want project_cap", got)
 	}
 }

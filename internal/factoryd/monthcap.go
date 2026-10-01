@@ -15,9 +15,21 @@ import (
 // cap is reached.
 const SourceMonthCap = "month_cap"
 
-// monthCapReached opens the escalation of a session the gateway refused
-// at the month cap.
-const monthCapReached = "the month cap is reached: the gateway refused this task's spend (refused_month_cap): "
+// monthCapReached and projectCapReached open the escalation of a session
+// the gateway refused at the month cap or at its project's.
+const (
+	monthCapReached   = "the month cap is reached: the gateway refused this task's spend (refused_month_cap): "
+	projectCapReached = "the project's month cap is reached: the gateway refused this task's spend (refused_project_cap): "
+)
+
+// capRefused is the escalation reason of a session the gateway refused at
+// a month cap.
+func capRefused(r policy.Refusal) string {
+	if r.Decision == policy.RefusedProjectCap {
+		return projectCapReached + r.Reason
+	}
+	return monthCapReached + r.Reason
+}
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's

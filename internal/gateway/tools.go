@@ -226,10 +226,12 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	if decision != "" {
 		return s.refuseTool(c, tool, decision, reason)
 	}
+	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: c.task.ID, Kind: policy.KindTool, Ref: tool, EUR: worst, Cap: toolCap,
 		DayEUR:   c.pv.Document.Budget.DayEUR,
 		MonthEUR: c.pv.Document.Budget.MonthEUR,
+		Project:  project, ProjectEUR: projectEUR,
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {

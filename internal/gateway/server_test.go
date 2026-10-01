@@ -68,6 +68,8 @@ type memStore struct {
 	ledger []ledgerRow
 	holds  map[int64]policy.Hold
 	nextID int64
+	// reqs are the hold requests in order
+	reqs []policy.HoldRequest
 	// day is today's ledger total before this test's calls, month the
 	// month's before today
 	day, month float64
@@ -101,19 +103,26 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	if t.Status != "running" && t.Status != "in-review" {
 		return policy.Hold{}, &policy.Refusal{Decision: "refused_task_status", Reason: "task " + t.ID + " is " + t.Status}
 	}
-	dayTotal := m.day
+	m.reqs = append(m.reqs, r)
+	dayTotal, projectTotal := m.day, 0.0
 	for _, l := range m.ledger {
 		dayTotal += l.eur
+		if m.tasks[l.taskID].Repository == t.Repository {
+			projectTotal += l.eur
+		}
 	}
-	taskHeld, dayHeld := 0.0, 0.0
+	taskHeld, dayHeld, projectHeld := 0.0, 0.0, 0.0
 	for _, h := range m.holds {
 		dayHeld += h.EUR
 		if h.TaskID == r.TaskID {
 			taskHeld += h.EUR
 		}
+		if m.tasks[h.TaskID].Repository == t.Repository {
+			projectHeld += h.EUR
+		}
 	}
-	taskHeadroom, dayHeadroom, monthHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal
-	free := policy.Free{Task: taskHeadroom - taskHeld, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld}
+	taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal, r.ProjectEUR-projectTotal
+	free := policy.Free{Task: taskHeadroom - taskHeld, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld}
 	var h policy.Hold
 	var err error
 	if r.Kind == policy.KindTool {
@@ -137,7 +146,7 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	}
 	m.nextID++
 	h.ID = m.nextID
-	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom, monthHeadroom)
+	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom)
 	m.holds[h.ID] = h
 	return h, nil
 }
@@ -1439,6 +1448,70 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	}
 	if len(store.ledger) != 2 || store.ledger[0] != (ledgerRow{"a", "coding-cheap", 0.625, "model"}) || store.ledger[1] != (ledgerRow{"b", "coding-cheap", 0.5, "model"}) {
 		t.Fatalf("ledger = %+v, want one model row per allowed call", store.ledger)
+	}
+}
+
+// Two tasks of linkshort, whose file caps the project at 1 EUR a month,
+// together spend it: the cap binds both keys and refuses the next call of
+// either with the file to raise it in; a task of a project without a cap
+// keeps its own headroom.
+func TestProjectCapAcrossTasks(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore(
+		Task{Classes: coder, ID: "a", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
+		Task{Classes: coder, ID: "b", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
+		Task{Classes: coder, ID: "c", BudgetEUR: 5, Status: "running", Repository: "notes/notes"},
+	)
+	pv := testPolicy(3, 20)
+	pv.Projects = map[string]policy.ProjectConfig{
+		"linkshort": {Repository: "linkshort/linkshort", Budget: &policy.ProjectBudget{MonthEUR: 1}},
+		"notes":     {Repository: "notes/notes"},
+	}
+	store.setPolicy(pv)
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: authByTask{}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
+	call := func(task, cost string) *httptest.ResponseRecorder {
+		stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": cost}})
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
+		r.Header.Set("X-Task", task)
+		rr := httptest.NewRecorder()
+		s.Routes("test").ServeHTTP(rr, r)
+		return rr
+	}
+	if rr := call("a", "0.625"); rr.Code != http.StatusOK {
+		t.Fatalf("a's first call = %d, want 200", rr.Code)
+	}
+	if rr := call("b", "0.5"); rr.Code != http.StatusOK {
+		t.Fatalf("b's first call = %d, want 200", rr.Code)
+	}
+	for _, task := range []string{"a", "b"} {
+		rr := call(task, "0.1")
+		if rr.Code != http.StatusPaymentRequired || rr.Header().Get(HeaderDecision) != policy.RefusedProjectCap ||
+			!strings.Contains(rr.Body.String(), "project -0.125000) fits 0 output tokens") ||
+			!strings.Contains(rr.Body.String(), "; the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit") {
+			t.Fatalf("%s after the project's 1.125 = %d %s %s, want 402 refused_project_cap naming projects/linkshort.yaml", task, rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+		}
+	}
+	if rr := call("c", "0.1"); rr.Code != http.StatusOK {
+		t.Fatalf("c's call = %d %s, want 200: notes has no cap", rr.Code, rr.Body.String())
+	}
+	// a minted at min(5, 20, 50, 1), b at the project's 1 - 0.625, c at its
+	// task's 5
+	if calls := minter.mintCalls(); len(calls) != 3 || calls[0] != (mintCall{"a", 1, "coding-cheap,coding-frontier"}) ||
+		calls[1] != (mintCall{"b", 0.375, "coding-cheap,coding-frontier"}) || calls[2] != (mintCall{"c", 5, "coding-cheap,coding-frontier"}) {
+		t.Fatalf("mint calls = %+v, want a at 1, b at 0.375, c at 5", calls)
+	}
+	audits := store.auditRows()
+	for i, want := range []string{"allowed", "allowed", policy.RefusedProjectCap, policy.RefusedProjectCap, "allowed"} {
+		if audits[i].Decision != want {
+			t.Fatalf("audit %d = %+v, want %s", i, audits[i], want)
+		}
+	}
+	if r := store.reqs[0]; r.Project != "linkshort" || r.ProjectEUR != 1 {
+		t.Fatalf("a's hold request = %+v, want linkshort's cap 1", r)
+	}
+	if r := store.reqs[len(store.reqs)-1]; r.TaskID != "c" || r.Project != "notes" || !math.IsInf(r.ProjectEUR, 1) {
+		t.Fatalf("c's hold request = %+v, want notes without a cap", r)
 	}
 }
 

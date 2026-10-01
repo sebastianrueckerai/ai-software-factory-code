@@ -152,7 +152,7 @@ func commissionReq(t *testing.T, task, typ string, minutes, gb int) CommissionRe
 		t.Fatal(err)
 	}
 	return CommissionRequest{TaskID: task, Repo: "sf/app", Session: "s-1", ServerType: typ, Purpose: "load test",
-		LeaseMinutes: minutes, VolumeGB: gb, Location: "fsn1", Quote: q, Envelope: testEnvelope, DayEUR: 20, MonthEUR: 50, Now: time.Now()}
+		LeaseMinutes: minutes, VolumeGB: gb, Location: "fsn1", Quote: q, Envelope: testEnvelope, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1), Now: time.Now()}
 }
 
 func scalar[T any](t *testing.T, db *sql.DB, q string, args ...any) T {
@@ -306,6 +306,35 @@ func TestReserveMonthCap(t *testing.T) {
 	c, err := a.Reserve(ctx, small())
 	if err != nil || c.Status != Pending || !strings.Contains(c.Violations[0], "exceeds the envelope's 0.03 EUR a month") {
 		t.Fatalf("second = %+v, %v", c, err)
+	}
+}
+
+// The project's month cap (its file's budget.month_eur, 0.03) bounds the
+// reservations of its tasks together: 2 h of cx23 hold 0.0192, so a second
+// leaves 0.0108 for 0.0192 and is refused, with nothing written.
+func TestReserveProjectCap(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 20)
+	seedTask(t, db, "t2", 20)
+	a := AgentStore{DB: db}
+	capped := func(task string) CommissionRequest {
+		r := commissionReq(t, task, "cx23", 120, 0)
+		r.Project, r.ProjectEUR = "app", 0.03
+		return r
+	}
+	if c, err := a.Reserve(ctx, capped("t1")); err != nil || c.Status != Reserved || !near(c.Hold.EUR, 0.0192) {
+		t.Fatalf("first = %+v, %v", c, err)
+	}
+	_, err := a.Reserve(ctx, capped("t2"))
+	var ref *policy.Refusal
+	if !errors.As(err, &ref) || ref.Decision != policy.RefusedProjectCap ||
+		ref.Reason != "cx23: worst case 0.019200 EUR exceeds the free headroom 0.010800 EUR (task 20.000000, day 19.980800, month 49.980800, project 0.010800); "+
+			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/app.yaml), and only a human raises it, by a commit" {
+		t.Fatalf("second = %v, want refused_project_cap", err)
+	}
+	if n := scalar[int](t, db, `SELECT count(*) FROM cloud_resources WHERE owner_ref = 't2'`); n != 0 {
+		t.Fatalf("rows for a refused commission: %d", n)
 	}
 }
 

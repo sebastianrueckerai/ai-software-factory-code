@@ -225,9 +225,9 @@ type Store interface {
 	// SetAgentSummary records the agent's last message of its latest
 	// pushed session.
 	SetAgentSummary(ctx context.Context, id, summary string) error
-	// MonthCapRefusal is the reason of the task's newest refused_month_cap
-	// audit row since since, if any.
-	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error)
+	// MonthCapRefusal is the task's newest refused_month_cap or
+	// refused_project_cap audit row since since, nil for none.
+	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error)
 	// EnterLane moves backlog card id into starting lane lane: queued at
 	// base sha with the lane's class as its capabilities, in the intake
 	// gate from now; false when the card was not in the backlog.
@@ -557,15 +557,18 @@ func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
-	var reason string
+func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error) {
+	var r policy.Refusal
 	err := s.db.QueryRowContext(ctx,
-		`SELECT reason FROM audit WHERE task_id = $1 AND decision = $2 AND ts >= $3 ORDER BY ts DESC, id DESC LIMIT 1`,
-		taskID, policy.RefusedMonthCap, since).Scan(&reason)
+		`SELECT decision, reason FROM audit WHERE task_id = $1 AND decision IN ($2, $3) AND ts >= $4 ORDER BY ts DESC, id DESC LIMIT 1`,
+		taskID, policy.RefusedMonthCap, policy.RefusedProjectCap, since).Scan(&r.Decision, &r.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return nil, nil
 	}
-	return reason, err == nil, err
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar

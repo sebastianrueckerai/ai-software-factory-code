@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http/httptest"
 	"slices"
 	"strconv"
@@ -411,7 +412,8 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	// the request as priced: 2 started hours of cx23 + IPv4 + 20 GB
 	r := e.cs.reqs[0]
 	if r.TaskID != "42" || r.Repo != "sf/app" || r.Session != "s-1" || r.Location != "fsn1" || r.LeaseMinutes != 90 || r.VolumeGB != 20 ||
-		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 || r.MonthEUR != 50 {
+		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 || r.MonthEUR != 50 ||
+		r.Project != "" || !math.IsInf(r.ProjectEUR, 1) {
 		t.Fatalf("reserve request = %+v", r)
 	}
 	sr := e.hz.serverReq
@@ -617,7 +619,7 @@ func TestCloudPrices(t *testing.T) {
 	// ruling 183: the envelope of the project's file
 	v := cloudPolicy()
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Envelope: &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}}}
+		Envelope: &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}, Budget: &policy.ProjectBudget{MonthEUR: 7}}}
 	e = newCloudEnv(t, coderTask(), v)
 	text, _ = e.call(t, policy.ToolCloudPrices, map[string]any{})
 	if !strings.Contains(text, "project app's envelope (projects/app.yaml, policy version 7)") || strings.Contains(text, "cx33") ||
@@ -625,8 +627,8 @@ func TestCloudPrices(t *testing.T) {
 		t.Fatalf("project envelope prices = %s", text)
 	}
 	if _, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 60}); isErr ||
-		e.cs.reqs[0].Envelope.MonthlyEUR != 3 {
-		t.Fatalf("the reservation's envelope = %+v", e.cs.reqs[0].Envelope)
+		e.cs.reqs[0].Envelope.MonthlyEUR != 3 || e.cs.reqs[0].Project != "app" || e.cs.reqs[0].ProjectEUR != 7 {
+		t.Fatalf("the reservation's envelope and project cap = %+v", e.cs.reqs[0])
 	}
 }
 

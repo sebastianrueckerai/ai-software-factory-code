@@ -1,10 +1,56 @@
 package policy
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// A project's month cap may only tighten the policy's (fixture month_eur
+// 50); 0 stops the project's spend; absent, the project has no cap of its
+// own, nor has a repository no file names.
+func TestProjectBudgetBounded(t *testing.T) {
+	with := func(budget string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], budget...)
+		return files
+	}
+	for name, tc := range map[string]struct{ budget, want string }{
+		"negative": {"budget: {month_eur: -1}\n", "project demo-app: budget.month_eur must not be negative (0 stops the project's spend)"},
+		"looser":   {"budget: {month_eur: 60}\n", "project demo-app: budget.month_eur 60 is looser than policy.yaml's budget.month_eur 50"},
+		"empty":    {"budget: {}\n", "projects/demo-app.yaml: schema:"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseTree(with(tc.budget)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	for budget, want := range map[string]float64{"budget: {month_eur: 10}\n": 10, "budget: {month_eur: 0}\n": 0, "budget: {month_eur: 50}\n": 50, "": math.Inf(1)} {
+		tree, err := ParseTree(with(budget))
+		if err != nil {
+			t.Fatalf("%q: %v", budget, err)
+		}
+		if name, eur := tree.ProjectCap("demo-app/demo-app"); name != "demo-app" || eur != want {
+			t.Fatalf("%q: ProjectCap = (%q, %g), want (demo-app, %g)", budget, name, eur, want)
+		}
+	}
+	tree, err := ParseTree(with("budget: {month_eur: 10}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, eur := tree.ProjectCap("nobody/nothing"); name != "" || !math.IsInf(eur, 1) {
+		t.Fatalf("ProjectCap of a repository no file names = (%q, %g), want no cap", name, eur)
+	}
+	// a tree read back from Postgres is held to the same bound
+	p := tree.Projects["demo-app"]
+	p.Budget = &ProjectBudget{MonthEUR: 60}
+	tree.Projects["demo-app"] = p
+	if err := tree.Validate(); err == nil || !strings.Contains(err.Error(), "budget.month_eur 60 is looser") {
+		t.Fatalf("Validate = %v, want the looser cap refused", err)
+	}
+}
 
 func TestProjectDefaultAbsentTakesBuiltIns(t *testing.T) {
 	d, err := Parse([]byte(valid))

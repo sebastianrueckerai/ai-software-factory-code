@@ -103,8 +103,9 @@ type liveKey struct {
 	saUID   string
 	version int64
 	day     string
-	// bound is the refusal the key's max_budget stands for: the smaller of
-	// the task's and the day's headroom at the mint.
+	// bound is the refusal the key's max_budget stands for: the smallest of
+	// the task's, the day's, the month's and the project's headroom at the
+	// mint.
 	bound    string
 	inFlight int
 	retired  bool
@@ -265,11 +266,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if purpose != "" {
 		ref, slot, models = purpose+"/"+chatReq.Model, task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
 	}
+	project, projectEUR := pv.ProjectCap(task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: task.ID, Kind: policy.KindModel, Ref: ref,
 		InTokens: len(body) + inTokenSlack, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
+		Project:  project, ProjectEUR: projectEUR,
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
@@ -507,8 +510,8 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 // keyFor returns the virtual key of the task's current run, policy version
 // and UTC day, or mints one: limited to the aliases the task's classes
 // allow (so LiteLLM refuses any other target) and capped at the hold's
-// headroom, the smallest of the task's, the day's and the month's. The key counts the
-// call as in flight until doneWith.
+// headroom, the smallest of the task's, the day's, the month's and the
+// project's. The key counts the call as in flight until doneWith.
 func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID string, models []string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
 	want := liveKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout), bound: hold.Bound}
 	// a key minted here and superseded before this call takes it is rare
@@ -708,8 +711,9 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 					} `json:"error"`
 				}
 				json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-				// the key's max_budget was the task's, the day's or the
-				// month's headroom; the proxy-wide budget stops every key
+				// the key's max_budget was the task's, the day's, the month's
+				// or the project's headroom; the proxy-wide budget stops every
+				// key
 				decision, reason := c.key.bound, "litellm budget_exceeded: "+liteErr.Error.Message
 				if isProxyBudget(liteErr.Error.Message) {
 					decision, reason = policy.RefusedMonthCap, "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "+liteErr.Error.Message

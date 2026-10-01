@@ -44,12 +44,12 @@ the agents work on.
   model (403 `refused_capability`). The call is then metered, see "Policy
   and costs": its output limit is clamped so its worst case fits the free
   headroom, the worst case is held, and the real cost is booked after the
-  call (402 `refused_budget`, `refused_day_cap` or `refused_month_cap`
-  when it cannot fit). The per-task LiteLLM virtual key is limited to the
+  call (402 `refused_budget`, `refused_day_cap`, `refused_month_cap` or
+  `refused_project_cap` when it cannot fit). The per-task LiteLLM virtual key is limited to the
   classes' aliases and capped at the smallest headroom; a new run, policy version or UTC day
   mints a new key and blocks the old one once the calls still using it
   are done. A LiteLLM budget refusal is labelled by the headroom the key
-  was capped at (`refused_budget`, `refused_day_cap` or `refused_month_cap`);
+  was capped at (`refused_budget`, `refused_day_cap`, `refused_month_cap` or `refused_project_cap`);
   LiteLLM's proxy-wide `max_budget` (its message names no entity) is
   `refused_month_cap`. Every decision has an audit row
   naming the policy version; an admitted call's row also carries its
@@ -719,7 +719,7 @@ blocks `lanes`, `dependencies`, `stages`, each with its `on_findings`
 rule, ruling 177, and `merge`) and `projects/<name>.yaml` (one per
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
-quota, secrets). The Go types in `internal/policy` are the
+quota, secrets, `budget: {month_eur}`). The Go types in `internal/policy` are the
 schema: `factoryd schema --out <dir>` writes one JSON Schema per file
 kind (draft-07; every enumerated field lists its values, every key its
 doc comment, a key is required unless its yaml tag says `omitempty`),
@@ -819,7 +819,14 @@ the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
 session and gate supervisor, `audit_model` for the audit; a class without one gets no such call).
 The gateway never reads the files, only the version in force in
-Postgres. `day_eur: 0` or `month_eur: 0` stops all spend. Because the decoder is strict,
+Postgres. `day_eur: 0` or `month_eur: 0` stops all spend. A project's
+file may cap its tasks together per UTC calendar month with
+`budget: {month_eur: N}`, 0 to the policy's `month_eur` (0 stops the
+project's spend); without it the project has no cap of its own. A call
+the project's month cannot fit is refused `refused_project_cap`, naming
+`projects/<name>.yaml`, and a session that pushed nothing after such a
+refusal (or a `refused_month_cap`) waits on a human, who raises the cap
+by a commit and answers. Because the decoder is strict,
 a new key lands in infra first and the factoryd that reads it rolls
 right after: the running factoryd refuses the commit, keeps its version
 and files the issue, and the new one loads the head at boot.
@@ -831,8 +838,9 @@ agent's task running; factoryd's running or in review, checked with the
 hold), the alias (an agent's must be in its classes' `models`, factoryd's
 must be the class's alias for the purpose; else 403 `refused_capability`),
 the task headroom (else 402 `refused_budget`), the day headroom (else
-402 `refused_day_cap`) and the month headroom (else 402
-`refused_month_cap`). `review-frontier` and `supervisor` are not in
+402 `refused_day_cap`), the month headroom (else 402
+`refused_month_cap`) and the project's month headroom (else 402
+`refused_project_cap`). `review-frontier` and `supervisor` are not in
 `coder`'s `models`: the agent cannot call them.
 
 Intake gives every agent task the capability class `coder`
@@ -854,7 +862,9 @@ token covers at least one byte). Under one Postgres advisory lock, in one
 transaction, the headroom left after spend and every outstanding hold is
 computed (task: budget minus spent; day: `day_eur` minus today's ledger
 total; month: `month_eur` minus the ledger total since the 1st, UTC;
-standing lines count for neither), the output limit (`max_tokens` or `max_completion_tokens`) is
+project: its file's `budget.month_eur` minus the month's ledger rows of
+the tasks of its repository and their outstanding holds; standing lines
+count for none), the output limit (`max_tokens` or `max_completion_tokens`) is
 clamped to what that pays for, and a `holds` row takes the worst case.
 Fewer than 1024 output tokens (a floor any model needs room to fill,
 reasoning or answer) is refused unless the caller asked for fewer. After the
@@ -1022,7 +1032,7 @@ any other status with `refused_task_status` in its own transaction. Prices not i
 response live in the policy's `prices`. A refusal (`refused_capability`,
 `refused_task_status`, `refused_arguments`, `refused_price`,
 `refused_tool_requests`, `refused_tool_eur`, `refused_budget`,
-`refused_day_cap`, `refused_month_cap`) comes back as an MCP tool error that says the policy
+`refused_day_cap`, `refused_month_cap`, `refused_project_cap`) comes back as an MCP tool error that says the policy
 refused and the tool did not run; a provider failure (`error_tool`) says
 the tool failed. Every call has an audit row with the decision, the tool
 (`audit.tool`), the policy version and, when admitted, the hold.

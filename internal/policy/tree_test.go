@@ -449,7 +449,7 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if got := pol.Properties["limits"].Properties["agent_time"]; got.Type != "string" || got.Pattern == "" {
 		t.Errorf("agent_time = type %q pattern %q, want a duration string", got.Type, got.Pattern)
 	}
-	for key, bound := range map[string]string{"quota": "project_default.quota", "envelope": "envelope_default", "standing": "project_default.standing"} {
+	for key, bound := range map[string]string{"quota": "project_default.quota", "envelope": "envelope_default", "standing": "project_default.standing", "budget": "budget.month_eur"} {
 		if d := project.Properties[key].Description; !strings.Contains(d, "Stricter wins: bounded by policy.yaml's "+bound) {
 			t.Errorf("project %s description = %q, want its bound marked", key, d)
 		}

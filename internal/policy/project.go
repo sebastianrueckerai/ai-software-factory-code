@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -105,6 +106,17 @@ func (t Tree) ProjectOf(repository string) (string, ProjectConfig, bool) {
 		}
 	}
 	return "", ProjectConfig{}, false
+}
+
+// ProjectCap is the name of repository's project and its month cap, its
+// file's budget.month_eur: +Inf when the file sets none or no file names
+// repository.
+func (t Tree) ProjectCap(repository string) (string, float64) {
+	name, p, _ := t.ProjectOf(repository)
+	if p.Budget == nil {
+		return name, math.Inf(1)
+	}
+	return name, p.Budget.MonthEUR
 }
 
 // EnvelopeOf is the envelope of repository's project, the default one for
@@ -217,6 +229,17 @@ type ProjectConfig struct {
 	// specific wins, a project's own file over the process, the process
 	// over the class.
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
+	// Budget caps the spend of the project's tasks together; absent: the
+	// project has no cap of its own. Stricter wins: bounded by policy.yaml's
+	// budget.month_eur; a looser file is rejected.
+	Budget *ProjectBudget `yaml:"budget,omitempty" json:"budget,omitempty"`
+}
+
+// ProjectBudget caps a project's spend in EUR.
+type ProjectBudget struct {
+	// MonthEUR caps the project's tasks together per UTC calendar month;
+	// 0 stops the project's spend.
+	MonthEUR float64 `yaml:"month_eur" json:"month_eur"`
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
@@ -380,6 +403,9 @@ func (p ProjectConfig) Validate(name string) error {
 			bad("%v", err)
 		}
 	}
+	if p.Budget != nil && p.Budget.MonthEUR < 0 {
+		bad("budget.month_eur must not be negative (0 stops the project's spend)")
+	}
 	switch p.Objects {
 	case ObjectsFactory:
 		if strings.HasPrefix(name, "factory-") || name == "flux-system" || name == "sf" {
@@ -421,8 +447,8 @@ func (p ProjectConfig) Validate(name string) error {
 }
 
 // checkBounds: a project file may only tighten what policy.yaml bounds
-// (stricter wins): each quota, envelope and standing value at most the
-// policy's, each server type one the policy lists.
+// (stricter wins): each quota, envelope, standing and budget value at most
+// the policy's, each server type one the policy lists.
 func (d Document) checkBounds(name string, p ProjectConfig) error {
 	var errs []error
 	looser := func(field string, v, bound any, policyField string) {
@@ -461,6 +487,9 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 		number("standing.monthly_eur", s.MonthlyEUR, b.MonthlyEUR, "project_default.standing.monthly_eur")
 		types("standing.server_types", s.ServerTypes, b.ServerTypes, "project_default.standing.server_types")
 		number("standing.max_count", float64(s.MaxCount), float64(b.MaxCount), "project_default.standing.max_count")
+	}
+	if b := p.Budget; b != nil {
+		number("budget.month_eur", b.MonthEUR, d.Budget.MonthEUR, "budget.month_eur")
 	}
 	return errors.Join(errs...)
 }

@@ -212,13 +212,13 @@ func TestFitTool(t *testing.T) {
 		requests int
 		want     string
 	}{
-		"fits":           {Free{Task: 1, Day: 1, Month: 1}, 0.07, 2, ""},
-		"requests used":  {Free{Task: 1, Day: 1, Month: 1}, 0, 3, "refused_tool_requests"},
-		"euros used":     {Free{Task: 1, Day: 1, Month: 1}, 0.071, 2, "refused_tool_eur"},
-		"task headroom":  {Free{Task: 0.029, Day: 1, Month: 1}, 0, 0, "refused_budget"},
-		"day headroom":   {Free{Task: 1, Day: 0.029, Month: 1}, 0, 0, "refused_day_cap"},
-		"month headroom": {Free{Task: 1, Day: 1, Month: 0.029}, 0, 0, "refused_month_cap"},
-		"exact headroom": {Free{Task: 0.03, Day: 0.03, Month: 0.03}, 0, 0, ""},
+		"fits":           {Free{Task: 1, Day: 1, Month: 1, Project: inf}, 0.07, 2, ""},
+		"requests used":  {Free{Task: 1, Day: 1, Month: 1, Project: inf}, 0, 3, "refused_tool_requests"},
+		"euros used":     {Free{Task: 1, Day: 1, Month: 1, Project: inf}, 0.071, 2, "refused_tool_eur"},
+		"task headroom":  {Free{Task: 0.029, Day: 1, Month: 1, Project: inf}, 0, 0, "refused_budget"},
+		"day headroom":   {Free{Task: 1, Day: 0.029, Month: 1, Project: inf}, 0, 0, "refused_day_cap"},
+		"month headroom": {Free{Task: 1, Day: 1, Month: 0.029, Project: inf}, 0, 0, "refused_month_cap"},
+		"exact headroom": {Free{Task: 0.03, Day: 0.03, Month: 0.03, Project: inf}, 0, 0, ""},
 	} {
 		h, err := FitTool(tc.free, tc.requests, tc.usedEUR, r)
 		switch {
@@ -232,48 +232,76 @@ func TestFitTool(t *testing.T) {
 
 func TestFitResource(t *testing.T) {
 	r := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384}
-	h, err := FitResource(Free{Task: 0.05, Day: 1, Month: 1}, r)
+	h, err := FitResource(Free{Task: 0.05, Day: 1, Month: 1, Project: inf}, r)
 	if err != nil || h.EUR != 0.0384 || h.Kind != KindResource {
 		t.Fatalf("fit = %+v, %v", h, err)
 	}
 	var ref *Refusal
-	if _, err := FitResource(Free{Task: 0.03, Day: 1, Month: 1}, r); !errors.As(err, &ref) || ref.Decision != "refused_budget" {
+	if _, err := FitResource(Free{Task: 0.03, Day: 1, Month: 1, Project: inf}, r); !errors.As(err, &ref) || ref.Decision != "refused_budget" {
 		t.Fatalf("task headroom 0.03 err = %v, want refused_budget", err)
 	}
-	if _, err := FitResource(Free{Task: 1, Day: 0.01, Month: 1}, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
+	if _, err := FitResource(Free{Task: 1, Day: 0.01, Month: 1, Project: inf}, r); !errors.As(err, &ref) || ref.Decision != "refused_day_cap" {
 		t.Fatalf("day headroom 0.01 err = %v, want refused_day_cap", err)
 	}
 	// a reservation the month cannot fit leaves euros for smaller calls
-	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.0383}, r); !errors.As(err, &ref) || ref.Decision != "refused_month_cap" ||
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.0383, Project: inf}, r); !errors.As(err, &ref) || ref.Decision != "refused_month_cap" ||
 		!strings.Contains(ref.Reason, "the reservation exceeds the month's remaining headroom (budget.month_eur)") || strings.Contains(ref.Reason, "is spent") {
 		t.Fatalf("month headroom 0.0383 err = %v, want refused_month_cap: the reservation exceeds the month's remaining headroom", err)
 	}
 	tool := HoldRequest{Kind: KindTool, Ref: ToolWebScrape, EUR: 0.03}
-	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.029}, tool); !errors.As(err, &ref) ||
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0.029, Project: inf}, tool); !errors.As(err, &ref) ||
 		!strings.Contains(ref.Reason, "the tool call's worst case exceeds the month's remaining headroom (budget.month_eur)") {
 		t.Fatalf("tool call past the month = %v, want its own reason", err)
 	}
-	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0.001, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
 		!strings.Contains(ref.Reason, "the month cap budget.month_eur in policy.yaml is spent") {
 		t.Fatalf("model call past the month = %v, want the cap spent", err)
 	}
+	// the project's cap names the project's file; its figure shows only
+	// under a cap
+	project := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384, Project: "linkshort"}
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 1, Project: 0.0383}, project); !errors.As(err, &ref) || ref.Decision != RefusedProjectCap ||
+		ref.Reason != "server: worst case 0.038400 EUR exceeds the free headroom 0.038300 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.038300); "+
+			"the reservation exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit" {
+		t.Fatalf("reservation past the project's month = %v", err)
+	}
+	project.Kind, project.Ref = KindTool, ToolWebScrape
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 1, Project: 0.0383}, project); !errors.As(err, &ref) || ref.Decision != RefusedProjectCap ||
+		!strings.HasSuffix(ref.Reason, "; the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit") {
+		t.Fatalf("tool call past the project's month = %v", err)
+	}
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, Project: "linkshort"}); !errors.As(err, &ref) ||
+		ref.Reason != "free headroom 0.001000 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.001000) fits 250 output tokens after at most 0 input tokens, below the minimum call of 1024; "+
+			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit" {
+		t.Fatalf("model call past the project's month = %v", err)
+	}
+	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
+		ref.Reason != "free headroom 0.001000 EUR (task 0.001000, day 1.000000, month 1.000000) fits 250 output tokens after at most 0 input tokens, below the minimum call of 1024" {
+		t.Fatalf("model call past the task's budget without a project cap = %v", err)
+	}
 }
+
+var inf = math.Inf(1)
 
 func TestHeadroomBound(t *testing.T) {
 	for _, tc := range []struct {
-		task, day, month float64
-		want             float64
-		bound            string
+		task, day, month, project float64
+		want                      float64
+		bound                     string
 	}{
-		{1, 3, 2, 1, "refused_budget"},
-		{5, 1, 2, 1, "refused_day_cap"},
-		{5, 3, 2, 2, "refused_month_cap"},
-		{1, 1, 1, 1, "refused_budget"},
-		{2, 1, 1, 1, "refused_day_cap"},
-		{2, 2, 1, 1, "refused_month_cap"},
+		{1, 3, 2, inf, 1, "refused_budget"},
+		{5, 1, 2, inf, 1, "refused_day_cap"},
+		{5, 3, 2, inf, 2, "refused_month_cap"},
+		{1, 1, 1, inf, 1, "refused_budget"},
+		{2, 1, 1, inf, 1, "refused_day_cap"},
+		{2, 2, 1, inf, 1, "refused_month_cap"},
+		{2, 20, 50, 0.1, 0.1, "refused_project_cap"},
+		{2, 20, 0.1, 0.1, 0.1, "refused_month_cap"},
+		{0.1, 20, 50, 0.1, 0.1, "refused_budget"},
+		{2, 20, 50, 0, 0, "refused_project_cap"},
 	} {
-		if got, bound := HeadroomBound(tc.task, tc.day, tc.month); got != tc.want || bound != tc.bound {
-			t.Errorf("HeadroomBound(%g, %g, %g) = (%g, %s), want (%g, %s)", tc.task, tc.day, tc.month, got, bound, tc.want, tc.bound)
+		if got, bound := HeadroomBound(tc.task, tc.day, tc.month, tc.project); got != tc.want || bound != tc.bound {
+			t.Errorf("HeadroomBound(%g, %g, %g, %g) = (%g, %s), want (%g, %s)", tc.task, tc.day, tc.month, tc.project, got, bound, tc.want, tc.bound)
 		}
 	}
 }
@@ -284,7 +312,7 @@ func TestDayCapZeroStopsSpend(t *testing.T) {
 		t.Fatalf("day_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
 	}
 	var r *Refusal
-	if _, err := Fit(Free{Task: 1, Day: 0, Month: 1}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
+	if _, err := Fit(Free{Task: 1, Day: 0, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
 		t.Fatalf("Fit under a day cap of 0 = %v, want refused_day_cap", err)
 	}
 }
@@ -295,10 +323,10 @@ func TestMonthCapZeroStopsSpend(t *testing.T) {
 		t.Fatalf("month_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
 	}
 	var r *Refusal
-	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, WantOut: 1}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, WantOut: 1}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
 		t.Fatalf("Fit under a month cap of 0 = %v, want refused_month_cap", err)
 	}
-	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0}, HoldRequest{EUR: 0.0001}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
+	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0, Project: inf}, HoldRequest{EUR: 0.0001}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
 		t.Fatalf("FitResource under a month cap of 0 = %v, want refused_month_cap", err)
 	}
 }
@@ -330,7 +358,7 @@ func TestFit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := p
 			pr.MaxOutput = tc.maxOutput
-			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5)}, HoldRequest{InTokens: 1000, Price: pr, WantOut: tc.want})
+			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{InTokens: 1000, Price: pr, WantOut: tc.want})
 			if tc.refused != "" {
 				var r *Refusal
 				if !errors.As(err, &r) || r.Decision != tc.refused {
