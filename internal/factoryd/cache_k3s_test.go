@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -295,4 +296,85 @@ func TestCacheRightsOnAnAPIServer(t *testing.T) {
 	// the directory outlives its volume: the next claim of the name reads it
 	c.taskNamespace(t, nsNext, claim)
 	c.notePod(t, nsNext, "reader", claim, "test \"$(cat /cache/note)\" = "+run)
+}
+
+// limitsPodSpec is an otherwise-compliant task pod (gVisor, no automounted
+// token, non-root): the resources on its container, and on its init
+// container when withInit, are the only thing each case varies.
+func limitsPodSpec(mainLimits, initLimits map[string]any, withInit bool) map[string]any {
+	restricted := map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []any{"ALL"}}}
+	main := map[string]any{"name": "main", "image": "busybox:1.37", "command": []any{"sh", "-c", "true"}, "securityContext": restricted}
+	if mainLimits != nil {
+		main["resources"] = map[string]any{"limits": mainLimits}
+	}
+	spec := map[string]any{
+		"restartPolicy":                "Never",
+		"runtimeClassName":             "gvisor",
+		"automountServiceAccountToken": false,
+		"securityContext": map[string]any{
+			"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000,
+			"seccompProfile": map[string]any{"type": "RuntimeDefault"},
+		},
+		"containers": []any{main},
+	}
+	if withInit {
+		ic := map[string]any{"name": "init", "image": "busybox:1.37", "command": []any{"sh", "-c", "true"}, "securityContext": restricted}
+		if initLimits != nil {
+			ic["resources"] = map[string]any{"limits": initLimits}
+		}
+		spec["initContainers"] = []any{ic}
+	}
+	return map[string]any{"spec": spec}
+}
+
+// TestTaskPodWithoutLimitsRefused: factoryd-task-namespaces refuses a task
+// pod whose container or init container carries no cpu and memory limits,
+// even in a namespace with no LimitRange to default them (design 5): the
+// LimitRange admission sets missing limits before this policy runs, so a
+// namespace that has one would mask the rule.
+func TestTaskPodWithoutLimitsRefused(t *testing.T) {
+	c := newK3sCluster(t)
+	run := testRun()
+	ns := "factory-agents-t131-" + run
+	c.removeVolumes(t, ns)
+	c.taskNamespace(t, ns, "cache-t131-"+run)
+	c.asFactoryd()
+	const refusedMsg = "every container and initContainer of a task pod must set cpu and memory limits"
+	refusedWith := func(name string, err error) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), refusedMsg) {
+			t.Errorf("%s: %v, want refused with %q", name, err, refusedMsg)
+		}
+	}
+
+	cases := []struct {
+		name                   string
+		mainLimits, initLimits map[string]any
+		withInit               bool
+		refused                bool
+	}{
+		{"no limits at all", nil, nil, false, true},
+		{"limits on the container, none on its init container",
+			map[string]any{"cpu": "500m", "memory": "512Mi"}, nil, true, true},
+		{"cpu only, on both", map[string]any{"cpu": "500m"}, map[string]any{"cpu": "500m"}, true, true},
+		{"cpu and memory on both",
+			map[string]any{"cpu": "500m", "memory": "512Mi"}, map[string]any{"cpu": "500m", "memory": "512Mi"}, true, false},
+	}
+	for i, tc := range cases {
+		name := "limits-" + strconv.Itoa(i) + "-" + run
+		err := c.CreatePod(context.Background(), ns, name, limitsPodSpec(tc.mainLimits, tc.initLimits, tc.withInit))
+		if tc.refused {
+			refusedWith(tc.name, err)
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v, want admitted", tc.name, err)
+			continue
+		}
+		c.asAdmin()
+		if err := c.DeletePod(context.Background(), ns, name); err != nil {
+			t.Errorf("%s: cleanup: %v", tc.name, err)
+		}
+		c.asFactoryd()
+	}
 }

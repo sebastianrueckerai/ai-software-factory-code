@@ -391,6 +391,17 @@ spec:
           : (has(object.spec.securityContext) && has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 0))
       )
     message: every container, initContainer and ephemeralContainer must have an effective runAsNonRoot of true and an effective runAsUser other than 0 (container overrides pod)
+  # A namespace without a LimitRange sets no default: without this rule a
+  # pod that omits limits would run unbounded. Every pod factoryd creates
+  # (runner.go, ci.go, gates.go) already sets both on every container and
+  # initContainer, so this is the stop for a namespace that has none yet.
+  - expression: >-
+      variables.kind != 'Pod' || request.operation == 'DELETE' ||
+      (object.spec.containers +
+       (has(object.spec.initContainers) ? object.spec.initContainers : []))
+      .all(c, has(c.resources) && has(c.resources.limits) &&
+        has(c.resources.limits.cpu) && has(c.resources.limits.memory))
+    message: every container and initContainer of a task pod must set cpu and memory limits
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
