@@ -312,9 +312,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			log.Printf("task %s: revoke session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
-	// least privilege (ruling 97): read on the task's repository to clone
-	// the base, write on the bot's fork to push the branch, nothing on sf
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	// least privilege (ruling 97): read on the task's repository and the
+	// bot's fork for the clone init container (a resumed branch's head is
+	// on the fork), write on the fork to push the branch, nothing else on sf
+	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
 	if err != nil {
 		return SessionResult{}, err
 	}

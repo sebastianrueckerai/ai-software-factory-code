@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -54,6 +55,8 @@ func run(log func(string, ...any)) int {
 		return 1
 	}
 	switch os.Getenv("MODE") {
+	case "clone":
+		return runClone(log, workspace)
 	case "repro-fetch":
 		return runReproFetch(log, workspace)
 	case "repro":
@@ -101,12 +104,12 @@ func run(log func(string, ...any)) int {
 	}
 
 	repoDir := filepath.Join(workspace, "repo")
-	if err := cloneBase(env, repoDir); err != nil {
+	if err := cloned(workspace); err != nil {
 		log("clone: %v", err)
 		endBrief(err)
 		return 1
 	}
-	base, err := prepareRepo(repoDir, env)
+	base, mainHead, err := prepareRepo(repoDir, env)
 	if err != nil {
 		log("prepare repo: %v", err)
 		endBrief(err)
@@ -199,7 +202,7 @@ func run(log func(string, ...any)) int {
 	var pushErr error
 	res = deliver(res, stopped, func() (string, error) {
 		endPush := tel.phase("push")
-		commit, pushErr = commitAndPush(repoDir, env, base, killOthers)
+		commit, pushErr = commitAndPush(repoDir, env, base, mainHead, killOthers)
 		endPush(pushErr)
 		return commit, pushErr
 	}, env.branch, emit)
@@ -328,8 +331,9 @@ const (
 )
 
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
-// the task's repository (the base); pushURL/pushToken write the task branch
-// to the bot's fork, the only place a worker can write (ruling 97).
+// the task's repository and the bot's fork, in the clone init container
+// only; pushURL/pushToken write the task branch to the fork, the only place
+// a worker can write (ruling 97).
 type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
 	repoURL, repoToken, pushURL, pushToken                    string
@@ -358,13 +362,12 @@ func loadEnv() (workerEnv, error) {
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
 	e.branch = str("BRANCH")
-	e.repoToken, e.pushToken = str("REPO_TOKEN"), str("PUSH_TOKEN")
+	e.pushToken = str("PUSH_TOKEN")
 	messageHash := str("MESSAGE_TOKEN_SHA256")
 	// opencode inherits this process's environment
-	os.Unsetenv("REPO_TOKEN")
 	os.Unsetenv("PUSH_TOKEN")
 	os.Unsetenv("MESSAGE_TOKEN_SHA256")
-	e.repoURL, e.pushURL = str("REPO_URL"), str("PUSH_URL")
+	e.pushURL = str("PUSH_URL")
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
@@ -372,7 +375,7 @@ func loadEnv() (workerEnv, error) {
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
 	required := map[string]string{
-		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository, "REPO_URL": e.repoURL, "REPO_TOKEN": e.repoToken,
+		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,
 		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,
 	}
 	if str("MODE") == "report" {
@@ -432,9 +435,9 @@ func (e workerEnv) git(dir string, args ...string) (string, error) {
 }
 
 // gitAuth runs git with token as an http.extraHeader in the environment
-// (never args, never a config file). Only the initial clone and fetch,
-// before the agent exists, and the final push from the worker's own repo,
-// after every agent process is dead, use it.
+// (never args, never a config file). Only the clone init container, where
+// no agent runs, and the final push from the worker's own repo, after
+// every agent process is dead, use it.
 func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 	_, err := e.runGit(dir, []string{
 		"GIT_CONFIG_COUNT=1",
@@ -444,9 +447,32 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 	return err
 }
 
+// runClone is the clone init container's mode, into ws: it alone holds
+// the read token, on the task's repository and the bot's fork.
+func runClone(log func(string, ...any), ws string) int {
+	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
+	if err == nil {
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL")}
+		err = cloneBase(e, filepath.Join(ws, "repo"))
+	}
+	return recordFetch(log, ws, err)
+}
+
+// cloned is the clone init container's failure, nil when it cloned.
+func cloned(ws string) error {
+	failed, err := os.ReadFile(fetchFailed(ws))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.New(string(failed))
+}
+
 // cloneBase clones the task's repository at its base and, when the session
 // resumes a branch head that only the fork holds, fetches that branch from
-// the fork. No agent process exists yet; the headers stay out of .git/config.
+// the fork, both with the read token. The headers stay out of .git/config.
 func cloneBase(e workerEnv, repoDir string) error {
 	if err := e.gitAuth(e.repoToken, "", "clone", "-q", e.repoURL, repoDir); err != nil {
 		return err
@@ -457,7 +483,7 @@ func cloneBase(e workerEnv, repoDir string) error {
 	if _, err := e.git(repoDir, "cat-file", "-e", e.repoSHA+"^{commit}"); err == nil {
 		return nil
 	}
-	return e.gitAuth(e.pushToken, repoDir, "fetch", "-q", e.pushURL, "refs/heads/"+e.branch)
+	return e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.pushURL, "refs/heads/"+e.branch)
 }
 
 func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {
@@ -501,12 +527,16 @@ func (b *capBuffer) Write(p []byte) (int, error) {
 }
 
 // prepareRepo puts the clone on the task branch at the task SHA and returns
-// that base commit. The commit identity goes into the repo config so the
-// agent's own commits carry it too.
-func prepareRepo(repoDir string, e workerEnv) (string, error) {
+// that base commit and main's head at the clone (origin/HEAD), recorded
+// before the agent can move it. The commit identity goes into the repo
+// config so the agent's own commits carry it too.
+func prepareRepo(repoDir string, e workerEnv) (base, mainHead string, err error) {
 	// the adapter writes brief.json into the work tree; keep it out of the agent's own commits
 	if err := os.WriteFile(filepath.Join(repoDir, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
-		return "", err
+		return "", "", err
+	}
+	if mainHead, err = e.git(repoDir, "rev-parse", "--verify", "refs/remotes/origin/HEAD^{commit}"); err != nil {
+		return "", "", err
 	}
 	steps := [][]string{{"config", "user.name", botName}, {"config", "user.email", botEmail}}
 	if e.repoSHA != "" {
@@ -515,10 +545,11 @@ func prepareRepo(repoDir string, e workerEnv) (string, error) {
 	steps = append(steps, []string{"checkout", "-q", "-B", e.branch})
 	for _, args := range steps {
 		if _, err := e.git(repoDir, args...); err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
-	return e.git(repoDir, "rev-parse", "HEAD")
+	base, err = e.git(repoDir, "rev-parse", "HEAD")
+	return base, mainHead, err
 }
 
 const (
@@ -528,13 +559,14 @@ const (
 
 // commitAndPush never runs a token-bearing git in the agent's repo, whose
 // config, hooks and work tree the agent controls. A fresh worker repo
-// fetches the agent's HEAD, stages the agent's work tree on top under the
-// worker's own config (so no agent filter, hook or fsmonitor runs), commits
-// any leftovers, and pushes to the task URL if the result moved past base.
-// killAgent runs before the fetch of main and the push, so no agent process
-// is alive while a token is in a git process's environment. Returns the
-// pushed commit, empty when there was nothing to push.
-func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() error) (string, error) {
+// fetches the agent's HEAD, the start and mainHead (main at the clone) by
+// their ids, stages the agent's work tree on top under the worker's own
+// config (so no agent filter, hook or fsmonitor runs), commits any
+// leftovers, and pushes to the task URL if the result moved past base.
+// killAgent runs before the push, so no agent process is alive while a
+// token is in a git process's environment. Returns the pushed commit,
+// empty when there was nothing to push.
+func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAgent func() error) (string, error) {
 	own, err := os.MkdirTemp(filepath.Dir(agentRepo), ".push-")
 	if err != nil {
 		return "", err
@@ -547,9 +579,10 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if err := os.WriteFile(filepath.Join(own, ".git", "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
 		return "", err
 	}
-	// the start commit too: an agent that reset its branch may no longer
-	// have it in its HEAD's history
-	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent", "+"+base+":refs/heads/start"); err != nil {
+	// the start commit and main too: an agent that reset its branch may no
+	// longer have them in its HEAD's history
+	if _, err := e.git(own, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/agent", "+"+base+":refs/heads/start",
+		"+"+mainHead+":refs/heads/main"); err != nil {
 		return "", err
 	}
 	tree, err := stageWorkTree(own, agentRepo, e)
@@ -571,9 +604,9 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 		return "", fmt.Errorf("stop agent processes: %w", err)
 	}
 	// The fetch ran upload-pack under the agent's repo config, so the worker
-	// repo's config is not trusted either: the token-bearing fetch of main,
-	// the commit and the push run from a bare repo made after every agent
-	// process is dead, borrowing the worker repo's objects only.
+	// repo's config is not trusted either: the commit and the token-bearing
+	// push run from a bare repo made after every agent process is dead,
+	// borrowing the worker repo's objects only.
 	send, err := os.MkdirTemp(filepath.Dir(agentRepo), ".send-")
 	if err != nil {
 		return "", err
@@ -582,15 +615,10 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 	if _, err := e.git("", "init", "-q", "--bare", send); err != nil {
 		return "", err
 	}
-	// main first: a fetch with the alternate in place reads the worker
-	// repo's refs under that repo's config
-	if err := e.gitAuth(e.repoToken, "", "--git-dir="+send, "fetch", "-q", "--no-tags", e.repoURL, "+HEAD:refs/heads/main"); err != nil {
-		return "", err
-	}
 	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
-	parents, guard := sessionParents(e, send, base, agent)
+	parents, guard := sessionParents(e, send, base, mainHead, agent)
 	if guardTree, err := e.git(send, "rev-parse", guard+"^{tree}"); err != nil || tree == guardTree {
 		return "", err
 	}
@@ -612,16 +640,17 @@ func commitAndPush(agentRepo string, e workerEnv, base string, killAgent func() 
 // sessionParents answers the pushed commit's parents and the commit whose
 // workflow directories it must keep. The start commit is the parent, unless
 // the agent pulled main commits newer than the one the start is on (the
-// merge base of its HEAD and the fetched main descends from the start's):
-// then that newest main commit is the parent, next to the start when the
-// start is a resumed session's pushed work in progress, so main's changes
-// stay main's in the pull request's diff.
-func sessionParents(e workerEnv, send, base, agent string) ([]string, string) {
-	start, err := e.git(send, "merge-base", base, "refs/heads/main")
+// merge base of its HEAD and mainHead descends from the start's): then
+// that newest main commit is the parent, next to the start when the start
+// is a resumed session's pushed work in progress, so main's changes stay
+// main's in the pull request's diff. The agent holds no token, so the main
+// it can pull is the clone's.
+func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, string) {
+	start, err := e.git(send, "merge-base", base, mainHead)
 	if err != nil {
 		return []string{"-p", base}, base
 	}
-	tip, err := e.git(send, "merge-base", agent, "refs/heads/main")
+	tip, err := e.git(send, "merge-base", agent, mainHead)
 	if err != nil || tip == start {
 		return []string{"-p", base}, base
 	}

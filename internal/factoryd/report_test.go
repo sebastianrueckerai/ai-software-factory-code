@@ -55,6 +55,11 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "do not change code") || env["PUSH_URL"] != "" || env["PUSH_TOKEN"] != "" {
 		t.Fatalf("pod env = %v", env)
 	}
+	// the clone init container reads the repository only: a report has no fork
+	clone := containerEnv(kube.podAt(0).spec["spec"].(map[string]any)["initContainers"].([]any)[0].(map[string]any))
+	if clone["MODE"] != "clone" || clone["REPO_TOKEN"] != "secret:task-git/REPO_TOKEN" || clone["REPO_SHA"] != "abc123" || clone["PUSH_URL"] != "" {
+		t.Fatalf("clone env = %v", clone)
+	}
 	if sec := kube.secrets["factory-agents-t1/task-git"]; sec["PUSH_TOKEN"] != "" {
 		t.Fatalf("task-git secret carries a push token: %v", sec)
 	}

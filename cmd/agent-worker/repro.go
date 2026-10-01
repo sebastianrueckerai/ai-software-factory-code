@@ -61,16 +61,14 @@ func loadReproEnv() (reproEnv, error) {
 	return reproEnv{command: v["REPRO_COMMAND"], timeout: time.Duration(secs) * time.Second}, nil
 }
 
-// fetchFailed is where the fetch leaves its failure for the repro mode to
-// report: the init container always exits 0, so the report is one path.
+// fetchFailed is where an init container's fetch (clone, repro-fetch)
+// leaves its failure for the worker container to report: the init
+// container always exits 0, so the report is one path.
 func fetchFailed(ws string) string { return filepath.Join(ws, "fetch-failed") }
 
-// runReproFetch is the init container's repro-fetch mode, into ws.
-func runReproFetch(log func(string, ...any), ws string) int {
-	e, err := loadFetchEnv()
-	if err == nil {
-		err = fetchHead(e, filepath.Join(ws, "repo"))
-	}
+// recordFetch records the fetch's failure, if any, and is the init
+// container's exit code.
+func recordFetch(log func(string, ...any), ws string, err error) int {
 	if err == nil {
 		return 0
 	}
@@ -79,6 +77,15 @@ func runReproFetch(log func(string, ...any), ws string) int {
 		return 1
 	}
 	return 0
+}
+
+// runReproFetch is the init container's repro-fetch mode, into ws.
+func runReproFetch(log func(string, ...any), ws string) int {
+	e, err := loadFetchEnv()
+	if err == nil {
+		err = fetchHead(e, filepath.Join(ws, "repo"))
+	}
+	return recordFetch(log, ws, err)
 }
 
 // runRepro is the worker's repro mode: it reports one repro envelope on

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -788,9 +789,9 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 	return fmt.Errorf("pod %s still pending after %s", podName, timeout)
 }
 
-// setupNamespace builds the session's sandbox: base is the read token on
-// the task's repository (the clone), push the write token on the bot's fork
-// (the branch push).
+// setupNamespace builds the session's sandbox: base is the read token of
+// the pod's clone or fetch init container, push the write token on the
+// bot's fork (the branch push).
 func (r *Runner) setupNamespace(ctx context.Context, t Task, base, push ForgejoToken) (string, error) {
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
@@ -978,9 +979,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "SESSION_ID", "value": s.id},
 		{"name": "OBJECTIVE", "value": t.Objective},
 		{"name": "REPOSITORY", "value": t.Repository},
-		{"name": "REPO_URL", "value": r.repoURL(s.repo)},
-		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
-			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": r.branch(t)},
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
@@ -997,10 +995,20 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
 	}
+	cloneEnv := []map[string]any{
+		{"name": "MODE", "value": "clone"},
+		{"name": "REPO_URL", "value": r.repoURL(s.repo)},
+		{"name": "REPO_SHA", "value": s.startRef},
+		{"name": "BRANCH", "value": r.branch(t)},
+		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
+			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
+	}
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": s.report})
 	} else {
-		env = append(env, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
+		fork := r.repoURL(r.forgejo.Fork(s.repo))
+		cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": fork})
+		env = append(env, map[string]any{"name": "PUSH_URL", "value": fork},
 			map[string]any{"name": "PUSH_TOKEN", "valueFrom": map[string]any{
 				"secretKeyRef": map[string]any{"name": "task-git", "key": "PUSH_TOKEN"}}})
 	}
@@ -1013,7 +1021,16 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}
-	return r.sandboxPodSpec(t, s.cache, env, true)
+	pod := r.sandboxPodSpec(t, s.cache, env, true)
+	// the clone init container alone holds the read token: the agent's
+	// container gets the clone in the workspace, and no token to read with
+	spec := pod["spec"].(map[string]any)
+	clone := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
+	clone["name"] = "clone"
+	clone["env"] = cloneEnv
+	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}}
+	spec["initContainers"] = []any{clone}
+	return pod
 }
 
 // sandboxPodSpec is a gVisor worker pod in the task namespace; only an

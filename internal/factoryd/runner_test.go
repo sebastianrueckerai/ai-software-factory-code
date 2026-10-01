@@ -687,8 +687,8 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c0ffee" || !strings.HasPrefix(res.SessionID, "s-") {
 		t.Fatalf("result = %+v, want pushed c0ffee", res)
 	}
-	// read on the base repository to clone, write on the bot's fork to push: nothing else
-	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code") ||
+	// read on the base repository and the fork to clone, write on the fork to push: nothing else
+	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code,factory-agent/ai-software-factory-code") ||
 		!slices.Contains(hub.calls, "mint task-t1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
 		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
 	}
@@ -699,10 +699,9 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
 		t.Fatalf("pod env = %v, want the base SHA and the cheap model", env)
 	}
-	if env["REPO_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/sf/ai-software-factory-code.git" ||
-		env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" ||
-		env["REPO_TOKEN"] != "secret:task-git/REPO_TOKEN" || env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
-		t.Fatalf("pod env = %v, want the clone from sf and the push to the fork, each with its own token", env)
+	if env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" ||
+		env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
+		t.Fatalf("pod env = %v, want the push to the fork with the push token", env)
 	}
 	if _, ok := env["GIT_TOKEN"]; ok {
 		t.Fatal("GIT_TOKEN is still set: one way only")
@@ -837,10 +836,74 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	}
 }
 
+// The clone runs in an init container, the read token's only holder
+// (item 40): read on the task's repository and the bot's fork, where a
+// resumed session's branch head is. The worker container, where the agent
+// runs, gets neither the read token nor the repository URL to use it on;
+// it keeps the push token for the push.
+func TestSessionPodClonesInAnInitContainer(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "pushed branch factory/t1 at c0ffee")); err != nil {
+		t.Fatal(err)
+	}
+	var reads []string
+	for _, call := range hub.calls {
+		if strings.Contains(call, " read:repository ") {
+			reads = append(reads, call)
+		}
+	}
+	if !slices.Equal(reads, []string{"mint task-t1-base read:repository sf/x,factory-agent/x"}) {
+		t.Fatalf("read mints = %v, want one read token on sf/x and factory-agent/x", reads)
+	}
+	spec := kube.podAt(0).spec["spec"].(map[string]any)
+	inits, _ := spec["initContainers"].([]any)
+	if len(inits) != 1 || inits[0].(map[string]any)["name"] != "clone" {
+		t.Fatalf("initContainers = %v, want [clone]", inits)
+	}
+	clone, worker := inits[0].(map[string]any), spec["containers"].([]any)[0].(map[string]any)
+	want := map[string]string{
+		"MODE":       "clone",
+		"REPO_URL":   "http://forgejo-http.forgejo.svc.cluster.local:3000/sf/x.git",
+		"PUSH_URL":   "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/x.git",
+		"REPO_SHA":   "abc123",
+		"BRANCH":     "factory/t1",
+		"REPO_TOKEN": "secret:task-git/REPO_TOKEN",
+	}
+	if got := containerEnv(clone); !reflect.DeepEqual(got, want) {
+		t.Fatalf("clone env = %v, want %v", got, want)
+	}
+	for _, key := range []string{"image", "command", "resources", "securityContext"} {
+		if !reflect.DeepEqual(clone[key], worker[key]) {
+			t.Fatalf("clone %s = %v, want the worker's %v", key, clone[key], worker[key])
+		}
+	}
+	// the workspace only: no gateway token, no project cache
+	if mounts := fmt.Sprint(clone["volumeMounts"]); mounts != "[map[mountPath:/workspace name:workspace]]" {
+		t.Fatalf("clone mounts = %s, want the workspace only", mounts)
+	}
+	env := containerEnv(worker)
+	for _, name := range []string{"REPO_TOKEN", "REPO_URL"} {
+		if _, ok := env[name]; ok {
+			t.Fatalf("worker container env has %s: %v", name, env)
+		}
+	}
+	if env["REPO_SHA"] != "abc123" || env["BRANCH"] != "factory/t1" || env["PUSH_TOKEN"] != "secret:task-git/PUSH_TOKEN" {
+		t.Fatalf("worker container env = %v, want the start, the branch and the push token", env)
+	}
+}
+
 // podEnv flattens a pod's worker container env into name → value.
 func podEnv(p *fakePod) map[string]string {
+	return containerEnv(p.spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))
+}
+
+// containerEnv flattens a container's env into name → value, a secret
+// reference into secret:<name>/<key>.
+func containerEnv(container map[string]any) map[string]string {
 	env := map[string]string{}
-	container := p.spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
 	for _, e := range container["env"].([]map[string]any) {
 		if v, ok := e["value"].(string); ok {
 			env[e["name"].(string)] = v
