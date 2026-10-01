@@ -1250,3 +1250,25 @@ func TestCISpawnerTeardownOfAnOldNamespace(t *testing.T) {
 		t.Fatalf("deleted registrations = %v, want the runner removed from the code repository", hub.deleted)
 	}
 }
+
+// Ruling 226 keeps main's jobs off the shared cache, so their GOCACHE, GOPATH
+// and npm cache fill the pod's own tmp emptyDir: a real app's cold checks
+// pass 1 GiB and the kubelet killed the pod mid-download (round 2's exit
+// test, linkshort3 runs 1 to 22). The limit holds a cold checks run.
+func TestCIRunnerTmpHoldsAColdMainChecksRun(t *testing.T) {
+	spawner := newTestCISpawner(t, newFakeKube(), &ciHub{})
+	pod, _ := spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort3", nil, false)["spec"].(map[string]any)
+	vols, _ := pod["volumes"].([]any)
+	for _, v := range vols {
+		m, _ := v.(map[string]any)
+		if m["name"] != "tmp" {
+			continue
+		}
+		ed, _ := m["emptyDir"].(map[string]any)
+		if lim, _ := ed["sizeLimit"].(string); lim != "4Gi" {
+			t.Fatalf("tmp emptyDir sizeLimit = %v, want 4Gi", ed["sizeLimit"])
+		}
+		return
+	}
+	t.Fatal("no tmp emptyDir with a size limit found")
+}

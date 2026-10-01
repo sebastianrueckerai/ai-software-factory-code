@@ -608,7 +608,11 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
-		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+		// main jobs run cold by ruling 226: GOCACHE, GOPATH and npm's
+		// cache live here, and a real app's cold checks pass 1 GiB (the
+		// kubelet then kills the pod mid-download; round 2's exit test,
+		// linkshort3 runs 1 to 22)
+		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 		map[string]any{"name": "registration", "secret": map[string]any{"secretName": ciSecretName}},
 	}
 	volumes = append(volumes, cacheVolumes(cache)...)
