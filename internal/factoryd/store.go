@@ -282,7 +282,8 @@ type Store interface {
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
 	// ReportOf is parent's report task of source.
 	ReportOf(ctx context.Context, parent, source string) (Task, bool, error)
-	// PlanCards are the cards plan filed (source plan).
+	// PlanCards are the cards plan filed (source plan) that hold their
+	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
@@ -447,7 +448,7 @@ func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bo
 }
 
 func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 ORDER BY id`, plan, SourcePlan)
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
 func defaultKind(kind string) string {
