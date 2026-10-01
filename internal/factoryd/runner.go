@@ -427,7 +427,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
 	// follower answers at once, as the session loop may be waiting on a
-	// supervisor call
+	// supervisor call, and re-asks cover a failed answer
 	var pushToken string
 	answer := func(line []byte) {
 		var env struct {

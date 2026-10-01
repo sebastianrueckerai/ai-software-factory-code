@@ -497,10 +497,14 @@ func (e workerEnv) runGit(dir string, env []string, args ...string) (string, err
 // maxGitOutput bounds what one worker git command may print into memory.
 const maxGitOutput = 1 << 20
 
+// gitBin is the image's own git: PATH leads with the agent-writable
+// /cache/go/bin, where a planted git would otherwise take the push's call.
+const gitBin = "/usr/bin/git"
+
 // runGitCtx scrubs the token from failures, because worker stderr reaches
 // the factoryd log.
 func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
+	cmd := exec.CommandContext(ctx, gitBin, append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}

@@ -469,6 +469,7 @@ type forgejoHub struct {
 	branchHead  string // the task branch's head; empty = no branch yet
 	mainHead    string // the task repository's main head
 	comments    []string
+	failWrites  int // write-token mints to answer 502 before succeeding
 }
 
 func (h *forgejoHub) minted() []string {
@@ -490,6 +491,12 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				Repositories []Repo
 			}
 			json.NewDecoder(r.Body).Decode(&body)
+			if slices.Contains(body.Scopes, "write:repository") && h.failWrites > 0 {
+				h.failWrites--
+				h.calls = append(h.calls, fmt.Sprintf("mint %s %s failed", body.Name, strings.Join(body.Scopes, ",")))
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
 			h.nextID++
 			h.tokens = append(h.tokens, TokenRef{ID: h.nextID, Name: body.Name})
 			h.mintedNames = append(h.mintedNames, body.Name)

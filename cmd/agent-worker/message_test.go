@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,5 +145,39 @@ func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	}
 	if out, _ := exec.Command("git", "-C", fork, "rev-parse", "refs/heads/factory/t1").Output(); strings.TrimSpace(string(out)) != commit {
 		t.Fatalf("fork branch = %q, want the pushed commit %s", out, commit)
+	}
+}
+
+// A push request nobody answers is written again inside the window, so one
+// transient failure on factoryd's side costs an interval, not the push.
+func TestPushTokenReaskedInsideTheWindow(t *testing.T) {
+	previous := pushRetryEvery
+	pushRetryEvery = 15 * time.Millisecond
+	t.Cleanup(func() { pushRetryEvery = previous })
+	gate := newPushGate()
+	var lines atomic.Int32
+	asked := make(chan string, 1)
+	go func() {
+		tok, err := gate.ask("c1", 2*time.Second, writerFunc(func(p []byte) (int, error) {
+			lines.Add(1)
+			return len(p), nil
+		}))
+		if err != nil {
+			t.Error(err)
+		}
+		asked <- tok
+	}()
+	// the first ask went unanswered; only a re-ask may be answered
+	for until := time.Now().Add(time.Second); lines.Load() < 2 && time.Now().Before(until); {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if n := lines.Load(); n < 2 {
+		t.Fatalf("push request written %d times, want a re-ask", n)
+	}
+	if !gate.take("tok-r") {
+		t.Fatal("no ask waited for the re-asked token")
+	}
+	if tok := <-asked; tok != "tok-r" {
+		t.Fatalf("the push got token %q, want tok-r", tok)
 	}
 }

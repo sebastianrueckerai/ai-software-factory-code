@@ -90,8 +90,8 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(context.Cont
 }
 
 // pushGate hands factoryd's push token to the session's push: it takes a
-// token only while ask waits, which the push calls once every agent
-// process is dead, and only one.
+// token only while ask waits — the push asks once every agent process is
+// dead, and re-asks until answered — and only one token is ever taken.
 type pushGate struct {
 	mu     sync.Mutex
 	asking bool
@@ -99,6 +99,11 @@ type pushGate struct {
 }
 
 func newPushGate() *pushGate { return &pushGate{token: make(chan string, 1)} }
+
+// pushRetryEvery paces the push request's re-asks inside its one window:
+// factoryd's tap answers every ask, so one transient failure on its side
+// costs an interval, not the push.
+var pushRetryEvery = 5 * time.Second
 
 // take hands token to the waiting ask; false when none waits.
 func (g *pushGate) take(token string) bool {
@@ -113,28 +118,35 @@ func (g *pushGate) take(token string) bool {
 }
 
 // ask writes the push request for commit on w, the stdout factoryd reads,
-// and waits at most wait for factoryd's POST /push.
+// re-writing it every pushRetryEvery until factoryd's POST /push arrives
+// or wait runs out.
 func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, error) {
-	g.mu.Lock()
-	g.asking = true
-	g.mu.Unlock()
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
 	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
-	fmt.Fprintln(w, string(line))
-	timeout := time.NewTimer(wait)
-	defer timeout.Stop()
-	select {
-	case token := <-g.token:
-		return token, nil
-	case <-timeout.C:
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.asking = false
-	select {
-	case token := <-g.token:
-		return token, nil
-	default:
-		return "", fmt.Errorf("no push token from factoryd within %s", wait)
+	for {
+		g.mu.Lock()
+		g.asking = true
+		g.mu.Unlock()
+		fmt.Fprintln(w, string(line))
+		retry := time.NewTimer(pushRetryEvery)
+		select {
+		case token := <-g.token:
+			retry.Stop()
+			return token, nil
+		case <-retry.C:
+		case <-deadline.C:
+			retry.Stop()
+			g.mu.Lock()
+			g.asking = false
+			g.mu.Unlock()
+			select {
+			case token := <-g.token:
+				return token, nil
+			default:
+				return "", fmt.Errorf("no push token from factoryd within %s", wait)
+			}
+		}
 	}
 }
 

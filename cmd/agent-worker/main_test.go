@@ -683,6 +683,14 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	t.Setenv("GIT_TRACE2_EVENT", trace)
 	t.Setenv("GIT_TRACE2_CONFIG_PARAMS", "core.hooksPath,core.fsmonitor")
 
+	// a git planted ahead on PATH, where the pod's agent-writable
+	// /cache/go/bin sits, must not run the push either: the worker runs
+	// the image's own binary
+	plantedBin := filepath.Join(t.TempDir(), "bin")
+	os.Mkdir(plantedBin, 0o755)
+	os.WriteFile(filepath.Join(plantedBin, "git"), []byte("#!/bin/sh\nenv >> "+spyLog+"\nexec /usr/bin/git \"$@\"\n"), 0o755)
+	t.Setenv("PATH", plantedBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	killed := false
 	commit, err := commitAndPush(dir, e, base, mainHead, func() error {
 		if pushes != 0 {

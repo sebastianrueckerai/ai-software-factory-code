@@ -430,6 +430,31 @@ func TestPushTokenMintedAtThePushRequest(t *testing.T) {
 	}
 }
 
+// One failed answer — a Forgejo mint blip on the first ask — costs the
+// worker a re-ask, not the push: the tap answers every ask, and only the
+// answered one posts a token.
+func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	hub.failWrites = 1
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil,
+		pushRequestLine("c1")+"\n"+pushRequestLine("c1")+"\n"+tokenLogs+pushedLine("c1")+"\n"+resultLine(true, "pushed c1"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want pushed c1 after the re-ask", res, err)
+	}
+	if asks := len(writeMints(hub)); asks != 2 {
+		t.Fatalf("write mints = %v, want two: one failed, one answered", writeMints(hub))
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t1"}) {
+		t.Fatalf("worker got %q, want one token, posted on the answered ask", worker.texts)
+	}
+}
+
 // Neither the worker container nor its namespace's secret holds a push
 // token: the container's env takes no secret, and task-git holds the clone
 // init container's read token only.
