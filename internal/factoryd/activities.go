@@ -35,6 +35,11 @@ var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
 // heartbeat, so within this. The heartbeat timeout is 2 minutes.
 const HeartbeatEvery = 10 * time.Second
 
+// contentFilterRefusal opens the escalation of a session the model provider
+// refused with its content check: every next session sends the same brief and
+// is refused the same way, so only a human changing the wording helps.
+const contentFilterRefusal = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+
 // RegisterActivities registers the runner's activities under the names the
 // workflow calls, on a worker or a test environment. No argument or result
 // carries a credential: each activity mints or reads the tokens it uses
@@ -437,6 +442,12 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		return res
 	case out.result != nil:
 		res.Summary = out.result.Summary
+		if !out.result.Success && (strings.Contains(res.Summary, "DataInspectionFailed") || strings.Contains(res.Summary, "data_inspection_failed")) {
+			// the same brief is refused the same way: only a human helps
+			res.Outcome = OutcomeEscalate
+			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
+			return res
+		}
 	default:
 		res.Summary = out.noResult
 	}
