@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -28,10 +29,12 @@ import (
 	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/interceptor"
 	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -271,6 +274,93 @@ func TestTerminalForgejoErrorsEndRetries(t *testing.T) {
 			t.Fatalf("%s: err = %v, want the cause kept", name, err)
 		}
 	}
+}
+
+// stubActivityNext is a fixed ExecuteActivity result, standing in for the
+// rest of the interceptor chain so TerminalForgejoErrors is tested on its
+// own, with no Temporal failure-conversion round trip to blur what it
+// actually returned.
+type stubActivityNext struct {
+	interceptor.ActivityInboundInterceptorBase
+	err error
+}
+
+func (s *stubActivityNext) ExecuteActivity(context.Context, *interceptor.ExecuteActivityInput) (any, error) {
+	return nil, s.err
+}
+
+// Every activity error crossing the worker boundary is scrubbed of
+// factoryd's configured secrets. A message a scrub changes keeps its
+// ApplicationError type and non-retryable flag but carries no cause, so
+// Temporal does not record it twice (today's bug); a message nothing
+// changes is the exact same error value; a cancellation never reaches the
+// scrub at all.
+func TestActivityErrorsScrubbed(t *testing.T) {
+	const secret = "the-forgejo-bot-password-value"
+	run := func(err error) error {
+		inbound := (&TerminalForgejoErrors{Scrub: redact.New(secret)}).
+			InterceptActivity(context.Background(), &stubActivityNext{err: err})
+		_, got := inbound.ExecuteActivity(context.Background(), &interceptor.ExecuteActivityInput{})
+		return got
+	}
+
+	t.Run("scrubs a plain retryable error", func(t *testing.T) {
+		got := run(fmt.Errorf("forgejo GET /x: status 502: token=%s leaked", secret))
+		want := "forgejo GET /x: status 502: token=[redacted] leaked"
+		if got == nil || got.Error() != want {
+			t.Fatalf("err = %v, want %q", got, want)
+		}
+		if isTerminal(got) {
+			t.Fatalf("err = %v, want it still retryable", got)
+		}
+	})
+
+	t.Run("scrubs an already-built ApplicationError and drops its cause", func(t *testing.T) {
+		in := temporal.NewApplicationErrorWithOptions("probe failed: token "+secret, "customType",
+			temporal.ApplicationErrorOptions{NonRetryable: true, Cause: errors.New("some original cause")})
+		got := run(in)
+		var app *temporal.ApplicationError
+		if !errors.As(got, &app) {
+			t.Fatalf("err = %v, want an ApplicationError", got)
+		}
+		if app.Type() != "customType" || !app.NonRetryable() {
+			t.Fatalf("type = %q, nonRetryable = %v, want customType and true", app.Type(), app.NonRetryable())
+		}
+		if app.Message() != "probe failed: token [redacted]" {
+			t.Fatalf("message = %q, want the secret scrubbed", app.Message())
+		}
+		if errors.Unwrap(got) != nil || strings.Contains(got.Error(), "some original cause") {
+			t.Fatalf("err = %v, want no cause", got)
+		}
+	})
+
+	t.Run("scrubs the forgejo-terminal wrap without doubling the message", func(t *testing.T) {
+		got := run(fmt.Errorf("forgejo GET /x: %w: status 422: token=%s leaked", ErrRefused, secret))
+		want := "forgejo GET /x: forgejo: refused: status 422: token=[redacted] leaked (type: terminal, retryable: false)"
+		if got == nil || got.Error() != want {
+			t.Fatalf("err = %v, want %q", got, want)
+		}
+		if !isTerminal(got) {
+			t.Fatalf("err = %v, want it terminal", got)
+		}
+		if errors.Unwrap(got) != nil {
+			t.Fatalf("err = %v, want no cause", got)
+		}
+	})
+
+	t.Run("leaves an error with nothing to scrub the same value", func(t *testing.T) {
+		in := fmt.Errorf("task t1: %w", ErrNotFound)
+		if got := run(in); got != in { //nolint:errorlint // same value, not just equal, is the point
+			t.Fatalf("err = %v, want the identical value %v", got, in)
+		}
+	})
+
+	t.Run("passes a cancellation through untouched", func(t *testing.T) {
+		in := temporal.NewCanceledError("stopping")
+		if got := run(in); got != in { //nolint:errorlint // same value, not just equal, is the point
+			t.Fatalf("err = %v, want the identical value %v", got, in)
+		}
+	})
 }
 
 // A recorded pull request Forgejo no longer has leaves nothing to close:

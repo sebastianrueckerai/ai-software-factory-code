@@ -30,6 +30,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -231,7 +232,12 @@ func main() {
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
-	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(gates, openActivities,
+	// every secret a registered activity can embed in an error: Forgejo's,
+	// LiteLLM's, S3's and the gateway's own (ruling 152, item 48)
+	scrub := redact.New(forgejo.BotPassword, forgejo.CIOrgToken, forgejo.ProjectsToken,
+		forgejo.Seeded[policy.SecretCIRegistrar], forgejo.Seeded[policy.SecretMerge], forgejo.Seeded[policy.SecretConfig],
+		litellm.MasterKey, objects.AccessKey, objects.SecretKey, gatewayToken)
+	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
@@ -621,10 +627,10 @@ func envInt(name string, def int) int {
 // HeartbeatEvery apart, so a workflow's cancel reaches a running activity
 // within that. extra: GateWatch, the open-activity gauge and the activity
 // spans.
-func workerOptions(extra ...interceptor.WorkerInterceptor) worker.Options {
+func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerInterceptor) worker.Options {
 	return worker.Options{
 		WorkerStopTimeout:            120 * time.Second,
 		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
-		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{}}, extra...),
+		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{Scrub: scrub}}, extra...),
 	}
 }

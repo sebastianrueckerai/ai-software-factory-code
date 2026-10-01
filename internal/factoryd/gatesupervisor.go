@@ -15,6 +15,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -160,8 +161,9 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 // error in the bundle instead.
 func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision, pinned policy.Document) (gateBundle, []string) {
 	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
+	objective := InboundBrief(harness.TaskBrief{Objective: t.Objective, AuthorStanding: t.Standing()}).Objective
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
-		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: t.Objective,
+		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
 		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
 	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {

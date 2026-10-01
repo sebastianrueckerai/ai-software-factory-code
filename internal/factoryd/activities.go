@@ -18,6 +18,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -94,30 +95,64 @@ func (r *Runner) RegisterActivities(w interface {
 }
 
 // TerminalForgejoErrors is the worker interceptor that ends an activity's
-// retries on a Forgejo refusal or on a Forgejo 404 that escaped it: no
-// retry fixes a 4xx, and the activities that tolerate an absent object
-// swallow ErrNotFound themselves, so one that escapes names an object gone
-// for good. A kube, S3 or store not-found keeps retrying. Temporal reads
-// the non-retryable type off the returned error itself, never off one it
-// wraps, so the classification sits at the activity boundary.
+// retries on a Forgejo refusal or on a Forgejo 404 that escaped it, and
+// scrubs every activity error of Scrub's secrets before it leaves the
+// worker (ruling 152, item 48): no retry fixes a 4xx, and the activities
+// that tolerate an absent object swallow ErrNotFound themselves, so one
+// that escapes names an object gone for good. A kube, S3 or store
+// not-found keeps retrying. Temporal reads the non-retryable type off the
+// returned error itself, never off one it wraps, so the classification
+// sits at the activity boundary.
 type TerminalForgejoErrors struct {
 	interceptor.WorkerInterceptorBase
+	Scrub *redact.Scrubber
 }
 
-func (*TerminalForgejoErrors) InterceptActivity(ctx context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
-	return &terminalForgejoInbound{interceptor.ActivityInboundInterceptorBase{Next: next}}
+func (t *TerminalForgejoErrors) InterceptActivity(ctx context.Context, next interceptor.ActivityInboundInterceptor) interceptor.ActivityInboundInterceptor {
+	return &terminalForgejoInbound{
+		ActivityInboundInterceptorBase: interceptor.ActivityInboundInterceptorBase{Next: next},
+		scrub:                          cmp.Or(t.Scrub, redact.New()),
+	}
 }
 
 type terminalForgejoInbound struct {
 	interceptor.ActivityInboundInterceptorBase
+	scrub *redact.Scrubber
 }
 
 func (i *terminalForgejoInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
 	out, err := i.Next.ExecuteActivity(ctx, in)
-	if forgejoTerminal(err) && !isTerminal(err) {
-		return out, temporal.NewNonRetryableApplicationError(err.Error(), errTerminal, err)
+	if err == nil || temporal.IsCanceledError(err) {
+		return out, err
 	}
-	return out, err
+	if forgejoTerminal(err) && !isTerminal(err) {
+		err = temporal.NewNonRetryableApplicationError(err.Error(), errTerminal, nil)
+	}
+	return out, scrubActivityError(err, i.scrub)
+}
+
+// scrubActivityError is err with every secret s knows replaced, crossing
+// the worker boundary clean. A message the scrub leaves alone stays err
+// itself; one it changes keeps its ApplicationError type and non-retryable
+// flag but carries no cause, so Temporal does not record it twice.
+func scrubActivityError(err error, s *redact.Scrubber) error {
+	var app *temporal.ApplicationError
+	if errors.As(err, &app) {
+		msg := app.Message()
+		if clean := s.String(msg); clean != msg {
+			return temporal.NewApplicationErrorWithOptions(clean, app.Type(), temporal.ApplicationErrorOptions{
+				NonRetryable:   app.NonRetryable(),
+				NextRetryDelay: app.NextRetryDelay(),
+				Category:       app.Category(),
+			})
+		}
+		return err
+	}
+	msg := err.Error()
+	if clean := s.String(msg); clean != msg {
+		return errors.New(clean)
+	}
+	return err
 }
 
 // forgejoTerminal is a Forgejo answer no retry changes: a refusal or a 404.

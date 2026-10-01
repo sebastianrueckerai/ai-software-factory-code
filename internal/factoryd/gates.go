@@ -660,7 +660,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return Review{}, err
 	}
 	content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, reviewPrompt, reviewInput{
-		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()},
+		Brief: InboundBrief(harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
 		PR:    pr.Number, Commit: commit, Diff: diff, Gates: gates, EarlierReviews: earlier,
 	})
 	stopBeats()

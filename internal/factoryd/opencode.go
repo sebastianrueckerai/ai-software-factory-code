@@ -515,23 +515,33 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 	return harness.Result{Success: success, Summary: summary}
 }
 
+// InboundBrief is b with the issue author's text (Objective and
+// PosterInfo) sanitised (sanitize.Inbound) when AuthorStanding is not a
+// writer's: an outside account's or telemetry's report is untrusted input,
+// wherever a brief reaches a model (the agent's own, the review's, a
+// supervisor's) or the gate supervisor's bundle (ruling 152, item 48). The
+// spec (a writer's plan issue), the human's answers (writers answer
+// escalations) and the findings (factoryd's, the reviewer's, CI's lines)
+// pass as written.
+func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
+	if b.AuthorStanding == harness.StandingWriter {
+		return b
+	}
+	b.Objective = sanitize.Inbound(b.Objective)
+	b.PosterInfo = slices.Clone(b.PosterInfo)
+	for i, s := range b.PosterInfo {
+		b.PosterInfo[i] = sanitize.Inbound(s)
+	}
+	return b
+}
+
 // objectiveText is the brief the agent reads. The issue author's text
 // (the issue and every answer to an information request) stands between
 // markers with a random tag the author cannot know, after the lines
 // factoryd writes, so none of it can pass for the standing line or for
-// the brief's own sections (ruling 152). Only that author's text (the
-// objective and the poster's answers) is sanitised (sanitize.Inbound), and
-// only when AuthorStanding is not a writer's: the spec (a writer's plan
-// issue), the human's answers (writers answer escalations) and the
-// findings (factoryd's, the reviewer's, CI's lines) pass as written.
+// the brief's own sections (ruling 152).
 func objectiveText(brief harness.TaskBrief) string {
-	if brief.AuthorStanding != harness.StandingWriter {
-		brief.Objective = sanitize.Inbound(brief.Objective)
-		brief.PosterInfo = slices.Clone(brief.PosterInfo)
-		for i, s := range brief.PosterInfo {
-			brief.PosterInfo[i] = sanitize.Inbound(s)
-		}
-	}
+	brief = InboundBrief(brief)
 	texts := append([]string{brief.Objective, brief.Spec}, brief.PosterInfo...)
 	for {
 		tag := randomTag()

@@ -713,8 +713,8 @@ func factoryModel(d policy.Document, t Task, purpose string) string {
 // gateway on the task's account.
 func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int, messages []string) Decision {
 	return r.supervisor.Decide(ctx, t.ID, factoryModel(s.policy, t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
-		Brief: harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
-			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()},
+		Brief: InboundBrief(harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
+			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()}),
 		Trip:     TripReport{Detector: trip.Kind, Detail: trip.Detail},
 		Digest:   digest.digest(),
 		Record:   recorder.Tail(maxRecordTail),
