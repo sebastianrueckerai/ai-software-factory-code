@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -601,5 +602,192 @@ func TestAlertIssueNamesTheService(t *testing.T) {
 		if title, _ := alertIssue(a, "p", "platform", nil); title != want {
 			t.Errorf("%s: %q, want %q", labels, title, want)
 		}
+	}
+}
+
+// Item 127: the gateway's 5xx rule fires while a roll restarts the
+// Deployment it watches, so it is recorded as noise and not filed; a
+// redelivery of the same firing adds nothing; the rule still files once
+// the restart window has passed, and every other rule still files inside
+// it; a rollout still running has an open-ended window.
+//
+// Alertmanager's fingerprint hashes the alert's label set, so every firing
+// of this rule on this namespace carries the SAME fingerprint "fp-5xx"
+// here: a noise verdict from one firing must not swallow a later, distinct
+// one, whether that firing is a real problem past the window or another
+// roll's own restart (fix round 1, review of f5886c2).
+func TestAlertInsideRollWindowRecordedNotFiled(t *testing.T) {
+	r := newAlertRig(t)
+	r.ns.labels["factory"] = "ai-software-factory-code"
+	r.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
+		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+	deployments := &fakeDeployments{json: map[string]string{
+		"factoryd":        deploymentJSON("2020-01-01T00:00:00Z", "2020-01-01T00:01:00Z", registryHost+"factory-gateway@"+digestOld),
+		"factory-gateway": deploymentJSON("2026-09-28T12:00:00Z", "2026-09-28T12:01:30Z", registryHost+"factory-gateway@"+digestNew),
+	}, reads: map[string]int{}}
+	r.in.Kube, r.in.Namespace = deployments, "factory"
+
+	inside := sigAlert("firing", "fp-5xx", "factory", "2026-09-28T12:05:00Z", neverEnds)
+	if rr := r.post(t, "signoz", "hook-pw", inside); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 1 || rows[0].Kind != AlertSigNoz || rows[0].Verdict != VerdictNoise || rows[0].ResolvedBy != "factoryd" || rows[0].TaskID != "" {
+		t.Fatalf("rows %+v, want 1 noise row resolved by factoryd with no task", rows)
+	}
+	if len(r.fj.issues) != 0 || len(r.store.tasks) != 0 {
+		t.Fatalf("inside the window: %d issues, %d tasks; want 0, 0", len(r.fj.issues), len(r.store.tasks))
+	}
+
+	if rr := r.post(t, "signoz", "hook-pw", inside); rr.Code != http.StatusOK {
+		t.Fatalf("redelivery: status %d", rr.Code)
+	}
+	if rows = r.store.alertRows(); len(rows) != 1 || len(r.fj.issues) != 0 || len(r.store.tasks) != 0 {
+		t.Fatalf("after a redelivery: %d rows, %d issues, %d tasks; want 1, 0, 0", len(rows), len(r.fj.issues), len(r.store.tasks))
+	}
+
+	// same fingerprint as "inside", a later, distinct start one second past
+	// the window: a real firing, not that noise row's redelivery
+	after := sigAlert("firing", "fp-5xx", "factory", "2026-09-28T12:11:31Z", neverEnds)
+	if rr := r.post(t, "signoz", "hook-pw", after); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	if len(r.fj.issues) != 1 || len(r.store.tasks) != 1 {
+		t.Fatalf("one second past the window: %d issues, %d tasks; want 1, 1", len(r.fj.issues), len(r.store.tasks))
+	}
+
+	restarts := sigAlert("firing", "fp-restarts", "factory", "2026-09-28T12:03:00Z", neverEnds)
+	restarts["labels"].(map[string]string)["alertname"] = "container restarts"
+	if rr := r.post(t, "signoz", "hook-pw", restarts); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	if len(r.fj.issues) != 2 {
+		t.Fatalf("a different rule inside the window: %d issues, want 2 (it still files)", len(r.fj.issues))
+	}
+
+	deployments.set("factory-gateway", deploymentJSON("2026-09-28T12:00:00Z", "", registryHost+"factory-gateway@"+digestNew))
+	running := sigAlert("firing", "fp-running", "factory", "2026-09-28T12:02:00Z", neverEnds)
+	if rr := r.post(t, "signoz", "hook-pw", running); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	rows = r.store.alertRows()
+	if len(rows) != 4 || rows[3].Verdict != VerdictNoise || rows[3].TaskID != "" || len(r.fj.issues) != 2 {
+		t.Fatalf("a rollout still running: %d rows (last verdict %q, task %q), %d issues; want 4 rows (noise, no task), 2 issues",
+			len(rows), rows[3].Verdict, rows[3].TaskID, len(r.fj.issues))
+	}
+
+	// a fresh fingerprint's history: a noise row from one roll must not
+	// stand for a later roll's own restart, months apart but both "fp-5xx"
+	r2 := newAlertRig(t)
+	r2.ns.labels["factory"] = "ai-software-factory-code"
+	r2.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
+		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+	deployments2 := &fakeDeployments{json: map[string]string{
+		"factoryd":        deploymentJSON("2020-01-01T00:00:00Z", "2020-01-01T00:01:00Z", registryHost+"factory-gateway@"+digestOld),
+		"factory-gateway": deploymentJSON("2026-09-28T12:00:00Z", "2026-09-28T12:01:30Z", registryHost+"factory-gateway@"+digestNew),
+	}, reads: map[string]int{}}
+	r2.in.Kube, r2.in.Namespace = deployments2, "factory"
+
+	firstRoll := sigAlert("firing", "fp-5xx", "factory", "2026-09-28T12:05:00Z", neverEnds)
+	if rr := r2.post(t, "signoz", "hook-pw", firstRoll); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+
+	deployments2.set("factory-gateway", deploymentJSON("2026-10-05T09:00:00Z", "2026-10-05T09:01:00Z", registryHost+"factory-gateway@"+digestNew))
+	secondRoll := sigAlert("firing", "fp-5xx", "factory", "2026-10-05T09:05:00Z", neverEnds)
+	if rr := r2.post(t, "signoz", "hook-pw", secondRoll); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	rows2 := r2.store.alertRows()
+	if len(rows2) != 2 || rows2[1].Verdict != VerdictNoise || rows2[1].TaskID != "" ||
+		rows2[1].Detail["roll_window"] != "roll window of factory-gateway" || len(r2.fj.issues) != 0 || len(r2.store.tasks) != 0 {
+		t.Fatalf("a new roll's window: %d rows (last verdict %q, task %q), %d issues, %d tasks; want 2 rows (both noise, no task), 0, 0",
+			len(rows2), rows2[1].Verdict, rows2[1].TaskID, len(r2.fj.issues), len(r2.store.tasks))
+	}
+}
+
+// Fix round 2 (review of fe7dc45): the fingerprint's newest row can also be a
+// FILED row whose task already closed, not just an unfiled noise row. A new
+// start on that fingerprint reached take's last file() with no window check
+// at all, so the gateway's 5xx fingerprint would pay for a fresh task on
+// every roll after its first real incident closed: exactly what item 127
+// exists to stop.
+func TestAlertAfterItsTaskClosedStillChecksTheWindow(t *testing.T) {
+	setup := func(t *testing.T) (*alertRig, *fakeDeployments, string) {
+		t.Helper()
+		r := newAlertRig(t)
+		r.ns.labels["factory"] = "ai-software-factory-code"
+		r.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
+			Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+		// a roll long over by the time the first incident fires: it files
+		// normally, giving a filed row to close
+		deployments := &fakeDeployments{json: map[string]string{
+			"factoryd":        deploymentJSON("2020-01-01T00:00:00Z", "2020-01-01T00:01:00Z", registryHost+"factory-gateway@"+digestOld),
+			"factory-gateway": deploymentJSON("2026-08-01T00:00:00Z", "2026-08-01T00:01:00Z", registryHost+"factory-gateway@"+digestNew),
+		}, reads: map[string]int{}}
+		r.in.Kube, r.in.Namespace = deployments, "factory"
+
+		first := sigAlert("firing", "fp-5xx-closed", "factory", "2026-09-01T00:00:00Z", neverEnds)
+		if rr := r.post(t, "signoz", "hook-pw", first); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+		rows := r.store.alertRows()
+		if len(rows) != 1 || rows[0].TaskID == "" || len(r.fj.issues) != 1 || len(r.store.tasks) != 1 {
+			t.Fatalf("the first incident: %d rows (task %q), %d issues, %d tasks; want 1 filed row, 1, 1", len(rows), rows[0].TaskID, len(r.fj.issues), len(r.store.tasks))
+		}
+		ended := time.Now().Add(-2 * time.Hour)
+		task := r.store.tasks[rows[0].TaskID]
+		task.Status, task.FinishedAt = "done", &ended
+		r.store.tasks[rows[0].TaskID] = task
+
+		deployments.set("factory-gateway", deploymentJSON("2026-09-28T12:00:00Z", "2026-09-28T12:01:30Z", registryHost+"factory-gateway@"+digestNew))
+		return r, deployments, "fp-5xx-closed"
+	}
+
+	t.Run("inside a later roll's window", func(t *testing.T) {
+		r, _, fp := setup(t)
+		again := sigAlert("firing", fp, "factory", "2026-09-28T12:05:00Z", neverEnds)
+		if rr := r.post(t, "signoz", "hook-pw", again); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+		rows := r.store.alertRows()
+		if len(rows) != 2 || rows[1].Kind != AlertSigNoz || rows[1].Verdict != VerdictNoise || rows[1].ResolvedBy != "factoryd" || rows[1].TaskID != "" {
+			t.Fatalf("rows %+v, want a second, noise row with no task", rows)
+		}
+		if len(r.fj.issues) != 1 || len(r.store.tasks) != 1 {
+			t.Fatalf("inside the window, after the task closed: %d issues, %d tasks; want 1, 1 (no new ones)", len(r.fj.issues), len(r.store.tasks))
+		}
+	})
+
+	t.Run("outside any window", func(t *testing.T) {
+		r, _, fp := setup(t)
+		// one second past the window set up in setup
+		again := sigAlert("firing", fp, "factory", "2026-09-28T12:11:31Z", neverEnds)
+		if rr := r.post(t, "signoz", "hook-pw", again); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+		rows := r.store.alertRows()
+		if len(rows) != 2 || rows[1].TaskID == "" {
+			t.Fatalf("rows %+v, want a second, filed row", rows)
+		}
+		if len(r.fj.issues) != 2 || len(r.store.tasks) != 2 {
+			t.Fatalf("past any window, after the task closed: %d issues, %d tasks; want 2, 2 (it files)", len(r.fj.issues), len(r.store.tasks))
+		}
+	})
+}
+
+func TestRestartWindowAlertNameMatchesTheRule(t *testing.T) {
+	data, err := os.ReadFile("../../k8s/alerts/5xx-rate.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rule struct {
+		Alert string `json:"alert"`
+	}
+	if err := json.Unmarshal(data, &rule); err != nil {
+		t.Fatal(err)
+	}
+	if restartWindowAlert != rule.Alert {
+		t.Fatalf("restartWindowAlert = %q, want k8s/alerts/5xx-rate.json's alert %q", restartWindowAlert, rule.Alert)
 	}
 }

@@ -29,6 +29,15 @@ const SourceAlert = "alert"
 // the same start is filed once more: the merged fix did not fix it.
 const refileAfter = 30 * time.Minute
 
+// restartWindowAlert is the only rule a roll's restart trips for nothing
+// (ruling 237): k8s/alerts/5xx-rate.json's "alert". The restarts and
+// roll-not-live rules are what a broken roll trips, so they still file.
+const restartWindowAlert = "5xx rate above 5 %"
+
+// restartWindow is how long after a Deployment is live its alerts still
+// count as the roll's own restart, not a real problem (ruling 237).
+const restartWindow = 10 * time.Minute
+
 // SigNozAlert is one alert of a SigNoz v0.143.0 webhook notification (the
 // Alertmanager v4 message).
 type SigNozAlert struct {
@@ -74,6 +83,11 @@ type AlertIntake struct {
 	// Timeline records the events of the cards it files.
 	Timeline *Timeline
 	Budget   func() policy.Budget
+	// Kube reads a roll target's Deployment, to tell a restartWindowAlert
+	// inside its restart window from a real one (item 127). Namespace is
+	// the factory's own namespace, the one those Deployments run in.
+	Kube      DeploymentReader
+	Namespace string
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
 	// project's own environment hosts, allowed unmangled in a posted alert.
 	LinkHosts func() []string
@@ -153,9 +167,20 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	}
 	at := stamp(a.StartsAt)
 	if !seen {
-		return in.file(ctx, a, p, ns, at, false)
+		return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
 	}
 	if !filed {
+		if row.Verdict != "" {
+			if row.Detail["starts_at"] == at {
+				// the exact same firing redelivered: nothing
+				return nil
+			}
+			// Alertmanager's fingerprint hashes the alert's label set, the
+			// same across every firing of this rule in this namespace, so a
+			// later, distinct start is not this row's redelivery: judged
+			// again rather than trusted on the strength of the first verdict
+			return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+		}
 		// an earlier delivery wrote the row and failed before its task
 		// was filed: file it now, under the row's task id
 		return in.fileTask(ctx, a, p, ns, row)
@@ -176,7 +201,92 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"starts_at": at})
 	}
+	// the fingerprint's task already closed: a roll can retrigger this same
+	// fingerprint (item 127, fix round 2), so it is judged again rather than
+	// filed outright
+	return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+}
+
+// fileUnlessRestartWindow files a as a fresh issue and task, unless it is
+// the restart-window rule firing inside a roll's restart window, in which
+// case judgeRestartWindow has already recorded it as noise.
+func (in *AlertIntake) fileUnlessRestartWindow(ctx context.Context, a SigNozAlert, p Project, ns, at, name string) error {
+	noise, err := in.judgeRestartWindow(ctx, a, name, ns)
+	if err != nil {
+		return err
+	}
+	if noise {
+		return nil
+	}
 	return in.file(ctx, a, p, ns, at, false)
+}
+
+// judgeRestartWindow records a's row as noise and reports true when name is
+// the restart-window rule firing in the factory's own namespace inside a
+// roll target's restart window (item 127); otherwise it reports false and
+// leaves filing it to the caller.
+func (in *AlertIntake) judgeRestartWindow(ctx context.Context, a SigNozAlert, name, ns string) (bool, error) {
+	if name != restartWindowAlert || ns != in.Namespace {
+		return false, nil
+	}
+	dep, applied, live, inWindow, err := in.inRestartWindow(ctx, a.StartsAt)
+	if err != nil {
+		return false, err
+	}
+	if !inWindow {
+		return false, nil
+	}
+	return true, in.recordRestartWindowNoise(ctx, a, dep, applied, live)
+}
+
+// inRestartWindow reports whether starts lies in a roll target Deployment's
+// restart window, in the factory's own namespace: from Flux applying the
+// spec to restartWindow after the Deployment is live, open-ended while the
+// rollout still runs (live not reached yet). deployment names the
+// Deployment the window matched.
+func (in *AlertIntake) inRestartWindow(ctx context.Context, starts time.Time) (deployment string, applied, live time.Time, ok bool, err error) {
+	checked := map[string]bool{}
+	for _, target := range RollTargets {
+		if checked[target.Deployment] {
+			continue
+		}
+		checked[target.Deployment] = true
+		d, derr := in.Kube.Deployment(ctx, in.Namespace, target.Deployment)
+		if derr != nil {
+			if errors.Is(derr, ErrNotFound) {
+				continue
+			}
+			return "", time.Time{}, time.Time{}, false, derr
+		}
+		at, hasApplied := d.applied()
+		if !hasApplied || starts.Before(at) {
+			continue
+		}
+		if up, hasLive := d.live(); hasLive {
+			if starts.Before(up.Add(restartWindow)) {
+				return target.Deployment, at, up, true, nil
+			}
+			continue
+		}
+		return target.Deployment, at, time.Time{}, true, nil
+	}
+	return "", time.Time{}, time.Time{}, false, nil
+}
+
+// recordRestartWindowNoise writes a's row as noise, resolved by factoryd,
+// because its startsAt lies in deployment's restart window: no issue or
+// task files. Its starts_at, read back by judgeRestartWindow, tells this
+// exact firing's redelivery from a later firing of the same fingerprint
+// (Alertmanager's fingerprint never changes between firings of this rule),
+// which is judged again rather than trusted on the strength of this one.
+func (in *AlertIntake) recordRestartWindowNoise(ctx context.Context, a SigNozAlert, deployment string, applied, live time.Time) error {
+	detail := map[string]any{"roll_window": "roll window of " + deployment, "applied": stamp(applied), "starts_at": stamp(a.StartsAt)}
+	if !live.IsZero() {
+		detail["live"] = stamp(live)
+	}
+	_, err := in.Store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]),
+		Fingerprint: a.Fingerprint, Verdict: VerdictNoise, ResolvedBy: "factoryd", Detail: detail})
+	return err
 }
 
 // file writes the alert's row, the dedupe key, with the id of the task it
