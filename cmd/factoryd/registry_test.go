@@ -14,8 +14,7 @@ import (
 // forgejo-registry pull secret, which stays for image pulls only.
 func TestTheRollerReadsTheRegistryWithTheReadToken(t *testing.T) {
 	t.Setenv("REGISTRY_READ_USER", "factory-registry-read")
-	t.Setenv("REGISTRY_READ_TOKEN", "read-tok")
-	reg := rollRegistry("http://forgejo.example")
+	reg := rollRegistry("http://forgejo.example", "read-tok")
 	if reg.BaseURL != "http://forgejo.example" || reg.User != "factory-registry-read" || reg.Password != "read-tok" {
 		t.Fatalf("registry = %+v", reg)
 	}

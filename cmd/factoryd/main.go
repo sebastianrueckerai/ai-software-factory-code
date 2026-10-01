@@ -58,10 +58,7 @@ func main() {
 		return
 	}
 
-	dsn := os.Getenv("FACTORYD_DATABASE_URL")
-	if dsn == "" {
-		log.Fatal("FACTORYD_DATABASE_URL is required")
-	}
+	dsn := mustSecret("FACTORYD_DATABASE_URL")
 	store, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		log.Fatalf("open task store (boot migrations): %v", err)
@@ -113,18 +110,18 @@ func main() {
 	}
 	ciQueue := factoryd.NewCIQueue(metrics)
 
-	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustEnv("LITELLM_MASTER_KEY")}
+	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")}
 	objects := &factoryd.S3{
 		Endpoint:  mustEnv("S3_ENDPOINT"),
 		Region:    env("S3_REGION", "fsn1"),
 		Bucket:    mustEnv("S3_BUCKET"),
-		AccessKey: mustEnv("S3_ACCESS_KEY_ID"),
-		SecretKey: mustEnv("S3_SECRET_ACCESS_KEY"),
+		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
+		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
 	}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm, Metrics: metrics}
 	// the gateway-factoryd token: the gateway's escalation hand-over to
 	// factoryd, and factoryd's model calls on a task's account
-	gatewayURL, gatewayToken := env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"), mustEnv("GATEWAY_TOKEN")
+	gatewayURL, gatewayToken := env("GATEWAY_URL", "http://factory-gateway.factory.svc.cluster.local:8081"), mustSecret("GATEWAY_TOKEN")
 
 	kube, err := factoryd.NewInClusterKube()
 	if err != nil {
@@ -184,7 +181,7 @@ func main() {
 	}
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
-	hetznerCI := hcloud.New(mustEnv("HETZNER_CI_KEY"))
+	hetznerCI := hcloud.New(mustSecret("HETZNER_CI_KEY"))
 	cloudRegistry := store.CloudResources()
 	nodeIPs, err := cloudres.IPv4Sources(strings.Split(mustEnv("CI_BUILD_VM_SOURCES"), ","))
 	if err != nil {
@@ -232,21 +229,26 @@ func main() {
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
-	// every secret a registered activity can embed in an error: Forgejo's,
-	// LiteLLM's, S3's and the gateway's own (ruling 152, item 48)
-	scrub := redact.New(forgejo.BotPassword, forgejo.CIOrgToken, forgejo.ProjectsToken,
-		forgejo.Seeded[policy.SecretCIRegistrar], forgejo.Seeded[policy.SecretMerge], forgejo.Seeded[policy.SecretConfig],
-		litellm.MasterKey, objects.AccessKey, objects.SecretKey, gatewayToken)
+	// the boot's remaining credentials, read here so every one of them is
+	// registered before the scrubber is built: it knows every secret value
+	// factoryd loads, not a subset (ruling 152, item 48)
+	intakeToken := mustSecret("INTAKE_TOKEN")
+	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
+	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
+	signozPassword := mustSecret("SIGNOZ_PASSWORD")
+	consoleClientSecret := mustSecret("CONSOLE_CLIENT_SECRET")
+	consoleSessionKey := mustSecret("CONSOLE_SESSION_KEY")
+	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
+	scrub := redact.New(bootSecrets...)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
 	runner.RegisterActivities(taskWorker)
 
-	intakeToken := mustEnv("INTAKE_TOKEN")
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: mustEnv("FORGEJO_WEBHOOK_SECRET"), Policy: func() policy.Document { return policyLoader.Current().Document }, Projects: store, Metrics: metrics,
+		Secret: webhookSecret, Policy: func() policy.Document { return policyLoader.Current().Document }, Projects: store, Metrics: metrics,
 		Timeline: runner.Timeline(),
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
@@ -259,7 +261,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	runner.BootSweep(ctx)
-	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document })
+	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document }, webhookSecret)
 	webhookIntake.MainPushed = registrar.MainPushed
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
@@ -288,7 +290,7 @@ func main() {
 	go rolls.Run(ctx)
 	// the roll as a factory task (ruling 178): main CI's images of a green
 	// commit, read with a read:package token, open the roll's pull request
-	registry := rollRegistry(forgejo.BaseURL)
+	registry := rollRegistry(forgejo.BaseURL, registryReadToken)
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
@@ -313,7 +315,7 @@ func main() {
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it)
-	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: mustEnv("SIGNOZ_WEBHOOK_PASSWORD"),
+	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
 	// the gateway's hand-over of an agent's escalate_to_human
@@ -337,7 +339,7 @@ func main() {
 	// of its, with its FACTORY_READ_TOKEN
 	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, &factoryd.SigNoz{
 		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
-		Email:   mustEnv("SIGNOZ_EMAIL"), Password: mustEnv("SIGNOZ_PASSWORD")}, kube))
+		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}, kube))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{
@@ -352,8 +354,8 @@ func main() {
 		ForgejoURL:       forgejo.BaseURL,
 		ForgejoPublicURL: forgejo.PublicURL,
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
-		ClientSecret:     mustEnv("CONSOLE_CLIENT_SECRET"),
-		SessionKey:       []byte(mustEnv("CONSOLE_SESSION_KEY")),
+		ClientSecret:     consoleClientSecret,
+		SessionKey:       []byte(consoleSessionKey),
 		Tasks:            store,
 		Writers: func(ctx context.Context) ([]string, error) {
 			p, ok, err := factoryd.OwnProject(ctx, store, kube.Namespace())
@@ -590,8 +592,8 @@ func env(name, def string) string {
 // rollRegistry is the roller's registry client: user factory-registry-read
 // with its read:package token (secret forgejo-registry-read), which can
 // overwrite no tag.
-func rollRegistry(baseURL string) *factoryd.Registry {
-	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: mustEnv("REGISTRY_READ_TOKEN")}
+func rollRegistry(baseURL, token string) *factoryd.Registry {
+	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: token}
 }
 
 func mustEnv(name string) string {
@@ -599,6 +601,19 @@ func mustEnv(name string) string {
 	if v == "" {
 		log.Fatalf("%s is required", name)
 	}
+	return v
+}
+
+// bootSecrets is every credential mustSecret has loaded this boot: the
+// daemon's error scrubber is built from it, so a secret cannot be loaded
+// without being scrubbed (ruling 152, item 48).
+var bootSecrets []string
+
+// mustSecret is mustEnv for a credential: the value is registered for
+// scrubbing the moment it is loaded.
+func mustSecret(name string) string {
+	v := mustEnv(name)
+	bootSecrets = append(bootSecrets, v)
 	return v
 }
 

@@ -76,7 +76,7 @@ func checkProject(ctx context.Context, src factoryd.ConfigSource, name string, f
 // database, tokens and service account.
 func registerMain(args []string) {
 	ctx := context.Background()
-	store, err := factoryd.OpenStore(ctx, mustEnv("FACTORYD_DATABASE_URL"))
+	store, err := factoryd.OpenStore(ctx, mustSecret("FACTORYD_DATABASE_URL"))
 	if err != nil {
 		log.Fatalf("open store: %v", err)
 	}
@@ -91,7 +91,7 @@ func registerMain(args []string) {
 			log.Printf("current policy: %v", err)
 		}
 		return v.Document
-	})
+	}, mustSecret("FORGEJO_WEBHOOK_SECRET"))
 	if err := registerProject(ctx, args, os.Stdout, reg); err != nil {
 		log.Fatalf("register-project: %v", err)
 	}
@@ -102,23 +102,23 @@ func newForgejo() *factoryd.Forgejo {
 		BaseURL:       env("FORGEJO_URL", "https://git.aisoftwarefactory.world"),
 		PublicURL:     env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"),
 		BotUser:       env("FORGEJO_BOT_USER", "factory-agent"),
-		BotPassword:   mustEnv("FORGEJO_BOT_PASSWORD"),
-		CIOrgToken:    mustEnv("FORGEJO_CI_ORG_TOKEN"),
-		ProjectsToken: mustEnv("FORGEJO_PROJECTS_TOKEN"),
+		BotPassword:   mustSecret("FORGEJO_BOT_PASSWORD"),
+		CIOrgToken:    mustSecret("FORGEJO_CI_ORG_TOKEN"),
+		ProjectsToken: mustSecret("FORGEJO_PROJECTS_TOKEN"),
 		// the one place a seed project's secrets are read: its file names
 		// them (policy.SeedTokens)
 		Seeded: map[string]string{
-			policy.SecretCIRegistrar: mustEnv("FORGEJO_CI_REGISTRAR_TOKEN"),
-			policy.SecretMerge:       mustEnv("FORGEJO_MERGE_TOKEN"),
-			policy.SecretConfig:      mustEnv("FORGEJO_CONFIG_TOKEN"),
+			policy.SecretCIRegistrar: mustSecret("FORGEJO_CI_REGISTRAR_TOKEN"),
+			policy.SecretMerge:       mustSecret("FORGEJO_MERGE_TOKEN"),
+			policy.SecretConfig:      mustSecret("FORGEJO_CONFIG_TOKEN"),
 		},
 	}
 }
 
-func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, doc func() policy.Document) *factoryd.Registrar {
+func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, doc func() policy.Document, webhookSecret string) *factoryd.Registrar {
 	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Policy: doc,
 		WebhookURL:       env("FACTORYD_WEBHOOK_URL", "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo"),
-		WebhookSecret:    mustEnv("FORGEJO_WEBHOOK_SECRET"),
+		WebhookSecret:    webhookSecret,
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),
 		GitURL: env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"), RegistryHost: env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
 		MergeUser: env("FORGEJO_MERGE_USER", "factory-merge"),
