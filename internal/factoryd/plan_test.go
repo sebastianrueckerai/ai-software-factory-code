@@ -155,6 +155,18 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
+// round2-design.md section 8: every card routes through its own
+// internal/server/routes_<key>.go, so two cards never edit one route list.
+func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
+	want := "every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
+		t.Fatal("a shape with no foundation card still gets the one-route-file sentence")
+	}
+}
+
 // factoryd, not the model, orders the foundation first and the integration
 // last: every card depends on the foundation, the integration on every
 // card, besides the edges the planner listed among the features.

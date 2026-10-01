@@ -492,7 +492,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	if shape.Foundation {
 		g += "Exactly one card has role foundation: the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
 			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
-			"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise). "
+			"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise). " +
+			"every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list. "
 	}
 	if shape.Integration {
 		g += "Exactly one card has role integration: it turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. "
