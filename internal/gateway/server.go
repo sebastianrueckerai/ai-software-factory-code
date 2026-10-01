@@ -84,6 +84,12 @@ const (
 // factorydSA stands for the service account uid of factoryd's key slot.
 const factorydSA = "factoryd"
 
+// statusClientCanceled is nginx's "client closed request"; net/http defines
+// no constant for it. It answers a call whose caller is already gone
+// instead of 5xx, so an alert on 5xx-rate never counts a caller's own
+// disconnect as an upstream fault.
+const statusClientCanceled = 499
+
 // auditFactoryd is the audit kind of a factoryd call refused before its
 // purpose is known; it is no purpose.
 const auditFactoryd = "factoryd"
@@ -285,6 +291,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	key, err := s.keyFor(ctx, slot, task, id.SAUID, models, pv, hold)
 	if err != nil {
 		s.finish(call, zeroCost, "")
+		if r.Context().Err() != nil {
+			s.refuse(w, pid, id.TaskID, purpose, "client_canceled", err.Error(), chatReq.Model, statusClientCanceled, "client_canceled")
+			return
+		}
 		s.refuse(w, pid, id.TaskID, purpose, "error_mint", err.Error(), chatReq.Model, http.StatusBadGateway, "upstream_error")
 		return
 	}
@@ -658,6 +668,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		if err != nil {
 			// the provider may have run part of the call: book the hold
 			s.finish(c, nil, "")
+			if r.Context().Err() != nil {
+				s.refuse(w, c.pid, c.task.ID, c.kind, "client_canceled", err.Error(), c.alias, statusClientCanceled, "client_canceled")
+				return
+			}
 			s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 			return
 		}
@@ -671,6 +685,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			if res.StatusCode == http.StatusUnauthorized && attempt == 0 && isKeyBlocked(respBody) {
 				if err := s.rekey(ctx, c); err != nil {
 					s.finish(c, zeroCost, "")
+					if r.Context().Err() != nil {
+						s.refuse(w, c.pid, c.task.ID, c.kind, "client_canceled", err.Error(), c.alias, statusClientCanceled, "client_canceled")
+						return
+					}
 					s.refuse(w, c.pid, c.task.ID, c.kind, "error_mint", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 					return
 				}

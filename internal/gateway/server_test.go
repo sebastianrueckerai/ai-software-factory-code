@@ -1831,3 +1831,266 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 		t.Fatalf("audit kinds = %q", kinds)
 	}
 }
+
+// A caller that disconnects mid-call is not an upstream fault: the gateway
+// must answer 499 (not 502) and still book whatever hold the provider may
+// have earned, so an alert on 5xx never counts a client's own cancellation
+// (debug-gateway-5xx.md).
+
+func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
+	started := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body) // #nosec G104 -- a real upstream reads the body too; net/http only notices a dropped connection once it does
+		close(started)
+		<-r.Context().Done() // the gateway drops the connection once its caller cancels
+	}))
+	defer up.Close()
+
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     &fakeMinter{},
+		LiteLLMURL: up.URL,
+		Prices:     testPrices,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap"))).WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer forged-but-fakeAuth-ignores")
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		s.Routes("test").ServeHTTP(rr, r)
+		close(done)
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the fake litellm never received the call")
+	}
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never returned after the client cancelled")
+	}
+
+	if rr.Code != 499 {
+		t.Fatalf("status = %d, want 499", rr.Code)
+	}
+	if got := rr.Header().Get(HeaderDecision); got != "client_canceled" {
+		t.Fatalf("decision header = %q, want client_canceled", got)
+	}
+	audits := store.auditRows()
+	if last := audits[len(audits)-1]; last.Decision != "client_canceled" {
+		t.Fatalf("audit decision = %q, want client_canceled (all rows %+v)", last.Decision, audits)
+	}
+	// the provider may have run part of the call: the hold is booked exactly
+	// as a real upstream failure would, 132 input tokens at 1e-6 and 32768
+	// output tokens at 4e-6
+	if got, ok := store.spentOf("42"); !ok || got != 2.131204 {
+		t.Fatalf("spent = (%v, %v), want (2.131204, true)", got, ok)
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want every hold released", n)
+	}
+}
+
+// The existing "litellm unreachable refuses 502" case in TestChatCompletions
+// is the regression for this same site with the client still connected: a
+// real transport failure must keep answering 502 error_upstream.
+
+func TestKeyMintClientCanceledAnswers499(t *testing.T) {
+	stub := newStubUpstream(t)
+	hold := make(chan struct{})
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	minter := &fakeMinter{hold: map[string]chan struct{}{"42": hold}, err: errors.New("litellm down")}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     minter,
+		LiteLLMURL: stub.URL,
+		Prices:     testPrices,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap"))).WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer forged-but-fakeAuth-ignores")
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		s.Routes("test").ServeHTTP(rr, r)
+		close(done)
+	}()
+
+	for len(minter.mintCalls()) == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	close(hold)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never returned after the client cancelled")
+	}
+
+	if rr.Code != 499 {
+		t.Fatalf("status = %d, want 499", rr.Code)
+	}
+	if got := rr.Header().Get(HeaderDecision); got != "client_canceled" {
+		t.Fatalf("decision header = %q, want client_canceled", got)
+	}
+	if _, ok := store.spentOf("42"); ok {
+		t.Fatal("spent updated, want untouched: no provider call was ever made")
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want every hold released", n)
+	}
+	if auths, _, _ := stub.seen(); len(auths) != 0 {
+		t.Fatalf("upstream hit %d times, want 0: the mint never finished", len(auths))
+	}
+}
+
+// The existing "key mint failure refuses 502" case in TestChatCompletions is
+// the regression for this site with the client still connected.
+
+func TestRekeyClientCanceledAnswers499(t *testing.T) {
+	const blockedBody = `{"error":{"message":"Authentication Error, Key is blocked. Update via ` + "`/key/unblock`" + ` if you are an admin.","code":"401"}}`
+	var mu sync.Mutex
+	blocked := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		b := blocked
+		mu.Unlock()
+		if b {
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, blockedBody)
+			return
+		}
+		w.Header().Set("x-litellm-response-cost", "0.1")
+		io.WriteString(w, `{}`)
+	}))
+	defer up.Close()
+
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     minter,
+		LiteLLMURL: up.URL,
+		Prices:     testPrices,
+	})
+	h := s.Routes("test")
+
+	// establish a cached key so the second call hits the blocked-key retry
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("first call = %d: %s", rr.Code, rr.Body)
+	}
+
+	mu.Lock()
+	blocked = true
+	mu.Unlock()
+	hold := make(chan struct{})
+	minter.hold = map[string]chan struct{}{"42": hold}
+	minter.err = errors.New("litellm down")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap"))).WithContext(ctx)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer forged-but-fakeAuth-ignores")
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rr, r)
+		close(done)
+	}()
+
+	for len(minter.mintCalls()) < 2 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	close(hold)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler never returned after the client cancelled")
+	}
+
+	if rr.Code != 499 {
+		t.Fatalf("status = %d, want 499", rr.Code)
+	}
+	if got := rr.Header().Get(HeaderDecision); got != "client_canceled" {
+		t.Fatalf("decision header = %q, want client_canceled", got)
+	}
+	// the first call's cost booked; the blocked retry's hold booked nothing
+	if spent, ok := store.spentOf("42"); !ok || spent != 2.1 {
+		t.Fatalf("spent = (%v, %v), want (2.1, true)", spent, ok)
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want every hold released", n)
+	}
+}
+
+func TestRekeyFailureStays502WhenConnected(t *testing.T) {
+	const blockedBody = `{"error":{"message":"Authentication Error, Key is blocked. Update via ` + "`/key/unblock`" + ` if you are an admin.","code":"401"}}`
+	var mu sync.Mutex
+	blocked := false
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		b := blocked
+		mu.Unlock()
+		if b {
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, blockedBody)
+			return
+		}
+		w.Header().Set("x-litellm-response-cost", "0.1")
+		io.WriteString(w, `{}`)
+	}))
+	defer up.Close()
+
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{
+		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store:      store,
+		Minter:     minter,
+		LiteLLMURL: up.URL,
+		Prices:     testPrices,
+	})
+	h := s.Routes("test")
+
+	if rr := doChat(t, h, chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("first call = %d: %s", rr.Code, rr.Body)
+	}
+
+	mu.Lock()
+	blocked = true
+	mu.Unlock()
+	minter.err = errors.New("litellm down")
+
+	rr := doChat(t, h, chatBody("coding-cheap"))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: a real rekey failure with the client still connected must still alert", rr.Code)
+	}
+	if got := rr.Header().Get(HeaderDecision); got != "error_mint" {
+		t.Fatalf("decision header = %q, want error_mint", got)
+	}
+	if spent, ok := store.spentOf("42"); !ok || spent != 2.1 {
+		t.Fatalf("spent = (%v, %v), want (2.1, true) unchanged by the failed rekey", spent, ok)
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want every hold released", n)
+	}
+}
