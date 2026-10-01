@@ -305,6 +305,24 @@ func TestWorkflowHappyPathToMerged(t *testing.T) {
 	}
 }
 
+// A project whose file sets model: stronger (TaskConfig.Stronger) starts
+// its coding card's first session on Models.Stronger, not Models.Start.
+func TestStrongerProjectStartsOnTheStrongerRung(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, Stronger: true}
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/coding-frontier" {
+		t.Fatalf("sessions = %+v, want the first session on the stronger rung factory/coding-frontier", h.sessions)
+	}
+}
+
 // The version the workflow started under reaches every session and the
 // model review, which read their limits from it (ruling 183).
 func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {

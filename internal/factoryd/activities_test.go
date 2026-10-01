@@ -1401,6 +1401,37 @@ func TestTaskConfigCarriesTime(t *testing.T) {
 	}
 }
 
+// TaskConfig sets Stronger for a coding card of a project whose file sets
+// model: stronger; the plan lane's planner keeps its own rung.
+func TestProjectModelStronger(t *testing.T) {
+	classes := map[string]policy.Class{
+		"coder":   {Session: policy.SessionCode},
+		"planner": {Session: policy.SessionPlan},
+	}
+	process := policy.Process{Lanes: []policy.Lane{
+		{Name: policy.LaneReady, Class: "coder"},
+		{Name: policy.LanePlan, Class: "planner"},
+	}}
+	project := policy.ProjectConfig{Repository: "org/repo", Process: "p", Model: policy.ModelStronger}
+	v := policy.Version{ID: 1, Tree: policy.Tree{
+		Document:  policy.Document{Classes: classes},
+		Processes: map[string]policy.Process{"p": process}, Projects: map[string]policy.ProjectConfig{"proj": project}}}
+
+	for name, tc := range map[string]struct {
+		lane string
+		want bool
+	}{"ready lane coder": {policy.LaneReady, true}, "plan lane planner": {policy.LanePlan, false}} {
+		t.Run(name, func(t *testing.T) {
+			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Lane: tc.lane}, &prForgejo{})
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, true, nil }
+			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(1))
+			if got := getInto[TaskConfig](t, val, err); got.Stronger != tc.want {
+				t.Fatalf("Stronger = %v, want %v", got.Stronger, tc.want)
+			}
+		})
+	}
+}
+
 // A session's deadline is now plus its resolved agent time (SessionInput's,
 // over the pinned policy's limits), never later than the activity's own
 // deadline less sessionGrace.

@@ -244,8 +244,10 @@ completion (`closing`), a closed issue or a PR closed without merge
 finish it failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Then: up to
 `limits.sessions` (3) attempts, each `SetState running` then
-`RunSession`, the first on `MODEL` (default `factory/coding-cheap`);
-every session starts from the task branch's head on the fork when the
+`RunSession`, the first on `MODEL` (default `factory/coding-cheap`), or
+on `STRONGER_MODEL` when the task is a coding card (`session: code`) of
+a project whose file sets `model: stronger` (the planner and the
+screening keep their own rungs); every session starts from the task branch's head on the fork when the
 branch exists, else from the base SHA. After a pushed commit
 `OpenPullRequest` (head `factory-agent:factory/<id>`, base `main`,
 `Closes #<issue>`, reusing an open PR for that fork branch and recording
@@ -722,7 +724,7 @@ blocks `lanes`, `dependencies`, `stages`, each with its `on_findings`
 rule, ruling 177, and `merge`) and `projects/<name>.yaml` (one per
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
-quota, secrets, `budget: {month_eur}`). The Go types in `internal/policy` are the
+quota, secrets, `budget: {month_eur}`, `model: stronger`). The Go types in `internal/policy` are the
 schema: `factoryd schema --out <dir>` writes one JSON Schema per file
 kind (draft-07; every enumerated field lists its values, every key its
 doc comment, a key is required unless its yaml tag says `omitempty`),

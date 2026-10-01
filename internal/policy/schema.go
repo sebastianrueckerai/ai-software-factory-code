@@ -53,6 +53,7 @@ var enums = map[string][]string{
 	"ProjectConfig.MergeRule": MergeRules,
 	"ProjectConfig.Objects":   ObjectOwners,
 	"ProjectConfig.Agents":    AgentModes,
+	"ProjectConfig.Model":     ModelValues,
 	"SeedTokens.Read":         SeedSecrets,
 	"SeedTokens.Actions":      SeedSecrets,
 	"SeedTokens.Merge":        SeedSecrets,

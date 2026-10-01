@@ -233,6 +233,11 @@ type ProjectConfig struct {
 	// project has no cap of its own. Stricter wins: bounded by policy.yaml's
 	// budget.month_eur; a looser file is rejected.
 	Budget *ProjectBudget `yaml:"budget,omitempty" json:"budget,omitempty"`
+	// Model runs a coding card's first session on Models.Stronger instead
+	// of the ladder's first rung; the only accepted value is "stronger".
+	// Absent: a coding card starts on the first rung. The planner and
+	// report sessions keep their own rung.
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 }
 
 // ProjectBudget caps a project's spend in EUR.
@@ -299,6 +304,12 @@ var AgentModes = []string{AgentsCoder, AgentsNone}
 
 // MergeRules are the merge_rule values.
 var MergeRules = []string{MergeAuto, MergeHuman}
+
+// ModelStronger is ProjectConfig.Model's only accepted value.
+const ModelStronger = "stronger"
+
+// ModelValues are the model values.
+var ModelValues = []string{ModelStronger}
 
 var (
 	projectFileName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$`)
@@ -405,6 +416,9 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.Budget != nil && p.Budget.MonthEUR < 0 {
 		bad("budget.month_eur must not be negative (0 stops the project's spend)")
+	}
+	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
+		bad("model %q: want one of %v", p.Model, ModelValues)
 	}
 	switch p.Objects {
 	case ObjectsFactory:

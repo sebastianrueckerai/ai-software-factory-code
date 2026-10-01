@@ -158,6 +158,12 @@ type TaskConfig struct {
 	// session's own policy limits.
 	AgentTime time.Duration
 	CheckIn   time.Duration
+	// Stronger: the project's file sets model: stronger and this is a
+	// coding card (Session code); the card's first session runs on
+	// WorkflowConfig.Models.Stronger instead of Models.Start. A run from
+	// before this field existed decodes it false. The planner and report
+	// sessions keep their own rung.
+	Stronger bool
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -660,6 +666,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		return t.finish("failed", "ensure issue: "+errMessage(err))
 	}
 	model := t.cfg.Models.Start
+	if t.cfg.Task.Stronger {
+		model = t.cfg.Models.Stronger
+	}
 	var findings []string
 	startRef, parent := "", ""
 	var u TaskUsage

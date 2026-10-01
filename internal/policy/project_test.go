@@ -52,6 +52,33 @@ func TestProjectBudgetBounded(t *testing.T) {
 	}
 }
 
+// A project's model key is "stronger" or absent; any other value refused.
+func TestProjectModelStronger(t *testing.T) {
+	with := func(model string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], model...)
+		return files
+	}
+	tree, err := ParseTree(with("model: stronger\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Projects["demo-app"].Model; got != ModelStronger {
+		t.Fatalf("Model = %q, want %q", got, ModelStronger)
+	}
+	tree, err = ParseTree(with(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Projects["demo-app"].Model; got != "" {
+		t.Fatalf("Model = %q, want empty (a project with no model key starts on the ladder's first rung)", got)
+	}
+	want := `project demo-app: model "fastest": want one of [stronger]`
+	if _, err := ParseTree(with("model: fastest\n")); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("ParseTree error = %v, want it to contain %q", err, want)
+	}
+}
+
 func TestProjectDefaultAbsentTakesBuiltIns(t *testing.T) {
 	d, err := Parse([]byte(valid))
 	if err != nil {

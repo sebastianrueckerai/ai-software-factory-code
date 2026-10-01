@@ -763,6 +763,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = lane.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
+	tc.Stronger = tc.Session == policy.SessionCode && project.Model == policy.ModelStronger
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
 	return tc, nil
 }
