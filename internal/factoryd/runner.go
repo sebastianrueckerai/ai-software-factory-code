@@ -40,7 +40,6 @@ type RunnerConfig struct {
 	Models               ModelLadder
 	AnswerTokens         int
 	HeadroomTokens       int
-	AnswerSlice          time.Duration // agent time a human answer guarantees the attempt it buys
 	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
 	// Supervisor is the session supervisor's configuration; its agent
@@ -251,7 +250,6 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		Models:        r.cfg.Models,
 		MaxSessions:   l.Sessions,
 		WallClockCap:  l.AgentTime,
-		AnswerSlice:   r.cfg.AnswerSlice,
 		ChecksTimeout: r.cfg.ChecksTimeout,
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,

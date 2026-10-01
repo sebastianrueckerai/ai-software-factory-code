@@ -576,10 +576,11 @@ ahead of the objective as settled
 answers the agent must not escalate again; the `session_start` timeline
 step records them. The
 human is the one party allowed to raise a limit: the answer buys the
-extra attempt, and if less than `ESCALATION_ANSWER_SLICE` (10 min, never
-more than `limits.agent_time`) of agent time is left under the cap, the
-answer also grants the difference, so every answer gets at least that
-slice of working time. Both grants are recorded on the task row. Every
+extra attempt, and if less than a quarter of the task's resolved agent
+time (never under the 5 minutes a session needs to start) is left under
+the cap, the answer also grants the difference, so every answer gets at
+least that slice of working time (change id `answer-slice`, ruling 237).
+Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.
 

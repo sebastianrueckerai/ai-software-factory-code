@@ -120,9 +120,10 @@ type WorkflowConfig struct {
 	// WallClockCap bounds the agent's working time across all sessions of
 	// a task; waiting on checks or on a reviewer does not count.
 	WallClockCap time.Duration
-	// AnswerSlice is the agent time a human answer guarantees the attempt
-	// it buys, granted on top of the cap when less is left: at most this
-	// much per answer, never more than the cap.
+	// AnswerSlice is the agent time a human answer guaranteed the attempt
+	// it bought, for a run from before the change id "answer-slice": kept
+	// only so that history still replays. A current run computes the
+	// slice as a quarter of WallClockCap (grant).
 	AnswerSlice   time.Duration
 	ChecksTimeout time.Duration
 	// StrongerAfter is how many returns from the same stage keep the
@@ -342,6 +343,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
 	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
+	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -580,6 +582,12 @@ const (
 	// screening stage's verdict does. A healed run screens the answers it
 	// rebuilt again.
 	versionScreenAnswers workflow.Version = 1
+	// versionAnswerSlice (change id "answer-slice", ruling 237, item 136):
+	// a human answer's slice is a quarter of the task's resolved agent
+	// time, never under min(minSession, WallClockCap): WorkflowConfig's
+	// own AnswerSlice no longer bounds it. A run from before the change
+	// keeps that field's value instead (grant).
+	versionAnswerSlice workflow.Version = 1
 )
 
 // minSession is the least agent time a session starts with, or the whole
@@ -614,6 +622,7 @@ type taskRun struct {
 	judged            []string // the heads a verification took up (versionKeepWork)
 	answerScreening   workflow.Version
 	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
+	answerSlice       workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1030,14 +1039,20 @@ func (t *taskRun) climbed(stronger bool) bool {
 }
 
 // grant is what a human answer buys; only a human raises a limit. One
-// more attempt, and when less than AnswerSlice of agent time is left, the
-// difference, so the attempt is not born at the cap.
+// more attempt, and when less than the slice of agent time is left, the
+// difference, so the attempt is not born at the cap. The slice is a
+// quarter of the resolved agent time, never under the 5 minutes a session
+// needs to start (versionAnswerSlice); a run from before the change id
+// keeps WorkflowConfig.AnswerSlice instead.
 func (t *taskRun) grant(u *TaskUsage) {
 	u.ExtraAttempts++
 	if t.v5 < versionPersistUsage {
 		return
 	}
 	slice := min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
+	if t.answerSlice >= versionAnswerSlice {
+		slice = max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
+	}
 	if left := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime; left < slice {
 		u.ExtraTime += slice - left
 	}

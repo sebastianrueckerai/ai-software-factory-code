@@ -519,8 +519,8 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 {
 		t.Fatalf("sessions = %+v, want one, the fourth, after the answer", h.sessions)
 	}
-	if h.usage[0] != (TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3, ExtraTime: 2 * time.Minute, ExtraAttempts: 1}) {
-		t.Fatalf("usage = %+v, want the answer's grant first: an attempt, and 2m to a 10m slice", h.usage)
+	if h.usage[0] != (TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3, ExtraAttempts: 1}) {
+		t.Fatalf("usage = %+v, want the answer's grant first: an attempt, no extra time (8m left already covers the 5m slice)", h.usage)
 	}
 }
 
@@ -918,7 +918,7 @@ func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 			state:   RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c3", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}},
 			results: []SessionResult{pushed("s2", "c4")},
 			want:    []string{"pr c3 after 0 cards", "approval c3", "session 2 after 0 cards", "pr c4 after 0 cards", "approval c4"},
-			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 10 * time.Minute, ExtraAttempts: 1},
+			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
 		},
 	} {
 		h := newWorkflowHarness(t)
@@ -1308,8 +1308,9 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	}
 }
 
-// A human answer near the cap gets a fresh slice: at least AnswerSlice of
-// agent time is left for the attempt it buys, granted on the task's row.
+// A human answer near the cap gets a fresh slice: at least a quarter of
+// the task's agent time is left for the attempt it buys, granted on the
+// task's row.
 func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(19 * time.Minute).Return(
@@ -1329,7 +1330,82 @@ func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
 		t.Fatalf("final = %q after %d sessions, finals = %v; want done after the answer's attempt", final, len(h.sessions), h.finals)
 	}
-	want := TaskUsage{AgentTime: 24 * time.Minute, Attempts: 2, ExtraTime: 9 * time.Minute, ExtraAttempts: 1}
+	want := TaskUsage{AgentTime: 24 * time.Minute, Attempts: 2, ExtraTime: 4 * time.Minute, ExtraAttempts: 1}
+	if last := h.usage[len(h.usage)-1]; last != want {
+		t.Fatalf("usage = %+v, want %+v", last, want)
+	}
+}
+
+// The slice a human answer buys is a quarter of the task's resolved agent
+// time, floored at min(minSession, WallClockCap) so the attempt it buys is
+// never born under the 5 minutes a session needs to start (ruling 237,
+// change id "answer-slice"). Each case escalates with no agent time left,
+// so the grant's ExtraTime is the slice itself, and the session after it
+// (1 minute, well inside even the smallest slice) completes: the slice was
+// the next session's remaining budget too.
+func TestAnswerSliceIsAQuarterOfTheAgentTime(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cap       time.Duration
+		wantExtra time.Duration
+	}{
+		"2h, used 2h, a quarter":   {cap: 2 * time.Hour, wantExtra: 30 * time.Minute},
+		"10m, used 10m, the floor": {cap: 10 * time.Minute, wantExtra: 5 * time.Minute},
+		"30m, used 30m, a quarter": {cap: 30 * time.Minute, wantExtra: 7*time.Minute + 30*time.Second},
+	} {
+		cfg := testWorkflowConfig
+		cfg.WallClockCap = tc.cap
+		h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(tc.cap).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "stuck"}, nil
+			}).Once()
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				return pushed("s2", "c2"), nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(tc.cap+5*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try again", Comment: 602})
+		h.signalAfter(tc.cap+20*time.Minute, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+			t.Fatalf("%s: final = %q after %d sessions, finals = %v; want done after the answer's attempt", name, final, len(h.sessions), h.finals)
+		}
+		want := TaskUsage{AgentTime: tc.cap + time.Minute, Attempts: 2, ExtraTime: tc.wantExtra, ExtraAttempts: 1}
+		if last := h.usage[len(h.usage)-1]; last != want {
+			t.Fatalf("%s: usage = %+v, want %+v", name, last, want)
+		}
+	}
+}
+
+// A run from before the change id "answer-slice" keeps WorkflowConfig's own
+// AnswerSlice instead of a quarter of the cap: with cap 2h, a quarter would
+// be 30m, but AnswerSlice 10m (never more than the cap) governs, as it did
+// before the change.
+func TestAnswerSliceBeforeTheChange(t *testing.T) {
+	cfg := testWorkflowConfig
+	cfg.WallClockCap, cfg.AnswerSlice = 2*time.Hour, 10*time.Minute
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	h.env.OnGetVersion("answer-slice", workflow.DefaultVersion, versionAnswerSlice).Return(workflow.DefaultVersion)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(2 * time.Hour).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "stuck"}, nil
+		}).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s2", "c2"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(2*time.Hour+5*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try again", Comment: 602})
+	h.signalAfter(2*time.Hour+20*time.Minute, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, finals = %v; want done after the answer's attempt", final, len(h.sessions), h.finals)
+	}
+	want := TaskUsage{AgentTime: 2*time.Hour + time.Minute, Attempts: 2, ExtraTime: 10 * time.Minute, ExtraAttempts: 1}
 	if last := h.usage[len(h.usage)-1]; last != want {
 		t.Fatalf("usage = %+v, want %+v", last, want)
 	}

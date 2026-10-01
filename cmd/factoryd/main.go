@@ -146,7 +146,6 @@ func main() {
 		Models:               ladder,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
-		AnswerSlice:          envDuration("ESCALATION_ANSWER_SLICE", 10*time.Minute),
 		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
