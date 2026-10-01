@@ -58,6 +58,7 @@ var activityGates = map[string]string{
 	ActivityMerge:            GateMerge,
 	ActivityEscalate:         GateHuman,
 	ActivityScreen:           GateScreening,
+	ActivityScreenAnswer:     GateScreening,
 	ActivityRunReport:        GateSession,
 	ActivityGateAudit:        GateAudit,
 	ActivityRunPlan:          GateSession,
@@ -69,7 +70,7 @@ var activityGates = map[string]string{
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
-	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead}
+	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

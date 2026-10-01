@@ -86,6 +86,7 @@ const (
 	ActivityCloseNotReproduced          = "CloseNotReproduced"
 	ActivityScreen                      = "Screen"
 	ActivityJudgeScreening              = "JudgeScreening"
+	ActivityScreenAnswer                = "ScreenAnswer"
 	ActivityRunReport                   = "RunReport"
 	ActivityRollCommit                  = "RollCommit"
 	ActivityRerunChecks                 = "RerunChecks"
@@ -340,6 +341,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
 	run.plan = workflow.GetVersion(ctx, "plan", workflow.DefaultVersion, versionPlan)
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
+	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -571,6 +573,13 @@ const (
 	// answer buys time; a branch with nothing past the base fails at the
 	// agent-time cap as before.
 	versionKeepWork workflow.Version = 1
+	// versionScreenAnswers (change id "screen-answers", item 132): before
+	// each session, the answers of the issue's author no screening read yet
+	// go through ScreenAnswer on a task whose author is not a writer and
+	// whose screening stage applies; a suspect one waits on a human as the
+	// screening stage's verdict does. A healed run screens the answers it
+	// rebuilt again, unless it waits on that human.
+	versionScreenAnswers workflow.Version = 1
 )
 
 // minSession is the least agent time a session starts with, or the whole
@@ -603,6 +612,8 @@ type taskRun struct {
 	plan              workflow.Version
 	keepWork          workflow.Version
 	judged            []string // the heads a verification took up (versionKeepWork)
+	answerScreening   workflow.Version
+	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -747,14 +758,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.pr = st.PR
 			return t.roll(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
-			// the screening's human, asked again; the answer runs the
-			// first session
+			// the screening's human, asked again; the answer runs the next
+			// session and covers every answer on the issue
+			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitScreening(healedReason, cmp.Or(st.Question, screeningQuestion))
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = answer
-			if st.WriteUp != "" {
+			findings, t.screened = answer, len(t.posterInfo)
+			if st.WriteUp != "" && u.Attempts == 0 {
 				findings = append(findings, writeUpFinding(st.WriteUp))
 			}
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
@@ -848,6 +860,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
+		final, why, answer := t.screenAnswers()
+		if final != "" {
+			return t.finish(final, why)
+		}
+		findings = append(findings, answer...)
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}

@@ -138,6 +138,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityScreen:         func(ctx context.Context, taskID string) (ScreenResult, error) { return ScreenResult{}, nil },
 		ActivityJudgeScreening: func(ctx context.Context, taskID, verdict string) error { return nil },
+		ActivityScreenAnswer: func(ctx context.Context, taskID, text string, pin int64) (ScreenResult, error) {
+			return ScreenResult{}, nil
+		},
 		ActivityRunReport: func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
 			return ReportResult{}, nil
 		},

@@ -76,6 +76,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityCloseNotReproduced:          r.CloseNotReproduced,
 		ActivityScreen:                      r.Screen,
 		ActivityJudgeScreening:              r.JudgeScreening,
+		ActivityScreenAnswer:                r.ScreenAnswer,
 		ActivityRunReport:                   r.RunReport,
 		ActivityRollCommit:                  r.RollCommit,
 		ActivityGateAudit:                   r.GateAudit,
@@ -158,8 +159,10 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
 		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"},
-		// waiting-human: a human answered a gate's escalation and the gate runs again
-		"in-review": {"running", "in-review", "waiting-human"},
+		// waiting-human: a human answered a gate's escalation and the gate runs
+		// again; waiting-poster: a cap right after the author's answer
+		// verifies the branch's head
+		"in-review": {"running", "in-review", "waiting-human", "waiting-poster"},
 	}[state]
 	if from == nil {
 		return terminalError("unknown task state %q", state)
@@ -463,8 +466,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	}
 	if t.Status != "waiting-human" {
 		// queued: the screening stage's suspect verdict, before any session;
-		// waiting-deps: a dependency ended failed or closed
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review"}, "waiting-human"); err != nil {
+		// waiting-deps: a dependency ended failed or closed; waiting-poster:
+		// the author's answer screened suspect, or a cap reached on it
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster"}, "waiting-human"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")

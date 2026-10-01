@@ -470,17 +470,52 @@ func (t *taskRun) screen() (final, why string, findings []string) {
 	if decided {
 		return v.final, v.reason, v.findings
 	}
-	if err != nil {
-		res = ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"the screening failed: " + errMessage(err)}}
-	}
-	if res.Verdict == ScreenClear {
+	return t.awaitSuspect(suspectReasons(res, err))
+}
+
+// screenAnswers screens the answers of the issue's author the screening
+// has not read (versionScreenAnswers), on a task whose author is not a
+// writer and whose screening stage applies: one ScreenAnswer each, then
+// one card with every suspect one's reasons.
+func (t *taskRun) screenAnswers() (final, why string, findings []string) {
+	if t.answerScreening < versionScreenAnswers || t.screened >= len(t.posterInfo) || t.standing == harness.StandingWriter {
 		return "", "", nil
 	}
-	reasons := res.Reasons
-	if len(reasons) == 0 {
-		reasons = []string{fmt.Sprintf("the screening gave no clear verdict (%q)", res.Verdict)}
+	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageScreening })
+	if i < 0 || t.skipReason(t.cfg.Stages[i]) != "" {
+		return "", "", nil
 	}
-	// on_findings is human: the loader refuses anything else (ruling 182)
+	ctx := workflow.WithActivityOptions(t.ctx, reviewOptions())
+	var reasons []string
+	for ; t.screened < len(t.posterInfo); t.screened++ {
+		var res ScreenResult
+		err := workflow.ExecuteActivity(ctx, ActivityScreenAnswer, t.taskID, t.posterInfo[t.screened], t.cfg.PolicyVersion).Get(t.ctx, &res)
+		reasons = append(reasons, suspectReasons(res, err)...)
+	}
+	return t.awaitSuspect(reasons)
+}
+
+// suspectReasons are what a screening's verdict, or its failure err, puts
+// on the card: none for clear.
+func suspectReasons(res ScreenResult, err error) []string {
+	switch {
+	case err != nil:
+		return []string{"the screening failed: " + errMessage(err)}
+	case res.Verdict == ScreenClear:
+		return nil
+	case len(res.Reasons) == 0:
+		return []string{fmt.Sprintf("the screening gave no clear verdict (%q)", res.Verdict)}
+	}
+	return res.Reasons
+}
+
+// awaitSuspect waits on the human who reads the screening's reasons; none
+// waits on no one. The stage's on_findings is human: the loader refuses
+// anything else (ruling 182).
+func (t *taskRun) awaitSuspect(reasons []string) (final, why string, findings []string) {
+	if len(reasons) == 0 {
+		return "", "", nil
+	}
 	return t.awaitScreening(screeningAsks+strings.Join(reasons, "; ")+
 		"\nReply on this issue to let the agent work on it, or close the issue.", screeningQuestion)
 }
