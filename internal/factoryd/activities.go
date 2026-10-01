@@ -396,7 +396,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
-		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": r.branch(t), "commit": res.Commit})
+		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": taskBranch(t), "commit": res.Commit})
 		// a session that ended without its last word keeps the one before
 		if out.agentText != "" {
 			if err := r.store.SetAgentSummary(ctx, t.ID, textutil.Truncate(out.agentText, maxAgentSummary)); err != nil {
@@ -411,7 +411,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 // ref, else main's current head, which becomes the task's base.
 func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string) (string, error) {
 	fork := r.forgejo.Fork(repo)
-	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(*t))
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(*t))
 	switch {
 	case err == nil:
 		return head, nil
@@ -659,7 +659,7 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	if err != nil {
 		return PullRequest{}, err
 	}
-	branch, fork := r.branch(t), r.forgejo.Fork(repo)
+	branch, fork := taskBranch(t), r.forgejo.Fork(repo)
 	existing, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch)
 	if err != nil {
 		return PullRequest{}, err
@@ -716,7 +716,7 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 	}
 	for _, dir := range WorkflowDirs {
 		if was[dir] != now[dir] {
-			return terminalError("branch %s changes %s/ (commit %s against base %s); factoryd opens no pull request that edits a workflow directory", r.branch(t), dir, commit, base)
+			return terminalError("branch %s changes %s/ (commit %s against base %s); factoryd opens no pull request that edits a workflow directory", taskBranch(t), dir, commit, base)
 		}
 	}
 	return nil
@@ -800,7 +800,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		pr = &got
-	} else if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), r.branch(t)); err != nil {
+	} else if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), taskBranch(t)); err != nil {
 		return RunState{}, err
 	}
 	switch {
@@ -1011,7 +1011,7 @@ func (r *Runner) BranchHead(ctx context.Context, taskID string) (string, error) 
 		return "", err
 	}
 	fork := r.forgejo.Fork(repo)
-	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return "", nil
@@ -1034,12 +1034,12 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 		return "", err
 	}
 	fork := r.forgejo.Fork(repo)
-	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, r.branch(t))
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
 	if err != nil {
 		return "", fmt.Errorf("branch head: %w", err)
 	}
 	if head == sha {
-		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, r.branch(t), "", "factoryd: run the checks of "+sha+" again", nil); err != nil {
+		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, taskBranch(t), "", "factoryd: run the checks of "+sha+" again", nil); err != nil {
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
@@ -1182,7 +1182,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		}
 		if final == "done" || final == "closed" {
 			fork := r.forgejo.Fork(repo)
-			if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, r.branch(t))); err != nil {
+			if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, taskBranch(t))); err != nil {
 				return err
 			}
 		}
@@ -1257,7 +1257,7 @@ func (r *Runner) closeTaskPullRequest(ctx context.Context, repo Repo, t Task, ms
 		pr = &state
 	} else {
 		var err error
-		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo), r.branch(t)); err != nil {
+		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, r.forgejo.Fork(repo), taskBranch(t)); err != nil {
 			return err
 		}
 	}

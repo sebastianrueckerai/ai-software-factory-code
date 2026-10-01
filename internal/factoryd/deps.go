@@ -372,7 +372,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 			return 0, stopped("labelling its issue", err)
 		}
 	}
-	if err := r.forgejo.CopyBranch(ctx, r.forgejo.Fork(repo), r.branch(old), r.branch(t)); err != nil {
+	if err := r.forgejo.CopyBranch(ctx, r.forgejo.Fork(repo), taskBranch(old), taskBranch(t)); err != nil {
 		return 0, stopped("copying the branch", err)
 	}
 	signalDependents(ctx, r.store, r.cfg.Workflows, t.ID)

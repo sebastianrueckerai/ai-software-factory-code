@@ -964,8 +964,6 @@ func (r *Runner) agentNamespace(taskID string) string {
 	return r.cfg.AgentNamespacePrefix + taskID
 }
 
-func (r *Runner) branch(t Task) string { return taskBranch(t) }
-
 // taskBranch is task t's branch on the bot's fork.
 func taskBranch(t Task) string { return "factory/" + t.ID }
 
@@ -995,7 +993,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "OBJECTIVE", "value": t.Objective},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
-		{"name": "BRANCH", "value": r.branch(t)},
+		{"name": "BRANCH", "value": taskBranch(t)},
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
@@ -1014,7 +1012,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "MODE", "value": "clone"},
 		{"name": "REPO_URL", "value": r.repoURL(s.repo)},
 		{"name": "REPO_SHA", "value": s.startRef},
-		{"name": "BRANCH", "value": r.branch(t)},
+		{"name": "BRANCH", "value": taskBranch(t)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
 	}

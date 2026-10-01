@@ -612,7 +612,7 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	fork, branch := r.forgejo.Fork(repo), r.branch(t)
+	fork, branch := r.forgejo.Fork(repo), taskBranch(t)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch)
 	exists := err == nil
 	if err != nil && !errors.Is(err, ErrNotFound) {
