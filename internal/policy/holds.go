@@ -253,27 +253,23 @@ var now = time.Now
 // FreeHeadroom reads r's task's, the UTC day's, the UTC calendar month's
 // and the task's project's month headroom inside tx (under LockHeadroom).
 // The project's is r.ProjectEUR less the month's ledger rows and the
-// outstanding holds of every task of the task's repository. Every
-// outstanding hold counts against the day and the month. A task that is
-// neither running nor in review is refused: settlement relies on a
-// finished task taking no new hold.
+// outstanding holds of every task of the task's repository, read only
+// under a cap (+Inf otherwise). Every outstanding hold counts against the
+// day and the month. A task that is neither running nor in review is
+// refused: settlement relies on a finished task taking no new hold.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
-	taskID := r.TaskID
+	taskID, at := r.TaskID, now()
 	var f Free
 	var status string
-	var taskHeld, allHeld, projectSpent, projectHeld float64
+	var taskHeld, allHeld float64
 	err := tx.QueryRowContext(ctx,
 		`SELECT status, (budget_eur - spent_eur)::float8,
 		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
 		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = ($4::timestamptz AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
 		        ($3 - `+MonthSpentSQL("$4::timestamptz")+`)::float8,
-		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8,
-		        COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
-		                  WHERE p.repository = tasks.repository AND l.kind <> 'standing'
-		                    AND l.day >= date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC')::date), 0)::float8,
-		        COALESCE((SELECT sum(h.eur) FROM holds h JOIN tasks p ON p.id = h.task_id WHERE p.repository = tasks.repository), 0)::float8
-		 FROM tasks WHERE id = $1`, taskID, r.DayEUR, r.MonthEUR, now(),
-	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &f.MonthHeadroom, &allHeld, &projectSpent, &projectHeld)
+		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
+		 FROM tasks WHERE id = $1`, taskID, r.DayEUR, r.MonthEUR, at,
+	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &f.MonthHeadroom, &allHeld)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Free{}, fmt.Errorf("hold: no task row for %s", taskID)
 	}
@@ -284,8 +280,21 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, status)}
 	}
 	f.Task, f.Day, f.Month = f.TaskHeadroom-taskHeld, f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
-	f.ProjectHeadroom = r.ProjectEUR - projectSpent
-	f.Project = f.ProjectHeadroom - projectHeld
+	f.ProjectHeadroom, f.Project = math.Inf(1), math.Inf(1)
+	if math.IsInf(r.ProjectEUR, 1) {
+		return f, nil
+	}
+	// a standing line's task id is standing:<repository>: it joins no task
+	var spent, held float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
+		                  WHERE p.repository = t.repository AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date), 0)::float8,
+		        COALESCE((SELECT sum(h.eur) FROM holds h JOIN tasks p ON p.id = h.task_id WHERE p.repository = t.repository), 0)::float8
+		 FROM tasks t WHERE t.id = $1`, taskID, at).Scan(&spent, &held); err != nil {
+		return Free{}, err
+	}
+	f.ProjectHeadroom = r.ProjectEUR - spent
+	f.Project = f.ProjectHeadroom - held
 	return f, nil
 }
 

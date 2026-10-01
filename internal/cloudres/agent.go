@@ -252,9 +252,10 @@ func envelopeUse(ctx context.Context, q rowQuerier, repo string) (EnvelopeUse, e
 // Reserve decides a commission in one transaction under the headroom lock:
 // the project's envelope, then, beyond it, an approved request of the task for the same or a
 // larger spec, else the pending or denied one, else a new approval
-// request; within it (or approved), the reservation against the task's
-// and the day's headroom (a *policy.Refusal when it does not fit) and the
-// registry rows, written before any resource is created.
+// request; within it (or approved), the reservation against the task's,
+// the day's, the month's and the project's headroom (a *policy.Refusal
+// when it does not fit) and the registry rows, written before any resource
+// is created.
 func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commission, error) {
 	tx, err := a.DB.BeginTx(ctx, nil)
 	if err != nil {

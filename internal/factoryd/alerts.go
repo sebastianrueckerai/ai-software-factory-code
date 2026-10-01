@@ -45,7 +45,7 @@ const (
 type Alert struct {
 	ID         int64
 	Kind       string
-	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor, cap (the session cap's card) or month_cap; month_cap: the percent
+	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor, cap (the session cap's card), month_cap or project_cap; month_cap: the percent
 	TaskID     string
 	RaisedAt   time.Time
 	BoundS     int // gate_bound only

@@ -819,7 +819,9 @@ the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
 session and gate supervisor, `audit_model` for the audit; a class without one gets no such call).
 The gateway never reads the files, only the version in force in
-Postgres. `day_eur: 0` or `month_eur: 0` stops all spend. A project's
+Postgres. `day_eur: 0` stops all spend; `month_eur: 0` does too, but
+only in a commit that also lowers every project's `budget.month_eur` to 0
+(a project cap looser than the policy's is refused). A project's
 file may cap its tasks together per UTC calendar month with
 `budget: {month_eur: N}`, 0 to the policy's `month_eur` (0 stops the
 project's spend); without it the project has no cap of its own. A call

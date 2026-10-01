@@ -517,8 +517,9 @@ func TestMonthHeadroom(t *testing.T) {
 
 // A project's month cap (budget.month_eur in its file) bounds its tasks
 // together: the cap less the month's ledger rows of the tasks of its
-// repository, standing lines and earlier months left out, less their
-// outstanding holds. Hand-derived: p/p's cap 1.00, its task o spent 0.90
+// repository, earlier months left out, less their outstanding holds; a
+// standing line (task id standing:<repository>) joins no task. Hand-derived:
+// p/p's cap 1.00, its task o spent 0.90
 // this month (and 5 last month); a has budget 2, the day cap is 20 and the
 // month 50, so a's headroom is task 2, day 19.10, month 49.10, project
 // 0.10. Task b of q/q has no cap and the same numbers.
@@ -584,6 +585,33 @@ func TestProjectCapBoundsHeadroom(t *testing.T) {
 	if _, err := TakeHold(ctx, db, model); !errors.As(err, &r) || r.Decision != RefusedProjectCap ||
 		!strings.HasSuffix(r.Reason, "; the project cap budget.month_eur in projects/p.yaml is spent, and only a human raises it, by a commit") {
 		t.Fatalf("a's model call under a spent cap = %v, want refused_project_cap naming projects/p.yaml", err)
+	}
+}
+
+// A project without a cap costs its holds no project query: with
+// tasks.repository gone inside the transaction, the uncapped headroom still
+// reads, and only a capped one fails on the column.
+func TestNoProjectQueryWithoutACap(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository) VALUES ('a', 2, 0, 'running', 'p/p')`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE tasks DROP COLUMN repository`); err != nil {
+		t.Fatal(err)
+	}
+	req := HoldRequest{TaskID: "a", Kind: KindModel, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
+	if f, err := FreeHeadroom(ctx, tx, req); err != nil || !math.IsInf(f.ProjectHeadroom, 1) || !math.IsInf(f.Project, 1) || !near(f.Task, 2) {
+		t.Fatalf("uncapped headroom without tasks.repository = (%+v, %v), want task 2 and the project's +Inf", f, err)
+	}
+	req.Project, req.ProjectEUR = "p", 1
+	if _, err := FreeHeadroom(ctx, tx, req); err == nil || !strings.Contains(err.Error(), "repository") {
+		t.Fatalf("capped headroom without tasks.repository = %v, want the project query to fail on the column", err)
 	}
 }
 
