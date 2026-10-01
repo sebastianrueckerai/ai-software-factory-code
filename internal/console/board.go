@@ -89,10 +89,14 @@ type card struct {
 	PlanIssue       int64  // a plan's card: the plan's issue
 	Moves           []move // a backlog card: the starting lanes the viewer may move it into
 	Plan            *planCards
+	Retry           *retry // a failed plan card's Retry, for an approver who may move it into ready
 }
 
 // move is a backlog card's button into a starting lane.
 type move struct{ Lane, Title, CSRF, Project string }
+
+// retry is a failed plan card's Retry button.
+type retry struct{ CSRF, Project string }
 
 // planCards are an accepted plan's cards and, for an approver while any
 // is in the backlog, Start plan (CSRF set).
@@ -301,6 +305,20 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		byID[bt.ID] = bt.Task
 	}
 	unchecked := false
+	// mayReady: the viewer, an approver, may move t's cards into ready,
+	// as Start plan and Retry do
+	mayReady := func(t factoryd.Task) bool {
+		if !d.Approver {
+			return false
+		}
+		_, proc := processOf(byRepo, t)
+		ready, _ := proc.Lane(policy.LaneReady)
+		ok, err := c.mayMoveCached(ctx, t.Repository, s.user, ready.MovedBy)
+		if err != nil {
+			log.Printf("console: may %s move %s's cards into ready: %v", s.user, t.Repository, err)
+		}
+		return ok
+	}
 	for _, bt := range tasks {
 		t := bt.Task
 		if !inView(t.Repository) {
@@ -347,18 +365,16 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 			}
 		}
 		if t.Lane == policy.LanePlan && t.Status == "done" {
-			_, proc := processOf(byRepo, t)
-			ready, _ := proc.Lane(policy.LaneReady)
-			mayStart := d.Approver
-			if mayStart {
-				if mayStart, err = c.mayMoveCached(ctx, t.Repository, s.user, ready.MovedBy); err != nil {
-					log.Printf("console: may %s start plan %s: %v", s.user, t.ID, err)
-				}
-			}
-			if k.Plan, err = c.planCards(ctx, t, mayStart, s.csrf, project); err != nil {
+			if k.Plan, err = c.planCards(ctx, t, mayReady(t), s.csrf, project); err != nil {
 				log.Printf("console: the cards of plan %s: %v", t.ID, err)
 				d.Problems = append(d.Problems, "the cards of plan "+t.ID+" could not be read")
 			}
+		}
+		// a retry that stopped before its replacement got an issue is finished by the next
+		replacement, retried := byID[factoryd.RetryID(t.ID)]
+		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
+			mayReady(t) {
+			k.Retry = &retry{CSRF: s.csrf, Project: project}
 		}
 		if ok {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)

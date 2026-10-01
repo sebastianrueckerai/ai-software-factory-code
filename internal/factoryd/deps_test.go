@@ -3,7 +3,9 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -258,15 +260,15 @@ func depSteps(t *testing.T, objects *fakeObjectStore, id string) []string {
 	return out
 }
 
-// A dependency that ended failed or closed opens the card with the
-// reason: an answer starts the card with the reason as a finding, a close
-// ends it closed.
-func TestFailedDependencyOpensCard(t *testing.T) {
-	const reason = "dependency #3 (links-api) ended failed: close this card, or answer to start it anyway"
+// A dependency that ended closed opens the card with the reason: an
+// answer starts the card with the reason as a finding, a close ends it
+// closed.
+func TestClosedDependencyOpensCard(t *testing.T) {
+	const reason = "dependency #3 (links-api) ended closed: close this card, or answer to start it anyway"
 	failed := func(h *workflowHarness) {
 		h.taskConfig = depsConfig()
 		h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(
-			DepState{Waiting: []int64{5}, Ended: &Dependency{TaskID: "t-a", Issue: 3, Key: "links-api", Status: "failed"}}, nil)
+			DepState{Waiting: []int64{5}, Ended: &Dependency{TaskID: "t-a", Issue: 3, Key: "links-api", Status: "closed"}}, nil)
 	}
 	t.Run("answer starts", func(t *testing.T) {
 		h := newWorkflowHarness(t)
@@ -385,15 +387,17 @@ func TestFailedDependencyOpensCard(t *testing.T) {
 }
 
 // The heal pass signals dep_ended to a waiting card whose wait would end
-// (every dependency done, or one ended failed), not to one still waiting,
-// and starts the workflow of every waiting card.
+// (every dependency done, or one ended closed), not to one still waiting,
+// a failed dependency's included, and starts the workflow of every
+// waiting card.
 func TestHealSignalsWaitingCards(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	for id, st := range map[string]string{"t-done": "done", "t-failed": "failed", "t-open": "running"} {
+	for id, st := range map[string]string{"t-done": "done", "t-failed": "failed", "t-closed": "closed", "t-open": "running"} {
 		store.CreateTask(ctx, Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code"})
 	}
-	for id, deps := range map[string][]string{"tw-free": {"t-done"}, "tw-failed": {"t-done", "t-failed", "t-open"}, "tw-waits": {"t-done", "t-open"}} {
+	for id, deps := range map[string][]string{"tw-free": {"t-done"}, "tw-failed": {"t-done", "t-failed"}, "tw-closed": {"t-done", "t-closed", "t-open"},
+		"tw-waits": {"t-done", "t-open"}} {
 		store.CreateTask(ctx, Task{ID: id, Status: "waiting-deps", Kind: "agent", Repository: "sf/ai-software-factory-code"})
 		store.AddTaskDeps(ctx, id, deps)
 	}
@@ -407,10 +411,10 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 		}
 	}
 	slices.Sort(dep)
-	if !slices.Equal(dep, []string{"tw-failed", "tw-free"}) {
-		t.Fatalf("dep_ended to %v, want tw-failed and tw-free", dep)
+	if !slices.Equal(dep, []string{"tw-closed", "tw-free"}) {
+		t.Fatalf("dep_ended to %v, want tw-closed and tw-free", dep)
 	}
-	for _, id := range []string{"tw-free", "tw-failed", "tw-waits"} {
+	for _, id := range []string{"tw-free", "tw-failed", "tw-closed", "tw-waits"} {
 		if !slices.Contains(wf.started, id) {
 			t.Fatalf("started = %v, want every waiting card's workflow", wf.started)
 		}
@@ -441,5 +445,425 @@ func TestNoDepsNoWait(t *testing.T) {
 				t.Fatalf("final = %q", final)
 			}
 		})
+	}
+}
+
+// Item 119: a dependency that failed keeps the card waiting, with no human
+// card, until the failed card is retried; one closed ends the wait. A card
+// a human was asked about a failed dependency before (a healed run in
+// waiting-human) goes back to the wait.
+func TestFailedDependencyKeepsTheCardWaiting(t *testing.T) {
+	for _, status := range []string{"queued", "waiting-human"} {
+		t.Run(status, func(t *testing.T) {
+			ctx := context.Background()
+			card := Task{ID: "t-c", Kind: "agent", Status: status, Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+			r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{7: {"agent"}}})
+			store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "failed", Repository: "sf/repo", IssueNumber: 5, PlanKey: "links"})
+			store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
+			ask := func() DepState {
+				t.Helper()
+				v, err := execActivity(t, r, ActivityDependencies, "t-c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				var d DepState
+				if err := v.Get(&d); err != nil {
+					t.Fatal(err)
+				}
+				return d
+			}
+			if d := ask(); !slices.Equal(d.Waiting, []int64{5}) || d.Ended != nil {
+				t.Fatalf("failed dependency: %+v, want waiting on 5 and none ended", d)
+			}
+			if got, _, _ := store.Task(ctx, "t-c"); got.Status != "waiting-deps" || got.Gate != GateDependencies {
+				t.Fatalf("card %s in gate %q, want waiting-deps in gate dependencies", got.Status, got.Gate)
+			}
+			a := store.tasks["t-a"]
+			a.Status = "closed"
+			store.tasks["t-a"] = a
+			if d := ask(); d.Ended == nil || *d.Ended != (Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "closed"}) {
+				t.Fatalf("closed dependency: Ended = %+v, want #5 closed", d.Ended)
+			}
+		})
+	}
+}
+
+// retryCard is linkshort's card links-api of plan t-plan (#1), as
+// CreateChildren files it.
+const retryCard = "Links API\n\nCard links-api of plan #1 (2 of 4), accepted by sebastian. Written by the planner.\n\n" +
+	"POST /api/links creates a link.\n\nDirectories (guidance, not a boundary): none\nDepends on: #4 (foundation)\nAcceptance:\n" +
+	"- POST /api/links answers 201\nSize: small"
+
+// newRetryRig is plan t-plan (#1) on linkshort with its cards: the
+// foundation t-f (#4) done, A t-a (#5, links-api) failed with the reason
+// "wall-clock cap reached" and its branch at c7, depending on the
+// foundation, and B t-b (#6, redirects) waiting on A; issues up to #8
+// exist.
+func newRetryRig(t *testing.T) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo, *fakeWorkflows) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, objects, fj := newPlanRunner(t, testPlan())
+	for n := int64(2); n <= 8; n++ {
+		fj.issues[n] = &planIssue{title: fmt.Sprintf("issue %d", n), poster: "factory-agent", state: "open"}
+	}
+	fj.next = 8
+	fj.branches = map[string]string{"main": "m1", "factory/t-a": "c7"}
+	card := func(id string, n int64, status, key, objective string) Task {
+		return Task{ID: id, Kind: "agent", Status: status, Lane: policy.LaneReady, Process: "spec", Repository: "linkshort/linkshort",
+			IssueNumber: n, Source: SourcePlan, Parent: "t-plan", PlanKey: key, Priority: 2, RiskClass: "standard", BudgetEUR: 2,
+			Author: "sebastian", AuthorWriter: true, SHA: "b0", Objective: objective}
+	}
+	for _, c := range []Task{card("t-f", 4, "done", "foundation", "Foundation"), card("t-a", 5, "failed", "links-api", retryCard),
+		card("t-b", 6, "waiting-deps", "redirects", "Redirects")} {
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.AddTaskDeps(ctx, "t-a", []string{"t-f"})
+	store.AddTaskDeps(ctx, "t-b", []string{"t-a"})
+	objects.Put(ctx, "sessions/t-a/timeline.jsonl", []byte(`{"step":"final","state":"failed","reason":"wall-clock cap reached"}`+"\n"))
+	wf := &fakeWorkflows{}
+	r.cfg.Workflows = wf
+	return r, store, objects, fj, wf
+}
+
+// Item 119: the retry of failed card A files its replacement A' (the same
+// plan, key, process, priority and author, in the backlog, the objective
+// with the line naming A and its reason) on a new issue as CreateChildren
+// files a card, takes A's key, its dependencies and its dependents, copies
+// its branch, wakes the dependents, and closes A's issue as the bot,
+// recorded.
+func TestRetryPlanCardFilesAReplacement(t *testing.T) {
+	const line = "Replaces #5, which failed: wall-clock cap reached"
+	for name, branch := range map[string]bool{"branch": true, "no branch": false} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, objects, fj, wf := newRetryRig(t)
+			if !branch {
+				delete(fj.branches, "factory/t-a")
+			}
+			fj.calls = nil
+			issue, err := r.RetryPlanCard(ctx, "t-a", "alice")
+			if err != nil || issue != 9 {
+				t.Fatalf("RetryPlanCard = %d, %v; want #9", issue, err)
+			}
+			cards := cardsByKey(t, store)
+			n := cards["links-api"]
+			if len(cards) != 3 || n.ID != "t-33198a8c2c69" || cards["redirects"].ID != "t-b" {
+				t.Fatalf("plan cards %v, want the foundation, the replacement of A and B", slices.Sorted(maps.Keys(cards)))
+			}
+			if n.Status != "backlog" || n.Lane != policy.LaneBacklog || n.Process != "spec" || n.Source != SourcePlan || n.Parent != "t-plan" ||
+				n.Kind != "agent" || n.Priority != 2 || n.RiskClass != "standard" || n.BudgetEUR != 2 || n.Author != "sebastian" || !n.AuthorWriter ||
+				n.SHA != "b0" || n.IssueNumber != 9 || n.Repository != "linkshort/linkshort" || n.Objective != retryCard+"\n\n"+line {
+				t.Fatalf("replacement = %+v", n)
+			}
+			if a := store.tasks["t-a"]; a.PlanKey != "" || a.Status != "failed" {
+				t.Fatalf("A = %s with key %q, want failed without a key", a.Status, a.PlanKey)
+			}
+			title, body, _ := strings.Cut(retryCard, "\n\n")
+			if is := fj.issues[9]; is.title != title || is.body != body+"\n\n"+line || is.poster != "factory-agent" ||
+				!slices.Equal(is.labels, []string{"backlog", "state/backlog"}) {
+				t.Fatalf("issue #9 = %+v", is)
+			}
+			if !slices.Equal(store.deps[n.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{n.ID}) {
+				t.Fatalf("task_deps: replacement %v, B %v; want [t-f] and [%s]", store.deps[n.ID], store.deps["t-b"], n.ID)
+			}
+			if head, ok := fj.branches["factory/"+n.ID]; ok != branch || branch && head != "c7" {
+				t.Fatalf("branch factory/%s = %q (%v), want c7 only when A's branch exists", n.ID, head, ok)
+			}
+			var onA []string
+			for _, c := range fj.comments {
+				if c.issue == 5 {
+					onA = append(onA, c.body)
+				}
+			}
+			if !slices.Equal(onA, []string{"factoryd: Retried as #9."}) || fj.issues[5].state != "closed" {
+				t.Fatalf("#5: comments %q, state %q; want the retry's comment and closed", onA, fj.issues[5].state)
+			}
+			if !slices.ContainsFunc(store.intakeEvents, func(e IntakeEvent) bool {
+				return e.TaskID == "t-a" && e.Kind == IntakeFactoryClosed && e.CommentID == 5
+			}) {
+				t.Fatalf("intake events %+v, want factoryd's record of closing #5", store.intakeEvents)
+			}
+			if !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
+				t.Fatalf("signals %q, want dep_ended to B", wf.signals)
+			}
+			want := []string{"POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
+				"GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5"}
+			if !slices.Equal(fj.calls, want) {
+				t.Fatalf("forgejo calls\n%q\nwant\n%q", fj.calls, want)
+			}
+			if got := events(t, objects, n.ID); !slices.Equal(got, []string{"card_created alice"}) {
+				t.Fatalf("replacement events %v", got)
+			}
+			tl, _ := objects.Get(ctx, "sessions/t-a/timeline.jsonl")
+			if step := lastStep(tl, "retried"); step == nil || step["as"] != n.ID ||
+				step["issue"] != float64(9) || step["by"] != "alice" {
+				t.Fatalf("A's retried step = %v", step)
+			}
+		})
+	}
+}
+
+// A card retried once, a card that did not fail and a task that is no
+// card of a plan are refused, and nothing is filed.
+func TestRetryRefusedTwice(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	fj.calls = nil
+	tasks := len(store.tasks)
+	for id, want := range map[string]string{
+		"t-a":    "Card #5 was already retried.",
+		"t-b":    "Card #6 did not fail: it is waiting-deps.",
+		"t-plan": "Task t-plan is no card of a plan.",
+	} {
+		_, err := r.RetryPlanCard(ctx, id, "alice")
+		var no ErrNoRetry
+		if !errors.As(err, &no) || err.Error() != want {
+			t.Errorf("retry of %s: %v, want the refusal %q", id, err, want)
+		}
+	}
+	if len(fj.calls) != 0 || len(store.tasks) != tasks {
+		t.Fatalf("a refused retry acted: forgejo %q, %d tasks (were %d)", fj.calls, len(store.tasks), tasks)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). The
+// retry's rows, in one transaction, once: the failed card lets go of its
+// key, the replacement takes it, the failed card's dependencies and its
+// dependents; the plan's cards are those that hold a key.
+func TestPGStoreRetryCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_retry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "t-plan", Status: "done", IssueNumber: 1, Source: "webhook"},
+		{ID: "t-f", Status: "done", IssueNumber: 4, PlanKey: "foundation"},
+		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links"},
+		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects"},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
+		if tk.ID != "t-plan" {
+			tk.Source, tk.Parent = SourcePlan, "t-plan"
+		}
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddTaskDeps(ctx, "t-a", []string{"t-f"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddTaskDeps(ctx, "t-b", []string{"t-a"}); err != nil {
+		t.Fatal(err)
+	}
+	card := func(id, key string) Task {
+		return Task{ID: id, Status: "backlog", Lane: policy.LaneBacklog, BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
+			Source: SourcePlan, Parent: "t-plan", PlanKey: key}
+	}
+	if ok, err := s.ReplaceFailedCard(ctx, "t-a", card("t-a2", "links")); !ok || err != nil {
+		t.Fatalf("first retry = %v, %v; want done", ok, err)
+	}
+	if a, _, _ := s.Task(ctx, "t-a"); a.PlanKey != "" || a.Status != "failed" {
+		t.Fatalf("A = %s with key %q, want failed without a key", a.Status, a.PlanKey)
+	}
+	if got, _, _ := s.Task(ctx, "t-a2"); got.PlanKey != "links" || got.Status != "backlog" {
+		t.Fatalf("replacement = %s with key %q", got.Status, got.PlanKey)
+	}
+	for _, again := range []struct{ of, id, key string }{{"t-a", "t-a3", "links"}, {"t-f", "t-f2", "foundation"}} {
+		if ok, err := s.ReplaceFailedCard(ctx, again.of, card(again.id, again.key)); ok || err != nil {
+			t.Fatalf("retry of %s = %v, %v; want refused", again.of, ok, err)
+		}
+		if _, found, _ := s.Task(ctx, again.id); found {
+			t.Fatalf("a refused retry of %s inserted %s", again.of, again.id)
+		}
+	}
+	if err := s.SetTaskIssue(ctx, "t-a2", 9); err != nil {
+		t.Fatal(err)
+	}
+	var on []string
+	rows, err := s.db.QueryContext(ctx, `SELECT depends_on FROM task_deps WHERE task_id = 't-a2'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var d string
+		rows.Scan(&d)
+		on = append(on, d)
+	}
+	rows.Close()
+	if !slices.Equal(on, []string{"t-f"}) {
+		t.Fatalf("the replacement depends on %v, want [t-f]", on)
+	}
+	open, err := s.OpenDependencies(ctx, "t-b")
+	if err != nil || !slices.Equal(open, []Dependency{{TaskID: "t-a2", Issue: 9, Key: "links", Status: "backlog"}}) {
+		t.Fatalf("B waits on %+v, %v; want the replacement #9", open, err)
+	}
+	if got, _ := s.WaitingDependents(ctx, "t-a"); len(got) != 0 {
+		t.Fatalf("A still has dependents %v", got)
+	}
+	cards, err := s.PlanCards(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, c := range cards {
+		ids = append(ids, c.ID)
+	}
+	if !slices.Equal(ids, []string{"t-a2", "t-b", "t-f"}) {
+		t.Fatalf("plan cards %v, want those holding a key", ids)
+	}
+}
+
+// cancelOnReplace cancels the request's context once the retry's
+// transaction committed, as a browser that leaves mid-way does.
+type cancelOnReplace struct {
+	*fakeStore
+	cancel context.CancelFunc
+}
+
+func (s cancelOnReplace) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
+	defer s.cancel()
+	return s.fakeStore.ReplaceFailedCard(ctx, id, t)
+}
+
+// A retry whose request is cancelled after its transaction still files the
+// issue, moves the dependencies and closes the failed card's issue.
+func TestRetryFinishesAfterTheClientLeaves(t *testing.T) {
+	r, store, _, fj, _ := newRetryRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	r.store = cancelOnReplace{store, cancel}
+	if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+		t.Fatalf("RetryPlanCard = %d, %v; want #9", issue, err)
+	}
+	if fj.issues[5].state != "closed" || !slices.Equal(store.deps["t-b"], []string{cardsByKey(t, store)["links-api"].ID}) {
+		t.Fatalf("#5 %s, B waits on %v; want #5 closed and B on the replacement", fj.issues[5].state, store.deps["t-b"])
+	}
+}
+
+// A retry that stops at a failed Forgejo call after its transaction is
+// finished by the next Retry, which finds the replacement by its id: one
+// issue, B on the replacement, the branch copied once (a branch already
+// there is kept), #5 commented once and closed; a third Retry is refused.
+func TestRetryResumesAfterAFailedStep(t *testing.T) {
+	const replacement = "t-33198a8c2c69"
+	for name, fail := range map[string]func(*planForgejo){
+		"labels":  func(fj *planForgejo) { fj.failLabel = 1 },
+		"comment": func(fj *planForgejo) { fj.failCall = "POST issues/5/comments" },
+		"close":   func(fj *planForgejo) { fj.failCall = "PATCH issues/5" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, _, fj, _ := newRetryRig(t)
+			fail(fj)
+			if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err == nil || errors.As(err, new(ErrNoRetry)) {
+				t.Fatalf("first retry: %v, want it stopped by Forgejo", err)
+			}
+			if got := store.tasks[replacement]; got.IssueNumber != 9 || !slices.Equal(store.deps["t-b"], []string{replacement}) ||
+				fj.issues[5].state == "closed" {
+				t.Fatalf("after the failed step: replacement on #%d, B waits on %v, #5 %s; want #9, the replacement, #5 open",
+					got.IssueNumber, store.deps["t-b"], fj.issues[5].state)
+			}
+			wantHead := "c7"
+			if _, copied := fj.branches["factory/"+replacement]; copied {
+				wantHead = "c8"
+				fj.branches["factory/"+replacement] = wantHead
+			}
+			if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+				t.Fatalf("second retry = %d, %v; want #9", issue, err)
+			}
+			var onA []string
+			for _, c := range fj.comments {
+				if c.issue == 5 {
+					onA = append(onA, c.body)
+				}
+			}
+			if fj.next != 9 || !slices.Equal(fj.issues[9].labels, []string{"backlog", "state/backlog"}) ||
+				fj.branches["factory/"+replacement] != wantHead || fj.issues[5].state != "closed" || !slices.Equal(onA, []string{"factoryd: Retried as #9."}) {
+				t.Fatalf("after the second retry: %d issues, #9 labels %v, branch %q, #5 %s with %q",
+					fj.next, fj.issues[9].labels, fj.branches["factory/"+replacement], fj.issues[5].state, onA)
+			}
+			var no ErrNoRetry
+			if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); !errors.As(err, &no) || err.Error() != "Card #5 was already retried." {
+				t.Fatalf("third retry: %v, want already retried", err)
+			}
+		})
+	}
+}
+
+// A healed card that goes back to the wait asks about a dependency that
+// ends closed later with that dependency's question, not the healed one.
+func TestHealedCardBackInTheWaitAsksAnew(t *testing.T) {
+	const reason = "dependency #6 (redirects) ended closed: close this card, or answer to start it anyway"
+	h := newWorkflowHarness(t)
+	h.taskConfig = depsConfig()
+	h.state = RunState{Status: "waiting-human", Question: "dependency #5 (links-api) ended failed: close this card, or answer to start it anyway"}
+	start := h.env.Now()
+	h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (DepState, error) {
+		if h.env.Now().Sub(start) < 3*time.Minute {
+			return DepState{Waiting: []int64{5, 6}}, nil
+		}
+		return DepState{Waiting: []int64{5}, Ended: &Dependency{TaskID: "t-r", Issue: 6, Key: "redirects", Status: "closed"}}, nil
+	})
+	h.signalAfter(3*time.Minute, SignalDepEnded, TaskSignal{})
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q", final)
+	}
+	if !slices.Equal(h.escalated, []string{reason}) {
+		t.Fatalf("escalated %q, want the closed dependency's question", h.escalated)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A failed
+// plan card that a waiting card depends on stays on the board past the
+// week the board shows finished tasks; one nothing waits on does not.
+func TestPGStoreBoardKeepsABlockingFailedCard(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_retry_board"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "t-plan", Status: "done", IssueNumber: 1},
+		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links"},
+		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects"},
+		{ID: "t-c", Status: "failed", IssueNumber: 7, PlanKey: "search"},
+		{ID: "t-d", Status: "done", IssueNumber: 8, PlanKey: "tags"},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Source = 1, "sf/r", "agent", "webhook"
+		if tk.ID != "t-plan" {
+			tk.Source, tk.Parent = SourcePlan, "t-plan"
+		}
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddTaskDeps(ctx, "t-b", []string{"t-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddTaskDeps(ctx, "t-d", []string{"t-c"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id IN ('t-plan', 't-a', 't-c', 't-d')`); err != nil {
+		t.Fatal(err)
+	}
+	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, b := range tasks {
+		ids = append(ids, b.ID)
+	}
+	slices.Sort(ids)
+	if !slices.Equal(ids, []string{"t-a", "t-b"}) {
+		t.Fatalf("board = %v, want the waiting card and the failed card it waits on", ids)
 	}
 }

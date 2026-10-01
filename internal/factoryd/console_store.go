@@ -22,7 +22,8 @@ type BoardTask struct {
 
 // BoardTasks lists at most limit tasks for the console's board: those not
 // done or failed first, most urgent first, then those finished after
-// since, newest first. The escalation reason comes from the escalation's
+// since, or failed holding a plan key while a card waits on them (their
+// Retry), newest first. The escalation reason comes from the escalation's
 // intake event, so a poll reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -36,6 +37,8 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.body, e.created_at AS at FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $2 ORDER BY e.id DESC LIMIT 1) esc ON true
 		 WHERE status NOT IN ('done', 'failed', 'closed') OR finished_at > $1
+		    OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
+		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps')
 		 ORDER BY status IN ('done', 'failed', 'closed'), priority DESC, finished_at DESC NULLS FIRST, id
 		 LIMIT $3`, since, IntakeEscalation, limit, AlertEscalation)
 	if err != nil {

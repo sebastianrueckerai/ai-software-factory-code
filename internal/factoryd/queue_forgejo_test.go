@@ -149,3 +149,68 @@ func TestUpdateBranchAsBotOnFork(t *testing.T) {
 		t.Fatalf("SyncWithMain against a conflicting main = %+v, %v: want the conflict", res, err)
 	}
 }
+
+// The retry's branch copy (item 119) on Forgejo 15.0.9: the bot creates
+// factory/t-new on its fork at factory/t-old's head; a branch already
+// there is kept; a branch that does not exist copies nothing.
+func TestCopyBranchOnFork(t *testing.T) {
+	base, a := startForgejo(t)
+	ctx := context.Background()
+	admin := (&Forgejo{BaseURL: base}).adminCall(a)
+	must := func(_ []byte, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	bot := &Forgejo{BaseURL: base, BotUser: "factory-agent", BotPassword: "t135-bot-" + fmt.Sprint(time.Now().UnixNano())}
+	must(admin(ctx, http.MethodPost, "/api/v1/admin/users", mustJSON(map[string]any{"username": bot.BotUser, "password": bot.BotPassword,
+		"email": "agent@example.org", "must_change_password": false}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs", mustJSON(map[string]any{"username": "linkshort"}), http.StatusCreated))
+	must(admin(ctx, http.MethodPost, "/api/v1/orgs/linkshort/repos", mustJSON(map[string]any{"name": "linkshort", "private": true,
+		"auto_init": true, "default_branch": "main"}), http.StatusCreated))
+	up := Repo{Owner: "linkshort", Name: "linkshort"}
+	must(admin(ctx, http.MethodPut, "/api/v1/repos/linkshort/linkshort/collaborators/"+bot.BotUser,
+		mustJSON(map[string]string{"permission": "write"}), http.StatusNoContent))
+	if err := bot.EnsureFork(ctx, up); err != nil {
+		t.Fatal(err)
+	}
+	fork := bot.Fork(up)
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": "factory/t-old",
+		"old_branch_name": "main"}), http.StatusCreated))
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/contents", fork), mustJSON(map[string]any{"branch": "factory/t-old",
+		"message": "wip", "files": []map[string]string{{"operation": "create", "path": "links.go",
+			"content": base64.StdEncoding.EncodeToString([]byte("package links\n"))}}}), http.StatusCreated))
+	head := func(branch string) string {
+		t.Helper()
+		sha, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch)
+		if err != nil {
+			t.Fatalf("%s: %v", branch, err)
+		}
+		return sha
+	}
+	old, main := head("factory/t-old"), head("main")
+	if old == main {
+		t.Fatal("the old branch holds no commit of its own")
+	}
+	if err := bot.CopyBranch(ctx, fork, "factory/t-old", "factory/t-new"); err != nil {
+		t.Fatal(err)
+	}
+	if got := head("factory/t-new"); got != old {
+		t.Fatalf("factory/t-new at %s, want factory/t-old's head %s", got, old)
+	}
+	must(bot.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/branches", fork), mustJSON(map[string]string{"new_branch_name": "factory/t-own",
+		"old_branch_name": "main"}), http.StatusCreated))
+	if err := bot.CopyBranch(ctx, fork, "factory/t-old", "factory/t-own"); err != nil {
+		t.Fatalf("copy onto an existing branch: %v, want it kept", err)
+	}
+	if got := head("factory/t-own"); got != main {
+		t.Fatalf("factory/t-own at %s, want its own head %s kept", got, main)
+	}
+	if err := bot.CopyBranch(ctx, fork, "factory/t-gone", "factory/t-x"); err != nil {
+		t.Fatalf("copy of a missing branch: %v, want nothing done", err)
+	}
+	if _, err := bot.BranchHeadSHA(ctx, fork.Owner, fork.Name, "factory/t-x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("factory/t-x after copying a missing branch: %v, want not found", err)
+	}
+}

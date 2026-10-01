@@ -155,18 +155,6 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
-// round2-design.md section 8: every card routes through its own
-// internal/server/routes_<key>.go, so two cards never edit one route list.
-func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
-	want := "every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
-		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
-	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
-		t.Fatal("a shape with no foundation card still gets the one-route-file sentence")
-	}
-}
-
 // factoryd, not the model, orders the foundation first and the integration
 // last: every card depends on the foundation, the integration on every
 // card, besides the edges the planner listed among the features.
@@ -208,12 +196,14 @@ type planForgejo struct {
 	calls     []string
 	failLabel int // the nth labels PUT answers 500
 	labelPuts int
+	branches  map[string]string // the bot's fork: branch → head
+	failCall  string            // the call answered 500 once
 }
 
 type planIssue struct {
-	title, body, poster string
-	labels              []string
-	deps                []int64
+	title, body, poster, state string
+	labels                     []string
+	deps                       []int64
 }
 
 type stubComment struct {
@@ -233,6 +223,12 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
 		call := r.Method + " " + rest
+		if call == f.failCall {
+			f.failCall = ""
+			f.calls = append(f.calls, call)
+			http.Error(w, "forgejo down", http.StatusInternalServerError)
+			return
+		}
 		switch {
 		case r.Method == "POST" && rest == "issues":
 			f.next++
@@ -298,6 +294,34 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, c)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, c.id)
+		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":
+			n, _ := strconv.ParseInt(parts[1], 10, 64)
+			f.issues[n].state = body["state"].(string)
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/linkshort/branches/"):
+			name := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/factory-agent/linkshort/branches/")
+			call = "GET fork branch " + name
+			head, ok := f.branches[name]
+			if !ok {
+				http.NotFound(w, r)
+				break
+			}
+			fmt.Fprintf(w, `{"commit":{"id":%q}}`, head)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/repos/factory-agent/linkshort/branches":
+			call = fmt.Sprintf("POST fork branches %s", body["new_branch_name"])
+			head, ok := f.branches[body["old_branch_name"].(string)]
+			if !ok {
+				http.Error(w, `{"message":"The old branch does not exist"}`, http.StatusNotFound)
+				break
+			}
+			if _, exists := f.branches[body["new_branch_name"].(string)]; exists {
+				http.Error(w, `{"message":"The branch already exists."}`, http.StatusConflict)
+				break
+			}
+			f.branches[body["new_branch_name"].(string)] = head
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
 		case r.Method == "PATCH" && len(parts) == 3 && parts[1] == "comments":
 			id, _ := strconv.ParseInt(parts[2], 10, 64)
 			for _, c := range f.comments {

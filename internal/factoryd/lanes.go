@@ -221,9 +221,12 @@ func (in *Intake) move(ctx context.Context, via string, p Project, t Task, name 
 		in.refuseEntry(ctx, via, t.Repository, t.IssueNumber, names, refusal(lane, t.Repository, sender))
 		return nil
 	}
-	sha, err := in.baseSHA(ctx, t.Repository, defaultBranch)
-	if err != nil {
-		return err
+	// a retried card's replacement keeps the failed card's base, which its copied branch is built on
+	sha := t.SHA
+	if t.Source != SourcePlan || sha == "" {
+		if sha, err = in.baseSHA(ctx, t.Repository, defaultBranch); err != nil {
+			return err
+		}
 	}
 	if ok, err := in.Store.EnterLane(ctx, t.ID, name, lane.Class, sha); err != nil || !ok {
 		return err

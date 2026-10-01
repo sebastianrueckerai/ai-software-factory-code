@@ -559,3 +559,108 @@ func TestStartPlanAndLanesFollowTheProject(t *testing.T) {
 		t.Error("an approver who does not write linkshort sees Start plan, which ready's moved_by refuses him")
 	}
 }
+
+// failedCard is card #7 of plan t-plan, failed.
+func failedCard() factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Lane: "ready", Process: "spec", Objective: "card 7",
+		Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}}
+}
+
+// Item 119: a failed card of a plan that holds its key shows Retry to an
+// approver who may move cards into ready, and so does one whose retry
+// stopped before its replacement got an issue; a done card, a failed card
+// retried (its replacement on an issue) and a failed task of no plan show
+// none, nor does any card to a writer who is no approver or to an
+// approver who does not write the project.
+func TestFailedPlanCardShowsRetry(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	retried, stopped := failedCard(), failedCard()
+	retried.ID, retried.IssueNumber, retried.PlanKey = "t-c8", 8, ""
+	stopped.ID, stopped.IssueNumber, stopped.PlanKey = "t-c9", 9, ""
+	replacement := func(id string, n int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "backlog", Lane: "backlog", Process: "spec",
+			Objective: "again", Repository: "linkshort/linkshort", IssueNumber: n, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k"}}
+	}
+	r.tasks.tasks = append(planTasks(), failedCard(), retried, stopped, replacement("t-fcbf45070fe4", 14), replacement("t-806433097bea", 0),
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fix", Kind: "agent",
+			Status: "failed", Lane: "ready", Process: "maintenance", Objective: "a fix", Repository: "sf/code", IssueNumber: 13}})
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	failed := col(t, body, "Failed")
+	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#board" hx-swap="outerHTML" class="inline">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="">` +
+		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
+	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
+		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
+	}
+	for _, id := range []string{"t-c5", "t-c8", "t-fix"} {
+		if strings.Contains(body, "/tasks/"+id+"/retry") {
+			t.Errorf("%s shows Retry", id)
+		}
+	}
+	ak, _ := r.as(t, "alice")
+	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "/retry") {
+		t.Error("alice, no approver, sees Retry")
+	}
+	r.repoWriters["linkshort/linkshort"] = nil
+	r.c.moves = nil
+	ck, _ = r.as(t, "sebastian")
+	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "/retry") {
+		t.Error("an approver who does not write linkshort sees Retry, which ready's moved_by refuses him")
+	}
+}
+
+// Item 119: Retry, by an approver, files the replacement (factoryd's
+// RetryPlanCard) and labels its issue agent as the human, so intake starts
+// it in ready; a refusal answers 409 with its sentence and labels nothing;
+// a writer who is no approver gets 403 and nothing happens.
+func TestRetryLabelsTheReplacement(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), failedCard())
+	ck, s := r.loggedIn(t)
+	ak, as := r.as(t, "alice")
+	retry := func(ck *http.Cookie, csrf string) *httptest.ResponseRecorder {
+		req := post("/tasks/t-c7/retry", url.Values{"csrf": {csrf}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+	r.fg.calls = nil
+	if rec := retry(ak, as.csrf); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the policy's approvers may authorize spend." ||
+		len(r.retried) != 0 || len(r.fg.calls) != 0 {
+		t.Fatalf("alice retries: %d %q, retried %v, forgejo %v", rec.Code, rec.Body, r.retried, r.fg.calls)
+	}
+	r.repoWriters["linkshort/linkshort"] = nil
+	if rec := retry(ck, s.csrf); rec.Code != http.StatusForbidden ||
+		strings.TrimSpace(rec.Body.String()) != "Lane ready takes cards from writers of linkshort/linkshort." || len(r.retried) != 0 {
+		t.Fatalf("an approver who does not write linkshort retries: %d %q, retried %v", rec.Code, rec.Body, r.retried)
+	}
+	r.repoWriters["linkshort/linkshort"] = []string{"sebastian"}
+	rec := retry(ck, s.csrf)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Retried #7 as #9; it starts in lane ready once factoryd picks it up.") {
+		t.Fatalf("retry: %d %.400s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(r.retried, []string{"t-c7 by sebastian"}) {
+		t.Errorf("RetryPlanCard calls %v", r.retried)
+	}
+	if want := []string{"/api/v1/repos/linkshort/linkshort/issues/9/labels [21]"}; !slices.Equal(r.fg.labelled, want) {
+		t.Errorf("labelled %v, want %v", r.fg.labelled, want)
+	}
+	for _, call := range r.fg.calls {
+		if !strings.HasSuffix(call, " Bearer access-1") {
+			t.Errorf("call %q not made with sebastian's token", call)
+		}
+	}
+	r.fg.labelled = nil
+	r.retryErr = factoryd.ErrNoRetry("Card #7 was already retried.")
+	if rec := retry(ck, s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #7 was already retried." ||
+		len(r.fg.labelled) != 0 {
+		t.Errorf("a refused retry: %d %q, labelled %v", rec.Code, rec.Body, r.fg.labelled)
+	}
+	r.retryErr = errors.New("the retry of t-c7 as t-x stopped at filing its issue: forgejo 502")
+	if rec := retry(ck, s.csrf); rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The card could not be retried; see the factoryd log." || len(r.fg.labelled) != 0 {
+		t.Errorf("a failed retry: %d %q, labelled %v", rec.Code, rec.Body, r.fg.labelled)
+	}
+}

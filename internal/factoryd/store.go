@@ -292,6 +292,12 @@ type Store interface {
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
 	// WaitingDependents are the tasks in waiting-deps that wait on id.
 	WaitingDependents(ctx context.Context, id string) ([]string, error)
+	// ReplaceFailedCard puts plan card t in failed card id's place in one
+	// transaction: id lets go of its key, which t holds; t is inserted with
+	// every dependency of id, and every task waiting on id waits on t.
+	// False, and nothing changed, when id is no failed card holding the
+	// key.
+	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -392,8 +398,11 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	return s.insertTask(ctx, t, "")
 }
 
-// insertTask inserts t, onConflict the insert's conflict clause.
-func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
+// insertTask inserts t through db, onConflict the insert's conflict
+// clause, so a retry's transaction reuses it (Task 135).
+func insertTask(ctx context.Context, db interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}, t Task, onConflict string) error {
 	caps, err := toJSON(t.RequiredCapabilities)
 	if err != nil {
 		return err
@@ -411,11 +420,15 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
 		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''))
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
-	_, err = s.db.ExecContext(ctx, q,
+	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey)
 	return err
+}
+
+func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
+	return insertTask(ctx, s.db, t, onConflict)
 }
 
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {

@@ -343,6 +343,29 @@ func TestLabelOnBotIssueMovesChild(t *testing.T) {
 	}
 }
 
+// A retried card's replacement keeps its base, the failed card's, into
+// ready: its first session starts on the copied branch built on it. A
+// card of a plan without a base takes main's head.
+func TestReplacementKeepsItsBaseIntoReady(t *testing.T) {
+	in, store, _ := laneIntake(t, "spec", specLanes)
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: "plan", Process: "spec", Repository: "sf/ai-software-factory-code", IssueNumber: 1}
+	for id, n := range map[string]int64{"t-new": 20, "t-child": 21} {
+		store.tasks[id] = Task{ID: id, Kind: "agent", Status: "backlog", Lane: "backlog", Process: "spec", Repository: "sf/ai-software-factory-code",
+			IssueNumber: n, Parent: "t-plan", Source: "plan", Author: "alice", AuthorWriter: true}
+	}
+	replacement := store.tasks["t-new"]
+	replacement.SHA = "b0"
+	store.tasks["t-new"] = replacement
+	for _, n := range []int64{20, 21} {
+		labels := []string{"backlog", "state/backlog", "agent"}
+		setLabels(t, in, n, labels)
+		post(t, in, "issue_label", labelEvent(n, "factory-agent", labels, "sebastian"))
+	}
+	if got, child := store.tasks["t-new"], store.tasks["t-child"]; got.Status != "queued" || got.SHA != "b0" || child.Status != "queued" || child.SHA != "sha-main-head" {
+		t.Fatalf("replacement %s at %q, card %s at %q; want both queued, at b0 and at main's head", got.Status, got.SHA, child.Status, child.SHA)
+	}
+}
+
 // A bot issue of the human lane (an alert's on agents none, the loader's)
 // has a row no label changes.
 func TestLabelOnHumanKindBotIssueChangesNothing(t *testing.T) {

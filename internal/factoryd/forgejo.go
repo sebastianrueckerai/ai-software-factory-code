@@ -899,6 +899,21 @@ func (f *Forgejo) DeleteBranch(ctx context.Context, owner, repo, branch string) 
 	return err
 }
 
+// CopyBranch creates branch to on repo at branch from's head; nothing when
+// from does not exist (Forgejo answers 404), and a branch to that exists
+// is kept (Forgejo would answer 409).
+func (f *Forgejo) CopyBranch(ctx context.Context, repo Repo, from, to string) error {
+	if _, err := f.BranchHeadSHA(ctx, repo.Owner, repo.Name, to); !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/branches", repo.Owner, repo.Name),
+		mustJSON(map[string]string{"new_branch_name": to, "old_branch_name": from}), http.StatusCreated)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // BranchHeadSHA reads a branch's current head commit SHA: intake uses it to
 // stamp a new task's base SHA to the default branch's head at intake time.
 func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string) (string, error) {
