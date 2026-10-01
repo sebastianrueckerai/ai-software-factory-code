@@ -104,8 +104,11 @@ func TestEventsRecorded(t *testing.T) {
 		r, store, objects := newActivityRunner(t, plan, fj)
 		for id, issue := range map[string]int64{"t-c2": 2, "t-c3": 3} {
 			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Lane: "ready", Process: "spec", Repository: "sf/repo",
-				IssueNumber: issue, Parent: "t-plan", Source: SourcePlan})
+				IssueNumber: issue, Parent: "t-plan", Source: SourcePlan, PlanKey: id})
 		}
+		// a card that failed and was retried lets go of its key: the plan's cards are the others
+		store.CreateTask(ctx, Task{ID: "t-c1", Kind: "agent", Status: "failed", Lane: "ready", Process: "spec", Repository: "sf/repo",
+			IssueNumber: 4, Parent: "t-plan", Source: SourcePlan})
 		if _, err := execActivity(t, r, ActivityFinish, "t-c2", "done", "merged"); err != nil {
 			t.Fatal(err)
 		}
