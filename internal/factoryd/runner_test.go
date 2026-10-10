@@ -39,6 +39,7 @@ import (
 type fakeKube struct {
 	mu           sync.Mutex
 	namespaces   map[string]map[string]string // name → labels
+	terminating  map[string]bool              // name → metadata.deletionTimestamp is set
 	pods         map[string]*fakePod
 	podOrder     []*fakePod // creation order; entries survive deletion
 	deletedPods  []string
@@ -91,6 +92,7 @@ type fakePod struct {
 func newFakeKube() *fakeKube {
 	return &fakeKube{
 		namespaces:  map[string]map[string]string{},
+		terminating: map[string]bool{},
 		pods:        map[string]*fakePod{},
 		secrets:     map[string]map[string]string{},
 		secretTypes: map[string]string{},
@@ -109,6 +111,7 @@ func (k *fakeKube) CreateNamespace(ctx context.Context, name string, labels map[
 	if _, ok := k.namespaces[name]; ok {
 		return ErrAlreadyExists
 	}
+	delete(k.terminating, name) // a recreated namespace has no deletionTimestamp
 	k.namespaces[name] = labels
 	k.createdNs[name] = labels
 	return nil
@@ -133,17 +136,32 @@ func (k *fakeKube) DeleteNamespace(ctx context.Context, name string) error {
 }
 
 func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
+	nsList, err := k.ListNamespacesByLabel(ctx, key, value)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(nsList))
+	for _, ns := range nsList {
+		names = append(names, ns.Name)
+	}
+	return names, nil
+}
+
+// ListNamespacesByLabel reports the deletion state fakeKube's namespaces
+// carry: InClusterKube decodes metadata.deletionTimestamp, and reconcile is
+// the caller that needs it.
+func (k *fakeKube) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	var names []string
+	var out []NamespaceInfo
 	for name, labels := range k.namespaces {
 		v, ok := labels[key]
 		if value == "" && ok || v == value {
-			names = append(names, name)
+			out = append(out, NamespaceInfo{Name: name, Terminating: k.terminating[name]})
 		}
 	}
-	slices.Sort(names) // the API server lists by name
-	return names, nil
+	slices.SortFunc(out, func(a, b NamespaceInfo) int { return cmp.Compare(a.Name, b.Name) })
+	return out, nil
 }
 
 func (k *fakeKube) CreateServiceAccount(ctx context.Context, namespace, name string) error {

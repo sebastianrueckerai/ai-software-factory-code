@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +39,8 @@ func TestInClusterKubeWire(t *testing.T) {
 		},
 		"GET /api/v1/namespaces": func(w http.ResponseWriter, r *http.Request) {
 			selectors = append(selectors, r.URL.Query().Get("labelSelector"))
-			io.WriteString(w, `{"items":[{"metadata":{"name":"factory-agents-t1"}}]}`)
+			io.WriteString(w, `{"items":[{"metadata":{"name":"factory-agents-t1"}},`+
+				`{"metadata":{"name":"factory-agents-t2","deletionTimestamp":"2026-09-28T10:00:00Z"}}]}`)
 		},
 		"POST /api/v1/namespaces/factory-agents-t1/resourcequotas": func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusCreated)
@@ -139,14 +142,27 @@ func TestInClusterKubeWire(t *testing.T) {
 		t.Fatalf("CreateNamespace: %v", err)
 	}
 	names, err := k.NamespacesByLabel(ctx, "factory.ai/task", "t1")
-	if err != nil || len(names) != 1 || names[0] != "factory-agents-t1" {
+	if err != nil || len(names) != 2 {
 		t.Fatalf("NamespacesByLabel = %v, %v", names, err)
+	}
+	for _, want := range []string{"factory-agents-t1", "factory-agents-t2"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("NamespacesByLabel = %v, missing %s: a Terminating namespace still exists", names, want)
+		}
+	}
+	listed, err := k.ListNamespacesByLabel(ctx, "factory.ai/task", "t1")
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("ListNamespacesByLabel = %v, %v", listed, err)
+	}
+	wantListed := []NamespaceInfo{{Name: "factory-agents-t1"}, {Name: "factory-agents-t2", Terminating: true}}
+	if !reflect.DeepEqual(listed, wantListed) {
+		t.Fatalf("ListNamespacesByLabel = %+v, want %+v", listed, wantListed)
 	}
 	if _, err := k.NamespacesByLabel(ctx, "factory.ai/task", ""); err != nil {
 		t.Fatalf("NamespacesByLabel key-only: %v", err)
 	}
 	// "factory.ai/task=" would select only namespaces whose label is empty
-	if fmt.Sprint(selectors) != "[factory.ai/task=t1 factory.ai/task]" {
+	if fmt.Sprint(selectors) != "[factory.ai/task=t1 factory.ai/task=t1 factory.ai/task]" {
 		t.Fatalf("labelSelectors = %v", selectors)
 	}
 	if err := k.CreateServiceAccount(ctx, "factory-agents-t1", "task-t1"); err != nil {
