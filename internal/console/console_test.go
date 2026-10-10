@@ -165,12 +165,20 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fakeTasks is the board's task store. read is called, with the mutex held,
+// on every Task read; a test may set it to change the rows while a request
+// runs (item 141: factoryd ends an accepted plan and files its cards seconds
+// after the console's first read of it).
 type fakeTasks struct {
+	mu    sync.Mutex
 	tasks []factoryd.BoardTask
 	plans map[string][]factoryd.PlanRevision // by task, oldest first
+	read  func(s *fakeTasks, id string)
 }
 
 func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	revs := s.plans[id]
 	for i := len(revs) - 1; i >= 0; i-- {
 		if n == 0 || revs[i].Revision == n {
@@ -181,6 +189,8 @@ func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.
 }
 
 func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Parent == plan && t.Source == factoryd.SourcePlan {
@@ -191,6 +201,11 @@ func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, 
 }
 
 func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.read != nil {
+		s.read(s, id)
+	}
 	for _, t := range s.tasks {
 		if t.ID == id {
 			return t.Task, true, nil
@@ -200,11 +215,15 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 }
 
 func (s *fakeTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.tasks[:min(limit, len(s.tasks))], nil
 }
 
 // set replaces the tasks; the escalated ones carry reason.
 func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.tasks = nil
 	for _, t := range tasks {
 		b := factoryd.BoardTask{Task: t}
@@ -212,6 +231,17 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 			b.Escalation = reason
 		}
 		s.tasks = append(s.tasks, b)
+	}
+}
+
+// setStatus changes task id's row to status; a read hook already holds the
+// lock, so it takes none.
+func (s *fakeTasks) setStatus(id, status string) {
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Status = status
+			return
+		}
 	}
 }
 
