@@ -117,7 +117,10 @@ type Config struct {
 	// ReconcileError is Registrar.ReconcileError: why the project's last
 	// reconcile failed, "" when it was clean.
 	ReconcileError func(name string) string
-	HTTP           *http.Client // nil = 15 s timeout
+	// MergeRetryPause is the wait before a retry of a merge Forgejo refused
+	// with 405 while it re-checks mergeability (nil = 1 s).
+	MergeRetryPause *time.Duration
+	HTTP            *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics

@@ -115,6 +115,8 @@ type infraFake struct {
 	merges      []recorded
 	mergeStatus int
 	mergeBody   string
+	// mergeStatuses answers the merge calls in order, then mergeStatus.
+	mergeStatuses []int
 }
 
 type recorded struct {
@@ -156,7 +158,11 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			json.NewEncoder(w).Encode(f.pull)
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls/12/merge":
 			f.merges = append(f.merges, rec())
-			w.WriteHeader(f.mergeStatus)
+			status := f.mergeStatus
+			if len(f.mergeStatuses) > 0 {
+				status, f.mergeStatuses = f.mergeStatuses[0], f.mergeStatuses[1:]
+			}
+			w.WriteHeader(status)
 			w.Write([]byte(f.mergeBody))
 		case strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/"):
 			t.Errorf("unexpected infra call %s %s", req.Method, req.URL.Path)
@@ -376,6 +382,12 @@ func newStatusRig(t *testing.T) *statusRig {
 	return s
 }
 
+// Each merge attempt waits MergeRetryPause on a 405; zero keeps tests fast.
+func (s *statusRig) noMergePause() {
+	pause := time.Duration(0)
+	s.rig.c.cfg.MergeRetryPause = &pause
+}
+
 func (s *statusRig) row(p factoryd.Project) {
 	s.projects.rows = append(projectRows(), p)
 }
@@ -520,16 +532,21 @@ func TestStatusStopsPolling(t *testing.T) {
 }
 
 // The Merge button merges as the human with section 5's body; Forgejo's
-// refusal shows on the step.
+// refusal shows on the step and answers its own request, so a plain POST
+// gets a non-2xx status instead of a 303 that shows nothing.
 func TestMergeAsHumanShowsRefusal(t *testing.T) {
 	s := newStatusRig(t)
+	s.noMergePause()
 	s.infra.set(openPull)
-	s.infra.mergeStatus, s.infra.mergeBody = http.StatusMethodNotAllowed, `{"message":"Does not have enough approvals","url":"x"}`
+	s.infra.mergeStatus, s.infra.mergeBody = http.StatusUnprocessableEntity, `{"message":"Does not have enough approvals","url":"x"}`
 	req := post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}})
 	req.Header.Set("HX-Request", "true")
 	rec := s.do(req, s.ck)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Forgejo refused the merge: Does not have enough approvals") {
 		t.Fatalf("merge refused: %d\n%s", rec.Code, rec.Body.String())
+	}
+	if _, states, _ := steps(s.status(t)); states[1] != "failed" {
+		t.Errorf("after a refusal step 2 = %s, want failed", states[1])
 	}
 	s.infra.mu.Lock()
 	merges := s.infra.merges
@@ -538,12 +555,60 @@ func TestMergeAsHumanShowsRefusal(t *testing.T) {
 	if len(merges) != 1 || merges[0].auth != "Bearer access-1" || !reflect.DeepEqual(merges[0].body, want) {
 		t.Fatalf("merges %v, want one as the human with %v", merges, want)
 	}
+	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusConflict ||
+		!strings.Contains(rec.Body.String(), "Forgejo refused the merge: Does not have enough approvals") {
+		t.Errorf("a plain POST's refused merge = %d:\n%s", rec.Code, rec.Body.String())
+	}
 	s.infra.mergeStatus, s.infra.mergeBody = http.StatusOK, ""
 	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("merge = %d", rec.Code)
 	}
 	if _, states, _ := steps(s.status(t)); states[1] != "waiting" {
 		t.Errorf("after a merge Forgejo took, step 2 = %s (the pull request still reads open in the fake)", states[1])
+	}
+}
+
+// A plain POST whose merge Forgejo refuses every time answers 409 with the
+// refusal text, after the 405 retries ran out.
+func TestMergeRefusalPlainPostGets409(t *testing.T) {
+	s := newStatusRig(t)
+	s.noMergePause()
+	s.infra.set(openPull)
+	s.infra.mergeStatus, s.infra.mergeBody = http.StatusMethodNotAllowed, `{"message":"Please try again later.","url":"x"}`
+	rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Forgejo refused the merge: Please try again later.") {
+		t.Fatalf("a plain POST's refused merge = %d:\n%s", rec.Code, rec.Body.String())
+	}
+	s.infra.mu.Lock()
+	attempts := len(s.infra.merges)
+	s.infra.mu.Unlock()
+	if attempts != mergeRetryTries+1 {
+		t.Errorf("%d merge calls, want %d with the 405 retries", attempts, mergeRetryTries+1)
+	}
+	if run := s.c.runs["linkshort"]; run == nil || run.merge != "Please try again later." {
+		t.Errorf("the refusal was not kept for the panel: %+v", run)
+	}
+}
+
+// A 405 while Forgejo re-checks mergeability becomes a merge on a retry.
+func TestMergeRetriesAfter405(t *testing.T) {
+	s := newStatusRig(t)
+	s.noMergePause()
+	s.infra.set(openPull)
+	s.infra.mergeStatuses = []int{http.StatusMethodNotAllowed, http.StatusOK}
+	s.infra.mergeBody = `{"message":"Please try again later.","url":"x"}`
+	rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("merge after a 405 = %d:\n%s", rec.Code, rec.Body.String())
+	}
+	s.infra.mu.Lock()
+	attempts := len(s.infra.merges)
+	s.infra.mu.Unlock()
+	if attempts != 2 {
+		t.Errorf("%d merge calls, want the 405 and the retry", attempts)
+	}
+	if run := s.c.runs["linkshort"]; run == nil || run.merge != "" {
+		t.Errorf("a merged project keeps a refusal: %+v", run)
 	}
 }
 
