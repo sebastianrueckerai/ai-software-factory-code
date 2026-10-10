@@ -121,6 +121,7 @@ func CIReposOf(f *Forgejo, projects interface {
 type CISpawner struct {
 	cfg     CIConfig
 	kube    Kube
+	nsList  NamespaceLister
 	forgejo *Forgejo
 	builds  *BuildVMs
 	now     func() time.Time
@@ -144,6 +145,17 @@ const (
 )
 
 func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (*CISpawner, error) {
+	return NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, nil)
+}
+
+// NewCISpawnerWithNamespaces is NewCISpawner with the namespace list that
+// reconcile reads: a caller whose Kube client does not report deletion
+// timestamps (a test fake) passes one that does. Without it reconcile
+// would read the pod status of a Terminating namespace — whose RoleBinding
+// is already gone — log the resulting Forbidden on every tick until the
+// namespace disappears, and count it as live against MaxConcurrent. A nil
+// nsList means kube itself must be a NamespaceLister.
+func NewCISpawnerWithNamespaces(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs, nsList NamespaceLister) (*CISpawner, error) {
 	cfg.setDefaults()
 	if cfg.FactoryNamespace == "" || cfg.Repos == nil || cfg.RunnerImage == "" || cfg.GitBaseURL == "" {
 		return nil, fmt.Errorf("ci spawner: FactoryNamespace, Repos, RunnerImage, GitBaseURL are required")
@@ -154,7 +166,14 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
+	if nsList == nil {
+		l, ok := kube.(NamespaceLister)
+		if !ok {
+			return nil, fmt.Errorf("ci spawner: the kube client lists no namespace deletion state")
+		}
+		nsList = l
+	}
+	return &CISpawner{cfg: cfg, kube: kube, nsList: nsList, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -413,24 +432,30 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 // (a setup crash between the namespace step and the pod step) reads as
 // "not found", torn down the same way. It reports how many namespaces are
 // still live; one whose status cannot be read counts as live, so the cap
-// fails closed.
+// fails closed. A namespace already Terminating (deletionTimestamp set) is
+// skipped entirely: teardown deleted it, its RoleBinding usually went with
+// it, so a pod read there answers Forbidden; the namespace is neither read
+// nor logged nor counted as live.
 func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 	for id, at := range s.tornDown {
 		if s.now().Sub(at) >= ciReclaimWindow {
 			delete(s.tornDown, id)
 		}
 	}
-	names, err := s.kube.NamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
+	names, err := s.nsList.ListNamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
 	if err != nil {
 		log.Printf("ci spawner: reconcile list: %v", err)
 	}
 	for _, ns := range names {
-		if !isCINamespace(s.cfg.NamespacePrefix, ns) {
+		if !isCINamespace(s.cfg.NamespacePrefix, ns.Name) {
 			continue
 		}
-		phase, _, err := s.kube.PodStatus(ctx, ns, ciPodName)
+		if ns.Terminating {
+			continue // teardown already took it; no read, not live
+		}
+		phase, _, err := s.kube.PodStatus(ctx, ns.Name, ciPodName)
 		if err != nil && !errors.Is(err, ErrNotFound) {
-			log.Printf("ci spawner: reconcile %s status: %v", ns, err)
+			log.Printf("ci spawner: reconcile %s status: %v", ns.Name, err)
 			live++
 			continue
 		}
@@ -439,20 +464,20 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 			continue
 		}
 		if err == nil {
-			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns, s.cfg.NamespacePrefix), 10, 64); perr == nil {
-				if _, ready, _ := s.kube.PodInitFinished(ctx, ns, ciPodName); phase == "Failed" && !ready && s.vmTries[id] == 1 {
+			if id, perr := strconv.ParseInt(strings.TrimPrefix(ns.Name, s.cfg.NamespacePrefix), 10, 64); perr == nil {
+				if _, ready, _ := s.kube.PodInitFinished(ctx, ns.Name, ciPodName); phase == "Failed" && !ready && s.vmTries[id] == 1 {
 					// its first VM never answered and the init container
 					// failed the pod before the runner took the job: the
 					// job is still waiting, for a second VM at once
-					log.Printf("ci spawner: %s: build vm never answered buildkitd, replaced once", ns)
+					log.Printf("ci spawner: %s: build vm never answered buildkitd, replaced once", ns.Name)
 				} else { // a runner ran: its job may still be listed waiting
 					delete(s.vmTries, id)
 					s.tornDown[id] = s.now()
-					s.recordReady(ctx, ns, id)
+					s.recordReady(ctx, ns.Name, id)
 				}
 			}
 		}
-		s.teardown(ctx, ns, repos)
+		s.teardown(ctx, ns.Name, repos)
 	}
 	s.sweepOrphanRunners(ctx, repos)
 	return live

@@ -155,6 +155,40 @@ func (k *InClusterKube) DeleteNamespace(ctx context.Context, name string) error 
 }
 
 func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
+	nsList, err := k.listNamespaces(ctx, key, value)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(nsList))
+	for _, ns := range nsList {
+		names = append(names, ns.Name)
+	}
+	return names, nil
+}
+
+// NamespaceLister lists namespaces by label with their deletion state.
+// InClusterKube satisfies it; a test scripts a fake. It is a separate seam
+// from Kube.NamespacesByLabel, whose meaning for its other callers is
+// simply "the namespace exists": reconcile needs to know which of the
+// namespaces it lists are already Terminating and must not be read at all.
+type NamespaceLister interface {
+	ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error)
+}
+
+// NamespaceInfo is a listed namespace's name and whether the API server has
+// stamped metadata.deletionTimestamp on it: a Terminating namespace still
+// matches its label selector and still shows in a list while its contents
+// are being garbage-collected away.
+type NamespaceInfo struct {
+	Name        string
+	Terminating bool
+}
+
+func (k *InClusterKube) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
+	return k.listNamespaces(ctx, key, value)
+}
+
+func (k *InClusterKube) listNamespaces(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
 	sel := key
 	if value != "" {
 		sel += "=" + value // "key=" would select only empty values
@@ -163,18 +197,19 @@ func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Name              string `json:"name"`
+				DeletionTimestamp string `json:"deletionTimestamp"`
 			} `json:"metadata"`
 		} `json:"items"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces?"+q.Encode(), &list); err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(list.Items))
+	out := make([]NamespaceInfo, 0, len(list.Items))
 	for _, it := range list.Items {
-		names = append(names, it.Metadata.Name)
+		out = append(out, NamespaceInfo{Name: it.Metadata.Name, Terminating: it.Metadata.DeletionTimestamp != ""})
 	}
-	return names, nil
+	return out, nil
 }
 
 // NamespaceLabel is namespace name's label key, "" when it has none.

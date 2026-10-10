@@ -127,7 +127,7 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 	builds.collector.OwnerDone = CIOwnerDone(kube)
 	builds.collector.ReleaseAttempts = 1 // as cmd/factoryd wires it
 	builds.collector.RetryWait = time.Hour
-	spawner, err := NewCISpawner(testCIConfig(), forgejo, kube, builds)
+	spawner, err := NewCISpawnerWithNamespaces(testCIConfig(), forgejo, kube, builds, fakeNamespaceLister{kube})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	cfg := testCIConfig()
 	builds, _, _ := newTestBuildVMs(t, 2)
 
-	first, err := NewCISpawner(cfg, forgejo, kube, builds)
+	first, err := NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, fakeNamespaceLister{kube})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	// A restarted factoryd builds a brand new CISpawner against the same
 	// cluster and registrar state; the namespace label, not process memory,
 	// is what must stop a second registration.
-	restarted, err := NewCISpawner(cfg, forgejo, kube, builds)
+	restarted, err := NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, fakeNamespaceLister{kube})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,6 +389,64 @@ func TestCISpawnerReconcileIgnoresAgentNamespaces(t *testing.T) {
 
 	if _, ok := kube.namespaces["factory-agents-t1"]; !ok {
 		t.Fatal("agent task namespace was swept by the CI reconciler")
+	}
+}
+
+// Roadmap 143: teardown deletes the job's namespace asynchronously, so it
+// stays Terminating while its RoleBinding factoryd needs is already gone.
+// reconcile must not read such a namespace's pod status (a 403), must not
+// log it, and must not count it as live against MaxConcurrent. A Forbidden
+// on a namespace that is not being deleted still logs and fails closed.
+func TestCISpawnerReconcileSkipsTerminatingNamespaces(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{
+		{ID: 1, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+		{ID: 2, RunsOn: []string{"pr-untrusted"}, Status: "waiting"},
+	}}
+	spawner := newTestCISpawner(t, kube, hub)
+	spawner.cfg.MaxConcurrent = 1
+	ctx := context.Background()
+	spawner.poll(ctx) // spawns factory-agents-ci-1
+
+	ns := "factory-agents-ci-1"
+	kube.terminating[ns] = true // DeleteNamespace returned; the GC is running
+	delete(kube.pods, ns+"/"+ciPodName)
+	kube.statusErr = map[string]error{ns + "/" + ciPodName: fmt.Errorf("%w: cannot get pods", ErrForbidden)}
+
+	logs := captureLog(t)
+	live := spawner.reconcile(ctx, codeCIRepos)
+	if out := logs.String(); out != "" {
+		t.Fatalf("reconcile of a Terminating namespace logged:\n%s", out)
+	}
+	if live != 0 {
+		t.Fatalf("live = %d, want 0: a Terminating namespace counts as gone", live)
+	}
+	spawner.poll(ctx)
+	if _, ok := kube.namespaces["factory-agents-ci-2"]; !ok {
+		t.Fatalf("job 2 stayed queued behind a Terminating namespace:\n%s", logs.String())
+	}
+
+	// a live namespace whose pod read is forbidden still logs and holds its
+	// slot: the cap fails closed, as before
+	delete(kube.terminating, ns)
+	kube.namespaces[ns] = map[string]string{
+		"factory.ai/task": "ci-1", "pod-security.kubernetes.io/enforce": "restricted",
+	}
+	delete(kube.statusErr, "factory-agents-ci-2/"+ciPodName) // its pod is gone: reads as not found
+	// the fake's DeleteNamespace is synchronous: ci-2 left the list when
+	// teardown took it. It comes back without the label reconcile lists by,
+	// so only the forbidden namespace 1 is read.
+	kube.namespaces["factory-agents-ci-2"]["pod-security.kubernetes.io/enforce"] = ""
+	logs.Reset()
+	live = spawner.reconcile(ctx, codeCIRepos)
+	if live != 1 {
+		t.Fatalf("live = %d, want 1: an unreadable namespace still counts as live", live)
+	}
+	if out := logs.String(); !strings.Contains(out, "ci spawner: reconcile "+ns+" status:") || !strings.Contains(out, "forbidden") {
+		t.Fatalf("a Forbidden read of a live namespace was not logged:\n%s", out)
+	}
+	if _, ok := kube.namespaces[ns]; !ok {
+		t.Fatal("the forbidden namespace was torn down despite the failed read")
 	}
 }
 
@@ -1195,7 +1253,7 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	cfg := testCIConfig()
 	f := &Forgejo{BaseURL: srv.URL, HTTP: srv.Client(), ProjectsToken: "projects-tok", Seeded: testSeeded}
 	cfg.Repos = CIReposOf(f, store)
-	spawner, err := NewCISpawner(cfg, f, kube, builds)
+	spawner, err := NewCISpawnerWithNamespaces(cfg, f, kube, builds, fakeNamespaceLister{kube})
 	if err != nil {
 		t.Fatal(err)
 	}
