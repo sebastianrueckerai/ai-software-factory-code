@@ -740,6 +740,13 @@ var (
 	ErrBeyondStanding = errors.New("beyond the project's standing block")
 )
 
+// Commission is agent row id: the console reads it for the project
+// (repository) a promote or release's event belongs to, and whether the
+// commission still exists at all.
+func (a AgentStore) Commission(ctx context.Context, id int64) (Resource, bool, error) {
+	return PG(a).Get(ctx, id)
+}
+
 // Commissions lists the agent rows open now or closed after since, by
 // project, task and commission: the console's resources page.
 func (a AgentStore) Commissions(ctx context.Context, since time.Time) ([]Resource, error) {

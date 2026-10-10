@@ -74,7 +74,7 @@ func (a AgentAsk) reason() string {
 	if a.Kind == AskInfo {
 		return agentAsksAuthor + a.Question + "\nTried: " + a.Tried + "\nNeeds: " + a.Needs
 	}
-	return agentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
+	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate_to_human,

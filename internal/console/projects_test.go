@@ -30,6 +30,14 @@ type fakeProjects struct {
 
 func (f *fakeProjects) Projects(context.Context) ([]factoryd.Project, error) { return f.rows, nil }
 
+func (f *fakeProjects) ProjectByRepository(_ context.Context, repository string) (factoryd.Project, bool, error) {
+	i := slices.IndexFunc(f.rows, func(p factoryd.Project) bool { return p.Repository == repository })
+	if i < 0 {
+		return factoryd.Project{}, false, nil
+	}
+	return f.rows[i], true, nil
+}
+
 // projectRows are the factory's code (seed, coder), the demo app (factory,
 // registered), the infra repository (seed, agents none) and a row whose
 // file is gone.

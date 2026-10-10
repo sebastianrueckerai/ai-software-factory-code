@@ -90,6 +90,7 @@ type card struct {
 	Moves           []move // a backlog card: the starting lanes the viewer may move it into
 	Plan            *planCards
 	Retry           *retry // a failed plan card's Retry, for an approver who may move it into ready
+	Activity        string // the task's newest event as one line, or the intake_events body
 }
 
 // move is a backlog card's button into a starting lane.
@@ -398,6 +399,51 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 			}
 			d.Approvals = append(d.Approvals, k)
 		}
+	}
+	var ids []string
+	collect := func(ks []card) {
+		for _, k := range ks {
+			ids = append(ids, k.ID)
+		}
+	}
+	for _, col := range d.Columns {
+		collect(col.Cards)
+	}
+	collect(d.HumanTasks)
+	collect(d.Escalations)
+	if len(ids) > 0 {
+		newest := map[string]factoryd.Event{}
+		if c.cfg.Events != nil {
+			got, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
+			if err != nil {
+				log.Printf("console: newest events: %v", err)
+			} else {
+				newest = got
+			}
+		}
+		// A card with no event keeps its escalation's first line, the
+		// question it waits on an answer to; a card with neither claims
+		// nothing.
+		setActivity := func(k *card) {
+			if e, ok := newest[k.ID]; ok {
+				k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
+				return
+			}
+			if k.Reason != "" {
+				q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
+				k.Activity = q
+			}
+		}
+		setAll := func(ks []card) {
+			for i := range ks {
+				setActivity(&ks[i])
+			}
+		}
+		for i := range d.Columns {
+			setAll(d.Columns[i].Cards)
+		}
+		setAll(d.HumanTasks)
+		setAll(d.Escalations)
 	}
 	return d, nil
 }
@@ -732,6 +778,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s filed %s#%d (%s)", current(r).user, repo, issue.Number, lane)
+	c.act(r, repo.String(), "", issue.Number, factoryd.EventCardFiled, map[string]any{"lane": lane, "title": title})
 	http.Redirect(w, r, "/?filed="+strconv.FormatInt(issue.Number, 10), http.StatusSeeOther)
 }
 
@@ -763,11 +810,18 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), t.IssueNumber)
-	if err := c.asUser(r, http.MethodPost, path, map[string]string{"body": text}, http.StatusCreated, nil); err != nil {
+	var posted struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.asUser(r, http.MethodPost, path, map[string]string{"body": text}, http.StatusCreated, &posted); err != nil {
 		c.forgejoFailed(w, r, "post the answer", err)
 		return
 	}
 	log.Printf("console: %s answered the escalation of %s", current(r).user, t.ID)
+	// One action, one row: the event names the comment this button posted,
+	// so intake records no second question_answered when its webhook
+	// delivers that very comment.
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, commentDetail(posted.ID))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

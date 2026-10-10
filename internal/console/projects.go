@@ -169,6 +169,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
+	c.act(r, p.Name+"/"+p.Name, "", 0, factoryd.EventProjectFiled, map[string]any{"name": p.Name, "pr": pull.Number})
 	http.Redirect(w, r, "/projects/"+p.Name+"/status", http.StatusSeeOther)
 }
 
@@ -425,6 +426,7 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s merged %s#%d", current(r).user, c.cfg.InfraRepo, pr.Number)
+	c.act(r, c.projectRepository(r, name), "", 0, factoryd.EventProjectMerged, map[string]any{"name": name, "pr": pr.Number})
 	c.acted(w, r, name)
 }
 

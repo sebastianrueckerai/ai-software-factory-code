@@ -1958,7 +1958,7 @@ const maxAnswer = 4000
 // escalationQuestion is an escalation reason's first line, an agent's
 // question without its prefix.
 func escalationQuestion(reason string) string {
-	q, _, _ := strings.Cut(strings.TrimPrefix(reason, agentAsks), "\n")
+	q, _, _ := strings.Cut(strings.TrimPrefix(reason, AgentAsks), "\n")
 	return q
 }
 

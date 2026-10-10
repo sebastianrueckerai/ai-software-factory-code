@@ -383,6 +383,7 @@ func main() {
 		Resources:  cloudres.AgentStore(store.CloudResources()),
 		Alerts:     store,
 		Projects:   store,
+		Events:     store,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,
 		InfraRepo:  configRepo,

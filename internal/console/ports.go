@@ -33,6 +33,9 @@ type Resources interface {
 	Standing(ctx context.Context, repo string) (cloudres.StandingUse, error)
 	Promote(ctx context.Context, id int64, by string, standing func(repo string) policy.Standing) error
 	EndLease(ctx context.Context, id int64, by string) error
+	// Commission reads one agent row: the repository a promote or release
+	// event belongs to (cloudres.AgentStore).
+	Commission(ctx context.Context, id int64) (cloudres.Resource, bool, error)
 }
 
 // Policies reads the policy version being enforced (policy_versions).
@@ -53,10 +56,22 @@ type Alerts interface {
 	// SetAlertVerdict judges an open escalation alert as by;
 	// factoryd.ErrNotFound when there is none.
 	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
+	// AlertByID reads one alert row: the task whose repository an alert
+	// verdict's event carries (factoryd.PGStore).
+	AlertByID(ctx context.Context, id int64) (factoryd.Alert, bool, error)
 }
 
 // Projects are the configuration's project files joined with their rows
 // (factoryd.PGStore).
 type Projects interface {
 	Projects(ctx context.Context) ([]factoryd.Project, error)
+	// ProjectByRepository is the project whose file names repository
+	// (owner/name); false when none does.
+	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
+}
+
+// Events is the event spine (factoryd.Events): one row per action,
+// whatever the input, and a project's feed.
+type Events interface {
+	factoryd.Events
 }

@@ -24,8 +24,9 @@ const (
 const StepEvent = "event"
 
 // recordEvent appends event with detail to taskID's timeline as one line
-// of step event; a nil tl records nothing. A failed append is logged: an
-// event never fails the step it records.
+// of step event and writes the same event as a row of events, via
+// factoryd; a nil tl records nothing. A failed append is logged: an event
+// never fails the step it records.
 func (tl *Timeline) recordEvent(ctx context.Context, taskID, event string, detail map[string]any) {
 	if tl == nil {
 		return
@@ -34,6 +35,32 @@ func (tl *Timeline) recordEvent(ctx context.Context, taskID, event string, detai
 	maps.Copy(entry, detail)
 	if err := tl.Append(ctx, taskID, StepEvent, entry); err != nil {
 		log.Printf("task %s: event %s: %v", taskID, event, err)
+	}
+	tl.RecordRow(ctx, taskID, event, FactoryDecider, ViaFactoryd, detail)
+}
+
+// RecordRow writes event as an events row: the task's repository and issue
+// come from its row, and actor and via say who did it and how it reached
+// the factory (factoryd's own events pass FactoryDecider and ViaFactoryd,
+// intake an answer's author and ViaWebhook). A Timeline with no recorder or
+// store, or a task that cannot be read, leaves no row (logged).
+func (tl *Timeline) RecordRow(ctx context.Context, taskID, event, actor, via string, detail map[string]any) {
+	if tl == nil || tl.Events == nil || tl.Store == nil {
+		return
+	}
+	t, ok, err := tl.Store.Task(ctx, taskID)
+	if err != nil {
+		log.Printf("task %s: event %s: the task: %v", taskID, event, err)
+		return
+	}
+	if !ok {
+		log.Printf("task %s: event %s: no such task", taskID, event)
+		return
+	}
+	e := Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: event,
+		Actor: actor, Via: via, Detail: detail}
+	if _, err := tl.Events.Record(ctx, e); err != nil {
+		log.Printf("task %s: event %s: the row: %v", taskID, event, err)
 	}
 }
 
