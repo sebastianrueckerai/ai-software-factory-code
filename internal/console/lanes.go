@@ -229,6 +229,46 @@ func (c *Console) moveCard(w http.ResponseWriter, r *http.Request) {
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Moved #%d to lane %s; it leaves the backlog once factoryd picks it up.", t.IssueNumber, lane), nil)
 }
 
+// Item 141: the wait's length and poll interval, settable for the tests.
+// Accepting a plan only signals its workflow; the plan task reaches its
+// final status seconds later, once factoryd has filed the cards. A Start
+// plan posted right after the accept waits for that instead of losing
+// the race with a 409.
+var (
+	startPlanWait = 15 * time.Second
+	startPlanPoll = 500 * time.Millisecond
+)
+
+// awaitAcceptedPlan is plan task t once it is final: t itself when it
+// already is, else re-read every startPlanPoll until startPlanWait runs
+// out. It answers false when the task never turned final, or vanished.
+func (c *Console) awaitAcceptedPlan(ctx context.Context, t factoryd.Task) (factoryd.Task, bool) {
+	if t.Lane != policy.LanePlan || factoryd.Final(t.Status) {
+		return t, t.Lane == policy.LanePlan && t.Status == "done"
+	}
+	deadline := time.Now().Add(startPlanWait)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return t, false
+		case <-time.After(startPlanPoll):
+		}
+		next, ok, err := c.cfg.Tasks.Task(ctx, t.ID)
+		if err != nil {
+			log.Printf("console: task %s while waiting for its plan: %v", t.ID, err)
+			return t, false
+		}
+		if !ok {
+			return next, false
+		}
+		if next.Lane != policy.LanePlan || factoryd.Final(next.Status) {
+			return next, next.Lane == policy.LanePlan && next.Status == "done"
+		}
+		t = next
+	}
+	return t, false
+}
+
 // startPlan labels each card of an accepted plan still in the backlog
 // agent as the human (section 1.5): each label event is a move into ready.
 func (c *Console) startPlan(w http.ResponseWriter, r *http.Request) {
@@ -236,10 +276,16 @@ func (c *Console) startPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if t.Lane != policy.LanePlan || t.Status != "done" {
-		http.Error(w, "Task "+t.ID+" is no accepted plan.", http.StatusConflict)
+	accepted, ok := c.awaitAcceptedPlan(r.Context(), t)
+	if !ok {
+		msg := "Task " + t.ID + " is no accepted plan."
+		if accepted.Lane == policy.LanePlan && accepted.Status != "done" && !factoryd.Final(accepted.Status) {
+			msg = "The plan's cards are still being filed; try again in a moment."
+		}
+		http.Error(w, msg, http.StatusConflict)
 		return
 	}
+	t = accepted
 	_, proc, ok := c.cardProcess(w, r, t)
 	if !ok {
 		return

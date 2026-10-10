@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -429,6 +430,95 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		if rec := r.do(post("/tasks/t-plan/plan/"+name, f), ak); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s without text: %d, want 400", name, rec.Code)
 		}
+	}
+}
+
+// Item 141: a Start plan posted seconds after Accept, while factoryd is
+// still filing the plan's cards, waits for the plan task to turn done
+// instead of answering 409; a plan that never turns done gets 409 with
+// why, and a non-plan still answers at once.
+func TestStartPlanWaitsForTheCardsToBeFiled(t *testing.T) {
+	wait, poll := startPlanWait, startPlanPoll
+	startPlanWait, startPlanPoll = 300*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { startPlanWait, startPlanPoll = wait, poll })
+
+	r := newRig(t)
+	withLinkshort(r)
+	ck, s := r.loggedIn(t)
+	start := func(id string) *httptest.ResponseRecorder {
+		req := post("/tasks/"+id+"/start-plan", url.Values{"csrf": {s.csrf}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+
+	// the plan is accepted but not yet final when start-plan first reads it
+	plan := planTasks()
+	for i := range plan {
+		if plan[i].ID == "t-plan" {
+			plan[i].Status = "running"
+		}
+	}
+	r.tasks.tasks = plan
+	var reads int32
+	// factoryd files the cards and ends the plan on the third read of it:
+	// after Accept nothing had happened yet, so start-plan's first read
+	// finds the plan running.
+	r.tasks.read = func(s *fakeTasks, id string) {
+		if id == "t-plan" && atomic.AddInt32(&reads, 1) == 3 {
+			s.setStatus("t-plan", "done")
+		}
+	}
+	r.fg.calls = nil
+	rec := start("t-plan")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start plan while the cards are being filed: %d %.300s", rec.Code, rec.Body)
+	}
+	if got := atomic.LoadInt32(&reads); got != 3 {
+		t.Errorf("%d reads of the plan, want the first, two polls and no more", got)
+	}
+	if want := []string{"/api/v1/repos/linkshort/linkshort/issues/2/labels [21]", "/api/v1/repos/linkshort/linkshort/issues/3/labels [21]"}; !slices.Equal(r.fg.labelled, want) {
+		t.Errorf("labelled %v, want %v", r.fg.labelled, want)
+	}
+
+	// a plan whose cards are never filed: 409 with the reason, nothing labelled
+	r.tasks.read, r.fg.labelled = nil, nil
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-plan" {
+			r.tasks.tasks[i].Status = "running"
+		}
+	}
+	before := time.Now()
+	if rec := start("t-plan"); rec.Code != http.StatusConflict ||
+		strings.TrimSpace(rec.Body.String()) != `The plan's cards are still being filed; try again in a moment.` ||
+		len(r.fg.labelled) != 0 {
+		t.Errorf("a plan that never turns done: %d %q, labelled %v", rec.Code, rec.Body, r.fg.labelled)
+	}
+	if d := time.Since(before); d < startPlanWait {
+		t.Errorf("the wait gave up after %v, want the whole %v", d, startPlanWait)
+	}
+
+	// a card of another lane is refused without waiting
+	before = time.Now()
+	if rec := start("t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-run is no accepted plan." {
+		t.Errorf("start plan on a card: %d %q", rec.Code, rec.Body)
+	}
+	if d := time.Since(before); d >= startPlanPoll {
+		t.Errorf("a card waited %v, want no wait at all", d)
+	}
+
+	// a failed plan is not an accepted one: 409 at once
+	r.tasks.read = nil
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-plan" {
+			r.tasks.tasks[i].Status = "failed"
+		}
+	}
+	before = time.Now()
+	if rec := start("t-plan"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-plan is no accepted plan." {
+		t.Errorf("start plan on a failed plan: %d %q", rec.Code, rec.Body)
+	}
+	if d := time.Since(before); d >= startPlanPoll {
+		t.Errorf("a failed plan waited %v, want no wait at all", d)
 	}
 }
 
