@@ -136,39 +136,33 @@ func (k *fakeKube) DeleteNamespace(ctx context.Context, name string) error {
 }
 
 func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	var names []string
-	for name, labels := range k.namespaces {
-		v, ok := labels[key]
-		if value == "" && ok || v == value {
-			names = append(names, name)
-		}
+	nsList, err := k.ListNamespacesByLabel(ctx, key, value)
+	if err != nil {
+		return nil, err
 	}
-	slices.Sort(names) // the API server lists by name
+	names := make([]string, 0, len(nsList))
+	for _, ns := range nsList {
+		names = append(names, ns.Name)
+	}
 	return names, nil
 }
 
-// fakeNamespaceLister reports the deletion state fakeKube's namespaces
+// ListNamespacesByLabel reports the deletion state fakeKube's namespaces
 // carry: InClusterKube decodes metadata.deletionTimestamp, and reconcile is
 // the caller that needs it.
-type fakeNamespaceLister struct{ k *fakeKube }
-
-func (l fakeNamespaceLister) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
-	l.k.mu.Lock()
-	defer l.k.mu.Unlock()
+func (k *fakeKube) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	var out []NamespaceInfo
-	for name, labels := range l.k.namespaces {
+	for name, labels := range k.namespaces {
 		v, ok := labels[key]
 		if value == "" && ok || v == value {
-			out = append(out, NamespaceInfo{Name: name, Terminating: l.k.terminating[name]})
+			out = append(out, NamespaceInfo{Name: name, Terminating: k.terminating[name]})
 		}
 	}
 	slices.SortFunc(out, func(a, b NamespaceInfo) int { return cmp.Compare(a.Name, b.Name) })
 	return out, nil
 }
-
-var _ NamespaceLister = fakeNamespaceLister{}
 
 func (k *fakeKube) CreateServiceAccount(ctx context.Context, namespace, name string) error {
 	return k.saErr

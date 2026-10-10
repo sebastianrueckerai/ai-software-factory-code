@@ -48,6 +48,12 @@ type Kube interface {
 	CreateNamespace(ctx context.Context, name string, labels map[string]string) error
 	DeleteNamespace(ctx context.Context, name string) error
 	NamespacesByLabel(ctx context.Context, key, value string) ([]string, error)
+	// ListNamespacesByLabel lists the same namespaces with their deletion
+	// state. NamespacesByLabel's meaning for its callers is simply "the
+	// namespace exists" — a Terminating one still answers there; this is
+	// reconcile's variant, which must not read a namespace teardown already
+	// deleted (its RoleBinding is gone, so a pod read answers Forbidden).
+	ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error)
 	CreateServiceAccount(ctx context.Context, namespace, name string) error
 	CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
@@ -164,15 +170,6 @@ func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string
 		names = append(names, ns.Name)
 	}
 	return names, nil
-}
-
-// NamespaceLister lists namespaces by label with their deletion state.
-// InClusterKube satisfies it; a test scripts a fake. It is a separate seam
-// from Kube.NamespacesByLabel, whose meaning for its other callers is
-// simply "the namespace exists": reconcile needs to know which of the
-// namespaces it lists are already Terminating and must not be read at all.
-type NamespaceLister interface {
-	ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error)
 }
 
 // NamespaceInfo is a listed namespace's name and whether the API server has

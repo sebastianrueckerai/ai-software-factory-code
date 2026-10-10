@@ -127,7 +127,7 @@ func newTestCISpawner(t *testing.T, kube *fakeKube, hub *ciHub) *CISpawner {
 	builds.collector.OwnerDone = CIOwnerDone(kube)
 	builds.collector.ReleaseAttempts = 1 // as cmd/factoryd wires it
 	builds.collector.RetryWait = time.Hour
-	spawner, err := NewCISpawnerWithNamespaces(testCIConfig(), forgejo, kube, builds, fakeNamespaceLister{kube})
+	spawner, err := NewCISpawner(testCIConfig(), forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	cfg := testCIConfig()
 	builds, _, _ := newTestBuildVMs(t, 2)
 
-	first, err := NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, fakeNamespaceLister{kube})
+	first, err := NewCISpawner(cfg, forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestCISpawnerIdempotentAcrossRestart(t *testing.T) {
 	// A restarted factoryd builds a brand new CISpawner against the same
 	// cluster and registrar state; the namespace label, not process memory,
 	// is what must stop a second registration.
-	restarted, err := NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, fakeNamespaceLister{kube})
+	restarted, err := NewCISpawner(cfg, forgejo, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1253,7 +1253,7 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	cfg := testCIConfig()
 	f := &Forgejo{BaseURL: srv.URL, HTTP: srv.Client(), ProjectsToken: "projects-tok", Seeded: testSeeded}
 	cfg.Repos = CIReposOf(f, store)
-	spawner, err := NewCISpawnerWithNamespaces(cfg, f, kube, builds, fakeNamespaceLister{kube})
+	spawner, err := NewCISpawner(cfg, f, kube, builds)
 	if err != nil {
 		t.Fatal(err)
 	}

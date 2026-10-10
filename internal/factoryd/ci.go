@@ -121,7 +121,6 @@ func CIReposOf(f *Forgejo, projects interface {
 type CISpawner struct {
 	cfg     CIConfig
 	kube    Kube
-	nsList  NamespaceLister
 	forgejo *Forgejo
 	builds  *BuildVMs
 	now     func() time.Time
@@ -145,17 +144,6 @@ const (
 )
 
 func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (*CISpawner, error) {
-	return NewCISpawnerWithNamespaces(cfg, forgejo, kube, builds, nil)
-}
-
-// NewCISpawnerWithNamespaces is NewCISpawner with the namespace list that
-// reconcile reads: a caller whose Kube client does not report deletion
-// timestamps (a test fake) passes one that does. Without it reconcile
-// would read the pod status of a Terminating namespace — whose RoleBinding
-// is already gone — log the resulting Forbidden on every tick until the
-// namespace disappears, and count it as live against MaxConcurrent. A nil
-// nsList means kube itself must be a NamespaceLister.
-func NewCISpawnerWithNamespaces(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs, nsList NamespaceLister) (*CISpawner, error) {
 	cfg.setDefaults()
 	if cfg.FactoryNamespace == "" || cfg.Repos == nil || cfg.RunnerImage == "" || cfg.GitBaseURL == "" {
 		return nil, fmt.Errorf("ci spawner: FactoryNamespace, Repos, RunnerImage, GitBaseURL are required")
@@ -166,14 +154,7 @@ func NewCISpawnerWithNamespaces(cfg CIConfig, forgejo *Forgejo, kube Kube, build
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	if nsList == nil {
-		l, ok := kube.(NamespaceLister)
-		if !ok {
-			return nil, fmt.Errorf("ci spawner: the kube client lists no namespace deletion state")
-		}
-		nsList = l
-	}
-	return &CISpawner{cfg: cfg, kube: kube, nsList: nsList, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -442,7 +423,7 @@ func (s *CISpawner) reconcile(ctx context.Context, repos []CIRepo) (live int) {
 			delete(s.tornDown, id)
 		}
 	}
-	names, err := s.nsList.ListNamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
+	names, err := s.kube.ListNamespacesByLabel(ctx, "pod-security.kubernetes.io/enforce", "restricted")
 	if err != nil {
 		log.Printf("ci spawner: reconcile list: %v", err)
 	}
