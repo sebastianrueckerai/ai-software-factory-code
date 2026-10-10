@@ -71,7 +71,7 @@ func tripVerdict(a SupervisorAction) string {
 // escalationSource names who asked for the human.
 func escalationSource(reason string) string {
 	switch {
-	case strings.HasPrefix(reason, agentAsks):
+	case strings.HasPrefix(reason, AgentAsks):
 		return "agent"
 	case strings.HasPrefix(reason, capReached):
 		return "cap"
@@ -137,6 +137,17 @@ func (s *PGStore) Alerts(ctx context.Context, limit int) ([]Alert, error) {
 func (s *PGStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	a, err := scanAlert(s.db.QueryRowContext(ctx,
 		`SELECT `+alertColumns+` FROM alerts WHERE fingerprint = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, fingerprint, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Alert{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// AlertByID is alerts row id; false when there is none. The console reads
+// it for the repository an event about the alert belongs to.
+func (s *PGStore) AlertByID(ctx context.Context, id int64) (Alert, bool, error) {
+	a, err := scanAlert(s.db.QueryRowContext(ctx,
+		`SELECT `+alertColumns+` FROM alerts WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Alert{}, false, nil
 	}

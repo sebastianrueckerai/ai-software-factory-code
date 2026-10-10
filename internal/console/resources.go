@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -185,5 +186,26 @@ func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what st
 		return
 	}
 	log.Printf("console: %s %sd the commission of resource %d", user, what, id)
+	kind := factoryd.EventResourcePromoted
+	if what == "release" {
+		kind = factoryd.EventResourceReleased
+	}
+	c.resourceEvent(r, id, kind)
 	http.Redirect(w, r, "/resources", http.StatusSeeOther)
+}
+
+// resourceEvent records what the human did to a commission under its own
+// project: an unreadable row, or one with no repository, leaves no row
+// (PGStore rejects an empty one), logged.
+func (c *Console) resourceEvent(r *http.Request, id int64, kind string) {
+	res, ok, err := c.cfg.Resources.Commission(r.Context(), id)
+	switch {
+	case err != nil:
+		log.Printf("console: resource %d: %v", id, err)
+		return
+	case !ok, res.Repo == "":
+		log.Printf("console: resource %d: no project to record %s under", id, kind)
+		return
+	}
+	c.act(r, res.Repo, res.OwnerRef, 0, kind, map[string]any{"resource": id, "kind": res.Kind})
 }

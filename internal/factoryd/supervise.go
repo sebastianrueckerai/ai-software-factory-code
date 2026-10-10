@@ -209,10 +209,10 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	return nil
 }
 
-// agentAsks opens an agent escalation's reason, before its question;
+// AgentAsks opens an agent escalation's reason, before its question;
 // agentAsksAuthor an information request's.
 const (
-	agentAsks       = "The agent asks: "
+	AgentAsks       = "The agent asks: "
 	agentAsksAuthor = "The agent asks the issue's author: "
 )
 

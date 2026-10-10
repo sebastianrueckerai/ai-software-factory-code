@@ -238,7 +238,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.ChecksPoll = HeartbeatEvery
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
-		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
+		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
+			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
 }
 
 // WorkflowConfig is what TaskWorkflow captures at its start: the limits of

@@ -25,6 +25,12 @@ import (
 // it.
 type Timeline struct {
 	Objects ObjectStore
+	// Events receives a row beside every event timeline line (the store);
+	// nil records none.
+	Events eventRecorder
+	// Store reads the task of an event, for its repository and issue; nil
+	// (or no task) leaves no row.
+	Store Store
 	// Metrics receives factory.task.gate.duration for every step that
 	// carries started; nil = none.
 	Metrics *telemetry.Metrics

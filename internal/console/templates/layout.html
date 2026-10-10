@@ -27,6 +27,7 @@
 {{define "card"}}<article class="card"{{if .Moves}} draggable="true" data-card="{{.ID}}"{{end}}>
 <h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
 <p class="meta">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}<span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .GateText}} · <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
+{{if .Activity}}<p class="meta activity">{{.Activity}}</p>{{end}}
 {{if .PlanIssue}}<p class="meta">part of plan #{{.PlanIssue}}</p>{{end}}
 {{if .WaitingOn}}<p class="waiting">waiting on {{.WaitingOn}}</p>{{end}}
 {{with .Plan}}<ul class="children" aria-label="The plan's cards">{{range .Cards}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>

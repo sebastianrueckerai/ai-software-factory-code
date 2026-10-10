@@ -916,21 +916,56 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 		return err
 	}
 	if fresh && !onPR {
-		in.countAnswer(ctx, t, c.Author, trusted)
+		in.countAnswer(ctx, t, c.Author, trusted, c.ID)
 	}
 	return in.signalEvent(ctx, t.ID, e, number)
 }
 
 // countAnswer counts a new issue comment that answers a task waiting on a
 // human: the poster's on a task waiting for the poster, a writer's on a
-// task waiting for a human's answer or for the poster.
-func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool) {
+// task waiting for an answer or for the poster. Each of those records
+// question_answered via webhook, so one question leaves one event whatever
+// the input (ruling 252). The console's Answer button posts its answer as
+// an issue comment itself and files its own row naming that comment, so
+// intake must stay silent for it: buttonCommentIDs are the comments of the
+// task a button already recorded, read before this path runs; skip is the
+// comment being counted now (0 = none), left out of the list it stores so a
+// later comment still counts.
+func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool, skip int64) {
+	var ids []int64
+	if in.Timeline != nil && in.Timeline.Events != nil {
+		var err error
+		ids, err = in.Timeline.Events.ButtonCommentIDs(ctx, t.ID)
+		if err != nil {
+			log.Printf("intake: task %s: the button's answers: %v", t.ID, err)
+		}
+	}
+	counts := func() {
+		for _, id := range ids {
+			if id == skip {
+				return
+			}
+		}
+		in.recordAnswer(ctx, t, author, skip)
+	}
 	switch {
 	case t.Status == "waiting-poster" && author == t.Author:
 		in.intervened(ctx, t, InterventionPosterAnswer)
+		counts()
 	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
 		in.intervened(ctx, t, InterventionEscalationAnswer)
+		counts()
 	}
+}
+
+// recordAnswer writes the question_answered row of the comment (0 = none of
+// its own) that answered t's question, by its author, through the webhook.
+func (in *Intake) recordAnswer(ctx context.Context, t Task, author string, commentID int64) {
+	detail := map[string]any{}
+	if commentID != 0 {
+		detail["comment"] = commentID
+	}
+	in.Timeline.RecordRow(ctx, t.ID, EventQuestionAnswered, author, ViaWebhook, detail)
 }
 
 // intervened counts a human intervention of kind in task t.

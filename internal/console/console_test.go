@@ -64,6 +64,7 @@ type fakeForgejo struct {
 	failReview bool
 	closed     []string // "path state"
 	labelled   []string // "path [label ids]"
+	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -158,8 +159,9 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
 		f.comments[r.URL.Path] = body["body"]
+		f.commentN++
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte(`{"id":5}`))
+		json.NewEncoder(w).Encode(map[string]any{"id": f.commentN})
 	default:
 		http.NotFound(w, r)
 	}
@@ -355,6 +357,17 @@ func (f *fakeResources) EndLease(_ context.Context, id int64, by string) error {
 	return nil
 }
 
+// Commission answers a row by id from rows; 13 and any unknown id have
+// none.
+func (f *fakeResources) Commission(_ context.Context, id int64) (cloudres.Resource, bool, error) {
+	for _, r := range f.rows {
+		if r.ID == id {
+			return r, true, nil
+		}
+	}
+	return cloudres.Resource{}, false, nil
+}
+
 // fakeAlerts is the alerts table.
 type fakeAlerts struct {
 	rows     []factoryd.Alert
@@ -374,6 +387,15 @@ func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by st
 		}
 	}
 	return factoryd.ErrNotFound
+}
+
+func (a *fakeAlerts) AlertByID(_ context.Context, id int64) (factoryd.Alert, bool, error) {
+	for _, r := range a.rows {
+		if r.ID == id {
+			return r, true, nil
+		}
+	}
+	return factoryd.Alert{}, false, nil
 }
 
 type fakeLedger struct {

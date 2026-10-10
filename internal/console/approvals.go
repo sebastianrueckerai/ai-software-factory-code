@@ -145,6 +145,7 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 		if !c.decided(w, r, a, "approved", "approved for the task") {
 			return
 		}
+		c.act(r, a.Project, a.TaskID, 0, factoryd.EventMergeApproved, map[string]any{"approval": a.ID, "kind": "resource"})
 	case factoryd.ApprovalMerge:
 		var spec factoryd.MergeSpec
 		if err := json.Unmarshal(a.Spec, &spec); err != nil || spec.HeadSHA == "" {
@@ -162,6 +163,7 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("console: %s approved PR #%d of %s at %s", user, a.PRNumber, a.TaskID, spec.HeadSHA)
+		c.act(r, a.Project, a.TaskID, 0, factoryd.EventMergeApproved, map[string]any{"pr": a.PRNumber})
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -186,6 +188,7 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 		if !c.decided(w, r, a, "denied", note) {
 			return
 		}
+		c.act(r, a.Project, a.TaskID, 0, factoryd.EventMergeDenied, map[string]any{"approval": a.ID, "kind": "resource"})
 	case factoryd.ApprovalMerge:
 		repo, err := factoryd.SplitRepo(a.Project)
 		if err != nil {
@@ -207,6 +210,7 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 			if !c.decided(w, r, a, "denied", "changes requested: "+note) {
 				return
 			}
+			c.act(r, a.Project, a.TaskID, 0, factoryd.EventMergeDenied, map[string]any{"pr": a.PRNumber, "action": "request_changes"})
 		case "reject":
 			pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 			if err := c.asUser(r, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, a.PRNumber),
@@ -222,6 +226,7 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 			if !c.decided(w, r, a, "denied", "rejected: "+note) {
 				return
 			}
+			c.act(r, a.Project, a.TaskID, 0, factoryd.EventMergeDenied, map[string]any{"pr": a.PRNumber, "action": "reject"})
 		default:
 			http.Error(w, "choose request changes or reject", http.StatusBadRequest)
 			return

@@ -226,6 +226,7 @@ func (c *Console) moveCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s moved %s (%s#%d) to lane %s", user, t.ID, t.Repository, t.IssueNumber, lane)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardMoved, map[string]any{"lane": lane})
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Moved #%d to lane %s; it leaves the backlog once factoryd picks it up.", t.IssueNumber, lane), nil)
 }
 
@@ -322,6 +323,7 @@ func (c *Console) startPlan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	log.Printf("console: %s started plan %s: %d cards labelled agent", current(r).user, t.ID, n)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanStarted, map[string]any{"cards": n})
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Start plan: %d %s of plan #%d labelled agent.", n, plural(n, "card"), t.IssueNumber), nil)
 }
 
@@ -365,6 +367,7 @@ func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s retried %s (%s#%d) as #%d", user, t.ID, t.Repository, t.IssueNumber, issue)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Retried #%d as #%d; it starts in lane ready once factoryd picks it up.", t.IssueNumber, issue), nil)
 }
 
@@ -416,6 +419,7 @@ func (c *Console) acceptPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s accepted revision %d of plan %s", user, revision, t.ID)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanAccepted, map[string]any{"revision": revision})
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Accepted revision %d of plan #%d; factoryd files its cards.", revision, t.IssueNumber), nil)
 }
 
@@ -436,6 +440,7 @@ func (c *Console) planChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s asked for changes to plan %s", current(r).user, t.ID)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, nil)
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Your change request is on plan #%d; the planner answers a new revision.", t.IssueNumber), nil)
 }
 
@@ -457,5 +462,6 @@ func (c *Console) rejectPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s rejected plan %s: %s", user, t.ID, note)
+	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanRejected, nil)
 	c.showBoard(w, r, http.StatusOK, fmt.Sprintf("Rejected plan #%d.", t.IssueNumber), nil)
 }
