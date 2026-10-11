@@ -265,9 +265,10 @@ func diffStat(d map[string]any) string {
 var commas = message.NewPrinter(language.English)
 
 // stepLine is step i on one line, without content. A model call's prompt
-// tokens are opencode's total less its output and reasoning (its input
-// leaves out the cached tokens); a step recorded before the cache count
-// was kept shows no cached share. opencode's own cost is left out: the
+// tokens are opencode's total less its output and reasoning, or without a
+// total its input plus the cache's reads and writes (its input leaves out
+// the cached tokens); a step recorded before the cache count was kept
+// shows no cached share. opencode's own cost is left out: the
 // factory's provider publishes no price, so it is 0; the ledger's cost line
 // is the call's EUR.
 func stepLine(i int, ev harness.Event, start time.Time) string {
@@ -275,9 +276,13 @@ func stepLine(i int, ev harness.Event, start time.Time) string {
 	head := fmt.Sprintf("%d %s ", i, offset(ev.Time, start))
 	if ev.Kind == harness.EventModelCall {
 		tokens, _ := d["tokens"].(map[string]any)
+		cache, cached := tokens["cache"].(map[string]any)
 		prompt := numAt(tokens, "total") - numAt(tokens, "output") - numAt(tokens, "reasoning")
+		if numAt(tokens, "total") == 0 {
+			prompt = numAt(tokens, "input") + numAt(cache, "read") + numAt(cache, "write")
+		}
 		line := head + commas.Sprintf("model call, %d prompt tokens", int(prompt))
-		if cache, ok := tokens["cache"].(map[string]any); ok && prompt > 0 {
+		if cached && prompt > 0 {
 			line += fmt.Sprintf(" (%.0f%% cached)", 100*numAt(cache, "read")/prompt)
 		}
 		return line

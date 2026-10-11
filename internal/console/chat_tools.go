@@ -477,7 +477,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "One card in full: its state, gate, spend of budget, lane, issue and sessions of its cap; the cards it depends on and that depend on it; the question it waits on with its choices; its pull request with its head and state, and its waiting requests; which of the reads pr, plan and session holds its reviews, audit, checks, plan and sessions; its objective and the agent's summary.",
+		about: "One card in full: its state, gate, spend of budget, lane, issue and sessions of its cap; its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call; the cards it depends on and that depend on it; the question it waits on with its choices; its pull request with its head and state, and its waiting requests; which of the reads pr, plan and session holds its reviews, audit, checks, plan and sessions; its objective and the agent's summary.",
 		fits:  "any card",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
@@ -526,7 +526,7 @@ var tools = []chatTool{
 		fits:     "the project's repository",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
-		about: "One session of a card, the newest unless n numbers one: its model, attempt and outcome, its duration, the agent's closing summary, the supervisor's trips and the messages it got, the files it changed, its diff stat, its spend and its step count.",
+		about: "One session of a card, the newest unless n numbers one: its model, attempt and outcome, its duration, the agent's closing summary, the supervisor's trips and the messages it got; its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call; the files it changed, its diff stat and its step count.",
 		fits:  sessionFits,
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
 	{name: "session_steps", title: "List a session's steps",

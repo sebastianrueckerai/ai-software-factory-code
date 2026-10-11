@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -109,9 +110,9 @@ func TestSessionsOf(t *testing.T) {
 
 // The session read is one session's summary: its number of the card's,
 // model, attempt and outcome, its duration, the agent's closing summary,
-// the supervisor's trips and the messages the session got, the files it
-// changed, its diff stat, its spend and its step count; the newest when n
-// is unset. A running session runs since its start; one without a
+// the supervisor's trips and the messages the session got, its cost line,
+// the files it changed, its diff stat and its step count; the newest when
+// n is unset. A running session runs since its start; one without a
 // transcript says so; a card without sessions and a session past the
 // card's are refused.
 func TestChatSessionRead(t *testing.T) {
@@ -497,4 +498,29 @@ func TestCostLines(t *testing.T) {
 		"cost: review/review-frontier, 1 call (1 without usage), 0.0125 EUR per call",
 	})
 	equal(t, "no calls", costLines(nil), []string{"cost: no model calls"})
+}
+
+// A step without opencode's total (a provider that sends no total_tokens)
+// counts its prompt as input plus the cache's reads and writes: 4,433 +
+// 68,000 = 72,433, of which 68,000 cached (93.9%).
+func TestStepLineWithoutTotal(t *testing.T) {
+	start := time.Date(2026, 10, 11, 10, 0, 0, 0, time.UTC)
+	ev := harness.Event{Kind: harness.EventModelCall, Time: start.Add(5 * time.Second), Detail: map[string]any{
+		"tokens": map[string]any{"total": 0.0, "input": 4433.0, "output": 900.0, "reasoning": 0.0, "cache": map[string]any{"read": 68000.0, "write": 0.0}}}}
+	equal(t, "the step line", stepLine(1, ev, start), "1 0:05 model call, 72,433 prompt tokens (94% cached)")
+}
+
+// The project agent picks a read by its description: the card and session
+// reads name their cost line, and the session's no longer names a spend.
+func TestCostReadsNameTheCostLine(t *testing.T) {
+	r, _ := newSessionsRig(t)
+	for _, name := range []string{"card", "session"} {
+		tool, ok := r.c.chatTool(name)
+		if !ok || !strings.Contains(tool.about, "its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call") {
+			t.Errorf("%s: %q names no cost line", name, tool.about)
+		}
+	}
+	if tool, _ := r.c.chatTool("session"); strings.Contains(tool.about, "spend") {
+		t.Errorf("session: %q names a spend", tool.about)
+	}
 }
