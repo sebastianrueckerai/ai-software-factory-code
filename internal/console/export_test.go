@@ -404,7 +404,8 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 
 // An import row adds the step "Imported from GitHub" after the
 // repository's: waiting before the load, running until registration's
-// migrate, then done with its time or failed with the row's state.
+// migrate and during it with its start, then done with its time or failed
+// with the row's state.
 func TestStatusShowsGitHubImport(t *testing.T) {
 	for _, c := range []struct {
 		load                bool
@@ -412,6 +413,7 @@ func TestStatusShowsGitHubImport(t *testing.T) {
 	}{
 		{false, "pending", stepWaiting, "After the merge."},
 		{true, "pending", stepRunning, "Registration copies github.com/acme/app into the repository within a minute of the load."},
+		{true, "copying since 2026-10-11 14:00 UTC", stepRunning, "github.com/acme/app, copying since 2026-10-11 14:00 UTC."},
 		{true, "failed: forgejo POST /api/v1/repos/migrate: status 500: boom", stepFailed,
 			"The copy of github.com/acme/app failed: forgejo POST /api/v1/repos/migrate: status 500: boom. The reconcile tries again at least hourly."},
 		{true, "imported 2026-10-11 14:00 UTC", stepDone, "github.com/acme/app, imported 2026-10-11 14:00 UTC."},

@@ -59,9 +59,10 @@ type forgejoState struct {
 
 	files         map[string]bool // main's paths
 	migrated      []map[string]any
-	migrateFail   string   // a migrate's 500 answer; "": it works
-	source        []string // the migrated repository's paths; none: it is empty
-	sourceBranch  string   // and its default branch
+	migrateFail   string        // a migrate's 500 answer; "": it works
+	migrateGate   chan struct{} // a migrate answers once it closes, the fake's lock free meanwhile; nil: at once
+	source        []string      // the migrated repository's paths; none: it is empty
+	sourceBranch  string        // and its default branch
 	defaultBranch string
 }
 
@@ -104,6 +105,8 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		const repo = "/api/v1/repos/demo-app/demo-app"
 		p := r.URL.Path
 		switch {
+		case p == "/api/v1/repos/other/other": // a second project, not made yet
+			http.NotFound(w, r)
 		// the site admin's
 		case admin && r.Method == http.MethodGet && p == "/api/v1/orgs/demo-app":
 			if !s.org {
@@ -135,6 +138,11 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/repos/migrate":
 			s.migrated = append(s.migrated, body)
+			if gate := s.migrateGate; gate != nil {
+				s.mu.Unlock()
+				<-gate
+				s.mu.Lock()
+			}
 			if s.migrateFail != "" {
 				w.WriteHeader(http.StatusInternalServerError)
 				io.WriteString(w, s.migrateFail)

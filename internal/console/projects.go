@@ -373,6 +373,8 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 				imported.State, imported.Detail = stepDone, from+", "+m.State+"."
 			case strings.HasPrefix(m.State, "failed"):
 				imported.State, imported.Detail = stepFailed, "The copy of "+from+" "+m.State+". The reconcile tries again at least hourly."
+			case strings.HasPrefix(m.State, "copying"):
+				imported.State, imported.Detail = stepRunning, from+", "+m.State+"."
 			case merged.State == stepDone:
 				imported.State, imported.Detail = stepRunning, "Registration copies "+from+" into the repository within a minute of the load."
 			}

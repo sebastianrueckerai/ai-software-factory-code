@@ -18,8 +18,9 @@ const (
 	MirrorExport = "export"
 	// MirrorImport is a new project's GitHub repository, which
 	// registration copies into its Forgejo repository once; its token,
-	// empty for a public one, is forgotten after the copy. Its last update
-	// is the copy's start, then its end.
+	// empty for a public one, is forgotten after the copy. Its state is
+	// pending, copying since the copy's start, then imported or failed;
+	// its last update the copy's start, then its end.
 	MirrorImport = "import"
 )
 
@@ -89,20 +90,20 @@ func (s *PGStore) DeleteMirror(ctx context.Context, project, direction string) e
 	return err
 }
 
-// DeleteStaleImports deletes the import rows still pending, last written
-// before before, of projects not in files, and answers them without their
-// tokens.
+// DeleteStaleImports deletes the import rows still pending or copying,
+// last written before before, of projects not in files, and answers them
+// without their tokens, their state its first word.
 func (s *PGStore) DeleteStaleImports(ctx context.Context, files []string, before time.Time) ([]Mirror, error) {
-	rows, err := s.db.QueryContext(ctx, `DELETE FROM project_mirrors WHERE direction = 'import' AND state = 'pending'
-		AND updated_at < $1 AND project <> ALL($2::text[]) RETURNING project, remote`, before, files)
+	rows, err := s.db.QueryContext(ctx, `DELETE FROM project_mirrors WHERE direction = 'import' AND (state = 'pending' OR state LIKE 'copying %')
+		AND updated_at < $1 AND project <> ALL($2::text[]) RETURNING project, remote, split_part(state, ' ', 1)`, before, files)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var gone []Mirror
 	for rows.Next() {
-		m := Mirror{Direction: MirrorImport, State: "pending"}
-		if err := rows.Scan(&m.Project, &m.Remote); err != nil {
+		m := Mirror{Direction: MirrorImport}
+		if err := rows.Scan(&m.Project, &m.Remote, &m.State); err != nil {
 			return nil, err
 		}
 		gone = append(gone, m)

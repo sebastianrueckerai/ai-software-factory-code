@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -131,16 +132,21 @@ func TestPushMirrorCalls(t *testing.T) {
 // memMirrors are mirror rows by project, recording each state set as
 // "project direction: state | last error | last update".
 type memMirrors struct {
+	mu   sync.Mutex
 	rows map[string]Mirror
 	set  []string
 }
 
 func (m *memMirrors) MirrorToken(_ context.Context, project, direction string) (Mirror, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	row, ok := m.rows[project+" "+direction]
 	return row, ok, nil
 }
 
 func (m *memMirrors) SetMirrorState(_ context.Context, project, direction, state, lastError string, lastUpdate time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	at := "never"
 	if !lastUpdate.IsZero() {
 		at = lastUpdate.UTC().Format(time.RFC3339)
@@ -160,6 +166,8 @@ func (m *memMirrors) DeleteStaleImports(context.Context, []string, time.Time) ([
 }
 
 func (m *memMirrors) SetMirrorToken(_ context.Context, project, direction, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if row, ok := m.rows[project+" "+direction]; ok {
 		row.Token = token
 		m.rows[project+" "+direction] = row
@@ -352,6 +360,7 @@ func TestRegisterImportFailure(t *testing.T) {
 	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
 		t.Fatalf("%v\n%s", err, rig.logs)
 	}
+	rig.reg.copies.Wait()
 	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 2 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
 		t.Fatalf("the retry: %d migrates, token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
 	}
@@ -448,58 +457,155 @@ func TestRegisterMirrorsWithoutImport(t *testing.T) {
 	}
 }
 
-// The row holds a migrate's start before the migrate. A pending row whose
-// migrate started over twice the migrate's timeout (20 minutes) ago, with
-// the repository still empty, copied an empty source: registration takes
-// it as imported, with no second migrate, and seeds the whole template.
-// Before that, at 2 or 19 minutes, the copy may still run: the
-// registration waits as before, the row as it was.
-func TestRegisterImportEmptySource(t *testing.T) {
+// The row reads copying since the copy's start, before the migrate.
+// After a restart no copy runs here and a copying row is read against
+// Forgejo, which finishes a migrate its caller left: a non-empty
+// repository is the copy's, imported with no second migrate at any age; an
+// empty one copied an empty source once the copy started over twice the
+// migrate's timeout (20 minutes) ago, imported and seeded whole. Before
+// that, at 2 or 19 minutes, it may still copy: registration waits, no
+// failure, the row as it was.
+func TestRegisterImportAfterRestart(t *testing.T) {
 	rig, mirrors := importRig(t)
 	rig.fj.migrateFail = `{"message":"cut"}`
 	before := time.Now().Truncate(time.Second)
 	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err == nil || len(mirrors.set) != 2 {
 		t.Fatalf("registration error %v, states set %q", err, mirrors.set)
 	}
-	start, ok := strings.CutPrefix(mirrors.set[0], "demo-app import: pending |  | ")
-	if at, err := time.Parse(time.RFC3339, start); !ok || err != nil || at.Before(before) || at.After(time.Now()) ||
-		!strings.HasPrefix(mirrors.set[1], "demo-app import: failed: ") {
-		t.Fatalf("states set %q: want pending with the migrate's start, then failed", mirrors.set)
+	state, at, _ := strings.Cut(strings.TrimPrefix(mirrors.set[0], "demo-app import: "), " |  | ")
+	if start, err := time.Parse(time.RFC3339, at); err != nil || start.Before(before) || start.After(time.Now()) ||
+		state != "copying since "+start.Format("2006-01-02 15:04")+" UTC" || !strings.HasPrefix(mirrors.set[1], "demo-app import: failed: ") {
+		t.Fatalf("states set %q: want copying since the migrate's start, then failed", mirrors.set)
 	}
 
 	all := map[string]string{"README.md": "# template\n", "deploy/staging/kustomization.yaml": "namespace: demo-staging\n", ".forgejo/CODEOWNERS": "* @demo-app\n"}
 	maps.Copy(all, factoryWorkflows)
-	started := func(ago time.Duration) (*registerRig, *memMirrors, Mirror) {
+	started := func(ago time.Duration, empty bool) (*registerRig, *memMirrors, Mirror) {
 		rig, mirrors := importRig(t)
 		rig.fj.repo = true
+		if !empty {
+			rig.fj.defaultBranch, rig.fj.branches["main"] = "main", "1mp0rt"
+			for _, f := range rig.fj.source {
+				rig.fj.files[f] = true
+			}
+		}
 		row := mirrors.rows["demo-app import"]
 		row.LastUpdate = time.Now().Add(-ago)
+		row.State = "copying since " + row.LastUpdate.UTC().Format("2006-01-02 15:04") + " UTC"
 		mirrors.rows["demo-app import"] = row
 		return rig, mirrors, row
 	}
-	rig, mirrors, _ = started(21 * time.Minute)
-	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
-		t.Fatalf("%v\n%s", err, rig.logs)
-	}
-	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 0 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
-		t.Fatalf("migrates %d, import row token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
-	}
-	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)" || rig.fj.seeds[0].branch != "main" ||
-		!reflect.DeepEqual(rig.fj.seeds[0].files, all) {
-		t.Fatalf("commits %+v, want one seed with %q", rig.fj.seeds, all)
+	for _, c := range []struct {
+		ago   time.Duration
+		empty bool
+		seed  string
+		files map[string]string
+	}{
+		{21 * time.Minute, false, "Factory workflows", factoryWorkflows},
+		{19 * time.Minute, false, "Factory workflows", factoryWorkflows},
+		{2 * time.Minute, false, "Factory workflows", factoryWorkflows},
+		{21 * time.Minute, true, "Seed from template ts-go (registration)", all},
+	} {
+		rig, mirrors, _ := started(c.ago, c.empty)
+		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+			t.Fatalf("%v ago, empty %v: %v\n%s", c.ago, c.empty, err, rig.logs)
+		}
+		if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 0 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+			t.Fatalf("%v ago, empty %v: migrates %d, import row token %q, state %q", c.ago, c.empty, len(rig.fj.migrated), row.Token, row.State)
+		}
+		if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != c.seed || rig.fj.seeds[0].branch != "main" || !reflect.DeepEqual(rig.fj.seeds[0].files, c.files) {
+			t.Fatalf("%v ago, empty %v: commits %+v, want one %q with %q", c.ago, c.empty, rig.fj.seeds, c.seed, c.files)
+		}
 	}
 
-	const msg = "registration: repository demo-app/demo-app: the repository exists, empty: a migrate of github.com/acme/app may still be copying; the next reconcile looks again"
 	for _, ago := range []time.Duration{2 * time.Minute, 19 * time.Minute} {
-		rig, mirrors, want := started(ago)
-		_, err := rig.reg.Register(context.Background(), "demo-app", false)
-		if err == nil || !strings.Contains(err.Error(), msg) {
-			t.Fatalf("started %v ago: registration error %v", ago, err)
+		rig, mirrors, want := started(ago, true)
+		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil || rig.reg.ReconcileError("demo-app") != "" {
+			t.Fatalf("started %v ago: registration error %v, reconcile error %q", ago, err, rig.reg.ReconcileError("demo-app"))
 		}
-		if row := mirrors.rows["demo-app import"]; row != want || len(mirrors.set) != 0 || len(rig.fj.migrated) != 0 || len(rig.fj.seeds) != 0 {
-			t.Fatalf("started %v ago: import row %+v, states set %q, migrates %d, seeds %d; want %+v unchanged, none set",
-				ago, row, mirrors.set, len(rig.fj.migrated), len(rig.fj.seeds), want)
+		line := "project demo-app: registration: repository demo-app/demo-app: copying github.com/acme/app since " +
+			want.LastUpdate.UTC().Format("2006-01-02 15:04") + " UTC\n"
+		if row := mirrors.rows["demo-app import"]; row != want || len(mirrors.set) != 0 || len(rig.fj.migrated) != 0 || len(rig.fj.seeds) != 0 ||
+			!strings.Contains(rig.logs.String(), line) {
+			t.Fatalf("started %v ago: import row %+v, states set %q, migrates %d, seeds %d; want %+v unchanged, none set, the line %q\n%s",
+				ago, row, mirrors.set, len(rig.fj.migrated), len(rig.fj.seeds), want, line, rig.logs)
 		}
+	}
+}
+
+// The copy runs beside the reconciles: project A's reconcile starts it
+// and returns with its row copying since the start, no failure; project
+// B's reconcile takes the registrar's lock while A's migrate still blocks;
+// a second reconcile of A during the copy starts no second migrate. The
+// migrate's end writes imported and reconciles A again, which seeds it.
+func TestImportCopiesAside(t *testing.T) {
+	rig, mirrors := importRig(t)
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	rig.fj.migrateGate = gate
+	rig.store.m["other"] = Project{Name: "other", Repository: "other/other", Objects: policy.ObjectsFactory, File: true,
+		PullToken: "pull", GitToken: "git", MergeToken: "merge"}
+	ctx := context.Background()
+	reconcile := func(name string) {
+		t.Helper()
+		p, done := rig.store.m[name], make(chan error, 1)
+		go func() { done <- rig.reg.Reconcile(ctx, p) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%s's reconcile: %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s's reconcile still waits after 5 s", name)
+		}
+	}
+	before := time.Now().Truncate(time.Second)
+	reconcile("demo-app")
+	row, _, _ := mirrors.MirrorToken(ctx, "demo-app", MirrorImport)
+	if row.LastUpdate.Before(before) || row.LastUpdate.After(time.Now()) || row.State != "copying since "+row.LastUpdate.UTC().Format("2006-01-02 15:04")+" UTC" ||
+		row.Token != importToken || rig.reg.ReconcileError("demo-app") != "" {
+		t.Fatalf("during the copy: import row %+v, reconcile error %q", row, rig.reg.ReconcileError("demo-app"))
+	}
+	reconcile("other")
+	reconcile("demo-app")
+	release()
+	rig.reg.copies.Wait()
+	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 1 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("after the copy: migrates %d, import row token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
+	}
+	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Factory workflows" || rig.reg.ReconcileError("demo-app") != "" {
+		t.Fatalf("after the copy: commits %+v, reconcile error %q\n%s", rig.fj.seeds, rig.reg.ReconcileError("demo-app"), rig.logs)
+	}
+	for _, line := range []string{"project other: repository other/other: " + string(Waiting),
+		"project demo-app: repository demo-app/demo-app: imported from acme/app"} {
+		if !strings.Contains(rig.logs.String(), line+"\n") {
+			t.Errorf("log lacks %q:\n%s", line, rig.logs)
+		}
+	}
+}
+
+// factoryd's stop cuts a running copy: its row stays copying, no failure
+// written, no reconcile error, for the next start to read against Forgejo.
+func TestImportCopyStopsWithFactoryd(t *testing.T) {
+	rig, mirrors := importRig(t)
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	rig.fj.migrateGate = gate
+	ctx, stop := context.WithCancel(context.Background())
+	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	copying, _, _ := mirrors.MirrorToken(ctx, "demo-app", MirrorImport)
+	stop()
+	rig.reg.copies.Wait()
+	const line = "project demo-app: repository demo-app/demo-app: the copy of github.com/acme/app stopped with factoryd; its row stays copying\n"
+	if row := mirrors.rows["demo-app import"]; !strings.HasPrefix(row.State, "copying since ") || row != copying || len(mirrors.set) != 1 ||
+		rig.reg.ReconcileError("demo-app") != "" || !strings.Contains(rig.logs.String(), line) {
+		t.Fatalf("after the stop: import row %+v, states set %q, reconcile error %q\n%s", row, mirrors.set, rig.reg.ReconcileError("demo-app"), rig.logs)
+	}
+	if _, running := rig.reg.copying.Load("demo-app"); running {
+		t.Fatal("the stopped copy still counts as running")
 	}
 }
 
@@ -533,21 +639,24 @@ func TestImportedManifests(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the poll
-// deletes, with one log line, an import row still pending 7 days after its
-// last write whose project no file names, and its token with it; it keeps
-// a younger one, a filed project's, a failed one and an export row.
+// deletes, with one log line each, an import row still pending or copying
+// 7 days after its last write whose project no file names, and its token
+// with it; it keeps a younger one, a filed project's, a failed one and an
+// export row.
 func TestPollDeletesStaleImports(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	logs := captureLog(t)
 	rows := []struct {
-		m   Mirror
-		age string
+		m    Mirror
+		age  string
+		gone bool
 	}{
-		{Mirror{Project: "gone", Direction: MirrorImport, Remote: "acme/gone", Token: "ghp_g0neT0ken", State: "pending"}, "169 hours"},
-		{Mirror{Project: "gone", Direction: MirrorExport, Remote: "acme/gone", Username: "u", Token: "ghp-exp0rt", State: "created"}, "169 hours"},
-		{Mirror{Project: "young", Direction: MirrorImport, Remote: "acme/young", State: "pending"}, "167 hours"},
-		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending"}, "169 hours"},
-		{Mirror{Project: "broken", Direction: MirrorImport, Remote: "acme/broken", State: "failed: x"}, "169 hours"},
+		{Mirror{Project: "gone", Direction: MirrorImport, Remote: "acme/gone", Token: "ghp_g0neT0ken", State: "pending"}, "169 hours", true},
+		{Mirror{Project: "cut", Direction: MirrorImport, Remote: "acme/cut", Token: "ghp_cutT0ken", State: "copying since 2026-10-01 10:00 UTC"}, "169 hours", true},
+		{Mirror{Project: "gone", Direction: MirrorExport, Remote: "acme/gone", Username: "u", Token: "ghp-exp0rt", State: "created"}, "169 hours", false},
+		{Mirror{Project: "young", Direction: MirrorImport, Remote: "acme/young", State: "pending"}, "167 hours", false},
+		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending"}, "169 hours", false},
+		{Mirror{Project: "broken", Direction: MirrorImport, Remote: "acme/broken", State: "failed: x"}, "169 hours", false},
 	}
 	for _, r := range rows {
 		if err := s.PutMirror(ctx, r.m); err != nil {
@@ -561,13 +670,15 @@ func TestPollDeletesStaleImports(t *testing.T) {
 	}
 	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s}
 	r.poll(ctx)
-	for i, row := range rows {
-		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok != (i > 0) {
-			t.Errorf("%s %s row kept %v, %v; want %v", row.m.Project, row.m.Direction, ok, err, i > 0)
+	for _, row := range rows {
+		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok == row.gone {
+			t.Errorf("%s %s row kept %v, %v; want %v", row.m.Project, row.m.Direction, ok, err, !row.gone)
 		}
 	}
-	const line = "project gone: import row of github.com/acme/gone deleted: pending over 7 days, and no file projects/gone.yaml\n"
-	if !strings.HasSuffix(logs.String(), line) || strings.Count(logs.String(), "import row") != 1 || strings.Contains(logs.String(), "ghp_g0neT0ken") {
-		t.Fatalf("log:\n%s\nwant one line %q", logs, line)
+	lines := []string{"project gone: import row of github.com/acme/gone deleted: pending over 7 days, and no file projects/gone.yaml\n",
+		"project cut: import row of github.com/acme/cut deleted: copying over 7 days, and no file projects/cut.yaml\n"}
+	if !strings.Contains(logs.String(), lines[0]) || !strings.Contains(logs.String(), lines[1]) || strings.Count(logs.String(), "import row") != 2 ||
+		strings.Contains(logs.String(), "ghp_g0neT0ken") || strings.Contains(logs.String(), "ghp_cutT0ken") {
+		t.Fatalf("log:\n%s\nwant the lines %q", logs, lines)
 	}
 }

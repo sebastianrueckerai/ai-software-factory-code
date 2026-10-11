@@ -81,6 +81,11 @@ type Registrar struct {
 	// reconcileErrs is each factory project's last failed reconcile, by
 	// name; a clean one deletes it.
 	reconcileErrs sync.Map
+	// copying holds, under mu, the name of each project whose copy from
+	// GitHub runs: ensureRepo starts one at most; copies are their
+	// goroutines, which Register waits for.
+	copying sync.Map
+	copies  sync.WaitGroup
 }
 
 // SecretReader reads a kv-v2 secret's fields (openbao.Client).
@@ -148,6 +153,8 @@ type reconcileRun struct {
 	errs []error
 	// unclean: a line waited, failed or reported anything but in place
 	unclean bool
+	// copying: registration waits for the project's copy from GitHub
+	copying bool
 }
 
 func (run *reconcileRun) line(object string, c Change) {
@@ -252,7 +259,7 @@ func (r *Registrar) poll(ctx context.Context) {
 		log.Printf("projects: import rows: %v", err)
 	}
 	for _, m := range gone {
-		log.Printf("project %s: import row of github.com/%s deleted: pending over 7 days, and no file projects/%s.yaml", m.Project, m.Remote, m.Project)
+		log.Printf("project %s: import row of github.com/%s deleted: %s over 7 days, and no file projects/%s.yaml", m.Project, m.Remote, m.State, m.Project)
 	}
 }
 
@@ -403,9 +410,13 @@ func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
 
 func (run *reconcileRun) approvers() []string { return run.r.Policy().ApproversOf(run.p.Repository) }
 
-// forgejo keeps the repository's objects and reports its Actions secrets'
-// names; false: it stopped before reading them.
+// forgejo keeps the repository's objects, none while its copy from GitHub
+// runs, and reports its Actions secrets' names; false: it stopped before
+// reading them.
 func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
+	if run.copying {
+		return nil, false
+	}
 	f, repo := run.r.Forgejo, run.p.Repo()
 	object := "repository " + repo.String()
 	exists, admin, err := f.ProjectRepoAccess(ctx, repo)
@@ -1111,15 +1122,24 @@ func (r *Registrar) ReconcileError(name string) string {
 	return s
 }
 
-// register makes what only the site admin can (ruling 164).
+// register makes what only the site admin can (ruling 164); a copy from
+// GitHub still running is a wait, no failure.
 func (run *reconcileRun) register(ctx context.Context, rotate bool) {
-	run.fail("registration", run.r.admin(ctx, &run.p, rotate))
+	err := run.r.admin(ctx, &run.p, rotate)
+	run.copying = errors.Is(err, errCopying)
+	if run.copying {
+		run.line("registration", Change(err.Error()))
+		return
+	}
+	run.fail("registration", err)
 }
 
 // Register is factoryd register-project: the factory project name, whose
 // file the configuration holds, gets its row and its reconcile, which
 // registers it when its row lacks a token or rotate is set (every token
-// minted again). A second run changes nothing.
+// minted again), and waits for a copy from GitHub the reconcile started,
+// whose end reconciles again: a failure is the last reconcile's. A second
+// run changes nothing.
 func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Project, error) {
 	p, err := r.stored(ctx, name)
 	if err != nil {
@@ -1137,6 +1157,10 @@ func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Pro
 		return p, err
 	}
 	err = r.reconcile(ctx, p, rotate)
+	r.copies.Wait()
+	if last := r.ReconcileError(name); err == nil && last != "" {
+		err = errors.New(last)
+	}
 	if stored, serr := r.stored(ctx, name); serr == nil {
 		p = stored
 	}
@@ -1235,15 +1259,16 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 }
 
 // ensureRepo makes repo: Forgejo's migrate of the GitHub repository that
-// name's import row names while the row waits for it, after which the row
-// forgets the token and says imported, else empty. The row's last update
-// is the migrate's start. A non-empty repository already there is an
-// earlier migrate's, finished after its caller left; an empty one may
-// still be copying, so the row waits, unless the row is pending and its
-// migrate started over twice the migrate's timeout ago (Forgejo syncs
+// name's import row names while the row waits for it, else empty. The
+// migrate is a copy beside the reconciles (copy), which registration waits
+// for without failing. A row not imported over a repository with no copy
+// running here is one a restart cut or an earlier migrate's, which Forgejo
+// finishes when its caller leaves: a non-empty repository is the copy's,
+// imported; an empty one may still be copying, so the row waits, unless
+// the copy started over twice the migrate's timeout ago (Forgejo syncs
 // branches and tags after the clone while the repository reads empty):
-// the copy of an empty source, which the seed fills whole. A refused
-// migrate leaves the row its token and says failed, the token taken out.
+// the copy of an empty source, which the seed fills whole. With no
+// repository (Forgejo drops a refused migrate's), the copy starts again.
 func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
 	m, ok, err := Mirror{}, false, error(nil)
 	if r.Mirrors != nil {
@@ -1255,33 +1280,105 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 	if !ok || strings.HasPrefix(m.State, "imported") {
 		return r.Forgejo.AdminEnsureRepo(ctx, a, repo)
 	}
+	if _, running := r.copying.Load(name); running {
+		return "", copyingSince(m)
+	}
 	exists, body, err := adminExists(ctx, r.Forgejo.adminCall(a), "/api/v1/repos/"+repo.String())
 	if err != nil {
 		return "", err
 	}
-	if exists {
-		var res struct {
-			Empty bool `json:"empty"`
-		}
-		if err := json.Unmarshal(body, &res); err != nil {
-			return "", err
-		}
-		if res.Empty && (m.State != "pending" || m.LastUpdate.IsZero() || time.Since(m.LastUpdate) <= 2*migrateTimeout) {
-			return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
-		}
-	} else if err := r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "pending", "", time.Now()); err != nil {
-		return "", err
-	} else if err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token); err != nil {
-		msg := err.Error()
-		if m.Token != "" {
-			msg = strings.ReplaceAll(msg, m.Token, "[token]")
-		}
-		first, _, _ := strings.Cut(msg, "\n")
-		return "", errors.Join(errors.New(msg), r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "failed: "+textutil.Truncate(first, 120), msg, time.Time{}))
+	if !exists {
+		return "", r.copy(ctx, a, name, repo, m)
 	}
-	now := time.Now().UTC()
+	var res struct {
+		Empty bool `json:"empty"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", err
+	}
+	switch {
+	case !res.Empty, !m.LastUpdate.IsZero() && time.Since(m.LastUpdate) > 2*migrateTimeout:
+		return r.imported(ctx, name, m)
+	case strings.HasPrefix(m.State, "copying"):
+		return "", copyingSince(m)
+	}
+	return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
+}
+
+// errCopying is registration's wait for a project's copy from GitHub.
+var errCopying = errors.New("copying")
+
+const minuteUTC = "2006-01-02 15:04 UTC"
+
+func copyingSince(m Mirror) error {
+	return fmt.Errorf("%w github.com/%s since %s", errCopying, m.Remote, m.LastUpdate.UTC().Format(minuteUTC))
+}
+
+// copy writes name's import row m copying since now and starts its
+// migrate into repo in a goroutine of its own, under ctx: the reconcile
+// loop's, which ends with factoryd's stop and leaves the row copying for
+// the next start to read against Forgejo. The copy's end, under mu, so
+// after the reconcile that started it, writes imported and reconciles the
+// project again, or failed with the error, which is the project's
+// reconcile error until the next reconcile, at least hourly, copies again.
+func (r *Registrar) copy(ctx context.Context, a AdminAuth, name string, repo Repo, m Mirror) error {
+	m.LastUpdate = time.Now()
+	m.State = "copying since " + m.LastUpdate.UTC().Format(minuteUTC)
+	if err := r.Mirrors.SetMirrorState(ctx, name, MirrorImport, m.State, "", m.LastUpdate); err != nil {
+		return err
+	}
+	r.copying.Store(name, struct{}{})
+	r.copies.Add(1)
+	go func() {
+		defer r.copies.Done()
+		err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token)
+		r.mu.Lock()
+		c, err := r.copied(ctx, name, m, err)
+		r.copying.Delete(name)
+		switch {
+		case ctx.Err() != nil:
+			log.Printf("project %s: repository %s: the copy of github.com/%s stopped with factoryd; its row stays copying", name, repo, m.Remote)
+		case err != nil:
+			log.Printf("project %s: repository %s: %v", name, repo, err)
+			r.reconcileErrs.Store(name, fmt.Sprintf("registration: repository %s: %v", repo, err))
+		default:
+			log.Printf("project %s: repository %s: %s", name, repo, c)
+		}
+		r.mu.Unlock()
+		if err != nil || ctx.Err() != nil {
+			return
+		}
+		if p, err := r.stored(ctx, name); err != nil {
+			log.Printf("project %s: %v", name, err)
+		} else {
+			r.Reconcile(ctx, p) // #nosec G104 -- each object's failure is logged by the run
+		}
+	}()
+	return copyingSince(m)
+}
+
+// copied records the end of m's copy, err its migrate's: the row forgets
+// the token and says imported. A refused migrate leaves the row its token
+// and says failed, the token taken out; one cut by ctx writes nothing.
+func (r *Registrar) copied(ctx context.Context, name string, m Mirror, err error) (Change, error) {
+	if err == nil {
+		return r.imported(ctx, name, m)
+	}
+	msg := err.Error()
+	if m.Token != "" {
+		msg = strings.ReplaceAll(msg, m.Token, "[token]")
+	}
+	if ctx.Err() != nil {
+		return "", errors.New(msg)
+	}
+	first, _, _ := strings.Cut(msg, "\n")
+	return "", errors.Join(errors.New(msg), r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "failed: "+textutil.Truncate(first, 120), msg, time.Time{}))
+}
+
+func (r *Registrar) imported(ctx context.Context, name string, m Mirror) (Change, error) {
+	now := time.Now()
 	return Change("imported from " + m.Remote), errors.Join(r.Mirrors.SetMirrorToken(ctx, name, MirrorImport, ""),
-		r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "imported "+now.Format("2006-01-02 15:04")+" UTC", "", now))
+		r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "imported "+now.UTC().Format(minuteUTC), "", now))
 }
 
 // adminAuth reads the site admin's login from OpenBao; the caller holds it

@@ -1610,19 +1610,28 @@ token for a private one. The console stores it as the name's
 request; the file, the pull request and the `project_filed` event never
 hold the token. Registration then makes the repository with Forgejo's
 migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
-mirror) in place of the empty create, clears the row's token and sets
-`imported <time>`, or `failed: <error>` with the token taken out; the row's
-`last_update` holds each migrate's start. A repository already there that
-is empty while the row is pending may still be copying, unless the migrate
-started over 20 minutes ago (twice its timeout, since Forgejo syncs
-branches and tags after the clone while the repository reads empty): then
-it is the copy of an empty source and imported. The seed gives a source
+mirror) in place of the empty create. The migrate runs in a goroutine of
+its own, one per project at most, so no other project's reconcile waits
+for it: the row reads `copying since <time>` (its `last_update` the
+start) and the project's registration waits without failing. The
+migrate's end clears the row's token, sets `imported <time>` and
+reconciles the project again, or sets `failed: <error>` with the token
+taken out, which the next reconcile, at least hourly, copies again.
+factoryd's stop leaves the row copying. A copying row with no copy running
+(after a restart) is read against Forgejo, which finishes a migrate its
+caller left: a non-empty repository is the copy's, imported; an empty one
+may still be copying, unless the copy started over 20 minutes ago (twice
+the migrate's timeout, since Forgejo syncs branches and tags after the
+clone while the repository reads empty): then it is the copy of an empty
+source and imported; with no repository (Forgejo drops a refused
+migrate's) the copy starts again. The seed gives a source
 whose default branch is not `main` a `main` from it, seeds an empty one
 whole, and otherwise commits only the template's `.forgejo/` files and `AGENTS.md` that the copy lacks,
 with the template's `deploy/` when the copy has none ("Factory workflows",
-"Factory workflows and manifests"). An import row still pending 7 days
-after its last write whose project no file names (a pull request closed
-unmerged) is deleted with its token at the next poll. The panel
+"Factory workflows and manifests"). An import row still pending or
+copying 7 days after its last write whose project no file names (a pull
+request closed unmerged, a file removed during the copy) is deleted with
+its token at the next poll. The panel
 shows a fifth step, "Imported from GitHub", between the repository and
 `ready_at`.
 
