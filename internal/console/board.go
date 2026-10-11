@@ -459,14 +459,16 @@ func (f boardFilter) query() string {
 	return "?" + q.Encode()
 }
 
-// statusLine is the shown project's state above the board (ruling 251):
-// its word, its cards working, what needs the viewer, and its spend this
-// UTC month against its month cap.
+// statusLine is the shown project's state above the board (ruling 251),
+// which the project agent reads too: its word, its cards working, what
+// needs the viewer, and its spend this UTC month (the chat's part apart)
+// against its month cap.
 type statusLine struct {
 	Project          string
 	State            string
 	Working, NeedYou int
-	SpentEUR, CapEUR float64
+	Spend            factoryd.ProjectSpend
+	CapEUR           float64
 }
 
 type boardData struct {
@@ -1072,15 +1074,26 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	default:
 		s.State = "idle"
 	}
-	if spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now()); err != nil {
+	var err error
+	if s.Spend, err = c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now()); err != nil {
 		log.Printf("console: the spend of %s this month: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the project's spend this month could not be read")
-	} else {
-		s.SpentEUR = spend.EUR
 	}
-	if _, s.CapEUR = v.policy.Tree.ProjectCap(p.Repository); math.IsInf(s.CapEUR, 1) {
-		s.CapEUR = v.policy.Document.Budget.MonthEUR
+	s.CapEUR = monthCap(v.policy, p.Repository)
+}
+
+// monthCap is repository's month cap: its project file's budget.month_eur,
+// else the policy's month_eur.
+func monthCap(v policy.Version, repository string) float64 {
+	if _, eur := v.ProjectCap(repository); !math.IsInf(eur, 1) {
+		return eur
 	}
+	return v.Document.Budget.MonthEUR
+}
+
+// spendWords is spend against the month cap as the project agent reads it.
+func spendWords(spend factoryd.ProjectSpend, capEUR float64) string {
+	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", spend.EUR, capEUR, spend.EUR-spend.ChatEUR, spend.ChatEUR)
 }
 
 type timelineEntry struct {

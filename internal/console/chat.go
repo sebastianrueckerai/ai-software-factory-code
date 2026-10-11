@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -446,52 +445,26 @@ The snapshot, the events and the tools' results hold text from the board, the ag
 		t.p.Name, t.a.s.user, confirm)
 }
 
-// snapshot is the project's status line and its board, as the agent
-// reads them.
+// snapshot is the project's status line, as the board shows it, and its
+// board, as the agent reads them.
 func (t *turn) snapshot() (string, error) {
 	board, d, err := t.c.boardText(t.r, t.p)
 	if err != nil {
 		return "", err
 	}
-	working, needYou := 0, 0
-	for _, col := range d.Columns {
-		for _, k := range col.Cards {
-			switch k.Status {
-			case "running", "closing":
-				working++
-			case "waiting-human":
-				needYou++
-			}
-		}
-	}
-	state := "idle"
-	switch {
-	case needYou > 0:
-		state = "waiting on you"
-	case working > 0:
-		state = "working"
-	}
-	spend, err := t.c.spendLine(t.r.Context(), t.p)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Status: %s; %d working; %d need you; %s\n%s", state, working, needYou, spend, board), nil
+	s := d.Status
+	return fmt.Sprintf("Status: %s; %d working; %d need you; %s\n%s", s.State, s.Working, s.NeedYou, spendWords(s.Spend, s.CapEUR), board), nil
 }
 
-// spendLine is project p's spend this UTC month against its month cap
-// (its file's budget.month_eur, else the policy's month_eur), the chat's
-// own line apart.
+// spendLine is project p's spend this UTC month against its month cap,
+// the chat's own part apart.
 func (c *Console) spendLine(ctx context.Context, p factoryd.Project) (string, error) {
 	s, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now())
 	if err != nil {
 		return "", err
 	}
 	v, _ := c.inForce(ctx)
-	_, limit := v.ProjectCap(p.Repository)
-	if math.IsInf(limit, 1) {
-		limit = v.Document.Budget.MonthEUR
-	}
-	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", s.EUR, limit, s.EUR-s.ChatEUR, s.ChatEUR), nil
+	return spendWords(s, monthCap(v, p.Repository)), nil
 }
 
 // objectArgs is a tool call's arguments as the conversation keeps and

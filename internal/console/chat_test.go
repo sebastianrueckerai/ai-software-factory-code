@@ -295,7 +295,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, want := range []string{
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge.",
-		"The project now:\nStatus: waiting on you; 1 working; 1 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
+		"The project now:\nStatus: working; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)

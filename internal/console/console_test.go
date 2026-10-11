@@ -481,8 +481,6 @@ type fakeLedger struct {
 	chat      *policy.ChatConfig // the policy's chat block
 }
 
-
-
 // testProcesses are the shipped two processes; spec lists its lanes out of
 // the board's order, which the board does not follow.
 func testProcesses() map[string]policy.Process {
