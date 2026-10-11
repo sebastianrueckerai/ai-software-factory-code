@@ -1029,7 +1029,7 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 // ProjectNetworkPolicy is a project namespace's default deny (the deployer
 // role writes no network policy, so the project cannot widen it): in, from
 // its own namespace, the edge gateway's Envoy, the CNPG operator and, in
-// staging, the project's CI runners on 8080 (the smoke test); out, to its
+// staging, the project's smoke runners on 8080 (the smoke test); out, to its
 // own namespace, DNS, the API server (CNPG's instance manager), the SigNoz
 // collector and the project file's egress hosts on 443.
 func ProjectNetworkPolicy(p Project, ns string) map[string]any {
@@ -1070,7 +1070,7 @@ func ProjectNetworkPolicy(p Project, ns string) map[string]any {
 	}
 	if e, ok := p.Staging(); ok && e.Namespace == ns {
 		in = append(in, map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{
-			"app.kubernetes.io/name": "ci-runner", "k8s:io.cilium.k8s.namespace.labels." + CIProjectLabel: p.Name}}},
+			"app.kubernetes.io/name": "ci-runner", CIRoleLabel: ciRoleSmoke, "k8s:io.cilium.k8s.namespace.labels." + CIProjectLabel: p.Name}}},
 			"toPorts": ports("TCP", "8080")})
 	}
 	return map[string]any{"endpointSelector": map[string]any{}, "ingress": in, "egress": out}

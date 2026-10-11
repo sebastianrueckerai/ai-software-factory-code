@@ -84,7 +84,7 @@ type CIRepo struct {
 	// its agents' cache-<project>: the checks gate merges
 	Cache string
 	// Staging is the namespace of the project's staging environment, which
-	// its main workflow smoke-tests; "" none.
+	// its main workflow's smokeLabel job smoke-tests; "" none.
 	Staging string
 }
 
@@ -115,13 +115,14 @@ func CIReposOf(f *Forgejo, projects interface {
 	}
 }
 
-// CISpawner polls Forgejo for Actions jobs waiting on cfg.Label or
-// cfg.BuildLabel and, for each one not yet served, registers an ephemeral
-// runner and spawns a namespace holding one gVisor pod running
-// `forgejo-runner one-job --wait` (plus, for a build-label job, a build VM
-// the pod reaches over mTLS). It never binds a specific job to a specific runner
-// instance: Forgejo's own scheduler decides which waiting job a connected
-// runner ends up serving. The namespace name and its factory.ai/task label
+// CISpawner polls Forgejo for Actions jobs waiting on cfg.Label,
+// cfg.BuildLabel or a staging project's smokeLabel and, for each one not yet
+// served, registers an ephemeral runner and spawns a namespace holding one
+// gVisor pod running `forgejo-runner one-job --wait` (plus, for a
+// build-label job, a build VM the pod reaches over mTLS). Only a smoke
+// runner is bound to its job (serveSmoke): for the other labels Forgejo's
+// own scheduler decides which waiting job a connected runner ends up
+// serving. The namespace name and its factory.ai/task label
 // carry the job id, so a restart or a second poll tick never spawns a second
 // runner for the same job.
 type CISpawner struct {
@@ -137,6 +138,10 @@ type CISpawner struct {
 	// vmTries counts the build VMs each live build job got: a job whose
 	// first VM never answered gets one more, its last try.
 	vmTries map[int64]int
+	// smokeDone maps each smoke job decided (staging opened, the runner
+	// torn down, or never served) to the handle of the attempt decided,
+	// while Forgejo still lists the job: a re-run is a new attempt.
+	smokeDone map[int64]string
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -160,7 +165,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, smokeDone: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -179,10 +184,13 @@ func (s *CISpawner) Run(ctx context.Context) {
 }
 
 // ciJobKind distinguishes the ordinary runner (build: false) from a
-// pr-untrusted-build job, which additionally gets a build VM.
+// pr-untrusted-build job, which additionally gets a build VM, and from a
+// smoke runner, which takes only the job attempt named by handle.
 type ciJobKind struct {
-	label string
-	build bool
+	label  string
+	build  bool
+	smoke  bool
+	handle string
 }
 
 func (s *CISpawner) jobKinds() []ciJobKind {
@@ -200,6 +208,7 @@ func (s *CISpawner) poll(ctx context.Context) {
 	}
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
 
+	s.serveSmoke(ctx, repos, &slots)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel)
 	for _, kind := range s.jobKinds() {
 		for _, rj := range s.jobs(ctx, repos, kind.label) {
@@ -240,6 +249,125 @@ func (s *CISpawner) poll(ctx context.Context) {
 			slots--
 		}
 	}
+}
+
+// smokeLabel is the runner label of a project's smoke job, the one job
+// that reaches its staging (the template's ci.yml).
+func smokeLabel(project string) string { return project + "-smoke" }
+
+// serveSmoke serves each staging project's smokeLabel jobs (roadmap 162).
+// Forgejo 15 lists a waiting job without its run, so a smoke runner takes
+// only the job attempt it was spawned for (--handle) and starts without
+// staging; once it took the job, admitSmoke reads the job's run. A smoke
+// namespace whose job Forgejo no longer lists waiting or running is torn
+// down: a bound runner never serves another job.
+func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) {
+	listed := map[int64]bool{}
+	complete := true
+	for _, r := range repos {
+		if r.Staging == "" {
+			continue
+		}
+		label := smokeLabel(r.Project)
+		jobs, err := s.forgejo.RunJobs(ctx, r, label)
+		if err != nil {
+			log.Printf("ci spawner: jobs of %s (%s): %v", r.Repo, label, err)
+			complete = false
+			continue
+		}
+		s.cfg.Queue.Observe(ctx, label, jobs)
+		for _, job := range jobs {
+			listed[job.ID] = true
+			if h, ok := s.smokeDone[job.ID]; ok && h == job.Handle {
+				continue
+			}
+			switch {
+			case job.Status == "waiting" && job.Handle == "":
+				log.Printf("ci spawner: job %d (%s) names no handle to bind a runner to: not served", job.ID, label)
+				s.smokeDone[job.ID] = ""
+			case job.Status == "waiting":
+				served, err := s.served(ctx, job.ID)
+				switch {
+				case err != nil:
+					log.Printf("ci spawner: check job %d served: %v", job.ID, err)
+				case served:
+				case *slots <= 0:
+					log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, label, s.cfg.MaxConcurrent)
+				default:
+					if err := s.spawn(ctx, r, job.ID, ciJobKind{label: label, smoke: true, handle: job.Handle}); err != nil {
+						log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, r.Repo, err)
+						continue
+					}
+					*slots--
+				}
+			case job.TaskID != 0:
+				s.admitSmoke(ctx, r, job, repos)
+			}
+		}
+	}
+	if !complete {
+		return
+	}
+	for id := range s.smokeDone {
+		if !listed[id] {
+			delete(s.smokeDone, id)
+		}
+	}
+	names, err := s.kube.ListNamespacesByLabel(ctx, CIRoleLabel, ciRoleSmoke)
+	if err != nil {
+		log.Printf("ci spawner: smoke namespaces: %v", err)
+		return
+	}
+	for _, ns := range names {
+		id, err := strconv.ParseInt(strings.TrimPrefix(ns.Name, s.cfg.NamespacePrefix), 10, 64)
+		if ns.Terminating || err != nil || listed[id] {
+			continue
+		}
+		log.Printf("ci spawner: %s: its smoke job is neither waiting nor running: torn down", ns.Name)
+		s.teardown(ctx, ns.Name, repos)
+	}
+}
+
+// admitSmoke decides a smoke job its runner took: a run that is a push to
+// main opens staging's egress to the runner, any other run tears it down.
+func (s *CISpawner) admitSmoke(ctx context.Context, r CIRepo, job CIJob, repos []CIRepo) {
+	served, err := s.served(ctx, job.ID)
+	if err != nil {
+		log.Printf("ci spawner: check job %d served: %v", job.ID, err)
+		return
+	}
+	if !served {
+		return
+	}
+	tasks, err := s.forgejo.ActionTasks(ctx, r.Token, r.Repo.Owner, r.Repo.Name, 1)
+	if err != nil {
+		log.Printf("ci spawner: job %d: tasks of %s: %v", job.ID, r.Repo, err)
+		return
+	}
+	i := slices.IndexFunc(tasks, func(t ActionTask) bool { return t.ID == job.TaskID })
+	if i < 0 {
+		log.Printf("ci spawner: job %d: its task %d is not among %s's newest tasks", job.ID, job.TaskID, r.Repo)
+		return
+	}
+	run := tasks[i].RunNumber
+	runs, err := s.forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name,
+		url.Values{"run_number": {strconv.FormatInt(run, 10)}, "event": {"push"}, "ref": {"refs/heads/main"}})
+	if err != nil {
+		log.Printf("ci spawner: job %d: run %d of %s: %v", job.ID, run, r.Repo, err)
+		return
+	}
+	ns := s.namespaceFor(job.ID)
+	if len(runs) != 1 {
+		log.Printf("ci spawner: job %d (%s) is in run %d, no push to main: no staging, its runner torn down", job.ID, smokeLabel(r.Project), run)
+		s.smokeDone[job.ID] = job.Handle
+		s.teardown(ctx, ns, repos)
+		return
+	}
+	if err := s.kube.ApplyCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(nil, r, r.Staging)); err != nil {
+		log.Printf("ci spawner: job %d: open %s to %s: %v", job.ID, ns, r.Staging, err)
+		return
+	}
+	s.smokeDone[job.ID] = job.Handle
 }
 
 type repoJob struct {
@@ -321,6 +449,9 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 		// factoryd's ingress admits a project run's runner to its alerts endpoint
 		labels[CIProjectLabel] = repo.Project
 	}
+	if kind.smoke {
+		labels[CIRoleLabel] = ciRoleSmoke
+	}
 	if err := s.kube.CreateNamespace(ctx, ns, labels); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
 	}
@@ -377,7 +508,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.CreateServiceAccount(ctx, ns, "ci-runner")
 		}},
 		{"egress policy", func() error {
-			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm, repo))
+			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm, repo, ""))
 		}},
 		{"runner registration secret", func() error {
 			// forgejo-runner reads its token from a file (--token-url
@@ -666,11 +797,22 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 			"securityContext": securityContext,
 		})
 	}
+	labels := map[string]string{"app.kubernetes.io/name": "ci-runner"}
+	args := []any{
+		"one-job",
+		"--url", s.cfg.GitBaseURL,
+		"--uuid", "$(RUNNER_UUID)",
+		"--token-url", "file:/var/run/secrets/ci/token",
+		"--label", kind.label + ":host",
+	}
+	if kind.smoke {
+		labels[CIRoleLabel] = ciRoleSmoke
+		args = append(args, "--handle", kind.handle)
+	}
+	args = append(args, "--wait")
 	return map[string]any{
 		"metadata": map[string]any{
-			"labels": map[string]string{
-				"app.kubernetes.io/name": "ci-runner",
-			},
+			"labels": labels,
 		},
 		"spec": map[string]any{
 			"restartPolicy":                "Never",
@@ -685,17 +827,10 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 			"terminationGracePeriodSeconds": 30,
 			"dnsConfig":                     map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
 			"containers": []any{map[string]any{
-				"name":    "runner",
-				"image":   s.cfg.RunnerImage,
-				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"},
-				"args": []any{
-					"one-job",
-					"--url", s.cfg.GitBaseURL,
-					"--uuid", "$(RUNNER_UUID)",
-					"--token-url", "file:/var/run/secrets/ci/token",
-					"--label", kind.label + ":host",
-					"--wait",
-				},
+				"name":            "runner",
+				"image":           s.cfg.RunnerImage,
+				"command":         []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"},
+				"args":            args,
 				"env":             env,
 				"resources":       resources,
 				"volumeMounts":    mounts,
@@ -726,6 +861,10 @@ const (
 	factorydHost   = "factoryd.factory.svc.cluster.local"
 	// CIProjectLabel marks a CI namespace running a project's job.
 	CIProjectLabel = "factory.ai/ci-project"
+	// CIRoleLabel marks a smoke runner's namespace and pod: staging admits
+	// on 8080 only such pods of its own project.
+	CIRoleLabel = "factory.ai/ci-role"
+	ciRoleSmoke = "smoke"
 )
 
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
@@ -737,9 +876,10 @@ const (
 // A build job additionally reaches its own VM's buildkitd, the read-only
 // build cache (its own policy refuses writes) and, since BuildKit fetches
 // registry tokens through the client session, Docker Hub's token service;
-// layers and release downloads are the VM's. A project's job reaches its
-// staging namespace's Services, which the main workflow smoke-tests.
-func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo) map[string]any {
+// layers and release downloads are the VM's. With staging, the runner
+// reaches that namespace's Services: admitSmoke grants it a smoke runner
+// whose run is a push to main.
+func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[string]any {
 	project := repo.Project != ""
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
@@ -762,8 +902,8 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo) map[string]any {
 	if project {
 		dnsNames = append(dnsNames, map[string]any{"matchName": factorydHost}, map[string]any{"matchName": forgejoSSHHost})
 	}
-	if repo.Staging != "" {
-		dnsNames = append(dnsNames, map[string]any{"matchPattern": "*." + repo.Staging + ".svc.cluster.local"})
+	if staging != "" {
+		dnsNames = append(dnsNames, map[string]any{"matchPattern": "*." + staging + ".svc.cluster.local"})
 	}
 
 	toFQDNs := make([]any, 0, len(fqdns))
@@ -815,9 +955,9 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo) map[string]any {
 			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
 		})
 	}
-	if repo.Staging != "" {
+	if staging != "" {
 		egress = append(egress, map[string]any{
-			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": repo.Staging}}},
+			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": staging}}},
 			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "80", "protocol": "TCP"},
 				map[string]any{"port": "443", "protocol": "TCP"}, map[string]any{"port": "8080", "protocol": "TCP"}}}},
 		})

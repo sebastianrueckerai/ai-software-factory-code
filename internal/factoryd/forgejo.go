@@ -403,13 +403,15 @@ func codeWrite(mode string) bool {
 // CIJob is one Forgejo Actions job for a runner label (task 41: the
 // `pr-untrusted` label routes pull-request jobs to the ephemeral gVisor
 // runner instead of the privileged dind runner). TaskID is set once a
-// runner picked the job up: the id of its actions/tasks entry.
+// runner picked the job up: the id of its actions/tasks entry. Handle
+// names the job's current attempt, which a runner may ask for alone.
 type CIJob struct {
 	ID     int64    `json:"id"`
 	Name   string   `json:"name"`
 	RunsOn []string `json:"runs_on"`
 	Status string   `json:"status"`
 	TaskID int64    `json:"task_id"`
+	Handle string   `json:"handle"`
 }
 
 // RunJobs lists owner/repo's Actions jobs carrying label, in every state

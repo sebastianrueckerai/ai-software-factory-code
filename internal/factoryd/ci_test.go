@@ -540,12 +540,14 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 }
 
 // A project's runner reaches its staging namespace's pods on 80, 443 and
-// 8080 and resolves the Services there (the template's smoke test); one
-// without a staging environment keeps exactly the policy it had.
-func TestCIEgressReachesTheProjectsStaging(t *testing.T) {
+// 8080 and resolves the Services there only when it is granted staging (a
+// smoke runner whose run is a push to main); every other runner of a
+// project with staging keeps exactly the project policy.
+func TestCIEgressReachesStagingOnlyWhenGranted(t *testing.T) {
 	s := &CISpawner{cfg: testCIConfig()}
 	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"3000","protocol":"TCP"}]}]},{"toFQDNs":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"}],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}],"rules":{"dns":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"},{"matchName":"forgejo-http.forgejo.svc.cluster.local"},{"matchName":"factoryd.factory.svc.cluster.local"},{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}]}}]},{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"2222","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:app":"factoryd","k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}],"egressDeny":[{"toCIDR":["169.254.169.254/32"]}],"endpointSelector":{"matchLabels":{"app.kubernetes.io/name":"ci-runner"}}}`
-	if got := string(mustJSON(s.ciEgressSpec(nil, CIRepo{Project: "uptime"}))); got != before {
+	repo := CIRepo{Project: "uptime", Staging: "uptime-staging"}
+	if got := string(mustJSON(s.ciEgressSpec(nil, repo, ""))); got != before {
 		t.Fatalf("without staging:\n%s\nwant\n%s", got, before)
 	}
 	want := strings.Replace(before, `{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}`,
@@ -553,7 +555,7 @@ func TestCIEgressReachesTheProjectsStaging(t *testing.T) {
 	want = strings.Replace(want, `"k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}`,
 		`"k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]},`+
 			`{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}],"toPorts":[{"ports":[{"port":"80","protocol":"TCP"},{"port":"443","protocol":"TCP"},{"port":"8080","protocol":"TCP"}]}]}`, 1)
-	if got := string(mustJSON(s.ciEgressSpec(nil, CIRepo{Project: "uptime", Staging: "uptime-staging"}))); got != want {
+	if got := string(mustJSON(s.ciEgressSpec(nil, repo, "uptime-staging"))); got != want {
 		t.Fatalf("with staging uptime-staging:\n%s\nwant\n%s", got, want)
 	}
 }
@@ -1290,11 +1292,13 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 			t.Errorf("%s: in the project's egress %v, in the code's %v", want, strings.Contains(project, want), strings.Contains(code, want))
 		}
 	}
-	// staging, never prod: the smoke test reaches the Service STAGING_URL names
-	if !strings.Contains(project, "k8s:io.kubernetes.pod.namespace:demo-app-staging") || strings.Contains(project, "demo-app-prod") ||
-		strings.Contains(code, "demo-app-staging") {
+	// neither staging nor prod: only the smoke runner reaches staging
+	if strings.Contains(project, "demo-app-staging") || strings.Contains(project, "demo-app-prod") || strings.Contains(code, "demo-app-staging") {
 		t.Errorf("staging in the project's egress %v, prod %v, staging in the code's %v", strings.Contains(project, "demo-app-staging"),
 			strings.Contains(project, "demo-app-prod"), strings.Contains(code, "demo-app-staging"))
+	}
+	if got := kube.pods["factory-agents-ci-9/"+ciPodName].spec["metadata"].(map[string]any)["labels"]; !reflect.DeepEqual(got, map[string]string{"app.kubernetes.io/name": "ci-runner"}) {
+		t.Errorf("pr-untrusted pod labels = %v, want only the ci-runner name", got)
 	}
 	if !strings.Contains(project, "matchName:registry.npmjs.org") || !strings.Contains(code, "matchName:registry.npmjs.org") {
 		t.Errorf("the npm registry: in the project's egress %v, in the code's %v", strings.Contains(project, "registry.npmjs.org"), strings.Contains(code, "registry.npmjs.org"))
@@ -1312,6 +1316,149 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	want := []string{"register sf/ai-software-factory-code", "register demo-app/demo-app", "delete demo-app/demo-app/actions/runners/102"}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+// A staging project's <project>-smoke job gets a runner bound to the job's
+// attempt, labelled the smoke runner and without staging. Once it took the
+// job, staging's egress follows only when the job's run is a push to main;
+// a pull request's runner is torn down, the reason logged once. A job
+// without a handle is never served, and a bound runner whose job is gone
+// is torn down.
+func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
+	logs := captureLog(t)
+	var mu sync.Mutex
+	jobs := []CIJob{
+		{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-11"},
+		{ID: 12, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-12"},
+		{ID: 13, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-13"},
+		{ID: 14, RunsOn: []string{"demo-smoke"}, Status: "waiting"},
+	}
+	tasks := []ActionTask{{ID: 502, RunNumber: 8}, {ID: 501, RunNumber: 7}}
+	runs := []struct {
+		number     string
+		event, ref string
+	}{{"7", "push", "refs/heads/main"}, {"8", "pull_request", "refs/pull/3/head"}}
+	var deleted []string
+	next := int64(100)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Header.Get("Authorization") != "token projects-tok" {
+			t.Errorf("%s %s with %q, want the project's token", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		q := r.URL.Query()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
+			var out []CIJob
+			for _, j := range jobs {
+				if slices.Contains(j.RunsOn, q.Get("labels")) {
+					out = append(out, j)
+				}
+			}
+			json.NewEncoder(w).Encode(nonNil(out))
+		case r.URL.Path == "/api/v1/repos/demo/demo/actions/tasks":
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": tasks})
+		case r.URL.Path == "/api/v1/repos/demo/demo/actions/runs":
+			out := []map[string]any{}
+			for _, run := range runs {
+				if run.number == q.Get("run_number") && run.event == q.Get("event") && run.ref == q.Get("ref") {
+					out = append(out, map[string]any{"id": 70, "event": run.event})
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": out})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo/demo/actions/runners":
+			next++
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d,"uuid":"u","token":"t"}`, next)
+		case r.Method == http.MethodDelete:
+			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo/demo/actions/runners/"))
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo/demo/actions/runners":
+			io.WriteString(w, "[]")
+		default:
+			t.Errorf("unexpected call %s %s", r.Method, r.URL)
+		}
+	}))
+	defer srv.Close()
+	kube := newFakeKube()
+	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
+	builds, _, _ := newTestBuildVMs(t, 2)
+	repo := CIRepo{Repo: Repo{Owner: "demo", Name: "demo"}, Token: "projects-tok", Project: "demo", Cache: "cache-ci-demo", Staging: "demo-staging"}
+	cfg := testCIConfig()
+	cfg.Repos = func(context.Context) ([]CIRepo, error) { return []CIRepo{repo}, nil }
+	spawner, err := NewCISpawner(cfg, &Forgejo{BaseURL: srv.URL, HTTP: srv.Client()}, kube, builds)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spawner.poll(context.Background())
+	for _, id := range []string{"11", "12", "13"} {
+		ns := "factory-agents-ci-" + id
+		if l := kube.createdNs[ns]; l[CIRoleLabel] != "smoke" || l[CIProjectLabel] != "demo" {
+			t.Fatalf("%s labels = %v, want the smoke role of project demo", ns, l)
+		}
+		if egress := string(mustJSON(kube.cnps[ns+"/ci-egress"])); strings.Contains(egress, "demo-staging") {
+			t.Fatalf("%s reaches staging before its run is read: %s", ns, egress)
+		}
+	}
+	if _, ok := kube.createdNs["factory-agents-ci-14"]; ok {
+		t.Fatal("job 14 names no handle, but got a runner")
+	}
+	pod := kube.pods["factory-agents-ci-11/"+ciPodName].spec
+	if got, want := pod["metadata"].(map[string]any)["labels"], map[string]string{"app.kubernetes.io/name": "ci-runner", CIRoleLabel: "smoke"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("smoke pod labels = %v, want %v", got, want)
+	}
+	args := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]
+	wantArgs := []any{"one-job", "--url", "http://forgejo-http.forgejo.svc.cluster.local:3000", "--uuid", "$(RUNNER_UUID)",
+		"--token-url", "file:/var/run/secrets/ci/token", "--label", "demo-smoke:host", "--handle", "h-11", "--wait"}
+	if !reflect.DeepEqual(args, wantArgs) {
+		t.Fatalf("smoke runner args = %v, want %v", args, wantArgs)
+	}
+
+	mu.Lock()
+	jobs = []CIJob{
+		{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "running", Handle: "h-11", TaskID: 501},
+		{ID: 12, RunsOn: []string{"demo-smoke"}, Status: "running", Handle: "h-12", TaskID: 502},
+		{ID: 14, RunsOn: []string{"demo-smoke"}, Status: "waiting"},
+	}
+	mu.Unlock()
+	spawner.poll(context.Background())
+	spawner.poll(context.Background())
+
+	if got, want := string(mustJSON(kube.cnps["factory-agents-ci-11/ci-egress"])), string(mustJSON(spawner.ciEgressSpec(nil, repo, "demo-staging"))); got != want {
+		t.Fatalf("job 11's run is a push to main, its egress = %s, want %s", got, want)
+	}
+	if want := []string{"factory-agents-ci-11/ci-egress"}; !reflect.DeepEqual(kube.applies, want) {
+		t.Fatalf("applied egress = %v, want %v once", kube.applies, want)
+	}
+	if want := []string{"factory-agents-ci-12", "factory-agents-ci-13"}; !reflect.DeepEqual(kube.deletedNs, want) {
+		t.Fatalf("deleted namespaces = %v, want %v", kube.deletedNs, want)
+	}
+	mu.Lock()
+	if want := []string{"102", "103"}; !reflect.DeepEqual(deleted, want) {
+		t.Fatalf("deregistered runners = %v, want %v", deleted, want)
+	}
+	mu.Unlock()
+	for _, line := range []string{
+		"ci spawner: job 12 (demo-smoke) is in run 8, no push to main: no staging, its runner torn down",
+		"ci spawner: job 14 (demo-smoke) names no handle to bind a runner to: not served",
+		"ci spawner: factory-agents-ci-13: its smoke job is neither waiting nor running: torn down",
+	} {
+		if n := strings.Count(logs.String(), line); n != 1 {
+			t.Errorf("%q logged %d times, want once; log:\n%s", line, n, logs)
+		}
+	}
+
+	// a re-run of job 11 is a new attempt: a new runner, bound to it
+	kube.pods["factory-agents-ci-11/"+ciPodName].phase = "Succeeded"
+	mu.Lock()
+	jobs[0] = CIJob{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-11b"}
+	mu.Unlock()
+	spawner.poll(context.Background())
+	pod = kube.pods["factory-agents-ci-11/"+ciPodName].spec
+	if args := fmt.Sprint(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]); !strings.Contains(args, "--handle h-11b --wait") {
+		t.Fatalf("re-run's runner args = %s, want it bound to h-11b", args)
 	}
 }
 

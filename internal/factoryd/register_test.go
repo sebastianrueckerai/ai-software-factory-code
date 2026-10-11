@@ -1212,13 +1212,14 @@ func TestProjectEgressReachesOnlyTheFilesHosts(t *testing.T) {
 	}
 }
 
-// The staging namespace admits the project's own CI runners on 8080, the
-// smoke test's way in; its other rules and prod's policy stay as they were.
-func TestStagingAdmitsTheProjectsCIRunners(t *testing.T) {
+// The staging namespace admits on 8080 only the project's smoke runners,
+// the smoke test's way in; its other rules and prod's policy stay as they
+// were.
+func TestStagingAdmitsOnlyTheProjectsSmokeRunners(t *testing.T) {
 	p := Project{Name: "uptime", Namespaces: []string{"uptime-staging", "uptime-prod"},
 		Environments: []Environment{{Namespace: "uptime-staging", Path: "deploy/staging"}, {Namespace: "uptime-prod", Path: "deploy/prod"}}}
 	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}]}]},{"toEntities":["kube-apiserver"]},{"toEndpoints":[{"matchLabels":{"app.kubernetes.io/component":"otel-collector","k8s:io.kubernetes.pod.namespace":"platform"}}],"toPorts":[{"ports":[{"port":"4318","protocol":"TCP"}]}]}],"endpointSelector":{},"ingress":[{"fromEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}]},{"fromEntities":["ingress"]},{"fromEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"cnpg-system"}}],"toPorts":[{"ports":[{"port":"8000","protocol":"TCP"},{"port":"5432","protocol":"TCP"}]}]}]}`
-	want := strings.TrimSuffix(before, "]}") + `,{"fromEndpoints":[{"matchLabels":{"app.kubernetes.io/name":"ci-runner","k8s:io.cilium.k8s.namespace.labels.factory.ai/ci-project":"uptime"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}]}`
+	want := strings.TrimSuffix(before, "]}") + `,{"fromEndpoints":[{"matchLabels":{"app.kubernetes.io/name":"ci-runner","factory.ai/ci-role":"smoke","k8s:io.cilium.k8s.namespace.labels.factory.ai/ci-project":"uptime"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}]}`
 	if got := string(mustJSON(ProjectNetworkPolicy(p, "uptime-staging"))); got != want {
 		t.Fatalf("staging:\n%s\nwant\n%s", got, want)
 	}
