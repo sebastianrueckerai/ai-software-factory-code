@@ -139,6 +139,13 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			"2": `[{"filename":"internal/console/old.go","status":"removed","additions":0,"deletions":12}]`,
 		}
 		w.Write([]byte(cmp.Or(pages[r.URL.Query().Get("page")], "[]")))
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/32/files":
+		// a pull request of more files than the drawer reads: every page full
+		var files []map[string]any
+		for i := range 50 {
+			files = append(files, map[string]any{"filename": fmt.Sprintf("gen/p%s-%d.go", r.URL.Query().Get("page"), i), "status": "added", "additions": 1})
+		}
+		json.NewEncoder(w).Encode(files)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/linkshort/linkshort/issues":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)

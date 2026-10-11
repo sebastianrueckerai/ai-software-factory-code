@@ -1,4 +1,4 @@
-{{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}" hx-get="/board{{.Query}}" hx-trigger="every 30s" hx-swap="outerHTML">
+{{define "board"}}<div id="board" data-project="{{if .Writes}}{{.Project}}{{end}}" data-query="{{.Query}}" hx-get="/board{{.Query}}" hx-trigger="every 30s" hx-swap="outerHTML">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 {{with .Status}}{{if .Project}}<p class="status-line" aria-label="Status of the project">
@@ -55,7 +55,7 @@
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}">
 {{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
-{{template "merge-facts" .}}
+{{if eq .Filter.View "wide"}}{{template "merge-facts" .}}{{else}}{{template "merge-brief" .}}{{end}}
 {{else}}<h4 id="approval-{{.ID}}">Resource request</h4>
 <dl class="facts">
 <dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>
@@ -68,12 +68,12 @@
 {{end}}<p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
 {{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
 {{end}}{{if .Approver}}<form method="post" action="/approvals/{{.ID}}/approve">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 {{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>{{end}}
 <button type="submit" aria-label="{{if eq .Kind "merge"}}Approve as you: merge PR #{{.PRNumber}}{{else}}Approve resource request {{.ID}}{{end}} of {{.TaskID}}">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
 </form>{{else}}<p class="meta">Only the policy's approvers may approve.</p>{{end}}
 <form method="post" action="/approvals/{{.ID}}/deny">
-<input type="hidden" name="csrf" value="{{.CSRF}}">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
 <textarea id="note-{{.ID}}" name="note" rows="2" required></textarea>
 {{if eq .Kind "merge"}}<fieldset><legend>Deny by</legend>
@@ -95,6 +95,21 @@
 {{if .Merge.Recommendation}}<dt>Agent's recommendation</dt><dd class="reason">{{.Merge.Recommendation}}</dd>
 {{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
 {{end}}</dl>{{end}}
+
+{{define "merge-brief"}}<dl class="facts">
+<dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
+<dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</dd>
+{{if .Merge.Recommendation}}<dt>Agent's recommendation</dt><dd class="reason">{{.Merge.Recommendation}}</dd>
+{{end}}</dl>
+<details class="more"><summary>More</summary>
+<dl class="facts">
+<dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
+{{with .Merge.Review.Findings}}<dt>Model review's findings</dt><dd>{{range $i, $f := .}}{{if $i}}<br>{{end}}- {{$f}}{{end}}</dd>
+{{end}}{{range $i, $r := .Merge.EarlierReviews}}<dt>Earlier review {{inc $i}}</dt><dd>{{if $r.Verdict}}{{$r.Verdict}}: {{$r.Summary}}{{else}}{{$r.Note}}{{end}}{{range $r.Findings}}<br>- {{.}}{{end}}</dd>
+{{end}}{{with .Merge.Audit}}<dt>Security audit</dt><dd>{{.Verdict}}{{if .Model}} ({{.Model}}{{if .Deployment}}, {{.Deployment}}{{end}}){{end}}{{range .Findings}}<br>- {{.Item}}{{if .File}}: <code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code>{{end}}: {{.Why}}{{end}}</dd>
+{{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
+{{end}}</dl>
+</details>{{end}}
 
 {{define "plan"}}<h4 id="approval-{{.ID}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 <p class="spec">{{.SpecLines}}</p>
@@ -127,7 +142,7 @@
 </form>{{end}}
 
 {{define "card"}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}" data-place="{{.Place}}"{{if and .Moves (eq .Filter.View "wide")}} draggable="true"{{end}}>
-<p class="line1"><span class="ref">{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}}</span> <strong class="title"><a href="#card={{.ID}}" class="open">{{.Title}}</a></strong>{{with .Accent}} <span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>
+<p class="line1"><span class="ref">{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}}</span> <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong>{{with .Accent}} <span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>
 <p class="line2"><span class="pill {{.StatusClass}}">{{.Status}}</span>{{if .Total}} <span class="elapsed">{{.Total}} in all</span>{{end}}{{with .Checks}} <span class="checks">{{.}} checks</span>{{end}}{{if gt .BudgetEUR 0.0}} <span class="spend{{if .NearBudget}} near{{end}}">{{eur2 .SpentEUR}} / {{eur2 .BudgetEUR}}{{if .NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if .GateText}} <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
 {{if or .Activity .StaleText}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}
 {{if or .Badge .Fine .ModelAlias .Blocked .Children .PlanIssue .WaitingOn}}<p class="chips">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}{{range .Fine}}<span class="pill fine {{.Class}}">{{.Words}}</span> {{end}}{{with .ModelAlias}}<span class="chip model">{{.}}</span> {{end}}{{if .Blocked}}<span class="chip blocked" title="{{.BlockedOn}}">blocked by {{.Blocked}}</span> {{end}}{{with .Children}}<span class="chip rollup">{{.}}</span> {{end}}{{if .PlanIssue}}<span class="chip plan">part of plan #{{.PlanIssue}}</span> {{end}}{{if .WaitingOn}}<span class="chip waiting">waiting on {{.WaitingOn}}</span>{{end}}</p>{{end}}

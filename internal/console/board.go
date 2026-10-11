@@ -186,19 +186,16 @@ type card struct {
 // fine is a card's fine state as a chip in the pill's hues.
 type fine struct{ Words, Class string }
 
-// fineStates are what k's column leaves unsaid: retrying; in the five
-// columns waiting on the author, failed or closed, which the wide view
-// has columns for; and stale.
+// fineStates are what k's column and pill leave unsaid: retrying; in the
+// five columns waiting on the author, which the wide view has a column
+// for; and stale. Failed and closed are the pill's own words.
 func fineStates(k card, wide bool) []fine {
 	var out []fine
 	switch {
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
-	case wide:
-	case k.Status == "waiting-poster":
+	case !wide && k.Status == "waiting-poster":
 		out = append(out, fine{"waiting on the author", "st-waiting hollow"})
-	case k.Status == "failed" || k.Status == "closed":
-		out = append(out, fine{k.Status, statusClass(k.Status)})
 	}
 	if k.Stale {
 		out = append(out, fine{"stale", "st-stale"})
@@ -481,6 +478,7 @@ type boardData struct {
 	// on it carries back so an action keeps the view.
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
+	Writes      bool     // the viewer writes the shown project: its stream and drawer are theirs
 	ToggleQuery string   // the filter with the other view
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
@@ -748,9 +746,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			k.Badge = t.Lane
 		}
 	}
-	// the five columns are no lanes: every card wears its lane
+	// the five columns are no lanes: a card wears its lane, unless its
+	// status says the same word
 	if !v.filter.wide() {
 		k.Badge = t.Lane
+		if t.Lane == t.Status {
+			k.Badge = ""
+		}
 	}
 	if t.Lane == policy.LanePlan && t.Status == "done" {
 		var err error
@@ -865,6 +867,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		return d, err
 	}
 	var shown factoryd.Project
+	writable := map[string]bool{}
 	for _, p := range all {
 		// a project whose writers could not be checked is offered, its
 		// buttons hidden, rather than an empty board
@@ -874,6 +877,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
 			v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
 		}
+		writable[p.Name] = writes
 		if writes || err != nil {
 			d.Projects = append(d.Projects, p.Name)
 			if f.Project == "" && shown.Name == "" {
@@ -892,7 +896,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	case !slices.Contains(d.Projects, shown.Name):
 		d.Projects = append(d.Projects, shown.Name)
 	}
-	f.Project = shown.Name
+	f.Project, d.Writes = shown.Name, writable[shown.Name]
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
 	wide := f.wide()
 	other := f
@@ -1453,6 +1457,7 @@ type drawerData struct {
 	Longest                    int
 	Entries                    []timelineEntry
 	Files                      []prFile
+	MoreFiles                  bool   // Files are the first filesPages pages
 	Problem                    string // what the tab could not read
 }
 
@@ -1514,7 +1519,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		var err error
-		if d.Files, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
+		if d.Files, d.MoreFiles, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
 			problem("pull request's files", err)
 		}
 	}
@@ -1574,13 +1579,17 @@ type prFile struct {
 	Deletions int    `json:"deletions"`
 }
 
-// prFiles are pull request pr's changed files, every page, read through
-// the human's token.
-func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFile, error) {
+// filesPages bounds the pages of a pull request's files the drawer reads:
+// Forgejo computes the diff again for every page.
+const filesPages = 10
+
+// prFiles are pull request pr's changed files, read through the human's
+// token, up to filesPages pages; more when Forgejo may list others.
+func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFile, bool, error) {
 	repo, err := factoryd.SplitRepo(repository)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return factoryd.GetPages[prFile](r.Context(), c.userCall(current(r)),
-		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr))
+	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
+		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
 }

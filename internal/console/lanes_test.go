@@ -635,7 +635,7 @@ func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
 	// a failed check keeps the board of the first project, buttons hidden,
 	// and offers every project it could not check, once each
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if !strings.Contains(body, `data-project="ai-software-factory-code"`) || strings.Count(body, "who may move a card could not be checked") != 1 ||
+	if !strings.Contains(body, `data-query="?project=ai-software-factory-code"`) || strings.Count(body, "who may move a card could not be checked") != 1 ||
 		!strings.Contains(body, `<option value="ai-software-factory-code" selected>ai-software-factory-code</option>
 <option value="demo-app">demo-app</option>
 <option value="linkshort">linkshort</option>

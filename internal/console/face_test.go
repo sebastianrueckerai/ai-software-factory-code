@@ -27,14 +27,16 @@ func faceOf(t *testing.T, section, id string) string {
 	return section[start : i+strings.Index(section[i:], "</article>")]
 }
 
-// titleOf is the title line's words on the face of card id, the link that
-// opens its drawer.
+// titleOf is the title line's words on the face of card id, inside the
+// link that opens its drawer for a writer.
 func titleOf(t *testing.T, body, id string) string {
 	t.Helper()
 	face := faceOf(t, body, id)
-	_, title, _ := strings.Cut(face, `<strong class="title"><a href="#card=`+id+`" class="open">`)
-	title, _, _ = strings.Cut(title, "</a></strong>")
-	return title
+	_, title, _ := strings.Cut(face, `<strong class="title" title="`)
+	_, title, _ = strings.Cut(title, `">`)
+	title, _, _ = strings.Cut(title, "</strong>")
+	title = strings.TrimPrefix(title, `<a href="#card=`+id+`" class="open">`)
+	return strings.TrimSuffix(title, "</a>")
 }
 
 // The face's title: a writer's summary, else a planned card's key, else

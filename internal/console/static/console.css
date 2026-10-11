@@ -91,8 +91,8 @@ h4 { font-size: .9rem; margin: 0 0 .25rem; }
 .face > * { min-width: 0; }
 .face > p { margin: 0; }
 .ref { font-weight: 600; white-space: nowrap; }
-.chip { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; font-size: .75rem; color: var(--text-muted); background: var(--bg-raised); overflow-wrap: anywhere; }
-.pill { display: inline-block; padding: 0 .45rem; border-radius: 999px; font-size: .75rem; line-height: 1.5; border: 1px solid transparent; }
+.chip { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; font-size: .75rem; color: var(--text-muted); background: var(--bg-raised); white-space: nowrap; }
+.pill { display: inline-block; padding: 0 .45rem; border-radius: 999px; font-size: .75rem; line-height: 1.5; border: 1px solid transparent; white-space: nowrap; }
 .st-running { background: var(--st-running); color: var(--st-running-fg); }
 .st-waiting { background: var(--st-waiting); color: var(--st-waiting-fg); }
 .st-review { background: var(--st-review); color: var(--st-review-fg); }
@@ -138,7 +138,7 @@ form.inline button { margin: 0 .25rem .25rem 0; }
 .gate { font-weight: 600; }
 .gates meter { width: 12rem; }
 /* the card's lane: a chip that whispers, the muted words of every chip */
-.badge { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-muted); font-size: .75rem; }
+.badge { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-muted); font-size: .75rem; white-space: nowrap; }
 .spec { white-space: pre-wrap; border-left: 3px solid var(--line-strong); padding-left: .5rem; font-size: .85rem; }
 .children { margin: .25rem 0; padding-left: 1.2rem; font-size: .85rem; }
 form.move button { margin: .25rem .25rem 0 0; padding: .15rem .5rem; }
@@ -221,6 +221,9 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .column .facts dd { margin-bottom: .3rem; min-width: 0; }
 .lane:not(.five) .column:has(.approval.plan) { grid-column: span 2; }
 #needs-you { scroll-margin-top: 1rem; }
+/* a card's first line takes two lines at most in the five columns; the
+   title's title attribute holds it whole */
+.lane.five .face .line1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .face .title a { color: inherit; text-decoration: none; }
 .face .title a:hover, .face .title a:focus-visible { text-decoration: underline; }
 /* stale and retrying are fine states: stale the stale ring's amber,

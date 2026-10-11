@@ -169,21 +169,29 @@ func (f *Forgejo) ListTokens(ctx context.Context) ([]TokenRef, error) {
 // A page may hold fewer items than the limit asked for (the server caps
 // it at its MAX_RESPONSE_ITEMS), so only an empty page ends the list.
 func GetPages[T any](ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), path string) ([]T, error) {
-	var all []T
-	for page := 1; ; page++ {
+	all, _, err := GetPagesUpTo[T](ctx, call, path, 0)
+	return all, err
+}
+
+// GetPagesUpTo reads the pages of the list as GetPages does, at most max
+// of them (0 every one); more is true when it stopped at max with items
+// on the last page it read.
+func GetPagesUpTo[T any](ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), path string, max int) (all []T, more bool, err error) {
+	for page := 1; max == 0 || page <= max; page++ {
 		body, err := call(ctx, http.MethodGet, fmt.Sprintf("%spage=%d&limit=50", path, page), nil, http.StatusOK)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		var items []T
 		if err := json.Unmarshal(body, &items); err != nil {
-			return nil, fmt.Errorf("forgejo GET %s: %w", path, err)
+			return nil, false, fmt.Errorf("forgejo GET %s: %w", path, err)
 		}
 		if len(items) == 0 {
-			return all, nil
+			return all, false, nil
 		}
 		all = append(all, items...)
 	}
+	return all, true, nil
 }
 
 // RevokeToken deletes a token. A 404 means it is already gone — a revoke

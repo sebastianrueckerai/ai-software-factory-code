@@ -118,7 +118,7 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 }
 
 // decideButton runs a button's decision on the approval request the path
-// names and goes back to the board.
+// names and goes back to the board the form carried.
 func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) error) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -129,7 +129,7 @@ func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision 
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
 }
 
 // review submits a pull request review on q's pull request as a's member.

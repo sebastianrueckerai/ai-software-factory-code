@@ -218,6 +218,12 @@ function closeDrawer() {
 }
 window.addEventListener("hashchange", showDrawer);
 document.addEventListener("DOMContentLoaded", showDrawer);
+// a drawer refused or unreachable closes, so the board moves again
+function drawerFailed(e) {
+  if (e.detail.target && e.detail.target.id === "drawer") closeDrawer();
+}
+document.addEventListener("htmx:responseError", drawerFailed);
+document.addEventListener("htmx:sendError", drawerFailed);
 document.addEventListener("htmx:afterSwap", function (e) {
   var shown = e.detail.target.id === "drawer" && e.detail.target.querySelector("[data-drawer]");
   if (shown && location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);

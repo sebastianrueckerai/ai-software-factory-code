@@ -25,7 +25,7 @@
 {{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
 {{template "steps" .}}
 {{end}}{{else if not .Card.PRNumber}}<p class="meta">no pull request yet</p>
-{{else if not .Problem}}<table class="files"><caption>The changed files of PR #{{.Card.PRNumber}}</caption>
+{{else if not .Problem}}<table class="files"><caption>{{if .MoreFiles}}The first {{len .Files}}{{else}}The{{end}} changed files of PR #{{.Card.PRNumber}}</caption>
 <thead><tr><th scope="col">File</th><th scope="col">Change</th><th scope="col">Added</th><th scope="col">Deleted</th></tr></thead>
 <tbody>{{range .Files}}<tr><td><code>{{.Filename}}</code></td><td>{{.Status}}</td><td>+{{.Additions}}</td><td>−{{.Deletions}}</td></tr>
 {{else}}<tr><td colspan="4">No file changed.</td></tr>
