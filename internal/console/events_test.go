@@ -449,7 +449,7 @@ func TestBoardActivityLine(t *testing.T) {
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Process: "maintenance",
 			Objective: "add the feed", Repository: "sf/code", IssueNumber: 12},
 		factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
-			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13, CreatedAt: time.Now()})
+			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13})
 	at := time.Now().Add(-5 * time.Minute)
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: at}); err != nil {
@@ -469,7 +469,7 @@ func TestBoardActivityLine(t *testing.T) {
 		end := strings.Index(body[i:], "</article>")
 		return body[start : i+end]
 	}
-	if got := card("t-run"); !strings.Contains(got, `class="activity">card_moved by sebastian via button at `) {
+	if got := card("t-run"); !strings.Contains(got, `class="activity">card_moved by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
 		t.Errorf("the card with an event: %.400s", got)
 	}
 	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {

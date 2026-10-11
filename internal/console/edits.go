@@ -43,14 +43,10 @@ func (c *Console) setSummary(w http.ResponseWriter, r *http.Request) {
 	if !c.mayWriteTask(w, r, t) {
 		return
 	}
-	summary := r.PostFormValue("summary")
+	summary := strings.TrimSpace(r.PostFormValue("summary"))
 	if utf8.RuneCountInString(summary) > maxSummaryLen {
 		http.Error(w, "a summary of up to 255 characters", http.StatusBadRequest)
 		return
-	}
-	// a value of nothing but spaces restores the generated title.
-	if strings.TrimSpace(summary) == "" {
-		summary = ""
 	}
 	if err := c.cfg.Tasks.SetHumanSummary(r.Context(), t.ID, summary); err != nil {
 		if errors.Is(err, factoryd.ErrNotFound) {

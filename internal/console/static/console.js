@@ -1,6 +1,6 @@
-// The board polls every 10 s; skip a poll while a form on it is being
-// filled in (text typed, a choice changed, or a field focused) so the swap
-// does not wipe it.
+// The board polls every 3 s; skip a poll while a card's expanded view is
+// open or a form on it is being filled in (text typed, a choice changed,
+// or a field focused) so the swap neither closes nor wipes it.
 document.addEventListener("htmx:beforeRequest", function (e) {
   var board = e.detail.elt;
   if (board.id !== "board") return;

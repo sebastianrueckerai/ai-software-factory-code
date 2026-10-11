@@ -23,10 +23,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// eur2 is money to the cent, as a card's face reads spend against budget.
 var funcs = template.FuncMap{
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	// eur2 is money to the cent, as a card's face reads spend against budget
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
+	// accents are the colour labels a writer may put on a card
+	"accents": func() []string { return factoryd.Accents },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -100,8 +102,8 @@ type card struct {
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
-	// Checks is "n/n" from the task's newest checks step, "" where the
-	// card has no timeline with one.
+	// Checks is "n/n" from the task's newest checks step, "" on a card
+	// without a pull request, a final one, or one whose timeline holds none.
 	Checks string
 	// NearBudget is spend at 80 percent of the budget or more.
 	NearBudget bool
@@ -111,39 +113,35 @@ type card struct {
 	StaleText string
 	// Children roll up an accepted plan: n running, n done, n waiting.
 	Children string
-	// Blocked is how many cards this one waits on; BlockedOn names their
-	// issues in its title attribute ("#3, #5").
+	// Blocked is how many cards this one depends on that are not done;
+	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
 	BlockedOn string
-	// Accent is the card's colour label (one of factoryd.Accents), ""
-	// when none: no chip, no edge. It never changes a state rendering.
-	Accent string
 	// MayWriteSummary is whether the viewer writes the task's project, so
-	// the expanded view carries its forms with a CSRF token for them;
-	// CSRF is that token (an escalation copy keeps it for its answer
-	// form, which reads the page's own token).
+	// the expanded view carries the summary and accent forms; CSRF is the
+	// session's token for them.
 	MayWriteSummary bool
 	CSRF            string
 	// FilterProject and FilterAccent are the board's filter the card's
-	// forms carry back so an action keeps the view; Accents are the
-	// choices its accent select offers.
-	boardFilter
+	// forms carry back so an action keeps the view.
 	FilterProject, FilterAccent string
-	Accents                     []string
 }
 
-// titleClause is the face's title from the objective: up to the first
-// full stop that ends a sentence — one followed by a space, or one at the
-// very end — or 80 characters when there is none. A dot inside a file name
-// or a version ("internal/console/board.go", "v1.2") ends no sentence, so
-// the clause keeps it.
+// titleClause is the face's title from the objective, on one line: up to
+// the first full stop that ends a sentence — one followed by whitespace,
+// or one at the very end — and at most 80 characters. A dot inside a file
+// name or a version ("internal/console/board.go", "v1.2") ends no
+// sentence, so the clause keeps it.
 func titleClause(objective string) string {
-	s := strings.TrimSpace(objective)
-	if i := strings.Index(s, ". "); i >= 0 {
-		s = strings.TrimSpace(s[:i])
-	} else if strings.HasSuffix(s, ".") {
-		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
+	words := strings.Fields(objective)
+	for i, w := range words {
+		if strings.HasSuffix(w, ".") {
+			words[i] = strings.TrimSuffix(w, ".")
+			words = words[:i+1]
+			break
+		}
 	}
+	s := strings.TrimSpace(strings.Join(words, " "))
 	if r := []rune(s); len(r) > 80 {
 		s = strings.TrimRight(string(r[:80]), " ,;:")
 	}
@@ -162,18 +160,6 @@ var statusClasses = map[string]string{
 }
 
 func statusClass(status string) string { return cmp.Or(statusClasses[status], "st-other") }
-
-// statusLabels are the pill's display text per status.
-var statusLabels = map[string]string{
-	"running": "running", "closing": "closing", "queued": "queued",
-	"waiting-human": "waiting", "waiting-poster": "waiting",
-	"waiting-deps": "waiting", "in-review": "in review",
-	"done": "done", "failed": "failed", "closed": "closed",
-	"backlog": "backlog", "plan": "plan",
-}
-
-// StatusLabel is the card's status as display text for the pill.
-func (k card) StatusLabel() string { return cmp.Or(statusLabels[k.Status], k.Status) }
 
 // nearBudgetShare is the share of its budget from which a card's spend is
 // shown prominent with the warning sign and the words "near its budget".
@@ -206,15 +192,15 @@ func newestChecksCount(steps []map[string]any) string {
 	return ""
 }
 
-// faceTimelines reads the newest checks step onto every card that has a
-// session to have one: each agent card not yet final, at most once per
+// faceTimelines reads the newest checks step onto every card that can
+// have one: a card with a pull request, not yet final, at most once per
 // render. A timeline that cannot be read keeps the card without the chip —
 // the object store answers no body for a task that never wrote a timeline,
 // and reading is best-effort here, never a reason to fail the board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
 	read := map[string]string{}
 	set := func(k *card) {
-		if k.Kind != "agent" || factoryd.Final(k.Status) {
+		if k.PRNumber == 0 || factoryd.Final(k.Status) {
 			return
 		}
 		if _, ok := read[k.ID]; !ok {
@@ -267,16 +253,11 @@ func planRollup(cards []card) string {
 }
 
 // move is a backlog card's button into a starting lane. The board's filter
-// rides on the form in the template, read from the page's data.
-type move struct {
-	Lane, Title string
-	CSRF        string
-}
+// rides on the form from the card's FilterProject and FilterAccent.
+type move struct{ Lane, Title, CSRF string }
 
 // retry is a failed plan card's Retry button.
-type retry struct {
-	CSRF string
-}
+type retry struct{ CSRF string }
 
 // planCards are an accepted plan's cards and, for an approver while any
 // is in the backlog, Start plan (CSRF set).
@@ -319,11 +300,9 @@ type boardData struct {
 	Filed string
 	Note  string // what the human's last action did
 	// Project and Accent are the board's filter, which every form on it
-	// carries back so an action keeps the view; Accents are the choices
-	// its select offers.
+	// carries back so an action keeps the view.
 	boardFilter
 	Query       string // the filter as a URL query for the poll's hx-get
-	Accents     []string
 	Projects    []string
 	Columns     []column
 	HumanTasks  []card
@@ -356,7 +335,6 @@ func (c *Console) card(t factoryd.Task) card {
 		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	k.StatusClass = statusClass(t.Status)
-	k.Accent = t.Accent
 	k.Title = cmp.Or(t.HumanSummary, func() string {
 		if t.PlanKey != "" {
 			return t.PlanKey
@@ -473,7 +451,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
 	ctx, s := r.Context(), current(r)
 	f := boardFilter{Project: project, Accent: accent}
-	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Query: f.query(), Accents: factoryd.Accents}
+	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Query: f.query()}
 	v, _ := c.inForce(r)
 	d.Approver = slices.Contains(v.Document.Approvers, s.user)
 	all, err := c.coderProjects(r)
@@ -621,21 +599,24 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 			mayReady(t) {
 			k.Retry = &retry{CSRF: s.csrf}
 		}
+		// a waiting plan's card is its escalation: Request changes answers it
+		escalated := t.Status == "waiting-human" && !planned[t.ID]
+		if escalated {
+			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
+		}
 		if ok {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 		}
-		// a waiting plan's card is its escalation: Request changes answers it
 		if t.Status == "waiting-human" && planned[t.ID] {
 			escalations[t.ID] = bt
-		} else if t.Status == "waiting-human" {
-			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
+		} else if escalated {
 			d.Escalations = append(d.Escalations, k)
 		}
 	}
 	for _, a := range pending {
 		if inView(a.Project) {
 			k := c.approvalCard(ctx, a, byID, s.csrf, d.Approver)
-			k.Filter = project
+			k.FilterProject, k.FilterAccent = project, accent
 			// an escalation from before this revision's request (a cap a
 			// writer granted) no longer holds
 			if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
@@ -716,35 +697,16 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 	}
 	everyCard(setActivity)
 	c.faceTimelines(ctx, everyCard)
-	// mayWrite is whether the viewer writes that repository, asked at most
-	// once per repository per render through the move cache.
-	mayWrite := func(repository string) bool {
-		ok, err := c.mayMoveCached(ctx, repository, s.user, policy.MovedByWriters)
-		if err != nil {
-			log.Printf("console: may %s write %s: %v", s.user, repository, err)
-			return false
-		}
-		return ok
-	}
-	writes := map[string]bool{}
-	mayWriteOnce := func(repository string) bool {
-		if _, ok := writes[repository]; !ok {
-			writes[repository] = mayWrite(repository)
-		}
-		return writes[repository]
-	}
 	setForms := func(k *card) {
-		k.MayWriteSummary = mayWriteOnce(k.Repository)
-		if k.MayWriteSummary {
+		ok, err := c.mayMoveCached(ctx, k.Repository, s.user, policy.MovedByWriters)
+		if err != nil && !unchecked {
+			unchecked = true
+			log.Printf("console: may %s write %s: %v", s.user, k.Repository, err)
+		}
+		if k.MayWriteSummary = ok; ok {
 			k.CSRF = s.csrf
 		}
-		k.boardFilter, k.Accents = f, d.Accents
-		k.FilterProject, k.FilterAccent = f.Project, f.Accent
-		if k.Plan != nil {
-			for i := range k.Plan.Cards {
-				k.Plan.Cards[i].boardFilter = f
-			}
-		}
+		k.FilterProject, k.FilterAccent = project, accent
 	}
 	everyCard(setForms)
 	return d, nil
