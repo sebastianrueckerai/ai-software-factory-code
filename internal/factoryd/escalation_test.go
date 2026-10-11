@@ -1,13 +1,18 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -48,7 +53,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 		t.Fatalf("EscalateSession = %v", err)
 	}
 	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, "The agent asks: Which license applies?\nWhy: the issue names none\nRecommendation: MIT, as the other repositories") ||
-		!strings.Contains(res.Reason, "Detector: agent_escalation") {
+		!strings.Contains(res.Reason, "Detector: agent_escalation") || !slices.Equal(res.Choices, []string{"MIT", "Apache-2.0", "GPL-3.0"}) {
 		t.Fatalf("result = %+v", res)
 	}
 	if len(f.chats) != 0 {
@@ -147,15 +152,18 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 type fakeSessions struct {
 	err   error
 	calls []string
+	asks  []AgentAsk
 }
 
 func (f *fakeSessions) EscalateSession(_ context.Context, taskID string, a AgentAsk) error {
 	f.calls = append(f.calls, strings.Join([]string{taskID, a.Kind, a.Question, a.Reason, a.Recommendation, a.Tried, a.Needs}, "|"))
+	f.asks = append(f.asks, a)
 	return f.err
 }
 
-// licenseAsk is an agent's escalate_to_human.
-var licenseAsk = AgentAsk{Kind: AskEscalation, Question: "Which license applies?", Reason: "the issue names none", Recommendation: "MIT, as the other repositories"}
+// licenseAsk is an agent's escalate_to_human with its choices.
+var licenseAsk = AgentAsk{Kind: AskEscalation, Question: "Which license applies?", Reason: "the issue names none", Recommendation: "MIT, as the other repositories",
+	Choices: []string{"MIT", "Apache-2.0", "GPL-3.0"}}
 
 func TestEscalationHandler(t *testing.T) {
 	store := newFakeStore()
@@ -213,6 +221,46 @@ func TestEscalationHandler(t *testing.T) {
 	}
 }
 
+// An escalation's choices are 2 to 5, none empty or over 60 characters,
+// each trimmed: they reach the session and the agent's intake event. Any
+// other list is dropped and logged, and the question still delivered.
+func TestEscalationHandlerChoices(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	wide := strings.Repeat("ä", 60) // 60 characters in 120 bytes
+	for _, tc := range []struct {
+		name, choices, logged string
+		want                  []string
+	}{
+		{"three", `[" MIT ","Apache-2.0","GPL-3.0"]`, "", []string{"MIT", "Apache-2.0", "GPL-3.0"}},
+		{"60 characters", `["` + wide + `","no"]`, "", []string{wide, "no"}},
+		{"none", `[]`, "", nil},
+		{"six", `["a","b","c","d","e","f"]`, "task t-run: the agent's 6 choices are dropped", nil},
+		{"61 characters", `["` + strings.Repeat("a", 61) + `","no"]`, "task t-run: the agent's 2 choices are dropped", nil},
+		{"an empty one", `["yes"," "]`, "task t-run: the agent's 2 choices are dropped", nil},
+		{"one", `["yes"]`, "task t-run: the agent's 1 choices are dropped", nil},
+	} {
+		logs.Reset()
+		store.intakeEvents = nil
+		s := &fakeSessions{}
+		rec := httptest.NewRecorder()
+		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
+			`{"task_id":"t-run","kind":"escalation","question":"Which license?","reason":"none named","recommendation":"MIT","choices":`+tc.choices+`}`)))
+		if rec.Code != http.StatusAccepted || len(s.asks) != 1 || !slices.Equal(s.asks[0].Choices, tc.want) {
+			t.Errorf("%s: %d, delivered %+v; want 202 with choices %q", tc.name, rec.Code, s.asks, tc.want)
+		}
+		if e := store.intakeEvents; len(e) != 1 || !slices.Equal(e[0].Choices, tc.want) {
+			t.Errorf("%s: intake events %+v, want one with choices %q", tc.name, e, tc.want)
+		}
+		if got := logs.String(); tc.logged == "" && strings.Contains(got, "dropped") || !strings.Contains(got, tc.logged) {
+			t.Errorf("%s: log %q, want %q", tc.name, got, tc.logged)
+		}
+	}
+}
+
 // An escalation counts as delivered only once the session took it: one the
 // session never reads before it ends is refused, never accepted and lost.
 func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
@@ -238,7 +286,7 @@ func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
 	if err := runner.EscalateSession(t.Context(), "t1", licenseAsk); err != nil {
 		t.Fatalf("escalation to a reading session = %v", err)
 	}
-	if e := <-took; e != licenseAsk {
+	if e := <-took; !reflect.DeepEqual(e, licenseAsk) {
 		t.Fatalf("took %+v", e)
 	}
 }

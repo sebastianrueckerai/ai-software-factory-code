@@ -48,6 +48,11 @@ const (
 // after the store changed either: detail {"status", "gate"}.
 const EventTaskStatus = "task_status"
 
+// EventQuestionAsked is factoryd's record of an escalation, the question
+// question_answered answers: detail {"question", "comment", and "choices"
+// when the agent offered any}.
+const EventQuestionAsked = "question_asked"
+
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is
 // owner/name, the project the event belongs to; TaskID and IssueNumber are

@@ -163,6 +163,9 @@ type IntakeEvent struct {
 	// signalled (factoryd was down or erroring at delivery) is signalled by
 	// the heal pass.
 	Signalled bool
+	// Choices are the answers an agent offered with its question, on its
+	// ask and on the escalation that put the question to a human.
+	Choices []string
 }
 
 // changeRequestKinds are the intake event kinds that ask for changes on
@@ -523,11 +526,19 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 }
 
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
+	choices := any(nil)
+	if len(e.Choices) > 0 {
+		b, err := json.Marshal(e.Choices)
+		if err != nil {
+			return 0, err
+		}
+		choices = b
+	}
 	var id int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id`,
-		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled).Scan(&id)
+		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled, choices)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled, choices).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
@@ -536,14 +547,14 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 
 func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled
+		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices
 		 FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
 	return scanIntakeEvents(rows, err)
 }
 
 func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled
+		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices
 		 FROM intake_events WHERE task_id = $1 AND signalled AND kind = ANY($2)
 		 AND created_at > COALESCE((SELECT max(created_at) FROM sessions WHERE task_id = $1), '-infinity')
 		 ORDER BY id`, taskID, changeRequestKinds)
@@ -558,12 +569,24 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for rows.Next() {
 		var e IntakeEvent
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled); err != nil {
+		var choices []byte
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled, &choices); err != nil {
+			return nil, err
+		}
+		if err := unmarshalChoices(choices, &e.Choices); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// unmarshalChoices reads a choices column into choices; NULL leaves none.
+func unmarshalChoices(b []byte, choices *[]string) error {
+	if len(b) == 0 {
+		return nil
+	}
+	return json.Unmarshal(b, choices)
 }
 
 func (s *PGStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {

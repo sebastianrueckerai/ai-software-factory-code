@@ -227,7 +227,7 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if a.Kind == AskInfo {
 		kind, detail = TripAgentInfoRequest, "the agent called request_info"
 	}
-	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason()}})
+	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason(), Choices: a.Choices}})
 }
 
 // TakeNudge is the nudge the last event earned, once.

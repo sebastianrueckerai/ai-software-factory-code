@@ -1057,7 +1057,7 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 // Ruling 120: Reconcile rebuilds the human's answers from the intake
 // events, newest first: every trusted issue comment newer than an
 // escalation's comment, tagged with that escalation's question; a healed
-// re-ask keeps the question it re-asks. A comment before any escalation,
+// re-ask keeps the question it re-asks and its choices. A comment before any escalation,
 // an untrusted one and a bot's are no answers.
 func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	r, store, _ := newActivityRunner(t, withStatus(prTask, "waiting-human"), &prForgejo{})
@@ -1066,7 +1066,7 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which file?\nWhy: open", CommentID: 600},
 		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true},
 		{Kind: "issue_comment", Author: "reader", Body: "spam", CommentID: 602},
-		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603},
+		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603, Choices: []string{"hello", "bye"}},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 604},
 		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true},
 	} {
@@ -1079,8 +1079,8 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}
-	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || got.Screening {
-		t.Fatalf("answers = %q, question = %q, screening %v; want %q, Which text?", got.Answers, got.Question, got.Screening, want)
+	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || !slices.Equal(got.Choices, []string{"hello", "bye"}) || got.Screening {
+		t.Fatalf("answers = %q, question = %q, choices %q, screening %v; want %q, Which text?, hello and bye", got.Answers, got.Question, got.Choices, got.Screening, want)
 	}
 	// the screening's escalation, asked again by a healed run: the task
 	// waits on its screening
@@ -1160,6 +1160,44 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 	if want := []string{"agent 701", "supervisor 702", "cap 703"}; !slices.Equal(got, want) {
 		t.Fatalf("escalation alerts = %q, want %q", got, want)
+	}
+}
+
+// The agent's choices ride with its escalation: on the intake event the
+// board reads, on the timeline's escalated step, and in the question_asked
+// row's detail beside the question and the comment. An escalation without
+// choices records none.
+func TestEscalateRecordsTheChoices(t *testing.T) {
+	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+	rows := &fakeEventRecorder{}
+	r.timeline.Events = rows
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open", []string{"a.txt", "b.txt", "c.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands"); err != nil {
+		t.Fatal(err)
+	}
+	if e := store.intakeEvents; len(e) != 2 || !slices.Equal(e[0].Choices, []string{"a.txt", "b.txt", "c.txt"}) || e[1].Choices != nil {
+		t.Fatalf("intake events = %+v", e)
+	}
+	var steps []string
+	for line := range strings.Lines(timeline(t, objects)) {
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil && m["step"] == "escalated" {
+			steps = append(steps, fmt.Sprint(m["comment"], " ", m["choices"]))
+		}
+	}
+	if want := []string{"701 [a.txt b.txt c.txt]", "702 <nil>"}; !slices.Equal(steps, want) {
+		t.Fatalf("escalated steps = %q, want %q", steps, want)
+	}
+	want := []Event{
+		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "c.txt"}, "comment": int64(701)}},
+		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"question": "supervisor escalated: the check cannot pass", "comment": int64(702)}},
+	}
+	if !reflect.DeepEqual(rows.rows, want) {
+		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
 	}
 }
 

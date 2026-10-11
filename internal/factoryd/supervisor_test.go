@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestParseDecision(t *testing.T) {
 		{"escalate", `{"action":"escalate","reason":"the check can never pass"}`, Decision{Action: ActionEscalate, Reason: "the check can never pass"}},
 		{"fenced", "```json\n{\"action\":\"continue\"}\n```", Decision{Action: ActionContinue}},
 	} {
-		if got := parseDecision(tc.in); got != tc.want {
+		if got := parseDecision(tc.in); !reflect.DeepEqual(got, tc.want) {
 			t.Fatalf("%s: %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
@@ -215,7 +216,7 @@ func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
 	f := &fakeLiteLLM{content: `{"action":"message","guidance":"read the script first"}`}
 	m := testSupervisorModel(f.srv(t).URL)
 	d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput())
-	if d != (Decision{Action: ActionMessage, Guidance: "read the script first"}) {
+	if !reflect.DeepEqual(d, Decision{Action: ActionMessage, Guidance: "read the script first"}) {
 		t.Fatalf("decision = %+v", d)
 	}
 	if len(f.chats) != 1 || f.auth[0] != "Bearer gw-token" || f.tasks[0] != "t1" || f.purposes[0] != "supervisor" {

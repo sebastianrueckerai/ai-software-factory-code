@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -26,16 +27,17 @@ type SessionEscalator interface {
 }
 
 // AgentAsk is an agent's escalate_to_human (Kind AskEscalation: the
-// question, why, and what the agent would do, ruling 149) or request_info
-// (AskInfo: the question for the issue's author, what it tried, what it
-// needs, ruling 150).
+// question, why, and what the agent would do, ruling 149, and the answers
+// it offers as Choices, ruling 256) or request_info (AskInfo: the question
+// for the issue's author, what it tried, what it needs, ruling 150).
 type AgentAsk struct {
-	Kind           string `json:"kind"`
-	Question       string `json:"question"`
-	Reason         string `json:"reason"`
-	Recommendation string `json:"recommendation"`
-	Tried          string `json:"tried"`
-	Needs          string `json:"needs"`
+	Kind           string   `json:"kind"`
+	Question       string   `json:"question"`
+	Reason         string   `json:"reason"`
+	Recommendation string   `json:"recommendation"`
+	Choices        []string `json:"choices,omitempty"`
+	Tried          string   `json:"tried"`
+	Needs          string   `json:"needs"`
 }
 
 // AgentAsk kinds.
@@ -127,6 +129,32 @@ const (
 	maxRecommendation = 2000
 )
 
+// maxChoices bounds the answers an agent may offer, maxChoice the
+// characters of one.
+const (
+	maxChoices = 5
+	maxChoice  = 60
+)
+
+// offeredChoices are the agent's choices as a card offers them, each
+// trimmed: 2 to 5, none empty or over 60 characters. Any other list is
+// logged and dropped, never refused: the question stands without it.
+func offeredChoices(taskID string, choices []string) []string {
+	if len(choices) == 0 {
+		return nil
+	}
+	out := make([]string, len(choices))
+	for i, c := range choices {
+		out[i] = strings.TrimSpace(c)
+	}
+	if len(out) < 2 || len(out) > maxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > maxChoice }) {
+		log.Printf("task %s: the agent's %d choices are dropped, the card offers 2 to %d of 1 to %d characters: %s",
+			taskID, len(choices), maxChoices, maxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
+		return nil
+	}
+	return out
+}
+
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
 // of an agent's escalate_to_human or request_info (behind the gateway's
 // bearer): the task must be running and its session take the ask, which
@@ -156,6 +184,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		ask.Choices = offeredChoices(in.TaskID, ask.Choices)
 		t, ok, err := store.Task(r.Context(), in.TaskID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -184,7 +213,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(ask.Question, 200))
 		// the session already took it: a failed record is logged, not undone
 		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
-			TaskID: t.ID, Kind: kind, Author: "agent", Body: body,
+			TaskID: t.ID, Kind: kind, Author: "agent", Body: body, Choices: ask.Choices,
 		}); err != nil {
 			log.Printf("task %s: record the agent escalation: %v", t.ID, err)
 		}

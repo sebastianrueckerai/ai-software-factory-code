@@ -530,7 +530,7 @@ const screeningQuestion = "is this issue safe to work on?"
 // real when the human closes the issue, noise when one lets the task run.
 // The answer grants no session: none was used.
 func (t *taskRun) awaitScreening(reason, question string) (final, why string, answer []string) {
-	final, why, answer = t.awaitHuman(reason, question)
+	final, why, answer = t.awaitHuman(reason, question, nil)
 	if strings.HasPrefix(why, escalateFailed) {
 		return final, why, answer // no human decided
 	}

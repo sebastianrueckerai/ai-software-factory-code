@@ -392,7 +392,7 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 		{Kind: "issue_comment", Author: "stranger", Body: "me too", CommentID: 202},
 		{Kind: "issue_comment", Author: "sebastian", Body: "on Linux", CommentID: 203, Trusted: true},
 	}
-	answers, _ := answersFrom(events)
+	answers, _, _ := answersFrom(events)
 	if len(answers) != 1 || !strings.Contains(answers[0], "answer") {
 		t.Fatalf("answers = %q, want only the writer's before the information request", answers)
 	}

@@ -249,7 +249,7 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			if healed {
 				ask = healedReason
 			}
-			final, why, answer := t.awaitHuman(ask, reason)
+			final, why, answer := t.awaitHuman(ask, reason, nil)
 			if final != "" {
 				return closedBeforeStart(final, why)
 			}

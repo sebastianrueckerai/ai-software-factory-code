@@ -650,7 +650,7 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 		}
 		if ask != "" {
-			if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask).Get(t.ctx, &t.escalation); err != nil {
+			if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask, []string(nil)).Get(t.ctx, &t.escalation); err != nil {
 				return t.finish("failed", escalateFailed+errMessage(err))
 			}
 			ask, wait = "", true

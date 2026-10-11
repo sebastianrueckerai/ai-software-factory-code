@@ -62,7 +62,8 @@ type workflowHarness struct {
 	states      []string
 	state       RunState // what Reconcile reports; zero = a fresh task
 	finishAt    time.Time
-	escalated   []string // Escalate reasons, in order
+	escalated   []string   // Escalate reasons, in order
+	choices     [][]string // Escalate choices, in order
 	usage       []TaskUsage
 	logs        *lockedBuffer // the workflow's log
 	recorded    []recordedStep
@@ -124,7 +125,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
-		ActivityEscalate:          func(ctx context.Context, taskID, reason string) (int64, error) { return 0, nil },
+		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
 		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
@@ -210,9 +211,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		})
 	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
-	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID, reason string) (int64, error) {
+	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
+			h.choices = append(h.choices, choices)
 			return int64(600 + len(h.escalated)), h.escalateErr
 		})
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
@@ -1296,7 +1298,8 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
-		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"}},
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"},
+			Choices: []string{"edit the script", "skip the check"}},
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Findings: []string{"n2"}},
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Findings: []string{"n3"}},
 		pushed("s4", "c4"))
@@ -1308,8 +1311,9 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "the check cannot pass") {
-		t.Fatalf("escalations = %q", h.escalated)
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "the check cannot pass") ||
+		!slices.Equal(h.choices[0], []string{"edit the script", "skip the check"}) {
+		t.Fatalf("escalations = %q with choices %q", h.escalated, h.choices)
 	}
 	if len(h.sessions) != 4 {
 		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
@@ -1573,10 +1577,11 @@ func TestWorkflowCutsLongAnswers(t *testing.T) {
 }
 
 // A healed run rebuilds the task's answers from Reconcile and tags the
-// answer to its re-asked question with the original question.
+// answer to its re-asked question with the original question; the re-ask
+// keeps its choices.
 func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "waiting-human", Answers: []string{`sebastian, to "Which file?": a.txt`}, Question: "Which text?"}
+	h.state = RunState{Status: "waiting-human", Answers: []string{`sebastian, to "Which file?": a.txt`}, Question: "Which text?", Choices: []string{"hello", "bye"}}
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "ok", Comment: 900})
@@ -1587,5 +1592,9 @@ func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
 	}
 	if want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}; len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
 		t.Fatalf("sessions = %+v, want answers %q", h.sessions, want)
+	}
+	// the re-ask offers the question's choices again
+	if !slices.Equal(h.escalated, []string{healedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
+		t.Fatalf("escalations = %q with choices %q, want the healed re-ask with hello and bye", h.escalated, h.choices)
 	}
 }

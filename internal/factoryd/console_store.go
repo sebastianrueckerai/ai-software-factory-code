@@ -8,9 +8,10 @@ import (
 )
 
 // BoardTask is a task on the console's board with the reason of its
-// latest escalation ("" when it never escalated), its open escalation
-// alert (0 when none awaits a verdict), a card in waiting-deps the issues
-// it waits on (WaitingOn: "#3, #5"), in any status the issues of the
+// latest escalation ("" when it never escalated) and the Choices its agent
+// offered with that question, its open escalation alert (0 when none
+// awaits a verdict), a card in waiting-deps the issues it waits on
+// (WaitingOn: "#3, #5"), in any status the issues of the
 // cards it depends on that are not done (Dependencies: "#3, #5", for the
 // face's "blocked by n" chip), and the entries ahead of it in its merge
 // queue.
@@ -18,6 +19,7 @@ type BoardTask struct {
 	Task
 	Escalation      string
 	EscalatedAt     time.Time
+	Choices         []string
 	EscalationAlert int64
 	WaitingOn       string
 	Dependencies    string
@@ -26,7 +28,7 @@ type BoardTask struct {
 
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
 // kind and $2 the escalation alert's kind; the caller adds the WHERE.
-const boardTaskQuery = `SELECT ` + taskColumns + `, COALESCE(esc.body, ''), esc.at,
+const boardTaskQuery = `SELECT ` + taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.choices,
 		        COALESCE((SELECT a.id FROM alerts a
 		        WHERE a.task_id = tasks.id AND a.kind = $2 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
@@ -35,17 +37,21 @@ const boardTaskQuery = `SELECT ` + taskColumns + `, COALESCE(esc.body, ''), esc.
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
 		        (SELECT count(*) FROM merge_queue me JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id)
-		 FROM tasks LEFT JOIN LATERAL (SELECT e.body, e.created_at AS at FROM intake_events e
+		 FROM tasks LEFT JOIN LATERAL (SELECT e.body, e.created_at AS at, e.choices FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $1 ORDER BY e.id DESC LIMIT 1) esc ON true`
 
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
 	var at sql.NullTime
+	var choices []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead)...)
 	})
+	if err != nil {
+		return b, err
+	}
 	b.Task, b.EscalatedAt = t, at.Time
-	return b, err
+	return b, unmarshalChoices(choices, &b.Choices)
 }
 
 // BoardTasks lists at most limit tasks for the console's board: those not

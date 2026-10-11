@@ -472,7 +472,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		case d.Action == ActionRetryStronger:
 			res.Outcome = OutcomeRetryStronger
 		default:
-			res.Outcome = OutcomeEscalate
+			res.Outcome, res.Choices = OutcomeEscalate, d.Choices
 			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)
 		}
 		return res
@@ -492,9 +492,11 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 }
 
 // Escalate hands the task to a human (architecture 6.6): state
-// waiting-human, mirrored on the issue, and a comment with the reason. It
+// waiting-human, mirrored on the issue, a comment with the reason and a
+// question_asked row with its question; the agent's choices, if any, ride
+// on that row, the timeline's step and the intake event the card reads. It
 // returns the comment's id: only later comments answer it.
-func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, error) {
+func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
@@ -519,12 +521,19 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string) (int64, er
 	if err != nil {
 		return 0, err
 	}
-	r.record(ctx, taskID, "escalated", map[string]any{"reason": reason, "comment": id})
+	step := map[string]any{"reason": reason, "comment": id}
+	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": id}
+	if len(choices) > 0 {
+		step["choices"], asked["choices"] = choices, choices
+	}
+	r.record(ctx, taskID, "escalated", step)
 	// the durable anchor Reconcile rebuilds the answers from; a retry
 	// with the same comment records nothing twice
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id}); err != nil {
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
+		Choices: choices}); err != nil {
 		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
 	}
+	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
 		return id, nil // the question asked again, or the screening's: its alert is open already
 	}
@@ -837,7 +846,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			log.Printf("task %s: issue #%d closed by %s, which factoryd did not record as its own: not counted", t.ID, t.IssueNumber, closer)
 		}
 	}
-	st.Answers, st.Question = answersFrom(events)
+	st.Answers, st.Question, st.Choices = answersFrom(events)
 	st.Screening = waitsOnScreening(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
@@ -902,15 +911,16 @@ func waitsOnScreening(events []IntakeEvent) bool {
 // answersFrom rebuilds the human's answers from a task's intake events
 // (oldest first), newest first: every trusted issue comment newer than an
 // escalation's comment, tagged with that escalation's question (a healed
-// re-ask keeps the question it re-asks). question is the last one asked.
-func answersFrom(events []IntakeEvent) (answers []string, question string) {
+// re-ask keeps the question it re-asks). question is the last one asked,
+// choices the answers its agent offered.
+func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
 	var since int64
 	for _, e := range events {
 		switch {
 		case e.Kind == IntakeEscalation:
 			since = e.CommentID
 			if e.Body != healedReason {
-				question = escalationQuestion(e.Body)
+				question, choices = escalationQuestion(e.Body), e.Choices
 			}
 		case e.Kind == IntakeInfoRequest:
 			since = 0 // what follows answers the information request
@@ -918,7 +928,7 @@ func answersFrom(events []IntakeEvent) (answers []string, question string) {
 			answers = append([]string{answerText(e.Author, question, e.Body)}, answers...)
 		}
 	}
-	return answers, question
+	return answers, question, choices
 }
 
 // posterInfoFrom rebuilds the answers to the task's information requests

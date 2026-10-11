@@ -214,8 +214,10 @@ type SessionResult struct {
 	Summary   string
 	Findings  []string
 	// Reason is the supervisor's escalation reason with the progress
-	// digest's summary, for the issue.
-	Reason string
+	// digest's summary, for the issue; Choices the answers the agent
+	// offered with its own escalation.
+	Reason  string
+	Choices []string
 	// Trip is the TripKind the supervisor stopped the session on, "" for
 	// none.
 	Trip string
@@ -242,9 +244,11 @@ type RunState struct {
 	Usage    TaskUsage // what earlier runs used of the caps and were granted
 	// Answers are the human's answers to the task's escalations rebuilt
 	// from the intake events, newest first (ruling 120), and Question the
-	// question of its last escalation, which a healed run asks again.
+	// question of its last escalation, which a healed run asks again with
+	// its Choices.
 	Answers  []string
 	Question string
+	Choices  []string
 	// InfoRequest is the comment of the task's last information request
 	// and InfoRequestedAt its time, PosterInfo the answers to them, oldest
 	// first (ruling 150): a healed run waiting on the issue's author
@@ -719,7 +723,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
+		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached, nil)
 		if final != "" {
 			return final, why
 		}
@@ -793,7 +797,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if question == "" {
 				question = healedReason
 			}
-			final, why, answer := t.awaitHuman(healedReason, question)
+			final, why, answer := t.awaitHuman(healedReason, question, st.Choices)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -850,7 +854,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached)
+				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached, nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
@@ -898,7 +902,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
-			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
+			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -968,7 +972,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
-			final, why, answer := t.awaitHuman(res.Reason, escalationQuestion(res.Reason))
+			final, why, answer := t.awaitHuman(res.Reason, escalationQuestion(res.Reason), res.Choices)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1470,7 +1474,7 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 		if !decided || v.escalate == "" {
 			return v, decided, err
 		}
-		final, why, changes := t.awaitHuman(v.escalate, escalationQuestion(v.escalate))
+		final, why, changes := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)
 		switch {
 		case final != "":
 			return verdict{final: final, reason: why}, true, nil
@@ -1694,13 +1698,14 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 	}
 }
 
-// awaitHuman escalates the task and blocks, at no cost, until a human
-// answers on the issue (a comment newer than the escalation, or a change
-// request on the task's PR) or a terminal signal decides the task. answer
-// is the change requests; the human's answers go to t.answers
-// (versionAnswers), or into answer before it.
-func (t *taskRun) awaitHuman(reason, question string) (final, why string, answer []string) {
-	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason).Get(t.ctx, &t.escalation); err != nil {
+// awaitHuman escalates the task with the agent's choices, if any, and
+// blocks, at no cost, until a human answers on the issue (a comment newer
+// than the escalation, or a change request on the task's PR) or a
+// terminal signal decides the task. answer is the change requests; the
+// human's answers go to t.answers (versionAnswers), or into answer before
+// it.
+func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, why string, answer []string) {
+	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
 	for {

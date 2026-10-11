@@ -37,6 +37,9 @@ type Decision struct {
 	Action   SupervisorAction `json:"action"`
 	Guidance string           `json:"guidance,omitempty"`
 	Reason   string           `json:"reason,omitempty"`
+	// Choices are the answers the agent offered with its own escalation,
+	// never a field of the supervisor model's answer.
+	Choices []string `json:"-"`
 }
 
 // maxDecisionText caps guidance and reason; they become findings and

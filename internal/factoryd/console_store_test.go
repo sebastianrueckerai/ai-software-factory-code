@@ -38,10 +38,12 @@ func TestPGStoreBoardTasks(t *testing.T) {
 		UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id = 'old'`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
-	// the board reads an escalation's reason from the row the escalation
-	// wrote, the latest one, not from the timeline object
-	for _, body := range []string{"old reason", "cannot reach the database"} {
-		if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "high", Kind: IntakeEscalation, Author: "factoryd", Body: body}); err != nil {
+	// the board reads an escalation's reason and choices from the row the
+	// escalation wrote, the latest one, not from the timeline object
+	for _, e := range []IntakeEvent{{Body: "old reason", Choices: []string{"old", "older"}},
+		{Body: "cannot reach the database", Choices: []string{"use the replica", "wait for it", "give up"}}} {
+		e.TaskID, e.Kind, e.Author = "high", IntakeEscalation, "factoryd"
+		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -65,6 +67,17 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 	if want := []string{"cannot reach the database", "", ""}; !slices.Equal(reasons, want) {
 		t.Fatalf("reasons = %q, want %q", reasons, want)
+	}
+	if want := []string{"use the replica", "wait for it", "give up"}; !slices.Equal(tasks[0].Choices, want) || tasks[1].Choices != nil {
+		t.Fatalf("choices = %q and %q, want %q and none", tasks[0].Choices, tasks[1].Choices, want)
+	}
+	// the intake events read them back; a row without choices has none
+	events, err := s.IntakeEvents(ctx, "high")
+	if err != nil || len(events) != 2 || !slices.Equal(events[0].Choices, []string{"old", "older"}) || !slices.Equal(events[1].Choices, []string{"use the replica", "wait for it", "give up"}) {
+		t.Fatalf("IntakeEvents(high) = %+v, %v", events, err)
+	}
+	if events, err := s.IntakeEvents(ctx, "low"); err != nil || len(events) != 1 || events[0].Choices != nil {
+		t.Fatalf("IntakeEvents(low) = %+v, %v; want one row without choices", events, err)
 	}
 	// one card reads as the board reads it, a card off the board too
 	if one, ok, err := s.BoardTask(ctx, "high"); err != nil || !ok || !reflect.DeepEqual(one, tasks[0]) {

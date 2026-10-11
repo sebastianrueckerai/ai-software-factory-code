@@ -1472,7 +1472,7 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 		t.Fatalf("events = %q, want %q", kinds, wantKinds)
 	}
 	// the author's comment never counts as an escalation's answer
-	if answers, _ := answersFrom(append([]IntakeEvent{{Kind: IntakeEscalation, CommentID: 1}}, store.intakeEvents...)); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
+	if answers, _, _ := answersFrom(append([]IntakeEvent{{Kind: IntakeEscalation, CommentID: 1}}, store.intakeEvents...)); len(answers) != 1 || !strings.Contains(answers[0], "sebastian") {
 		t.Fatalf("answers = %q, want only the writer's", answers)
 	}
 }
