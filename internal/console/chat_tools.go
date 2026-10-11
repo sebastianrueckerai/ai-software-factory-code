@@ -105,7 +105,26 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 	if in.Revision > 0 {
 		parts = append(parts, fmt.Sprintf("revision %d", in.Revision))
 	}
+	if tool.name == "answer" {
+		bt, _, err := t.c.cfg.Tasks.BoardTask(t.r.Context(), in.TaskID)
+		if err != nil {
+			return "", err
+		}
+		if len(bt.Choices) > 0 {
+			parts = append(parts, "choices "+numbered(bt.Choices))
+		}
+	}
 	return sanitize.Inbound(strings.Join(parts, ", ")), nil
+}
+
+// numbered is a question's choices on one line, each with its number, so
+// the member may answer "the second".
+func numbered(choices []string) string {
+	parts := make([]string, len(choices))
+	for i, c := range choices {
+		parts[i] = fmt.Sprintf("%d. %s", i+1, c)
+	}
+	return strings.Join(parts, "; ")
 }
 
 // cardTitle is the face's title of t: the summary a writer set, the plan
@@ -232,7 +251,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "One card in detail: status, lane, gate, spend, its issue and pull request, the objective, the agent's summary, the question it waits on, its merge request's reviews, its plan's revision and cards, its plan.",
+		about: "One card in detail: status, lane, gate, spend, its issue and pull request, the objective, the agent's summary, the question it waits on with the choices it offers, its merge request's reviews, its plan's revision and cards, its plan.",
 		run:   func(t *turn, in toolInput) (string, undoFunc, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
 		about: "The project's newest events, newest first: what was done to which card, by whom and through what (button, chat, factoryd, webhook).",
@@ -279,7 +298,7 @@ var tools = []chatTool{
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Answer the question a card waits on (it needs you): a comment on its issue as the member, which resumes it.",
+		about:    "Answer the question a card waits on (it needs you), with one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it.",
 		run: func(t *turn, in toolInput) (string, undoFunc, error) {
 			note, err := t.c.doAnswer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
@@ -409,7 +428,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		fmt.Fprintf(&b, "\npull request %s/pulls/%d", base, k.PRNumber)
 	}
 	for _, f := range []struct{ name, v string }{{"waiting on", bt.WaitingOn}, {"depends on", bt.Dependencies},
-		{"the question it waits on", bt.Escalation}, {"objective", k.Objective}, {"the agent's summary", k.AgentSummary}} {
+		{"the question it waits on", bt.Escalation}, {"the choices it offers", numbered(bt.Choices)}, {"objective", k.Objective}, {"the agent's summary", k.AgentSummary}} {
 		if f.v != "" {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
 		}

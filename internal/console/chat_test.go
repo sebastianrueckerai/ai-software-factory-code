@@ -679,6 +679,39 @@ func TestChatProposalDescriptionAndMalformedCalls(t *testing.T) {
 	equal(t, "the turn's malformed call, stored", stored[0].ToolCalls[0].Arguments, "{}")
 }
 
+// A needs-you card's choices reach the project agent numbered: the card
+// tool lists them under the question, and an answer's proposal carries
+// them in its one line, so the member can say "take the second". Do it
+// posts the choice like any text, as the member, one row via chat.
+func TestChatAnswersWithAChoice(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks[2].Choices = []string{"a replica", "a shard", "both"}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-e"}`)}, {say("It asks: use a replica?")},
+		{call(3, "answer", `{"task_id":"t-e","text":"a shard"}`)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what does #13 ask?"}})
+	msgs := messages(t, g.calls()[1])
+	if got, want := msgs[len(msgs)-1]["content"].(string), "\nthe question it waits on: the agent asks: use a replica?"+
+		"\nthe choices it offers: 1. a replica; 2. a shard; 3. both\nobjective: Use a replica?"; !strings.Contains(got, want) {
+		t.Fatalf("the card the agent reads =\n%s\nwant it to hold\n%s", got, want)
+	}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"take the second"}})
+	equal(t, "stream", events, []string{
+		`proposal {"arguments":{"task_id":"t-e","text":"a shard"},` +
+			`"description":"Answer a card, #13 t-e \"Use a replica?\", text a shard, choices 1. a replica; 2. a shard; 3. both","id":"TOKEN","tool":"answer"}`,
+		`done {}`})
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "Do it", events, []string{
+		`tool {"arguments":{"task_id":"t-e","text":"a shard"},"duration_ms":0,"name":"answer","result":"Answered #13."}`,
+		`applied {"result":"Answered #13.","tool":"answer"}`, `done {}`})
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
+		t.Fatalf("the comment = %q, want the second choice", got)
+	}
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered, Detail: postedDetail(1)})
+}
+
 // A month whose chat budget is spent ends the turn with one line, before
 // any model call; a gateway that fails ends it with an error event and no
 // done.
