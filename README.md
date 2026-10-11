@@ -1513,11 +1513,12 @@ ready"), which nothing clears; for a factory project:
   and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
   2222); with a `deploy/staging` environment, after the cluster objects,
   `STAGING_URL` (`http://<name>.<namespace>.svc.cluster.local:8080`, the
-  template's Service) and `STAGING_SECRETS`, one `KEY=value` line per
-  `secrets` entry with the staging namespace's value (a comment line when
-  there are none: Forgejo refuses an empty secret), for the template's smoke
-  test, written again when the sha256 of both in `staging_hash` changes; no
-  value is logged. As the bot: its private fork
+  template's Service) and `STAGING_SECRETS`, one `KEY='value'` line per
+  `secrets` entry with the staging namespace's value single-quoted, since the
+  template's smoke test sources it as shell (a key that is no shell
+  variable name gets a comment line and no value; so does a project without
+  entries, since Forgejo refuses an empty secret), written again when the
+  sha256 of both in `staging_hash` changes; no value is logged. As the bot: its private fork
   `factory-agent/<name>` and the boot labels. A project whose registration
   failed waits here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and

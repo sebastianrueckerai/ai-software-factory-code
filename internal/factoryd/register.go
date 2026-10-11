@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -669,8 +670,9 @@ func (run *reconcileRun) hostKey(ctx context.Context, secrets []string) (Change,
 
 // staging keeps STAGING_URL, the staging Service's address (the
 // template's Service is named after the project), and STAGING_SECRETS,
-// one KEY=value line per secrets entry with staging's value, which the
-// smoke test sources; the row keeps their hash. Forgejo refuses an empty
+// one KEY='value' line per secrets entry with staging's value, which the
+// smoke test sources as shell (a key that is no shell name gets a comment
+// line instead); the row keeps their hash. Forgejo refuses an empty
 // secret, so a project without secrets gets a comment line.
 func (run *reconcileRun) staging(ctx context.Context, secrets []string) (Change, error) {
 	p := run.p
@@ -678,6 +680,10 @@ func (run *reconcileRun) staging(ctx context.Context, secrets []string) (Change,
 	var lines strings.Builder
 	for _, entry := range p.Secrets {
 		name, key, _ := strings.Cut(entry, "/")
+		if !shellName.MatchString(key) {
+			lines.WriteString("# " + entry + ": " + key + " is not a shell variable name\n")
+			continue
+		}
 		data, err := run.r.Kube.GetSecretData(ctx, e.Namespace, name)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return "", err
@@ -686,7 +692,7 @@ func (run *reconcileRun) staging(ctx context.Context, secrets []string) (Change,
 		if !ok {
 			return Change("waiting: " + e.Namespace + " has no secret " + entry + " yet"), nil
 		}
-		lines.WriteString(key + "=" + v + "\n")
+		lines.WriteString(key + "='" + strings.ReplaceAll(v, "'", `'\''`) + "'\n")
 	}
 	if len(p.Secrets) == 0 {
 		lines.WriteString("# projects/" + p.Name + ".yaml names no secrets\n")
@@ -914,6 +920,7 @@ func roleBinding(ns, name, clusterRole string, labels map[string]string, subject
 var (
 	projectRequests = map[string]any{"cpu": "50m", "memory": "64Mi"}
 	projectLimits   = map[string]any{"cpu": "500m", "memory": "512Mi"}
+	shellName       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
 func (run *reconcileRun) pullConfig() []byte {

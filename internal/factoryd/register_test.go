@@ -1108,7 +1108,7 @@ func TestStagingSecretsMirrored(t *testing.T) {
 	if len(value) != 64 || value == rig.kube.secrets["demo-prod/demo-admin"]["ADMIN_TOKEN"] {
 		t.Fatalf("generated staging %q, prod %q", value, rig.kube.secrets["demo-prod/demo-admin"]["ADMIN_TOKEN"])
 	}
-	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN="+value+"\n" {
+	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN='"+value+"'\n" {
 		t.Fatalf("STAGING_SECRETS = %q", got)
 	}
 	if got := rig.fj.secrets["STAGING_URL"]; got != "http://demo-app.demo-staging.svc.cluster.local:8080" {
@@ -1140,7 +1140,7 @@ func TestStagingSecretsMirrored(t *testing.T) {
 	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
-	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN=set-by-hand\n" || staged() != 4 ||
+	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN='set-by-hand'\n" || staged() != 4 ||
 		!strings.Contains(rig.logs.String(), "project demo-app: actions secrets STAGING_URL, STAGING_SECRETS: updated\n") {
 		t.Fatalf("after a changed value: %q, %d writes\n%s", got, staged(), rig.logs)
 	}
@@ -1148,6 +1148,27 @@ func TestStagingSecretsMirrored(t *testing.T) {
 		if strings.Contains(rig.logs.String(), v) {
 			t.Fatalf("the log holds the value %s:\n%s", v, rig.logs)
 		}
+	}
+}
+
+// The smoke test sources STAGING_SECRETS as shell: a value is quoted, and
+// a key that is no shell name gets a comment line and no value.
+func TestStagingSecretsQuoted(t *testing.T) {
+	rig := newRegisterRig(t)
+	p := demoProject()
+	p.Secrets = []string{"demo-admin/ADMIN_TOKEN", "demo-db/db-password"}
+	rig.store.m[p.Name] = p
+	rig.kube.secrets["demo-staging/demo-admin"] = map[string]string{"ADMIN_TOKEN": "it's $x"}
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	got := rig.fj.secrets["STAGING_SECRETS"]
+	if want := "ADMIN_TOKEN='it'\\''s $x'\n# demo-db/db-password: db-password is not a shell variable name\n"; got != want {
+		t.Fatalf("STAGING_SECRETS = %q, want %q", got, want)
+	}
+	db := rig.kube.secrets["demo-staging/demo-db"]["db-password"]
+	if len(db) != 64 || strings.Contains(got, db) || strings.Contains(rig.logs.String(), db) {
+		t.Fatalf("db-password %q: in the secret %v, in the log %v", db, strings.Contains(got, db), strings.Contains(rig.logs.String(), db))
 	}
 }
 
