@@ -309,11 +309,15 @@ func priorityFromLabels(names []string) int {
 	return best
 }
 
-func objectiveFromIssue(issue webhookIssue) string {
-	if issue.Body == "" {
-		return issue.Title
+func objectiveFromIssue(issue webhookIssue) string { return IssueObjective(issue.Title, issue.Body) }
+
+// IssueObjective is the objective of a card whose issue has title and
+// body: the title, then the body after a blank line.
+func IssueObjective(title, body string) string {
+	if body == "" {
+		return title
 	}
-	return issue.Title + "\n\n" + issue.Body
+	return title + "\n\n" + body
 }
 
 // ReproCommand is the issue body's first fenced code block labelled repro

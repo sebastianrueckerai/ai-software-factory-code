@@ -69,6 +69,7 @@ type fakeForgejo struct {
 	labelled   []string // "path [label ids]"
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
+	patched    []string // "path {body}" per PATCH of an issue
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -182,6 +183,15 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write([]byte(`{"id":12}`))
+	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
+		// the issue as it stands after the edit: the rig's issues are titled
+		// "Fix the cache" with the body "It drops entries." until edited
+		raw, _ := io.ReadAll(r.Body)
+		f.patched = append(f.patched, r.URL.Path+" "+string(raw))
+		var body map[string]string
+		json.Unmarshal(raw, &body)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"title": cmp.Or(body["title"], "Fix the cache"), "body": cmp.Or(body["body"], "It drops entries.")})
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
@@ -329,6 +339,40 @@ func (s *fakeTasks) SetHumanSummary(_ context.Context, id, summary string) error
 		}
 	}
 	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+// SetObjective stores task id's objective.
+func (s *fakeTasks) SetObjective(_ context.Context, id, objective string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Objective = objective
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+func (s *fakeTasks) AddTaskDeps(_ context.Context, id string, dependsOn []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deps == nil {
+		s.deps = map[string][]string{}
+	}
+	for _, d := range dependsOn {
+		if !slices.Contains(s.deps[id], d) {
+			s.deps[id] = append(s.deps[id], d)
+		}
+	}
+	return nil
+}
+
+func (s *fakeTasks) RemoveTaskDeps(_ context.Context, id string, dependsOn []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps[id] = slices.DeleteFunc(s.deps[id], func(d string) bool { return slices.Contains(dependsOn, d) })
+	return nil
 }
 
 // SetTaskAccent stores task id's accent colour; "" removes it.
@@ -595,6 +639,7 @@ type rig struct {
 	retryErr    error
 	metrics     *sdkmetric.ManualReader
 	invited     []string // "repository user permission" per AddCollaborator
+	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
 }
 
 var monthly = 8.99
@@ -673,6 +718,18 @@ func newRig(t *testing.T) *rig {
 		},
 		AddCollaborator: func(_ context.Context, repo factoryd.Repo, user, permission string) error {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
+			return nil
+		},
+		AddIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64) error {
+			r.issueDeps = append(r.issueDeps, fmt.Sprintf("%s#%d on #%d", repo, number, dependency))
+			return nil
+		},
+		RemoveIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64) error {
+			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
+			if !slices.Contains(r.issueDeps, edge) {
+				return fmt.Errorf("no dependency %s", edge)
+			}
+			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })
 			return nil
 		},
 	})

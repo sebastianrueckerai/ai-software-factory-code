@@ -18,28 +18,31 @@ import (
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID   string `json:"task_id,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Body     string `json:"body,omitempty"`
-	Lane     string `json:"lane,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Note     string `json:"note,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Revision int    `json:"revision,omitempty"`
-	SHA256   string `json:"sha256,omitempty"`
-	Summary  string `json:"summary,omitempty"`
-	Accent   string `json:"accent,omitempty"`
-	Login    string `json:"login,omitempty"`
-	N        int    `json:"n,omitempty"`
-	Ref      string `json:"ref,omitempty"`
-	Path     string `json:"path,omitempty"`
-	WithDiff bool   `json:"with_diff,omitempty"`
-	Remote   string `json:"remote,omitempty"`
-	Username string `json:"username,omitempty"`
-	Token    string `json:"token,omitempty"`
-	From     int    `json:"from,omitempty"`
-	To       int    `json:"to,omitempty"`
-	Query    string `json:"query,omitempty"`
+	TaskID    string `json:"task_id,omitempty"`
+	Title     string `json:"title,omitempty"`
+	Body      string `json:"body,omitempty"`
+	Lane      string `json:"lane,omitempty"`
+	Text      string `json:"text,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Revision  int    `json:"revision,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Accent    string `json:"accent,omitempty"`
+	Login     string `json:"login,omitempty"`
+	N         int    `json:"n,omitempty"`
+	Ref       string `json:"ref,omitempty"`
+	Path      string `json:"path,omitempty"`
+	WithDiff  bool   `json:"with_diff,omitempty"`
+	Remote    string `json:"remote,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Token     string `json:"token,omitempty"`
+	From      int    `json:"from,omitempty"`
+	To        int    `json:"to,omitempty"`
+	Query     string `json:"query,omitempty"`
+	Size      string `json:"size,omitempty"`
+	DependsOn string `json:"depends_on,omitempty"`
+	Remove    bool   `json:"remove,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -133,7 +136,18 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
 	}
-	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"action", in.Action},
+	if in.DependsOn != "" {
+		d, err := t.card(toolInput{TaskID: in.DependsOn})
+		if err != nil {
+			return "", err
+		}
+		edge := "depends on"
+		if in.Remove {
+			edge = "no longer depends on"
+		}
+		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, cardTitle(d)))
+	}
+	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
@@ -376,12 +390,13 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
-			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human")},
+			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
+			"size": enum("the card's size, which sets its budget; none for the default budget", policy.CardSizes...)},
 		required: []string{"title", "lane"},
 		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
 		fits:     "a lane of the project",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", "")
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size)
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
@@ -515,6 +530,42 @@ var tools = []chatTool{
 		fits:     "a factory project, for an approver",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, in.Username, in.Token)
+			return note, nil, err
+		}},
+	{name: "close", title: "Close a card", write: true,
+		params: map[string]any{"task_id": taskParam, "note": str("why, commented on the issue before it closes; optional")}, required: []string{"task_id"},
+		about: "Close a card's issue as the member, the note commented first when given; the factory ends the card.",
+		fits:  "a card that is not final",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doClose(t.r.Context(), t.a, in.TaskID, in.Note)
+			return note, nil, err
+		}},
+	{name: "edit", title: "Edit a card", write: true,
+		params: map[string]any{"task_id": taskParam, "title": str("the new title, at most 255 characters; empty keeps it"),
+			"body": str("the new description in Markdown, replacing the old; empty keeps it")},
+		required: []string{"task_id"},
+		about:    "Edit a card's issue as the member, its title, its description or both; the card's next session reads the edit.",
+		fits:     "a card not in a session",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
+			return note, nil, err
+		}},
+	{name: "grant_session", title: "Grant a session", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+		required: []string{"task_id", "text"},
+		about:    "Grant a card at its session cap one more session: the member's answer to its findings, a comment on its issue, which resumes it.",
+		fits:     "a card at its session cap",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
+			return note, nil, err
+		}},
+	{name: "set_dependency", title: "Set a dependency", write: true,
+		params: map[string]any{"task_id": taskParam, "depends_on": str("the task id of the card it waits for"),
+			"remove": map[string]any{"type": "boolean", "description": "true removes the dependency"}},
+		required: []string{"task_id", "depends_on"},
+		about:    "Make a card that has not started wait for another card of the project until that one is done, or with remove no longer; its issue shows the dependency.",
+		fits:     "two cards of which the first has not started",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
 			return note, nil, err
 		}},
 	{name: "unmove_card", write: true, internal: true,

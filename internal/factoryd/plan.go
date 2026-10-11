@@ -1177,6 +1177,18 @@ func (f *Forgejo) AddIssueDependency(ctx context.Context, repo Repo, number, dep
 	return err
 }
 
+// RemoveIssueDependency makes issue number of repo no longer depend on
+// issue dependency (swagger issueRemoveIssueDependencies): any 2xx, as
+// its swagger says 200 where the add answers 201.
+func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number, dependency int64) error {
+	payload, err := json.Marshal(map[string]any{"owner": repo.Owner, "repo": repo.Name, "index": dependency})
+	if err != nil {
+		return err
+	}
+	_, err = f.call(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies", repo.Owner, repo.Name, number), payload, anySuccess)
+	return err
+}
+
 // planOf is plan card t's section "The spec and the plan" (its plan's
 // issue text and the accepted plan's summary) and its role; "" for a task
 // no plan filed.

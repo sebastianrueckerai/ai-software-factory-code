@@ -45,6 +45,10 @@ const (
 	EventGithubExportSet      = "github_export_set"
 	EventGithubExportRemoved  = "github_export_removed"
 	EventMemberInvited        = "member_invited"
+	EventCardClosed           = "card_closed"
+	EventCardEdited           = "card_edited"
+	EventSessionGranted       = "session_granted"
+	EventDependencySet        = "dependency_set"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate
@@ -104,11 +108,11 @@ func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
 		detail = b
 	}
 	// only a second row naming the same answer comment conflicts (the
-	// partial unique index of 20261011004000_events_answer_once.sql)
+	// partial unique index of 20261011170500_events_grant_once.sql)
 	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
 		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
-		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind = 'question_answered' DO NOTHING
+		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind IN ('question_answered', 'session_granted') DO NOTHING
 		 RETURNING id, at`,
 		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&e.ID, &e.At)
 	switch {

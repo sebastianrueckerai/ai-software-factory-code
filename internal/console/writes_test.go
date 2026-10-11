@@ -1,0 +1,256 @@
+package console
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+)
+
+// newWritesRig is the chat rig with the cards the writes need beside #5,
+// #11 and #13: #14 t-cap waiting at its session cap (three sessions of
+// the policy's three), #7 t-done done, and #21 t-a and #22 t-b in the
+// backlog.
+func newWritesRig(t *testing.T) (*rig, *chatGateway) {
+	r, _, g := newChatRig(t)
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14,
+			Objective: "Trim the logs.", Usage: factoryd.TaskUsage{Attempts: 3}},
+			Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed"},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 7,
+			Objective: "Add the schema."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}})
+	return r, g
+}
+
+// proposeAndDo has the agent call tool with args, which proposes, and the
+// member press Do it: it answers the proposal's stream and the Do it's.
+func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string) (proposed, done []string) {
+	t.Helper()
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, tool, args)}}
+	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"do it"}})
+	if len(tokens) != 1 {
+		t.Fatalf("%s proposed %v", tool, proposed)
+	}
+	_, done, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	return proposed, done
+}
+
+// ran is the stream of a Do it of tool with args that answered result
+// and offers no undo.
+func ran(tool, args, result string) []string {
+	return []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"` + tool + `","result":"` + result + `"}`,
+		`applied {"result":"` + result + `","tool":"` + tool + `"}`, `done {}`}
+}
+
+// writesOf is what Forgejo was asked to change, "METHOD path" in order.
+func writesOf(f *fakeForgejo) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		if parts := strings.Fields(c); parts[0] != http.MethodGet {
+			out = append(out, parts[0]+" "+parts[1])
+		}
+	}
+	return out
+}
+
+// close proposes; Do it comments the note on the card's issue as the
+// member and then closes the issue as them, which intake turns into the
+// card's end, with one card_closed row via chat. A final card refuses with
+// its state. The face's Close button runs the same action: one row via
+// button and a 303 to the filtered board.
+func TestChatClose(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"task_id":"t-m","note":"Superseded by #7."}`
+	proposed, done := proposeAndDo(t, r, g, "close", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache\", note Superseded by #7.","id":"TOKEN","tool":"close"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("close", args, "Closed #5; factoryd ends the card."))
+	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"})
+	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/5/comments"], "Superseded by #7.")
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Superseded by #7."}})
+
+	code, msg := refused(t, r, "close", toolInput{TaskID: "t-done"})
+	equal(t, "close of a done card", []any{code, msg},
+		[]any{http.StatusConflict, "Card #7 is done, not a card that is not final: the card is final: a new card continues the work."})
+
+	ck, s := r.loggedIn(t)
+	before = r.events.count()
+	rec := r.do(post("/tasks/t-m/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-m", detail: map[string]any{"note": ""}})
+	equal(t, "the button's patch", r.fg.patched[1:], []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
+}
+
+// edit proposes; Do it edits the issue's title alone as the member, and
+// the card's objective becomes the issue's title and body as Forgejo
+// answers them, which the next session's brief reads; one card_edited row
+// via chat. A running card refuses, and an edit of neither title nor
+// body is refused.
+func TestChatEdit(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
+	proposed, done := proposeAndDo(t, r, g, "edit", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache\", title Fix the cache eviction","id":"TOKEN","tool":"edit"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("edit", args, "Edited #5; the card's next session reads the edit."))
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
+	k, _, _ := r.tasks.Task(t.Context(), "t-m")
+	equal(t, "the objective", k.Objective, "Fix the cache eviction\n\nIt drops entries.")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardEdited, Detail: map[string]any{"title": "Fix the cache eviction"}})
+
+	code, msg := refused(t, r, "edit", toolInput{TaskID: "t-r", Title: "Faster"})
+	equal(t, "edit of a running card", []any{code, msg}, []any{http.StatusConflict,
+		"Card #11 runs an agent session, not a card not in a session: steer sends its session a message; its pull request comes when the session ends."})
+	code, msg = refused(t, r, "edit", toolInput{TaskID: "t-m", Body: " \n"})
+	equal(t, "edit of nothing", []any{code, msg}, []any{http.StatusBadRequest, "a title or a body is required"})
+}
+
+// A body alone replaces the issue's body: the objective keeps the title
+// Forgejo answers, and the row counts the body's bytes.
+func TestEditBody(t *testing.T) {
+	r, _ := newWritesRig(t)
+	_, s := r.loggedIn(t)
+	before := r.events.count()
+	note, err := r.c.doEdit(t.Context(), actor{s: s, via: factoryd.ViaButton}, "t-m", "", "Entries vanish under load.")
+	equal(t, "doEdit", []any{note, err}, []any{"Edited #5; the card's next session reads the edit.", nil})
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"body":"Entries vanish under load."}`})
+	k, _, _ := r.tasks.Task(t.Context(), "t-m")
+	equal(t, "the objective", k.Objective, "Fix the cache\n\nEntries vanish under load.")
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
+}
+
+// grant_session proposes on the card at its session cap; Do it posts the
+// member's answer on its issue, the comment that grants the session, with
+// one session_granted row via chat naming it. A card with a question is
+// no card at its cap: the refusal names the answer tool.
+func TestChatGrantSession(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
+	proposed, done := proposeAndDo(t, r, g, "grant_session", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs\", text Trim to 1 MB first.","id":"TOKEN","tool":"grant_session"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("grant_session", args, "Your answer is on #14; it grants the card one session."))
+	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted, Detail: postedDetail(1)})
+
+	code, msg := refused(t, r, "grant_session", toolInput{TaskID: "t-e", Text: "yes"})
+	equal(t, "grant to a question", []any{code, msg}, []any{http.StatusConflict,
+		"Card #13 waits on a human: an answer, an approval or a decision, not a card at its session cap: answer it (answer)."})
+}
+
+// set_dependency proposes; Do it stores the edge and makes the issue
+// depend on the other's as the bot, with one dependency_set row via chat.
+// A card that started refuses, a cycle refuses naming the dependency
+// that closes it, and remove takes the edge off both again.
+func TestChatSetDependency(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"task_id":"t-b","depends_on":"t-a"}`
+	proposed, done := proposeAndDo(t, r, g, "set_dependency", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("set_dependency", args, "#22 depends on #21 now."))
+	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {"t-a"}})
+	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
+	row := func(removed bool) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-b", IssueNumber: 22, Kind: factoryd.EventDependencySet,
+			Detail: map[string]any{"depends_on": "t-a", "removed": removed}}
+	}
+	chatRows(t, r.events, before, "sebastian", row(false))
+
+	for _, tc := range []struct {
+		in   toolInput
+		code int
+		want string
+	}{
+		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
+			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
+		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already depends on #21, so #21 cannot depend on #22."},
+		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
+		{toolInput{TaskID: "t-a", DependsOn: "t-done"}, http.StatusConflict,
+			"Card #7 is done, not a card that is not final: the card is final: a new card continues the work."},
+		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
+		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
+	} {
+		code, msg := refused(t, r, "set_dependency", tc.in)
+		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})
+	}
+
+	args = `{"task_id":"t-b","depends_on":"t-a","remove":true}`
+	proposed, done = proposeAndDo(t, r, g, "set_dependency", args)
+	equal(t, "removal's proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", no longer depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
+		`done {}`})
+	equal(t, "removal's Do it", done, ran("set_dependency", args, "#22 no longer depends on #21."))
+	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {}})
+	equal(t, "the issue dependencies", r.issueDeps, []string{})
+	chatRows(t, r.events, before, "sebastian", row(false), row(true))
+}
+
+// new_card takes a size: the proposal names it, and Do it files the issue
+// with its body ending in the size line.
+func TestChatNewCardSize(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"title":"Cache metrics","body":"Count hits.","lane":"backlog","size":"large"}`
+	proposed, done := proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., lane backlog, size large","id":"TOKEN","tool":"new_card"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nSize: large")
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large"}})
+}
+
+// The face offers a writer Close on a card in the backlog, waiting on a
+// human or failed, behind a confirm; the answer form of a card at its
+// session cap says what the answer does.
+func TestCardFaceCloseAndGrant(t *testing.T) {
+	r, _ := newWritesRig(t)
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	closeForm := `<form method="post" action="/tasks/t-a/close" hx-post="/tasks/t-a/close" hx-target="#board" hx-swap="outerHTML" ` +
+		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
+		`<input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">` +
+		`<button type="submit" class="deny" aria-label="Close #21">Close</button></form>`
+	if face := faceOf(t, body, "t-a"); !strings.Contains(face, closeForm) {
+		t.Errorf("the backlog card's face =\n%s\nwant it to hold\n%s", face, closeForm)
+	}
+	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-r": false, "t-done": false} {
+		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
+			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
+		}
+	}
+	if esc := escalationOf(t, body, "t-cap"); !strings.Contains(esc, `<button type="submit">Grant one session with this answer</button>`) {
+		t.Errorf("the capped card's answer form =\n%s\nwant it to grant one session", esc)
+	}
+	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
+		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
+	}
+}

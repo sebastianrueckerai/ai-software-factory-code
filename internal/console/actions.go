@@ -577,6 +577,221 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
 }
 
+// doGrantSession grants card id, waiting at its session cap, one more
+// session: the member's answer to its findings commented on its issue as
+// doAnswer does, which the workflow's wait takes as the grant.
+func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) > 64<<10 {
+		return "", refuse(http.StatusBadRequest, "an answer of up to 64 KiB is required")
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if f := c.capFactsOf(ctx, t); !f.capped || t.IssueNumber == 0 {
+		return "", wrongState(t, f, "a card at its session cap")
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
+	var posted int64
+	if err := c.comment(ctx, a, t, text, &posted); err != nil {
+		return "", &forgejoRefusal{"post the answer", err}
+	}
+	log.Printf("console: %s granted %s a session via %s", a.s.user, t.ID, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventSessionGranted, commentDetail(posted))
+	return fmt.Sprintf("Your answer is on #%d; it grants the card one session.", t.IssueNumber), nil
+}
+
+// doClose closes card id's issue as the member, its note commented first
+// when given; intake ends the card as on any writer's close.
+func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if len(note) > 64<<10 {
+		return "", refuse(http.StatusBadRequest, "a note of up to 64 KiB")
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
+	if factoryd.Final(t.Status) {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
+	}
+	if t.IssueNumber == 0 {
+		return "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	if note != "" {
+		if err := c.comment(ctx, a, t, note, nil); err != nil {
+			return "", &forgejoRefusal{"post the note", err}
+		}
+	}
+	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
+		return "", &forgejoRefusal{"close the issue", err}
+	}
+	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
+	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
+}
+
+// editIssue patches card t's issue with fields as the member; out takes
+// the issue as Forgejo answers it.
+func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, fields map[string]string, out any) error {
+	path, err := issuePath(t, "")
+	if err != nil {
+		return err
+	}
+	return c.as(ctx, a.s, http.MethodPatch, path, fields, http.StatusCreated, out)
+}
+
+// doEdit edits card id's issue as the member, its title, its body or both,
+// and makes the card's objective the edited issue's as intake builds it,
+// which the next session's brief reads; a running session keeps its
+// brief, so a running card refuses.
+func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (string, error) {
+	title = strings.TrimSpace(title)
+	if strings.TrimSpace(body) == "" {
+		body = ""
+	}
+	switch {
+	case title == "" && body == "":
+		return "", refuse(http.StatusBadRequest, "a title or a body is required")
+	case utf8.RuneCountInString(title) > 255:
+		return "", refuse(http.StatusBadRequest, "a title of 1 to 255 characters is required")
+	case len(body) > 64<<10:
+		return "", refuse(http.StatusBadRequest, "the description is longer than 64 KiB")
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
+	if t.Status == "running" {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a card not in a session")
+	}
+	if t.IssueNumber == 0 {
+		return "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	fields, detail := map[string]string{}, map[string]any{}
+	if title != "" {
+		fields["title"], detail["title"] = title, title
+	}
+	if body != "" {
+		fields["body"], detail["body_bytes"] = body, len(body)
+	}
+	var issue struct{ Title, Body string }
+	if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
+		return "", &forgejoRefusal{"edit the issue", err}
+	}
+	if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
+		log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The issue is edited, but the card's objective could not be stored; edit it again.")
+	}
+	log.Printf("console: %s edited %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardEdited, detail)
+	return fmt.Sprintf("Edited #%d; the card's next session reads the edit.", t.IssueNumber), nil
+}
+
+// doSetDependency makes card id, which has not started, wait for card
+// dependsOn of its project until that one is done, or with remove no
+// longer: on the issues as the bot, then in the store, whose edge the
+// dependency wait reads. A cycle refuses.
+func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn string, remove bool) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	d, err := c.cardIn(ctx, a, dependsOn)
+	if err == nil && d.Repository != t.Repository {
+		err = refuse(http.StatusNotFound, "There is no card "+dependsOn+" in this project.")
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
+	switch {
+	case t.ID == d.ID:
+		return "", refuse(http.StatusBadRequest, "a card cannot depend on itself")
+	case !slices.Contains([]string{"backlog", "queued", "waiting-deps"}, t.Status):
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that has not started")
+	case !remove && factoryd.Final(d.Status):
+		return "", wrongState(d, c.capFactsOf(ctx, d), "a card that is not final")
+	case t.IssueNumber == 0 || d.IssueNumber == 0:
+		return "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: the dependencies of %s: %v", t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the card's dependencies")
+	}
+	has := slices.ContainsFunc(deps, func(x factoryd.Dependency) bool { return x.TaskID == d.ID })
+	switch {
+	case remove && !has:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("#%d does not depend on #%d.", t.IssueNumber, d.IssueNumber))
+	case has && !remove:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already depends on #%d.", t.IssueNumber, d.IssueNumber))
+	case !remove:
+		cycle, err := c.reaches(ctx, d.ID, t.ID)
+		if err != nil {
+			log.Printf("console: the dependencies of %s: %v", d.ID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the card's dependencies")
+		}
+		if cycle {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("#%d already depends on #%d, so #%d cannot depend on #%d.",
+				d.IssueNumber, t.IssueNumber, t.IssueNumber, d.IssueNumber))
+		}
+	}
+	repo, err := factoryd.SplitRepo(t.Repository)
+	if err != nil {
+		return "", refuse(http.StatusInternalServerError, "the task names no repository")
+	}
+	issues, store, verb := c.cfg.AddIssueDependency, c.cfg.Tasks.AddTaskDeps, "add"
+	if remove {
+		issues, store, verb = c.cfg.RemoveIssueDependency, c.cfg.Tasks.RemoveTaskDeps, "remove"
+	}
+	if err := issues(ctx, repo, t.IssueNumber, d.IssueNumber); err != nil {
+		return "", &forgejoRefusal{fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err}
+	}
+	if err := store(ctx, t.ID, []string{d.ID}); err != nil {
+		log.Printf("console: %s the dependency of %s on %s: %v", verb, t.ID, d.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The issue's dependency is set, but the card's could not be stored; set it again.")
+	}
+	log.Printf("console: %s set %s on %s (removed %t) via %s", a.s.user, t.ID, d.ID, remove, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventDependencySet, map[string]any{"depends_on": d.ID, "removed": remove})
+	if remove {
+		return fmt.Sprintf("#%d no longer depends on #%d.", t.IssueNumber, d.IssueNumber), nil
+	}
+	return fmt.Sprintf("#%d depends on #%d now.", t.IssueNumber, d.IssueNumber), nil
+}
+
+// reaches: card from depends on card to, through dependencies not done.
+func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
+	seen := map[string]bool{from: true}
+	for next := []string{from}; len(next) > 0; next = next[1:] {
+		deps, err := c.cfg.Tasks.Dependencies(ctx, next[0])
+		if err != nil {
+			return false, err
+		}
+		for _, x := range deps {
+			if x.TaskID == to && x.Status != "done" {
+				return true, nil
+			}
+			if x.Status != "done" && !seen[x.TaskID] {
+				seen[x.TaskID] = true
+				next = append(next, x.TaskID)
+			}
+		}
+	}
+	return false, nil
+}
+
 // doComment posts text on card id's issue as the member, a writer of its
 // project; posted is the comment's id.
 func (c *Console) doComment(ctx context.Context, a actor, id, text string) (posted int64, note string, err error) {

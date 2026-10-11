@@ -80,7 +80,8 @@ type ChatConfig struct {
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
 	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search",
 	"new_card", "move_card", "answer", "comment", "steer", "retry", "start_plan", "accept_plan",
-	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent", "invite", "github_export"}
+	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent", "invite", "github_export",
+	"close", "edit", "grant_session", "set_dependency"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -88,7 +89,7 @@ var ChatModels = []string{"operator"}
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
-		"approve_merge", "deny_merge", "invite", "github_export"}}
+		"approve_merge", "deny_merge", "invite", "github_export", "close", "edit", "grant_session", "set_dependency"}}
 
 // ChatOf is project p's chat block: DefaultChat, the policy's keys over
 // it, then the project file's.

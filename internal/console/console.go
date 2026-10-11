@@ -72,6 +72,12 @@ type Tasks interface {
 	SetHumanSummary(ctx context.Context, id, summary string) error
 	// SetTaskAccent is a writer's colour label on task id; "" removes it.
 	SetTaskAccent(ctx context.Context, id, accent string) error
+	// SetObjective is task id's objective after a writer edited its issue.
+	SetObjective(ctx context.Context, id, objective string) error
+	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
+	// dependsOn, or no longer.
+	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
 }
 
 // Config wires the console. ForgejoURL serves the code exchange and API
@@ -159,6 +165,10 @@ type Config struct {
 	// as the token registration keeps project repositories with
 	// (factoryd's Forgejo.AddProjectCollaborator): an invited member.
 	AddCollaborator func(ctx context.Context, repo factoryd.Repo, user, permission string) error
+	// AddIssueDependency and RemoveIssueDependency make issue number of
+	// repo depend on issue dependency, or no longer, as the bot, which
+	// keeps Forgejo's dependencies as it does a plan's (factoryd's Forgejo).
+	AddIssueDependency, RemoveIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64) error
 }
 
 // Console is the console's http.Handler.
@@ -233,6 +243,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/plan/changes", c.auth(c.planChanges))
 	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
 	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
+	c.mux.Handle("POST /tasks/{id}/close", c.auth(c.closeCard))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.factory(c.costs)))
 	c.mux.Handle("GET /policy", c.auth(c.factory(c.policy)))

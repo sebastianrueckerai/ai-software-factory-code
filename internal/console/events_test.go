@@ -209,7 +209,7 @@ func standingResource(r *rig) {
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
 }
 
-// actions are the seventeen POST handlers, one per kind a button leaves;
+// actions are the POST handlers, one per kind a button leaves;
 // factoryd's own kinds, task_status among them, come from its store and
 // its Timeline (internal/factoryd).
 var actions = []action{
@@ -246,6 +246,8 @@ var actions = []action{
 		map[string]any{"alert": 3, "verdict": "real"}, verdictAlert, url.Values{"verdict": {"real"}}),
 	boardAction("setSummary", "/tasks/t-m/summary", factoryd.EventSummarySet, "sf/code", "t-m",
 		map[string]any{"summary": "a short summary"}, backlogCard, url.Values{"summary": {"a short summary"}}),
+	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",
+		map[string]any{"note": ""}, backlogCard, url.Values{"project": {"ai-software-factory-code"}}),
 	boardAction("setAccent", "/tasks/t-m/accent", factoryd.EventAccentSet, "sf/code", "t-m",
 		map[string]any{"accent": "blue"}, backlogCard, url.Values{"value": {"blue"}}),
 	boardAction("promote", "/resources/11/promote", factoryd.EventResourcePromoted, "sf/code", "t-res",

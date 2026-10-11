@@ -685,6 +685,13 @@ func (s *PGStore) SetHumanSummary(ctx context.Context, id, summary string) error
 	return oneRow(res, err, "task "+id)
 }
 
+// SetObjective replaces task id's objective, which the next session's
+// brief reads.
+func (s *PGStore) SetObjective(ctx context.Context, id, objective string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2 WHERE id = $1`, id, objective)
+	return oneRow(res, err, "task "+id)
+}
+
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL).
 func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET accent = NULLIF($2, '') WHERE id = $1`, id, accent)

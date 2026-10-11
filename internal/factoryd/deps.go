@@ -67,6 +67,11 @@ func (s *PGStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string
 	return err
 }
 
+func (s *PGStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM task_deps WHERE task_id = $1 AND depends_on = ANY($2::text[])`, id, dependsOn)
+	return err
+}
+
 func (s *PGStore) OpenDependencies(ctx context.Context, id string) ([]Dependency, error) {
 	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
 		FROM task_deps d JOIN tasks t ON t.id = d.depends_on

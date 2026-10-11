@@ -1375,8 +1375,13 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `answer` and `steer` (text injected into the board could otherwise make
   the agent answer a waiting card or message a running session as the
   member), `start_plan`, `retry`, `accept_plan`, `request_changes`,
-  `reject_plan`, `approve_merge` and `deny_merge`; `confirm: []` asks for
-  none.
+  `reject_plan`, `approve_merge`, `deny_merge`, `invite`, `github_export`,
+  `close`, `edit`, `grant_session` and `set_dependency`; `confirm: []` asks
+  for none. `close` closes the card's issue as the member (the face's Close
+  button too), `edit` its title or body and the task's objective, which the
+  next session's brief reads, `grant_session` answers a card at its session
+  cap, and `set_dependency` adds or removes a dependency of a card that has
+  not started, in the store and on the issues as the bot.
 
 ## Projects (task 65, ruling 179)
 

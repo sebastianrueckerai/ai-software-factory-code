@@ -168,7 +168,8 @@ func TestPGStoreEventRequiresRepositoryAndKind(t *testing.T) {
 
 // Record publishes the row it stored: the id it answers and the time the
 // table gave it when the caller set none. A second row naming the same
-// answer comment is no row: Record answers 0 and publishes nothing.
+// answer comment is no row: Record answers 0 and publishes nothing, also
+// for the webhook's answer of the comment a grant named.
 func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -206,6 +207,16 @@ func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
 	case e := <-ch:
 		t.Fatalf("the repeated answer published event %d", e.ID)
 	default:
+	}
+	grant := Event{Repository: "sf/r", TaskID: "t-1", Kind: EventSessionGranted, Actor: "alice", Via: ViaChat,
+		Detail: map[string]any{"comment": int64(8)}}
+	if id, err := s.Record(ctx, grant); id == 0 || err != nil {
+		t.Fatalf("Record(grant) = %d, %v", id, err)
+	}
+	receive(t, ch)
+	answer.Detail, answer.Via = grant.Detail, ViaWebhook
+	if id, err := s.Record(ctx, answer); id != 0 || err != nil {
+		t.Fatalf("the webhook's answer of the grant's comment = %d, %v; want 0 and no error", id, err)
 	}
 }
 

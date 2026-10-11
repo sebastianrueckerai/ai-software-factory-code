@@ -148,6 +148,15 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if tk, _ := read(); tk.HumanSummary != "" || tk.Accent != "" {
 		t.Fatalf("after clearing: summary %q, accent %q", tk.HumanSummary, tk.Accent)
 	}
+	if err := s.SetObjective(ctx, "t-s", "Fix the cache eviction\n\nIt drops entries."); err != nil {
+		t.Fatal(err)
+	}
+	if tk, _ := read(); tk.Objective != "Fix the cache eviction\n\nIt drops entries." {
+		t.Fatalf("objective = %q, want the edited one", tk.Objective)
+	}
+	if err := s.SetObjective(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetObjective of no task = %v, want ErrNotFound", err)
+	}
 	if err := s.SetHumanSummary(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetHumanSummary of no task = %v, want ErrNotFound", err)
 	}

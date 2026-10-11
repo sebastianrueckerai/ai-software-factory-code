@@ -133,6 +133,7 @@ type card struct {
 	PRURL    string
 	Reason   string   // an escalation's reason
 	Choices  []string // the answers its agent offered, a button each
+	Capped   bool     // an escalated card at its session cap, which an answer grants a session
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -186,6 +187,12 @@ type card struct {
 	Filter boardFilter
 	// Place is where the board puts the card (boardCard).
 	Place string
+}
+
+// Closes: the face offers its viewer, a writer, Close: a card with an
+// issue in the backlog, waiting on a human or failed.
+func (k card) Closes() bool {
+	return k.MayWriteSummary && k.IssueNumber > 0 && slices.Contains([]string{"backlog", "waiting-human", "failed"}, k.Status)
 }
 
 // fine is a card's fine state as a chip in the pill's hues.
@@ -842,6 +849,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	if v.escalated(t) {
 		k.Reason, k.Choices, k.EscalationAlert = bt.Escalation, bt.Choices, bt.EscalationAlert
+		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 	}
 	return k
 }

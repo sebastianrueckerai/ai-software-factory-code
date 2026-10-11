@@ -116,6 +116,26 @@ func TestForgejoRevokeAlreadyGone(t *testing.T) {
 	}
 }
 
+// RemoveIssueDependency deletes the dependency as the bot, the issue it
+// is on named in the body, and takes Forgejo's 200 as its swagger says.
+func TestForgejoRemoveIssueDependency(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pw, _ := r.BasicAuth()
+		b, _ := io.ReadAll(r.Body)
+		got = fmt.Sprintf("%s %s %s:%s %s", r.Method, r.URL.Path, user, pw, b)
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
+	if err := f.RemoveIssueDependency(context.Background(), Repo{Owner: "sf", Name: "r"}, 22, 21); err != nil {
+		t.Fatalf("RemoveIssueDependency: %v", err)
+	}
+	if want := `DELETE /api/v1/repos/sf/r/issues/22/dependencies factory-bot:bot-pw {"index":21,"owner":"sf","repo":"r"}`; got != want {
+		t.Fatalf("request = %s, want %s", got, want)
+	}
+}
+
 func TestForgejoCreateIssue(t *testing.T) {
 	var gotPath string
 	var gotBody map[string]any

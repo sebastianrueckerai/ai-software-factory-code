@@ -77,6 +77,20 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if got, _ := s.OpenDependencies(ctx, "t-b"); len(got) != 0 {
 		t.Fatalf("a card without dependencies has open ones: %+v", got)
 	}
+	for range 2 {
+		if err := s.RemoveTaskDeps(ctx, "t-y", []string{"t-a", "t-b"}); err != nil {
+			t.Fatalf("RemoveTaskDeps: %v", err)
+		}
+	}
+	if got, err := s.Dependencies(ctx, "t-y"); err != nil || len(got) != 0 {
+		t.Fatalf("Dependencies(t-y) after the removal = %+v, %v; want none", got, err)
+	}
+	if got, err := s.Dependencies(ctx, "t-x"); err != nil || len(got) != 3 {
+		t.Fatalf("Dependencies(t-x) after t-y's removal = %+v, %v; want its three", got, err)
+	}
+	if err := s.AddTaskDeps(ctx, "t-y", []string{"t-a"}); err != nil {
+		t.Fatal(err)
+	}
 	tasks, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
 	if err != nil {
 		t.Fatal(err)
