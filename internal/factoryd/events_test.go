@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+// TestRecordEventLeavesOneFactorydRow asserts that Timeline.recordEvent
+// with fakeEventRecorder and a fake store leaves exactly one row with via
+// factoryd, actor factoryd, the task's repository and issue.
+func TestRecordEventLeavesOneFactorydRow(t *testing.T) {
+	store := &fakeStore{tasks: map[string]Task{
+		"t1": {ID: "t1", Repository: "sf/code", IssueNumber: 42},
+	}}
+	rec := &fakeEventRecorder{}
+	objects := &fakeObjectStore{}
+	tl := &Timeline{Objects: objects, Events: rec, Store: store}
+	tl.recordEvent(context.Background(), "t1", EventCardEnteredLane, map[string]any{"lane": "ready"})
+	if len(rec.rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rec.rows))
+	}
+	e := rec.rows[0]
+	if e.Via != ViaFactoryd || e.Actor != FactoryDecider || e.Repository != "sf/code" || e.IssueNumber != 42 {
+		t.Errorf("row = %+v", e)
+	}
+}
+
 // Each of the five events is one timeline line of step event on the task
 // it concerns, recorded where it happens.
 func TestEventsRecorded(t *testing.T) {

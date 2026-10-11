@@ -12,7 +12,8 @@ import (
 )
 
 // fakeEventRecorder is the events table of a Timeline in tests: it keeps
-// every row and answers ButtonCommentIDs from them, as PGStore does.
+// every row and drops a question_answered duplicate the way the partial
+// unique index on (task_id, detail->>'comment') does.
 type fakeEventRecorder struct {
 	mu   sync.Mutex
 	rows []Event
@@ -21,23 +22,16 @@ type fakeEventRecorder struct {
 func (f *fakeEventRecorder) Record(_ context.Context, e Event) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.rows = append(f.rows, e)
-	return int64(len(f.rows)), nil
-}
-
-func (f *fakeEventRecorder) ButtonCommentIDs(_ context.Context, taskID string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []int64
-	for i := len(f.rows) - 1; i >= 0; i-- {
-		e := f.rows[i]
-		if e.TaskID == taskID && e.Kind == EventQuestionAnswered && e.Via == ViaButton {
-			if c, ok := e.Detail["comment"].(int64); ok {
-				out = append(out, c)
+	if e.Kind == EventQuestionAnswered && e.Detail != nil && e.Detail["comment"] != nil {
+		comment := e.Detail["comment"]
+		for _, r := range f.rows {
+			if r.TaskID == e.TaskID && r.Kind == EventQuestionAnswered && r.Detail != nil && r.Detail["comment"] == comment {
+				return 0, nil
 			}
 		}
 	}
-	return out, nil
+	f.rows = append(f.rows, e)
+	return int64(len(f.rows)), nil
 }
 
 // answerEvents is recorder's question_answered rows of task id, as

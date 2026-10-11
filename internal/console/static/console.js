@@ -1,6 +1,6 @@
-// The board polls every 3 s; skip a poll while a card's expanded view is
-// open or a form on it is being filled in (text typed, a choice changed,
-// or a field focused) so the swap neither closes nor wipes it.
+// The board subscribes to the event stream instead of polling; skip an
+// htmx request while a form on the board is being filled in (text typed,
+// a choice changed, or a field focused) so the swap does not wipe it.
 document.addEventListener("htmx:beforeRequest", function (e) {
   var board = e.detail.elt;
   if (board.id !== "board") return;
@@ -100,4 +100,62 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     localStorage.setItem("theme", theme);
     label();
   });
+})();
+
+// The board opens an EventSource on the project's stream; on each event it
+// swaps the card the event names and its activity line. A project-level
+// event (card_filed, project_merged) swaps the whole board. A failed
+// stream falls back to the poll after 30 s without messages and says so in
+// the footer.
+(function () {
+  var board = document.getElementById("board");
+  if (!board) return;
+  var project = board.dataset.project;
+  if (!project) return;
+  var url = "/projects/" + encodeURIComponent(project) + "/events/stream";
+  var es = null;
+  var fallbackTimer = null;
+  var footer = document.querySelector("footer");
+  function showFallback() {
+    if (!footer) {
+      footer = document.createElement("footer");
+      document.body.appendChild(footer);
+    }
+    footer.textContent = "The event stream failed; the board polls every 3 s.";
+  }
+  function clearFallback() {
+    if (footer) footer.textContent = "";
+  }
+  function startPoll() {
+    board.setAttribute("hx-get", "/board" + (project ? "?project=" + encodeURIComponent(project) : ""));
+    board.setAttribute("hx-trigger", "every 3s");
+    board.setAttribute("hx-swap", "outerHTML");
+    htmx.process(board);
+  }
+  function openStream() {
+    es = new EventSource(url);
+    var lastMessage = Date.now();
+    es.addEventListener("event", function (e) {
+      lastMessage = Date.now();
+      clearFallback();
+      try {
+        var ev = JSON.parse(e.data);
+        if (ev.kind === "card_filed" || ev.kind === "project_merged") {
+          htmx.ajax("GET", "/board" + (project ? "?project=" + encodeURIComponent(project) : ""), {target: board, swap: "outerHTML"});
+          return;
+        }
+        if (ev.task_id) {
+          htmx.ajax("GET", "/cards/" + encodeURIComponent(ev.task_id), {target: "[data-card=\"" + CSS.escape(ev.task_id) + "\"]", swap: "outerHTML"});
+        }
+      } catch (err) {}
+    });
+    es.onerror = function () {
+      if (Date.now() - lastMessage > 30000) {
+        es.close();
+        showFallback();
+        startPoll();
+      }
+    };
+  }
+  openStream();
 })();

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -33,6 +34,14 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if e.Kind == factoryd.EventQuestionAnswered && e.Detail != nil && e.Detail["comment"] != nil {
+		comment := e.Detail["comment"]
+		for _, r := range f.rows {
+			if r.TaskID == e.TaskID && r.Kind == factoryd.EventQuestionAnswered && r.Detail != nil && r.Detail["comment"] == comment {
+				return 0, nil
+			}
+		}
+	}
 	f.next++
 	e.ID = f.next
 	if e.At.IsZero() {
@@ -71,21 +80,6 @@ func (f *fakeEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[st
 		if e.TaskID != "" && set[e.TaskID] {
 			if _, ok := out[e.TaskID]; !ok {
 				out[e.TaskID] = e
-			}
-		}
-	}
-	return out, nil
-}
-
-func (f *fakeEvents) ButtonCommentIDs(_ context.Context, taskID string) ([]int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []int64
-	for i := len(f.rows) - 1; i >= 0; i-- {
-		e := f.rows[i]
-		if e.TaskID == taskID && e.Kind == factoryd.EventQuestionAnswered && e.Via == factoryd.ViaButton {
-			if id, ok := e.Detail["comment"].(int64); ok {
-				out = append(out, id)
 			}
 		}
 	}
@@ -195,7 +189,45 @@ func standingResource(r *rig) {
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
 }
 
-// actions are the fifteen POST handlers, one per event kind of the spine.
+// withInfraForEvents sets up the infra fake for createProject and
+// mergeProject actions in the events table.
+func withInfraForEvents(r *rig) *infraFake {
+	f := &infraFake{mergeStatus: http.StatusOK}
+	next, err := url.Parse(r.fg.srv.URL)
+	if err != nil {
+		panic(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(next)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch {
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{"number":12}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/infra/pulls/main/project-linkshort":
+			if f.pull == nil {
+				http.Error(w, `{"message":"pull request does not exist"}`, http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(f.pull)
+		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls/12/merge":
+			w.WriteHeader(f.mergeStatus)
+			w.Write([]byte(f.mergeBody))
+		default:
+			proxy.ServeHTTP(w, req)
+		}
+	}))
+	r.c.cfg.ForgejoURL = srv.URL
+	r.c.cfg.InfraRepo = factoryd.Repo{Owner: "sf", Name: "infra"}
+	r.c.cfg.InfraToken = "config-token"
+	return f
+}
+
+// actions are the seventeen POST handlers, one per event kind of the spine.
 var actions = []action{
 	boardAction("createTask", "/tasks", factoryd.EventCardFiled, "sf/code", "",
 		map[string]any{"lane": "ready", "title": "Fix the cache"}, nil,
@@ -236,6 +268,26 @@ var actions = []action{
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
 	boardAction("release", "/resources/11/release", factoryd.EventResourceReleased, "sf/code", "t-res",
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
+	{name: "createProject", kind: factoryd.EventProjectFiled, repo: "linkshort/linkshort",
+		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
+		setup: func(r *rig) {
+			withInfraForEvents(r)
+			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+		},
+		request: func(r *rig, s *session) *http.Request {
+			return post("/projects", url.Values{"csrf": {s.csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "merge_rule": {"human"}})
+		}},
+	{name: "mergeProject", kind: factoryd.EventProjectMerged, repo: "linkshort/linkshort",
+		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
+		setup: func(r *rig) {
+			f := withInfraForEvents(r)
+			f.set(map[string]any{"number": 12, "state": "open", "merged": false})
+			pause := time.Duration(0)
+			r.c.cfg.MergeRetryPause = &pause
+		},
+		request: func(r *rig, s *session) *http.Request {
+			return post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}})
+		}},
 }
 
 // wantRow is what the row of one action must say: exactly one new event,
@@ -420,25 +472,60 @@ func idsOf(events []eventJSON) []int64 {
 	return out
 }
 
-// A handler that records an event with no project is refused by the store
-// (PGStore and this fake alike), not silently dropped: the feed of the
-// infra repository stays empty and the row never exists.
-func TestFakeEventsRejectAnEmptyRepository(t *testing.T) {
-	ev := &fakeEvents{}
-	if _, err := ev.Record(context.Background(), factoryd.Event{Kind: factoryd.EventCardFiled, Actor: "a", Via: factoryd.ViaButton}); err == nil {
-		t.Fatal("an event with no repository was accepted")
+// The stream answers 403 for a non-writer.
+func TestStreamAnswers403ForNonWriter(t *testing.T) {
+	r := newRig(t)
+	bus := factoryd.NewEventBus()
+	r.c.cfg.Bus = bus
+	ck, _ := r.loggedIn(t)
+	r.repoWriters["sf/code"] = []string{"someone-else"}
+	req := httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/events/stream", nil)
+	rec := r.do(req, ck)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-writer = %d, want 403", rec.Code)
 	}
-	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", Actor: "a", Via: factoryd.ViaButton}); err == nil {
-		t.Fatal("an event with no kind was accepted")
+}
+
+// The card fragment answers 200 for a writer and 404 otherwise.
+func TestCardFragmentAnswers200ForWriter(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 99})
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-x", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("card fragment = %d: %s", rec.Code, rec.Body)
 	}
-	if ev.count() != 0 {
-		t.Fatalf("rows = %d, want none", ev.count())
+	if !strings.Contains(rec.Body.String(), "#99") {
+		t.Errorf("card lacks issue number: %.200s", rec.Body)
+	}
+}
+
+func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 99})
+	ck, _ := r.loggedIn(t)
+	r.repoWriters["sf/code"] = []string{"someone-else"}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-x", nil), ck)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("non-writer = %d, want 404", rec.Code)
+	}
+}
+
+// The board template no longer carries hx-trigger="every 3s".
+func TestBoardTemplateHasNoPoll(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, `hx-trigger="every 3s"`) {
+		t.Error("board still polls")
+	}
+	if !strings.Contains(body, `data-project=""`) {
+		t.Error("board lacks data-project")
 	}
 }
 
 // The board's activity line: one line of the card's newest event where one
-// exists, the escalation's question where it has none but waits on an
-// answer, and nothing at all where it has neither.
+// exists, nothing at all where it has none.
 func TestBoardActivityLine(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "code", Repository: "sf/code", MergeRule: "human",

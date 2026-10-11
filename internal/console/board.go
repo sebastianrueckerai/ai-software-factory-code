@@ -1097,3 +1097,58 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 	}
 	http.Error(w, "Forgejo refused to "+what+"; see the factoryd log", http.StatusBadGateway)
 }
+
+// cardFragment answers GET /cards/{id}: the one card's HTML as the board
+// renders it, for writers of its project, 404 otherwise. The stream uses
+// this to swap a single card on each event without re-rendering the board.
+func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	t, ok, err := c.cfg.Tasks.Task(r.Context(), id)
+	switch {
+	case err != nil:
+		log.Printf("console: card %s: %v", id, err)
+		http.Error(w, "cannot read the task", http.StatusInternalServerError)
+		return
+	case !ok:
+		http.NotFound(w, r)
+		return
+	}
+	may, err := c.mayMoveCached(r.Context(), t.Repository, current(r).user, policy.MovedByWriters)
+	switch {
+	case err != nil:
+		log.Printf("console: may %s write %s: %v", current(r).user, t.Repository, err)
+		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
+		return
+	case !may:
+		http.NotFound(w, r)
+		return
+	}
+	s := current(r)
+	k := c.card(t)
+	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+		byID := map[string]factoryd.Task{}
+		if bt, ok, _ := c.cfg.Tasks.Task(r.Context(), t.Parent); ok {
+			byID[bt.ID] = bt
+		}
+		k.PlanIssue = c.planIssue(r.Context(), byID, t.Parent)
+	}
+	if t.Status == "backlog" {
+		name, proc := processOf(nil, t)
+		for _, lane := range policy.LaneNames {
+			why, err := moveRefusal(r.Context(), t, name, proc, lane, s.user, c.mayMoveCached)
+			if err == nil && why == "" {
+				k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf})
+			}
+		}
+	}
+	newest, err := c.cfg.Events.NewestTaskEvents(r.Context(), []string{id})
+	if err != nil {
+		log.Printf("console: card %s: newest events: %v", id, err)
+	} else if e, ok := newest[id]; ok {
+		k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := c.tmpl.ExecuteTemplate(w, "card", k); err != nil {
+		log.Printf("console: card %s: render: %v", id, err)
+	}
+}

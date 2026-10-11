@@ -926,35 +926,20 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 // task waiting for an answer or for the poster. Each of those records
 // question_answered via webhook, so one question leaves one event whatever
 // the input (ruling 252). The console's Answer button posts its answer as
-// an issue comment itself and files its own row naming that comment, so
-// intake must stay silent for it: buttonCommentIDs are the comments of the
-// task a button already recorded, read before this path runs; skip is the
-// comment being counted now (0 = none), left out of the list it stores so a
-// later comment still counts.
+// an issue comment itself and files its own row naming that comment; the
+// partial unique index on (task_id, detail->>'comment') keeps one row per
+// answer whatever the timing.
 func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool, skip int64) {
-	var ids []int64
-	if in.Timeline != nil && in.Timeline.Events != nil {
-		var err error
-		ids, err = in.Timeline.Events.ButtonCommentIDs(ctx, t.ID)
-		if err != nil {
-			log.Printf("intake: task %s: the button's answers: %v", t.ID, err)
-		}
-	}
-	counts := func() {
-		for _, id := range ids {
-			if id == skip {
-				return
-			}
-		}
+	record := func() {
 		in.recordAnswer(ctx, t, author, skip)
 	}
 	switch {
 	case t.Status == "waiting-poster" && author == t.Author:
 		in.intervened(ctx, t, InterventionPosterAnswer)
-		counts()
+		record()
 	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
 		in.intervened(ctx, t, InterventionEscalationAnswer)
-		counts()
+		record()
 	}
 }
 

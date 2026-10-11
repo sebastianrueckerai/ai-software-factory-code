@@ -64,6 +64,8 @@ func main() {
 		log.Fatalf("open task store (boot migrations): %v", err)
 	}
 	defer store.Close()
+	eventBus := factoryd.NewEventBus()
+	store.SetBus(eventBus)
 	// no valid configuration version at all is the one configuration
 	// failure that stops the boot; a later refused commit is raised and
 	// the last valid version holds
@@ -384,6 +386,7 @@ func main() {
 		Alerts:     store,
 		Projects:   store,
 		Events:     store,
+		Bus:        eventBus,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,
 		InfraRepo:  configRepo,

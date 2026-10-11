@@ -98,6 +98,9 @@ type Config struct {
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
+	// Bus is the in-process event broadcaster: the stream subscribes to it
+	// so every Record fans out without polling the table (factoryd.EventBus).
+	Bus *factoryd.EventBus
 	// MayMove is intake's moved_by judgement (factoryd.Intake.MayMove):
 	// whether user may put a card of repository into a lane moved by
 	// movedBy. The console asks it only to offer and pre-check a move.
@@ -211,6 +214,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /projects", c.auth(c.spend("add a project", c.createProject)))
 	c.mux.Handle("GET /projects/{name}/status", c.auth(c.projectStatus))
 	c.mux.Handle("GET /projects/{name}/events", c.auth(c.projectEvents))
+	c.mux.Handle("GET /projects/{name}/events/stream", c.auth(c.projectEventsStream))
+	c.mux.Handle("GET /cards/{id}", c.auth(c.cardFragment))
 	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	return c, nil

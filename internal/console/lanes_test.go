@@ -139,7 +139,7 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	if strings.Contains(code, "card 2") || strings.Contains(code, "Link shortener") || !strings.Contains(code, "fix the cache") {
 		t.Errorf("the code project's board shows another project's cards, or not its own")
 	}
-	for _, want := range []string{`<option value="ai-software-factory-code" selected>`, `hx-get="/board?project=ai-software-factory-code"`} {
+	for _, want := range []string{`<option value="ai-software-factory-code" selected>`, `data-project="ai-software-factory-code"`} {
 		if !strings.Contains(code, want) {
 			t.Errorf("filtered board lacks %q", want)
 		}

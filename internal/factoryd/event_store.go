@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
@@ -83,11 +84,31 @@ func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
 		detail = b
 	}
 	var id int64
-	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb) RETURNING id`,
-		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&id)
-	return id, err
+	var err error
+	if e.Kind == EventQuestionAnswered && e.Detail != nil && e.Detail["comment"] != nil {
+		err = s.db.QueryRowContext(ctx,
+			`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
+			 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
+			 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind = 'question_answered' DO NOTHING
+			 RETURNING id`,
+			nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+	} else {
+		err = s.db.QueryRowContext(ctx,
+			`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
+			 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb) RETURNING id`,
+			nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&id)
+	}
+	if err != nil {
+		return 0, err
+	}
+	e.ID = id
+	if s.bus != nil {
+		s.bus.Publish(e)
+	}
+	return id, nil
 }
 
 // nullTime is t as a SQL NULL when it is the zero time, so the column
@@ -160,35 +181,9 @@ func (s *PGStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[str
 // nothing, so a Timeline without one keeps writing only timeline lines.
 type eventRecorder interface {
 	Record(ctx context.Context, e Event) (int64, error)
-	// ButtonCommentIDs are the comment ids among taskID's question_answered
-	// rows left by a button: intake stays silent for those comments, so an
-	// answer recorded once is never recorded twice.
-	ButtonCommentIDs(ctx context.Context, taskID string) ([]int64, error)
 }
 
 var _ eventRecorder = (*PGStore)(nil)
-
-// ButtonCommentIDs lists the "comment" of taskID's question_answered rows
-// recorded through a button, newest first.
-func (s *PGStore) ButtonCommentIDs(ctx context.Context, taskID string) ([]int64, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT (detail->>'comment')::bigint FROM events
-		 WHERE task_id = $1 AND kind = $2 AND via = $3 AND detail ? 'comment' ORDER BY id DESC`,
-		taskID, EventQuestionAnswered, ViaButton)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
 
 // eventStoreOf is store's row-writing half for the Timeline, or nil when it
 // writes none: a test store that only answers tasks records no rows.

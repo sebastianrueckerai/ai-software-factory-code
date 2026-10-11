@@ -65,9 +65,6 @@ type Alerts interface {
 // (factoryd.PGStore).
 type Projects interface {
 	Projects(ctx context.Context) ([]factoryd.Project, error)
-	// ProjectByRepository is the project whose file names repository
-	// (owner/name); false when none does.
-	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 
 // Events is the event spine (factoryd.Events): one row per action,

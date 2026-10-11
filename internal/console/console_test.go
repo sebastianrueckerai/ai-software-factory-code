@@ -526,7 +526,7 @@ func newRig(t *testing.T) *rig {
 		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects,
+		Projects: r.projects, Events: &fakeEvents{},
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
@@ -853,7 +853,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
-		`hx-get="/board"`, `hx-trigger="every 3s"`, `<script src="/static/htmx.min.js"`,
+		`data-project=""`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)

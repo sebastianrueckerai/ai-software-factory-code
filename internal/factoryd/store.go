@@ -375,8 +375,13 @@ const FactoryDecider = "factoryd"
 
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
 type PGStore struct {
-	db *sql.DB
+	db  *sql.DB
+	bus *EventBus
 }
+
+// SetBus wires the event bus: Record publishes every row through it so the
+// console's stream can fan out without polling the table.
+func (s *PGStore) SetBus(b *EventBus) { s.bus = b }
 
 // OpenStore opens the task store and applies pending migrations on boot.
 // An empty databaseURL makes pgx assemble the connection from the PG* vars.
