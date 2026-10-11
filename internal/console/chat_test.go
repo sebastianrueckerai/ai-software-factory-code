@@ -294,7 +294,9 @@ func TestChatTextReply(t *testing.T) {
 	system, _ := msgs[0]["content"].(string)
 	for _, want := range []string{
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
-		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge.",
+		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
+		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge. " +
+			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
 	} {
 		if !strings.Contains(system, want) {
