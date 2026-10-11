@@ -86,7 +86,7 @@ func TestSplitStatementsSkipsEmptyPieces(t *testing.T) {
 	}
 }
 
-var leadingKeyword = regexp.MustCompile(`^(?i)(CREATE|ALTER|INSERT|UPDATE|DROP|COMMENT|GRANT|WITH)\b`)
+var leadingKeyword = regexp.MustCompile(`^(?i)(CREATE|ALTER|INSERT|UPDATE|DELETE|DROP|COMMENT|GRANT|WITH)\b`)
 
 // Every statement of every migration file starts with a SQL keyword: no
 // comment fragment can ever reach the database. WITH counts because a CTE
