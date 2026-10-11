@@ -62,6 +62,7 @@ type forgejoState struct {
 	migrateFail   string        // a migrate's 500 answer; "": it works
 	migrateGate   chan struct{} // a migrate answers once it closes, the fake's lock free meanwhile; nil: at once
 	created       time.Time     // the repository's creation, as Forgejo answers it
+	repoRead      func()        // runs, under the lock, before each admin read of the repository
 	source        []string      // the migrated repository's paths; none: it is empty
 	sourceBranch  string        // and its default branch
 	defaultBranch string
@@ -126,6 +127,9 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case admin && p == "/api/v1/users/factory-projects/orgs/demo-app/permissions":
 			fmt.Fprintf(w, `{"is_owner":%v}`, s.orgOwner == "factory-projects")
 		case admin && r.Method == http.MethodGet && p == repo:
+			if s.repoRead != nil {
+				s.repoRead()
+			}
 			if !s.repo {
 				http.NotFound(w, r)
 				return

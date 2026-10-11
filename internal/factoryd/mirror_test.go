@@ -363,8 +363,9 @@ func TestRegisterImportsFromGitHub(t *testing.T) {
 // with the first line of the error, the token taken out, cut at 120; the
 // registration error says the same and no log line holds the token. A
 // reconcile while the repository is under 20 minutes old waits; once it
-// is older and GitHub shows a commit, the reconcile deletes it as the
-// admin and migrates again.
+// is older, the reconcile deletes it as the admin and migrates again,
+// asking GitHub nothing (ruling 289). A refusal for good copies again at
+// most once a reconcile, each time 20 minutes after the last leftover.
 func TestRegisterImportFailure(t *testing.T) {
 	rig, mirrors := importRig(t)
 	rig.fj.migrateFail = `{"message":"clone: https://oauth2:` + importToken + `@github.com/acme/app.git: authentication failed"}`
@@ -385,22 +386,65 @@ func TestRegisterImportFailure(t *testing.T) {
 	if strings.Contains(rig.logs.String(), importToken) || strings.Contains(err.Error(), importToken) {
 		t.Fatalf("the token was logged:\n%s", rig.logs)
 	}
-	rig.fj.migrateFail = ""
-	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err == nil || !strings.Contains(err.Error(), "may still be copying") ||
-		len(rig.fj.migrated) != 1 || len(rig.gh.calls) != 0 || slices.Contains(rig.fj.writes, deleteRepo) {
-		t.Fatalf("under 20 minutes: error %v, migrates %d, GitHub calls %q, writes %q", err, len(rig.fj.migrated), rig.gh.calls, rig.fj.writes)
+	reconcile := func() error {
+		err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"])
+		rig.reg.copies.Wait()
+		return err
 	}
-	rig.fj.created = time.Now().Add(-21 * time.Minute)
-	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
-		t.Fatalf("%v\n%s", err, rig.logs)
+	deletes := func() int {
+		return len(slices.DeleteFunc(slices.Clone(rig.fj.writes), func(w string) bool { return w != deleteRepo }))
 	}
-	rig.reg.copies.Wait()
-	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 2 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
-		t.Fatalf("the retry: %d migrates, token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
+	afterDelete := func() []string {
+		for i := len(rig.fj.writes) - 1; i >= 0; i-- {
+			if rig.fj.writes[i] == deleteRepo {
+				return rig.fj.writes[i:]
+			}
+		}
+		return nil
 	}
-	del := slices.Index(rig.fj.writes, deleteRepo)
-	if del < 0 || slices.Index(rig.fj.writes[del:], migrateAs) < 0 || !slices.Equal(rig.gh.calls, []string{githubCall}) {
-		t.Fatalf("the retry: GitHub calls %q, writes %q; want one call, the delete, then the migrate", rig.gh.calls, rig.fj.writes)
+	for i, migrates := range []int{2, 3} {
+		if err := reconcile(); err == nil || !strings.Contains(err.Error(), "may still be copying") || len(rig.fj.migrated) != migrates-1 || deletes() != i {
+			t.Fatalf("under 20 minutes, round %d: error %v, migrates %d, deletes %d", i, err, len(rig.fj.migrated), deletes())
+		}
+		rig.fj.created = time.Now().Add(-21 * time.Minute)
+		if i == 1 {
+			rig.fj.migrateFail = ""
+		}
+		if err := reconcile(); err != nil {
+			t.Fatalf("round %d: %v\n%s", i, err, rig.logs)
+		}
+		if len(rig.fj.migrated) != migrates || deletes() != i+1 || len(rig.gh.calls) != 0 || !slices.Contains(afterDelete(), migrateAs) {
+			t.Fatalf("round %d: migrates %d, deletes %d, GitHub calls %q, writes %q", i, len(rig.fj.migrated), deletes(), rig.gh.calls, rig.fj.writes)
+		}
+	}
+	if row := mirrors.rows["demo-app import"]; row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("the last retry: token %q, state %q", row.Token, row.State)
+	}
+}
+
+// The delete rests on a second read just before it: a repository that no
+// longer reads empty with the first read's creation (a push landed, or
+// another process's migrate made it anew) is left alone, nothing copied,
+// and the reconcile fails until the next one looks again.
+func TestImportLeftoverChangedBeforeTheDelete(t *testing.T) {
+	for name, change := range map[string]func(*forgejoState){
+		"made anew": func(s *forgejoState) { s.created = time.Now() },
+		"pushed":    func(s *forgejoState) { s.branches["main"] = "pu5h" },
+	} {
+		rig, mirrors := importRig(t)
+		rig.fj.repo, rig.fj.created = true, time.Now().Add(-21*time.Minute)
+		reads := 0
+		rig.fj.repoRead = func() {
+			if reads++; reads == 2 {
+				change(rig.fj)
+			}
+		}
+		want := mirrors.rows["demo-app import"]
+		err := rig.reg.Reconcile(context.Background(), rig.store.m["demo-app"])
+		if err == nil || !strings.Contains(err.Error(), "registration: repository demo-app/demo-app: the repository changed while registration read it") ||
+			reads != 2 || slices.Contains(rig.fj.writes, deleteRepo) || len(rig.fj.migrated) != 0 || mirrors.rows["demo-app import"] != want {
+			t.Fatalf("%s: error %v, reads %d, writes %q, migrates %d, import row %+v", name, err, reads, rig.fj.writes, len(rig.fj.migrated), mirrors.rows["demo-app import"])
+		}
 	}
 }
 
@@ -559,7 +603,7 @@ func TestRegisterImportAfterRestart(t *testing.T) {
 		{21 * time.Minute, true, "copying since T", http.StatusConflict, "Seed from template ts-go (registration)", all, 1, false},
 		{21 * time.Minute, true, "pending", http.StatusOK, "Factory workflows", factoryWorkflows, 1, true},
 		{21 * time.Minute, true, "copying since T", http.StatusOK, "Factory workflows", factoryWorkflows, 1, true},
-		{21 * time.Minute, true, "failed: cut", http.StatusOK, "Factory workflows", factoryWorkflows, 1, true},
+		{21 * time.Minute, true, "failed: cut", http.StatusConflict, "Factory workflows", factoryWorkflows, 0, true},
 	} {
 		rig, mirrors, _ := started(c.ago, c.empty, c.state, c.github)
 		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {

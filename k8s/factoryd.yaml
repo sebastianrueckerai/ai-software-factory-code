@@ -722,6 +722,7 @@ spec:
         - matchName: temporal-frontend.platform.svc.cluster.local
         - matchName: fsn1.your-objectstorage.com
         - matchName: api.hetzner.cloud
+        - matchName: api.github.com
         - matchName: signoz-otel-collector.platform.svc.cluster.local
         - matchName: signoz.platform.svc.cluster.local
         - matchName: forgejo-ssh.forgejo.svc.cluster.local
@@ -781,6 +782,7 @@ spec:
   - toFQDNs:
     - matchName: fsn1.your-objectstorage.com
     - matchName: api.hetzner.cloud
+    - matchName: api.github.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
   - toEndpoints:

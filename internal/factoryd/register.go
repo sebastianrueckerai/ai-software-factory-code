@@ -1280,9 +1280,12 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 // An empty one made under twice the migrate's timeout ago may still be
 // filling (Forgejo syncs branches and tags after the clone while the
 // repository reads empty): a copying row waits, any other fails. An older
-// empty one, whatever the row's state, is asked of GitHub: an empty source
-// is imported, which the seed fills whole; one with a commit was cut or
-// refused, so the admin deletes the repository and the copy starts again.
+// empty one under a failed row is the refused migrate's, which Forgejo
+// keeps marked being migrated for good (ruling 289); under a pending or
+// copying row GitHub is asked: an empty source is imported, which the seed
+// fills whole; one with a commit was cut. A refused or cut copy's
+// repository is deleted by the admin, if a second read still finds it as
+// the first did, and the copy starts again.
 func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
 	m, ok, err := Mirror{}, false, error(nil)
 	if r.Mirrors != nil {
@@ -1298,39 +1301,54 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 		return "", copyingSince(m)
 	}
 	call := r.Forgejo.adminCall(a)
-	exists, body, err := adminExists(ctx, call, "/api/v1/repos/"+repo.String())
+	res, exists, err := readRepo(ctx, call, repo)
 	if err != nil {
 		return "", err
 	}
 	if !exists {
 		return "", r.copy(ctx, a, name, repo, m)
 	}
-	var res struct {
-		Empty   bool      `json:"empty"`
-		Created time.Time `json:"created_at"`
-	}
-	if err := json.Unmarshal(body, &res); err != nil {
-		return "", err
-	}
+	young := time.Since(res.Created) <= 2*migrateTimeout
 	switch {
 	case !res.Empty:
 		return r.imported(ctx, name, m)
-	case time.Since(res.Created) <= 2*migrateTimeout && strings.HasPrefix(m.State, "copying"):
+	case young && strings.HasPrefix(m.State, "copying"):
 		return "", copyingSince(m)
-	case time.Since(res.Created) <= 2*migrateTimeout:
+	case young:
 		return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
-	}
-	if empty, err := r.sourceEmpty(ctx, m); err != nil || empty {
+	case !strings.HasPrefix(m.State, "failed"):
+		empty, err := r.sourceEmpty(ctx, m)
 		if err != nil {
 			return "", err
 		}
-		return r.imported(ctx, name, m)
+		if empty {
+			return r.imported(ctx, name, m)
+		}
+	}
+	if again, exists, err := readRepo(ctx, call, repo); err != nil || !exists || !again.Empty || !again.Created.Equal(res.Created) {
+		return "", errors.Join(errors.New("the repository changed while registration read it; the next reconcile looks again"), err)
 	}
 	if _, err := call(ctx, http.MethodDelete, "/api/v1/repos/"+repo.String(), nil, http.StatusNoContent); err != nil {
 		return "", fmt.Errorf("delete the empty repository a cut or refused copy of github.com/%s left: %w", m.Remote, err)
 	}
-	log.Printf("project %s: repository %s: deleted, empty since %s: github.com/%s has commits, the copy was cut or refused", name, repo, res.Created.UTC().Format(minuteUTC), m.Remote)
+	log.Printf("project %s: repository %s: deleted, empty since %s: the copy of github.com/%s was cut or refused, it copies again", name, repo, res.Created.UTC().Format(minuteUTC), m.Remote)
 	return "", r.copy(ctx, a, name, repo, m)
+}
+
+// repoRead is a repository as the admin reads it: empty, and when Forgejo
+// made it, which for a migrate is the migrate's start.
+type repoRead struct {
+	Empty   bool      `json:"empty"`
+	Created time.Time `json:"created_at"`
+}
+
+func readRepo(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), repo Repo) (repoRead, bool, error) {
+	var res repoRead
+	exists, body, err := adminExists(ctx, call, "/api/v1/repos/"+repo.String())
+	if err == nil && exists {
+		err = json.Unmarshal(body, &res)
+	}
+	return res, exists, err
 }
 
 // sourceEmpty asks GitHub whether m's repository has a commit, with m's

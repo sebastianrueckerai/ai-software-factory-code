@@ -1624,13 +1624,17 @@ read against Forgejo: a non-empty repository is the copy's, imported. An
 empty one made under 20 minutes ago (twice the migrate's timeout, since
 Forgejo syncs branches and tags after the clone while the repository reads
 empty) may still be filling: a copying row waits, any other fails the
-reconcile. An older empty one, whatever the row's state, is asked of
-GitHub once (`GET /repos/{owner}/{repo}/commits?per_page=1` on
-`api.github.com`, with the row's token if any): 409, an empty source, is
-imported; a commit means the copy was cut or refused, so the site admin
-deletes the empty repository and the copy starts again (so a refused
-import is copied again by a reconcile, at least hourly, 20 minutes on);
-any other answer leaves the row and fails the reconcile. With no
+reconcile. An older empty one under a failed row is the refused
+migrate's, which Forgejo keeps marked as being migrated for good: it is
+deleted and copied again without asking GitHub, so a refused import is
+copied again by a reconcile, at least hourly, 20 minutes after its last
+leftover. Under a pending or copying row, GitHub is asked once (`GET
+/repos/{owner}/{repo}/commits?per_page=1` on `api.github.com`, with the
+row's token if any; factoryd's egress admits it on 443): 409, an empty
+source, is imported; a commit means the copy was cut, so it is deleted
+and copied again; any other answer leaves the row and fails the reconcile. The site
+admin deletes a leftover only when a second read just before the delete
+still finds it empty with the same creation time. With no
 repository the copy starts. `register-project` waits for a copy it
 started and fails while the row still reads copying. The seed gives a source
 whose default branch is not `main` a `main` from it, seeds an empty one

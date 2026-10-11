@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -43,5 +47,61 @@ func TestCheckProjectReadsTheHead(t *testing.T) {
 		`projects/linkshort.yaml: template "ts-go2": no directory templates/ts-go2/ (templates: ts-go)`}
 	if err != nil || !slices.Equal(refused, want) {
 		t.Fatalf("refused %q, %v; want %q", refused, err, want)
+	}
+}
+
+// factoryd's default-deny egress resolves the GitHub API registration asks
+// whether an import's source is empty, and admits it on 443 alone.
+func TestEgressAdmitsTheGitHubAPI(t *testing.T) {
+	u, err := url.Parse(newRegistrar(nil, nil, nil, nil, "").GitHubAPI)
+	if err != nil || u.Scheme != "https" || u.Port() != "" {
+		t.Fatalf("GitHubAPI %v, %v: want https on its default port", u, err)
+	}
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type name struct {
+		MatchName string `yaml:"matchName"`
+	}
+	type names []name
+	type ports []struct {
+		Ports []struct{ Port, Protocol string } `yaml:"ports"`
+		Rules struct {
+			DNS names `yaml:"dns"`
+		} `yaml:"rules"`
+	}
+	has := func(ns names) bool { return slices.Contains(ns, name{u.Hostname()}) }
+	var resolves, admits bool
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Spec     struct {
+				Egress []struct {
+					ToFQDNs names `yaml:"toFQDNs"`
+					ToPorts ports `yaml:"toPorts"`
+				} `yaml:"egress"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind != "CiliumNetworkPolicy" || doc.Metadata.Name != "factoryd-egress" {
+			continue
+		}
+		for _, rule := range doc.Spec.Egress {
+			for _, p := range rule.ToPorts {
+				resolves = resolves || has(p.Rules.DNS)
+			}
+			if has(rule.ToFQDNs) {
+				admits = len(rule.ToPorts) == 1 && len(rule.ToPorts[0].Ports) == 1 &&
+					rule.ToPorts[0].Ports[0].Port == "443" && rule.ToPorts[0].Ports[0].Protocol == "TCP"
+			}
+		}
+	}
+	if !resolves || !admits {
+		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
 	}
 }
