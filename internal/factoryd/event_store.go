@@ -56,6 +56,12 @@ const (
 // after the store changed either: detail {"status", "gate"}.
 const EventTaskStatus = "task_status"
 
+// EventSessionSaid is the agent's text between its tool calls in a
+// running session: published on the bus for the drawer's Chat, never
+// stored, as the session's transcript is its record. Detail {"session",
+// "text"}.
+const EventSessionSaid = "session_said"
+
 // EventQuestionAsked is factoryd's record of an escalation, the question
 // question_answered answers: detail {"question", "comment", and "choices"
 // when the agent offered any}.

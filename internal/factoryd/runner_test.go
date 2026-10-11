@@ -986,6 +986,43 @@ func containerEnv(container map[string]any) map[string]string {
 	return env
 }
 
+// A model call's text reaches the bus as session_said of the session and
+// the card, at the step's time; a call without text and a tool call
+// publish nothing.
+func TestRunSessionPublishesTheAgentsText(t *testing.T) {
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	runner.cfg.Bus = NewEventBus()
+	ch := make(chan Event, 8)
+	defer runner.cfg.Bus.Subscribe("sf/repo", ch)()
+	at := time.Date(2026, 10, 12, 9, 30, 0, 0, time.UTC)
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: at, Detail: map[string]any{"text": "Reading the store first.", "cost": 0.01}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: at.Add(time.Second), Detail: map[string]any{"cost": 0.01}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventToolCall, Time: at.Add(2 * time.Second), Detail: map[string]any{"tool": "read"}}) + "\n" +
+		pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatalf("RunSession: %v", err)
+	}
+	want := Event{Repository: "sf/repo", TaskID: "t2", IssueNumber: 7, Kind: EventSessionSaid, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"session": res.SessionID, "text": "Reading the store first."}}
+	select {
+	case got := <-ch:
+		gotAt := got.At
+		got.At = time.Time{}
+		if !gotAt.Equal(at) || !reflect.DeepEqual(got, want) {
+			t.Fatalf("published %+v at %s, want %+v at %s", got, gotAt, want, at)
+		}
+	default:
+		t.Fatal("no session_said published")
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("published another %+v", got)
+	default:
+	}
+}
+
 // The worker gets the tools the task's classes may call under its pinned
 // version, for the brief to name.
 func TestRunSessionPassesTheOpenTools(t *testing.T) {

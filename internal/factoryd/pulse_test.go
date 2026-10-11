@@ -121,11 +121,12 @@ const goodPulse = `{"sentence": "#5 Redirect-stats needs your answer.", "bullets
 
 // pulseScript is a Pulser's run in a bubble: the store as seed leaves it
 // at the start, a card_moved event of linkshort at each of events, the
-// model answering answers in turn, a card waiting on a human while
+// agent's text on the bus at each of said after them, the model answering answers in turn, a card waiting on a human while
 // waiting says so (nil: never), stopped at end.
 type pulseScript struct {
 	seed     func(s *fakePulseStore, start time.Time)
 	events   []time.Duration
+	said     []time.Duration
 	answers  []string
 	statuses []int
 	hang     bool
@@ -159,6 +160,10 @@ func (sc pulseScript) run(t *testing.T) (store *fakePulseStore, g *pulseGateway,
 			store.Record(context.Background(), Event{Repository: "linkshort/linkshort", TaskID: "t-5", IssueNumber: int64(i + 1),
 				Kind: EventCardMoved, Actor: "sebastian", Via: ViaButton})
 		}
+		for _, d := range sc.said {
+			time.Sleep(time.Until(start.Add(d)))
+			store.bus.Publish(Event{Repository: "linkshort/linkshort", TaskID: "t-5", Kind: EventSessionSaid, Actor: FactoryDecider, Via: ViaFactoryd})
+		}
 		time.Sleep(time.Until(start.Add(sc.end)))
 		synctest.Wait()
 		cancel()
@@ -185,8 +190,9 @@ func seconds(s ...float64) []time.Duration {
 // Without events, every 60 s while the newest event is under an hour old:
 // one 10 min old and a pulse at the start make one call each minute and
 // 49 in all (the 50th would fall at the hour). A project idle for two
-// hours keeps its pulse, one without events never gets one, and one with
-// an event newer than its pulse gets one at the start.
+// hours keeps its pulse, also through the agent's text of a session, one
+// without events never gets one, and one with an event newer than its
+// pulse gets one at the start.
 func TestPulseSchedule(t *testing.T) {
 	aged := func(event, pulse time.Duration) func(*fakePulseStore, time.Time) {
 		return func(s *fakePulseStore, start time.Time) {
@@ -208,6 +214,7 @@ func TestPulseSchedule(t *testing.T) {
 		"events that keep coming":       {pulseScript{events: seconds(0, 1.5, 3, 4.5, 6, 7.5, 9, 10.5, 12, 13.5), end: 30 * time.Second}, seconds(10, 20)},
 		"active, no event since":        {pulseScript{seed: aged(10*time.Minute, 0), end: 2 * time.Hour}, everyMinute},
 		"idle two hours":                {pulseScript{seed: aged(2*time.Hour, 2*time.Hour), end: 2 * time.Hour}, nil},
+		"the agent's text only":         {pulseScript{seed: aged(2*time.Hour, 2*time.Hour), said: seconds(0, 5), end: time.Minute}, nil},
 		"no event ever":                 {pulseScript{end: 2 * time.Hour}, nil},
 		"an event newer than its pulse": {pulseScript{seed: aged(10*time.Second, 30*time.Second), end: 20 * time.Second}, seconds(0)},
 	} {

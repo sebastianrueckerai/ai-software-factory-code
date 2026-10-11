@@ -147,6 +147,7 @@ func main() {
 		GatewayURL:           gatewayURL,
 		GitBaseURL:           gitBase,
 		Models:               ladder,
+		Bus:                  eventBus,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
 		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),

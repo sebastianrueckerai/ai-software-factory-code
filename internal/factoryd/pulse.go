@@ -167,7 +167,7 @@ func (pl *Pulser) watch(ctx context.Context, p Project) {
 				// the bus dropped a full buffer: what it held counts as one event
 				ch = make(chan Event, pulseBuffer)
 				cancel = pl.Bus.Subscribe(p.Repository, ch)
-			} else if e.Kind == EventPulse || e.Kind == EventPulseComputing {
+			} else if e.Kind == EventPulse || e.Kind == EventPulseComputing || e.Kind == EventSessionSaid {
 				continue
 			}
 			lastEvent = time.Now()

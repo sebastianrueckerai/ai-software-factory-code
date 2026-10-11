@@ -42,6 +42,9 @@ type RunnerConfig struct {
 	HeadroomTokens       int
 	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
+	// Bus receives a session_said event for each model call's text, for
+	// the drawer's Chat; nil publishes none.
+	Bus *EventBus
 	// Supervisor is the session supervisor's configuration; its agent
 	// time, call count and progress detector come from the policy.
 	Supervisor SupervisorConfig
@@ -490,6 +493,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		if err := recorder.Record(ctx, *env.Event); err != nil {
 			log.Printf("task %s: record event: %v", t.ID, err)
+		}
+		if text, _ := env.Event.Detail["text"].(string); env.Event.Kind == harness.EventModelCall && text != "" && r.cfg.Bus != nil {
+			r.cfg.Bus.Publish(Event{At: env.Event.Time, Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventSessionSaid,
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"session": s.id, "text": text}})
 		}
 		switch env.Event.Kind {
 		case harness.EventPushed:
