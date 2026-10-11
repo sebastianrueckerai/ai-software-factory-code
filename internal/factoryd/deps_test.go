@@ -70,12 +70,15 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waiting := map[string]string{}
+	waiting, blocked := map[string]string{}, map[string]string{}
 	for _, b := range tasks {
-		waiting[b.ID] = b.WaitingOn
+		waiting[b.ID], blocked[b.ID] = b.WaitingOn, b.Dependencies
 	}
 	if waiting["t-x"] != "#4, #5" || waiting["t-y"] != "" {
 		t.Fatalf("board waiting-on = %q, want #4, #5 on the waiting card only", waiting)
+	}
+	if blocked["t-x"] != "#4, #5" || blocked["t-y"] != "#5" || blocked["t-a"] != "" {
+		t.Fatalf("board dependencies = %q, want the deps not done (#3 is) in any status: t-x #4, #5, t-y #5", blocked)
 	}
 }
 
