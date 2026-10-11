@@ -155,6 +155,12 @@ func TestChatCardInFull(t *testing.T) {
 	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, "\npull request #9 https://git.example/sf/code/pulls/9, head c0ffee1, merged\n") {
 		t.Errorf("the card of a merged pull request reads\n%s", got)
 	}
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(readsTimeline +
+		`{"step":"queue_synced","time":"2026-10-11T10:00:00Z","from":"c0ffee1","to":"c0ffee2","main":"0a1b2c3"}` + "\n" +
+		`{"step":"signal","time":"2026-10-11T10:01:00Z","signal":"pr_merged","author":"sebastian","pr":10,"ignored":"not the task's pull request"}` + "\n")
+	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, "\npull request #9 https://git.example/sf/code/pulls/9, head c0ffee2, open\n") {
+		t.Errorf("the card of a pull request the queue synced, with another pull request merged, reads\n%s", got)
+	}
 }
 
 // The pr read is a card's pull request: the newest checks' jobs, the
@@ -209,6 +215,7 @@ func TestChatFileRead(t *testing.T) {
 		"file", `{"ref":"main","path":"/docs/./a b.md"}`,
 		"file", `{"ref":"main","path":"huge.txt"}`,
 		"file", `{"path":"README.md"}`,
+		"file", `{"ref":"main","path":"//README.md"}`,
 	), []string{
 		strings.Repeat("r", 1200),
 		"Refused: bin/x at main is binary (100 bytes).",
@@ -218,6 +225,7 @@ func TestChatFileRead(t *testing.T) {
 		"spaced",
 		strings.Repeat("h", 64<<10) + "\n(cut at 64 KiB of at least 1048576)",
 		"Refused: The file read needs a ref and a path.",
+		strings.Repeat("r", 1200),
 	})
 	for _, c := range []struct {
 		in     toolInput

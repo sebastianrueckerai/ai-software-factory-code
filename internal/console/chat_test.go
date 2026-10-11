@@ -657,11 +657,13 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
 		"move_card", `{"task_id":"t-ls","lane":"ready"}`, "card_history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"plan","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"pr","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","summary":"x"},"duration_ms":0,"name":"set_summary","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","lane":"ready"},"duration_ms":0,"name":"move_card","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,

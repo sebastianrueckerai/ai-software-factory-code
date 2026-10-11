@@ -75,7 +75,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	if k.PRNumber > 0 {
 		fmt.Fprintf(&b, "\npull request #%d %s/pulls/%d", k.PRNumber, base, k.PRNumber)
-		if head, _ := newest(steps, "pushed")["commit"].(string); head != "" {
+		if head := prHead(steps); head != "" {
 			b.WriteString(", head " + head)
 		}
 		b.WriteString(", " + prState(steps))
@@ -148,13 +148,33 @@ func verdict(m map[string]any) string {
 	return cmp.Or(v, "no verdict")
 }
 
-// prState is how a card's pull request stands by its timeline.
+// prHead is a card's pull request's head by its timeline: the newest
+// commit a session pushed, a roll committed or the merge queue synced
+// to; "" for none.
+func prHead(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		var head any
+		switch m := steps[i]; m["step"] {
+		case "pushed", "roll_commit":
+			head = m["commit"]
+		case "queue_synced":
+			head = m["to"]
+		}
+		if s, _ := head.(string); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// prState is how a card's pull request stands by its timeline; a signal
+// factoryd ignored is another pull request's.
 func prState(steps []map[string]any) string {
 	for i := len(steps) - 1; i >= 0; i-- {
 		switch m := steps[i]; {
-		case m["step"] == "merged" || m["step"] == "signal" && m["signal"] == factoryd.SignalPRMerged:
+		case m["step"] == "merged" || m["step"] == "signal" && m["signal"] == factoryd.SignalPRMerged && m["ignored"] == nil:
 			return "merged"
-		case m["step"] == "signal" && m["signal"] == factoryd.SignalPRClosed:
+		case m["step"] == "signal" && m["signal"] == factoryd.SignalPRClosed && m["ignored"] == nil:
 			return "closed"
 		}
 	}
@@ -310,7 +330,7 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if in.Ref == "" || in.Path == "" {
 		return "", refuse(http.StatusBadRequest, "The file read needs a ref and a path.")
 	}
-	p := path.Clean(strings.TrimPrefix(in.Path, "/"))
+	p := path.Clean(strings.TrimLeft(in.Path, "/"))
 	if p == "." || p == ".." || strings.HasPrefix(p, "../") {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The path %s leaves the repository.", in.Path))
 	}
