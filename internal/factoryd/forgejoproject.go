@@ -372,6 +372,56 @@ func (f *Forgejo) AdminEnsureRepo(ctx context.Context, a AdminAuth, repo Repo) (
 	return Created, err
 }
 
+// migrateTimeout bounds Forgejo's migrate, which answers once the clone is
+// done and finishes it even when the caller stops waiting.
+const migrateTimeout = 10 * time.Minute
+
+// AdminMigrateRepo makes repo, private, Forgejo's copy of the GitHub
+// repository at cloneAddr, read with token ("" for a public one): no
+// mirror, the copy is the project's own.
+func (f *Forgejo) AdminMigrateRepo(ctx context.Context, a AdminAuth, repo Repo, cloneAddr, token string) error {
+	client := http.Client{}
+	if f.HTTP != nil {
+		client = *f.HTTP
+	}
+	client.Timeout = migrateTimeout
+	g := *f
+	g.HTTP = &client
+	_, err := g.adminCall(a)(ctx, http.MethodPost, "/api/v1/repos/migrate", mustJSON(map[string]any{"clone_addr": cloneAddr, "auth_token": token,
+		"repo_owner": repo.Owner, "repo_name": repo.Name, "service": "github", "private": true, "mirror": false}), http.StatusCreated)
+	return err
+}
+
+// MainAsDefault makes main repo's default branch, started at the default
+// branch's head; false: repo is empty.
+func (f *Forgejo) MainAsDefault(ctx context.Context, repo Repo) (bool, error) {
+	body, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String(), nil, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	var res struct {
+		DefaultBranch string `json:"default_branch"`
+		Empty         bool   `json:"empty"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Empty {
+		return false, err
+	}
+	if _, err := f.EnsureBranchFrom(ctx, repo, "main", res.DefaultBranch); err != nil {
+		return false, err
+	}
+	_, err = f.projectsCall(ctx, http.MethodPatch, "/api/v1/repos/"+repo.String(), mustJSON(map[string]string{"default_branch": "main"}), http.StatusOK)
+	return err == nil, err
+}
+
+// ProjectFileExists reports whether repo has path at ref.
+func (f *Forgejo) ProjectFileExists(ctx context.Context, repo Repo, ref, path string) (bool, error) {
+	_, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String()+"/contents/"+path+"?ref="+url.QueryEscape(ref), nil, http.StatusOK)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // AdminEnsureUser creates user with a random password nobody keeps: its
 // tokens are minted with sudo.
 func (f *Forgejo) AdminEnsureUser(ctx context.Context, a AdminAuth, user string) (Change, error) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -145,6 +146,18 @@ func (m *memMirrors) SetMirrorState(_ context.Context, project, direction, state
 		at = lastUpdate.UTC().Format(time.RFC3339)
 	}
 	m.set = append(m.set, project+" "+direction+": "+state+" | "+lastError+" | "+at)
+	if row, ok := m.rows[project+" "+direction]; ok {
+		row.State, row.LastError, row.LastUpdate = state, lastError, lastUpdate
+		m.rows[project+" "+direction] = row
+	}
+	return nil
+}
+
+func (m *memMirrors) SetMirrorToken(_ context.Context, project, direction, token string) error {
+	if row, ok := m.rows[project+" "+direction]; ok {
+		row.Token = token
+		m.rows[project+" "+direction] = row
+	}
 	return nil
 }
 
@@ -213,5 +226,184 @@ func TestPGStoreScrubChatMessages(t *testing.T) {
 	want := []string{`with [token]. {"text":"[token]"} Commented.`, `with ghp_s3cret. {"text":"ghp_s3cret"} Commented.`, `with ghp_s3cret. {"text":"ghp_s3cret"} Commented.`}
 	if !slices.Equal(got, want) {
 		t.Fatalf("after the scrub %q, want %q", got, want)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): an import
+// row may hold no token, a public source's or one the migrate used; an
+// export row must hold one.
+func TestPGStoreImportMirror(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	row := Mirror{Project: "linkshort", Direction: MirrorImport, Remote: "acme/app", Token: "ghp-s3cret", State: "pending"}
+	if err := s.PutMirror(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMirrorToken(ctx, "linkshort", MirrorImport, ""); err != nil {
+		t.Fatal(err)
+	}
+	row.Token = ""
+	if got, ok, err := s.MirrorToken(ctx, "linkshort", MirrorImport); err != nil || !ok || got != row {
+		t.Fatalf("after SetMirrorToken: %+v, %v, %v; want %+v", got, ok, err, row)
+	}
+	if err := s.PutMirror(ctx, Mirror{Project: "linkshort", Direction: MirrorImport, Remote: "acme/public", State: "pending"}); err != nil {
+		t.Fatalf("an import without a token: %v", err)
+	}
+	if err := s.PutMirror(ctx, Mirror{Project: "linkshort", Direction: MirrorExport, Remote: "acme/app", Username: "u", State: "created"}); err == nil {
+		t.Fatal("an export without a token was stored")
+	}
+	if err := s.DeleteMirror(ctx, "linkshort", MirrorImport); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// importedProject is demo-app with a template holding the factory's
+// workflows, roll script and conventions, a file under .forgejo/ that the
+// GitHub repository has too, and files of its own.
+func importedProject() Project {
+	p := demoProject()
+	p.Template = "ts-go"
+	p.TemplateFiles = map[string]string{
+		".forgejo/workflows/ci.yml":         "image: [[.Image]]\n",
+		".forgejo/workflows/pr.yml":         "on: pull_request\n",
+		".forgejo/roll.sh":                  "#!/bin/sh\n",
+		".forgejo/CODEOWNERS":               "* @[[.Name]]\n",
+		"AGENTS.md":                         "# [[.Name]]\n",
+		"README.md":                         "# template\n",
+		"deploy/staging/kustomization.yaml": "namespace: [[index .Namespaces \"deploy/staging\"]]\n",
+	}
+	return p
+}
+
+const importToken = "ghp_imp0rtT0ken"
+
+// importRig is a registration of demo-app whose row imports acme/app,
+// a GitHub repository with main and a CODEOWNERS of its own.
+func importRig(t *testing.T) (*registerRig, *memMirrors) {
+	rig := newRegisterRig(t)
+	rig.store.m["demo-app"] = importedProject()
+	mirrors := &memMirrors{rows: map[string]Mirror{"demo-app import": {Project: "demo-app", Direction: MirrorImport, Remote: "acme/app",
+		Token: importToken, State: "pending"}}}
+	rig.reg.Mirrors = mirrors
+	rig.fj.source, rig.fj.sourceBranch = []string{"go.mod", "main.go", ".forgejo/CODEOWNERS"}, "main"
+	return rig, mirrors
+}
+
+var factoryWorkflows = map[string]string{".forgejo/workflows/ci.yml": "image: git.aisoftwarefactory.world/demo-app/demo-app\n",
+	".forgejo/workflows/pr.yml": "on: pull_request\n", ".forgejo/roll.sh": "#!/bin/sh\n", "AGENTS.md": "# demo-app\n"}
+
+// A project with an import row is made by Forgejo's migrate of the GitHub
+// repository as the site admin, never by the create; the row forgets the
+// token and says imported; the seed adds only the template's workflows,
+// roll script and AGENTS.md the repository lacks, in one commit before
+// main's protection. A later registration migrates and seeds nothing; no
+// log line holds the token.
+func TestRegisterImportsFromGitHub(t *testing.T) {
+	rig, mirrors := importRig(t)
+	ctx := context.Background()
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	want := map[string]any{"clone_addr": "https://github.com/acme/app.git", "auth_token": importToken, "repo_owner": "demo-app",
+		"repo_name": "demo-app", "service": "github", "private": true, "mirror": false}
+	if len(rig.fj.migrated) != 1 || !reflect.DeepEqual(rig.fj.migrated[0], want) {
+		t.Fatalf("migrates %v, want one with %v", rig.fj.migrated, want)
+	}
+	if !slices.Contains(rig.fj.writes, "POST /api/v1/repos/migrate by basic sebastian") || slices.Contains(rig.fj.writes, "POST /api/v1/orgs/demo-app/repos by basic sebastian") {
+		t.Fatalf("writes %q: want the migrate as the admin and no create", rig.fj.writes)
+	}
+	if row := mirrors.rows["demo-app import"]; row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("import row after the migrate: token %q, state %q", row.Token, row.State)
+	}
+	if len(rig.fj.seeds) != 1 {
+		t.Fatalf("contents calls %+v, want one", rig.fj.seeds)
+	}
+	c := rig.fj.seeds[0]
+	if !reflect.DeepEqual(c.files, factoryWorkflows) || c.branch != "main" || c.message != "Factory workflows" || c.by != "token projects-tok" {
+		t.Fatalf("commit %q on %q by %q with %q\nwant %q", c.message, c.branch, c.by, c.files, factoryWorkflows)
+	}
+	seed := slices.Index(rig.fj.writes, "POST /api/v1/repos/demo-app/demo-app/contents by token projects-tok")
+	protect := slices.Index(rig.fj.writes, "POST /api/v1/repos/demo-app/demo-app/branch_protections by token projects-tok")
+	if seed < 0 || protect < 0 || seed > protect {
+		t.Fatalf("workflows at %d, first protection at %d: %v", seed, protect, rig.fj.writes)
+	}
+	for _, line := range []string{"repository demo-app/demo-app: imported from acme/app",
+		"seed: created 5eed: .forgejo/roll.sh, .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml, AGENTS.md from template ts-go"} {
+		if !strings.Contains(rig.logs.String(), "project demo-app: "+line+"\n") {
+			t.Errorf("log lacks %q:\n%s", line, rig.logs)
+		}
+	}
+	if _, err := rig.reg.Register(ctx, "demo-app", true); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if len(rig.fj.migrated) != 1 || len(rig.fj.seeds) != 1 {
+		t.Fatalf("a second registration migrated %d and seeded %d times", len(rig.fj.migrated), len(rig.fj.seeds))
+	}
+	if strings.Contains(rig.logs.String(), importToken) {
+		t.Fatalf("the token was logged:\n%s", rig.logs)
+	}
+}
+
+// A refused migrate leaves no repository and no seed: the row keeps its
+// token for the next try and says failed with the first line of the error,
+// the token taken out, cut at 120; the registration error says the same
+// and no log line holds the token. The next reconcile migrates again.
+func TestRegisterImportFailure(t *testing.T) {
+	rig, mirrors := importRig(t)
+	rig.fj.migrateFail = `{"message":"clone: https://oauth2:` + importToken + `@github.com/acme/app.git: authentication failed"}`
+	ctx := context.Background()
+	_, err := rig.reg.Register(ctx, "demo-app", false)
+	const msg = `forgejo POST /api/v1/repos/migrate: status 500: {"message":"clone: https://oauth2:[token]@github.com/acme/app.git: authentication failed"}`
+	if err == nil || !strings.Contains(err.Error(), "registration: repository demo-app/demo-app: "+msg) || rig.reg.ReconcileError("demo-app") != err.Error() {
+		t.Fatalf("registration error %v, reconcile error %q", err, rig.reg.ReconcileError("demo-app"))
+	}
+	row := mirrors.rows["demo-app import"]
+	const state = `failed: forgejo POST /api/v1/repos/migrate: status 500: {"message":"clone: https://oauth2:[token]@github.com/acme/app.git: authe…`
+	if row.Token != importToken || row.State != state || row.LastError != msg {
+		t.Fatalf("import row: token kept %v, state %q, error %q\nwant state %q", row.Token == importToken, row.State, row.LastError, state)
+	}
+	if rig.fj.repo || len(rig.fj.seeds) != 0 || slices.Contains(rig.fj.writes, "POST /api/v1/orgs/demo-app/repos by basic sebastian") {
+		t.Fatalf("after a refused migrate: repository %v, seeds %d, writes %q", rig.fj.repo, len(rig.fj.seeds), rig.fj.writes)
+	}
+	if strings.Contains(rig.logs.String(), importToken) || strings.Contains(err.Error(), importToken) {
+		t.Fatalf("the token was logged:\n%s", rig.logs)
+	}
+	rig.fj.migrateFail = ""
+	if err := rig.reg.Reconcile(ctx, rig.store.m["demo-app"]); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 2 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("the retry: %d migrates, token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
+	}
+}
+
+// A GitHub repository whose default branch is not main gets main from it,
+// as the default branch, before the workflows; an empty one is seeded
+// whole from the template as a new project is.
+func TestImportedMain(t *testing.T) {
+	all := map[string]string{"README.md": "# template\n", "deploy/staging/kustomization.yaml": "namespace: demo-staging\n", ".forgejo/CODEOWNERS": "* @demo-app\n"}
+	maps.Copy(all, factoryWorkflows)
+	for _, c := range []struct {
+		name, branch, message, head string
+		source                      []string
+		want                        map[string]string
+	}{
+		{"master", "master", "Factory workflows", "1mp0rt", []string{"go.mod", ".forgejo/CODEOWNERS"}, factoryWorkflows},
+		{"empty", "main", "Seed from template ts-go (registration)", "5eed", nil, all},
+	} {
+		rig, _ := importRig(t)
+		rig.fj.source, rig.fj.sourceBranch = c.source, c.branch
+		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+			t.Fatalf("%s: %v\n%s", c.name, err, rig.logs)
+		}
+		if len(rig.fj.seeds) != 1 || !reflect.DeepEqual(rig.fj.seeds[0].files, c.want) || rig.fj.seeds[0].message != c.message || rig.fj.seeds[0].branch != "main" {
+			t.Fatalf("%s: commits %+v, want %q with %q", c.name, rig.fj.seeds, c.message, c.want)
+		}
+		if rig.fj.defaultBranch != "main" || rig.fj.branches[c.branch] != c.head {
+			t.Errorf("%s: default branch %q, branches %v", c.name, rig.fj.defaultBranch, rig.fj.branches)
+		}
+		patched := slices.Contains(rig.fj.writes, "PATCH /api/v1/repos/demo-app/demo-app by token projects-tok")
+		if patched != (c.name == "master") {
+			t.Errorf("%s: default branch set %v: %q", c.name, patched, rig.fj.writes)
+		}
 	}
 }

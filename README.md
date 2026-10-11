@@ -1588,6 +1588,20 @@ branch `project-<name>` and opens its pull request. The status panel
 4. `ready_at`, with a link to the project's board, or that error once the
    repository has `main`.
 
+The form may name a GitHub repository (owner/name) to start from, with a
+token for a private one. The console stores it as the name's
+`project_mirrors` row (direction `import`, state `pending`) before the pull
+request; the file, the pull request and the `project_filed` event never
+hold the token. Registration then makes the repository with Forgejo's
+migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
+mirror) in place of the empty create, clears the row's token and sets
+`imported <time>`, or `failed: <error>` with the token taken out. The seed
+gives a source whose default branch is not `main` a `main` from it, seeds
+an empty one whole, and otherwise commits only the template's `.forgejo/`
+files and `AGENTS.md` that the copy lacks ("Factory workflows"). The panel
+shows a fifth step, "Imported from GitHub", between the repository and
+`ready_at`.
+
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
 `FACTORY_READ_TOKEN` (compared by hash in constant time; 401 otherwise, an

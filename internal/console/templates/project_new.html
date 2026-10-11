@@ -18,7 +18,13 @@
 {{range .Templates}}<option value="{{.}}"{{if eq . $.Form.Template}} selected{{end}}>{{.}}</option>{{end}}
 </select>
 <p id="template-help" class="meta">The files registration seeds the empty repository with. None: main's first push starts the project.</p>
-<label for="merge_rule">Merge rule</label>
+{{if .Import}}<label for="source">GitHub repository (owner/name)</label>
+<input id="source" name="source" type="text" maxlength="201" pattern="[A-Za-z0-9_.\-]{1,100}/[A-Za-z0-9_.\-]{1,100}" value="{{.Form.Source}}" aria-describedby="source-help">
+<p id="source-help" class="meta">Optional: registration copies it into the new repository in place of the template, which then adds only its CI workflows and AGENTS.md where the copy lacks them.</p>
+<label for="token">GitHub token</label>
+<input id="token" name="token" type="password" autocomplete="off" aria-describedby="token-help">
+<p id="token-help" class="meta">For a private repository: a token that reads it. Registration uses it once for the copy and forgets it; no agent sees it.</p>
+{{end}}<label for="merge_rule">Merge rule</label>
 <select id="merge_rule" name="merge_rule">
 <option value="human"{{if eq .Form.MergeRule "human"}} selected{{end}}>human</option>
 <option value="auto"{{if eq .Form.MergeRule "auto"}} selected{{end}}>auto</option>

@@ -93,7 +93,8 @@ var (
 )
 
 type newProject struct {
-	Name, Process, Template, MergeRule string
+	// Source is the GitHub repository, owner/name, registration copies.
+	Name, Process, Template, MergeRule, Source string
 }
 
 func (c *Console) newProjectForm(w http.ResponseWriter, r *http.Request) {
@@ -112,7 +113,7 @@ func (c *Console) renderNewProject(w http.ResponseWriter, r *http.Request, code 
 	w.WriteHeader(code)
 	c.render(w, "project_new.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Form": p, "Refused": refused,
 		"Processes": slices.Sorted(maps.Keys(v.Tree.Processes)), "Templates": slices.Sorted(maps.Keys(v.Tree.Templates)),
-		"Approver": c.approver(r)})
+		"Approver": c.approver(r), "Import": c.cfg.Mirrors != nil})
 }
 
 // projectFile is the file section 5 of stage11-design.md shows: the form's
@@ -132,10 +133,13 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 
 // createProject writes the new project's file, judges it the loader's way
 // against infra's head, and files it as the human: a new branch
-// project-<name> off main with the one file, and its pull request.
+// project-<name> off main with the one file, and its pull request. A
+// GitHub repository to start from is stored first, with its token, as the
+// name's import row, which registration reads.
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
-		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule")}
+		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
+	token := r.PostFormValue("token")
 	var refused []string
 	if !newProjectName.MatchString(p.Name) {
 		refused = append(refused, "name: a DNS label of 2 to 37 lowercase letters, digits and dashes, a letter or digit at each end")
@@ -148,6 +152,15 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.MergeRule != policy.MergeHuman && p.MergeRule != policy.MergeAuto {
 		refused = append(refused, "merge rule: human or auto")
+	}
+	if p.Source != "" && (c.cfg.Mirrors == nil || !githubRepo.MatchString(p.Source)) {
+		refused = append(refused, "GitHub repository: owner/name of a repository on GitHub, or none")
+	}
+	switch {
+	case token != "" && p.Source == "":
+		refused = append(refused, "GitHub token: only with a GitHub repository")
+	case token != "" && !githubToken.MatchString(token):
+		refused = append(refused, "GitHub token: 8 to 255 letters, digits, _ or -")
 	}
 	if len(refused) > 0 {
 		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
@@ -164,6 +177,20 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	if len(refused) > 0 {
 		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
 		return
+	}
+	if c.cfg.Mirrors != nil {
+		var err error
+		if p.Source == "" {
+			err = c.cfg.Mirrors.DeleteMirror(r.Context(), p.Name, factoryd.MirrorImport)
+		} else {
+			err = c.cfg.Mirrors.PutMirror(r.Context(), factoryd.Mirror{Project: p.Name, Direction: factoryd.MirrorImport, Remote: p.Source,
+				Token: token, State: "pending"})
+		}
+		if err != nil {
+			log.Printf("console: the GitHub import of %s: %v", p.Name, err)
+			http.Error(w, "cannot store the GitHub import; see the factoryd log", http.StatusInternalServerError)
+			return
+		}
 	}
 	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
 	branch := "project-" + p.Name
@@ -185,7 +212,11 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
-	c.act(r, p.Name+"/"+p.Name, "", 0, factoryd.EventProjectFiled, map[string]any{"name": p.Name, "pr": pull.Number})
+	detail := map[string]any{"name": p.Name, "pr": pull.Number}
+	if p.Source != "" {
+		detail["source"] = p.Source
+	}
+	c.act(r, p.Name+"/"+p.Name, "", 0, factoryd.EventProjectFiled, detail)
 	http.Redirect(w, r, "/projects/"+p.Name+"/status", http.StatusSeeOther)
 }
 
@@ -328,6 +359,26 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		}
 	}
 	out.Steps = []step{pulled, merged, created, ready}
+	if c.cfg.Mirrors != nil {
+		m, ok, err := c.cfg.Mirrors.Mirror(ctx, name, factoryd.MirrorImport)
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			imported := step{Name: "Imported from GitHub", State: stepWaiting, Detail: "After the merge.",
+				Tip: "Registration copies the GitHub repository into the new one with the token given at filing, then forgets the token; the template adds only its .forgejo/ files and AGENTS.md where the copy lacks them."}
+			from := "github.com/" + m.Remote
+			switch {
+			case strings.HasPrefix(m.State, "imported"):
+				imported.State, imported.Detail = stepDone, from+", "+m.State+"."
+			case strings.HasPrefix(m.State, "failed"):
+				imported.State, imported.Detail = stepFailed, "The copy of "+from+" "+m.State+". The reconcile tries again at least hourly."
+			case merged.State == stepDone:
+				imported.State, imported.Detail = stepRunning, "Registration copies "+from+" into the repository within a minute of the load."
+			}
+			out.Steps = slices.Insert(out.Steps, 3, imported)
+		}
+	}
 	out.Final = !slices.ContainsFunc(out.Steps, func(s step) bool { return s.State != stepDone })
 	return out, nil
 }

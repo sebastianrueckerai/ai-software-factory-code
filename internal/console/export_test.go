@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -29,6 +31,7 @@ type fakeMirrors struct {
 	push  map[string][]factoryd.PushMirror
 	calls []string
 	fail  error // AddPushMirror's answer
+	put   error // PutMirror's answer
 }
 
 func (f *fakeMirrors) Mirror(_ context.Context, project, direction string) (factoryd.Mirror, bool, error) {
@@ -42,6 +45,9 @@ func (f *fakeMirrors) Mirror(_ context.Context, project, direction string) (fact
 func (f *fakeMirrors) PutMirror(_ context.Context, m factoryd.Mirror) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.put != nil {
+		return f.put
+	}
 	f.rows[m.Project+" "+m.Direction] = m
 	return nil
 }
@@ -298,4 +304,134 @@ func (f *fakeChat) ScrubChatMessages(_ context.Context, repository, login, secre
 		json.Unmarshal([]byte(strings.ReplaceAll(string(b), secret, "[token]")), &f.msgs[repository+" "+login][i])
 	}
 	return nil
+}
+
+// The form asks for a GitHub repository and a token. With them it stores
+// the import row first, the token for registration alone, then files the
+// same project file and pull request as without, and the project_filed
+// row names the source; no file, pull request, event or log line holds the
+// token. A row it cannot store files nothing; a bad source or token is
+// refused without the token on the page; a form without a source drops a
+// stale import row of the name.
+func TestNewProjectImportsFromGitHub(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	ck, s := r.loggedIn(t)
+	page := r.do(httptest.NewRequest(http.MethodGet, "/projects/new", nil), ck).Body.String()
+	for _, want := range []string{`<label for="source">GitHub repository (owner/name)</label>`, `<input id="source" name="source" type="text"`,
+		`<label for="token">GitHub token</label>`, `<input id="token" name="token" type="password" autocomplete="off"`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("GET /projects/new lacks %q", want)
+		}
+	}
+	form := func(source, token string) url.Values {
+		f := linkshortForm(s.csrf)
+		f.Set("source", source)
+		f.Set("token", token)
+		return f
+	}
+	today := time.Now().UTC().Format(time.DateOnly)
+	if rec := r.do(post("/projects", form("acme/app", ghToken)), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /projects with a source = %d: %s", rec.Code, rec.Body.String())
+	}
+	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending"}
+	if got := r.mirrors.rows["linkshort import"]; got != want {
+		t.Fatalf("import row %+v, want %+v", got, want)
+	}
+	if m, ok, _ := r.mirrors.Mirror(context.Background(), "linkshort", factoryd.MirrorImport); !ok || m.Token != "" {
+		t.Fatalf("the handler's read answers %v, token %q", ok, m.Token)
+	}
+	infra.mu.Lock()
+	contents, pulls := infra.contents, infra.pulls
+	infra.mu.Unlock()
+	if len(contents) != 1 || len(pulls) != 1 {
+		t.Fatalf("%d contents and %d pull calls, want one each", len(contents), len(pulls))
+	}
+	files := contents[0].body["files"].([]any)
+	if file, _ := base64.StdEncoding.DecodeString(files[0].(map[string]any)["content"].(string)); string(file) != linkshortFile(today) {
+		t.Errorf("project file\n%s\nwant\n%s", file, linkshortFile(today))
+	}
+	if want := map[string]any{"head": "project-linkshort", "base": "main", "title": "Project linkshort"}; !reflect.DeepEqual(pulls[0].body, want) {
+		t.Errorf("pull request %v, want %v", pulls[0].body, want)
+	}
+	var filed []map[string]any
+	r.events.mu.Lock()
+	for _, e := range r.events.rows {
+		if e.Kind == factoryd.EventProjectFiled {
+			filed = append(filed, e.Detail)
+		}
+	}
+	r.events.mu.Unlock()
+	if want := []map[string]any{{"name": "linkshort", "pr": int64(12), "source": "acme/app"}}; !reflect.DeepEqual(filed, want) {
+		t.Errorf("project_filed rows %v, want %v", filed, want)
+	}
+
+	r.mirrors.put = errors.New("db down")
+	rec := r.do(post("/projects", form("acme/other", ghToken)), ck)
+	infra.mu.Lock()
+	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 1 {
+		t.Errorf("an unstored row: %d, %d contents calls; want 500 and nothing filed", rec.Code, len(infra.contents))
+	}
+	infra.mu.Unlock()
+	r.mirrors.put = nil
+	for _, c := range []struct{ source, token, line string }{
+		{"acme", ghToken, "GitHub repository: owner/name of a repository on GitHub, or none"},
+		{"acme/app", "short", "GitHub token: 8 to 255 letters, digits, _ or -"},
+		{"", ghToken, "GitHub token: only with a GitHub repository"},
+	} {
+		rec := r.do(post("/projects", form(c.source, c.token)), ck)
+		if body := rec.Body.String(); rec.Code != http.StatusUnprocessableEntity || !strings.Contains(body, c.line) || strings.Contains(body, ghToken) {
+			t.Errorf("source %q: %d, want 422 with %q and no token:\n%s", c.source, rec.Code, c.line, body)
+		}
+	}
+	if r.mirrors.rows["linkshort import"] != want {
+		t.Fatalf("a refused form changed the import row: %+v", r.mirrors.rows["linkshort import"])
+	}
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("POST /projects without a source = %d", rec.Code)
+	}
+	if _, ok := r.mirrors.rows["linkshort import"]; ok {
+		t.Error("a form without a source kept the stale import row")
+	}
+	infra.mu.Lock()
+	sent, _ := json.Marshal([]any{infra.contents, infra.pulls})
+	infra.mu.Unlock()
+	r.events.mu.Lock()
+	events, _ := json.Marshal(r.events.rows)
+	r.events.mu.Unlock()
+	if strings.Contains(logs.String()+string(sent)+string(events), ghToken) {
+		t.Fatalf("the token left the row:\n%s", logs.String())
+	}
+}
+
+// An import row adds the step "Imported from GitHub" after the
+// repository's: waiting before the load, running until registration's
+// migrate, then done with its time or failed with the row's state.
+func TestStatusShowsGitHubImport(t *testing.T) {
+	for _, c := range []struct {
+		load                bool
+		state, want, detail string
+	}{
+		{false, "pending", stepWaiting, "After the merge."},
+		{true, "pending", stepRunning, "Registration copies github.com/acme/app into the repository within a minute of the load."},
+		{true, "failed: forgejo POST /api/v1/repos/migrate: status 500: boom", stepFailed,
+			"The copy of github.com/acme/app failed: forgejo POST /api/v1/repos/migrate: status 500: boom. The reconcile tries again at least hourly."},
+		{true, "imported 2026-10-11 14:00 UTC", stepDone, "github.com/acme/app, imported 2026-10-11 14:00 UTC."},
+	} {
+		s := newStatusRig(t)
+		s.mirrors.rows["linkshort import"] = factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", State: c.state}
+		if c.load {
+			s.force.load("linkshort")
+		}
+		body := s.status(t)
+		names, states, _ := steps(body)
+		wantNames := []string{"Pull request opened", "Approved and merged", "Repository created", "Imported from GitHub", "Board ready"}
+		if !slices.Equal(names, wantNames) || states[3] != c.want || !strings.Contains(body, `<span class="detail">`+c.detail+`</span>`) {
+			t.Errorf("%s: steps %q, states %q, want %s with %q:\n%s", c.state, names, states, c.want, c.detail, body)
+		}
+	}
 }

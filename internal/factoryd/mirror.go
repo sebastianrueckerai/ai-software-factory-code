@@ -13,8 +13,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// MirrorExport is a project's push mirror to GitHub, kept by Forgejo.
-const MirrorExport = "export"
+const (
+	// MirrorExport is a project's push mirror to GitHub, kept by Forgejo.
+	MirrorExport = "export"
+	// MirrorImport is a new project's GitHub repository, which
+	// registration copies into its Forgejo repository once; its token,
+	// empty for a public one, is forgotten after the copy.
+	MirrorImport = "import"
+)
 
 // Mirror is a project's project_mirrors row: Remote is the GitHub
 // repository, owner/name; State the registrar's reading of its last sync.
@@ -67,6 +73,13 @@ func (s *PGStore) SetMirrorState(ctx context.Context, project, direction, state,
 	return err
 }
 
+// SetMirrorToken replaces the token of project's mirror of direction.
+func (s *PGStore) SetMirrorToken(ctx context.Context, project, direction, token string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET token = $3, updated_at = now() WHERE project = $1 AND direction = $2`,
+		project, direction, token)
+	return err
+}
+
 // DeleteMirror forgets project's mirror of direction.
 func (s *PGStore) DeleteMirror(ctx context.Context, project, direction string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM project_mirrors WHERE project = $1 AND direction = $2`, project, direction)
@@ -78,6 +91,7 @@ func (s *PGStore) DeleteMirror(ctx context.Context, project, direction string) e
 type MirrorStore interface {
 	MirrorToken(ctx context.Context, project, direction string) (Mirror, bool, error)
 	SetMirrorState(ctx context.Context, project, direction, state, lastError string, lastUpdate time.Time) error
+	SetMirrorToken(ctx context.Context, project, direction, token string) error
 }
 
 // GitHubAddress is the push mirror address of GitHub repository remote,

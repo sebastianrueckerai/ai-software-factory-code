@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // ProjectKube is the slice of the Kubernetes API registration uses.
@@ -436,14 +438,23 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 // seedFromTemplate commits the project's template, rendered, as main's
 // first commit by factory-projects (stage11-design.md section 6). It runs
 // before main's protection exists; a repository with main is never seeded,
-// so no project is seeded twice.
+// so no project is seeded twice. An imported repository gets main from
+// its default branch, then only the template's .forgejo/ files and
+// AGENTS.md it lacks, the factory's CI and conventions, in one commit.
 func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	f, p := run.r.Forgejo, run.p
 	has, err := f.ProjectBranchExists(ctx, p.Repo(), "main")
+	imported := false
+	if err == nil && run.r.Mirrors != nil {
+		_, imported, err = run.r.Mirrors.MirrorToken(ctx, p.Name, MirrorImport)
+	}
+	if err == nil && imported && !has {
+		has, err = f.MainAsDefault(ctx, p.Repo())
+	}
 	switch {
 	case err != nil:
 		return "", err
-	case has:
+	case has && (!imported || p.Template == ""):
 		return Unchanged, nil
 	case p.Template == "":
 		return "waiting: no template; main's first push starts the project", nil
@@ -451,6 +462,9 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 		return "", fmt.Errorf("template %q is not in the configuration version in force", p.Template)
 	}
 	if _, protected, err := f.ProjectBranchProtection(ctx, p.Repo(), "main"); err != nil || protected {
+		if has {
+			return Unchanged, err
+		}
 		return "waiting: main's protection exists, which refuses the seed; push main's first commit", err
 	}
 	data := policy.TemplateData{Name: p.Name, Repository: p.Repository, Image: run.r.RegistryHost + "/" + p.Repository, Namespaces: map[string]string{}}
@@ -461,11 +475,34 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	if err != nil {
 		return "", err
 	}
-	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Seed from template "+p.Template+" (registration)", files)
+	if !has {
+		sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Seed from template "+p.Template+" (registration)", files)
+		if err != nil {
+			return "", err
+		}
+		return Change(fmt.Sprintf("created %s from template %s", sha, p.Template)), nil
+	}
+	for path := range files {
+		keep := strings.HasPrefix(path, ".forgejo/") || path == "AGENTS.md"
+		if keep {
+			exists, err := f.ProjectFileExists(ctx, p.Repo(), "main", path)
+			if err != nil {
+				return "", err
+			}
+			keep = !exists
+		}
+		if !keep {
+			delete(files, path)
+		}
+	}
+	if len(files) == 0 {
+		return Unchanged, nil
+	}
+	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Factory workflows", files)
 	if err != nil {
 		return "", err
 	}
-	return Change(fmt.Sprintf("created %s from template %s", sha, p.Template)), nil
+	return Change(fmt.Sprintf("created %s: %s from template %s", sha, strings.Join(slices.Sorted(maps.Keys(files)), ", "), p.Template)), nil
 }
 
 // webhook keeps the hook to factoryd; the row keeps the sha256 of the
@@ -1032,7 +1069,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 	if err := logged("organisation "+org, c, err); err != nil {
 		return err
 	}
-	c, err = f.AdminEnsureRepo(ctx, a, repo)
+	c, err = r.ensureRepo(ctx, a, p.Name, repo)
 	if err := logged("repository "+repo.String(), c, err); err != nil {
 		return err
 	}
@@ -1098,6 +1135,34 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 		}
 	}
 	return nil
+}
+
+// ensureRepo makes repo: Forgejo's migrate of the GitHub repository that
+// name's import row names while the row waits for it, after which the row
+// forgets the token and says imported, else empty. A refused migrate
+// leaves the row its token and says failed, the token taken out.
+func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
+	m, ok, err := Mirror{}, false, error(nil)
+	if r.Mirrors != nil {
+		m, ok, err = r.Mirrors.MirrorToken(ctx, name, MirrorImport)
+	}
+	if err != nil {
+		return "", err
+	}
+	if !ok || strings.HasPrefix(m.State, "imported") {
+		return r.Forgejo.AdminEnsureRepo(ctx, a, repo)
+	}
+	if err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token); err != nil {
+		msg := err.Error()
+		if m.Token != "" {
+			msg = strings.ReplaceAll(msg, m.Token, "[token]")
+		}
+		first, _, _ := strings.Cut(msg, "\n")
+		return "", errors.Join(errors.New(msg), r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "failed: "+textutil.Truncate(first, 120), msg, time.Time{}))
+	}
+	now := time.Now().UTC()
+	return Change("imported from " + m.Remote), errors.Join(r.Mirrors.SetMirrorToken(ctx, name, MirrorImport, ""),
+		r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "imported "+now.Format("2006-01-02 15:04")+" UTC", "", now))
 }
 
 // adminAuth reads the site admin's login from OpenBao; the caller holds it

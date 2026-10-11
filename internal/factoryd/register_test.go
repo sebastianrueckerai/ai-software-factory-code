@@ -56,6 +56,13 @@ type forgejoState struct {
 	teamUnits     map[string]string
 	seeds         []seedCommit
 	orgBasic      string // the basic auth, user:password, of the organisation's create
+
+	files         map[string]bool // main's paths
+	migrated      []map[string]any
+	migrateFail   string   // a migrate's 500 answer; "": it works
+	source        []string // the migrated repository's paths; none: it is empty
+	sourceBranch  string   // and its default branch
+	defaultBranch string
 }
 
 // seedCommit is one contents call: its branch, message, credential and
@@ -68,7 +75,8 @@ type seedCommit struct {
 
 func newForgejoState() *forgejoState {
 	return &forgejoState{users: map[string]bool{"factory-projects": true, "factory-merge": true, "factory-agent": true, "sebastian": true},
-		collabs: map[string]string{}, protection: map[string]map[string]any{}, branches: map[string]string{}, secrets: map[string]string{}, tokens: map[int64][2]string{}, projectsAdmin: true}
+		collabs: map[string]string{}, protection: map[string]map[string]any{}, branches: map[string]string{}, secrets: map[string]string{}, tokens: map[int64][2]string{}, projectsAdmin: true,
+		files: map[string]bool{}}
 }
 
 func (s *forgejoState) server(t *testing.T) *httptest.Server {
@@ -125,6 +133,19 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			}
 			s.repo = true
 			w.WriteHeader(http.StatusCreated)
+		case admin && r.Method == http.MethodPost && p == "/api/v1/repos/migrate":
+			s.migrated = append(s.migrated, body)
+			if s.migrateFail != "" {
+				w.WriteHeader(http.StatusInternalServerError)
+				io.WriteString(w, s.migrateFail)
+				return
+			}
+			s.repo, s.defaultBranch = true, s.sourceBranch
+			for _, f := range s.source {
+				s.files[f], s.branches[s.sourceBranch] = true, "1mp0rt"
+			}
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		case admin && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/users/") && strings.Count(p, "/") == 4:
 			user := strings.TrimPrefix(p, "/api/v1/users/")
 			if !s.users[user] {
@@ -201,7 +222,16 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			io.WriteString(w, `{"permissions":{"admin":true}}`)
+			fmt.Fprintf(w, `{"permissions":{"admin":true},"default_branch":%q,"empty":%t}`, s.defaultBranch, len(s.branches) == 0)
+		case p == repo && r.Method == http.MethodPatch:
+			s.defaultBranch = body["default_branch"].(string)
+			io.WriteString(w, `{}`)
+		case strings.HasPrefix(p, repo+"/contents/") && r.Method == http.MethodGet:
+			if !s.files[strings.TrimPrefix(p, repo+"/contents/")] || r.URL.Query().Get("ref") != "main" {
+				http.NotFound(w, r)
+				return
+			}
+			io.WriteString(w, `{}`)
 		case p == repo+"/hooks" && r.Method == http.MethodGet:
 			s.hookReads = append(s.hookReads, by)
 			if by == "token revoked-tok" {
@@ -292,9 +322,13 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				b, _ := base64.StdEncoding.DecodeString(f["content"].(string))
 				c.ops[f["path"].(string)], c.files[f["path"].(string)] = f["operation"].(string), string(b)
 			}
-			if _, ok := s.branches[c.branch]; ok {
+			_, has := s.branches[c.branch]
+			if has && s.protection[c.branch] != nil || slices.ContainsFunc(slices.Collect(maps.Keys(c.files)), func(f string) bool { return s.files[f] }) {
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
+			}
+			for f := range c.files {
+				s.files[f] = true
 			}
 			s.seeds = append(s.seeds, c)
 			s.branches[c.branch] = "5eed"
