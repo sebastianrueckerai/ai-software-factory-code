@@ -79,7 +79,7 @@ func (f *fakeChat) msgKey(repository, login string, conv int64) string {
 	return fmt.Sprintf("%s %s %d", repository, login, conv)
 }
 
-func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
+func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, conversation int64, m factoryd.ChatMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
@@ -87,9 +87,11 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
-	conv := f.currentConv(repository, login)
-	m.Conversation = conv
-	f.msgs[f.msgKey(repository, login, conv)] = append(f.msgs[f.msgKey(repository, login, conv)], m)
+	if conversation == 0 {
+		conversation = f.currentConv(repository, login)
+	}
+	m.Conversation = conversation
+	f.msgs[f.msgKey(repository, login, conversation)] = append(f.msgs[f.msgKey(repository, login, conversation)], m)
 	return nil
 }
 
@@ -1064,7 +1066,7 @@ func TestChatSteerAndComment(t *testing.T) {
 func TestChatProposalDescriptionAndMalformedCalls(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant",
+	if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", 0, factoryd.ChatMessage{Role: "assistant",
 		ToolCalls: []factoryd.ChatToolCall{{ID: "call_0", Name: "card", Arguments: `{"task_id":`, Result: "earlier"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1240,7 +1242,7 @@ func TestChatReplayDropsClaims(t *testing.T) {
 		{Role: "assistant", Content: "The board has 3 cards"},
 		{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card", Arguments: "{}", Result: "ok"}}},
 	} {
-		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", 0, m); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -88,7 +88,7 @@ func TestPGStoreChatMessages(t *testing.T) {
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", ToolCalls: calls}},
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", Content: "One card, #4."}},
 	} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, m.m); err != nil {
+		if err := s.AddChatMessage(ctx, m.repo, m.login, 0, m.m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -286,7 +286,7 @@ func TestPGStoreChatConversations(t *testing.T) {
 		{"sf/code", "anna", "second"},
 		{"sf/code", "bob", "bob's"},
 	} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, ChatMessage{Role: "user", Content: m.content}); err != nil {
+		if err := s.AddChatMessage(ctx, m.repo, m.login, 0, ChatMessage{Role: "user", Content: m.content}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -298,7 +298,7 @@ func TestPGStoreChatConversations(t *testing.T) {
 	if err != nil || next != 2 {
 		t.Fatalf("new = %d, %v, want 2", next, err)
 	}
-	if err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "user", Content: "third"}); err != nil {
+	if err := s.AddChatMessage(ctx, "sf/code", "anna", 0, ChatMessage{Role: "user", Content: "third"}); err != nil {
 		t.Fatal(err)
 	}
 	c1, err := s.ChatMessages(ctx, "sf/code", "anna", 1, 100)

@@ -70,28 +70,46 @@ func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, b
 	return got, err
 }
 
-// CurrentConversation is login's highest conversation number on repository,
-// 1 when none.
+// CurrentConversation is login's current conversation number on repository,
+// 1 when none. It checks the tracking table first, then falls back to the
+// highest conversation with messages.
 func (s *PGStore) CurrentConversation(ctx context.Context, repository, login string) (int64, error) {
-	var n sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT max(conversation) FROM chat_messages WHERE repository = $1 AND login = $2`,
-		repository, login).Scan(&n); err != nil {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT conversation FROM chat_current_conversation WHERE repository = $1 AND login = $2`,
+		repository, login).Scan(&n)
+	if err == nil {
+		return n, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
-	if !n.Valid {
+	var maxConv sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT max(conversation) FROM chat_messages WHERE repository = $1 AND login = $2`,
+		repository, login).Scan(&maxConv); err != nil {
+		return 0, err
+	}
+	if !maxConv.Valid {
 		return 1, nil
 	}
-	return n.Int64, nil
+	return maxConv.Int64, nil
 }
 
 // NewConversation starts conversation max+1 for login on repository and
-// answers it.
+// answers it. It updates the tracking table so CurrentConversation sees
+// the new conversation immediately.
 func (s *PGStore) NewConversation(ctx context.Context, repository, login string) (int64, error) {
 	cur, err := s.CurrentConversation(ctx, repository, login)
 	if err != nil {
 		return 0, err
 	}
-	return cur + 1, nil
+	next := cur + 1
+	_, err = s.db.ExecContext(ctx, `INSERT INTO chat_current_conversation (repository, login, conversation) VALUES ($1, $2, $3)
+		ON CONFLICT (repository, login) DO UPDATE SET conversation = $3`,
+		repository, login, next)
+	if err != nil {
+		return 0, err
+	}
+	return next, nil
 }
 
 // ChatConversation is one conversation of a member on a project.
@@ -122,8 +140,9 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 	return out, rows.Err()
 }
 
-// AddChatMessage appends m to login's current conversation on repository.
-func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) error {
+// AddChatMessage appends m to login's conversation on repository. When
+// conversation is 0, the current one is used.
+func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, conversation int64, m ChatMessage) error {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(m.ToolCalls)
@@ -132,12 +151,15 @@ func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, 
 		}
 		calls = b
 	}
-	conv, err := s.CurrentConversation(ctx, repository, login)
-	if err != nil {
-		return err
+	if conversation == 0 {
+		var err error
+		conversation, err = s.CurrentConversation(ctx, repository, login)
+		if err != nil {
+			return err
+		}
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-		repository, login, m.Role, m.Content, calls, conv)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+		repository, login, m.Role, m.Content, calls, conversation)
 	return err
 }
 

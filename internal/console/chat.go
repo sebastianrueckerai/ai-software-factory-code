@@ -118,7 +118,7 @@ func (t *turn) fail(msg string) {
 // save appends m to the member's conversation, even once they left; false
 // once the turn failed.
 func (t *turn) save(m factoryd.ChatMessage) bool {
-	if err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.a.s.user, m); err != nil {
+	if err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.a.s.user, 0, m); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
 		return false
@@ -204,7 +204,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot file the chat's task", http.StatusInternalServerError)
 		return
 	}
-	if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text}); err != nil {
+	if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, 0, factoryd.ChatMessage{Role: "user", Content: text}); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
 		return

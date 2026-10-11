@@ -60,6 +60,7 @@ func TestLoadEnvStepCap(t *testing.T) {
 
 func TestLoadEnvFindingsAbsentMeansFirstAttempt(t *testing.T) {
 	setRequiredEnv(t)
+	t.Setenv("FINDINGS", "")
 	e, err := loadEnv()
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)

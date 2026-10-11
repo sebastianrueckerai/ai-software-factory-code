@@ -78,7 +78,7 @@ type Events interface {
 // project's month spend.
 type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
-	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) error
+	AddChatMessage(ctx context.Context, repository, login string, conversation int64, m factoryd.ChatMessage) error
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
