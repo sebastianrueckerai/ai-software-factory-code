@@ -1,7 +1,9 @@
--- events (ruling 252): one row per action, whatever the input — a human's
--- button in the console, factoryd's own task events, an answer that arrived
--- as an issue comment, and later the project agent's chat. The project
--- event feed reads it by repository; a card's activity line its newest row.
+-- events (ruling 252): one row per action, whatever the input: a button in
+-- the console, one of factoryd's own task events, an answer that arrived as
+-- an issue comment, and later the project agent's chat. The project event
+-- feed reads the table by repository. A card's activity line reads its
+-- newest row. The runner splits this file on semicolons, so no comment may
+-- hold one.
 CREATE TABLE IF NOT EXISTS events (
 	id bigserial PRIMARY KEY,
 	at timestamptz NOT NULL DEFAULT now(),
@@ -17,5 +19,5 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_repository_id_idx ON events (repository, id);
 
 -- NewestTaskEvents runs DISTINCT ON over task_id = ANY on every board
--- render; without this the read scans the table for each poll.
+-- render. Without this index the read scans the table for each poll.
 CREATE INDEX IF NOT EXISTS events_task_id_idx ON events (task_id, id);
