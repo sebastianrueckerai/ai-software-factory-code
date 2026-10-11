@@ -571,17 +571,17 @@ func cardFacts(c PlanCard) string {
 	return b.String()
 }
 
-// cardBody is card c's issue body before its marker: card i of n of the
-// plan on issue planIssue, accepted by approver, with the issues of the
-// cards it depends on (deps, their keys by issue).
-func cardBody(c PlanCard, planIssue int64, i, n int, approver string, deps []Dependency) string {
+// cardBody is card c's issue body before its marker: card i of n of of
+// (plan #n), accepted by approver, with the issues of the cards it
+// depends on (deps, their keys by issue).
+func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependency) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
-	return fmt.Sprintf("Card %s of plan #%d (%d of %d), accepted by %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
-		c.Key, planIssue, i, n, approver, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
+	return fmt.Sprintf("Card %s of %s (%d of %d), accepted by %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
+		c.Key, of, i, n, approver, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
 }
 
 // planGuide is the planner's guide: the spec is the issue, the answer one
@@ -1369,31 +1369,55 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		r.record(ctx, taskID, "plan_refused", map[string]any{"revision": revision, "by": approver, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
 	}
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, approver)
+	if err != nil {
+		return ChildrenResult{}, err
+	}
+	byKey := map[string]int64{}
+	var issues []int64
+	for _, c := range cards {
+		byKey[c.PlanKey] = c.IssueNumber
+		issues = append(issues, c.IssueNumber)
+	}
+	if _, err := r.postPlan(ctx, t, repo, revision, p, byKey); err != nil {
+		return ChildrenResult{}, err
+	}
+	if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "approved", approver, fmt.Sprintf("revision %d accepted: %d cards filed", revision, len(issues))); err != nil {
+		return ChildrenResult{}, err
+	}
+	r.record(ctx, taskID, "children_created", map[string]any{"revision": revision, "by": approver, "issues": issues})
+	return ChildrenResult{Issues: issues}, nil
+}
+
+// fileChildren files p's cards of task t, its process's, the cards of
+// of (plan #n), in topological order as backlog task rows and bot issues
+// found by their markers or filed, and records the edges in Forgejo and
+// task_deps; the cards in filing order.
+func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	_, project, _ := v.ProjectOf(t.Repository)
 	cards := map[string]Task{}
 	var open []webhookIssue
-	var issues []int64
 	for i, c := range order {
 		var deps []Dependency
 		for _, d := range dependsOn(order, edges, c.Key) {
 			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
 		}
 		title := r.untrusted(t, c.Title)
-		body := r.untrusted(t, cardBody(c, t.IssueNumber, i+1, len(order), approver, deps))
+		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
-			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: taskID, PlanKey: c.Key,
+			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
 			Author: approver, AuthorWriter: true})
 		if err != nil {
-			return ChildrenResult{}, err
+			return nil, err
 		}
 		if card.IssueNumber == 0 {
-			marker := cardMarker(taskID, c.Key)
+			marker := cardMarker(t.ID, c.Key)
 			if open == nil {
 				if open, err = r.forgejo.OpenIssues(ctx, repo.Owner, repo.Name); err != nil {
-					return ChildrenResult{}, err
+					return nil, err
 				}
 			}
 			i := slices.IndexFunc(open, func(is webhookIssue) bool {
@@ -1404,20 +1428,19 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 			} else {
 				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
 				if err != nil {
-					return ChildrenResult{}, err
+					return nil, err
 				}
 				card.IssueNumber = ref.Number
 			}
 			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelBacklog, "state/backlog"}); err != nil {
-				return ChildrenResult{}, err
+				return nil, err
 			}
 			if err := r.store.SetTaskIssue(ctx, card.ID, card.IssueNumber); err != nil {
-				return ChildrenResult{}, err
+				return nil, err
 			}
-			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": taskID})
+			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID})
 		}
 		cards[c.Key] = card
-		issues = append(issues, card.IssueNumber)
 	}
 	for _, c := range order {
 		if len(edges[c.Key]) == 0 {
@@ -1426,7 +1449,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		child := cards[c.Key]
 		have, err := r.forgejo.IssueDependencies(ctx, repo.Owner, repo.Name, child.IssueNumber)
 		if err != nil {
-			return ChildrenResult{}, err
+			return nil, err
 		}
 		var ids []string
 		for _, d := range dependsOn(order, edges, c.Key) {
@@ -1434,26 +1457,19 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 			ids = append(ids, dep.ID)
 			if !slices.Contains(have, dep.IssueNumber) {
 				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
-					return ChildrenResult{}, err
+					return nil, err
 				}
 			}
 		}
 		if err := r.store.AddTaskDeps(ctx, child.ID, ids); err != nil {
-			return ChildrenResult{}, err
+			return nil, err
 		}
 	}
-	byKey := map[string]int64{}
-	for k, c := range cards {
-		byKey[k] = c.IssueNumber
+	out := make([]Task, len(order))
+	for i, c := range order {
+		out[i] = cards[c.Key]
 	}
-	if _, err := r.postPlan(ctx, t, repo, revision, p, byKey); err != nil {
-		return ChildrenResult{}, err
-	}
-	if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "approved", approver, fmt.Sprintf("revision %d accepted: %d cards filed", revision, len(issues))); err != nil {
-		return ChildrenResult{}, err
-	}
-	r.record(ctx, taskID, "children_created", map[string]any{"revision": revision, "by": approver, "issues": issues})
-	return ChildrenResult{Issues: issues}, nil
+	return out, nil
 }
 
 // EditIssueComment replaces comment id's body.
@@ -1520,26 +1536,31 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 
 // planOf is plan card t's section "The spec and the plan" (its plan's
 // issue text and the accepted plan's summary), its role and its plan
-// row's directories; "" and none for a task no plan filed.
-func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, err error) {
+// row's directories, and the pull request of a split's card; "" and none
+// for a task no plan filed.
+func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, pull int64, err error) {
 	if t.Source != SourcePlan || t.Parent == "" {
-		return "", "", nil, nil
+		return "", "", nil, 0, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, 0, err
 	}
 	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 	if err != nil || !ok {
-		return "", "", nil, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
+		return "", "", nil, 0, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
 	}
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return "", "", nil, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
+		return "", "", nil, 0, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
 		role, dirs = p.Cards[i].Role, p.Cards[i].Directories
 	}
-	return plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary), role, dirs, nil
+	spec = plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary)
+	if plan.PRNumber != 0 {
+		spec += fmt.Sprintf("\n\nThe plan splits pull request #%[1]d, whose head is in your clone as branch pull/%[1]d: carry over the files and hunks your brief names.", plan.PRNumber)
+	}
+	return spec, role, dirs, plan.PRNumber, nil
 }

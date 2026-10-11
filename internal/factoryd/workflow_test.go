@@ -184,6 +184,12 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityAwaitRollHold:     func(ctx context.Context, taskID string) error { return nil },
 		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
 		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
+		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
+			return PlanResult{}, nil
+		},
+		ActivityFileSplit: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
+			return ChildrenResult{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

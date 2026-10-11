@@ -112,6 +112,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityAwaitRollHold:               r.AwaitRollHold,
 		ActivityClearRollHold:               r.ClearRollHold,
 		ActivityProviderWait:                r.ProviderWait,
+		ActivityRunSplit:                    r.RunSplit,
+		ActivityFileSplit:                   r.FileSplit,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -340,7 +342,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
-	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
+	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, err
 	}
 	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {

@@ -428,7 +428,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1385,8 +1385,9 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 }
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
-// task, a reviewer requests changes, or an approval merges the pull
-// request as factory-merge. A merge Forgejo refuses keeps the wait; one
+// task, a reviewer requests changes, a member's split files its cards
+// (versionSplit), or an approval merges the pull request as
+// factory-merge. A merge Forgejo refuses keeps the wait; one
 // that fails otherwise keeps the approval and is tried again after
 // mergeRetryAfter (versionGatesPinned).
 func (t *taskRun) awaitApproval(commit string) verdict {
@@ -1397,7 +1398,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 	for {
 		retried := false
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved} {
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved, SignalSplit} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		if t.rolling {
@@ -1415,6 +1416,13 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		}
 		if t.rolling && t.drainFolds() {
 			return verdict{reason: "newer images folded in"}
+		}
+		var split TaskSignal
+		if workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(&split) {
+			if v, done := t.split(split); done {
+				return v
+			}
+			continue
 		}
 		if t.v8 < versionGatesPinned {
 			approver = ""

@@ -337,6 +337,9 @@ type sessionSpec struct {
 	spec, cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
+	// pull is the pull request a split reads, whose head the clone holds
+	// as branch pull/<pull>; 0 for none
+	pull int64
 	// messageToken is the bearer of the worker's message endpoint, made
 	// per session; the pod gets its hash
 	messageToken string
@@ -1040,6 +1043,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "BRANCH", "value": taskBranch(t)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
+	}
+	if s.pull != 0 {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "PULL", "value": strconv.FormatInt(s.pull, 10)})
 	}
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": s.report})

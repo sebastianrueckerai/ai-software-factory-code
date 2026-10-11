@@ -63,18 +63,21 @@ var activityGates = map[string]string{
 	ActivityRunReport:        GateSession,
 	ActivityGateAudit:        GateAudit,
 	ActivityRunPlan:          GateSession,
+	ActivityRunSplit:         GateSession,
 	ActivityRequestPlan:      GateApproval,
 	ActivityAwaitSessionGap:  GateMerge,
 	ActivityProviderWait:     GateProvider,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
-// not name: they take the policy's default bound, RunPlan a session's.
+// not name: they take the policy's default bound, RunPlan and RunSplit a
+// session's.
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer,
-	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions}
+	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
+	ActivityRunSplit, ActivityFileSplit}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

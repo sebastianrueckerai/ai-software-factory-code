@@ -373,6 +373,9 @@ type workerEnv struct {
 	spec, cardRole string
 	// directories are the card's (DIRECTORIES), for the brief's map
 	directories []string
+	// pull is the pull request a split reads (PULL), whose head the clone
+	// fetches as branch pull/<pull>
+	pull string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -473,7 +476,7 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	if err == nil {
-		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL")}
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL")}
 		err = cloneBase(e, filepath.Join(ws, "repo"))
 	}
 	return recordFetch(log, ws, err)
@@ -491,12 +494,18 @@ func cloned(ws string) error {
 	return errors.New(string(failed))
 }
 
-// cloneBase clones the task's repository at its base and, when the session
-// resumes a branch head that only the fork holds, fetches that branch from
-// the fork, both with the read token. The headers stay out of .git/config.
+// cloneBase clones the task's repository at its base, with the head of a
+// split's pull request as branch pull/<n>, and, when the session resumes a
+// branch head that only the fork holds, fetches that branch from the fork,
+// all with the read token. The headers stay out of .git/config.
 func cloneBase(e workerEnv, repoDir string) error {
 	if err := e.gitAuth(e.repoToken, "", "clone", "-q", e.repoURL, repoDir); err != nil {
 		return err
+	}
+	if e.pull != "" {
+		if err := e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.repoURL, "+refs/pull/"+e.pull+"/head:refs/heads/pull/"+e.pull); err != nil {
+			return err
+		}
 	}
 	if e.repoSHA == "" {
 		return nil

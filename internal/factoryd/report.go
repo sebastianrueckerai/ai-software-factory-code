@@ -121,7 +121,7 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 // none, why the session ended without one.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (report, why string, escalated bool, err error) {
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers}
+	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return "", "", false, err
 	}

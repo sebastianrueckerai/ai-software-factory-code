@@ -347,6 +347,10 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			f.branches[body["new_branch_name"].(string)] = head
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/linkshort/linkshort":
+			w.Write([]byte(`{"default_branch":"main"}`))
+		case r.Method == "GET" && rest == "branches/main":
+			w.Write([]byte(`{"commit":{"id":"m1"}}`))
 		case r.Method == "PATCH" && len(parts) == 3 && parts[1] == "comments":
 			id, _ := strconv.ParseInt(parts[2], 10, 64)
 			for _, c := range f.comments {
@@ -1023,8 +1027,8 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it"})
-	if spec, role, dirs, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || err != nil {
-		t.Fatalf("planOf a webhook task = %q %q %q %v", spec, role, dirs, err)
+	if spec, role, dirs, pull, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || pull != 0 || err != nil {
+		t.Fatalf("planOf a webhook task = %q %q %q %d %v", spec, role, dirs, pull, err)
 	}
 }
 

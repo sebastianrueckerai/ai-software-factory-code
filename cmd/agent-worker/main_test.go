@@ -212,8 +212,9 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 
 // The clone init container (MODE=clone) alone holds the read token, on the
 // task's repository and the bot's fork: it clones the repository into the
-// workspace, fetches a resumed session's branch head from the fork with
-// that same token, and leaves no token in the clone's config. A failed
+// workspace, fetches a resumed session's branch head from the fork and a
+// split's pull request head from the repository with that same token, and
+// leaves no token in the clone's config. A failed
 // clone exits 0 and leaves its failure, scrubbed of the token, for the
 // worker container to report.
 func TestCloneModeClones(t *testing.T) {
@@ -288,9 +289,24 @@ func TestCloneModeClones(t *testing.T) {
 			}
 		})
 	}
+	// a split's session: the pull request's head, which Forgejo keeps in
+	// the repository as refs/pull/7/head, is the clone's branch pull/7
+	run("-C", seed, "push", "-q", remote, "factory/t1:refs/pull/7/head")
+	for k, v := range map[string]string{"MODE": "clone", "REPO_URL": srv.URL + "/repo.git", "PUSH_URL": "", "PULL": "7",
+		"REPO_SHA": head, "BRANCH": "factory/t1", "REPO_TOKEN": "r3ad-tok"} {
+		t.Setenv(k, v)
+	}
+	ws := t.TempDir()
+	if code := runClone(nolog, ws); code != 0 || cloned(ws) != nil {
+		t.Fatalf("clone exit %d: %v", code, cloned(ws))
+	}
+	if got := run("-C", filepath.Join(ws, "repo"), "rev-parse", "pull/7"); got != wip {
+		t.Fatalf("pull/7 = %s, want the pull request's head %s", got, wip)
+	}
 	if refused != 0 {
 		t.Fatalf("%d requests without the read token", refused)
 	}
+	t.Setenv("PULL", "")
 
 	t.Run("failed", func(t *testing.T) {
 		for k, v := range map[string]string{"MODE": "clone", "REPO_URL": strings.Replace(srv.URL, "http://", "http://x-access-token:r3ad-tok@", 1) + "/missing.git",

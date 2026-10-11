@@ -487,7 +487,8 @@ type forgejoHub struct {
 	branchHead  string // the task branch's head; empty = no branch yet
 	mainHead    string // the task repository's main head
 	comments    []string
-	failWrites  int // write-token mints to answer 502 before succeeding
+	failWrites  int    // write-token mints to answer 502 before succeeding
+	prFiles     string // a pull request's files, as Forgejo lists them
 }
 
 func (h *forgejoHub) minted() []string {
@@ -570,6 +571,8 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.revoked = append(h.revoked, id)
 			h.calls = append(h.calls, fmt.Sprintf("revoke %d", id))
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/files") && h.prFiles != "":
+			io.WriteString(w, h.prFiles)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 		}
