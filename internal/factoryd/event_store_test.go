@@ -2,6 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -203,5 +206,98 @@ func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
 	case e := <-ch:
 		t.Fatalf("the repeated answer published event %d", e.ID)
 	default:
+	}
+}
+
+// Every status or gate change of the store leaves one task_status row by
+// factoryd, with the task's repository and issue and its status and gate
+// after the change, and publishes it; a change whose condition matches no
+// row (a transition from a status the task is not in, a gate on a final
+// task) leaves none.
+func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events, tasks CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	bus := NewEventBus()
+	s.SetBus(bus)
+	published := make(chan Event, 16)
+	defer bus.Subscribe("sf/r", published)()
+	for _, tk := range []Task{
+		{ID: "t-s", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "backlog", BudgetEUR: 1},
+		{ID: "t-h", Repository: "sf/r", IssueNumber: 8, Kind: "agent", Status: "queued", BudgetEUR: 1},
+	} {
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	changed := func(ok bool, err error) error {
+		if err == nil && !ok {
+			return ErrNotFound
+		}
+		return err
+	}
+	for _, step := range []struct {
+		name   string
+		change func() error
+		task   string
+		issue  int64
+		detail map[string]any // nil: no row
+	}{
+		{"EnterLane", func() error { return changed(s.EnterLane(ctx, "t-s", "ready", "coder", "abc")) },
+			"t-s", 7, map[string]any{"status": "queued", "gate": GateIntake}},
+		{"MarkStarted", func() error { return s.MarkStarted(ctx, "t-s") },
+			"t-s", 7, map[string]any{"status": "running", "gate": GateIntake}},
+		{"SetGate", func() error { return s.SetGate(ctx, "t-s", GateChecks, time.Now()) },
+			"t-s", 7, map[string]any{"status": "running", "gate": GateChecks}},
+		{"TransitionTask from a status the task is not in", func() error {
+			if err := s.TransitionTask(ctx, "t-s", []string{"queued"}, "in-review"); !errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("= %v, want ErrNotFound", err)
+			}
+			return nil
+		}, "t-s", 7, nil},
+		{"TransitionTask", func() error { return s.TransitionTask(ctx, "t-s", []string{"running"}, "in-review") },
+			"t-s", 7, map[string]any{"status": "in-review", "gate": GateChecks}},
+		{"TransitionTask to a final status", func() error { return s.TransitionTask(ctx, "t-s", []string{"in-review"}, "done") },
+			"t-s", 7, map[string]any{"status": "done", "gate": ""}},
+		{"SetGate on a final task", func() error { return s.SetGate(ctx, "t-s", GateReview, time.Now()) }, "t-s", 7, nil},
+		{"ToHumanLane", func() error { return changed(s.ToHumanLane(ctx, "t-h")) },
+			"t-h", 8, map[string]any{"status": "waiting-human", "gate": ""}},
+	} {
+		before, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := step.change(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		after, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows := after[:len(after)-len(before)]
+		if step.detail == nil {
+			if len(rows) != 0 {
+				t.Errorf("%s left %d rows: %+v", step.name, len(rows), rows)
+			}
+			continue
+		}
+		if len(rows) != 1 {
+			t.Fatalf("%s left %d rows, want 1: %+v", step.name, len(rows), rows)
+		}
+		e := rows[0]
+		if e.Kind != EventTaskStatus || e.Actor != FactoryDecider || e.Via != ViaFactoryd || e.TaskID != step.task ||
+			e.Repository != "sf/r" || e.IssueNumber != step.issue || !reflect.DeepEqual(e.Detail, step.detail) {
+			t.Errorf("%s: row %+v, want task_status by factoryd of %s #%d with %v", step.name, e, step.task, step.issue, step.detail)
+		}
+		if got := <-published; got.ID != e.ID {
+			t.Errorf("%s: published event %d, want the row %d", step.name, got.ID, e.ID)
+		}
 	}
 }

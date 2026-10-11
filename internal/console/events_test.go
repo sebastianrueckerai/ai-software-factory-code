@@ -196,7 +196,9 @@ func standingResource(r *rig) {
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
 }
 
-// actions are the seventeen POST handlers, one per event kind of the spine.
+// actions are the seventeen POST handlers, one per kind a button leaves;
+// factoryd's own kinds, task_status among them, come from its store and
+// its Timeline (internal/factoryd).
 var actions = []action{
 	boardAction("createTask", "/tasks", factoryd.EventCardFiled, "sf/code", "",
 		map[string]any{"lane": "ready", "title": "Fix the cache"}, nil,
@@ -691,11 +693,24 @@ func TestBoardActivityLine(t *testing.T) {
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Process: "maintenance",
 			Objective: "add the feed", Repository: "sf/code", IssueNumber: 12, CreatedAt: time.Now()},
 		factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
-			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13})
+			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13},
+		factoryd.Task{ID: "t-rev", Kind: "agent", Status: "in-review", Process: "maintenance",
+			Objective: "review it", Repository: "sf/code", IssueNumber: 14, CreatedAt: time.Now()},
+		factoryd.Task{ID: "t-fin", Kind: "agent", Status: "done", Process: "maintenance",
+			Objective: "finished", Repository: "sf/code", IssueNumber: 15})
 	at := time.Now().Add(-5 * time.Minute)
-	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved,
-		Actor: "sebastian", Via: factoryd.ViaButton, At: at}); err != nil {
-		t.Fatalf("Record: %v", err)
+	for _, e := range []factoryd.Event{
+		{TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton},
+		{TaskID: "t-rev", Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": "checks"}},
+		{TaskID: "t-fin", Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "done", "gate": ""}},
+	} {
+		if e.Actor == "" {
+			e.Actor, e.Via = factoryd.FactoryDecider, factoryd.ViaFactoryd
+		}
+		e.Repository, e.At = "sf/code", at
+		if _, err := ev.Record(context.Background(), e); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -716,6 +731,12 @@ func TestBoardActivityLine(t *testing.T) {
 	}
 	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {
 		t.Errorf("the card without an event falls back to no escalation text: %.400s", got)
+	}
+	hhmm := at.UTC().Format("15:04")
+	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm, "t-fin": "status done at " + hhmm} {
+		if got := card(id); !strings.Contains(got, `class="activity">`+want+`<`) {
+			t.Errorf("the card whose newest event is its status lacks %q: %.400s", want, got)
+		}
 	}
 	if got := card("t-b"); strings.Contains(got, `activity`) {
 		t.Errorf("a card with neither claims an activity line: %.400s", got)

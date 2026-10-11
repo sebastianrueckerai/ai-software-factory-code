@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"time"
 
@@ -644,13 +645,8 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 }
 
 func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, lane = NULL, process = NULL
+	return s.changeStatus(ctx, `UPDATE tasks SET kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, lane = NULL, process = NULL
 		WHERE id = $1 AND kind = 'agent' AND status = 'queued'`, id)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
 }
 
 func (s *PGStore) BackfillProcess(ctx context.Context, repository, process string) error {
@@ -660,14 +656,9 @@ func (s *PGStore) BackfillProcess(ctx context.Context, repository, process strin
 }
 
 func (s *PGStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'queued', lane = $2, required_capabilities = jsonb_build_array($3::text),
+	return s.changeStatus(ctx, `UPDATE tasks SET status = 'queued', lane = $2, required_capabilities = jsonb_build_array($3::text),
 		sha = $4, gate = $5, gate_since = now()
 		WHERE id = $1 AND status = 'backlog'`, id, lane, class, sha, GateIntake)
-	if err != nil {
-		return false, err
-	}
-	n, err := res.RowsAffected()
-	return n == 1, err
 }
 
 func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
@@ -700,29 +691,59 @@ func (s *PGStore) Ping(ctx context.Context) error {
 }
 
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
-	res, err := s.db.ExecContext(ctx,
+	changed, err := s.changeStatus(ctx,
 		`UPDATE tasks SET status = $2,
 		        finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN now() ELSE finished_at END,
 		        gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
 		        gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END
 		 WHERE id = $1 AND status = ANY($3)`, id, to, from)
-	if err := oneRow(res, err, "task "+id); err != nil {
+	if err == nil && !changed {
+		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if err != nil {
 		return fmt.Errorf("%w (not in %v, cannot move to %s)", err, from, to)
 	}
 	return nil
 }
 
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET gate = $2, gate_since = $3
+	_, err := s.changeStatus(ctx, `UPDATE tasks SET gate = $2, gate_since = $3
 		WHERE id = $1 AND status NOT IN ('done', 'failed', 'closed', 'backlog')`, id, gate, since)
 	return err
 }
 
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx,
+	changed, err := s.changeStatus(ctx,
 		`UPDATE tasks SET status = 'running'
 		 WHERE id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster')`, id)
-	return oneRow(res, err, "task "+id)
+	if err == nil && !changed {
+		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	return err
+}
+
+// changeStatus runs update, an UPDATE of the one task $1 names that may
+// change its status or gate, and records the task_status event of the
+// change: the task's status and gate after it, by factoryd, through Record
+// like every other event, so the console's stream carries it. An update
+// that changed no row records nothing, and answers false. A failed record
+// is logged: it never fails the change.
+func (s *PGStore) changeStatus(ctx context.Context, update string, args ...any) (bool, error) {
+	e := Event{Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd}
+	var status, gate string
+	err := s.db.QueryRowContext(ctx, update+` RETURNING id, repository, issue_number, status, gate`, args...).
+		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	e.Detail = map[string]any{"status": status, "gate": gate}
+	if _, err := s.Record(ctx, e); err != nil {
+		log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
+	}
+	return true, nil
 }
 
 func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {

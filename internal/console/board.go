@@ -609,6 +609,21 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	return k
 }
 
+// activityLine is event e on its card's activity line: what happened, by
+// whom, which way and when; a task_status row names the status and gate
+// it left the task in.
+func activityLine(e factoryd.Event) string {
+	at := e.At.UTC().Format("15:04")
+	if e.Kind == factoryd.EventTaskStatus {
+		words := fmt.Sprintf("status %v", e.Detail["status"])
+		if gate, _ := e.Detail["gate"].(string); gate != "" {
+			words += ", gate " + gate + ","
+		}
+		return words + " at " + at
+	}
+	return fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, at)
+}
+
 // finishCards fills what each card's face reads per render rather than
 // from its task: the newest event's activity line and the stale ring, the
 // checks count, and for a writer of the card's project the summary and
@@ -635,7 +650,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			return q
 		}
 		if e, ok := newest[k.ID]; ok {
-			k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
+			k.Activity = activityLine(e)
 			k.Stale = live && ring(time.Since(e.At))
 			if k.Stale {
 				k.StaleText = "nothing for over " + minutes(time.Since(e.At))

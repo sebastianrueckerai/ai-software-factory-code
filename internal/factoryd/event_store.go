@@ -40,6 +40,10 @@ const (
 	EventAccentSet            = "accent_set"
 )
 
+// EventTaskStatus is factoryd's own record of a task's status or gate
+// after the store changed either: detail {"status", "gate"}.
+const EventTaskStatus = "task_status"
+
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is
 // owner/name, the project the event belongs to; TaskID and IssueNumber are
