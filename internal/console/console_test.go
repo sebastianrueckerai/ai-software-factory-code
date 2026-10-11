@@ -594,6 +594,7 @@ type fakeLedger struct {
 	chat      *policy.ChatConfig // the policy's chat block
 	approvers []string           // the policy's; nil: sebastian
 	files     map[string]policy.ProjectConfig
+	calls     map[string][]policy.ModelCall // by task
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -616,6 +617,10 @@ func testProcesses() map[string]policy.Process {
 func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	l.from, l.to = from, to
 	return l.costs, nil
+}
+
+func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.ModelCall, error) {
+	return l.calls[taskID], nil
 }
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {

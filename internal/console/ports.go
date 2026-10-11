@@ -43,9 +43,11 @@ type Policies interface {
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 }
 
-// Costs reads the ledger between two UTC days, both included.
+// Costs reads the ledger: its days between two UTC days, both included,
+// and a task's model calls.
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
+	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
 }
 
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by

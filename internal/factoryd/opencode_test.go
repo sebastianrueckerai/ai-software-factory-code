@@ -88,6 +88,18 @@ func TestOpencodeMapsRecordedEditRun(t *testing.T) {
 	}
 }
 
+// A step's tokens keep opencode's cache counts: its input excludes the
+// cached tokens (v1.18.32's getUsage subtracts cache.read and cache.write).
+func TestStepFinishKeepsTheCache(t *testing.T) {
+	var got harness.Event
+	(&opencodeParser{}).stepFinish([]byte(`{"reason":"tool-calls","tokens":{"total":73333,"input":4433,"output":900,"reasoning":0,"cache":{"read":68000,"write":0}},"cost":0}`),
+		time.Unix(0, 0), func(ev harness.Event) { got = ev })
+	want := map[string]any{"total": 73333.0, "input": 4433.0, "output": 900.0, "reasoning": 0.0, "cache": map[string]any{"read": 68000.0, "write": 0.0}}
+	if !reflect.DeepEqual(got.Detail["tokens"], want) {
+		t.Fatalf("tokens = %v, want %v", got.Detail["tokens"], want)
+	}
+}
+
 func TestOpencodeMapsToolErrorAsToolCall(t *testing.T) {
 	events := fixtureEvents(t, "opencode-run-tools.jsonl")
 	var toolErr harness.Event

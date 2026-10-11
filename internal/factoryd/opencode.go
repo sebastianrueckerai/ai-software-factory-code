@@ -952,6 +952,10 @@ func (p *opencodeParser) stepFinish(partJSON []byte, at time.Time, emit func(har
 			Input     float64 `json:"input"`
 			Output    float64 `json:"output"`
 			Reasoning float64 `json:"reasoning"`
+			Cache     struct {
+				Read  float64 `json:"read"`
+				Write float64 `json:"write"`
+			} `json:"cache"`
 		} `json:"tokens"`
 		Cost float64 `json:"cost"`
 	}
@@ -966,6 +970,7 @@ func (p *opencodeParser) stepFinish(partJSON []byte, at time.Time, emit func(har
 			"input":     part.Tokens.Input,
 			"output":    part.Tokens.Output,
 			"reasoning": part.Tokens.Reasoning,
+			"cache":     map[string]any{"read": part.Tokens.Cache.Read, "write": part.Tokens.Cache.Write},
 		},
 		"cost": part.Cost,
 	}

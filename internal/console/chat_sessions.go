@@ -14,8 +14,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -257,16 +261,26 @@ func diffStat(d map[string]any) string {
 	return fmt.Sprintf("%s, +%d -%d", textutil.Plural(int(numAt(diff, "files")), "file", "files"), int(numAt(diff, "insertions")), int(numAt(diff, "deletions")))
 }
 
-// stepLine is step i on one line, without content.
+// commas prints numbers with thousands separators.
+var commas = message.NewPrinter(language.English)
+
+// stepLine is step i on one line, without content. A model call's prompt
+// tokens are opencode's total less its output and reasoning (its input
+// leaves out the cached tokens); a step recorded before the cache count
+// was kept shows no cached share. opencode's own cost is left out: the
+// factory's provider publishes no price, so it is 0; the ledger's cost line
+// is the call's EUR.
 func stepLine(i int, ev harness.Event, start time.Time) string {
 	d := ev.Detail
 	head := fmt.Sprintf("%d %s ", i, offset(ev.Time, start))
 	if ev.Kind == harness.EventModelCall {
-		tokens := numAt(d, "tokens")
-		if m, ok := d["tokens"].(map[string]any); ok {
-			tokens = numAt(m, "total")
+		tokens, _ := d["tokens"].(map[string]any)
+		prompt := numAt(tokens, "total") - numAt(tokens, "output") - numAt(tokens, "reasoning")
+		line := head + commas.Sprintf("model call, %d prompt tokens", int(prompt))
+		if cache, ok := tokens["cache"].(map[string]any); ok && prompt > 0 {
+			line += fmt.Sprintf(" (%.0f%% cached)", 100*numAt(cache, "read")/prompt)
 		}
-		return head + fmt.Sprintf("model call, %d tokens, €%.4f", int(tokens), numAt(d, "cost"))
+		return line
 	}
 	name := string(ev.Kind)
 	if ev.Kind == harness.EventToolCall {
@@ -420,6 +434,17 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	if len(told) > 0 {
 		b.WriteString("\nsupervisor and messages:" + strings.Join(told, ""))
 	}
+	calls, err := t.c.cfg.Costs.ModelCalls(t.r.Context(), k.ID)
+	if err != nil {
+		return "", err
+	}
+	var during []policy.ModelCall
+	for _, c := range calls {
+		if !c.At.Before(s.Started) && (s.Ended.IsZero() || !c.At.After(s.Ended)) {
+			during = append(during, c)
+		}
+	}
+	b.WriteString("\n" + strings.Join(costLines(during), "\n"))
 	body, err := t.transcript(k.ID, s)
 	if no := (*refusal)(nil); errors.As(err, &no) {
 		return b.String() + "\n" + no.msg, nil
@@ -429,7 +454,6 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	}
 	var files []string
 	seen := map[string]bool{}
-	var spend float64
 	stat, n := "none", 0
 	eachStep(body, func(i int, ev harness.Event) {
 		n = i
@@ -439,8 +463,6 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 				seen[p] = true
 				files = append(files, textutil.Truncate(oneLine(p), 200))
 			}
-		case harness.EventModelCall:
-			spend += numAt(ev.Detail, "cost")
 		case harness.EventCheckpoint:
 			stat = cmp.Or(diffStat(ev.Detail), stat)
 		}
@@ -449,8 +471,51 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	if len(files) > 0 {
 		changed = fmt.Sprintf("%s (%d)", strings.Join(files[:min(len(files), filesListed)], ", "), len(files))
 	}
-	fmt.Fprintf(&b, "\nfiles changed: %s\ndiff: %s\nspend: €%.4f\n%s", changed, stat, spend, textutil.Plural(n, "step", "steps"))
+	fmt.Fprintf(&b, "\nfiles changed: %s\ndiff: %s\n%s", changed, stat, textutil.Plural(n, "step", "steps"))
 	return b.String(), nil
+}
+
+// costLines are calls per ref (an alias, or a factoryd purpose and its
+// alias), one line each: the calls, the prompt tokens per call (the
+// median, the lower middle one for an even count, and the max) and the
+// share the provider served from its cache, over the calls that reported
+// usage, and the EUR per call over all.
+func costLines(calls []policy.ModelCall) []string {
+	if len(calls) == 0 {
+		return []string{"cost: no model calls"}
+	}
+	byRef := map[string][]policy.ModelCall{}
+	for _, c := range calls {
+		byRef[c.Ref] = append(byRef[c.Ref], c)
+	}
+	var lines []string
+	for _, ref := range slices.Sorted(maps.Keys(byRef)) {
+		var eur float64
+		var prompts []int
+		var prompt, cached int
+		for _, c := range byRef[ref] {
+			eur += c.EUR
+			if c.PromptTokens > 0 {
+				prompts = append(prompts, c.PromptTokens)
+				prompt, cached = prompt+c.PromptTokens, cached+c.CachedTokens
+			}
+		}
+		n, word := len(byRef[ref]), "calls"
+		if n == 1 {
+			word = "call"
+		}
+		line := commas.Sprintf("cost: %s, %d %s", ref, n, word)
+		if without := n - len(prompts); without > 0 {
+			line += commas.Sprintf(" (%d without usage)", without)
+		}
+		if len(prompts) > 0 {
+			slices.Sort(prompts)
+			line += commas.Sprintf(", prompt tokens per call median %d max %d, %.0f%% cached",
+				prompts[(len(prompts)-1)/2], prompts[len(prompts)-1], 100*float64(cached)/float64(prompt))
+		}
+		lines = append(lines, line+fmt.Sprintf(", %.4f EUR per call", eur/float64(n)))
+	}
+	return lines
 }
 
 func (t *turn) stepsText(in toolInput) (string, error) {

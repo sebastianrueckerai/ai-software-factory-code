@@ -807,7 +807,7 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 		Project: "sf/code", Status: "pending", Spec: json.RawMessage(`{"revision":4,"sha256":"11e3f66aa"}`)})
 	equal(t, "the plan card", reads(t, r, g, "card", `{"task_id":"t-plan"}`), []string{
 		`#22 t-plan "Uptime checker" waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
-			"lane plan of process spec\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\n" +
+			"lane plan of process spec\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
 			"plan request 20 pending for revision 4\nplan: see plan\nobjective: Uptime checker."})
 
 	const pinned = `{"task_id":"t-plan","revision":4,"sha256":"11e3f66aa"}`

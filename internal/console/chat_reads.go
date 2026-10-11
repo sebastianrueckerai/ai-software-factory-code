@@ -65,6 +65,11 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
 		fmt.Fprintf(&b, "\nat its session cap: %d of %d sessions used, %d granted", f.attempts, f.sessions, f.extra)
 	}
+	calls, err := t.c.cfg.Costs.ModelCalls(ctx, k.ID)
+	if err != nil {
+		return "", err
+	}
+	b.WriteString("\n" + strings.Join(costLines(calls), "\n"))
 	for _, d := range deps {
 		fmt.Fprintf(&b, "\ndepends on #%d (%s)", d.Issue, factoryd.StatusMeaning(d.Status))
 	}

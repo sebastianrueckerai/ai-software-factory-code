@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // sessionsTimeline is t-r's timeline with two sessions: s1 on
@@ -27,19 +28,36 @@ const sessionsTimeline = `{"step":"session_start","time":"2026-10-11T10:00:00Z",
 // s1Transcript and s2Transcript are the two sessions' transcripts as the
 // session recorder writes them.
 const (
-	s1Transcript = `{"time":"2026-10-11T10:00:05Z","kind":"model_call","detail":{"reason":"tool-calls","tokens":{"total":1500,"input":1400,"output":100,"reasoning":0},"cost":0.01,"text":"reading"}}
+	s1Transcript = `{"time":"2026-10-11T10:00:05Z","kind":"model_call","detail":{"reason":"tool-calls","tokens":{"total":1500,"input":400,"output":100,"reasoning":0,"cache":{"read":1000,"write":0}},"cost":0,"text":"reading"}}
 {"time":"2026-10-11T10:00:10Z","kind":"tool_call","detail":{"tool":"read","status":"completed","args":{"path":"a.go"},"args_sha256":"aa","duration_ms":120}}
 {"time":"2026-10-11T10:01:00Z","kind":"tool_call","detail":{"tool":"edit","status":"completed","args":{"path":"a.go"},"args_sha256":"bb","duration_ms":40}}
 {"time":"2026-10-11T10:01:01Z","kind":"file_change","detail":{"path":"a.go","sha256":"cc","tool":"edit","bytes":300}}
 {"time":"2026-10-11T10:02:00Z","kind":"command","detail":{"command":"go test ./...","status":"completed","exit":1,"output":"FAIL: want 3","duration_ms":2300,"bytes":12}}
 {"time":"2026-10-11T10:03:00Z","kind":"checkpoint","detail":{"diff":{"files":1,"insertions":10,"deletions":2},"patch":"diff --git a/a.go b/a.go"}}
 `
-	s2Transcript = `{"time":"2026-10-11T10:13:30Z","kind":"model_call","detail":{"reason":"tool-calls","tokens":{"total":4200,"input":4000,"output":200,"reasoning":0},"cost":0.025,"text":"fixing the mean to the p95"}}
+	s2Transcript = `{"time":"2026-10-11T10:13:30Z","kind":"model_call","detail":{"reason":"tool-calls","tokens":{"total":4200,"input":4000,"output":200,"reasoning":0},"cost":0,"text":"fixing the mean to the p95"}}
 {"time":"2026-10-11T10:20:00Z","kind":"file_change","detail":{"path":"stats.go","sha256":"dd","tool":"write","bytes":900}}
 {"time":"2026-10-11T10:30:00Z","kind":"command","detail":{"command":"go test ./...","status":"completed","exit":0,"output":"ok","duration_ms":800,"bytes":2}}
 {"time":"2026-10-11T10:39:00Z","kind":"checkpoint","detail":{"diff":{"files":2,"insertions":40,"deletions":8},"patch":"diff --git a/stats.go b/stats.go"}}
 `
 )
+
+// trCalls are t-r's model calls in the ledger: three of s1 on
+// coding-cheap, one after s1's end and before s2's start, two of s2 on
+// coding-frontier.
+var trCalls = []policy.ModelCall{
+	{Ref: "coding-cheap", At: time.Date(2026, 10, 11, 10, 0, 5, 0, time.UTC), EUR: 0.0008, Usage: policy.Usage{PromptTokens: 40000, CachedTokens: 36000}},
+	{Ref: "coding-cheap", At: time.Date(2026, 10, 11, 10, 2, 0, 0, time.UTC), EUR: 0.0010, Usage: policy.Usage{PromptTokens: 52000, CachedTokens: 50000}},
+	{Ref: "coding-cheap", At: time.Date(2026, 10, 11, 10, 5, 0, 0, time.UTC), EUR: 0.0009, Usage: policy.Usage{PromptTokens: 46651, CachedTokens: 44000}},
+	{Ref: "coding-cheap", At: time.Date(2026, 10, 11, 10, 12, 45, 0, time.UTC), EUR: 0.0045, Usage: policy.Usage{PromptTokens: 30000}},
+	{Ref: "coding-frontier", At: time.Date(2026, 10, 11, 10, 13, 30, 0, time.UTC), EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000}},
+	{Ref: "coding-frontier", At: time.Date(2026, 10, 11, 10, 30, 0, 0, time.UTC), EUR: 0.0240, Usage: policy.Usage{PromptTokens: 111723, CachedTokens: 105000}},
+}
+
+// s2Cost is s2's two calls: prompt tokens 70,000 and 111,723, the lower
+// of the middle two the median; 171,000 of 181,723 cached (94.1%); 0.042
+// EUR over two calls.
+const s2Cost = "cost: coding-frontier, 2 calls, prompt tokens per call median 70,000 max 111,723, 94% cached, 0.0210 EUR per call\n"
 
 // newSessionsRig is the chat rig with t-r #11's two sessions and their
 // transcripts.
@@ -55,8 +73,9 @@ const (
 	s1Summary = "session 1 of 2 (s1), attempt 1, model coding-cheap: no_push\nstarted because: the card's first session\n" +
 		"started 2026-10-11 10:00 UTC, took 12 min\n" +
 		"summary: stopped without a push\nsupervisor and messages:\n  4:00 nudged after 3 identical read calls\n" +
-		"  5:00 repetition tripped: change approach\n  5:01 the supervisor's message\n  6:00 message from sebastian\n"
-	s1Steps = "1 0:05 model call, 1500 tokens, €0.0100\n" +
+		"  5:00 repetition tripped: change approach\n  5:01 the supervisor's message\n  6:00 message from sebastian\n" +
+		"cost: coding-cheap, 3 calls, prompt tokens per call median 46,651 max 52,000, 94% cached, 0.0009 EUR per call\n"
+	s1Steps = "1 0:05 model call, 1,400 prompt tokens (71% cached)\n" +
 		`2 0:10 read 120 ms: {"path":"a.go"}` + "\n" +
 		`3 1:00 edit 40 ms: {"path":"a.go"}` + "\n" +
 		"4 1:01 file_change: a.go, 300 bytes\n" +
@@ -101,8 +120,8 @@ func TestChatSessionRead(t *testing.T) {
 		"session", `{"task_id":"t-r","n":3}`, "session", `{"task_id":"t-m"}`), []string{
 		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
 			"started 2026-10-11 10:13 UTC, took 27 min\n" +
-			"summary: added the p95\nfiles changed: stats.go (1)\ndiff: 2 files, +40 -8\nspend: €0.0250\n4 steps",
-		s1Summary + "files changed: a.go (1)\ndiff: 1 file, +10 -2\nspend: €0.0100\n6 steps",
+			"summary: added the p95\n" + s2Cost + "files changed: stats.go (1)\ndiff: 2 files, +40 -8\n4 steps",
+		s1Summary + "files changed: a.go (1)\ndiff: 1 file, +10 -2\n6 steps",
 		"Refused: Card #11 has no session 3; it has had 2 sessions.",
 		"Refused: Card #5 has had no session yet.",
 	})
@@ -115,7 +134,7 @@ func TestChatSessionRead(t *testing.T) {
 		`{"step":"session_start","time":"2026-10-11T10:41:00Z","session":"s3","parent":"s2","model":"coding-frontier","attempt":3}` + "\n")
 	equal(t, "a running session without a transcript", reads(t, r, g, "session", `{"task_id":"t-r"}`, "session_search", `{"task_id":"t-r","query":"zzz"}`), []string{
 		"session 3 of 3 (s3), attempt 3, model coding-frontier: running\n" +
-			"started because: the previous session's push went back to the agent\nrunning since 2026-10-11 10:41 UTC\nno transcript for session 3",
+			"started because: the previous session's push went back to the agent\nrunning since 2026-10-11 10:41 UTC\ncost: no model calls\nno transcript for session 3",
 		"no hit for \"zzz\"\nno transcript for session 3",
 	})
 	status, msg := refused(t, r, "session_steps", toolInput{TaskID: "t-r"})
@@ -132,7 +151,7 @@ func TestChatSessionSteps(t *testing.T) {
 		"session_steps", `{"task_id":"t-r"}`, "session_steps", `{"task_id":"t-r","n":1,"from":6,"to":40}`), []string{
 		s1Steps + "steps 1 to 6 of 6",
 		`2 0:10 read 120 ms: {"path":"a.go"}` + "\n" + `3 1:00 edit 40 ms: {"path":"a.go"}` + "\nsteps 2 to 3 of 6",
-		"1 0:30 model call, 4200 tokens, €0.0250\n2 7:00 file_change: stats.go, 900 bytes\n3 17:00 command 800 ms: go test ./..., exit 0\n" +
+		"1 0:30 model call, 4,000 prompt tokens\n2 7:00 file_change: stats.go, 900 bytes\n3 17:00 command 800 ms: go test ./..., exit 0\n" +
 			"4 26:00 checkpoint: 2 files, +40 -8\nsteps 1 to 4 of 4",
 		"6 3:00 checkpoint: 1 file, +10 -2\nsteps 6 to 6 of 6",
 	})
@@ -171,7 +190,7 @@ func TestChatSessionStep(t *testing.T) {
 	equal(t, "the step reads", reads(t, r, g, "session_step", `{"task_id":"t-r","n":1,"from":5}`, "session_step", `{"task_id":"t-r","n":1,"from":1,"to":2}`,
 		"session_step", `{"task_id":"t-r","n":1,"from":5,"to":99}`, "session_step", `{"task_id":"t-r","n":1}`), []string{
 		"5 2:00 command 2.3 s: go test ./..., exit 1\n$ go test ./...\nFAIL: want 3\n\nsteps 5 to 5 of 6",
-		"1 0:05 model call, 1500 tokens, €0.0100\nreading\n\n" + `2 0:10 read 120 ms: {"path":"a.go"}` + "\n" + `args: {"path":"a.go"}` + "\n\nsteps 1 to 2 of 6",
+		"1 0:05 model call, 1,400 prompt tokens (71% cached)\nreading\n\n" + `2 0:10 read 120 ms: {"path":"a.go"}` + "\n" + `args: {"path":"a.go"}` + "\n\nsteps 1 to 2 of 6",
 		"5 2:00 command 2.3 s: go test ./..., exit 1\n$ go test ./...\nFAIL: want 3\n\n6 3:00 checkpoint: 1 file, +10 -2\n\nsteps 5 to 6 of 6",
 		"Refused: from and to are step numbers, from 1.",
 	})
@@ -192,9 +211,9 @@ func TestChatSessionStep(t *testing.T) {
 	}
 	r.objects["sessions/t-r/s1.jsonl"] = []byte(big.String())
 	got := reads(t, r, g, "session_step", `{"task_id":"t-r","n":1,"from":1,"to":30}`)[0]
-	// a block is "1 0:05 model call, 1 tokens, €0.0000\n" (39 bytes, € is
-	// three) and the text: 10039 bytes, cut to 8192
-	block := "1 0:05 model call, 1 tokens, €0.0000\n" + strings.Repeat("x", 8192-39) + "…\n(step cut at 8 KiB of 10039 bytes)"
+	// a block is "1 0:05 model call, 1 prompt tokens\n" (35 bytes) and the
+	// text: 10035 bytes, cut to 8192
+	block := "1 0:05 model call, 1 prompt tokens\n" + strings.Repeat("x", 8192-35) + "…\n(step cut at 8 KiB of 10035 bytes)"
 	if !strings.HasPrefix(got, block+"\n\n2 0:05 model call") {
 		t.Errorf("the first step reads\n%.300s", got)
 	}
@@ -222,7 +241,7 @@ func TestChatSessionSearch(t *testing.T) {
 		"session_search", `{"task_id":"t-r","query":"a.go","n":2}`,
 	), []string{
 		"session 2 step 1 (model_call): fixing the mean to the p95\n  after: 2 7:00 file_change: stats.go, 900 bytes",
-		`session 1 step 2 (tool_call): {"path":"a.go"}` + "\n  before: 1 0:05 model call, 1500 tokens, €0.0100\n" + `  after: 3 1:00 edit 40 ms: {"path":"a.go"}` + "\n" +
+		`session 1 step 2 (tool_call): {"path":"a.go"}` + "\n  before: 1 0:05 model call, 1,400 prompt tokens (71% cached)\n" + `  after: 3 1:00 edit 40 ms: {"path":"a.go"}` + "\n" +
 			`session 1 step 3 (tool_call): {"path":"a.go"}` + "\n" + `  before: 2 0:10 read 120 ms: {"path":"a.go"}` + "\n  after: 4 1:01 file_change: a.go, 300 bytes\n" +
 			"session 1 step 4 (file_change): a.go\n" + `  before: 3 1:00 edit 40 ms: {"path":"a.go"}` + "\n  after: 5 2:00 command 2.3 s: go test ./..., exit 1",
 		"Refused: The query is 2 to 200 characters.",
@@ -261,7 +280,7 @@ func TestChatSessionSearch(t *testing.T) {
 		"session 1 step 3 (command): last line\n  before: first",
 	})
 	equal(t, "a hit in a long line", reads(t, r, g, "session_search", `{"task_id":"t-r","query":"aneedleb","n":1}`), []string{
-		"session 1 step 2 (command): …" + strings.Repeat("a", 101) + "NEEDLE" + strings.Repeat("b", 101) + "…\n  before: 1 0:05 model call, 1 tokens, €0.0000" +
+		"session 1 step 2 (command): …" + strings.Repeat("a", 101) + "NEEDLE" + strings.Repeat("b", 101) + "…\n  before: 1 0:05 model call, 1 prompt tokens" +
 			"\n  after: 3 0:07 command: make",
 	})
 }
@@ -303,7 +322,7 @@ func TestChatSessionLongPath(t *testing.T) {
 		"1 1:00 file_change: " + cut + ", 10 bytes\n2 2:00 file_change: " + cut + ", 12 bytes\nsteps 1 to 2 of 2",
 		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
 			"started 2026-10-11 10:13 UTC, took 27 min\n" +
-			"summary: added the p95\nfiles changed: " + cut + " (1)\ndiff: none\nspend: €0.0000\n2 steps",
+			"summary: added the p95\n" + s2Cost + "files changed: " + cut + " (1)\ndiff: none\n2 steps",
 	})
 }
 
@@ -455,4 +474,27 @@ func TestChatSessionSearchEnd(t *testing.T) {
 		`no hit for "repetitive"`,
 		"no step matches; the session's end says: the provider refused the call",
 	})
+}
+
+// The cost line is a card's or a session's model calls per alias: the
+// calls, the prompt tokens per call (median and max) and their cached
+// share over the calls that reported usage, and the EUR per call over all.
+// Five calls of prompt tokens 30,000 to 111,723: the median 46,651; 265,000
+// of 280,374 cached (94.5%); 0.0047 EUR over five. A sixth without usage
+// counts in the calls and the EUR (0.0097 over six) only.
+func TestCostLines(t *testing.T) {
+	calls := []policy.ModelCall{
+		{Ref: "coding-cheap", EUR: 0.0009, Usage: policy.Usage{PromptTokens: 46651, CachedTokens: 44000}},
+		{Ref: "coding-cheap", EUR: 0.0007, Usage: policy.Usage{PromptTokens: 30000, CachedTokens: 27000}},
+		{Ref: "coding-cheap", EUR: 0.0013, Usage: policy.Usage{PromptTokens: 111723, CachedTokens: 108000}},
+		{Ref: "coding-cheap", EUR: 0.0010, Usage: policy.Usage{PromptTokens: 52000, CachedTokens: 50000}},
+		{Ref: "coding-cheap", EUR: 0.0008, Usage: policy.Usage{PromptTokens: 40000, CachedTokens: 36000}},
+	}
+	equal(t, "five calls", costLines(calls), []string{"cost: coding-cheap, 5 calls, prompt tokens per call median 46,651 max 111,723, 95% cached, 0.0009 EUR per call"})
+	calls = append(calls, policy.ModelCall{Ref: "review/review-frontier", EUR: 0.0125}, policy.ModelCall{Ref: "coding-cheap", EUR: 0.0050})
+	equal(t, "calls without usage", costLines(calls), []string{
+		"cost: coding-cheap, 6 calls (1 without usage), prompt tokens per call median 46,651 max 111,723, 95% cached, 0.0016 EUR per call",
+		"cost: review/review-frontier, 1 call (1 without usage), 0.0125 EUR per call",
+	})
+	equal(t, "no calls", costLines(nil), []string{"cost: no model calls"})
 }

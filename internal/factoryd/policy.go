@@ -610,6 +610,10 @@ func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, 
 	return policy.LedgerCosts(ctx, s.db, from, to)
 }
 
+func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error) {
+	return policy.ModelCalls(ctx, s.db, taskID)
+}
+
 var _ PolicyStore = (*PGStore)(nil)
 
 // Aliases are the ladder's models as the gateway sees them: without the

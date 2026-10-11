@@ -299,6 +299,7 @@ func newChatRig(t *testing.T) (*rig, *fakeChat, *chatGateway) {
 		factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."},
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"})
+	r.ledger.calls = map[string][]policy.ModelCall{"t-r": trCalls}
 	return r, chat, g
 }
 
@@ -511,7 +512,7 @@ func TestChatReadThenReply(t *testing.T) {
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
-			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\n" +
+			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
 			"merge request 4 pending for pull request #9, risk high; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
 			"objective: Fix the cache. It drops entries."},
@@ -1381,11 +1382,11 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian")
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs\" waiting-human ("+human+")\n"+
-		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\n"+
+		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\ncost: no model calls\n"+
 		"the question it waits on: the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed\n"+
 		"objective: Trim the logs.")
 	equal(t, "the card with a merge request", stored[0].ToolCalls[8].Result, "#15 t-mr \"Add the index\" waiting-human ("+human+")\n"+
-		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\n"+
+		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
 		"objective: Add the index.")
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
