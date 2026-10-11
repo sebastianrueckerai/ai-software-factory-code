@@ -570,6 +570,39 @@ func TestClampBudget(t *testing.T) {
 	}
 }
 
+// A card's budget follows its size: small 2, medium 5, large 10, anything
+// else the policy's default; an asked budget wins over the size, bounded by
+// the project's card maximum (else a large card's budget) and the policy's.
+func TestCardBudget(t *testing.T) {
+	b := Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15}
+	for size, want := range map[string]float64{"small": 2, "medium": 5, "large": 10, "": 5, "huge": 5} {
+		if got := b.SizeBudget(size); got != want {
+			t.Errorf("SizeBudget(%q) = %g, want %g", size, got, want)
+		}
+	}
+	for _, tc := range []struct {
+		b         Budget
+		p         *ProjectBudget
+		size      string
+		requested float64
+		want      float64
+	}{
+		{b, nil, "large", 0, 10},
+		{b, &ProjectBudget{TaskMaxEUR: 15}, "large", 0, 10},
+		{b, &ProjectBudget{TaskMaxEUR: 15}, "", 15, 15},
+		{b, nil, "", 15, 10},
+		{b, &ProjectBudget{TaskMaxEUR: 1}, "small", 0, 1},
+		{b, &ProjectBudget{TaskMaxEUR: 3}, "", 0, 3},
+		{b, &ProjectBudget{MonthEUR: 50}, "small", 9, 9},
+		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "medium", 0, 4},
+		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "", 0, 5},
+	} {
+		if got := CardBudget(tc.b, tc.p, tc.size, tc.requested); got != tc.want {
+			t.Errorf("CardBudget(%+v, %+v, %q, %g) = %g, want %g", tc.b, tc.p, tc.size, tc.requested, got, tc.want)
+		}
+	}
+}
+
 // Absent bounds are the defaults; a bounds section overrides per key and
 // its default covers the activities without a key of their own.
 func TestBounds(t *testing.T) {

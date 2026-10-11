@@ -231,7 +231,7 @@ type ProjectConfig struct {
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
 	// Budget caps the spend of the project's tasks together; absent: the
 	// project has no cap of its own. Stricter wins: bounded by policy.yaml's
-	// budget.month_eur; a looser file is rejected.
+	// budget.month_eur and budget.task_max_eur; a looser file is rejected.
 	Budget *ProjectBudget `yaml:"budget,omitempty" json:"budget,omitempty"`
 	// Model runs a coding card's first session on Models.Stronger instead
 	// of the ladder's first rung; the only accepted value is "stronger".
@@ -248,6 +248,9 @@ type ProjectBudget struct {
 	// MonthEUR caps the project's tasks together per UTC calendar month;
 	// 0 stops the project's spend.
 	MonthEUR float64 `yaml:"month_eur" json:"month_eur"`
+	// TaskMaxEUR is the project's own maximum for one card, up to the
+	// policy's task_max_eur; absent: a large card's budget.
+	TaskMaxEUR float64 `yaml:"task_max_eur,omitempty" json:"task_max_eur,omitempty"`
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
@@ -510,6 +513,7 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 	}
 	if b := p.Budget; b != nil {
 		number("budget.month_eur", b.MonthEUR, d.Budget.MonthEUR, "budget.month_eur")
+		number("budget.task_max_eur", b.TaskMaxEUR, d.Budget.TaskMaxEUR, "budget.task_max_eur")
 	}
 	if p.Chat != nil {
 		number("chat.monthly_eur", p.Chat.MonthlyEUR, d.ChatOf(ProjectConfig{}).MonthlyEUR, "chat.monthly_eur")

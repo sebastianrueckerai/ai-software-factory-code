@@ -880,3 +880,40 @@ func (b Budget) ClampBudget(requested float64) float64 {
 	}
 	return min(requested, b.TaskMaxEUR)
 }
+
+// sizeEUR is a card's budget by its size.
+var sizeEUR = map[string]float64{"small": 2, "medium": 5, "large": 10}
+
+// SizeBudget is a card's budget by its size: small 2, medium 5, large 10,
+// any other size the default.
+func (b Budget) SizeBudget(size string) float64 {
+	if eur, ok := sizeEUR[size]; ok {
+		return eur
+	}
+	return b.TaskDefaultEUR
+}
+
+// CardBudget is a new card's budget: the one asked for, else its size's,
+// at most the project's card maximum (without one, a large card's budget)
+// and the policy's task maximum. A card that asks for nothing gets the
+// default, at most the project's card maximum.
+func CardBudget(b Budget, p *ProjectBudget, size string, requested float64) float64 {
+	ceiling, own := b.SizeBudget("large"), p != nil && p.TaskMaxEUR > 0
+	if own {
+		ceiling = p.TaskMaxEUR
+	}
+	_, sized := sizeEUR[size]
+	switch {
+	case requested > 0:
+	case sized:
+		requested = sizeEUR[size]
+	case own:
+		return min(b.TaskDefaultEUR, ceiling)
+	default:
+		return b.TaskDefaultEUR
+	}
+	if eur := min(requested, ceiling, b.TaskMaxEUR); eur > 0 {
+		return eur
+	}
+	return b.TaskDefaultEUR
+}

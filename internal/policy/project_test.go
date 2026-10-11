@@ -3,6 +3,7 @@ package policy
 import (
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,6 +50,35 @@ func TestProjectBudgetBounded(t *testing.T) {
 	tree.Projects["demo-app"] = p
 	if err := tree.Validate(); err == nil || !strings.Contains(err.Error(), "budget.month_eur 60 is looser") {
 		t.Fatalf("Validate = %v, want the looser cap refused", err)
+	}
+}
+
+// A project's card maximum may only tighten the policy's task_max_eur
+// (here 15); the project schema lists it under budget.
+func TestProjectCardMaximumBounded(t *testing.T) {
+	with := func(budget string) map[string][]byte {
+		files := fixtureTree(t)
+		files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), "task_max_eur: 5", "task_max_eur: 15", 1))
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], budget...)
+		return files
+	}
+	if _, err := ParseTree(with("budget: {month_eur: 50, task_max_eur: 20}\n")); err == nil ||
+		!strings.Contains(err.Error(), "project demo-app: budget.task_max_eur 20 is looser than policy.yaml's budget.task_max_eur 15") {
+		t.Fatalf("ParseTree error = %v, want the looser card maximum refused", err)
+	}
+	if _, err := ParseTree(with("budget: {month_eur: 50, task_max_eur: -1}\n")); err == nil || !strings.Contains(err.Error(), "projects/demo-app.yaml: schema:") {
+		t.Fatalf("ParseTree error = %v, want the negative card maximum refused", err)
+	}
+	tree, err := ParseTree(with("budget: {month_eur: 50, task_max_eur: 15}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.Projects["demo-app"].Budget; got == nil || got.TaskMaxEUR != 15 {
+		t.Fatalf("budget = %+v, want task_max_eur 15", got)
+	}
+	budget := resolvedSchema(t, "project.schema.json").Schema().Properties["budget"]
+	if p := budget.Properties["task_max_eur"]; p == nil || p.Description == "" || slices.Contains(budget.Required, "task_max_eur") {
+		t.Fatalf("project schema budget = %+v, want an optional, described task_max_eur", budget)
 	}
 }
 
