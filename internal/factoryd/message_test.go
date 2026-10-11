@@ -155,7 +155,7 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	if !slices.Equal(worker.texts, want) {
 		t.Fatalf("worker got %q, want three nudges and the push token", worker.texts)
 	}
-	detail := "three nudges without a file change in between: read `{\"filePath\":\"/w/a.go\"}` 3 times; " +
+	detail := "three nudges without new file content in between: read `{\"filePath\":\"/w/a.go\"}` 3 times; " +
 		"read `{\"filePath\":\"/w/b.go\"}` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
 	line := "the previous session ended in a loop after " + detail
 	if !slices.Contains(res.Findings, line) || !strings.Contains(objectiveText(harness.TaskBrief{Findings: res.Findings}), "\n- "+line+"\n") {

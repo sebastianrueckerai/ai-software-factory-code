@@ -814,26 +814,31 @@ func TestNudgePrecedesSameCallOnScatteredCalls(t *testing.T) {
 	}
 }
 
-// The loop rule: the third nudge delivered with no file change since the
-// last one ends the session as a redirect, decided without the supervisor
-// model. nudge 1, a call, nudge 2, a file change, nudges 3, 4 and 5: the
-// trip comes at nudge 5, the third since the change.
-func TestLoopEndsAtTheThirdNudgeWithoutAFileChange(t *testing.T) {
-	t0 := time.Unix(0, 0)
-	read := func(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
-	nudge := func(s *Supervisor, ev harness.Event) *Trip {
-		t.Helper()
-		for i := 0; i < 3; i++ {
-			if trip := s.Event(ev, t0); trip != nil {
-				t.Fatalf("call %d of %v tripped: %+v", i, ev.Detail, trip)
-			}
+// nudgeOn feeds ev three times in a row and sends the nudge it earns,
+// returning NudgeSent's trip.
+func nudgeOn(t *testing.T, s *Supervisor, ev harness.Event) *Trip {
+	t.Helper()
+	for i := 0; i < 3; i++ {
+		if trip := s.Event(ev, time.Unix(0, 0)); trip != nil {
+			t.Fatalf("call %d of %v tripped: %+v", i, ev.Detail, trip)
 		}
-		n := s.TakeNudge()
-		if n == nil {
-			t.Fatalf("no nudge after three of %v", ev.Detail)
-		}
-		return s.NudgeSent(*n)
 	}
+	n := s.TakeNudge()
+	if n == nil {
+		t.Fatalf("no nudge after three of %v", ev.Detail)
+	}
+	return s.NudgeSent(*n)
+}
+
+func readEvent(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
+
+// The loop rule: the third nudge delivered with no new file content since
+// the last one ends the session as a redirect, decided without the
+// supervisor model. nudge 1, a call, nudge 2, a file change, nudges 3, 4
+// and 5: the trip comes at nudge 5, the third since the change.
+func TestLoopEndsAtTheThirdNudgeWithoutNewContent(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	read, nudge := readEvent, func(s *Supervisor, ev harness.Event) *Trip { return nudgeOn(t, s, ev) }
 	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
 	steps := []func() *Trip{
 		func() *Trip { return nudge(s, read("/w/a.go")) },
@@ -849,7 +854,7 @@ func TestLoopEndsAtTheThirdNudgeWithoutAFileChange(t *testing.T) {
 		}
 	}
 	trip := nudge(s, read("/w/c.go"))
-	want := "three nudges without a file change in between: read `{\"filePath\":\"/w/b.go\"}` 3 times; bash `go vet ./...` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
+	want := "three nudges without new file content in between: read `{\"filePath\":\"/w/b.go\"}` 3 times; bash `go vet ./...` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
 	if trip == nil || trip.Kind != TripLoop || trip.Detail != want {
 		t.Fatalf("nudge 5: trip = %+v, want loop with %q", trip, want)
 	}
@@ -869,6 +874,59 @@ func TestLoopEndsAtTheThirdNudgeWithoutAFileChange(t *testing.T) {
 		if trip := nudge(ro, read(p)); trip != nil {
 			t.Fatalf("report session: nudge of %s tripped %+v", p, trip)
 		}
+	}
+}
+
+// Only content the session has not written before resets the loop count
+// (ruling 280): a rewrite of the same content, or a shell diff back at an
+// earlier state, is no progress. h0, nudge, h1, then nudge and h1 twice
+// more, and a nudge: the trip comes at the third nudge after the first h1.
+// Through the shell: p2 and p3 are new, p2 and p3 again are not, so the
+// third nudge after the first p3 trips.
+func TestLoopResetsOnlyOnNewContent(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	steps := []func() *Trip{
+		func() *Trip { return s.Event(fileEvent("a.go", "h0"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/1.go")) },
+		func() *Trip { return s.Event(fileEvent("a.go", "h1"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/2.go")) },
+		func() *Trip { return s.Event(fileEvent("a.go", "h1"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/3.go")) },
+		func() *Trip { return s.Event(fileEvent("a.go", "h1"), t0) },
+	}
+	for i, step := range steps {
+		if trip := step(); trip != nil {
+			t.Fatalf("step %d tripped: %+v", i, trip)
+		}
+	}
+	if trip := nudgeOn(t, s, readEvent("/w/4.go")); trip == nil || trip.Kind != TripLoop || !strings.Contains(trip.Detail, "/w/2.go") || strings.Contains(trip.Detail, "/w/1.go") {
+		t.Fatalf("third nudge after h1: trip = %+v, want loop over 2, 3 and 4", trip)
+	}
+
+	checkpoint := func(ins int, patch string) harness.Event {
+		return harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+			"diff": map[string]any{"files": float64(1), "insertions": float64(ins), "deletions": float64(0)}, "patch": patch}}
+	}
+	s = mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	steps = []func() *Trip{
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/1.go")) },
+		func() *Trip { return s.Event(checkpoint(1, "p1"), t0) }, // the baseline
+		func() *Trip { return s.Event(checkpoint(2, "p2"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/2.go")) },
+		func() *Trip { return s.Event(checkpoint(3, "p3"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/3.go")) },
+		func() *Trip { return s.Event(checkpoint(2, "p2"), t0) },
+		func() *Trip { return nudgeOn(t, s, readEvent("/w/4.go")) },
+		func() *Trip { return s.Event(checkpoint(3, "p3"), t0) },
+	}
+	for i, step := range steps {
+		if trip := step(); trip != nil {
+			t.Fatalf("shell step %d tripped: %+v", i, trip)
+		}
+	}
+	if trip := nudgeOn(t, s, readEvent("/w/5.go")); trip == nil || trip.Kind != TripLoop || !strings.Contains(trip.Detail, "/w/3.go") || strings.Contains(trip.Detail, "/w/2.go") {
+		t.Fatalf("third nudge after p3: trip = %+v, want loop over 3, 4 and 5", trip)
 	}
 }
 

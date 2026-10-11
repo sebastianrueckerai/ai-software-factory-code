@@ -534,7 +534,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
 			return res
 		}
-		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) {
+		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
 			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), out.commit
 			res.Findings = append(slices.Clone(out.findings), loopFinding("the model provider refused its repeated tool calls: "+res.Summary))
 			return res
@@ -542,14 +542,23 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	default:
 		res.Summary = out.noResult
 	}
-	res.Findings = append(slices.Clone(out.findings), "previous session ended without a pushed commit: "+res.Summary)
+	ended := "previous session ended without a pushed commit: "
+	if out.commit != "" {
+		ended = "previous session ended unfinished: "
+	}
+	res.Findings = append(slices.Clone(out.findings), ended+res.Summary)
 	return res
 }
 
 // providerRepetition is Dashscope's refusal of a conversation that repeats
 // its tool calls (Stage 15, Stage 16): it comes after many calls, so it is
-// no outage, and the session ends as a loop.
-const providerRepetition = "Repetitive tool calls detected"
+// no outage, and the session ends as a loop. providerRefusalStatus is how
+// the opencode parser ends that error event, which the model's own text
+// quoting the phrase lacks.
+const (
+	providerRepetition    = "Repetitive tool calls detected"
+	providerRefusalStatus = "(status 400)"
+)
 
 // loopFinding is the next session's brief line on a loop: how the session
 // ended and what it repeated, a fact (ruling 263).

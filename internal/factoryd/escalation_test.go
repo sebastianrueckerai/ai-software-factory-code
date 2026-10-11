@@ -480,6 +480,40 @@ func TestRunSessionRepetitionRefusalIsALoop(t *testing.T) {
 	}
 }
 
+// A failed session that pushed its work is unfinished, not without a
+// commit, in the next brief; one that pushed nothing keeps the old line.
+// The model's own text quoting the refusal is no provider error event (no
+// "(status 400)"), so it is no loop.
+func TestRunSessionFailedSessionsLine(t *testing.T) {
+	const quoted = "the log says Repetitive tool calls detected, so I stop here"
+	for name, tc := range map[string]struct{ said, push, line string }{
+		"a 400 after work, pushed": {"APIError: context window exceeded (status 400)", "c-wip",
+			"previous session ended unfinished: APIError: context window exceeded (status 400); work in progress pushed to factory/t2 at c-wip"},
+		"the model quotes the refusal, pushed": {quoted, "c-wip",
+			"previous session ended unfinished: " + quoted + "; work in progress pushed to factory/t2 at c-wip"},
+		"nothing pushed": {"APIError: context window exceeded (status 400)", "",
+			"previous session ended without a pushed commit: APIError: context window exceeded (status 400)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			worker.start(t, runner)
+			said, logs := tc.said, reads(0, 2)
+			if tc.push != "" {
+				said += "; work in progress pushed to factory/t2 at " + tc.push
+				logs += pushRequestLine(tc.push) + "\n" + tokenLogs + pushedLine(tc.push) + "\n"
+			}
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs+resultLine(false, said))
+			if err != nil || res.Outcome != OutcomeNoPush || res.Trip != "" {
+				t.Fatalf("result = (%+v, %v), want no_push without a trip", res, err)
+			}
+			if got := res.Findings[len(res.Findings)-1]; got != tc.line {
+				t.Fatalf("line = %q, want %q", got, tc.line)
+			}
+		})
+	}
+}
+
 // A session the gateway refused at the project's month cap waits on a
 // human with the refusal, which names the file a human raises the cap in.
 func TestProjectCapRefusalEscalates(t *testing.T) {

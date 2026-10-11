@@ -31,14 +31,14 @@ const (
 	// call
 	TripAgentEscalation  TripKind = "agent_escalation"
 	TripAgentInfoRequest TripKind = "agent_info_request"
-	// TripLoop: loopNudges nudges delivered with no file change in between
+	// TripLoop: loopNudges nudges delivered with no new file content in between
 	// (NudgeSent), or the provider's refusal of repeated calls
 	// (sessionResult); a redirect, no supervisor call
 	TripLoop TripKind = "loop"
 )
 
-// loopNudges delivered nudges with no file change in between end the
-// session.
+// loopNudges delivered nudges with no new file content in between end
+// the session.
 const loopNudges = 3
 
 // Trip is a detector firing: the kind, what it saw, and the session's
@@ -116,8 +116,10 @@ type Supervisor struct {
 	// since; the next detector trip ends the session (the stuck rule).
 	// messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
-	// nudges are the nudges delivered since the last file change
+	// nudges are the nudges delivered since the last new file content;
+	// seen is the content the session wrote, by newContent's key
 	nudges []Nudge
+	seen   map[string]bool
 
 	// no_write's anchor: the last write, or its last continue
 	noWriteFrom time.Time
@@ -132,7 +134,7 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	}
 	cfg = cfg.withDefaults()
 	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
-		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now}
+		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}}
 	s.scheduleCheckIn(now.Add(checkInQuiet - 1))
 	return s, nil
 }
@@ -176,7 +178,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		s.sinceChange = 0
 		s.noWriteFrom = at
 		s.messaged = false
-		s.nudges = nil
+		if s.newContent(ev) {
+			s.nudges = nil
+		}
 	}
 	// every detector sees every event, whichever trips
 	traced := s.traces.observe(ev)
@@ -194,6 +198,26 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("agent events for %s without a file write or edit", at.Sub(s.noWriteFrom).Round(time.Second))})
 	}
 	return s.checkIn(at)
+}
+
+// newContent: the write ev records content the session has not written
+// before (ruling 280): a file change by its sha256, a moved shell diff by
+// its numbers and patch. One without a hash (a file over maxHashedFile, a
+// deleted file) counts as new.
+func (s *Supervisor) newContent(ev harness.Event) bool {
+	key := detailString(ev, "sha256")
+	if ev.Kind == harness.EventCheckpoint {
+		sum := sha256.Sum256([]byte(fmt.Sprint(ev.Detail["diff"]) + "\n" + detailString(ev, "patch")))
+		key = "diff\x00" + hex.EncodeToString(sum[:])
+	}
+	if key == "" {
+		return true
+	}
+	if s.seen[key] {
+		return false
+	}
+	s.seen[key] = true
+	return true
 }
 
 // commandDuration is how long a command event's command ran (duration_ms).
@@ -249,8 +273,8 @@ func (s *Supervisor) TakeNudge() *Nudge {
 }
 
 // NudgeSent counts n against its repetition's nudges: only a nudge the
-// session took is spent. The loopNudges-th since the last file change
-// trips loop; a report session writes no file, so its nudges never do.
+// session took is spent. The loopNudges-th since the last new file
+// content trips loop; a report session writes no file, so its nudges never do.
 func (s *Supervisor) NudgeSent(n Nudge) *Trip {
 	s.traces.nudged[n.key]++
 	if s.cfg.ReadOnly {
@@ -263,7 +287,7 @@ func (s *Supervisor) NudgeSent(n Nudge) *Trip {
 	for i, n := range s.nudges {
 		calls[i] = fmt.Sprintf("%s `%s` %d times", n.Tool, textutil.Truncate(n.Call, 200), n.Count)
 	}
-	return s.trip(&Trip{Kind: TripLoop, Detail: countWords[loopNudges] + " nudges without a file change in between: " + strings.Join(calls, "; "),
+	return s.trip(&Trip{Kind: TripLoop, Detail: countWords[loopNudges] + " nudges without new file content in between: " + strings.Join(calls, "; "),
 		decided: &Decision{Action: ActionRedirect}})
 }
 
