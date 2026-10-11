@@ -1366,6 +1366,50 @@ func TestReproCommand(t *testing.T) {
 	}
 }
 
+// An issue's body asks for its card's budget by a line "Size: <size>" or
+// "Budget: <n> [EUR]" (policy budget 5 by default, 15 at most): a size
+// gives its budget, an asked one wins over it, at most the project's card
+// maximum, else a large card's 10.
+func TestIntakeBudgetBySize(t *testing.T) {
+	for _, tc := range []struct {
+		body    string
+		project float64
+		want    float64
+	}{
+		{"Build it.\n\nSize: large", 0, 10},
+		{"Build it.\nBudget: 15 EUR\n", 15, 15},
+		{"Build it.\nBudget: 15 EUR\n", 0, 10},
+		{"budget: 40", 15, 15},
+		{"Size: giant", 0, 5},
+		{"Build it.", 0, 5},
+		{"Size: small\nBUDGET: 7", 0, 7},
+		{"Size: small\nSize: large", 0, 2},
+		{"The size: large is not a line of its own", 0, 5},
+	} {
+		in, store, _ := newTestIntake(t)
+		in.Policy = func() policy.Document {
+			return policy.Document{Budget: policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}}
+		}
+		p := seedProject("sf/ai-software-factory-code")
+		if tc.project > 0 {
+			p.Budget = &policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: tc.project}
+		}
+		store.projects = []Project{p}
+		body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add X", tc.body)
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d, body = %s", tc.body, rr.Code, rr.Body)
+		}
+		if len(store.tasks) != 1 {
+			t.Fatalf("%q: tasks = %d, want 1", tc.body, len(store.tasks))
+		}
+		for _, task := range store.tasks {
+			if task.BudgetEUR != tc.want {
+				t.Errorf("%q with project maximum %g: budget = %g, want %g", tc.body, tc.project, task.BudgetEUR, tc.want)
+			}
+		}
+	}
+}
+
 // A push to main reaches MainPushed with the repository; a push to any
 // other branch does not, and its failure fails the delivery.
 func TestIntakePushToMain(t *testing.T) {

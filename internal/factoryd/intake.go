@@ -335,6 +335,25 @@ func ReproCommand(body string) string {
 	return ""
 }
 
+// askedBudget is what the issue body asks for its card's budget: its first
+// line "Size: <size>" and its first line "Budget: <n>", "Budget: <n> EUR",
+// keys in any case; "" and 0 for none.
+func askedBudget(body string) (size string, eur float64) {
+	var sized, budgeted bool
+	for l := range strings.Lines(body) {
+		l = strings.ToLower(strings.TrimSpace(l))
+		if v, ok := strings.CutPrefix(l, "size:"); ok && !sized {
+			size, sized = strings.TrimSpace(v), true
+		} else if v, ok := strings.CutPrefix(l, "budget:"); ok && !budgeted {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(v, "eur")), 64); err == nil {
+				eur = n
+			}
+			budgeted = true
+		}
+	}
+	return size, eur
+}
+
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.
 func (in *Intake) handlePush(ctx context.Context, body []byte) error {
@@ -469,11 +488,12 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 			log.Printf("%s: issue #%d on %s: drop an outside account's writer labels: %v", via, issue.Index, repo, err)
 		}
 	}
+	size, eur := askedBudget(issue.Body)
 	task := Task{
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    in.Policy().Budget.ClampBudget(0),
+		BudgetEUR:    policy.CardBudget(in.Policy().Budget, p.Budget, size, eur),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",

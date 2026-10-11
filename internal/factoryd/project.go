@@ -42,6 +42,8 @@ type Project struct {
 	Egress []string
 	// Envelope is the file's envelope and standing block, else the policy's.
 	Envelope policy.Envelope
+	// Budget is the file's budget block; nil without one.
+	Budget *policy.ProjectBudget
 	// Tokens name a seed project's seeded secrets.
 	Tokens policy.SeedTokens
 	// Process names the process the project's cards follow and Lanes are
@@ -116,7 +118,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 		p := byName[name]
 		p.Name, p.Repository, p.MergeRule, p.Objects, p.Agents = name, c.Repository, c.MergeRule, c.Objects, c.Agents
 		p.Notify, p.Namespaces, p.Environments, p.Secrets, p.Egress = c.Notify, c.Namespaces, c.Environments, c.Secrets, c.Egress
-		p.Quota, p.Envelope, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), true
+		p.Quota, p.Envelope, p.Budget, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), c.Budget, true
 		p.Process, p.Lanes = c.Process, v.Processes[c.Process].Lanes
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens
