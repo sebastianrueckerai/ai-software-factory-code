@@ -589,3 +589,77 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		t.Errorf("t-c2 = %q, %q; want the summary links and the accent blue, not the filter's teal", got.HumanSummary, got.Accent)
 	}
 }
+
+// escalationOf is card id's escalation on the board: its face, its
+// question and its forms.
+func escalationOf(t *testing.T, body, id string) string {
+	t.Helper()
+	for _, part := range strings.Split(body, `<article class="card escalation">`)[1:] {
+		face, rest, _ := strings.Cut(part, "</article>")
+		if strings.Contains(face, `data-card="`+id+`"`) {
+			own, _, _ := strings.Cut(rest, "</article>")
+			return face + "</article>" + own
+		}
+	}
+	t.Fatalf("no escalation of %s:\n%s", id, body)
+	return ""
+}
+
+// A needs-you card with its agent's choices offers one button per choice
+// above the text box, each a form of its own to the answer endpoint with
+// the session's token and the board's filter; a card without choices
+// offers the text box alone, as before. A click is one answer: the choice
+// on the issue as the member, one row via button, a 303 to the filtered
+// board.
+func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-ch", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "add the feed"},
+			Escalation: "The agent asks: a replica or a shard?\nWhy: the reads outgrow one node", Choices: []string{"a replica", "a shard", "both"}},
+		{Task: factoryd.Task{ID: "t-plain", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14, Objective: "pick a port"},
+			Escalation: "The agent asks: which port?"},
+	}
+	ck, s := r.loggedIn(t)
+	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
+		`<input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`
+	choice := func(c string) string {
+		return `<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
+			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
+	}
+	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		if page == "/?project=ai-software-factory-code" {
+			filter = strings.TrimSuffix(filter, `<input type="hidden" name="view" value="wide">`)
+		}
+		esc := escalationOf(t, body, "t-ch")
+		want := `<p class="reason">The agent asks: a replica or a shard?` + "\n" + `Why: the reads outgrow one node</p>` + "\n" +
+			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
+			choice("a replica") + choice("a shard") + choice("both") + "</div>\n" +
+			`<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
+			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
+			`<textarea id="answer-t-ch" name="answer" rows="3" required></textarea>`
+		if !strings.Contains(esc, want) {
+			t.Errorf("%s: the escalation of t-ch =\n%s\nwant it to hold\n%s", page, esc, want)
+		}
+		if n := strings.Count(esc, `<button type="submit" name="answer"`); n != 3 {
+			t.Errorf("%s: t-ch offers %d choice buttons, want 3", page, n)
+		}
+		plain := escalationOf(t, body, "t-plain")
+		if strings.Contains(plain, `class="choices"`) || strings.Contains(plain, `name="answer" value=`) ||
+			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer">`) ||
+			!strings.Contains(plain, `<label for="answer-t-plain">Your answer, posted on the issue as you</label>`) {
+			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the text box alone", page, plain)
+		}
+	}
+
+	before := ev.count()
+	rec := r.do(post("/tasks/t-ch/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "accent": {""}, "view": {"wide"},
+		"answer": {"a shard"}}), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code&view=wide" {
+		t.Fatalf("the choice = %d to %q, want 303 to the filtered board", rec.Code, rec.Header().Get("Location"))
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
+		t.Fatalf("the comment = %q, want the choice", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-ch", detail: postedDetail(1)})
+}

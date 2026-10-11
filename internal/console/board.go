@@ -131,7 +131,8 @@ type card struct {
 	factoryd.Task
 	IssueURL string
 	PRURL    string
-	Reason   string // an escalation's reason
+	Reason   string   // an escalation's reason
+	Choices  []string // the answers its agent offered, a button each
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -772,7 +773,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Retry = &retry{CSRF: v.csrf}
 	}
 	if v.escalated(t) {
-		k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
+		k.Reason, k.Choices, k.EscalationAlert = bt.Escalation, bt.Choices, bt.EscalationAlert
 	}
 	return k
 }

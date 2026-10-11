@@ -43,9 +43,15 @@
 {{define "escalation"}}<article class="card escalation">
 {{template "card" .Card}}
 {{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
-<form method="post" action="/tasks/{{.Card.ID}}/answer">
+{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
+{{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<button type="submit" name="answer" value="{{.}}">{{.}}</button>
+</form>
+{{end}}</div>
+{{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
-<label for="answer-{{.Card.ID}}">Your answer, posted on the issue as you</label>
+<label for="answer-{{.Card.ID}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}" name="answer" rows="3" required></textarea>
 <button type="submit">Answer</button>
 </form>
