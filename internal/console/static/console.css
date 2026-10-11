@@ -18,23 +18,24 @@
   --text: oklch(0.93 0.005 250);
   --text-muted: oklch(0.68 0.01 250);
   --accent: oklch(0.72 0.14 250);
-  /* the states' pills: fill, text on it, and the ring some wear */
-  --st-running: oklch(0.32 0.09 250); --st-running-fg: oklch(0.9 0.05 250);
+  /* the states' pills: fill, text on it; each pill is 3:1 fill against
+     --bg-raised (0.21) and 4.5:1 text against its fill */
+  --st-running: oklch(0.38 0.1 250); --st-running-fg: oklch(0.93 0.02 250);
   --st-waiting: oklch(0.72 0.14 85); --st-waiting-fg: oklch(0.22 0.04 85);
   --st-review: oklch(0.68 0.16 305); --st-review-fg: oklch(0.18 0.05 305);
   --st-done: oklch(0.75 0.17 155); --st-done-fg: oklch(0.2 0.05 155);
-  --st-failed: oklch(0.63 0.19 25); --st-failed-fg: oklch(0.98 0.005 25);
+  --st-failed: oklch(0.55 0.2 25); --st-failed-fg: oklch(0.98 0.005 25);
   --st-closed: oklch(0.6 0.012 250); --st-closed-fg: oklch(0.18 0.01 250);
   --st-queued: oklch(0.55 0.02 250); --st-queued-fg: oklch(0.95 0.005 250);
   --st-neutral: oklch(0.5 0.015 250); --st-neutral-fg: oklch(0.95 0.005 250);
   --warn: oklch(0.78 0.15 85);
   --note-bg: oklch(0.26 0.06 155); --note-line: oklch(0.75 0.17 155);
   --problem-bg: oklch(0.26 0.06 25); --problem-line: oklch(0.63 0.19 25);
-  /* the accents a human may put on a card: fixed hues, never a state's
-     hue at the state's chroma (blue and violet sit far from the pills'
-     chroma, green and red near zero of it) */
-  --acc-red: oklch(0.5 0.13 25); --acc-orange: oklch(0.62 0.15 45);
-  --acc-amber: oklch(0.62 0.1 95); --acc-green: oklch(0.5 0.06 155);
+  /* accents: fixed hues, never a state's hue at the state's chroma;
+     amber (0.07) sits well below waiting's 0.14, red (0.08) well below
+     failed's 0.2 */
+  --acc-red: oklch(0.5 0.08 25); --acc-orange: oklch(0.62 0.15 45);
+  --acc-amber: oklch(0.62 0.07 95); --acc-green: oklch(0.5 0.06 155);
   --acc-teal: oklch(0.6 0.1 195); --acc-blue: oklch(0.55 0.05 250);
   --acc-violet: oklch(0.5 0.08 305); --acc-pink: oklch(0.6 0.15 350);
 }
@@ -58,8 +59,11 @@
   --warn: oklch(0.45 0.12 80);
   --note-bg: oklch(0.95 0.04 155); --note-line: oklch(0.5 0.14 155);
   --problem-bg: oklch(0.95 0.03 25); --problem-line: oklch(0.52 0.19 25);
-  --acc-red: oklch(0.42 0.16 25); --acc-orange: oklch(0.52 0.15 45);
-  --acc-amber: oklch(0.5 0.11 85); --acc-green: oklch(0.42 0.08 155);
+  /* accents: fixed hues, never a state's hue at the state's chroma;
+     amber (0.06) sits well below waiting's 0.13, red (0.08) well below
+     failed's 0.19 */
+  --acc-red: oklch(0.42 0.08 25); --acc-orange: oklch(0.52 0.15 45);
+  --acc-amber: oklch(0.5 0.06 85); --acc-green: oklch(0.42 0.08 155);
   --acc-teal: oklch(0.5 0.1 195); --acc-blue: oklch(0.42 0.08 250);
   --acc-violet: oklch(0.42 0.1 305); --acc-pink: oklch(0.5 0.16 350);
 }
@@ -95,11 +99,11 @@ h4 { font-size: .9rem; margin: 0 0 .25rem; }
 .st-backlog, .st-plan, .st-other { background: var(--st-neutral); color: var(--st-neutral-fg); }
 /* waiting on the author: the same amber as a wait, worn hollow */
 .pill.hollow { background: transparent; border-color: var(--st-waiting); color: var(--st-waiting); }
-[data-theme=light] .pill.hollow { color: var(--st-waiting); }
 .meta, .links { margin: .15rem 0; color: var(--text-muted); font-size: .85rem; }
 .line2 { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; }
 .activity { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: var(--text-muted); margin: .15rem 0; overflow-wrap: anywhere; }
 .chips { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
+.spend { color: var(--text-muted); }
 .spend.near { color: var(--warn); font-weight: 600; }
 .reason { white-space: pre-wrap; font-size: .85rem; }
 .note { background: var(--note-bg); border: 1px solid var(--note-line); color: var(--text); padding: .5rem; border-radius: 6px; }

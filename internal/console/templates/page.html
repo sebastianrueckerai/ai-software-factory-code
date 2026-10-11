@@ -6,6 +6,11 @@
 <option value=""{{if not .Project}} selected{{end}}>every project</option>
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select>
+<label for="accent-filter">Accent</label>
+<select id="accent-filter" name="accent">
+<option value=""{{if not .Accent}} selected{{end}}>every accent</option>
+{{range .Accents}}<option value="{{.}}"{{if eq . $.Accent}} selected{{end}}>{{.}}</option>
+{{end}}</select>
 <button type="submit">Show</button>
 </form>
 {{template "board" .}}

@@ -83,13 +83,10 @@ type card struct {
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
-	Total, GateAge  string
-	GateText        string
-	EscalationAlert int64  // the escalation's open alert
-	WaitingOn       string // a card in waiting-deps: the issues it waits on
-	// ModelAlias and AgentSummary are the embedded Task's own fields, read
-	// straight off it: the model chip on the face, the agent's last word
-	// in the expanded view.
+	Total, GateAge     string
+	GateText           string
+	EscalationAlert    int64  // the escalation's open alert
+	WaitingOn          string // a card in waiting-deps: the issues it waits on
 	Badge              string // the card's starting lane, in a column after the lanes
 	PlanIssue          int64  // a plan's card: the plan's issue
 	Moves              []move // a backlog card: the starting lanes the viewer may move it into
@@ -127,10 +124,12 @@ type card struct {
 	// form, which reads the page's own token).
 	MayWriteSummary bool
 	CSRF            string
-	// Project and Accent are the board's filter the card's forms carry
-	// back; Accents are the choices its accent select offers.
+	// FilterProject and FilterAccent are the board's filter the card's
+	// forms carry back so an action keeps the view; Accents are the
+	// choices its accent select offers.
 	boardFilter
-	Accents []string
+	FilterProject, FilterAccent string
+	Accents                     []string
 }
 
 // titleClause is the face's title from the objective: up to the first
@@ -163,6 +162,18 @@ var statusClasses = map[string]string{
 }
 
 func statusClass(status string) string { return cmp.Or(statusClasses[status], "st-other") }
+
+// statusLabels are the pill's display text per status.
+var statusLabels = map[string]string{
+	"running": "running", "closing": "closing", "queued": "queued",
+	"waiting-human": "waiting", "waiting-poster": "waiting",
+	"waiting-deps": "waiting", "in-review": "in review",
+	"done": "done", "failed": "failed", "closed": "closed",
+	"backlog": "backlog", "plan": "plan",
+}
+
+// StatusLabel is the card's status as display text for the pill.
+func (k card) StatusLabel() string { return cmp.Or(statusLabels[k.Status], k.Status) }
 
 // nearBudgetShare is the share of its budget from which a card's spend is
 // shown prominent with the warning sign and the words "near its budget".
@@ -311,6 +322,7 @@ type boardData struct {
 	// carries back so an action keeps the view; Accents are the choices
 	// its select offers.
 	boardFilter
+	Query       string // the filter as a URL query for the poll's hx-get
 	Accents     []string
 	Projects    []string
 	Columns     []column
@@ -461,7 +473,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
 	ctx, s := r.Context(), current(r)
 	f := boardFilter{Project: project, Accent: accent}
-	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Accents: factoryd.Accents}
+	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Query: f.query(), Accents: factoryd.Accents}
 	v, _ := c.inForce(r)
 	d.Approver = slices.Contains(v.Document.Approvers, s.user)
 	all, err := c.coderProjects(r)
@@ -727,6 +739,7 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 			k.CSRF = s.csrf
 		}
 		k.boardFilter, k.Accents = f, d.Accents
+		k.FilterProject, k.FilterAccent = f.Project, f.Accent
 		if k.Plan != nil {
 			for i := range k.Plan.Cards {
 				k.Plan.Cards[i].boardFilter = f

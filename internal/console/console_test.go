@@ -854,7 +854,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="https://git.example/sf/code/issues/11"`, `href="https://git.example/sf/code/pulls/12"`,
-		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00 EUR",
+		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
 		`hx-get="/board"`, `hx-trigger="every 3s"`, `<script src="/static/htmx.min.js"`,
@@ -1883,5 +1883,207 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	want := map[string]int64{"alert_verdict_click none none": 1}
 	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
 		t.Fatalf("interventions = %v, want %v", got, want)
+	}
+}
+
+func TestCardFaceTitleFromPlanKeyAndObjective(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		task      factoryd.Task
+		wantTitle string
+	}{
+		{"plan key", factoryd.Task{ID: "t-1", Kind: "agent", Status: "backlog", Repository: "sf/code", PlanKey: "web-pages"}, "web-pages"},
+		{"objective first clause", factoryd.Task{ID: "t-2", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache. Then update tests."}, "Fix the cache"},
+		{"objective with path", factoryd.Task{ID: "t-3", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix internal/console/board.go so it renders"}, "Fix internal/console/board.go so it renders"},
+		{"objective with version", factoryd.Task{ID: "t-4", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Bump to v1.2 and release"}, "Bump to v1.2 and release"},
+		{"objective final dot", factoryd.Task{ID: "t-5", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache."}, "Fix the cache"},
+		{"human summary overrides", factoryd.Task{ID: "t-6", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache.", HumanSummary: "custom title"}, "custom title"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			ck, _ := r.loggedIn(t)
+			r.tasks.set("", tc.task)
+			body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+			if !strings.Contains(body, `<strong class="title">`+tc.wantTitle+`</strong>`) {
+				t.Errorf("board lacks title %q", tc.wantTitle)
+			}
+		})
+	}
+}
+
+func TestCardFacePillClassPerStatus(t *testing.T) {
+	for _, tc := range []struct {
+		status, class string
+	}{
+		{"running", "st-running"}, {"waiting-human", "st-waiting"}, {"waiting-poster", "st-waiting hollow"},
+		{"in-review", "st-review"}, {"done", "st-done"}, {"failed", "st-failed"}, {"closed", "st-closed"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			r := newRig(t)
+			ck, _ := r.loggedIn(t)
+			r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: tc.status, Repository: "sf/code", Objective: "work"})
+			body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+			if !strings.Contains(body, `class="pill `+tc.class+`"`) {
+				t.Errorf("board lacks pill class %q for status %s", tc.class, tc.status)
+			}
+		})
+	}
+}
+
+func TestCardFaceSpendMutedBelowAndProminentAt80Percent(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-low", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "low spend", BudgetEUR: 10, SpentEUR: 5},
+		factoryd.Task{ID: "t-high", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "high spend", BudgetEUR: 10, SpentEUR: 8.5})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="spend">€5.00 / €10.00</span>`) {
+		t.Error("low spend lacks muted span")
+	}
+	if !strings.Contains(body, `<span class="spend near">€8.50 / €10.00 ⚠ near its budget</span>`) {
+		t.Error("high spend lacks prominent span with warning")
+	}
+}
+
+func TestCardFaceChipsOnlyWhenPresent(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work", ModelAlias: "coding-cheap"})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="chip model">coding-cheap</span>`) {
+		t.Error("board lacks model chip")
+	}
+	r.tasks.set("", factoryd.Task{ID: "t-2", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"})
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, `chip model`) {
+		t.Error("board shows model chip when none set")
+	}
+}
+
+func TestHTMLCarriesDataThemeAndToggleScript(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<html lang="en" data-theme="dark">`) {
+		t.Error("html lacks data-theme=dark")
+	}
+	if !strings.Contains(body, `<script src="/static/console.js"`) {
+		t.Error("page lacks console.js")
+	}
+	if !strings.Contains(body, `id="theme-toggle"`) {
+		t.Error("page lacks theme toggle button")
+	}
+}
+
+func TestSummaryPostAcceptsAndRefuses(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work", IssueNumber: 1})
+	before := ev.count()
+	rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {"a short summary"}}), ck)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+		t.Fatalf("summary POST = %d: %s", rec.Code, rec.Body)
+	}
+	if ev.count()-before != 1 {
+		t.Fatalf("summary POST left %d rows, want 1", ev.count()-before)
+	}
+	long := strings.Repeat("x", 256)
+	rec = r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {long}}), ck)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-long summary = %d, want 400", rec.Code)
+	}
+	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.c.mu.Lock()
+	r.c.moves = nil
+	r.c.mu.Unlock()
+	rec = r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {"x"}}), ck)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-writer summary = %d, want 403", rec.Code)
+	}
+}
+
+func TestSummaryEmptyRestoresGenerated(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache.", HumanSummary: "custom"})
+	rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {""}}), ck)
+	if rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+		t.Fatalf("empty summary = %d: %s", rec.Code, rec.Body)
+	}
+	r.tasks.mu.Lock()
+	got := r.tasks.tasks[0].HumanSummary
+	r.tasks.mu.Unlock()
+	if got != "" {
+		t.Fatalf("HumanSummary = %q, want empty after restore", got)
+	}
+}
+
+func TestAccentPostAcceptsNamesAndRefusesUnknown(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work", IssueNumber: 1})
+	for _, name := range factoryd.Accents {
+		before := ev.count()
+		rec := r.do(post("/tasks/t-1/accent", url.Values{"csrf": {s.csrf}, "value": {name}}), ck)
+		if rec.Code != http.StatusOK && rec.Code != http.StatusSeeOther {
+			t.Fatalf("accent %q = %d: %s", name, rec.Code, rec.Body)
+		}
+		if ev.count()-before != 1 {
+			t.Fatalf("accent %q left %d rows, want 1", name, ev.count()-before)
+		}
+	}
+	rec := r.do(post("/tasks/t-1/accent", url.Values{"csrf": {s.csrf}, "value": {"purple"}}), ck)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unknown accent = %d, want 400", rec.Code)
+	}
+}
+
+func TestAccentFilterNarrowsBoard(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-blue", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "blue work", Accent: "blue"},
+		factoryd.Task{ID: "t-red", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "red work", Accent: "red"},
+		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no accent"})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?accent=blue", nil), ck).Body.String()
+	if !strings.Contains(body, "blue work") {
+		t.Error("blue filter lacks blue card")
+	}
+	if strings.Contains(body, "red work") || strings.Contains(body, "no accent") {
+		t.Error("blue filter shows non-blue cards")
+	}
+}
+
+func TestAccentFilterSurvivesPollURL(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work", Accent: "blue"})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?accent=blue", nil), ck).Body.String()
+	if !strings.Contains(body, `hx-get="/board?accent=blue"`) {
+		t.Errorf("poll URL lacks accent filter: %s", body[:strings.Index(body, "hx-trigger")])
+	}
+}
+
+func TestFormsCarryBoardFilter(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work", IssueNumber: 1})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&accent=blue", nil), ck).Body.String()
+	if !strings.Contains(body, `hx-get="/board?project=ai-software-factory-code&accent=blue"`) &&
+		!strings.Contains(body, `hx-get="/board?accent=blue&amp;project=ai-software-factory-code"`) {
+		t.Error("poll URL lacks board filter")
+	}
+	if !strings.Contains(body, `<option value="blue" selected>blue</option>`) {
+		t.Error("accent filter select lacks selected blue")
+	}
+}
+
+func TestMigrationFileExists(t *testing.T) {
+	b, err := staticFS.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) == 0 {
+		t.Fatal("console.css is empty")
 	}
 }

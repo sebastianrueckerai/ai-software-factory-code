@@ -78,7 +78,7 @@ func (c *Console) setAccent(w http.ResponseWriter, r *http.Request) {
 	if !c.mayWriteTask(w, r, t) {
 		return
 	}
-	accent := r.PostFormValue("accent")
+	accent := r.PostFormValue("value")
 	if accent != "" && !factoryd.IsAccent(accent) {
 		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
 		return

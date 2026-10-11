@@ -4,6 +4,10 @@
 document.addEventListener("htmx:beforeRequest", function (e) {
   var board = e.detail.elt;
   if (board.id !== "board") return;
+  if (board.querySelector("details[open]")) {
+    e.preventDefault();
+    return;
+  }
   if (board.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) {
     e.preventDefault();
     return;
