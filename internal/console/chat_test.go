@@ -29,6 +29,15 @@ type fakeChat struct {
 	msgs  map[string][]factoryd.ChatMessage // by repository and login
 	next  int64
 	spend []spendRow
+	// proposals are the proposals and undos, in the order stored
+	proposals []*fakeProposal
+}
+
+// fakeProposal is a row of the proposals' table: used is its used_at, zero
+// while unused.
+type fakeProposal struct {
+	factoryd.ChatProposal
+	used time.Time
 }
 
 // spendRow is a ledger row of a task of repository on day, chat when the
@@ -83,6 +92,51 @@ func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at ti
 		}
 	}
 	return s, nil
+}
+
+func (f *fakeChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.proposals = append(f.proposals, &fakeProposal{ChatProposal: p})
+	return nil
+}
+
+func (f *fakeChat) TakeProposal(_ context.Context, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Token != token || p.Repository != repository || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		if p.Login != login {
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		}
+		p.used = now
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+}
+
+func (f *fakeChat) PurgeProposals(_ context.Context, before time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := len(f.proposals)
+	f.proposals = slices.DeleteFunc(f.proposals, func(p *fakeProposal) bool {
+		return p.ExpiresAt.Before(before) || !p.used.IsZero() && p.used.Before(before)
+	})
+	return int64(n - len(f.proposals)), nil
+}
+
+// proposal is token's row; false for none.
+func (f *fakeChat) proposal(token string) (fakeProposal, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Token == token {
+			return *p, true
+		}
+	}
+	return fakeProposal{}, false
 }
 
 // chatGateway is the model's gateway: it answers each call with the next
@@ -538,7 +592,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 // leaves it, an expired or unknown one is 404, and an undo token goes the
 // same way.
 func TestChatProposalIsTheMembersOnce(t *testing.T) {
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}, {call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}}
@@ -550,9 +604,13 @@ func TestChatProposalIsTheMembersOnce(t *testing.T) {
 		body[0] != "It is another member's." {
 		t.Fatalf("anna's Do it of sebastian's proposal = %d %q, want 403", code, body)
 	}
-	r.c.mu.Lock()
-	r.c.proposals[second[0]].expires = time.Now().Add(-time.Second)
-	r.c.mu.Unlock()
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Token == second[0] {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	chat.mu.Unlock()
 	for _, id := range []string{second[0], "no-such-proposal"} {
 		if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+id, nil); code != http.StatusNotFound {
 			t.Fatalf("Do it of proposal %s = %d, want 404", id, code)
@@ -567,6 +625,135 @@ func TestChatProposalIsTheMembersOnce(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardMoved, Detail: map[string]any{"lane": "ready"}})
+}
+
+// A proposal is a row of the store, the member's on the project, and the
+// stored call carries its token, which GET answers. Another member's Do
+// it is refused 403 and another project's route finds none, both leaving
+// it; the member's runs it once, one row via chat, with the proposal's
+// line on the row it stores.
+func TestChatProposalIsStored(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	args := `{"title":"Cache metrics","lane":"ready"}`
+	g.replies = [][]string{{call(1, "new_card", args)}}
+	start := time.Now()
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card for cache metrics"}})
+	end := time.Now()
+	desc := "File a card, title Cache metrics, lane ready"
+	row, _ := chat.proposal(tokens[0])
+	if row.ExpiresAt.Before(start.Add(30*time.Minute)) || row.ExpiresAt.After(end.Add(30*time.Minute)) {
+		t.Fatalf("the proposal expires %v, want 30 minutes after %v", row.ExpiresAt, start)
+	}
+	equal(t, "the proposal", row, fakeProposal{ChatProposal: factoryd.ChatProposal{Token: tokens[0], Kind: "proposal", Repository: "sf/code",
+		Login: "sebastian", Tool: "new_card", Args: json.RawMessage(args), Description: desc, ExpiresAt: row.ExpiresAt}})
+	chat.mu.Lock()
+	rows := len(chat.proposals)
+	chat.mu.Unlock()
+	if rows != 1 {
+		t.Fatalf("%d proposal rows, want 1", rows)
+	}
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
+	equal(t, "the stored call", stored[0].ToolCalls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
+		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
+	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
+		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
+	}
+	ak, as := r.as(t, "anna")
+	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusForbidden || body[0] != "It is another member's." {
+		t.Fatalf("anna's Do it = %d %q, want 403", code, body)
+	}
+	if code, body, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
+		t.Fatalf("Do it on another project = %d %q, want 404", code, body)
+	}
+	if row, _ := chat.proposal(tokens[0]); !row.used.IsZero() {
+		t.Fatalf("a refused Do it used the proposal at %v", row.used)
+	}
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	filed := "Filed sf/code#41 in lane ready."
+	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"` + filed + `"}`,
+		`applied {"result":"` + filed + `","tool":"new_card"}`, `done {}`})
+	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics"}}
+	chatRows(t, r.events, before, "sebastian", card)
+	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
+	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", Content: desc, At: stored[0].At,
+		ToolCalls: []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
+		t.Fatalf("a second Do it = %d %q, want 404", code, body)
+	}
+	chatRows(t, r.events, before, "sebastian", card)
+}
+
+// An undo is a row of the store too: the inverse tool with its
+// arguments, and the undone tool's name for its lines. An accent and a
+// comment run at once, a move on its Do it; each undo runs its inverse as
+// the member, one row via chat each, and offers no undo of its own.
+func TestChatUndoIsData(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.tasks.tasks[0].Accent = "blue"
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "set_accent", `{"task_id":"t-m","accent":"red"}`, "comment", `{"task_id":"t-m","text":"Looks right."}`,
+		"move_card", `{"task_id":"t-m","lane":"ready"}`)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"mark #5 red, say it looks right and start it"}})
+	_, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[2], nil)
+	for _, w := range []struct{ token, tool, args, undoes string }{
+		{tokens[0], "set_accent", `{"task_id":"t-m","accent":"blue"}`, "set_accent"},
+		{tokens[1], "delete_comment", `{"task_id":"t-m","n":1}`, "comment"},
+		{undo[0], "unmove_card", `{"task_id":"t-m","lane":"ready"}`, "move_card"},
+	} {
+		row, _ := chat.proposal(w.token)
+		equal(t, "the undo of "+w.undoes, row.ChatProposal, factoryd.ChatProposal{Token: w.token, Kind: "undo", Repository: "sf/code",
+			Login: "sebastian", Tool: w.tool, Args: json.RawMessage(w.args), Description: w.undoes, ExpiresAt: row.ExpiresAt})
+	}
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil)
+	back := `The accent of #5 is back to \"blue\".`
+	equal(t, "the accent's undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_accent","result":"` + back + `"}`,
+		`applied {"result":"` + back + `","tool":"set_accent"}`, `done {}`})
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.Accent != "blue" {
+		t.Fatalf("accent after the undo = %q, want blue", k.Accent)
+	}
+	chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[1], nil)
+	chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
+	ev := func(kind string, detail map[string]any) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: kind, Detail: detail}
+	}
+	chatRows(t, r.events, before, "sebastian",
+		ev(factoryd.EventAccentSet, map[string]any{"accent": "red"}), ev(factoryd.EventCardCommented, map[string]any{"comment": int64(1)}),
+		ev(factoryd.EventCardMoved, map[string]any{"lane": "ready"}), ev(factoryd.EventAccentSet, map[string]any{"accent": "blue"}),
+		ev(factoryd.EventCommentDeleted, map[string]any{"comment": int64(1)}), ev(factoryd.EventCardMoved, map[string]any{"lane": "backlog"}))
+}
+
+// A restart keeps proposals and undos, which the store holds: a proposal
+// made before one runs on the Do it after it, and that move's undo after
+// the next.
+func TestChatProposalSurvivesARestart(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"start #5"}})
+	restart := func() {
+		t.Helper()
+		c, err := New(r.c.cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.c = c
+		ck, s = r.loggedIn(t)
+	}
+	restart()
+	_, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	restart()
+	chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
+	moved := func(lane string) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardMoved, Detail: map[string]any{"lane": lane}}
+	}
+	chatRows(t, r.events, before, "sebastian", moved("ready"), moved("backlog"))
+	equal(t, "labelled", r.fg.labelled, []string{"/api/v1/repos/sf/code/issues/5/labels [1]"})
+	equal(t, "deleted", r.fg.deleted, []string{"/api/v1/repos/sf/code/issues/5/labels/1"})
 }
 
 // The chat answers 403 to a factory writer who does not write the
@@ -766,7 +953,9 @@ func TestChatBudgetSpentAndGatewayFailure(t *testing.T) {
 func TestChatToolsArePolicys(t *testing.T) {
 	var names []string
 	for _, tool := range tools {
-		names = append(names, tool.name)
+		if !tool.internal {
+			names = append(names, tool.name)
+		}
 	}
 	equal(t, "tools", names, policy.ChatTools)
 }

@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"testing"
@@ -18,7 +20,7 @@ func chatStore(t *testing.T) *PGStore {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, ledger, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_proposals, ledger, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -174,5 +176,96 @@ func TestPGStoreTaskEvents(t *testing.T) {
 	}
 	if !slices.Equal(gotIDs, []int64{ids[3], ids[2]}) || got[0].Kind != EventAccentSet || got[0].Via != ViaChat {
 		t.Fatalf("TaskEvents(t-1, 2) = %+v, want ids %d, %d", got, ids[3], ids[2])
+	}
+}
+
+// A proposal is taken once, by its member, on its project, until it
+// expires: another member's take leaves it, another project's finds none.
+func TestPGStoreTakeProposal(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	p := ChatProposal{Token: "tok-1", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card",
+		Args: json.RawMessage(`{"lane": "ready", "title": "Cache metrics"}`), Description: "File a card, title Cache metrics, lane ready",
+		ExpiresAt: now.Add(30 * time.Minute)}
+	if err := s.PutProposal(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	usedAt := func(token string) *time.Time {
+		var at *time.Time
+		if err := s.db.QueryRowContext(ctx, `SELECT used_at FROM chat_proposals WHERE token = $1`, token).Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		return at
+	}
+	if _, err := s.TakeProposal(ctx, "tok-1", "sf/code", "bob", now); !errors.Is(err, ErrOthersProposal) {
+		t.Fatalf("bob's take = %v, want ErrOthersProposal", err)
+	}
+	if at := usedAt("tok-1"); at != nil {
+		t.Fatalf("used_at after bob's take = %v, want NULL", at)
+	}
+	if _, err := s.TakeProposal(ctx, "tok-1", "linkshort/linkshort", "anna", now); !errors.Is(err, ErrNoProposal) {
+		t.Fatalf("a take on another project = %v, want ErrNoProposal", err)
+	}
+	got, err := s.TakeProposal(ctx, "tok-1", "sf/code", "anna", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ExpiresAt.Equal(p.ExpiresAt) {
+		t.Fatalf("expires_at = %v, want %v", got.ExpiresAt, p.ExpiresAt)
+	}
+	got.ExpiresAt = p.ExpiresAt
+	if !reflect.DeepEqual(got, p) {
+		t.Fatalf("taken = %+v\nwant    %+v", got, p)
+	}
+	if at := usedAt("tok-1"); at == nil || !at.Equal(now) {
+		t.Fatalf("used_at = %v, want %v", at, now)
+	}
+	if _, err := s.TakeProposal(ctx, "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
+		t.Fatalf("a second take = %v, want ErrNoProposal", err)
+	}
+	undo := ChatProposal{Token: "tok-2", Kind: "undo", Repository: "sf/code", Login: "anna", Tool: "set_accent",
+		Args: json.RawMessage(`{"accent": "blue", "task_id": "t-m"}`), Description: "set_accent", ExpiresAt: now}
+	if err := s.PutProposal(ctx, undo); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.TakeProposal(ctx, "tok-2", "sf/code", "anna", now.Add(time.Second)); !errors.Is(err, ErrNoProposal) {
+		t.Fatalf("a take a second after expiry = %v, want ErrNoProposal", err)
+	}
+}
+
+// The purge deletes the rows expired or used before its time and keeps
+// the pending ones.
+func TestPGStorePurgeProposals(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	for token, expires := range map[string]time.Time{"old-1": now.Add(-10 * time.Minute), "old-2": now.Add(-time.Second),
+		"used": now.Add(20 * time.Minute), "open": now.Add(20 * time.Minute)} {
+		if err := s.PutProposal(ctx, ChatProposal{Token: token, Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card",
+			Args: json.RawMessage(`{}`), ExpiresAt: expires}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.TakeProposal(ctx, "used", "sf/code", "anna", now.Add(-5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.PurgeProposals(ctx, now)
+	if err != nil || n != 3 {
+		t.Fatalf("purged %d, %v, want 3", n, err)
+	}
+	var left []string
+	rows, err := s.db.QueryContext(ctx, `SELECT token FROM chat_proposals`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, token)
+	}
+	if !slices.Equal(left, []string{"open"}) {
+		t.Fatalf("rows left = %q, want open", left)
 	}
 }

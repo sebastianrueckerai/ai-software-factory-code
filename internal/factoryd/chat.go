@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -38,6 +40,8 @@ type ChatToolCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Result    string `json:"result"`
+	// Proposal is the token of a call proposed to the member.
+	Proposal string `json:"proposal,omitempty"`
 }
 
 // EnsureChatTask is project name's chat task for the month of at, filed
@@ -121,4 +125,68 @@ func (s *PGStore) ProjectMonthSpend(ctx context.Context, repository string, at t
 		AND l.day < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month')::date`,
 		repository, at, KindChat).Scan(&p.EUR, &p.ChatEUR)
 	return p, err
+}
+
+// ChatProposal is a proposal of the project agent waiting for its
+// member's Do it (kind proposal), or an applied action's undo (kind undo):
+// tool with args, bound to the member and the project until it expires.
+// Description is a proposal's line for the member, or the name of the
+// tool whose action an undo undoes.
+type ChatProposal struct {
+	Token, Kind, Repository, Login, Tool string
+	Args                                 json.RawMessage
+	Description                          string
+	ExpiresAt                            time.Time
+}
+
+// TakeProposal's refusals.
+var (
+	ErrNoProposal     = errors.New("no such proposal or undo")
+	ErrOthersProposal = errors.New("the proposal or undo is another member's")
+)
+
+// PutProposal stores p.
+func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
+		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt)
+	return err
+}
+
+// TakeProposal uses token for login on repository at now, once: the row
+// unused and unexpired, marked used. ErrOthersProposal for such a row of
+// another login, which stays unused; ErrNoProposal for none.
+func (s *PGStore) TakeProposal(ctx context.Context, token, repository, login string, now time.Time) (ChatProposal, error) {
+	p := ChatProposal{Token: token, Repository: repository, Login: login}
+	var args []byte
+	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
+		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4
+		RETURNING kind, tool, args, description, expires_at`, token, repository, login, now).
+		Scan(&p.Kind, &p.Tool, &args, &p.Description, &p.ExpiresAt)
+	switch {
+	case err == nil:
+		p.Args = args
+		return p, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return ChatProposal{}, err
+	}
+	var others bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM chat_proposals
+		WHERE token = $1 AND repository = $2 AND used_at IS NULL AND expires_at >= $3)`, token, repository, now).Scan(&others); err != nil {
+		return ChatProposal{}, err
+	}
+	if others {
+		return ChatProposal{}, ErrOthersProposal
+	}
+	return ChatProposal{}, ErrNoProposal
+}
+
+// PurgeProposals deletes the rows expired or used before before and
+// answers how many.
+func (s *PGStore) PurgeProposals(ctx context.Context, before time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_proposals WHERE expires_at < $1 OR used_at < $1`, before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }

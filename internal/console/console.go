@@ -167,9 +167,6 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
-	// proposals wait for their member's Do it and undos are applied
-	// actions' inverses, by token (keep, take).
-	proposals, undos map[string]*pending
 }
 
 type session struct {

@@ -1,7 +1,6 @@
 package console
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,22 +18,38 @@ import (
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID   string `json:"task_id"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Lane     string `json:"lane"`
-	Text     string `json:"text"`
-	Note     string `json:"note"`
-	Action   string `json:"action"`
-	Revision int    `json:"revision"`
-	SHA256   string `json:"sha256"`
-	Summary  string `json:"summary"`
-	Accent   string `json:"accent"`
-	N        int    `json:"n"`
+	TaskID   string `json:"task_id,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Body     string `json:"body,omitempty"`
+	Lane     string `json:"lane,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Note     string `json:"note,omitempty"`
+	Action   string `json:"action,omitempty"`
+	Revision int    `json:"revision,omitempty"`
+	SHA256   string `json:"sha256,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Accent   string `json:"accent,omitempty"`
+	N        int    `json:"n,omitempty"`
+	// undo marks an undo's run, which only chatUndo sets: unexported, no
+	// arguments carry it
+	undo bool
 }
 
-// undoFunc is an applied action's inverse call.
-type undoFunc = func(ctx context.Context, a actor) (string, error)
+// setNote is a set tool's result on issue: field is set, or on an undo
+// back to v.
+func (in toolInput) setNote(field string, issue int64, v string) string {
+	if in.undo {
+		return fmt.Sprintf("The %s of #%d is back to %q.", field, issue, v)
+	}
+	return fmt.Sprintf("The %s of #%d is set.", field, issue)
+}
+
+// inverse is an applied action's undo: the tool of tools, internal ones
+// included, that undoes it, with its arguments.
+type inverse struct {
+	tool string
+	args toolInput
+}
 
 // chatTool is one of the project agent's tools: a read, or a console
 // action (write) it runs through the action's own function as the member.
@@ -43,7 +58,8 @@ type chatTool struct {
 	params             map[string]any // the arguments' JSON Schema properties
 	required           []string
 	write              bool
-	run                func(t *turn, in toolInput) (string, undoFunc, error)
+	internal           bool // an undo's inverse only: the agent is not offered it
+	run                func(t *turn, in toolInput) (string, *inverse, error)
 }
 
 func (tool chatTool) def() factoryd.OperatorTool {
@@ -69,7 +85,7 @@ var (
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session.
 func (c *Console) chatTools() []chatTool {
-	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool { return t.name == "steer" && c.cfg.Steer == nil })
+	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool { return t.internal || t.name == "steer" && c.cfg.Steer == nil })
 }
 
 func (c *Console) chatTool(name string) (chatTool, bool) {
@@ -249,22 +265,22 @@ func eventLines(events []factoryd.Event) string {
 var tools = []chatTool{
 	{name: "board", title: "Read the board",
 		about: "The project's board as the member sees it: each column with its cards (issue, task id, title, status, gate, spend of budget), the human lane, the escalated cards and the approval requests waiting.",
-		run: func(t *turn, _ toolInput) (string, undoFunc, error) {
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, _, err := t.c.boardText(t.r, t.p)
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "One card in detail: status, lane, gate, spend, its issue and pull request, the objective, the agent's summary, the question it waits on with the choices it offers, its merge request's reviews, its plan's revision and cards, its plan.",
-		run:   func(t *turn, in toolInput) (string, undoFunc, error) { s, err := t.cardText(in); return s, nil, err }},
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
 		about: "The project's newest events, newest first: what was done to which card, by whom and through what (button, chat, factoryd, webhook).",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
 			return eventLines(events), nil, err
 		}},
 	{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
 		about: "One card's events, newest first.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			k, err := t.card(in)
 			if err != nil {
 				return "", nil, err
@@ -274,63 +290,59 @@ var tools = []chatTool{
 		}},
 	{name: "costs", title: "Read the costs",
 		about: "The project's spend this UTC month against its month cap, the cards' and the chat's apart.",
-		run: func(t *turn, _ toolInput) (string, undoFunc, error) {
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.spendLine(t.r.Context(), t.p)
 			return "The project's " + s + ".", nil, err
 		}},
 	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "The diff of a card's pull request, read from Forgejo as the member; its first 20 KB.",
-		run:   func(t *turn, in toolInput) (string, undoFunc, error) { s, err := t.diff(in); return s, nil, err }},
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human")},
 		required: []string{"title", "lane"},
 		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", "")
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
 		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
 		about: "Move a backlog card into a starting lane of its process, as the member's label on its issue.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doMoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
-			return note, func(ctx context.Context, a actor) (string, error) {
-				return t.c.doUnmoveCard(ctx, a, in.TaskID, in.Lane)
-			}, err
+			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Answer the question a card waits on (it needs you), with one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doAnswer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "comment", title: "Comment on a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Comment on a card's issue as the member.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
-			return note, func(ctx context.Context, a actor) (string, error) {
-				return t.c.doDeleteComment(ctx, a, in.TaskID, posted)
-			}, err
+			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},
 	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Send a message to a running card's agent session, marked as the member's; the agent reads it next.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "File a failed card of a plan again and start the replacement in lane ready (an approver's action).",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
 		}},
 	{name: "start_plan", title: "Start a plan", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "Start an accepted plan: its cards still in the backlog go to lane ready (an approver's action).",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doStartPlan(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
 		}},
@@ -339,27 +351,27 @@ var tools = []chatTool{
 			"sha256": str("that revision's sha256, from the card tool")},
 		required: []string{"task_id", "revision", "sha256"},
 		about:    "Accept a plan's revision, which factoryd then files as cards (an approver's action).",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doAcceptPlan(t.r.Context(), t.a, in.TaskID, in.Revision, in.SHA256)
 			return note, nil, err
 		}},
 	{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan: a comment on its issue as the member.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "reject_plan", title: "Reject a plan", write: true, params: map[string]any{"task_id": taskParam, "note": str("why")},
 		required: []string{"task_id", "note"},
 		about:    "Reject a plan: its task ends failed with the reason.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRejectPlan(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "Approve a card's waiting merge request: the member's approving review on its pull request, then factoryd merges it (an approver's action).",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
 				return "", nil, err
@@ -372,7 +384,7 @@ var tools = []chatTool{
 			"action": enum("request_changes sends the card back to its agent, reject closes the pull request and fails the card", "request_changes", "reject")},
 		required: []string{"task_id", "note", "action"},
 		about:    "Deny a card's waiting merge request with the member's reason.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
 				return "", nil, err
@@ -384,23 +396,27 @@ var tools = []chatTool{
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line of up to 255 characters; empty restores the generated title")},
 		required: []string{"task_id", "summary"},
 		about:    "Set the one-line summary a card's face shows instead of its generated title.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetSummary(t.r.Context(), t.a, in.TaskID, in.Summary)
-			return fmt.Sprintf("The summary of #%d is set.", was.IssueNumber), func(ctx context.Context, a actor) (string, error) {
-				_, err := t.c.doSetSummary(ctx, a, in.TaskID, was.HumanSummary)
-				return fmt.Sprintf("The summary of #%d is back to %q.", was.IssueNumber, was.HumanSummary), err
-			}, err
+			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
 		}},
 	{name: "set_accent", title: "Set a card's accent", write: true,
 		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour; empty removes it", append([]string{""}, factoryd.Accents...)...)},
 		required: []string{"task_id", "accent"},
 		about:    "Set a card's colour label, which shows as a chip and its left edge.",
-		run: func(t *turn, in toolInput) (string, undoFunc, error) {
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
-			return fmt.Sprintf("The accent of #%d is set.", was.IssueNumber), func(ctx context.Context, a actor) (string, error) {
-				_, err := t.c.doSetAccent(ctx, a, in.TaskID, was.Accent)
-				return fmt.Sprintf("The accent of #%d is back to %q.", was.IssueNumber, was.Accent), err
-			}, err
+			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
+		}},
+	{name: "unmove_card", write: true, internal: true,
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
+			return note, nil, err
+		}},
+	{name: "delete_comment", write: true, internal: true,
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doDeleteComment(t.r.Context(), t.a, in.TaskID, int64(in.N))
+			return note, nil, err
 		}},
 }
 

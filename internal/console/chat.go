@@ -33,50 +33,36 @@ const (
 	chatWindow = 3 * time.Minute
 )
 
-// pending is a proposal waiting for its member's Do it, or an applied
-// action's undo: bound to the member and the project, used once, gone
-// after chatTTL.
-type pending struct {
-	login, repository string
-	expires           time.Time
-	tool              string
-	args              string                                             // a proposal's arguments
-	undo              func(ctx context.Context, a actor) (string, error) // an undo's inverse call
-}
-
-// keep files p under a fresh token in m (c.proposals or c.undos), and
-// forgets the expired ones.
-func (c *Console) keep(m *map[string]*pending, p *pending) string {
+// keep stores a proposal (kind proposal) or an applied action's undo
+// (kind undo) of tool with args for the member on the project, for
+// chatTTL under a fresh token, which it answers, and forgets the expired
+// and used ones; "" when the store fails.
+func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
+	ctx, now := context.WithoutCancel(t.r.Context()), time.Now()
+	if _, err := t.c.cfg.Chat.PurgeProposals(ctx, now); err != nil {
+		log.Printf("console: the chat's proposals: %v", err)
+	}
 	token := randomToken()
-	p.expires = time.Now().Add(chatTTL)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if *m == nil {
-		*m = map[string]*pending{}
+	if err := t.c.cfg.Chat.PutProposal(ctx, factoryd.ChatProposal{Token: token, Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
+		Tool: tool, Args: args, Description: description, ExpiresAt: now.Add(chatTTL)}); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		return ""
 	}
-	for k, old := range *m {
-		if time.Now().After(old.expires) {
-			delete(*m, k)
-		}
-	}
-	(*m)[token] = p
 	return token
 }
 
-// take uses token of m once for login on repository: 404 for one unknown,
-// expired or another project's, 403 for another member's, which stays.
-func (c *Console) take(m *map[string]*pending, token, login, repository string) (*pending, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	p, ok := (*m)[token]
+// take uses the member's token of kind on the project once: 404 for one
+// unknown, used, expired, another project's or of the other kind, 403 for
+// another member's, which stays.
+func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
+	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), token, t.p.Repository, t.a.s.user, time.Now())
 	switch {
-	case !ok || p.repository != repository || time.Now().After(p.expires):
-		return nil, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
-	case p.login != login:
-		return nil, refuse(http.StatusForbidden, "It is another member's.")
+	case errors.Is(err, factoryd.ErrOthersProposal):
+		return p, refuse(http.StatusForbidden, "It is another member's.")
+	case errors.Is(err, factoryd.ErrNoProposal) || err == nil && p.Kind != kind:
+		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
-	delete(*m, token)
-	return p, nil
+	return p, err
 }
 
 // turn is one answer of the project agent to the member, streamed.
@@ -236,10 +222,11 @@ func (t *turn) run(id string) {
 		proposed := false
 		var results []factoryd.OperatorMessage
 		for i, call := range answer.ToolCalls {
-			result, p := t.call(call)
-			proposed = proposed || p
+			result, token := t.call(call)
+			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
-			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments, Result: result})
+			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
+				Result: result, Proposal: token})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if !t.save(row) {
@@ -255,8 +242,9 @@ func (t *turn) run(id string) {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it, and answers the result the agent reads.
-func (t *turn) call(call factoryd.OperatorCall) (result string, proposed bool) {
+// confirm names it, and answers the result the agent reads and the
+// proposal's token.
+func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	tool, ok := t.c.chatTool(call.Name)
 	var in toolInput
 	switch {
@@ -270,14 +258,19 @@ func (t *turn) call(call factoryd.OperatorCall) (result string, proposed bool) {
 			result = "Refused: " + t.sentence(err)
 			break
 		}
-		id := t.c.keep(&t.c.proposals, &pending{login: t.a.s.user, repository: t.p.Repository, tool: tool.name, args: call.Arguments})
-		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": json.RawMessage(cmp.Or(call.Arguments, "{}")), "description": desc})
-		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, desc), true
+		args := json.RawMessage(cmp.Or(call.Arguments, "{}"))
+		id := t.keep("proposal", tool.name, args, desc)
+		if id == "" {
+			result = "The proposal could not be stored; nothing runs."
+			break
+		}
+		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": args, "description": desc})
+		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, desc), id
 	default:
-		return t.runTool(tool, call.Arguments, in), false
+		return t.runTool(tool, call.Arguments, in), ""
 	}
 	t.block(call.Name, call.Arguments, 0, result)
-	return result, false
+	return result, ""
 }
 
 // runTool runs tool with its arguments args (in, decoded) as the member:
@@ -285,7 +278,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result string, proposed bool) {
 // undo, when it has one.
 func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 	start := time.Now()
-	out, undo, err := tool.run(t, in)
+	out, inv, err := tool.run(t, in)
 	result := out
 	if err != nil {
 		result = "Refused: " + t.sentence(err)
@@ -296,8 +289,11 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 		return result
 	}
 	applied := map[string]string{"tool": tool.name, "result": out}
-	if undo != nil {
-		applied["undo"] = t.c.keep(&t.c.undos, &pending{login: t.a.s.user, repository: t.p.Repository, tool: tool.name, undo: undo})
+	if inv != nil {
+		args, _ := json.Marshal(inv.args)
+		applied["undo"] = t.keep("undo", inv.tool, args, tool.name)
+	}
+	if applied["undo"] != "" {
 		result += " The member may undo it."
 	} else {
 		result += " It cannot be undone."
@@ -347,48 +343,53 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	p, err := c.take(&c.proposals, r.PathValue("id"), t.a.s.user, t.p.Repository)
+	p, err := t.take("proposal", r.PathValue("id"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
 	t.open(w)
 	var in toolInput
-	tool, ok := c.chatTool(p.tool)
-	result := "There is no tool " + p.tool + "."
-	if ok && json.Unmarshal([]byte(cmp.Or(p.args, "{}")), &in) == nil {
-		result = t.runTool(tool, p.args, in)
+	tool, ok := c.chatTool(p.Tool)
+	result := "There is no tool " + p.Tool + "."
+	if ok && json.Unmarshal(p.Args, &in) == nil {
+		result = t.runTool(tool, string(p.Args), in)
 	}
-	if t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
-		{ID: "do-" + r.PathValue("id")[:12], Name: p.tool, Arguments: p.args, Result: result}}}) {
+	if t.save(factoryd.ChatMessage{Role: "assistant", Content: p.Description, ToolCalls: []factoryd.ChatToolCall{
+		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result}}}) {
 		t.send("done", struct{}{})
 	}
 }
 
 // chatUndo answers POST /projects/{name}/chat/undo/{token}: the inverse
-// of an applied action, streamed as a turn is.
+// of an applied action run as the member, named by the tool it undoes and
+// with no undo of its own, streamed as a turn is.
 func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
-	u, err := c.take(&c.undos, r.PathValue("token"), t.a.s.user, t.p.Repository)
+	u, err := t.take("undo", r.PathValue("token"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
 	t.open(w)
 	start := time.Now()
-	out, err := u.undo(r.Context(), t.a)
+	in := toolInput{undo: true}
+	out, err := "", error(refuse(http.StatusNotFound, "There is no tool "+u.Tool+"."))
+	if i := slices.IndexFunc(tools, func(tool chatTool) bool { return tool.name == u.Tool }); i >= 0 && json.Unmarshal(u.Args, &in) == nil {
+		out, _, err = tools[i].run(t, in)
+	}
 	result := out
 	if err != nil {
 		result = "Refused: " + t.sentence(err)
 	}
-	t.block("undo "+u.tool, "{}", time.Since(start), result)
+	t.block("undo "+u.Description, "{}", time.Since(start), result)
 	if err == nil {
-		t.send("applied", map[string]string{"tool": u.tool, "result": out})
+		t.send("applied", map[string]string{"tool": u.Description, "result": out})
 	}
-	if t.save(factoryd.ChatMessage{Role: "assistant", Content: "Undo of " + u.tool + ": " + result}) {
+	if t.save(factoryd.ChatMessage{Role: "assistant", Content: "Undo of " + u.Description + ": " + result}) {
 		t.send("done", struct{}{})
 	}
 }
