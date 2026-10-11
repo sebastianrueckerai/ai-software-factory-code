@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -682,8 +683,13 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	ck, _ := r.loggedIn(t)
-	for _, query := range []string{"", "?project=linkshort", "?accent=teal"} {
-		body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
+	for _, page := range []string{"", "?view=wide", "?project=linkshort", "?project=linkshort&view=wide", "?accent=teal"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/"+page, nil), ck).Body.String()
+		// the script asks for a card under the board's own query, the
+		// project it shows included
+		_, query, _ := strings.Cut(body, `data-query="`)
+		query, _, _ = strings.Cut(query, `"`)
+		query = html.UnescapeString(query)
 		faces := 0
 		for rest := body; ; faces++ {
 			i := strings.Index(rest, `<article class="card face`)
@@ -696,14 +702,19 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			id, _, _ := strings.Cut(face[strings.Index(face, `data-card="`)+len(`data-card="`):], `"`)
 			rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+query, nil), ck)
 			if rec.Code != http.StatusOK || rec.Body.String() != face {
-				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", query, id, rec.Code, rec.Body, face)
+				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", page, id, rec.Code, rec.Body, face)
 			}
 		}
-		if want := map[string]int{"": 14, "?project=linkshort": 8, "?accent=teal": 2}[query]; faces != want {
-			t.Errorf("board%s shows %d faces, want %d", query, faces, want)
+		// the code project: t-run, t-b, t-blk, the human task t-h and the
+		// escalated t-e, which the wide view shows twice (its escalation
+		// and its column); linkshort: the plan, its cards 2 to 5 and 7,
+		// the second spec and t-q; teal: t-e alone, of the code project
+		if want := map[string]int{"": 5, "?view=wide": 6, "?project=linkshort": 8, "?project=linkshort&view=wide": 8, "?accent=teal": 1}[page]; faces != want {
+			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() +
+		r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	for id, lanes := range map[string][]string{"t-c2": {"ready"}, "t-b": {"ready"}} {
 		face := faceOf(t, body, id)
 		for _, lane := range lanes {

@@ -76,17 +76,17 @@ func planTasks() []factoryd.BoardTask {
 	}
 }
 
-// Section 1.1: the lanes of the shown projects' processes in the fixed
-// order backlog, plan, ready, then the state columns; a starting lane's
-// column holds its queued and waiting-deps cards, every later column the
-// card's lane badge; a plan's card reads its plan; ?project= shows one
-// project and only its processes' lanes.
+// Section 1.1: the wide view shows the lanes of the project's process in
+// the fixed order backlog, plan, ready, then the state columns; a starting
+// lane's column holds its queued and waiting-deps cards, every later
+// column the card's lane badge; a plan's card reads its plan; the board
+// shows one project and only its process's lanes.
 func TestBoardColumnsFromLanes(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = planTasks()
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
 	titles := []string{"Backlog", "Plan", "Ready", "Running", "Waiting on a human", "Waiting on the author", "In review", "Done", "Failed", "Closed"}
 	last := -1
 	for _, title := range titles {
@@ -101,14 +101,20 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 			t.Errorf("board still has %s", gone)
 		}
 	}
+	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	for title, want := range map[string][]string{
-		"Backlog": {"card 2", "card 3", "an improvement"},
-		"Plan":    {"Another spec"},
-		"Ready":   {"card 4", `<span class="chip waiting">waiting on #3, #5</span>`},
-		"Running": {"fix the cache", `<span class="badge">ready</span>`},
-		"Done":    {"Link shortener", `<span class="badge">plan</span>`, "card 5", `<span class="badge">ready</span>`},
+		"Backlog":      {"card 2", "card 3"},
+		"Plan":         {"Another spec"},
+		"Ready":        {"card 4", `<span class="chip waiting">waiting on #3, #5</span>`},
+		"Done":         {"Link shortener", `<span class="badge">plan</span>`, "card 5", `<span class="badge">ready</span>`},
+		"code Backlog": {"an improvement"},
+		"code Running": {"fix the cache", `<span class="badge">ready</span>`},
 	} {
-		c := col(t, body, title)
+		board := body
+		if name, ok := strings.CutPrefix(title, "code "); ok {
+			title, board = name, code
+		}
+		c := col(t, board, title)
 		for _, w := range want {
 			if !strings.Contains(c, w) {
 				t.Errorf("column %s lacks %q:\n%s", title, w, c)
@@ -128,19 +134,12 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	if got := strings.Count(body, `<span class="chip plan">part of plan #1</span>`); got != 4 {
 		t.Errorf("%d cards read part of plan #1, want its 4 cards", got)
 	}
-	if !strings.Contains(body, `<option value="linkshort">linkshort</option>`) || !strings.Contains(body, `<option value="" selected>every project</option>`) {
-		t.Errorf("board lacks the project filter")
+	if !strings.Contains(body, `<option value="linkshort" selected>linkshort</option>`) || strings.Contains(body, "every project") {
+		t.Errorf("board lacks the project select, or offers every project")
 	}
 
-	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	// Five-column view when viewing one project: no lane columns
-	if strings.Contains(code, ">Backlog <span") || strings.Contains(code, ">Plan <span") || strings.Contains(code, ">Ready <span") {
-		t.Errorf("five-column view should not show lane columns")
-	}
-	for _, col := range []string{"Needs you", "Queued", "Working", "Verifying", "Done"} {
-		if !strings.Contains(code, ">"+col+" <span") {
-			t.Errorf("five-column view lacks %q column", col)
-		}
+	if strings.Contains(code, ">Plan <span") || !strings.Contains(code, ">Backlog <span") || !strings.Contains(code, ">Ready <span") {
+		t.Errorf("maintenance has no lane plan: the code project's board shows exactly backlog and ready")
 	}
 	if strings.Contains(code, "card 2") || strings.Contains(code, "Link shortener") || !strings.Contains(code, "fix the cache") {
 		t.Errorf("the code project's board shows another project's cards, or not its own")
@@ -173,15 +172,16 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	withLinkshort(r)
 	r.tasks.tasks = planTasks()
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
+	code := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for id, want := range map[string][]string{"t-spec2": nil, "t-c2": {"ready"}, "t-b": {"ready"}, "t-run": nil} {
-		if got := moveForms(body, id); !slices.Equal(got, want) {
+		if got := moveForms(body+code, id); !slices.Equal(got, want) {
 			t.Errorf("sebastian, %s: buttons %v, want %v", id, got, want)
 		}
 	}
 	for _, want := range []string{
 		`<form method="post" action="/cards/t-c2/lane" hx-post="/cards/t-c2/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="ready">` +
-			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value=""><input type="hidden" name="accent" value=""><input type="hidden" name="lane" value="ready">`,
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide"><input type="hidden" name="lane" value="ready">`,
 		`<button type="submit" aria-label="Move #2 to lane ready">→ Ready</button>`,
 		`data-lane="backlog"`, `data-lane="plan"`,
 	} {
@@ -192,11 +192,16 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	if face := faceOf(t, body, "t-c2"); !strings.Contains(face, `draggable="true"`) {
 		t.Errorf("the card with a move is not draggable:\n%s", face)
 	}
+	// the five columns have no lane to drop a card on: the buttons move it
+	five := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, five, "t-c2"); strings.Contains(face, "draggable") || !slices.Equal(moveForms(face, "t-c2"), []string{"ready"}) {
+		t.Errorf("in the five columns the card is draggable, or lacks its button:\n%s", face)
+	}
 
 	// a spec that is no plan's card may go to plan and ready
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-idea", Kind: "agent", Status: "backlog", Lane: "backlog",
 		Process: "spec", Objective: "an idea", Repository: "linkshort/linkshort", IssueNumber: 8}})
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
 	if got := moveForms(body, "t-idea"); !slices.Equal(got, []string{"plan", "ready"}) {
 		t.Errorf("sebastian, t-idea: buttons %v, want [plan ready]", got)
 	}
@@ -208,9 +213,10 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	spec.Lanes[0].MovedBy = policy.MovedByApprovers
 	withLinkshortLanes(r, spec.Lanes)
 	ak, _ := r.as(t, "alice")
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ak).Body.String()
+	code = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
 	for id, want := range map[string][]string{"t-idea": nil, "t-c2": nil, "t-b": {"ready"}} {
-		if got := moveForms(body, id); !slices.Equal(got, want) {
+		if got := moveForms(body+code, id); !slices.Equal(got, want) {
 			t.Errorf("alice, %s: buttons %v, want %v", id, got, want)
 		}
 	}
@@ -218,12 +224,12 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 		t.Errorf("a card with no button is draggable:\n%s", face)
 	}
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String()
 	if got := moveForms(body, "t-idea"); got != nil {
 		t.Errorf("alice's answer is kept for a minute: buttons %v, want none", got)
 	}
 	r.c.moves = nil
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String()
 	if got := moveForms(body, "t-idea"); !slices.Equal(got, []string{"plan"}) {
 		t.Errorf("alice, a writer of linkshort: buttons %v, want [plan] (ready is the approvers')", got)
 	}
@@ -334,8 +340,8 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-plan",
 		Project: "linkshort/linkshort", Status: "pending", Spec: json.RawMessage(`{"revision":2,"sha256":"sha-2"}`)})
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	card := col(t, body, "Approvals")
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	card := col(t, body, "Needs you")
 	for _, want := range []string{
 		`Plan <a href="https://git.example/linkshort/linkshort/issues/1">#1</a>, revision 2`,
 		"Link shortener\n\nBuild a link shortener.\nAccounts: sign up.\nLinks: shorten.\n…",
@@ -358,15 +364,19 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	requested := time.Now().Add(-time.Hour)
 	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
 	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = "limit reached: 3 sessions", requested.Add(time.Minute)
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
 	if !strings.Contains(col(t, body, "Approvals"), `<p class="reason">limit reached: 3 sessions</p>`) ||
 		!strings.Contains(body, `Escalations <span class="count">0</span>`) {
 		t.Errorf("the plan's escalation is not on its plan card alone:\n%s", body)
 	}
+	if needs := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); strings.Count(needs, "limit reached: 3 sessions") != 1 ||
+		strings.Contains(needs, `/answer"`) {
+		t.Errorf("Needs you shows the plan's escalation other than on its plan card alone:\n%s", needs)
+	}
 	// a cap from before this revision's request, which a writer granted, is
 	// over
 	r.tasks.tasks[0].EscalatedAt = requested.Add(-time.Minute)
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
 	if strings.Contains(body, "limit reached") || !strings.Contains(body, `Escalations <span class="count">0</span>`) {
 		t.Errorf("an escalation older than the request shows:\n%s", col(t, body, "Approvals"))
 	}
@@ -377,13 +387,13 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 			t.Errorf("plan card lacks %q", want)
 		}
 	}
-	if filtered := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Approvals"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort">`) != 3 {
+	if filtered := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String(), "Approvals"); strings.Count(filtered,
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`) != 3 {
 		t.Errorf("the plan card's three forms do not keep the filter:\n%s", filtered)
 	}
 
 	ak, as := r.as(t, "alice")
-	alice := col(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "Approvals")
+	alice := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "Needs you")
 	if strings.Contains(alice, "/plan/accept") || !strings.Contains(alice, "Only the policy's approvers may accept a plan.") ||
 		!strings.Contains(alice, "/plan/changes") || !strings.Contains(alice, "/plan/reject") {
 		t.Errorf("alice's plan card: accept hidden, changes and reject shown:\n%s", alice)
@@ -400,10 +410,10 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	if rec.Code != http.StatusConflict || len(r.fg.calls) != 0 || len(r.fg.comments) != 0 {
 		t.Fatalf("a stale revision: %d, calls %v, comments %v; want 409 and nothing done", rec.Code, r.fg.calls, r.fg.comments)
 	}
-	if c := col(t, rec.Body.String(), "Approvals"); !strings.Contains(c, `<p class="problem" role="alert">the plan changed to revision 2; reload</p>`) {
+	if c := col(t, rec.Body.String(), "Needs you"); !strings.Contains(c, `<p class="problem" role="alert">the plan changed to revision 2; reload</p>`) {
 		t.Errorf("the stale line is not on the plan card:\n%s", c)
 	}
-	req := post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"1"}, "sha256": {"sha-1"}})
+	req := post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"1"}, "sha256": {"sha-1"}, "project": {"linkshort"}})
 	req.Header.Set("HX-Request", "true")
 	if rec := r.do(req, ck); rec.Code != http.StatusConflict || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) ||
 		!strings.Contains(rec.Body.String(), "the plan changed to revision 2; reload") {
@@ -539,7 +549,7 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 	withLinkshort(r)
 	r.tasks.tasks = planTasks()
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	done := col(t, body, "Done")
 	for _, want := range []string{
 		`<li><a href="https://git.example/linkshort/linkshort/issues/2">#2</a> backlog</li>`,
@@ -552,7 +562,7 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 		}
 	}
 	ak, as := r.as(t, "alice")
-	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "Start plan") {
+	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "Start plan") {
 		t.Error("alice, no approver, sees Start plan")
 	}
 	start := func(ck *http.Cookie, csrf, id string) *httptest.ResponseRecorder {
@@ -586,7 +596,7 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 			r.tasks.tasks[i].Status, r.tasks.tasks[i].Lane = "queued", "ready"
 		}
 	}
-	if done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "Done"); strings.Contains(done, "Start plan") {
+	if done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done"); strings.Contains(done, "Start plan") {
 		t.Errorf("Start plan shown with no card in the backlog:\n%s", done)
 	}
 	r.fg.labelled = nil
@@ -612,9 +622,9 @@ func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
 	r.mayErr = errors.New("forgejo: 502")
 	var body string
 	for range 3 {
-		body = r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
+		body = r.do(httptest.NewRequest(http.MethodGet, "/board?project=linkshort", nil), ck).Body.String()
 	}
-	want := []string{"linkshort/linkshort sebastian writers", "sf/code sebastian writers"}
+	want := []string{"demo-app/demo-app sebastian writers", "linkshort/linkshort sebastian writers", "sf/code sebastian writers"}
 	if got := slices.Sorted(slices.Values(r.mayAsked)); !slices.Equal(got, want) {
 		t.Errorf("MayMove asked %v, want once each: %v", got, want)
 	}
@@ -629,8 +639,8 @@ func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
 		r.c.moves[k] = a
 	}
 	r.c.mu.Unlock()
-	body = r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
-	if len(r.mayAsked) != 2 || moveForms(body, "t-c2") == nil {
+	body = r.do(httptest.NewRequest(http.MethodGet, "/board?project=linkshort", nil), ck).Body.String()
+	if len(r.mayAsked) != 3 || moveForms(body, "t-c2") == nil {
 		t.Errorf("after a minute: asked %v, buttons %v; want asked again and the buttons back", r.mayAsked, moveForms(body, "t-c2"))
 	}
 }
@@ -644,7 +654,7 @@ func TestStartPlanAndLanesFollowTheProject(t *testing.T) {
 	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "backlog", Lane: "backlog",
 		Process: "maintenance", Objective: "filed under maintenance", Repository: "linkshort/linkshort", IssueNumber: 13}})
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if got := moveForms(body, "t-old"); !slices.Equal(got, []string{"plan", "ready"}) {
 		t.Errorf("a card whose row names maintenance on a spec project: buttons %v, want [plan ready]", got)
 	}
@@ -653,7 +663,7 @@ func TestStartPlanAndLanesFollowTheProject(t *testing.T) {
 	}
 	r.repoWriters["linkshort/linkshort"] = nil
 	r.c.moves = nil
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if strings.Contains(body, "Start plan") {
 		t.Error("an approver who does not write linkshort sees Start plan, which ready's moved_by refuses him")
 	}
@@ -685,10 +695,11 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fix", Kind: "agent",
 			Status: "failed", Lane: "ready", Process: "maintenance", Objective: "a fix", Repository: "sf/code", IssueNumber: 13}})
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	failed := col(t, body, "Failed")
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String() +
+		r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	failed := col(t, body, "Done")
 	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#board" hx-swap="outerHTML" class="inline">` +
-		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
 		`<input type="hidden" name="accent" value=""><button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
 		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
@@ -699,13 +710,13 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 		}
 	}
 	ak, _ := r.as(t, "alice")
-	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String(), "/retry") {
+	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "/retry") {
 		t.Error("alice, no approver, sees Retry")
 	}
 	r.repoWriters["linkshort/linkshort"] = nil
 	r.c.moves = nil
 	ck, _ = r.as(t, "sebastian")
-	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "/retry") {
+	if strings.Contains(r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "/retry") {
 		t.Error("an approver who does not write linkshort sees Retry, which ready's moved_by refuses him")
 	}
 }

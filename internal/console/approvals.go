@@ -31,11 +31,10 @@ type approvalCard struct {
 	PlanRows    []factoryd.PlanRow
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
-	// FilterProject and FilterAccent are the board's filter, which the
-	// card's forms keep.
-	FilterProject, FilterAccent string
-	CSRF                        string
-	Approver                    bool
+	// Filter is the board's filter, which the card's forms keep.
+	Filter   boardFilter
+	CSRF     string
+	Approver bool
 }
 
 // specLines are the plan card's first lines of a spec.
@@ -79,16 +78,26 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
 		return fmt.Errorf("spec: %w", err)
 	}
-	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.PlanSpec.Revision)
+	summary, rows, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
 	if err != nil || !ok {
 		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
 	}
+	k.PlanSummary, k.PlanRows = summary, rows
+	return nil
+}
+
+// planTable is revision n (0 the newest) of plan task id's plan: its
+// summary and its cards in filing order; false when there is none.
+func (c *Console) planTable(ctx context.Context, id string, n int) (string, []factoryd.PlanRow, bool, error) {
+	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, id, n)
+	if err != nil || !ok {
+		return "", nil, false, err
+	}
 	var p factoryd.Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return fmt.Errorf("revision %d of %s: %w", rev.Revision, k.TaskID, err)
+		return "", nil, false, fmt.Errorf("revision %d of %s: %w", rev.Revision, id, err)
 	}
-	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
-	return nil
+	return p.Summary, factoryd.PlanRows(p), true, nil
 }
 
 // approve approves the approval request the path names (doApprove).

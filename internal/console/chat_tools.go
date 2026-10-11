@@ -135,11 +135,11 @@ func cardLine(t factoryd.Task) string {
 // chatColumnCards bounds the cards of one column the agent reads.
 const chatColumnCards = 25
 
-// boardText is project p's board as the session's member sees it, for
-// the agent: each column with its cards, the human lane, the escalations
-// and the approval requests waiting.
+// boardText is project p's board in the wide view as the session's member
+// sees it, for the agent: each column with its cards, the human lane, the
+// escalations and the approval requests waiting.
 func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardData, error) {
-	d, err := c.boardOf(r, p.Name, "")
+	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide})
 	if errors.Is(err, errNoProject) {
 		return "Project " + p.Name + " takes no agent cards: it has no board.", d, nil
 	}
@@ -162,7 +162,11 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 		list(col.Title, col.Cards)
 	}
 	list("Human lane", d.HumanTasks)
-	list("Escalated, waiting on an answer", d.Escalations)
+	escalated := make([]card, 0, len(d.Escalations))
+	for _, n := range d.Escalations {
+		escalated = append(escalated, n.Card)
+	}
+	list("Escalated, waiting on an answer", escalated)
 	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
 	for _, a := range d.Approvals {
 		fmt.Fprintf(&b, "\n  %s request %d of %s", a.Kind, a.ID, a.TaskID)

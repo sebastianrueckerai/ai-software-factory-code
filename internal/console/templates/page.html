@@ -3,7 +3,6 @@
 <form method="get" action="/" class="filter">
 <label for="project-filter">Project</label>
 <select id="project-filter" name="project">
-<option value=""{{if not .Project}} selected{{end}}>every project</option>
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select>
 <label for="accent-filter">Accent</label>
@@ -11,22 +10,21 @@
 <option value=""{{if not .Accent}} selected{{end}}>every accent</option>
 {{range accents}}<option value="{{.}}"{{if eq . $.Accent}} selected{{end}}>{{.}}</option>
 {{end}}</select>
-<input type="hidden" name="view" value="{{.View}}">
-<button type="submit">Show</button>
-<a href="?view={{if eq .View "wide"}}{{else}}wide{{end}}{{with .Project}}&project={{.}}{{end}}{{with .Accent}}&accent={{.}}{{end}}" class="view-toggle">{{if eq .View "wide"}}Five columns{{else}}Wide view{{end}}</a>
-<button type="button" class="keys-toggle" aria-label="Keyboard shortcuts">?</button>
+{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}<button type="submit">Show</button>
+<a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Five columns{{else}}Wide view{{end}}</a>
+<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys">?</button>
 </form>
 {{template "board" .}}
-<div id="drawer" class="drawer" hidden></div>
-<div id="keys-overlay" class="overlay" hidden>
-<div class="overlay-content">
-<h3>Keyboard shortcuts</h3>
+<aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
+<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
+<div class="overlay-box">
+<h2 id="keys-title">Keys</h2>
 <dl>
-<dt><kbd>w</kbd></dt><dd>Toggle wide view</dd>
-<dt><kbd>Escape</kbd></dt><dd>Close drawer or overlay</dd>
-<dt><kbd>?</kbd></dt><dd>Show this help</dd>
+<dt><kbd>w</kbd></dt><dd>the wide view, the lanes as columns, or back to the five columns</dd>
+<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, or this list</dd>
+<dt><kbd>?</kbd></dt><dd>this list</dd>
 </dl>
-<button type="button" class="close-overlay">Close</button>
+<button type="button" id="keys-close">Close</button>
 </div>
 </div>
 {{template "foot"}}

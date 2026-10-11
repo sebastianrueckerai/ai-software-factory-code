@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
@@ -56,9 +57,11 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 	log.Printf("console: %s judged alert %d %s", user, id, v)
 	c.alertVerdictEvent(r, id, v)
 	c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionAlertVerdict, "none", "none")
+	// back to the alerts, or to the board under its filter: a path on
+	// this host, never another
 	back := "/alerts"
-	if r.PostFormValue("back") == "/" {
-		back = "/"
+	if b := r.PostFormValue("back"); b == "/" || strings.HasPrefix(b, "/?") {
+		back = b
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
 }

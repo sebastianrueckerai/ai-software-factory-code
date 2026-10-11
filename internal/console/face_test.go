@@ -27,12 +27,13 @@ func faceOf(t *testing.T, section, id string) string {
 	return section[start : i+strings.Index(section[i:], "</article>")]
 }
 
-// titleOf is the title line's words on the face of card id.
+// titleOf is the title line's words on the face of card id, the link that
+// opens its drawer.
 func titleOf(t *testing.T, body, id string) string {
 	t.Helper()
 	face := faceOf(t, body, id)
-	_, title, _ := strings.Cut(face, `<strong class="title">`)
-	title, _, _ = strings.Cut(title, "</strong>")
+	_, title, _ := strings.Cut(face, `<strong class="title"><a href="#card=`+id+`" class="open">`)
+	title, _, _ = strings.Cut(title, "</a></strong>")
 	return title
 }
 
@@ -125,7 +126,7 @@ func TestCardFaceChips(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare"}},
+		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare", CreatedAt: time.Now()}},
 		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "full",
 			ModelAlias: "coding-cheap"}, Dependencies: "#3, #5"},
 		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Lane: "ready", Repository: "sf/code", Objective: "deps done"}},
@@ -160,12 +161,12 @@ func TestCardFacePlanChildren(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "running", Lane: "ready",
 		Process: "spec", Objective: "card 9", Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">1 running · 1 done · 1 waiting</span>`) {
 		t.Errorf("the plan's face lacks its rollup:\n%s", face)
 	}
 	r.tasks.tasks = planTasks()[:3]
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-plan"); strings.Contains(face, "chip rollup") {
 		t.Errorf("a plan with only backlog cards shows a rollup:\n%s", face)
 	}
@@ -250,15 +251,19 @@ func TestCardFaceChecksCached(t *testing.T) {
 	render(2)
 }
 
-// An escalated card renders twice, in the escalations and in its column:
-// its summary and accent fields sit inside their labels with no id, so no
-// id repeats on the page.
+// The wide view renders an escalated card twice, in the escalations and
+// in its column, the five columns once, in Needs you: its summary and
+// accent fields sit inside their labels with no id, so no id repeats on
+// the page.
 func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("The agent asks: which region?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 13, Objective: "asks"})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 1 {
+		t.Errorf("the five columns render the escalated card %d times, want 1", n)
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	if n := strings.Count(body, `data-card="t-e"`); n != 2 {
 		t.Fatalf("the escalated card renders %d times, want 2", n)
 	}
@@ -368,10 +373,15 @@ func TestCardFaceWaitingReason(t *testing.T) {
 		Actor: "sebastian", Via: factoryd.ViaButton, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	want := `<p class="activity"><a href="https://git.example/sf/code/issues/12">answer on the issue</a> — use a replica or a shard?</p>`
-	for _, title := range []string{"Escalations", "Waiting on a human"} {
-		if face := faceOf(t, col(t, body, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_moved") {
+	for _, title := range []string{"Escalations", "Waiting on a human", "Needs you"} {
+		board := body
+		if title == "Needs you" {
+			board = five
+		}
+		if face := faceOf(t, col(t, board, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_moved") {
 			t.Errorf("%s: the waiting card's activity is not its question:\n%s", title, face)
 		}
 	}
@@ -446,7 +456,8 @@ func TestSummaryPost(t *testing.T) {
 	if rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {"mine"}}), ck); rec.Code != http.StatusForbidden || ev.count() != before {
 		t.Fatalf("a non-writer's summary = %d with %d rows, want 403 and none", rec.Code, ev.count()-before)
 	}
-	if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), "t-1"); got != "Fix the cache" {
+	// no longer a writer, the viewer asks for the project
+	if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-1"); got != "Fix the cache" {
 		t.Fatalf("a refused summary changed the title to %q", got)
 	}
 }

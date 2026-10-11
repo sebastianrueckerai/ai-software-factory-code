@@ -1,7 +1,10 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
 // choice changed) or a card's expanded view in it is open, so a swap of el
-// would wipe or close it.
+// would wipe or close it; and while the card drawer is open, the board
+// holds still beside it.
 function busy(el) {
+  var drawer = document.getElementById("drawer");
+  if (drawer && !drawer.hidden) return true;
   if (el.querySelector("details[open]")) return true;
   if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
@@ -74,6 +77,8 @@ function offerLanes() {
 }
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
+  // the board's project and accent show at once
+  if (e.target.id === "project-filter" || e.target.id === "accent-filter") e.target.form.submit();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
@@ -101,10 +106,10 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // is not on it or its place changed, and card_filed, project_merged and a
 // reconnect swap the board. Beside the stream the board polls every 30 s
 // (its template's hx-trigger), so its minute counters tick and whatever
-// the events do not carry is at most 30 s old. The board of every project
-// polls every 3 s instead, and so does a board whose stream failed
-// (closed, or in error for 30 s), which the footer says. A swap a busy
-// card or board would wipe waits until it is no longer busy.
+// the events do not carry is at most 30 s old. A board whose stream
+// failed (closed, or in error for 30 s) polls every 3 s instead, which
+// the footer says. A swap a busy card or board would wipe waits until it
+// is no longer busy.
 (function () {
   var polling = false, missed = {}, latest = {}, asked = 0;
   function board() { return document.getElementById("board"); }
@@ -183,117 +188,74 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   }
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
-    if (!b) return;
-    if (b.dataset.project) {
-      follow(b.dataset.project);
-    } else {
-      polling = true;
-      poll();
-    }
+    if (b && b.dataset.project) follow(b.dataset.project);
   });
 })();
 
-// Card drawer: opens beside the board when a card's title is clicked,
-// loaded with hx-get from GET /cards/{id}/drawer?tab=...; #card=<id> in
-// the URL opens it on load, Escape closes it.
-(function () {
-  var drawer = null;
-  function openDrawer(id, tab) {
-    if (!drawer) drawer = document.getElementById("drawer");
-    if (!drawer) return;
-    tab = tab || "overview";
-    drawer.hidden = false;
-    htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer?tab=" + tab, {target: "#drawer", swap: "innerHTML"});
-    history.replaceState(null, "", "#card=" + id);
+// The card drawer beside the board: #card=<id> in the URL opens it, on
+// load too, and a card's title links there; Escape or its ✕ closes it.
+// Its tabs and related cards load into it by hx-get, and the URL follows
+// the card it shows.
+function drawer() { return document.getElementById("drawer"); }
+function showDrawer() {
+  var d = drawer(), m = /^#card=(.+)$/.exec(location.hash);
+  if (!d) return;
+  document.body.classList.toggle("drawer-open", !!m);
+  d.hidden = !m;
+  if (!m) {
+    d.textContent = "";
+    return;
   }
-  function closeDrawer() {
-    if (!drawer) drawer = document.getElementById("drawer");
-    if (drawer) {
-      drawer.hidden = true;
-      drawer.innerHTML = "";
-    }
-    if (location.hash.indexOf("#card=") === 0) {
-      history.replaceState(null, "", location.pathname + location.search);
-    }
-  }
-  document.addEventListener("click", function (e) {
-    var title = e.target.closest && e.target.closest(".card .title");
-    if (title) {
-      var card = title.closest("[data-card]");
-      if (card) {
-        e.preventDefault();
-        openDrawer(card.dataset.card);
-      }
-    }
-    if (e.target.closest && e.target.closest(".close-drawer")) {
-      closeDrawer();
-    }
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer", {target: "#drawer", swap: "innerHTML"}).then(function () {
+    var h = d.querySelector("h2");
+    if (h) h.focus();
   });
-  document.addEventListener("DOMContentLoaded", function () {
-    var hash = location.hash;
-    if (hash.indexOf("#card=") === 0) {
-      openDrawer(hash.slice(6));
-    }
-  });
-  window.closeDrawer = closeDrawer;
-})();
+}
+function closeDrawer() {
+  if (location.hash.indexOf("#card=") !== 0) return;
+  history.replaceState(null, "", location.pathname + location.search);
+  showDrawer();
+}
+window.addEventListener("hashchange", showDrawer);
+document.addEventListener("DOMContentLoaded", showDrawer);
+document.addEventListener("htmx:afterSwap", function (e) {
+  var shown = e.detail.target.id === "drawer" && e.detail.target.querySelector("[data-drawer]");
+  if (shown && location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
+});
 
-// Keyboard shortcuts: w toggles wide view, Escape closes drawer or overlay,
-// ? shows the keys overlay.
+// The board's keys, listed by ? : w switches the view, Escape closes the
+// list or the drawer. The view chosen is remembered (theme.js applies it).
 (function () {
-  var overlay = null;
-  function toggleWide() {
-    var params = new URLSearchParams(location.search);
-    if (params.get("view") === "wide") {
-      params.delete("view");
-    } else {
-      params.set("view", "wide");
-    }
-    location.search = params.toString();
-  }
-  function showKeys() {
-    if (!overlay) overlay = document.getElementById("keys-overlay");
-    if (overlay) overlay.hidden = false;
-  }
-  function hideKeys() {
-    if (!overlay) overlay = document.getElementById("keys-overlay");
-    if (overlay) overlay.hidden = true;
+  function keys() { return document.getElementById("keys"); }
+  function showKeys(open) {
+    var k = keys();
+    if (!k) return;
+    k.hidden = !open;
+    if (open) document.getElementById("keys-close").focus();
   }
   document.addEventListener("keydown", function (e) {
-    if (e.target.matches("input, textarea, select")) return;
-    if (e.key === "w" || e.key === "W") {
+    if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "Escape") {
+      if (keys() && !keys().hidden) showKeys(false);
+      else closeDrawer();
+      return;
+    }
+    if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (e.key === "w") {
       e.preventDefault();
-      toggleWide();
-    } else if (e.key === "Escape") {
-      if (window.closeDrawer) window.closeDrawer();
-      hideKeys();
+      document.getElementById("view-toggle").click();
     } else if (e.key === "?") {
       e.preventDefault();
-      showKeys();
+      showKeys(true);
     }
   });
   document.addEventListener("click", function (e) {
-    if (e.target.closest && e.target.closest(".keys-toggle")) {
-      showKeys();
-    }
-    if (e.target.closest && e.target.closest(".close-overlay")) {
-      hideKeys();
-    }
-  });
-})();
-
-// View toggle: remembered in localStorage.
-(function () {
-  var stored = localStorage.getItem("board-view");
-  if (stored && !new URLSearchParams(location.search).has("view")) {
-    var params = new URLSearchParams(location.search);
-    params.set("view", stored);
-    history.replaceState(null, "", location.pathname + "?" + params.toString());
-  }
-  document.addEventListener("DOMContentLoaded", function () {
-    var params = new URLSearchParams(location.search);
-    var view = params.get("view") || "";
-    if (view) localStorage.setItem("board-view", view);
-    else localStorage.removeItem("board-view");
+    if (e.target.closest("#keys-toggle")) showKeys(true);
+    else if (e.target.closest("#keys-close") || e.target.id === "keys") showKeys(false);
+    else if (e.target.closest("#drawer-close")) closeDrawer();
+    var toggle = e.target.closest("#view-toggle");
+    if (!toggle) return;
+    if (toggle.dataset.view) localStorage.setItem("view", toggle.dataset.view);
+    else localStorage.removeItem("view");
   });
 })();

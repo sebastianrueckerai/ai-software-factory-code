@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -130,6 +131,14 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&body)
 		f.labelled = append(f.labelled, fmt.Sprintf("%s %v", r.URL.Path, body.Labels))
 		w.Write([]byte(`[]`))
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/31/files":
+		// two pages, as a pull request of more files than a page holds
+		pages := map[string]string{
+			"1": `[{"filename":"internal/console/board.go","status":"modified","additions":120,"deletions":38},` +
+				`{"filename":"internal/console/drawer_test.go","status":"added","additions":85,"deletions":0}]`,
+			"2": `[{"filename":"internal/console/old.go","status":"removed","additions":0,"deletions":12}]`,
+		}
+		w.Write([]byte(cmp.Or(pages[r.URL.Query().Get("page")], "[]")))
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/linkshort/linkshort/issues":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -182,7 +191,20 @@ type fakeTasks struct {
 	mu    sync.Mutex
 	tasks []factoryd.BoardTask
 	plans map[string][]factoryd.PlanRevision // by task, oldest first
+	deps  map[string][]string                // the tasks a task depends on
 	read  func(s *fakeTasks, id string)
+}
+
+func (s *fakeTasks) OpenDependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Dependency
+	for _, t := range s.tasks {
+		if slices.Contains(s.deps[id], t.ID) && t.Status != "done" {
+			out = append(out, factoryd.Dependency{TaskID: t.ID, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
@@ -447,9 +469,12 @@ func (a *fakeAlerts) AlertByID(_ context.Context, id int64) (factoryd.Alert, boo
 type fakeLedger struct {
 	from, to  time.Time
 	costs     policy.Costs
+	monthCaps map[string]float64 // budget.month_eur by project file
 	processes map[string]policy.Process
 	chat      *policy.ChatConfig // the policy's chat block
 }
+
+
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
 // the board's order, which the board does not follow.
@@ -474,7 +499,7 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 }
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
-	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
+	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
@@ -488,7 +513,13 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
-			Processes: l.processes}}, true, nil
+			Processes: l.processes}}
+	for name, eur := range l.monthCaps {
+		p := v.Tree.Projects[name]
+		p.Budget = &policy.ProjectBudget{MonthEUR: eur}
+		v.Tree.Projects[name] = p
+	}
+	return v, true, nil
 }
 
 type rig struct {
@@ -503,6 +534,7 @@ type rig struct {
 	alerts    *fakeAlerts
 	projects  *fakeProjects
 	events    *fakeEvents
+	chat      *fakeChat
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -542,6 +574,7 @@ func newRig(t *testing.T) *rig {
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
 		events:      &fakeEvents{bus: factoryd.NewEventBus()},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
+	r.chat = &fakeChat{tasks: r.tasks}
 	c, err := New(Config{
 		Metrics:   metrics,
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
@@ -549,7 +582,7 @@ func newRig(t *testing.T) *rig {
 		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Events: r.events, Bus: r.events.bus,
+		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
@@ -854,7 +887,8 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	// the reason comes from the task's row; the board reads no timeline
 	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"escalated","reason":"old reason","comment":4}
 `)
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
+	// the lanes and the state columns are the wide view's
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / = %d: %s", rec.Code, rec.Body)
 	}
@@ -876,7 +910,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
-		`data-project=""`, `<script src="/static/htmx.min.js"`,
+		`data-project="ai-software-factory-code"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
@@ -933,7 +967,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		r.fg.issues, r.fg.calls = nil, nil
 		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {"details"},
 			"lane": {tc.lane}, "priority": {tc.priority}}), ck)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed+"&project="+tc.project {
 			t.Fatalf("%s: POST /tasks = %d to %q: %s", tc.lane, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]
@@ -1130,7 +1164,8 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	// the human lane's approvals column is the wide view's
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	start := strings.Index(body, `id="col-approvals"`)
 	end := strings.Index(body[start:], "</section>")
 	lane := body[start : start+end]
@@ -1385,7 +1420,8 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		LeaseExpires: time.Now().Add(time.Hour)}}
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	// alice writes no project's repository: she asks for the code project
+	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if strings.Contains(board, "/approve\"") || !strings.Contains(board, `action="/approvals/3/deny"`) ||
 		!strings.Contains(board, "Only the policy's approvers may approve.") {
 		t.Fatalf("board for a non-approver: approve buttons %v, deny %v", strings.Contains(board, "/approve\""),
@@ -1547,14 +1583,14 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	}
 }
 
-// A card in waiting-deps sits in its lane's column and reads the issues it
-// waits on.
+// A card in waiting-deps sits in its lane's column of the wide view and
+// reads the issues it waits on.
 func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Lane: "ready", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	if c := col(t, body, "Ready"); !strings.Contains(c, "links api") || !strings.Contains(c, `<span class="chip waiting">waiting on #3, #5</span>`) {
 		t.Fatalf("Ready column = %s, want the card waiting on #3, #5", c)
 	}
@@ -1564,11 +1600,12 @@ func TestBoardCardShowsWaitingOn(t *testing.T) {
 // ahead of it and since when it waits.
 func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 	r := newRig(t)
+	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
 	since := time.Now().Add(-(6*time.Minute + 30*time.Second))
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
 		Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if want := `<span class="gate">merge queue, 2 ahead,</span> for 6 min`; !strings.Contains(body, want) {
 		t.Fatalf("board lacks %q", want)
 	}
@@ -1837,7 +1874,8 @@ func TestBoardShowsARollInTheHumanLaneUntilItsCard(t *testing.T) {
 		{ID: "t-roll", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c1c1c1c: factoryd, gateway", Repository: "sf/code"},
 		{ID: "t-m", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c2c2c2c: worker", Repository: "sf/code", PRNumber: 9},
 	}...)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	// the human lane and the state columns are the wide view's
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	column := func(id string) string {
 		start := strings.Index(body, `id="`+id+`"`)
 		if start < 0 {

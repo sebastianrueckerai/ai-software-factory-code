@@ -70,23 +70,58 @@ type verdictForm struct {
 	CSRF, Back string
 }
 
-// fiveColumns are the project screen's five columns: a view over task
-// states, never a new state. Each maps one or more statuses into a
-// column; the lane is a chip on the card, and the fine state (waiting on
-// the author, failed, closed, retrying, stale) a second chip.
-var fiveColumns = []struct {
-	Title    string
-	Statuses []string
-}{
-	{"Needs you", []string{"waiting-human"}},
-	{"Queued", []string{"backlog", "queued", "waiting-deps"}},
-	{"Working", []string{"running", "closing"}},
-	{"Verifying", []string{"in-review"}},
-	{"Done", []string{"done", "failed", "closed"}},
+// The project screen's five columns (ruling 255), a view over the task
+// states and never a state of their own; the lane and the fine state are
+// chips on the card.
+const (
+	colNeedsYou = iota
+	colQueued
+	colWorking
+	colVerifying
+	colDone
+)
+
+var fiveTitles = []string{"Needs you", "Queued", "Working", "Verifying", "Done"}
+
+// fiveColumn is t's column for viewer, -1 for a status none holds: a card
+// waiting on its author needs the viewer when they are the author, else
+// it waits like a queued one.
+func fiveColumn(t factoryd.Task, viewer string) int {
+	switch t.Status {
+	case "waiting-human":
+		return colNeedsYou
+	case "waiting-poster":
+		if t.Author == viewer {
+			return colNeedsYou
+		}
+		return colQueued
+	case "backlog", "queued", "waiting-deps":
+		return colQueued
+	case "running", "closing":
+		return colWorking
+	case "in-review":
+		return colVerifying
+	case "done", "failed", "closed":
+		return colDone
+	}
+	return -1
 }
 
-// stateColumns follow the lane columns, in board order; closing counts as
-// running. Kept for the wide view.
+// waitingSince is when bt began to wait, which ranks the Needs you column
+// oldest first: its escalation, else the gate it waits in, else its
+// filing.
+func waitingSince(bt factoryd.BoardTask) time.Time {
+	switch {
+	case !bt.EscalatedAt.IsZero():
+		return bt.EscalatedAt
+	case bt.GateSince != nil:
+		return *bt.GateSince
+	}
+	return bt.CreatedAt
+}
+
+// stateColumns are the wide view's columns after the lanes, in board
+// order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
 	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting on the author", "waiting-poster"},
 	{"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
@@ -132,16 +167,43 @@ type card struct {
 	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
 	BlockedOn string
+	// Retrying is a card whose newest session ended for a retry and whose
+	// next has not started; Fine are its fine states as chips.
+	Retrying bool
+	Fine     []fine
 	// MayWriteSummary is whether the viewer writes the task's project, so
 	// the expanded view carries the summary and accent forms; CSRF is the
 	// session's token for them.
 	MayWriteSummary bool
 	CSRF            string
-	// FilterProject and FilterAccent are the board's filter the card's
-	// forms carry back so an action keeps the view.
-	FilterProject, FilterAccent string
+	// Filter is the board's filter the card's forms carry back so an
+	// action keeps the view.
+	Filter boardFilter
 	// Place is where the board puts the card (boardCard).
 	Place string
+}
+
+// fine is a card's fine state as a chip in the pill's hues.
+type fine struct{ Words, Class string }
+
+// fineStates are what k's column leaves unsaid: retrying; in the five
+// columns waiting on the author, failed or closed, which the wide view
+// has columns for; and stale.
+func fineStates(k card, wide bool) []fine {
+	var out []fine
+	switch {
+	case k.Retrying:
+		out = append(out, fine{"retrying", "st-running"})
+	case wide:
+	case k.Status == "waiting-poster":
+		out = append(out, fine{"waiting on the author", "st-waiting hollow"})
+	case k.Status == "failed" || k.Status == "closed":
+		out = append(out, fine{k.Status, statusClass(k.Status)})
+	}
+	if k.Stale {
+		out = append(out, fine{"stale", "st-stale"})
+	}
+	return out
 }
 
 // titleClause is the face's title from the objective, on one line: up to
@@ -218,25 +280,42 @@ func newestChecksCount(steps []map[string]any) string {
 	return ""
 }
 
-// checksTTL is how long a card's checks count is kept: the renders, polls
-// and card swaps within it read the card's timeline once.
+// retrying: the newest session of steps ended for a retry (the
+// supervisor's retry_stronger) and the next has not started yet.
+func retrying(steps []map[string]any) bool {
+	for i := len(steps) - 1; i >= 0; i-- {
+		switch steps[i]["step"] {
+		case "session_start":
+			return false
+		case "session_end":
+			outcome, _ := steps[i]["outcome"].(string)
+			return strings.HasPrefix(outcome, "retry")
+		}
+	}
+	return false
+}
+
+// checksTTL is how long what a card's face reads from its timeline is
+// kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
-// checks is a remembered checks count and when it was read.
+// checks is a card's remembered checks count and retry, and when they
+// were read.
 type checks struct {
-	count string
-	at    time.Time
+	count    string
+	retrying bool
+	at       time.Time
 }
 
 // faceTimelines reads the newest checks step onto every card that can
-// have one: a card with a pull request, not yet final, at most once per
-// checksTTL. A timeline that cannot be read keeps the card without the
-// chip — the object store answers no body for a task that never wrote a
-// timeline, and reading is best-effort here, never a reason to fail the
-// board.
+// have one, a card with a pull request, and whether it is retrying onto
+// every running card: neither final, at most once per checksTTL. A
+// timeline that cannot be read keeps the card without the chips — the
+// object store answers no body for a task that never wrote a timeline,
+// and reading is best-effort here, never a reason to fail the board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
 	everyCard(func(k *card) {
-		if k.PRNumber == 0 || factoryd.Final(k.Status) {
+		if factoryd.Final(k.Status) || k.PRNumber == 0 && k.Status != "running" {
 			return
 		}
 		c.mu.Lock()
@@ -247,7 +326,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			if steps, err := c.readTimeline(ctx, k.ID); err != nil {
 				log.Printf("console: timeline of %s for its checks: %v", k.ID, err)
 			} else {
-				got.count = newestChecksCount(steps)
+				got.count, got.retrying = newestChecksCount(steps), retrying(steps)
 			}
 			c.mu.Lock()
 			for id, old := range c.checks {
@@ -261,7 +340,10 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			c.checks[k.ID] = got
 			c.mu.Unlock()
 		}
-		k.Checks = got.count
+		if k.PRNumber > 0 {
+			k.Checks = got.count
+		}
+		k.Retrying = got.retrying
 	})
 }
 
@@ -301,7 +383,7 @@ func planRollup(cards []card) string {
 }
 
 // move is a backlog card's button into a starting lane. The board's filter
-// rides on the form from the card's FilterProject and FilterAccent.
+// rides on the form from the card's Filter.
 type move struct{ Lane, Title, CSRF string }
 
 // retry is a failed plan card's Retry button.
@@ -319,18 +401,48 @@ type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
 	Cards []card
+	// Needs is the five columns' Needs you: what the wide view's human
+	// lane holds and every card that needs the viewer, oldest first.
+	Needs []need
 }
 
-// boardFilter is what the board was asked to show: the project and the
-// accent; every form on it carries it back, so an action keeps the view.
+// need is an item of the human lane, or of the Needs you column: an
+// approval request, an escalated card with its answer form (CSRF, the
+// verdict for an approver and the board to go back to), or a card that
+// needs the viewer; Since is when it began to wait.
+type need struct {
+	Since     time.Time
+	Approval  *approvalCard
+	Card      card
+	Escalated bool
+	CSRF      string
+	Approver  bool
+	Back      string
+}
+
+// viewWide is the board's wide view: the lanes as columns first, then the
+// task states, as the board was before the five columns.
+const viewWide = "wide"
+
+// boardFilter is what the board was asked to show: the project, the
+// accent and the view; every form on it carries it back, so an action
+// keeps the view.
 type boardFilter struct {
-	Project, Accent string
+	Project, Accent, View string
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent")}
+	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent"), View: r.PostFormValue("view")}
 }
+
+// urlFilter is the board's filter in the URL's query.
+func urlFilter(r *http.Request) boardFilter {
+	q := r.URL.Query()
+	return boardFilter{Project: q.Get("project"), Accent: q.Get("accent"), View: q.Get("view")}
+}
+
+func (f boardFilter) wide() bool { return f.View == viewWide }
 
 // query is the filter as a URL query, empty when it names nothing.
 func (f boardFilter) query() string {
@@ -341,23 +453,23 @@ func (f boardFilter) query() string {
 	if f.Accent != "" {
 		q.Set("accent", f.Accent)
 	}
+	if f.View != "" {
+		q.Set("view", f.View)
+	}
 	if q.Encode() == "" {
 		return ""
 	}
 	return "?" + q.Encode()
 }
 
-// statusLine is the project screen's quantitative summary above the board:
-// the project's state word, counts of working and needing-you cards, and
-// spend against the month cap.
+// statusLine is the shown project's state above the board (ruling 251):
+// its word, its cards working, what needs the viewer, and its spend this
+// UTC month against its month cap.
 type statusLine struct {
-	State      string // "working", "waiting on you", or "idle"
-	Working    int
-	NeedYou    int
-	SpendEUR   float64
-	MonthCap   float64
-	ProjectURL string // link to /costs
-	NeedYouURL string // link to the Needs you column
+	Project          string
+	State            string
+	Working, NeedYou int
+	SpentEUR, CapEUR float64
 }
 
 type boardData struct {
@@ -365,19 +477,19 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
-	// Project and Accent are the board's filter, which every form on it
-	// carries back so an action keeps the view.
+	// Project, Accent and View are the board's filter, which every form
+	// on it carries back so an action keeps the view.
 	boardFilter
-	Query       string // the filter as a URL query for the poll's hx-get
-	Projects    []string
+	Query       string   // the filter as a URL query for the poll's hx-get
+	ToggleQuery string   // the filter with the other view
+	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
 	Columns     []column
 	HumanTasks  []card
-	Escalations []card
+	Escalations []need
 	Approvals   []approvalCard
 	Problems    []string
-	Approver    bool   // may authorize spend (ruling 128)
-	View        string // "" (default five columns) or "wide" (lanes first)
+	Approver    bool // may authorize spend (ruling 128)
 }
 
 // boardLimit bounds the tasks one board render reads.
@@ -443,21 +555,19 @@ var errNoProject = errors.New("no such project")
 
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
-	project := r.URL.Query().Get("project")
-	accent := r.URL.Query().Get("accent")
-	view := r.URL.Query().Get("view")
-	if accent != "" && !factoryd.IsAccent(accent) {
+	f := urlFilter(r)
+	if f.Accent != "" && !factoryd.IsAccent(f.Accent) {
 		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
 		return
 	}
-	if view != "" && view != "wide" {
-		http.Error(w, "view must be wide or empty", http.StatusBadRequest)
+	if f.View != "" && !f.wide() {
+		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
 		return
 	}
-	d, err := c.boardOf(r, project, accent, view)
+	d, err := c.boardOf(r, f)
 	switch {
 	case errors.Is(err, errNoProject):
-		http.Error(w, "no project "+project+" takes agent tasks", http.StatusNotFound)
+		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
 		return
 	case err != nil:
 		log.Printf("console: board: %v", err)
@@ -478,22 +588,14 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // success (a reload resends nothing), else the page.
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
 	f := formFilter(r)
-	view := r.PostFormValue("view")
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
-		q := f.query()
-		if view != "" {
-			if q == "" {
-				q = "?view=" + view
-			} else {
-				q += "&view=" + view
-			}
-		}
-		http.Redirect(w, r, "/"+q, http.StatusSeeOther)
+		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
 		return
 	}
-	d, err := c.boardOf(r, f.Project, f.Accent, view)
+	d, err := c.boardOf(r, f)
 	if errors.Is(err, errNoProject) {
-		d, err = c.boardOf(r, "", f.Accent, view)
+		f.Project = ""
+		d, err = c.boardOf(r, f)
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
@@ -501,9 +603,21 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 		return
 	}
 	d.Note = note
-	for i, a := range d.Approvals {
+	// the approval cards: the wide view's human lane, else Needs you
+	cards := make([]*approvalCard, 0, len(d.Approvals))
+	for i := range d.Approvals {
+		cards = append(cards, &d.Approvals[i])
+	}
+	for _, col := range d.Columns {
+		for _, n := range col.Needs {
+			if n.Approval != nil {
+				cards = append(cards, n.Approval)
+			}
+		}
+	}
+	for _, a := range cards {
 		if p, ok := problems[a.TaskID]; ok {
-			d.Approvals[i].Problem = p
+			a.Problem = p
 		}
 	}
 	name := "page.html"
@@ -516,7 +630,8 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 }
 
 // boardView is what the cards of one render share: the viewer, whether
-// they approve, the board's filter (which every card's forms carry back),
+// they approve, the policy in force, the board's filter (which every
+// card's forms carry back),
 // the projects agents work on by repository, the tasks read so far by id,
 // the pending approval requests and the tasks they card (planned: by a
 // plan's request). boardOf fills it for the whole board, cardFragment for
@@ -524,6 +639,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 type boardView struct {
 	user, csrf      string
 	approver        bool
+	policy          policy.Version
 	filter          boardFilter
 	byRepo          map[string]factoryd.Project
 	byID            map[string]factoryd.Task
@@ -539,8 +655,8 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
 		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
-	pol, _ := c.inForce(ctx)
-	v.approver = slices.Contains(pol.Document.Approvers, s.user)
+	v.policy, _ = c.inForce(ctx)
+	v.approver = slices.Contains(v.policy.Document.Approvers, s.user)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
@@ -589,12 +705,13 @@ func (c *Console) mayReady(ctx context.Context, v *boardView, t factoryd.Task) b
 // boardCard is bt's card as the board shows it, in a column, the human
 // lane or the escalations, and as the card fragment swaps it in; its
 // activity line, checks and forms follow from finishCards. Place is
-// where the board puts it: the script swaps a card whose place changed
-// with the whole board.
+// where the board puts it, in either view: the script swaps a card whose
+// place changed with the whole board.
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
-	k.Place = fmt.Sprintf("%s %s %s %t %t %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert)
+	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
+		fiveColumn(t, v.user))
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
@@ -630,6 +747,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		if t.Lane == policy.LanePlan || t.Lane == policy.LaneReady {
 			k.Badge = t.Lane
 		}
+	}
+	// the five columns are no lanes: every card wears its lane
+	if !v.filter.wide() {
+		k.Badge = t.Lane
 	}
 	if t.Lane == policy.LanePlan && t.Status == "done" {
 		var err error
@@ -669,8 +790,9 @@ func activityLine(e factoryd.Event) string {
 
 // finishCards fills what each card's face reads per render rather than
 // from its task: the newest event's activity line and the stale ring, the
-// checks count, and for a writer of the card's project the summary and
-// accent forms with the board's filter. each visits every card once.
+// checks count and the retry, the fine states, and for a writer of the
+// card's project the summary and accent forms with the board's filter.
+// each visits every card once.
 func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(*card))) {
 	var ids []string
 	each(func(k *card) { ids = append(ids, k.ID) })
@@ -714,6 +836,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	}
 	each(setActivity)
 	c.faceTimelines(ctx, each)
+	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
 		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
 		if err != nil && !v.unchecked {
@@ -723,46 +846,61 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		if k.MayWriteSummary = ok; ok {
 			k.CSRF = v.csrf
 		}
-		k.FilterProject, k.FilterAccent = v.filter.Project, v.filter.Accent
+		k.Filter = v.filter
 	}
 	each(setForms)
 }
 
-// boardOf is the board of project ("" every project) and accent ("" every
-// accent) as the session's human sees it. When view is "wide", the lanes
-// of the shown projects' processes come first (backlog, plan, ready),
-// then the state columns. Otherwise (the default), the five columns map
-// task states into Needs you, Queued, Working, Verifying, Done.
-func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardData, error) {
+// boardOf is the board of one project, f.Project or else the first the
+// viewer writes, narrowed to f.Accent ("" every accent), as the session's
+// human sees it. The five columns are the default, the human lane folded
+// into Needs you; the wide view puts the lanes of the project's process
+// first in the fixed order backlog, plan, ready, then the state columns,
+// under the human lane.
+func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
-	f := boardFilter{Project: project, Accent: accent}
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, boardFilter: f, Query: f.query(), Approver: v.approver, View: view}
+	d := boardData{User: v.user, CSRF: v.csrf, Approver: v.approver}
 	if err != nil {
 		return d, err
 	}
+	var shown factoryd.Project
 	for _, p := range all {
-		d.Projects = append(d.Projects, p.Name)
-	}
-	shown := all
-	if project != "" {
-		i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Name == project })
-		if i < 0 {
-			return d, errNoProject
+		writes, err := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
+		if err != nil {
+			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
 		}
-		shown = all[i : i+1]
+		if writes {
+			d.Projects = append(d.Projects, p.Name)
+			if f.Project == "" && shown.Name == "" {
+				shown = p
+			}
+		}
+		if p.Name == f.Project {
+			shown = p
+		}
 	}
-	inView := func(repository string) bool { return project == "" || repository == shown[0].Repository }
-
-	// Five columns only when viewing one project and not explicitly wide
-	wide := view == "wide" || project == ""
+	switch {
+	case f.Project != "" && shown.Name == "":
+		return d, errNoProject
+	case shown.Name == "":
+		d.Problems = append(d.Problems, "You write none of the projects agents work on.")
+	case !slices.Contains(d.Projects, shown.Name):
+		d.Projects = append(d.Projects, shown.Name)
+	}
+	f.Project = shown.Name
+	v.filter, d.boardFilter, d.Query = f, f, f.query()
+	wide := f.wide()
+	other := f
+	if other.View = viewWide; wide {
+		other.View = ""
+	}
+	d.ToggleQuery = other.query()
 	byLane, byStatus := map[string]int{}, map[string]int{}
 	if wide {
 		lanes := map[string]bool{}
-		for _, p := range shown {
-			for _, l := range p.Lanes {
-				lanes[l.Name] = true
-			}
+		for _, l := range shown.Lanes {
+			lanes[l.Name] = true
 		}
 		for _, name := range policy.LaneNames {
 			if lanes[name] {
@@ -776,9 +914,8 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 		}
 		byStatus["closing"] = byStatus["running"]
 	} else {
-		for i, col := range fiveColumns {
-			byStatus[col.Title] = i
-			d.Columns = append(d.Columns, column{Title: col.Title})
+		for _, title := range fiveTitles {
+			d.Columns = append(d.Columns, column{Title: title})
 		}
 	}
 
@@ -793,24 +930,49 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 		v.byID[bt.ID] = bt.Task
 	}
 	escalations := map[string]factoryd.BoardTask{}
-	var working, needYou int
+	var needs []need
+	escalation := func(k card) need {
+		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: v.approver, Back: "/" + d.Query}
+	}
 	for _, bt := range tasks {
 		t := bt.Task
+		if t.Repository != shown.Repository {
+			continue
+		}
+		human, col := v.humanLane(t), fiveColumn(t, v.user)
+		// the status line counts the project's cards, whatever the accent;
+		// a plan that waits on its acceptance counts as its approval
+		switch {
+		case human:
+			if !factoryd.Final(t.Status) {
+				d.Status.NeedYou++
+			}
+		case col == colWorking:
+			d.Status.Working++
+		case col == colNeedsYou && !v.planned[t.ID]:
+			d.Status.NeedYou++
+		}
+		if t.Status == "waiting-human" && v.planned[t.ID] {
+			escalations[t.ID] = bt
+		}
 		// the accent filter narrows the board to one accent; a card with
 		// none is in no accent's board, and an accent never changes how a
 		// state renders.
-		if !inView(t.Repository) || accent != "" && t.Accent != accent {
+		if f.Accent != "" && t.Accent != f.Accent {
 			continue
 		}
 		k := c.boardCard(ctx, v, bt)
-		if v.humanLane(t) {
-			if !factoryd.Final(t.Status) {
-				d.HumanTasks = append(d.HumanTasks, k)
+		switch {
+		case human:
+			if factoryd.Final(t.Status) {
+				break
 			}
-			continue
-		}
-
-		if wide {
+			if wide {
+				d.HumanTasks = append(d.HumanTasks, k)
+			} else {
+				needs = append(needs, need{Since: t.CreatedAt, Card: k})
+			}
+		case wide:
 			i, ok := byStatus[t.Status]
 			switch t.Status {
 			case "backlog":
@@ -823,135 +985,94 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 			if ok {
 				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 			}
-		} else {
-			colIdx := fiveColumnForStatus(t.Status, t.Author, v.user)
-			if colIdx >= 0 && colIdx < len(d.Columns) {
-				d.Columns[colIdx].Cards = append(d.Columns[colIdx].Cards, k)
+			if v.escalated(t) {
+				d.Escalations = append(d.Escalations, escalation(k))
 			}
-		}
-
-		// Count for status line
-		if t.Status == "running" || t.Status == "closing" {
-			working++
-		}
-		if t.Status == "waiting-human" || (t.Status == "waiting-poster" && t.Author == v.user) {
-			needYou++
-		}
-
-		if t.Status == "waiting-human" && v.planned[t.ID] {
-			escalations[t.ID] = bt
-		} else if v.escalated(t) {
-			d.Escalations = append(d.Escalations, k)
+		case col == colNeedsYou:
+			// a plan that waits on its acceptance needs its approval card
+			if v.planned[t.ID] {
+				break
+			}
+			n := need{Since: waitingSince(bt), Card: k}
+			if v.escalated(t) {
+				n = escalation(k)
+				n.Since = waitingSince(bt)
+			}
+			needs = append(needs, n)
+		case col >= 0:
+			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}
 	for _, a := range v.pending {
-		if inView(a.Project) {
-			k := c.approvalCard(ctx, a, v.byID, v.csrf, d.Approver)
-			k.FilterProject, k.FilterAccent = project, accent
-			// an escalation from before this revision's request (a cap a
-			// writer granted) no longer holds
-			if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-				k.Escalation = e.Escalation
-			}
-			d.Approvals = append(d.Approvals, k)
+		if a.Project != shown.Repository {
+			continue
 		}
+		k := c.approvalCard(ctx, a, v.byID, v.csrf, d.Approver)
+		k.Filter = f
+		// an escalation from before this revision's request (a cap a
+		// writer granted) no longer holds
+		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
+			k.Escalation = e.Escalation
+		}
+		d.Status.NeedYou++
+		if wide {
+			d.Approvals = append(d.Approvals, k)
+		} else {
+			needs = append(needs, need{Since: a.CreatedAt, Approval: &k})
+		}
+	}
+	if !wide {
+		slices.SortStableFunc(needs, func(a, b need) int { return a.Since.Compare(b.Since) })
+		d.Columns[colNeedsYou].Needs = needs
 	}
 	c.finishCards(ctx, v, func(fn func(*card)) {
 		for i := range d.Columns {
 			for j := range d.Columns[i].Cards {
 				fn(&d.Columns[i].Cards[j])
 			}
+			for j := range d.Columns[i].Needs {
+				if d.Columns[i].Needs[j].Approval == nil {
+					fn(&d.Columns[i].Needs[j].Card)
+				}
+			}
 		}
 		for i := range d.HumanTasks {
 			fn(&d.HumanTasks[i])
 		}
 		for i := range d.Escalations {
-			fn(&d.Escalations[i])
+			fn(&d.Escalations[i].Card)
 		}
 	})
-
-	// Compute status line for the project screen
-	if !wide && len(shown) == 1 {
-		d.Status = c.computeStatusLine(ctx, shown[0], working, needYou)
+	if shown.Name != "" {
+		c.statusLine(ctx, v, shown, &d)
 	}
-
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
 }
 
-// fiveColumnForStatus maps a task's status into one of the five columns.
-// For waiting-poster, it goes to "Needs you" when the viewer is the author,
-// otherwise to "Queued".
-func fiveColumnForStatus(status, author, viewer string) int {
-	switch status {
-	case "waiting-human":
-		return 0 // Needs you
-	case "waiting-poster":
-		if author == viewer {
-			return 0 // Needs you
-		}
-		return 1 // Queued
-	case "backlog", "queued", "waiting-deps":
-		return 1 // Queued
-	case "running", "closing":
-		return 2 // Working
-	case "in-review":
-		return 3 // Verifying
-	case "done", "failed", "closed":
-		return 4 // Done
+// statusLine completes the board's status line with the project's state
+// word, its spend this UTC month (its chat's included) and its month cap:
+// its file's budget.month_eur, else the policy's.
+func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Project, d *boardData) {
+	s := &d.Status
+	s.Project = p.Name
+	switch {
+	case s.Working > 0:
+		s.State = "working"
+	case s.NeedYou > 0:
+		s.State = "waiting on you"
+	default:
+		s.State = "idle"
 	}
-	return -1
-}
-
-// computeStatusLine builds the project screen's quantitative summary.
-func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, working, needYou int) statusLine {
-	sl := statusLine{
-		Working:    working,
-		NeedYou:    needYou,
-		ProjectURL: "/costs",
-		NeedYouURL: "#col-0",
-	}
-
-	// Determine state word
-	if working > 0 {
-		sl.State = "working"
-	} else if needYou > 0 {
-		sl.State = "waiting on you"
+	if spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now()); err != nil {
+		log.Printf("console: the spend of %s this month: %v", p.Repository, err)
+		d.Problems = append(d.Problems, "the project's spend this month could not be read")
 	} else {
-		sl.State = "idle"
+		s.SpentEUR = spend.EUR
 	}
-
-	// Get spend from ledger for this UTC month
-	now := time.Now().UTC()
-	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	costs, err := c.cfg.Costs.Costs(ctx, from, now)
-	if err != nil {
-		log.Printf("console: status line costs: %v", err)
-	} else {
-		// Sum today's spend for the project
-		today := now.Format(policy.DateLayout)
-		for _, day := range costs.Days {
-			if day.Day == today {
-				sl.SpendEUR = day.Total
-				break
-			}
-		}
+	if _, s.CapEUR = v.policy.Tree.ProjectCap(p.Repository); math.IsInf(s.CapEUR, 1) {
+		s.CapEUR = v.policy.Document.Budget.MonthEUR
 	}
-
-	// Get month cap from policy or project file
-	pol, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
-	if err != nil || !ok {
-		log.Printf("console: status line policy: loaded %v, %v", ok, err)
-	} else {
-		_, cap := pol.Tree.ProjectCap(p.Repository)
-		if !math.IsInf(cap, 1) {
-			sl.MonthCap = cap
-		} else {
-			sl.MonthCap = pol.Document.Budget.MonthEUR
-		}
-	}
-
-	return sl
 }
 
 type timelineEntry struct {
@@ -1148,14 +1269,18 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
 }
 
-// labels lists repo's labels as member s, all pages.
-func (c *Console) labels(ctx context.Context, s *session, repo factoryd.Repo) (map[string]int64, error) {
-	asUser := func(ctx context.Context, method, path string, _ []byte, want int) ([]byte, error) {
+// userCall is a call as member s in the shape factoryd.GetPages calls.
+func (c *Console) userCall(s *session) func(context.Context, string, string, []byte, int) ([]byte, error) {
+	return func(ctx context.Context, method, path string, _ []byte, want int) ([]byte, error) {
 		var raw json.RawMessage
 		err := c.as(ctx, s, method, path, nil, want, &raw)
 		return raw, err
 	}
-	ls, err := factoryd.GetPages[factoryd.RepoLabel](ctx, asUser,
+}
+
+// labels lists repo's labels as member s, all pages.
+func (c *Console) labels(ctx context.Context, s *session, repo factoryd.Repo) (map[string]int64, error) {
+	ls, err := factoryd.GetPages[factoryd.RepoLabel](ctx, c.userCall(s),
 		fmt.Sprintf("/api/v1/repos/%s/%s/labels?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)))
 	if err != nil {
 		return nil, err
@@ -1223,7 +1348,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/?filed="+strconv.FormatInt(issue, 10), http.StatusSeeOther)
+	http.Redirect(w, r, "/?"+url.Values{"project": {r.PostFormValue("project")}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
 }
 
 // answer posts the human's answer to an escalation (doAnswer).
@@ -1244,37 +1369,40 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 	http.Error(w, "Forgejo refused to "+what+"; see the factoryd log", http.StatusBadGateway)
 }
 
-// cardFragment answers GET /cards/{id} to a writer of the card's project,
-// 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?accent) of the board it is swapped into.
-func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
+// writableCard is the card the path names, built as the board shows it
+// under the URL's filter (?project, ?accent, ?view), for a writer of its
+// project; anyone else gets refused and an unknown card 404. false: the
+// answer is written.
+func (c *Console) writableCard(w http.ResponseWriter, r *http.Request, refused int) (factoryd.BoardTask, card, *boardView, bool) {
 	ctx, id := r.Context(), r.PathValue("id")
 	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
 	switch {
 	case err != nil:
 		log.Printf("console: card %s: %v", id, err)
 		http.Error(w, "cannot read the task", http.StatusInternalServerError)
-		return
+		return bt, card{}, nil, false
 	case !ok:
 		http.NotFound(w, r)
-		return
+		return bt, card{}, nil, false
 	}
 	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
 	switch {
 	case err != nil:
 		log.Printf("console: may %s write %s: %v", current(r).user, bt.Repository, err)
 		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return
-	case !may:
+		return bt, card{}, nil, false
+	case !may && refused == http.StatusNotFound:
 		http.NotFound(w, r)
-		return
+		return bt, card{}, nil, false
+	case !may:
+		http.Error(w, "only the project's writers open its cards", refused)
+		return bt, card{}, nil, false
 	}
-	q := r.URL.Query()
-	v, _, err := c.viewOf(r, boardFilter{Project: q.Get("project"), Accent: q.Get("accent")})
+	v, _, err := c.viewOf(r, urlFilter(r))
 	if err != nil {
 		log.Printf("console: card %s: %v", id, err)
 		http.Error(w, "cannot read the card", http.StatusInternalServerError)
-		return
+		return bt, card{}, nil, false
 	}
 	v.byID[bt.ID] = bt.Task
 	if bt.Status == "failed" {
@@ -1284,139 +1412,171 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
-	c.render(w, "card", k)
+	return bt, k, v, true
 }
 
-// drawerData is the card drawer's content for one tab.
-type drawerData struct {
-	User     string
-	CSRF     string
-	Card     card
-	Tab      string // "overview", "activity", or "files"
-	Entries  []timelineEntry
-	Gates    []gateRow
-	Longest  int
-	Files    []prFile
-	NoPR     bool
-	FilesErr string
-}
-
-// prFile is a pull request's changed file from Forgejo's API.
-type prFile struct {
-	Name      string
-	Additions int
-	Deletions int
-	Status    string
-}
-
-// cardDrawer answers GET /cards/{id}/drawer?tab=... for writers of the
-// card's project (403 otherwise, 404 for an unknown card), with three tabs:
-// Overview, Activity, Files.
-func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
-	ctx, id := r.Context(), r.PathValue("id")
-	tab := r.URL.Query().Get("tab")
-	if tab == "" {
-		tab = "overview"
+// cardFragment answers GET /cards/{id} to a writer of the card's project,
+// 404 to anyone else: the one card as the board renders it, its forms
+// carrying the filter (?project, ?accent, ?view) of the board it is
+// swapped into.
+func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
+	if _, k, _, ok := c.writableCard(w, r, http.StatusNotFound); ok {
+		c.render(w, "card", k)
 	}
-	if tab != "overview" && tab != "activity" && tab != "files" {
+}
+
+// drawerTab is a tab of the card drawer: its ?tab= and its title.
+type drawerTab struct{ Name, Title string }
+
+// drawerTabs are the card drawer's tabs, the first its default.
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"activity", "Activity"}, {"files", "Files"}}
+
+// drawerData is the card drawer on one tab, under the card's face.
+// Overview: the objective as its headline, a planned card's provenance
+// line and its body, the plan's table, a pending merge's reviews and
+// audit, and the related cards. Activity: the timeline page's gates and
+// steps. Files: the pull request's changed files.
+type drawerData struct {
+	Card                       card
+	Tab                        string
+	Tabs                       []drawerTab
+	Headline, Provenance, Body string
+	PlanSummary                string
+	PlanRows                   []factoryd.PlanRow
+	Merge                      *approvalCard
+	Related                    []related
+	Gates                      []gateRow
+	Longest                    int
+	Entries                    []timelineEntry
+	Files                      []prFile
+	Problem                    string // what the tab could not read
+}
+
+// related is a card the drawer's card relates to, Why, in its live state.
+type related struct {
+	Why  string
+	Card card
+}
+
+// cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files
+// to a writer of the card's project, 403 to anyone else.
+func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
+	tab := cmp.Or(r.URL.Query().Get("tab"), drawerTabs[0].Name)
+	if !slices.ContainsFunc(drawerTabs, func(t drawerTab) bool { return t.Name == tab }) {
 		http.Error(w, "tab must be overview, activity or files", http.StatusBadRequest)
 		return
 	}
-
-	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
-	switch {
-	case err != nil:
-		log.Printf("console: drawer %s: %v", id, err)
-		http.Error(w, "cannot read the task", http.StatusInternalServerError)
-		return
-	case !ok:
-		http.NotFound(w, r)
+	bt, k, v, ok := c.writableCard(w, r, http.StatusForbidden)
+	if !ok {
 		return
 	}
-
-	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
-	switch {
-	case err != nil:
-		log.Printf("console: may %s write %s: %v", current(r).user, bt.Repository, err)
-		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return
-	case !may:
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
+	ctx := r.Context()
+	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
+	problem := func(what string, err error) {
+		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
+		d.Problem = "The " + what + " could not be read; see the factoryd log."
 	}
-
-	q := r.URL.Query()
-	v, _, err := c.viewOf(r, boardFilter{Project: q.Get("project"), Accent: q.Get("accent")})
-	if err != nil {
-		log.Printf("console: drawer %s: %v", id, err)
-		http.Error(w, "cannot read the card", http.StatusInternalServerError)
-		return
-	}
-	v.byID[bt.ID] = bt.Task
-
-	k := c.boardCard(ctx, v, bt)
-	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
-
-	d := drawerData{
-		User: current(r).user,
-		CSRF: current(r).csrf,
-		Card: k,
-		Tab:  tab,
-	}
-
 	switch tab {
 	case "overview":
-		// The card already has all the expanded content
+		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
+		if bt.Lane == policy.LanePlan {
+			var err error
+			if d.PlanSummary, d.PlanRows, _, err = c.planTable(ctx, bt.ID, 0); err != nil {
+				problem("plan", err)
+			}
+		}
+		for _, a := range v.pending {
+			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
+				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approver)
+				d.Merge = &m
+			}
+		}
+		var err error
+		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
+			problem("related cards", err)
+		}
 	case "activity":
 		steps, err := c.readTimeline(ctx, bt.ID)
 		if err != nil {
-			log.Printf("console: drawer %s timeline: %v", id, err)
-		} else {
-			for _, m := range steps {
-				d.Entries = append(d.Entries, entry(m))
-			}
-			d.Gates, d.Longest = gateRows(steps, bt.Task, time.Now())
+			problem("timeline", err)
+			break
 		}
+		for _, m := range steps {
+			d.Entries = append(d.Entries, entry(m))
+		}
+		d.Gates, d.Longest = gateRows(steps, bt.Task, time.Now())
 	case "files":
 		if bt.PRNumber == 0 {
-			d.NoPR = true
-		} else {
-			files, err := c.prFiles(r, bt.Repository, bt.PRNumber)
-			if err != nil {
-				log.Printf("console: drawer %s files: %v", id, err)
-				d.FilesErr = "could not read the pull request's files"
-			} else {
-				d.Files = files
-			}
+			break
+		}
+		var err error
+		if d.Files, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
+			problem("pull request's files", err)
 		}
 	}
-
 	c.render(w, "drawer.html", d)
 }
 
-// prFiles reads the pull request's changed files from Forgejo's API.
+// objectiveParts is an objective as the drawer shows it: its first line
+// the headline, a planned card's "Card k of plan #n ..." line its
+// provenance, the rest its body.
+func objectiveParts(objective string) (headline, provenance, body string) {
+	headline, body, _ = strings.Cut(strings.TrimSpace(objective), "\n")
+	body = strings.TrimSpace(body)
+	if line, rest, _ := strings.Cut(body, "\n"); strings.HasPrefix(line, "Card ") && strings.Contains(line, " of plan #") {
+		provenance, body = strings.TrimSpace(line), strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(headline), provenance, body
+}
+
+// relatedCards are the cards t relates to, each in its live state: those
+// it waits on that are not done, the plan it is part of, and an accepted
+// plan's cards (k's Plan).
+func (c *Console) relatedCards(ctx context.Context, t factoryd.Task, k card) ([]related, error) {
+	var ids, whys []string
+	deps, err := c.cfg.Tasks.OpenDependencies(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, dep := range deps {
+		ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
+	}
+	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
+	}
+	var out []related
+	for i, id := range ids {
+		rt, ok, err := c.cfg.Tasks.Task(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, related{whys[i], c.card(rt)})
+		}
+	}
+	if k.Plan != nil {
+		for _, child := range k.Plan.Cards {
+			out = append(out, related{"child", child})
+		}
+	}
+	return out, nil
+}
+
+// prFile is a changed file of a pull request, as Forgejo lists it.
+type prFile struct {
+	Filename  string `json:"filename"`
+	Status    string `json:"status"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+}
+
+// prFiles are pull request pr's changed files, every page, read through
+// the human's token.
 func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFile, error) {
 	repo, err := factoryd.SplitRepo(repository)
 	if err != nil {
 		return nil, err
 	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr)
-	var raw []map[string]any
-	if err := c.asUser(r, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
-		return nil, err
-	}
-	var out []prFile
-	for _, f := range raw {
-		name, _ := f["filename"].(string)
-		additions, _ := f["additions"].(float64)
-		deletions, _ := f["deletions"].(float64)
-		status, _ := f["status"].(string)
-		out = append(out, prFile{
-			Name:      name,
-			Additions: int(additions),
-			Deletions: int(deletions),
-			Status:    status,
-		})
-	}
-	return out, nil
+	return factoryd.GetPages[prFile](r.Context(), c.userCall(current(r)),
+		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr))
 }

@@ -137,7 +137,8 @@ form.inline button { margin: 0 .25rem .25rem 0; }
 .project { margin-bottom: 2rem; }
 .gate { font-weight: 600; }
 .gates meter { width: 12rem; }
-.badge { display: inline-block; padding: 0 .35rem; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); font-size: .75rem; }
+/* the card's lane: a chip that whispers, the muted words of every chip */
+.badge { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text-muted); font-size: .75rem; }
 .spec { white-space: pre-wrap; border-left: 3px solid var(--line-strong); padding-left: .5rem; font-size: .85rem; }
 .children { margin: .25rem 0; padding-left: 1.2rem; font-size: .85rem; }
 form.move button { margin: .25rem .25rem 0 0; padding: .15rem .5rem; }
@@ -199,36 +200,61 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .edit-form label { display: contents; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
 .edit-icon { text-decoration: none; }
-.summary-edit .edit-icon { color: var(--text-muted); font-weight: 600; }/* Status line: quantitative summary above the board */
-.status-line { display: flex; gap: .5rem; align-items: center; padding: .5rem; background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 6px; margin-bottom: 1rem; font-size: .9rem; }
-.status-line .state { font-weight: 600; text-transform: capitalize; }
-.status-line a { color: var(--accent); text-decoration: none; }
-.status-line a:hover { text-decoration: underline; }
-
-/* View toggle and keys button in the filter bar */
-.view-toggle, .keys-toggle { display: inline-block; padding: .35rem .8rem; margin: 0; border: 1px solid var(--accent); background: var(--bg-raised); color: var(--accent); border-radius: 4px; cursor: pointer; text-decoration: none; font: inherit; }
-.view-toggle:hover, .keys-toggle:hover { background: var(--accent); color: var(--bg); }
-
-/* Card drawer: opens beside the board, about 45 percent width */
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 45%; max-width: 48rem; background: var(--bg); border-left: 1px solid var(--line-strong); box-shadow: -2px 0 8px rgba(0,0,0,.15); overflow-y: auto; z-index: 100; padding: 1rem; }
+.summary-edit .edit-icon { color: var(--text-muted); font-weight: 600; }
+/* the status line: the project's state in words and three figures, each
+   linking to its page; normal states whisper, a card that needs you
+   speaks */
+.status-line { display: flex; flex-wrap: wrap; gap: .3rem 1.15rem; align-items: baseline; margin: 0 0 .75rem; padding: .45rem .1rem; border-bottom: 1px solid var(--line-subtle); font-variant-numeric: tabular-nums; }
+.status-line .pname { font-size: 1.02rem; }
+.status-line .state { font-weight: 600; color: var(--text-muted); }
+.status-line .state[data-state="working"] { color: var(--st-running); }
+.status-line .state[data-state="waiting on you"] { color: var(--st-waiting); }
+.status-line a.fig { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--line-strong); }
+.status-line a.fig:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.status-line a.fig.need { color: var(--st-waiting); font-weight: 600; }
+/* the five columns: Needs you a little wider, the human lane's cards in
+   it; the wide view keeps the lanes' grid */
+.lane.five { grid-template-columns: minmax(12.5rem, 1.4fr) repeat(4, minmax(8.5rem, 1fr)); gap: .5rem; overflow-x: auto; }
+.lane.five .column { min-width: 0; }
+.lane.five table { display: block; overflow-x: auto; }
+.column .facts { grid-template-columns: 1fr; }
+.column .facts dd { margin-bottom: .3rem; min-width: 0; }
+.lane:not(.five) .column:has(.approval.plan) { grid-column: span 2; }
+#needs-you { scroll-margin-top: 1rem; }
+.face .title a { color: inherit; text-decoration: none; }
+.face .title a:hover, .face .title a:focus-visible { text-decoration: underline; }
+/* stale and retrying are fine states: stale the stale ring's amber,
+   hollow */
+.pill.st-stale { background: transparent; border-color: var(--st-waiting); color: var(--st-waiting); }
+/* the header's view switch and keys */
+.view-toggle, .keys-toggle { display: inline-block; padding: .35rem .8rem; margin: 0; border: 1px solid var(--accent); background: var(--bg-raised); color: var(--accent); border-radius: 4px; text-decoration: none; font: inherit; }
+/* the card drawer beside the board: the board keeps the rest of the
+   width; a narrow screen gives the drawer all of it */
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 45vw; overflow-y: auto; z-index: 40; padding: 1rem 1.2rem; background: var(--bg-raised); border-left: 1px solid var(--line-strong); }
 .drawer[hidden] { display: none; }
-.drawer-header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line-subtle); padding-bottom: .5rem; }
-.drawer-header h2 { margin: 0; flex: 1; font-size: 1.1rem; }
-.close-drawer { background: transparent; border: none; color: var(--text-muted); font-size: 1.2rem; cursor: pointer; padding: .25rem; }
-.close-drawer:hover { color: var(--text); }
-.tabs { display: flex; gap: .25rem; }
-.tabs a { padding: .35rem .75rem; border: 1px solid var(--line-subtle); border-radius: 4px; text-decoration: none; color: var(--text-muted); font-size: .85rem; }
-.tabs a.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
-.tabs a:hover:not(.active) { background: var(--bg-raised); }
-.drawer-body { font-size: .9rem; }
+body.drawer-open main { margin-right: 45vw; }
+@media (max-width: 60rem) { .drawer { width: 100vw; } body.drawer-open main { margin-right: 0; } }
+.drawer h2 { margin: .1rem 2rem .4rem 0; font-size: 1.05rem; }
+.drawer h2:focus { outline: none; }
+.drawer-close { float: right; margin: 0; background: transparent; border: 0; color: var(--text-muted); font-size: 1.1rem; }
+.drawer-facts { display: flex; flex-wrap: wrap; gap: .4rem; align-items: baseline; margin: 0; font-size: .85rem; }
+.tabs { display: flex; gap: .4rem; margin: .8rem 0 .6rem; border-bottom: 1px solid var(--line-subtle); }
+.tabs button { margin: 0; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--text-muted); padding: .3rem .8rem; }
+.tabs button[aria-selected=true] { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.drawer-body section { margin-top: 1.1rem; }
+.drawer-body h4 { margin: 0 0 .35rem; font-size: .8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; }
+.drawer-body .headline { font-size: 1rem; margin: .4rem 0 .15rem; }
+.provenance { color: var(--text-muted); font-size: .8rem; margin: .1rem 0 .4rem; }
+.objective-body { white-space: pre-wrap; border-left: 3px solid var(--line-subtle); padding-left: .6rem; font-size: .88rem; color: var(--text-muted); }
+.related { list-style: none; padding: 0; margin: 0; }
+.related li { display: flex; gap: .55rem; align-items: baseline; padding: .22rem 0; border-bottom: 1px solid var(--line-subtle); }
+.related .why { color: var(--text-muted); font-size: .78rem; min-width: 9ch; }
 .files td code { word-break: break-all; }
-
-/* Keyboard shortcuts overlay */
-.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 200; }
+/* the keys' list */
+.overlay { position: fixed; inset: 0; z-index: 70; display: flex; align-items: center; justify-content: center; background: oklch(0 0 0 / .55); }
 .overlay[hidden] { display: none; }
-.overlay-content { background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; padding: 1.5rem; max-width: 24rem; }
-.overlay-content h3 { margin-top: 0; }
-.overlay-content dl { display: grid; grid-template-columns: auto 1fr; gap: .5rem 1rem; margin: 1rem 0; }
-.overlay-content dt kbd { background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 4px; padding: .1rem .4rem; font-family: ui-monospace, monospace; }
-.overlay-content dd { margin: 0; }
-.close-overlay { margin-top: 1rem; }
+.overlay-box { background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 8px; padding: 1.2rem 1.6rem; max-width: 30rem; }
+.overlay-box h2 { margin-top: 0; }
+.overlay-box dl { display: grid; grid-template-columns: max-content 1fr; gap: .4rem 1rem; }
+.overlay-box dd { margin: 0; }
+kbd { font-family: ui-monospace, monospace; color: var(--accent); font-weight: 700; }
