@@ -632,6 +632,16 @@ func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
 		!strings.Contains(body, "who may move a card could not be checked: the move buttons are hidden") {
 		t.Errorf("a failed check shows buttons or no problem line:\n%s", body)
 	}
+	// a failed check keeps the board of the first project, buttons hidden,
+	// and offers every project it could not check, once each
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `data-project="ai-software-factory-code"`) || strings.Count(body, "who may move a card could not be checked") != 1 ||
+		!strings.Contains(body, `<option value="ai-software-factory-code" selected>ai-software-factory-code</option>
+<option value="demo-app">demo-app</option>
+<option value="linkshort">linkshort</option>
+</select>`) {
+		t.Errorf("a failed check empties the board or its select:\n%s", body)
+	}
 	r.mayErr, r.mayAsked = nil, nil
 	r.c.mu.Lock()
 	for k, a := range r.c.moves {

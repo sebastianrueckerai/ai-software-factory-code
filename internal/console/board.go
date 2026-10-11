@@ -866,11 +866,15 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	}
 	var shown factoryd.Project
 	for _, p := range all {
+		// a project whose writers could not be checked is offered, its
+		// buttons hidden, rather than an empty board
 		writes, err := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
-		if err != nil {
+		if err != nil && !v.unchecked {
+			v.unchecked = true
 			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
+			v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
 		}
-		if writes {
+		if writes || err != nil {
 			d.Projects = append(d.Projects, p.Name)
 			if f.Project == "" && shown.Name == "" {
 				shown = p
