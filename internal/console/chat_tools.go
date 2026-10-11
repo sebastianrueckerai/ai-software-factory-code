@@ -31,6 +31,9 @@ type toolInput struct {
 	Summary  string `json:"summary,omitempty"`
 	Accent   string `json:"accent,omitempty"`
 	N        int    `json:"n,omitempty"`
+	Ref      string `json:"ref,omitempty"`
+	Path     string `json:"path,omitempty"`
+	WithDiff bool   `json:"with_diff,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -311,6 +314,18 @@ var tools = []chatTool{
 		about: "The diff of a card's pull request, read from Forgejo as the member; its first 20 KB.",
 		fits:  "any card",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
+	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+		about: "A plan card's newest revision: its rows with key, role, title, size, dependencies and issue number; for a child card, its plan's rows.",
+		fits:  "any card",
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
+	{name: "pr", title: "Read a pull request", params: map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "include the diff"}}, required: []string{"task_id"},
+		about: "A card's pull request: checks with verdicts, model review with findings, audit, diff stat; optionally the diff itself.",
+		fits:  "any card",
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
+	{name: "file", title: "Read a file", params: map[string]any{"ref": str("branch or commit"), "path": str("the file path")}, required: []string{"ref", "path"},
+		about: "A file at a branch or commit of the project's repository, cut at 64 KiB.",
+		fits:  "any card",
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human")},
@@ -461,61 +476,76 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString(cardLine(k))
-	if k.Lane != "" {
-		fmt.Fprintf(&b, "\nlane %s of process %s", k.Lane, k.Process)
+	if k.Gate != "" {
+		fmt.Fprintf(&b, "\ngate %s (%s)", k.Gate, factoryd.GateMeaning(k.Gate))
 	}
-	if k.Accent != "" {
-		b.WriteString(", accent " + k.Accent)
+	v, _ := t.c.inForce(ctx)
+	sessions := v.Tree.Document.Limits.Sessions
+	fmt.Fprintf(&b, "\nsessions: %d of %d", bt.QueueAhead, sessions)
+	if k.BudgetEUR > 0 {
+		fmt.Fprintf(&b, "\nspend €%.2f of budget €%.2f", k.SpentEUR, k.BudgetEUR)
 	}
-	base := strings.TrimSuffix(t.c.cfg.ForgejoPublicURL, "/") + "/" + k.Repository
-	if k.IssueNumber > 0 {
-		fmt.Fprintf(&b, "\nissue %s/issues/%d", base, k.IssueNumber)
-	}
-	if k.PRNumber > 0 {
-		fmt.Fprintf(&b, "\npull request %s/pulls/%d", base, k.PRNumber)
-	}
-	for _, f := range []struct{ name, v string }{{"waiting on", bt.WaitingOn}, {"depends on", bt.Dependencies},
-		{"the question it waits on", bt.Escalation}, {"the choices it offers", numbered(bt.Choices)}, {"objective", k.Objective}, {"the agent's summary", k.AgentSummary}} {
-		if f.v != "" {
-			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
-		}
-	}
-	if k.Parent != "" {
-		if p, ok, err := t.c.cfg.Tasks.Task(ctx, k.Parent); err == nil && ok && p.Repository == t.p.Repository {
-			b.WriteString("\npart of plan " + cardLine(p))
-		}
-	}
-	if k.Lane == policy.LanePlan {
-		if rev, ok, err := t.c.cfg.Tasks.PlanRevision(ctx, k.ID, 0); err == nil && ok {
-			fmt.Fprintf(&b, "\nplan revision %d, sha256 %s", rev.Revision, rev.SHA256)
-		}
-		cards, err := t.c.cfg.Tasks.PlanCards(ctx, k.ID)
-		if err != nil {
-			return "", err
-		}
-		for _, card := range cards {
-			b.WriteString("\n  plan card " + cardLine(card))
-		}
-	}
-	all, err := t.c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	deps, err := t.c.cfg.Tasks.OpenDependencies(ctx, k.ID)
 	if err != nil {
 		return "", err
 	}
-	for _, q := range all {
-		if q.TaskID != k.ID || q.Project != t.p.Repository {
-			continue
+	if len(deps) > 0 {
+		b.WriteString("\ndepends on:")
+		for _, d := range deps {
+			fmt.Fprintf(&b, "\n  #%d %s (%s)", d.Issue, d.Key, factoryd.StatusMeaning(d.Status))
 		}
-		fmt.Fprintf(&b, "\n%s request %d waiting", q.Kind, q.ID)
-		var spec factoryd.MergeSpec
-		if q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
-			fmt.Fprintf(&b, " for pull request #%d, risk %s; the model review: %s, %s", q.PRNumber, spec.RiskClass, spec.Review.Verdict, spec.Review.Summary)
-			if len(spec.WhyHuman) > 0 {
-				b.WriteString("; a human decides because " + strings.Join(spec.WhyHuman, ", "))
-			}
-			if spec.Recommendation != "" {
-				b.WriteString("; recommendation: " + spec.Recommendation)
-			}
+	}
+	if bt.Escalation != "" {
+		fmt.Fprintf(&b, "\nquestion: %s", bt.Escalation)
+		if len(bt.Choices) > 0 {
+			fmt.Fprintf(&b, "\nchoices: %s", numbered(bt.Choices))
 		}
+	}
+	if k.PRNumber > 0 {
+		fmt.Fprintf(&b, "\npull request #%d", k.PRNumber)
+	}
+	steps, _ := t.c.readTimeline(ctx, k.ID)
+	var checksPassed, checksTotal int
+	var reviewVerdict, auditVerdict string
+	var reviewFindings int
+	for _, m := range steps {
+		step, _ := m["step"].(string)
+		switch step {
+		case "checks":
+			jobs, _ := m["jobs"].([]any)
+			checksTotal = len(jobs)
+			for _, j := range jobs {
+				job, _ := j.(map[string]any)
+				status, _ := job["status"].(string)
+				if status == "success" {
+					checksPassed++
+				}
+			}
+		case "model_review":
+			reviewVerdict, _ = m["verdict"].(string)
+			findings, _ := m["findings"].([]any)
+			reviewFindings = len(findings)
+		case "audit":
+			auditVerdict, _ = m["verdict"].(string)
+		}
+	}
+	if reviewVerdict != "" {
+		fmt.Fprintf(&b, "\nreviews: %s (%d findings): see pr", reviewVerdict, reviewFindings)
+	}
+	if auditVerdict != "" {
+		fmt.Fprintf(&b, "\naudit: %s: see pr", auditVerdict)
+	}
+	if checksTotal > 0 {
+		fmt.Fprintf(&b, "\nchecks: %d/%d: see pr", checksPassed, checksTotal)
+	}
+	if k.Source == factoryd.SourcePlan || k.Lane == policy.LanePlan {
+		b.WriteString("\nplan: see plan")
+	}
+	if k.Objective != "" {
+		fmt.Fprintf(&b, "\nobjective: %s", textutil.Truncate(k.Objective, 2000))
+	}
+	if k.AgentSummary != "" {
+		fmt.Fprintf(&b, "\nagent summary: %s", textutil.Truncate(k.AgentSummary, 2000))
 	}
 	return b.String(), nil
 }
@@ -623,4 +653,187 @@ func (t *turn) systemText() (string, error) {
 	fmt.Fprintf(&b, "  agent time: %s\n", v.Tree.Document.Limits.AgentTime)
 	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d KiB\n", chatRounds, chatMessageMax>>10)
 	return b.String(), nil
+}
+
+// planText is the plan tool's answer.
+func (t *turn) planText(in toolInput) (string, error) {
+	ctx := t.r.Context()
+	k, err := t.card(in)
+	if err != nil {
+		return "", err
+	}
+	planID := k.ID
+	if k.Source == factoryd.SourcePlan && k.Parent != "" {
+		planID = k.Parent
+	}
+	rev, ok, err := t.c.cfg.Tasks.PlanRevision(ctx, planID, 0)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		if k.Source == factoryd.SourcePlan || k.Lane == policy.LanePlan {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is no plan and belongs to none.", k.IssueNumber))
+		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is no plan and belongs to none.", k.IssueNumber))
+	}
+	var p factoryd.Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return "", err
+	}
+	rows := factoryd.PlanRows(p)
+	cards, err := t.c.cfg.Tasks.PlanCards(ctx, planID)
+	if err != nil {
+		return "", err
+	}
+	issuesByKey := make(map[string]int64)
+	for _, c := range cards {
+		if c.PlanKey != "" {
+			issuesByKey[c.PlanKey] = c.IssueNumber
+		}
+	}
+	var b strings.Builder
+	if k.Source == factoryd.SourcePlan && k.Parent != "" {
+		parent, ok, err := t.c.cfg.Tasks.Task(ctx, k.Parent)
+		if err != nil {
+			return "", err
+		}
+		if ok {
+			fmt.Fprintf(&b, "card of plan #%d\n", parent.IssueNumber)
+		}
+	}
+	fmt.Fprintf(&b, "revision %d, sha256 %s\n", rev.Revision, rev.SHA256)
+	for _, row := range rows {
+		deps := "none"
+		if len(row.DependsOn) > 0 {
+			deps = strings.Join(row.DependsOn, ", ")
+		}
+		issue := "not filed"
+		if n := issuesByKey[row.Key]; n > 0 {
+			issue = fmt.Sprintf("issue #%d", n)
+		}
+		fmt.Fprintf(&b, "%s %s %q %s depends on %s %s\n", row.Key, row.Role, row.Title, row.Size, deps, issue)
+	}
+	if len(cards) > 0 {
+		b.WriteString("\n")
+		for _, c := range cards {
+			fmt.Fprintf(&b, "#%d %s %q %s (%s)\n", c.IssueNumber, c.ID, cardTitle(c), c.Status, factoryd.StatusMeaning(c.Status))
+		}
+	}
+	return b.String(), nil
+}
+
+// prText is the pr tool's answer.
+func (t *turn) prText(in toolInput) (string, error) {
+	ctx := t.r.Context()
+	k, err := t.card(in)
+	if err != nil {
+		return "", err
+	}
+	if k.PRNumber == 0 {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d has no pull request.", k.IssueNumber))
+	}
+	steps, err := t.c.readTimeline(ctx, k.ID)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, m := range steps {
+		step, _ := m["step"].(string)
+		switch step {
+		case "checks":
+			jobs, _ := m["jobs"].([]any)
+			for _, j := range jobs {
+				job, _ := j.(map[string]any)
+				name, _ := job["name"].(string)
+				status, _ := job["status"].(string)
+				secs, _ := job["run_seconds"].(float64)
+				fmt.Fprintf(&b, "%s %s %.0f s\n", name, status, secs)
+			}
+		case "model_review":
+			verdict, _ := m["verdict"].(string)
+			summary, _ := m["summary"].(string)
+			note, _ := m["note"].(string)
+			fmt.Fprintf(&b, "review: %s", verdict)
+			if summary != "" {
+				fmt.Fprintf(&b, " - %s", summary)
+			}
+			b.WriteString("\n")
+			findings, _ := m["findings"].([]any)
+			for i, f := range findings {
+				finding, _ := f.(map[string]any)
+				file, _ := finding["file"].(string)
+				line, _ := finding["line"].(float64)
+				text, _ := finding["text"].(string)
+				fmt.Fprintf(&b, "%d. %s:%.0f %s\n", i+1, file, line, text)
+			}
+			if note != "" {
+				fmt.Fprintf(&b, "note: %s\n", note)
+			}
+		case "audit":
+			verdict, _ := m["verdict"].(string)
+			fmt.Fprintf(&b, "audit: %s\n", verdict)
+			findings, _ := m["findings"].([]any)
+			for _, f := range findings {
+				finding, _ := f.(map[string]any)
+				file, _ := finding["file"].(string)
+				line, _ := finding["line"].(float64)
+				text, _ := finding["text"].(string)
+				fmt.Fprintf(&b, "  %s:%.0f %s\n", file, line, text)
+			}
+		}
+	}
+	files, _, err := t.c.prFiles(t.r, k.Repository, k.PRNumber)
+	if err != nil {
+		return "", err
+	}
+	var totalAdd, totalDel int
+	for _, f := range files {
+		fmt.Fprintf(&b, "%s +%d -%d\n", f.Filename, f.Additions, f.Deletions)
+		totalAdd += f.Additions
+		totalDel += f.Deletions
+	}
+	fmt.Fprintf(&b, "%d files, +%d -%d\n", len(files), totalAdd, totalDel)
+	if in.WithDiff {
+		diffStr, err := t.diff(in)
+		if err == nil {
+			b.WriteString("\n")
+			b.WriteString(diffStr)
+		}
+	}
+	return b.String(), nil
+}
+
+const fileLimit = 64 << 10
+
+// fileText is the file tool's answer.
+func (t *turn) fileText(in toolInput) (string, error) {
+	if in.Ref == "" || in.Path == "" {
+		return "", refuse(http.StatusBadRequest, "ref and path are required")
+	}
+	if strings.Contains(in.Path, "..") {
+		return "", refuse(http.StatusBadRequest, "path must not contain '..'")
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", refuse(http.StatusInternalServerError, "the project names no repository")
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name),
+		url.PathEscape(in.Path), url.QueryEscape(in.Ref))
+	var raw []byte
+	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, path, nil, http.StatusOK, &raw)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") || strings.Contains(err.Error(), "not found") {
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no %s at %s.", in.Path, in.Ref))
+		}
+		return "", &forgejoRefusal{"read the file", err}
+	}
+	if len(raw) > 0 && raw[0] == 0 {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%d bytes).", in.Path, in.Ref, len(raw)))
+	}
+	content := string(raw)
+	if len(content) > fileLimit {
+		return content[:fileLimit] + fmt.Sprintf("\n(cut at 64 KiB of %d)", len(content)), nil
+	}
+	return content, nil
 }

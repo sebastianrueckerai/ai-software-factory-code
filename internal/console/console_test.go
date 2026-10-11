@@ -68,6 +68,8 @@ type fakeForgejo struct {
 	labelled   []string // "path [label ids]"
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
+	pullFiles  map[int64][]prFile
+	contents   map[string]contentAnswer
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -185,6 +187,29 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
 		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
+		prStr := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/")
+		prStr = strings.TrimSuffix(prStr, "/files")
+		var pr int64
+		fmt.Sscanf(prStr, "%d", &pr)
+		if files, ok := f.pullFiles[pr]; ok {
+			json.NewEncoder(w).Encode(files)
+		} else {
+			w.Write([]byte("[]"))
+		}
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/contents/"):
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/contents/")
+		ref := r.URL.Query().Get("ref")
+		key := ref + ":" + path
+		if ans, ok := f.contents[key]; ok {
+			if ans.notFound {
+				http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+				return
+			}
+			w.Write([]byte(ans.body))
+		} else {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+		}
 	default:
 		http.NotFound(w, r)
 	}
