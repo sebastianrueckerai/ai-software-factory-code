@@ -88,9 +88,9 @@ func matches(re *regexp.Regexp, skip func(key, value string) bool, text string) 
 // hunkStart reads the new version's first line from a hunk header.
 var hunkStart = regexp.MustCompile(`^@@ -[0-9,]+ \+([0-9]+)`)
 
-// added calls f with every added line of a unified git diff, its file and
+// Added calls f with every added line of a unified git diff, its file and
 // its line in the new version.
-func added(diff string, f func(file string, line int, text string)) {
+func Added(diff string, f func(file string, line int, text string)) {
 	file, line, inHunk := "", 0, false
 	for _, l := range strings.Split(diff, "\n") {
 		switch {
@@ -123,7 +123,7 @@ func added(diff string, f func(file string, line int, text string)) {
 // shapes: one hit per line, the first shape that matches.
 func ScanDiff(diff string) []Hit {
 	var hits []Hit
-	added(diff, func(file string, line int, text string) {
+	Added(diff, func(file string, line int, text string) {
 		if kind := shapeOf(text); kind != "" {
 			hits = append(hits, Hit{File: file, Line: line, Kind: kind})
 		}
@@ -137,7 +137,7 @@ func ScanDiff(diff string) []Hit {
 func DiffSecrets(diff string) []string {
 	var out []string
 	pem := false
-	added(diff, func(_ string, _ int, text string) {
+	Added(diff, func(_ string, _ int, text string) {
 		switch {
 		case pem && strings.Contains(text, "-----END "):
 			pem = false

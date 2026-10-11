@@ -1424,14 +1424,15 @@ const reproActivityTimeout = 2 * (MaxReproTimeout + 10*time.Minute)
 // MaxReproTimeout is the longest reproduction command run.
 const MaxReproTimeout = 15 * time.Minute
 
-// reviewOptions: one review call is bounded by the policy's
-// supervisor_timeout, at most policy.MaxSupervisorTimeout; it heartbeats,
-// so a cancel reaches the call and a lost worker is noticed.
+// reviewOptions: one review or audit makes up to reviewChunks calls, each
+// bounded by the policy's supervisor_timeout, at most
+// policy.MaxSupervisorTimeout; it heartbeats, so a cancel reaches the call
+// and a lost worker is noticed.
 func reviewOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
-		StartToCloseTimeout:    policy.MaxSupervisorTimeout + 2*time.Minute,
-		ScheduleToCloseTimeout: 3*policy.MaxSupervisorTimeout + 10*time.Minute,
+		StartToCloseTimeout:    reviewChunks*policy.MaxSupervisorTimeout + 2*time.Minute,
+		ScheduleToCloseTimeout: 3*reviewChunks*policy.MaxSupervisorTimeout + 10*time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,

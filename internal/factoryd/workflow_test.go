@@ -1146,6 +1146,15 @@ func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
 	}
 }
 
+// The review and the audit make up to three calls of at most 15 minutes
+// in one attempt: 3 x 15 + 2 = 47 minutes per attempt, and three attempts
+// within 3 x 45 + 10 = 145 minutes.
+func TestReviewOptionsHoldThreeCalls(t *testing.T) {
+	if opts := reviewOptions(); opts.StartToCloseTimeout != 47*time.Minute || opts.ScheduleToCloseTimeout != 145*time.Minute || opts.RetryPolicy.MaximumAttempts != 3 {
+		t.Fatalf("review options = %+v", opts)
+	}
+}
+
 // A run started by the heal pass or by a signal reconciles first.
 
 // Case 1+2: a healed in-review task adopts its open PR: no new session,

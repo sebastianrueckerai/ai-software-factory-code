@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -179,16 +178,70 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 	}
 }
 
-// A diff cut at the review's 48 KiB is itself a finding.
+// A file over the audit's 48 KiB part: no model call, and the one finding
+// that says why.
 func TestGateAuditCutDiffIsAFinding(t *testing.T) {
 	big := "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,5000 @@\n" + strings.Repeat("+0123456789abcdef\n", 5000)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: big}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: "diff too large to audit in full", Why: fmt.Sprintf("the audit read the first %d bytes of the diff", reviewDiffMax)}}
-	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) {
+	want := []AuditFinding{{Item: "not audited in full", Why: "1 file, 88 KiB; the audit reads at most 3 parts of 48 KiB (a.txt alone is 88 KiB)"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
+		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
+	}
+}
+
+// Two files of 30 KiB: two audit calls, each with its part and the whole
+// diff's concurrency summary, and the findings of both.
+func TestGateAuditReadsTheDiffInParts(t *testing.T) {
+	diff := diffFile("a.go", 30<<10, "\tgo func() {") + diffFile("b.go", 30<<10)
+	ll := &fakeLiteLLM{contents: []string{
+		`{"verdict":"findings","findings":[{"item":"network egress","file":"a.go","line":1,"why":"a new host"}]}`,
+		`{"verdict":"findings","findings":[{"item":"RBAC and ServiceAccounts","file":"b.go","line":1,"why":"a new Role"}]}`}}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: "network egress", File: "a.go", Line: 1, Why: "a new host"}, {Item: "RBAC and ServiceAccounts", File: "b.go", Line: 1, Why: "a new Role"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 2 {
+		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
+	}
+	for i, part := range []string{`"part": "file 1 of 2, part 1 of 2"`, `"part": "file 2 of 2, part 2 of 2"`} {
+		if user := userMessage(ll.chats[i]); !strings.Contains(user, part) || !strings.Contains(user, `"concurrency": "a.go:1 goroutine: go func() {"`) {
+			t.Fatalf("call %d lacks its part or the concurrency summary", i+1)
+		}
+	}
+}
+
+// A part without a verdict is a finding naming the part; the other part's
+// findings stay.
+func TestGateAuditPartWithoutAVerdict(t *testing.T) {
+	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
+	ll := &fakeLiteLLM{contents: []string{"LGTM", `{"verdict":"findings","findings":[{"item":"secrets","file":"b.go","line":1,"why":"w"}]}`}}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	res := getInto[AuditResult](t, val, err)
+	if len(res.Findings) != 2 || res.Findings[0].Item != auditNoVerdict || !strings.HasPrefix(res.Findings[0].Why, "part 1 of 2: the answer is not one JSON object") ||
+		res.Findings[1] != (AuditFinding{Item: "secrets", File: "b.go", Line: 1, Why: "w"}) {
 		t.Fatalf("audit = %+v", res)
+	}
+}
+
+// Four parts: no model call, the pre-check still scans the whole diff,
+// and the one finding says why the rest is not audited.
+func TestGateAuditBeyondItsReachIsNotAuditedInFull(t *testing.T) {
+	diff := diffFile("a_test.go", 40<<10, "\tpassword = \"hunter2hunter2\"") + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
+	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{
+		{Item: "secret in the diff: password, secret or token assigned a literal", File: "a_test.go", Line: 1,
+			Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"},
+		{Item: "not audited in full", Why: "4 files, 160 KiB; the audit reads at most 3 parts of 48 KiB (too many parts)"},
+	}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
+		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
 }
 

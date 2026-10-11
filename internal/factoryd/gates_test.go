@@ -404,6 +404,152 @@ func TestModelReviewWithoutAReviewModel(t *testing.T) {
 	}
 }
 
+// diffFile is a new file's diff of exactly size bytes: its added lines,
+// then one added line of x that fills it.
+func diffFile(path string, size int, added ...string) string {
+	head := fmt.Sprintf("diff --git a/%s b/%s\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(added)+1)
+	for _, l := range added {
+		head += "+" + l + "\n"
+	}
+	return head + "+" + strings.Repeat("x", size-len(head)-2) + "\n"
+}
+
+// userMessage is the user message of a recorded model call.
+func userMessage(chat map[string]any) string {
+	msgs, _ := chat["messages"].([]any)
+	user, _ := msgs[1].(map[string]any)["content"].(string)
+	return user
+}
+
+// Two files of 30 KiB do not fit one part of 48 KiB: the review reads them
+// in two calls, each naming its part and carrying the whole diff's
+// concurrency summary, and combines the two answers.
+func TestModelReviewReadsTheDiffInParts(t *testing.T) {
+	diff := diffFile("a.go", 30<<10, "\tgo func() {") + diffFile("b.go", 30<<10)
+	for name, tc := range map[string]struct {
+		second   string
+		verdict  string
+		findings []string
+		strict   bool
+	}{
+		"approve and concerns": {`{"verdict":"concerns","summary":"second","findings":["x"],"strict_improvement":true}`, "concerns", []string{"x"}, true},
+		"all approve":          {`{"verdict":"approve","summary":"second","strict_improvement":false}`, "approve", nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: diff}
+			r, _, _ := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{contents: []string{`{"verdict":"approve","summary":"first","strict_improvement":true}`, tc.second}}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}})
+			rv := getInto[Review](t, val, err)
+			if rv.Verdict != tc.verdict || !slices.Equal(rv.Findings, tc.findings) || rv.Summary != "first\n\nsecond" ||
+				rv.StrictImprovement == nil || *rv.StrictImprovement != tc.strict || rv.Note != "" {
+				t.Fatalf("review = %+v", rv)
+			}
+			if len(ll.chats) != 2 {
+				t.Fatalf("calls = %d, want 2", len(ll.chats))
+			}
+			for i, want := range []struct{ part, file, other string }{
+				{`"part": "file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go"},
+				{`"part": "file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go"},
+			} {
+				user := userMessage(ll.chats[i])
+				if !strings.Contains(user, want.part) || !strings.Contains(user, want.file) || strings.Contains(user, want.other) ||
+					!strings.Contains(user, `"concurrency": "a.go:1 goroutine: go func() {"`) {
+					t.Fatalf("call %d lacks its part, its file or the concurrency summary, or carries the other file: %s", i+1, user[:min(len(user), 2000)])
+				}
+			}
+			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Read in 2 parts, 2 files, 60 KiB.") || !strings.Contains(fj.comments[0], "Verdict: **"+tc.verdict+"**") {
+				t.Fatalf("comments = %q", fj.comments)
+			}
+		})
+	}
+}
+
+// One part is one call without a part label; the comment says so.
+func TestModelReviewOfOnePartHasNoLabel(t *testing.T) {
+	fj := &gateForgejo{diff: diffFile("a.go", 2<<10)}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || rv.Summary != "ok" || rv.StrictImprovement != nil {
+		t.Fatalf("review = %+v", rv)
+	}
+	if user := userMessage(ll.chats[0]); len(ll.chats) != 1 || strings.Contains(user, `"part"`) || !strings.Contains(user, `"concurrency": "none"`) {
+		t.Fatalf("calls %d, user %s", len(ll.chats), user)
+	}
+	if !strings.Contains(fj.comments[0], "Read in 1 part, 1 file, 2 KiB.") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+}
+
+// A part without a verdict ends the review with its note, naming the
+// part; no later part is read.
+func TestModelReviewPartWithoutAVerdictIsTheNote(t *testing.T) {
+	fj := &gateForgejo{diff: diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10) + diffFile("c.go", 30<<10)}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{contents: []string{`{"verdict":"concerns","summary":"s","findings":["a.go: x"]}`, "LGTM"}, content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 2 of 3: model review answer invalid") || len(ll.chats) != 2 {
+		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
+	}
+}
+
+// Beyond three parts of 48 KiB, or with one file over 48 KiB, or a diff
+// over Forgejo's 1 MiB, the review makes no call and says why it did not
+// review, without a verdict or findings: the card takes it to a human.
+func TestModelReviewBeyondItsReachIsNotReviewed(t *testing.T) {
+	for name, tc := range map[string]struct{ diff, note string }{
+		"four parts": {diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10),
+			"not reviewed: 4 files, 160 KiB; the review reads at most 3 parts of 48 KiB (too many parts)"},
+		"one big file": {diffFile("big.go", 60<<10), "not reviewed: 1 file, 60 KiB; the review reads at most 3 parts of 48 KiB (big.go alone is 60 KiB)"},
+		"over 1 MiB": {diffFile("huge.go", 3<<19),
+			"not reviewed: more than 1 MiB of diff; the review reads at most 3 parts of 48 KiB (Forgejo's answer is cut at 1 MiB)"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: tc.diff}
+			r, _, objects := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			if rv.Verdict != "" || rv.Findings != nil || rv.Note != tc.note || len(ll.chats) != 0 {
+				t.Fatalf("review = %+v after %d calls, want the note %q", rv, len(ll.chats), tc.note)
+			}
+			if len(fj.comments) != 1 || !strings.HasSuffix(fj.comments[0], tc.note) {
+				t.Fatalf("comments = %q", fj.comments)
+			}
+			if step := timelineStep(t, objects, "t1", "model_review"); step["note"] != tc.note {
+				t.Fatalf("model_review step = %v", step)
+			}
+		})
+	}
+}
+
+func TestCombineReviews(t *testing.T) {
+	yes, no := true, false
+	for name, tc := range map[string]struct {
+		parts  []Review
+		strict *bool
+	}{
+		"one, not asked":  {[]Review{{Verdict: "approve", Summary: "a"}}, nil},
+		"one, true":       {[]Review{{Verdict: "approve", Summary: "a", StrictImprovement: &yes}}, &yes},
+		"true and true":   {[]Review{{Verdict: "approve", Summary: "a", StrictImprovement: &yes}, {Verdict: "approve", Summary: "b", StrictImprovement: &yes}}, &yes},
+		"true and absent": {[]Review{{Verdict: "approve", Summary: "a", StrictImprovement: &yes}, {Verdict: "approve", Summary: "b"}}, &no},
+		"true and false":  {[]Review{{Verdict: "approve", Summary: "a", StrictImprovement: &yes}, {Verdict: "approve", Summary: "b", StrictImprovement: &no}}, &no},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := combineReviews(tc.parts)
+			if (got.StrictImprovement == nil) != (tc.strict == nil) || got.StrictImprovement != nil && *got.StrictImprovement != *tc.strict {
+				t.Fatalf("strict = %v, want %v", got.StrictImprovement, tc.strict)
+			}
+		})
+	}
+}
+
 func TestRequestApprovalOpensTheCard(t *testing.T) {
 	r, store, objects := newGateRunner(t, gateTask, &gateForgejo{})
 	in := ApprovalInput{PR: PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}, Commit: "c1",
@@ -1084,6 +1230,22 @@ func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 }
 
 // A skipped reproduction is no finding: the checks ran the tests (#287).
+// The review and the audit prompts name the concurrency summary and the
+// parts as context, and no longer a cut diff.
+func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
+	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": auditPrompt} {
+		for _, s := range []string{"The concurrency summary lists every goroutine, channel, lock, select and atomic the diff adds, with file and line.",
+			"When part is present, the diff comes in parts"} {
+			if !strings.Contains(prompt, s) {
+				t.Errorf("the %s prompt lacks %q", name, s)
+			}
+		}
+	}
+	if strings.Contains(reviewPrompt, "may be cut") {
+		t.Error("the review prompt still says the diff may be cut")
+	}
+}
+
 func TestReviewPromptSkippedReproductionIsNoFinding(t *testing.T) {
 	for _, s := range []string{"A reproduction with Ran false means the issue carried no reproduction command: that is no finding by itself", "the pull request's checks (build, vet, the race tests) already ran and passed before this review"} {
 		if !strings.Contains(reviewPrompt, s) {

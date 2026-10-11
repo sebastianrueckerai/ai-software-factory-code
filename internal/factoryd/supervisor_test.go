@@ -124,6 +124,7 @@ type fakeLiteLLM struct {
 	status   int
 	decision string // X-Gateway-Decision of a refusal
 	content  string
+	contents []string // answers in order; past the last, content
 	delay    time.Duration
 	keys     string // /key/list body; empty = no keys
 	// deployment is the gateway's deployment header on an answer
@@ -164,7 +165,11 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			if f.deployment != "" {
 				w.Header().Set(gateway.HeaderDeployment, f.deployment)
 			}
-			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": f.content}}}})
+			content := f.content
+			if n := len(f.chats) - 1; n < len(f.contents) {
+				content = f.contents[n]
+			}
+			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
 			w.Write(out)
 		default:
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
