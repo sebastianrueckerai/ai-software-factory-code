@@ -801,7 +801,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	case "backlog":
 		name, proc := processOf(v.byRepo, t)
 		for _, lane := range policy.LaneNames {
-			why, err := moveRefusal(ctx, t, name, proc, lane, v.user, c.mayMoveCached)
+			why, err := moveRefusal(ctx, t, capFacts{}, name, proc, lane, v.user, c.mayMoveCached)
 			if err != nil && !v.unchecked {
 				v.unchecked = true
 				log.Printf("console: may %s move %s into %s: %v", v.user, t.ID, lane, err)

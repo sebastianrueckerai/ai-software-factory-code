@@ -45,6 +45,79 @@ func (e *refusal) Error() string { return e.msg }
 
 func refuse(status int, msg string) error { return &refusal{status, msg} }
 
+// capFacts are what a card waiting on a human waits for: its sessions
+// used, allowed and granted, whether it waits at its session cap, and its
+// pending merge or plan request. A pending request outranks the cap: a
+// card that used every session may still pass its gates.
+type capFacts struct {
+	attempts, sessions, extra int
+	capped, merge, plan       bool
+}
+
+// capFactsOf reads t's facts; a card not waiting on a human has none, and
+// a failed read leaves its fact unknown, which wrongState reads as a
+// question.
+func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
+	if t.Status != "waiting-human" {
+		return capFacts{}
+	}
+	f := capFacts{attempts: t.Usage.Attempts, extra: t.Usage.ExtraAttempts}
+	if v, ok := c.inForce(ctx); ok {
+		f.sessions = v.Document.Limits.Sessions
+	}
+	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: task %s's escalation: %v", t.ID, err)
+	}
+	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		log.Printf("console: approvals: %v", err)
+	}
+	for _, q := range all {
+		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
+		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan
+	}
+	f.capped = !f.merge && !f.plan && (factoryd.AtSessionCap(bt.Escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
+	return f
+}
+
+// wrongState refuses t, which needs another state, with 409: its state and
+// the action that fits it, so a wrong call corrects itself (ruling 263).
+func wrongState(t factoryd.Task, f capFacts, needs string) error {
+	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, not %s: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), needs, fitting(t, f)))
+}
+
+// fitting is the action that fits t's state.
+func fitting(t factoryd.Task, f capFacts) string {
+	switch t.Status {
+	case "waiting-human":
+		switch {
+		case t.Kind == "human":
+			return "a human does its work and closes its issue"
+		case f.capped:
+			return "an answer with the findings grants one session (answer); close ends it"
+		case f.merge:
+			return "approve_merge or deny_merge decide its merge request"
+		case f.plan:
+			return "accept_plan, request_changes or reject_plan decide the plan"
+		}
+		return "answer it (answer)"
+	case "waiting-poster":
+		return "the poster must answer on the issue"
+	case "running":
+		return "steer sends its session a message; its pull request comes when the session ends"
+	case "queued", "waiting-deps":
+		return "nothing to do until it starts"
+	case "in-review":
+		return "its gates run; nothing to do until they end"
+	case "backlog":
+		return "move_card starts it"
+	case "done", "failed", "closed":
+		return "the card is final: a new card continues the work"
+	}
+	return "wait a moment"
+}
+
 // forgejoRefusal is a Forgejo call of the action that failed: what the
 // action asked Forgejo for.
 type forgejoRefusal struct {
@@ -224,7 +297,7 @@ func (c *Console) doMoveCard(ctx context.Context, a actor, id, lane string) (str
 	if err != nil {
 		return "", err
 	}
-	why, err := moveRefusal(ctx, t, name, proc, lane, a.s.user, c.cfg.MayMove)
+	why, err := moveRefusal(ctx, t, c.capFactsOf(ctx, t), name, proc, lane, a.s.user, c.cfg.MayMove)
 	if err != nil {
 		log.Printf("console: may %s move %s into %s: %v", a.s.user, t.ID, lane, err)
 		return "", refuse(http.StatusServiceUnavailable, "cannot check who may move the card")
@@ -255,7 +328,7 @@ func (c *Console) doUnmoveCard(ctx context.Context, a actor, id, lane string) (s
 		return "", err
 	}
 	if t.Status != "backlog" {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d has left the backlog (it is %s): factoryd took it into the lane, which no undo reverses.", t.IssueNumber, t.Status))
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a card still in the backlog")
 	}
 	repo, err := factoryd.SplitRepo(t.Repository)
 	if err != nil {
@@ -294,11 +367,10 @@ func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, 
 	}
 	accepted, ok := c.awaitAcceptedPlan(ctx, t)
 	if !ok {
-		msg := "Task " + t.ID + " is no accepted plan."
 		if accepted.Lane == policy.LanePlan && accepted.Status != "done" && !factoryd.Final(accepted.Status) {
-			msg = "The plan's cards are still being filed; try again in a moment."
+			return "", refuse(http.StatusConflict, "The plan's cards are still being filed; try again in a moment.")
 		}
-		return "", refuse(http.StatusConflict, msg)
+		return "", wrongState(accepted, c.capFactsOf(ctx, accepted), "an accepted plan")
 	}
 	t = accepted
 	_, proc, err := c.processOfCard(ctx, t)
@@ -382,7 +454,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err == nil && (t.Lane != policy.LanePlan || t.IssueNumber == 0) {
-		err = refuse(http.StatusConflict, "Task "+t.ID+" is no plan.")
+		err = wrongState(t, c.capFactsOf(ctx, t), "a plan awaiting acceptance")
 	}
 	return t, err
 }
@@ -481,7 +553,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 		return "", err
 	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
-		return "", refuse(http.StatusConflict, "task "+t.ID+" is not waiting for an answer")
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
 	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
@@ -558,7 +630,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 		return "", err
 	}
 	if t.Status != "running" {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs no session (it is %s).", t.IssueNumber, t.Status))
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a running session")
 	}
 	switch err := c.cfg.Steer(ctx, t.ID, a.s.user, text); {
 	case errors.Is(err, factoryd.ErrNoLiveSession), errors.Is(err, harness.ErrNotRunning):

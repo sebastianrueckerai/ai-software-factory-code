@@ -62,6 +62,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		fmt.Fprintf(&b, "\nissue %s/issues/%d", base, k.IssueNumber)
 	}
 	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, v.Document.Limits.Sessions+k.Usage.ExtraAttempts)
+	if f := t.c.capFactsOf(ctx, k); f.capped {
+		fmt.Fprintf(&b, "\nat its session cap: %d of %d sessions used, %d granted", f.attempts, f.sessions, f.extra)
+	}
 	for _, d := range deps {
 		fmt.Fprintf(&b, "\ndepends on #%d (%s)", d.Issue, factoryd.StatusMeaning(d.Status))
 	}
@@ -84,7 +87,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		if q.TaskID != k.ID || q.Project != t.p.Repository {
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s request %d waiting", q.Kind, q.ID)
+		fmt.Fprintf(&b, "\n%s request %d pending", q.Kind, q.ID)
 		var spec factoryd.MergeSpec
 		if q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
 			fmt.Fprintf(&b, " for pull request #%d, risk %s", q.PRNumber, spec.RiskClass)

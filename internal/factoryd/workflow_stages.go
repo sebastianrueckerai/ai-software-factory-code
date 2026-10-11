@@ -47,6 +47,9 @@ const noVerdict = "the review gave no verdict: "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
+// AtSessionCap: escalation is the card of a task at its session cap.
+func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
+
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
 // findings, the newest, each at most maxCardLine.
 const (

@@ -259,7 +259,7 @@ func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalMerge && q.Project == t.p.Repository
 	})
 	if i < 0 {
-		return factoryd.ApprovalRequest{}, refuse(http.StatusConflict, fmt.Sprintf("Card #%d has no merge request waiting.", k.IssueNumber))
+		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
 	}
 	return all[i], nil
 }

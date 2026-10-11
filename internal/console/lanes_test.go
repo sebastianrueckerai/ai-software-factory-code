@@ -302,7 +302,8 @@ func TestMovePostAddsLabelAsHuman(t *testing.T) {
 		{ak, as.csrf, "t-b", "ready", "Lane ready takes cards from writers of sf/code.", http.StatusForbidden},
 		{ak, as.csrf, "t-c2", "ready", "Lane ready takes cards from the approvers.", http.StatusForbidden},
 		{ck, s.csrf, "t-c2", "plan", "Lane plan takes no card of a plan: plans do not nest.", http.StatusForbidden},
-		{ck, s.csrf, "t-run", "ready", "Card #11 is not in the backlog.", http.StatusForbidden},
+		{ck, s.csrf, "t-run", "ready", "Card #11 runs an agent session, not the backlog: steer sends its session a message; its pull request comes when the session ends.",
+			http.StatusForbidden},
 		{ck, s.csrf, "t-idea", "backlog", "Lane backlog is no starting lane of process spec.", http.StatusForbidden},
 		{ck, s.csrf, "t-b", "plan", "Lane plan is no starting lane of process maintenance.", http.StatusForbidden},
 		{ck, s.csrf, "t-none", "ready", "404 page not found", http.StatusNotFound},
@@ -520,7 +521,7 @@ func TestStartPlanWaitsForTheCardsToBeFiled(t *testing.T) {
 
 	// a card of another lane is refused without waiting
 	before = time.Now()
-	if rec := start("t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-run is no accepted plan." {
+	if rec := start("t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #11 runs an agent session, not an accepted plan: steer sends its session a message; its pull request comes when the session ends." {
 		t.Errorf("start plan on a card: %d %q", rec.Code, rec.Body)
 	}
 	if d := time.Since(before); d >= startPlanPoll {
@@ -535,7 +536,8 @@ func TestStartPlanWaitsForTheCardsToBeFiled(t *testing.T) {
 		}
 	}
 	before = time.Now()
-	if rec := start("t-plan"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-plan is no accepted plan." {
+	if rec := start("t-plan"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) !=
+		"Card #1 has failed, not an accepted plan: the card is final: a new card continues the work." {
 		t.Errorf("start plan on a failed plan: %d %q", rec.Code, rec.Body)
 	}
 	if d := time.Since(before); d >= startPlanPoll {
@@ -606,7 +608,7 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 		!strings.Contains(rec.Body.String(), "Start plan: 0 cards of plan #1 labelled agent.") {
 		t.Errorf("start with none in the backlog: %d, labelled %v", rec.Code, r.fg.labelled)
 	}
-	if rec := start(ck, s.csrf, "t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Task t-run is no accepted plan." {
+	if rec := start(ck, s.csrf, "t-run"); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #11 runs an agent session, not an accepted plan: steer sends its session a message; its pull request comes when the session ends." {
 		t.Errorf("start plan on a card: %d %q", rec.Code, rec.Body)
 	}
 }

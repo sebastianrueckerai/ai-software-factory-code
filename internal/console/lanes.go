@@ -78,12 +78,12 @@ func movedByRefusal(lane policy.Lane, repository string) string {
 	return fmt.Sprintf("Lane %s takes cards from %s.", lane.Name, who)
 }
 
-// moveRefusal is why user may not move card t, which follows process
-// name, into lane, in one sentence; "" allows it. The checks are intake's
-// (factoryd lanes.go move), which stays the judge.
-func moveRefusal(ctx context.Context, t factoryd.Task, name string, proc policy.Process, lane, user string, may mayMove) (string, error) {
+// moveRefusal is why user may not move card t, with facts f, which
+// follows process name, into lane, in one sentence; "" allows it. The
+// checks are intake's (factoryd lanes.go move), which stays the judge.
+func moveRefusal(ctx context.Context, t factoryd.Task, f capFacts, name string, proc policy.Process, lane, user string, may mayMove) (string, error) {
 	if t.Kind != "agent" || t.Status != "backlog" {
-		return fmt.Sprintf("Card #%d is not in the backlog.", t.IssueNumber), nil
+		return wrongState(t, f, "the backlog").Error(), nil
 	}
 	l, ok := proc.Lane(lane)
 	if !ok || l.Class == "" {

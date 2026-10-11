@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -507,7 +508,7 @@ func TestChatReadThenReply(t *testing.T) {
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
 			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\n" +
-			"merge request 4 waiting for pull request #9, risk high; " +
+			"merge request 4 pending for pull request #9, risk high; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
 			"objective: Fix the cache. It drops entries."},
 	})
@@ -1282,4 +1283,107 @@ func TestChatProposalStatesInGet(t *testing.T) {
 	chat.proposals[1].ExpiresAt = time.Now().Add(-time.Second)
 	chat.mu.Unlock()
 	equal(t, "the states 30 minutes on", states(), []factoryd.ProposalState{{Token: tokens[0], State: "used"}, {Token: tokens[1], State: "expired"}})
+}
+
+// Every refusal of a card's state names the state and the action that
+// fits it, the button's as well: #14 waits at its session cap, #15 used
+// all its sessions and waits on its merge request, which comes first. The
+// card tool names the cap and the pending merge request.
+func TestChatRefusalsNameTheState(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{"approve_merge"}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14,
+			Objective: "Trim the logs.", Usage: factoryd.TaskUsage{Attempts: 3}},
+			Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed"},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mr", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15,
+			PRNumber: 16, Objective: "Add the index.", Usage: factoryd.TaskUsage{Attempts: 3}}})
+	r.tasks.mu.Unlock()
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 5, Kind: factoryd.ApprovalMerge, TaskID: "t-mr", Project: "sf/code",
+		PRNumber: 16, Status: "pending", Spec: json.RawMessage(`{"risk_class":"low"}`)})
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1,
+		"deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
+		"deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
+		"steer", `{"task_id":"t-m","text":"go"}`,
+		"move_card", `{"lane":"ready","task_id":"t-r"}`,
+		"answer", `{"task_id":"t-r","text":"yes"}`,
+		"accept_plan", `{"revision":1,"sha256":"x","task_id":"t-m"}`,
+		"steer", `{"task_id":"t-mr","text":"go"}`,
+		"card", `{"task_id":"t-cap"}`,
+		"card", `{"task_id":"t-mr"}`,
+		"approve_merge", `{"task_id":"t-mr"}`)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go on"}})
+	const human = "waits on a human: an answer, an approval or a decision"
+	const backlog = "waits in the backlog until a member moves it into a lane"
+	const running = "steer sends its session a message; its pull request comes when the session ends."
+	refused := func(name, args, result string) string {
+		b, _ := json.Marshal(map[string]any{"name": name, "arguments": json.RawMessage(args), "duration_ms": 0, "result": result})
+		return "tool " + string(b)
+	}
+	equal(t, "stream", events, []string{
+		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
+			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer); close ends it."),
+		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
+			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
+		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+backlog+", not a running session: move_card starts it."),
+		refused("move_card", `{"lane":"ready","task_id":"t-r"}`, "Refused: Card #11 runs an agent session, not the backlog: "+running),
+		refused("answer", `{"task_id":"t-r","text":"yes"}`,
+			"Refused: Card #11 runs an agent session, not a question or a session cap to answer: "+running),
+		refused("accept_plan", `{"revision":1,"sha256":"x","task_id":"t-m"}`,
+			"Refused: Card #5 "+backlog+", not a plan awaiting acceptance: move_card starts it."),
+		refused("steer", `{"task_id":"t-mr","text":"go"}`,
+			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
+		refused("card", `{"task_id":"t-cap"}`, `#14 t-cap "Trim the logs" waiting-human (`+human+`)`),
+		refused("card", `{"task_id":"t-mr"}`, `#15 t-mr "Add the index" waiting-human (`+human+`)`),
+		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index\"","id":"TOKEN","tool":"approve_merge"}`,
+		`done {}`})
+	chatRows(t, r.events, before, "sebastian")
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
+	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs\" waiting-human ("+human+")\n"+
+		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\n"+
+		"the question it waits on: the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed\n"+
+		"objective: Trim the logs.")
+	equal(t, "the card with a merge request", stored[0].ToolCalls[8].Result, "#15 t-mr \"Add the index\" waiting-human ("+human+")\n"+
+		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\n"+
+		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
+		"objective: Add the index.")
+	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
+	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
+		"Card #5 " + backlog + ", not a question or a session cap to answer: move_card starts it.\n"})
+}
+
+// The fitting action of each state wrongState names, past the ones the
+// chat's refusals reach.
+func TestWrongState(t *testing.T) {
+	const needs = "a running session"
+	for _, tc := range []struct {
+		t    factoryd.Task
+		f    capFacts
+		want string
+	}{
+		{factoryd.Task{Kind: "human", Status: "waiting-human", IssueNumber: 1}, capFacts{},
+			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: a human does its work and closes its issue."},
+		{factoryd.Task{Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan, IssueNumber: 2}, capFacts{plan: true},
+			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: accept_plan, request_changes or reject_plan decide the plan."},
+		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},
+			"Card #3 waits on its poster's information, not a running session: the poster must answer on the issue."},
+		{factoryd.Task{Status: "queued", IssueNumber: 4}, capFacts{}, "Card #4 waits for its session to start, not a running session: nothing to do until it starts."},
+		{factoryd.Task{Status: "waiting-deps", IssueNumber: 5}, capFacts{},
+			"Card #5 waits for the cards it depends on, not a running session: nothing to do until it starts."},
+		{factoryd.Task{Status: "in-review", IssueNumber: 6}, capFacts{},
+			"Card #6 passes the gates after its session, not a running session: its gates run; nothing to do until they end."},
+		{factoryd.Task{Status: "done", IssueNumber: 7}, capFacts{}, "Card #7 is done, not a running session: the card is final: a new card continues the work."},
+		{factoryd.Task{Status: "failed", IssueNumber: 8}, capFacts{}, "Card #8 has failed, not a running session: the card is final: a new card continues the work."},
+		{factoryd.Task{Status: "closed", IssueNumber: 9}, capFacts{}, "Card #9 was closed, not a running session: the card is final: a new card continues the work."},
+		{factoryd.Task{Status: "closing", IssueNumber: 10}, capFacts{}, "Card #10 is being closed, not a running session: wait a moment."},
+	} {
+		var no *refusal
+		if err := wrongState(tc.t, tc.f, needs); !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != tc.want {
+			t.Errorf("%s: %v, want 409 %q", tc.t.Status, err, tc.want)
+		}
+	}
 }
