@@ -1002,6 +1002,50 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	}
 }
 
+// Stage 16 item 3.7: the form asks for a size; a sized card's issue ends
+// with its line "Size: <size>", which intake reads for the budget, and its
+// event names the size.
+func TestNewTaskSize(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, s := r.loggedIn(t)
+	form := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck).Body.String()
+	want := `<select id="size" name="size">
+<option value="">default</option>
+<option value="small">small</option>
+<option value="medium">medium</option>
+<option value="large">large</option>
+</select>`
+	if !strings.Contains(form, want) {
+		t.Fatalf("form lacks the size select %q: %s", want, form)
+	}
+	file := func(size string) *httptest.ResponseRecorder {
+		r.fg.issues = nil
+		return r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Fix the cache"},
+			"body": {"details"}, "lane": {"ready"}, "size": {size}}), ck)
+	}
+	for size, wantBody := range map[string]string{"large": "details\n\nSize: large", "": "details"} {
+		before := ev.count()
+		if rec := file(size); rec.Code != http.StatusSeeOther {
+			t.Fatalf("size %q: POST /tasks = %d: %s", size, rec.Code, rec.Body)
+		}
+		if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != wantBody {
+			t.Fatalf("size %q: issues %v, want one with body %q", size, r.fg.issues, wantBody)
+		}
+		detail := map[string]any{"lane": "ready", "title": "Fix the cache"}
+		if size != "" {
+			detail["size"] = size
+		}
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardFiled, repo: "sf/code", detail: detail})
+	}
+	before := ev.count()
+	if rec := file("giant"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "size must be small, medium or large") {
+		t.Fatalf("size giant: POST /tasks = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.issues) != 0 || ev.count() != before {
+		t.Fatalf("size giant filed %v and left %d rows", r.fg.issues, ev.count()-before)
+	}
+}
+
 func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)

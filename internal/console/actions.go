@@ -142,9 +142,10 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 
 // doFileCard files an issue on project's repository as the member, labelled
 // with the lane's label (backlog, plan or agent, or human for the human
-// lane) and priority when given; the webhook or the heal pass makes it a
-// task. It answers the repository and the issue's number.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority string) (factoryd.Repo, int64, error) {
+// lane) and priority when given, its body ending with the line "Size:
+// <size>" when given; the webhook or the heal pass makes it a task. It
+// answers the repository and the issue's number.
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size string) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -155,6 +156,13 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "lane must be backlog, plan, ready or human")
 	case priority != "" && !slices.Contains(priorities, priority):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "unknown priority")
+	case size != "" && !slices.Contains([]string{"small", "medium", "large"}, size):
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
+	}
+	detail := map[string]any{"lane": lane, "title": title}
+	if size != "" {
+		body += "\n\nSize: " + size
+		detail["size"] = size
 	}
 	ps, err := c.coderProjects(ctx)
 	if err != nil {
@@ -197,7 +205,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return repo, 0, &forgejoRefusal{"file the issue", err}
 	}
 	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, lane, a.via)
-	c.record(ctx, a, repo.String(), "", issue.Number, factoryd.EventCardFiled, map[string]any{"lane": lane, "title": title})
+	c.record(ctx, a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
 	return repo, issue.Number, nil
 }
 

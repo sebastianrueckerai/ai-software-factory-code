@@ -284,7 +284,7 @@ var tools = []chatTool{
 		required: []string{"title", "lane"},
 		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
 		run: func(t *turn, in toolInput) (string, undoFunc, error) {
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "")
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", "")
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
