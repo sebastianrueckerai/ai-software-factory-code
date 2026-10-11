@@ -65,7 +65,7 @@ var chatView = (function () {
     result = String(result || "");
     if (result.indexOf("Refused: ") === 0) return "<p class=\"refused\"><code>" + esc(name) + "</code> " + esc(result) + "</p>";
     var first = result.split("\n")[0];
-    return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + ms + " ms") + (first ? " · " + esc(first) : "") +
+    return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + Number(ms) + " ms") + (first ? " · " + esc(first) : "") +
       "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre></details>";
   }
   function proposalHTML(p) {
@@ -102,6 +102,9 @@ var chatView = (function () {
     close();
     return out.join("");
   }
+  function eventStream(contentType) {
+    return /^text\/event-stream/.test(contentType || "");
+  }
   // sse splits an event stream's text into its whole events and the rest
   function sse(text) {
     var blocks = text.split("\n\n"), rest = blocks.pop(), events = [];
@@ -117,7 +120,7 @@ var chatView = (function () {
     return {events: events, rest: rest};
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, sse: sse};
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, eventStream: eventStream, sse: sse};
 })();
 
 (function () {
@@ -157,8 +160,8 @@ var chatView = (function () {
     form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = on; });
     log.querySelectorAll("button").forEach(function (b) { b.disabled = on; });
   }
-  function read(resp, onEvent) {
-    var reader = resp.body.getReader(), decoder = new TextDecoder(), buf = "";
+  function read(reader, onEvent) {
+    var decoder = new TextDecoder(), buf = "";
     return reader.read().then(function next(chunk) {
       buf += decoder.decode(chunk.value || new Uint8Array(0), {stream: !chunk.done});
       var parsed = chatView.sse(buf);
@@ -172,7 +175,7 @@ var chatView = (function () {
   // or error. A 404 is onMissing's when given; a stream that ends without
   // either says the connection was lost, and nothing is sent again.
   function run(url, body, into, onMissing) {
-    var ended = false, said = null, raw = "", cursor = document.createElement("span");
+    var ended = false, said = null, raw = "", reader = null, cursor = document.createElement("span");
     cursor.className = "cursor";
     cursor.setAttribute("aria-hidden", "true");
     cursor.textContent = "▍";
@@ -206,14 +209,17 @@ var chatView = (function () {
         onMissing();
         return;
       }
-      if (!resp.ok || resp.headers.get("Content-Type") !== "text/event-stream") {
+      if (!resp.ok || !chatView.eventStream(resp.headers.get("Content-Type"))) {
         ended = true;
         return resp.text().then(function (text) {
           add(into, "<p class=\"chat-error\">" + chatView.esc(text.trim() || "The console refused: " + resp.status) + "</p>");
         });
       }
-      return read(resp, event);
-    }).catch(function () {}).then(function () {
+      reader = resp.body.getReader();
+      return read(reader, event);
+    }).catch(function () {
+      if (reader) reader.cancel().catch(function () {});
+    }).then(function () {
       if (!ended) add(into, "<p class=\"chat-error\">the chat lost the connection, send again</p>");
       cursor.remove();
       setStreaming(false);
@@ -301,6 +307,8 @@ var chatView = (function () {
     }
   });
 
+  // the input waits for the history, which replaces the log
+  setStreaming(true);
   fetch(base, {headers: {Accept: "application/json"}}).then(function (resp) {
     if (!resp.ok) throw new Error("GET " + base + ": " + resp.status);
     return resp.json();
@@ -309,5 +317,7 @@ var chatView = (function () {
     scrollEnd(true);
   }).catch(function () {
     add(log, "<p class=\"chat-error\">The conversation could not be read; reload the page.</p>");
+  }).then(function () {
+    setStreaming(false);
   });
 })();
