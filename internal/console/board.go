@@ -482,6 +482,7 @@ type boardData struct {
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
 	Writes      bool     // the viewer writes the shown project: its stream and drawer are theirs
+	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
 	ToggleQuery string   // the filter with the other view
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
@@ -900,6 +901,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		d.Projects = append(d.Projects, shown.Name)
 	}
 	f.Project, d.Writes = shown.Name, writable[shown.Name]
+	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
 	wide := f.wide()
 	other := f

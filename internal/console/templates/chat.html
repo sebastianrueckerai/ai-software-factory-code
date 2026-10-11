@@ -1,0 +1,26 @@
+{{define "chat-tabs"}}{{if .Chat}}<nav class="tabs screen-tabs" role="tablist" aria-label="The board or the chat">
+<button type="button" role="tab" aria-selected="true" aria-controls="board" data-pane-tab="board">Board</button>
+<button type="button" role="tab" aria-selected="false" aria-controls="chat" data-pane-tab="chat">Chat <span id="chat-open" class="tab-count" title="proposals not yet answered" hidden></span></button>
+</nav>
+{{end}}{{end}}
+
+{{define "chat"}}{{if .Chat}}<section id="chat" class="chat" aria-labelledby="chat-title"{{if .Writes}} data-project="{{.Project}}" data-login="{{.User}}"{{end}}>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · {{.Project}}</span></div>
+<div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
+{{if .Writes}}<p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
+{{else}}<p class="meta chat-start">You read this project: its writers chat with its agent.</p>
+{{end}}</div>
+{{if .Writes}}<form id="chat-form" class="chat-form" method="post" action="/projects/{{.Project}}/chat">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="chat-input" class="visually-hidden">Your message to the project agent</label>
+<textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
+<button type="submit">Send</button>
+</form>
+{{end}}<script src="/static/chat.js" defer></script>
+</section>
+{{end}}{{end}}
+
+{{define "chat-keys"}}{{if and .Chat .Writes}}<dt><kbd>/</kbd></dt><dd>write to the project agent</dd>
+<dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>
+<dt><kbd>Escape</kbd></dt><dd>in the chat's input: leave it</dd>
+{{end}}{{end}}

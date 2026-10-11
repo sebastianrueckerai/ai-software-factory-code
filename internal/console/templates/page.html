@@ -14,7 +14,9 @@
 <a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Five columns{{else}}Wide view{{end}}</a>
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys">?</button>
 </form>
+{{template "chat-tabs" .}}<div id="screen" class="screen{{if .Chat}} with-chat{{end}}" data-pane="board">
 {{template "board" .}}
+{{template "chat" .}}</div>
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
 <div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
 <div class="overlay-box">
@@ -23,7 +25,7 @@
 <dt><kbd>w</kbd></dt><dd>the wide view, the lanes as columns, or back to the five columns</dd>
 <dt><kbd>Escape</kbd></dt><dd>close the card's drawer, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
-</dl>
+{{template "chat-keys" .}}</dl>
 <button type="button" id="keys-close">Close</button>
 </div>
 </div>
