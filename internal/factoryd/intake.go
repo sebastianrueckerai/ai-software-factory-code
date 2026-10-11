@@ -363,12 +363,12 @@ func askedBudget(body string) (size string, eur float64) {
 	return size, eur
 }
 
-// askedDirectories are the directories a hand-filed card's text names for
-// its brief's map: its last line "Directories: <dir>, <dir>", key in any
-// case; none without one.
-func askedDirectories(text string) []string {
+// askedDirectories are the directories a writer's issue body names for its
+// card's map: its last line "Directories: <dir>, <dir>", key in any case;
+// none without one.
+func askedDirectories(body string) []string {
 	var dirs []string
-	for l := range strings.Lines(text) {
+	for l := range strings.Lines(body) {
 		key, v, _ := strings.Cut(l, ":")
 		if !strings.EqualFold(strings.TrimSpace(key), "directories") {
 			continue

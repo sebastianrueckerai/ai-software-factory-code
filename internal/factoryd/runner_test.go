@@ -1006,25 +1006,36 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 	}
 }
 
-// A hand-filed card's last line "Directories: <dir>, <dir>", key in any
-// case, names the directories of its brief's map (the pod's DIRECTORIES);
-// a card without one has none.
+// A writer's hand-filed card: the last line "Directories: <dir>, <dir>" of
+// its issue body, key in any case, names the directories of its brief's
+// map (the pod's DIRECTORIES); the title is no line of the body. An outside
+// account's or an alert's line, or a card without one, names none.
 func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
-	for objective, want := range map[string]string{
-		"Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy\n":    `["internal/console","internal/policy"]`,
-		"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone": `["internal/console","internal/gone"]`,
-		"Fix the drawer\n\nThe directories: internal/x are no line of their own":            "",
-		"fix it": "",
+	line := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy\n"
+	for _, tc := range []struct {
+		objective, source string
+		writer            bool
+		want              string
+	}{
+		{line, "webhook", true, `["internal/console","internal/policy"]`},
+		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`},
+		{"Fix the drawer\n\nThe directories: internal/x are no line of their own", "webhook", true, ""},
+		{"Directories: internal/console", "webhook", true, ""},
+		{"Directories: internal/console\n\nIt breaks.", "webhook", true, ""},
+		{line, "webhook", false, ""},
+		{line, SourceAlert, true, ""},
+		{"fix it", "webhook", true, ""},
 	} {
-		task := Task{ID: "t1", Status: "running", Objective: objective, Repository: "sf/repo", SHA: "base", Source: "webhook", RequiredCapabilities: []string{"coder"}}
+		task := Task{ID: "t1", Status: "running", Objective: tc.objective, Repository: "sf/repo", SHA: "base", Source: tc.source,
+			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}}
 		kube := newFakeKube()
 		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
 			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 			t.Fatal(err)
 		}
-		if got, ok := podEnv(kube.podAt(0))["DIRECTORIES"]; got != want || ok != (want != "") {
-			t.Errorf("%q: DIRECTORIES = %q (set %v), want %q", objective, got, ok, want)
+		if got, ok := podEnv(kube.podAt(0))["DIRECTORIES"]; got != tc.want || ok != (tc.want != "") {
+			t.Errorf("%q from %s (writer %v): DIRECTORIES = %q (set %v), want %q", tc.objective, tc.source, tc.writer, got, ok, tc.want)
 		}
 	}
 }

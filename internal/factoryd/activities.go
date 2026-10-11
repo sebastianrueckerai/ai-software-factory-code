@@ -19,6 +19,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -342,8 +343,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, err
 	}
-	if t.Source != SourcePlan {
-		s.directories = askedDirectories(t.Objective)
+	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
+		_, body, _ := strings.Cut(t.Objective, "\n\n")
+		s.directories = askedDirectories(body)
 	}
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 		return SessionResult{}, err

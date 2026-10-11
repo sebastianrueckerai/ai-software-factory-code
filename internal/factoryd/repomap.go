@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -34,18 +35,20 @@ var mapDir = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 // fsys, the work tree a session starts from, its files with their first
 // doc line and its subdirectories with a slash, not recursive, one line
 // each cut at 120 bytes, the section at most 4 KiB with the lines past it
-// counted in its last; "" for no directories (ruling 273).
+// counted in its last; "" for no directories (ruling 273). .git is no part
+// of the commit: neither a directory nor an entry.
 func RepoMap(fsys fs.FS, dirs []string) string {
 	var lines, seen []string
 	for _, d := range dirs {
 		dir := path.Clean(d)
-		if !mapDir.MatchString(d) || slices.Contains(seen, dir) {
+		top, _, _ := strings.Cut(dir, "/")
+		if !mapDir.MatchString(d) || top == ".git" || slices.Contains(seen, dir) {
 			continue
 		}
 		seen = append(seen, dir)
 		entries, err := fs.ReadDir(fsys, dir)
 		if !fs.ValidPath(dir) || err != nil {
-			lines = append(lines, dir+"/: not in the repository")
+			lines = append(lines, mapLine(dir+"/", "not in the repository"))
 			continue
 		}
 		for _, e := range entries {
@@ -53,16 +56,19 @@ func RepoMap(fsys fs.FS, dirs []string) string {
 			switch {
 			case e.Name() == ".git":
 			case e.IsDir():
-				lines = append(lines, name+"/")
+				lines = append(lines, mapLine(name+"/", ""))
 			case e.Type().IsRegular():
 				lines = append(lines, mapLine(name, docLine(fsys, name)))
 			default:
-				lines = append(lines, name)
+				lines = append(lines, mapLine(name, ""))
 			}
 		}
 	}
 	if len(lines) == 0 {
 		return ""
+	}
+	if whole := strings.Join(append([]string{mapHeading}, lines...), "\n"); len(whole) <= mapMax {
+		return whole
 	}
 	out, size := []string{mapHeading}, len(mapHeading)
 	for i, l := range lines {
@@ -81,11 +87,21 @@ func RepoMap(fsys fs.FS, dirs []string) string {
 
 func moreFiles(n int) string { return fmt.Sprintf("... and %d more files", n) }
 
+// mapLine is one line of the map, name and its doc line when it has one:
+// control characters dropped, since a file name may hold a newline and the
+// map stands outside the brief's markers, invalid bytes as U+FFFD, and cut
+// at 120 bytes.
 func mapLine(name, doc string) string {
 	l := name
 	if doc != "" {
 		l += ": " + doc
 	}
+	l = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, l)
 	if len(l) <= mapLineMax {
 		return l
 	}
@@ -112,12 +128,12 @@ func docLine(fsys fs.FS, name string) string {
 		return ""
 	}
 	if path.Ext(name) == ".go" {
-		return strings.ToValidUTF8(goDoc(head), "")
+		return goDoc(head)
 	}
 	for l := range strings.Lines(string(head)) {
 		l = strings.TrimSpace(l)
 		if t := strings.TrimSpace(strings.TrimLeft(l, "#")); strings.HasPrefix(l, "#") && !strings.HasPrefix(l, "#!") && t != "" {
-			return strings.ToValidUTF8(t, "")
+			return t
 		}
 	}
 	return ""
