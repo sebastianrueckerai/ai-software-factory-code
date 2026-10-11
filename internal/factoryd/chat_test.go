@@ -241,27 +241,39 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	}
 }
 
-// The purge deletes the rows expired or used before its time and keeps
-// the pending ones.
+// The purge deletes the rows expired before its time, used or not, but a
+// used proposal, which stays so the conversation reads it used; it keeps
+// the rows not yet expired.
 func TestPGStorePurgeProposals(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
-	for token, expires := range map[string]time.Time{"old-1": now.Add(-10 * time.Minute), "old-2": now.Add(-time.Second),
-		"used": now.Add(20 * time.Minute), "open": now.Add(20 * time.Minute)} {
-		if err := s.PutProposal(ctx, ChatProposal{Token: token, Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card",
-			Args: json.RawMessage(`{}`), ExpiresAt: expires}); err != nil {
+	for _, p := range []struct {
+		token, kind string
+		expires     time.Time
+	}{
+		{"old-1", "proposal", now.Add(-10 * time.Minute)}, {"old-2", "proposal", now.Add(-time.Second)},
+		{"used", "proposal", now.Add(20 * time.Minute)}, {"open", "proposal", now.Add(20 * time.Minute)},
+		{"used-old", "proposal", now.Add(-time.Second)}, {"undo-old", "undo", now.Add(-time.Second)},
+	} {
+		if err := s.PutProposal(ctx, ChatProposal{Token: p.token, Kind: p.kind, Repository: "sf/code", Login: "anna", Tool: "new_card",
+			Args: json.RawMessage(`{}`), ExpiresAt: p.expires}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.TakeProposal(ctx, "proposal", "used", "sf/code", "anna", now.Add(-5*time.Minute)); err != nil {
-		t.Fatal(err)
+	for _, take := range []struct {
+		kind, token string
+		at          time.Time
+	}{{"proposal", "used", now.Add(-5 * time.Minute)}, {"proposal", "used-old", now.Add(-10 * time.Minute)}, {"undo", "undo-old", now.Add(-10 * time.Minute)}} {
+		if _, err := s.TakeProposal(ctx, take.kind, take.token, "sf/code", "anna", take.at); err != nil {
+			t.Fatal(err)
+		}
 	}
 	n, err := s.PurgeProposals(ctx, now)
 	if err != nil || n != 3 {
 		t.Fatalf("purged %d, %v, want 3", n, err)
 	}
 	var left []string
-	rows, err := s.db.QueryContext(ctx, `SELECT token FROM chat_proposals`)
+	rows, err := s.db.QueryContext(ctx, `SELECT token FROM chat_proposals ORDER BY token`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,8 +285,8 @@ func TestPGStorePurgeProposals(t *testing.T) {
 		}
 		left = append(left, token)
 	}
-	if !slices.Equal(left, []string{"open"}) {
-		t.Fatalf("rows left = %q, want open", left)
+	if want := []string{"open", "used", "used-old"}; !slices.Equal(left, want) {
+		t.Fatalf("rows left = %q, want %q", left, want)
 	}
 }
 

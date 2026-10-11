@@ -367,11 +367,13 @@ var chatView = (function () {
     });
   }
   fresh.addEventListener("click", function () {
+    setStreaming(true);
     fetch(base + "/new", {method: "POST", headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
       if (!resp.ok) throw new Error("POST " + base + "/new: " + resp.status);
       return load("");
     }).catch(function () {
       add(log, "<p class=\"chat-error\">A new conversation could not be started; try again.</p>");
+      setStreaming(false);
     });
   });
   select.addEventListener("change", function () {

@@ -192,7 +192,7 @@ func (f *fakeChat) PurgeProposals(_ context.Context, before time.Time) (int64, e
 	defer f.mu.Unlock()
 	n := len(f.proposals)
 	f.proposals = slices.DeleteFunc(f.proposals, func(p *fakeProposal) bool {
-		return p.ExpiresAt.Before(before) || !p.used.IsZero() && p.used.Before(before)
+		return p.ExpiresAt.Before(before) && (p.used.IsZero() || p.Kind == "undo")
 	})
 	return int64(n - len(f.proposals)), nil
 }
@@ -576,7 +576,8 @@ func TestSystemTool(t *testing.T) {
 
 // A tool the chat's confirm names proposes and runs nothing; the
 // member's Do it runs it as theirs, through the move button's own code,
-// with one row, once. Its undo takes the label off while the card is
+// with one row, once, and the conversation reads it used though its undo
+// was stored after it. Its undo takes the label off while the card is
 // still in the backlog, with one row, once.
 func TestChatProposalRunsOnDoIt(t *testing.T) {
 	r, _, g := newChatRig(t)
@@ -599,6 +600,11 @@ func TestChatProposalRunsOnDoIt(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardMoved, Detail: map[string]any{"lane": "ready"}})
 	equal(t, "labelled", r.fg.labelled, []string{"/api/v1/repos/sf/code/issues/5/labels [1]"})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the proposal's state after the Do it", answer.Proposals, []factoryd.ProposalState{{Token: tokens[0], State: "used"}})
 	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound {
 		t.Fatalf("a second Do it = %d, want 404", code)
 	}
@@ -1215,6 +1221,19 @@ func TestChatReplayDropsClaims(t *testing.T) {
 	})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"content":"I proposed to file a card"`) {
 		t.Fatalf("GET = %s, want the row left out of the replay", rec.Body)
+	}
+}
+
+// A claim is one of the markers as whole words, in any case: a truthful
+// line that only holds one inside a word or a longer phrase is none.
+func TestIsClaim(t *testing.T) {
+	for content, want := range map[string]bool{
+		"CI started on #12": false, "The API closed it": false, "two to-do items": false, "You can undo it": false,
+		"I proposed to file a card": true, "Press Do it.": true, "the proposal's card": true, "two proposals wait": true, "I MOVED #5": true,
+	} {
+		if got := isClaim(content); got != want {
+			t.Errorf("isClaim(%q) = %v, want %v", content, got, want)
+		}
 	}
 }
 

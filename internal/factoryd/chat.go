@@ -281,10 +281,11 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 	return ChatProposal{}, ErrNoProposal
 }
 
-// PurgeProposals deletes the rows expired or used before before and
-// answers how many.
+// PurgeProposals deletes the rows expired before before, but a used
+// proposal, which stays so the conversation reads it used, and answers
+// how many.
 func (s *PGStore) PurgeProposals(ctx context.Context, before time.Time) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_proposals WHERE expires_at < $1 OR used_at < $1`, before)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_proposals WHERE expires_at < $1 AND (used_at IS NULL OR kind = 'undo')`, before)
 	if err != nil {
 		return 0, err
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ const (
 // keep stores a proposal (kind proposal) or an applied action's undo
 // (kind undo) of tool with args for the member on the project, for
 // chatTTL under a fresh token, which it answers, and forgets the expired
-// and used ones; "" when the store fails.
+// ones but a used proposal; "" when the store fails.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
 	ctx, now := context.WithoutCancel(t.r.Context()), time.Now()
 	if _, err := t.c.cfg.Chat.PurgeProposals(ctx, now); err != nil {
@@ -438,23 +439,15 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 // no tool calls marks it as a false claim of action, which the replay
 // drops so the model does not learn to repeat it.
 var chatClaimMarkers = []string{
-	"i proposed", "i have proposed", "proposal", "do it",
+	"i proposed", "i have proposed", "proposal", "proposals", "do it",
 	"i filed", "i have filed", "i moved", "i approved",
 	"i answered", "i set the", "i started", "i accepted",
 	"i rejected", "i denied", "i closed", "i commented", "i steered",
 }
 
-// isClaim is true when content holds one of chatClaimMarkers, case-
-// insensitively.
-func isClaim(content string) bool {
-	lower := strings.ToLower(content)
-	for _, m := range chatClaimMarkers {
-		if strings.Contains(lower, m) {
-			return true
-		}
-	}
-	return false
-}
+// isClaim is true when content holds one of chatClaimMarkers as whole
+// words, in any case.
+var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|") + `)\b`).MatchString
 
 // context is the turn's conversation for the model: the system prompt with
 // the project and its last chatEvents events, then the member's last
