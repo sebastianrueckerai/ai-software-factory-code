@@ -1198,7 +1198,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return nil // nothing to finish: gone, or already final
 	}
 	if t.Source == SourceRoll {
-		if err := r.store.ClearRollHold(ctx, taskID); err != nil {
+		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
 			return err
 		}
 	}

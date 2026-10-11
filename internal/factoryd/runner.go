@@ -110,6 +110,9 @@ type Runner struct {
 	// the wall clock
 	now   func() time.Time
 	sleep func(ctx context.Context, d time.Duration) error
+	// booted is when this factoryd started: for rollBoot after it, the
+	// sessions its restart stopped may not be retried here yet
+	booted time.Time
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
@@ -251,7 +254,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
-			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second}, nil
+			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, booted: time.Now()}, nil
 }
 
 // WorkflowConfig is what TaskWorkflow captures at its start: the limits of

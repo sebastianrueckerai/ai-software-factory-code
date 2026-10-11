@@ -54,7 +54,7 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	if len(*commits) != 1 || len(g.sessions) != 0 {
 		t.Fatalf("RollCommit calls %v, sessions %v", *commits, g.sessions)
 	}
-	if want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "settle"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) || g.approvals[0].Gates.Policy.Class != "high" {
@@ -86,7 +86,7 @@ func TestWorkflowRollFoldsANewHeadBeforeItsMerge(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r2", "review r2", "approval r2", "gap", "merge", "clear"}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r2", "review r2", "approval r2", "gap", "merge", "settle"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 || len(g.sessions) != 0 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -142,7 +142,7 @@ func TestWorkflowRollFoldOnAnUnmovedHeadIsNoFinding(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear"}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r1", "review r1", "approval r1", "gap", "merge", "settle"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -161,7 +161,8 @@ func TestWorkflowRollFailsOnAHumansChangeRequest(t *testing.T) {
 
 // Every merge of a roll waits for a session gap first, and its hold ends
 // with the merge, a merge that failed or was refused too: the retry and
-// the next approval wait for a gap again.
+// the next approval wait for a gap again; a merged one's hold settles
+// until the restart its merge brings.
 func TestWorkflowRollMergesInASessionGap(t *testing.T) {
 	g, _ := newRollHarness(t, "r1")
 	g.merge = []MergeResult{{Failed: "forgejo answered 502"}, {Refusal: "the approval is stale"}, {Merged: true}}
@@ -171,7 +172,7 @@ func TestWorkflowRollMergesInASessionGap(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear", "gap", "merge", "clear", "gap", "merge", "clear"}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear", "gap", "merge", "clear", "gap", "merge", "settle"}
 	if !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}

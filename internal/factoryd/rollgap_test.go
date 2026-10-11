@@ -32,6 +32,7 @@ var gapStart = time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
 
 func newGapClock(r *Runner) *gapClock {
 	c := &gapClock{at: gapStart}
+	r.booted = gapStart.Add(-rollBoot)
 	r.now = func() time.Time {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -273,19 +274,79 @@ func TestRunSessionCountsAsLiveUntilItEnds(t *testing.T) {
 	}
 }
 
-// A roll task that ends ends its hold, whatever its merge did.
-func TestFinishEndsARollsHold(t *testing.T) {
+// A roll that ends unmerged ends its hold. (Its repository is no
+// owner/name: Finish then skips the pull request, which the test hub does
+// not serve.)
+func TestFinishOfAnUnmergedRollEndsItsHold(t *testing.T) {
 	task := rollTask
-	task.PRNumber = 9
+	task.Repository = "malformed"
 	r, store, _ := rollGapRunner(t, task)
 	ctx := context.Background()
 	if err := store.SetRollHold(ctx, "r1", gapStart, gapStart.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Finish(ctx, "r1", "done", "pull request merged"); err != nil {
+	if err := r.Finish(ctx, "r1", "failed", "pull request closed without merge"); err != nil {
 		t.Fatal(err)
 	}
 	if h, ok := store.holds["r1"]; ok {
-		t.Fatalf("hold %+v after the roll ended", h)
+		t.Fatalf("hold %+v after the roll failed", h)
+	}
+}
+
+// A roll that ends merged holds sessions five minutes more, until the
+// restart its merge brings (Flux reads main once a minute).
+func TestFinishOfAMergedRollSettlesItsHold(t *testing.T) {
+	task := rollTask
+	task.PRNumber = 9
+	r, store, _ := rollGapRunner(t, task)
+	ctx := context.Background()
+	if err := store.SetRollHold(ctx, "r1", gapStart.Add(-time.Hour), gapStart.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Finish(ctx, "r1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if h := store.holds["r1"]; !h.Since.Equal(gapStart) || !h.Until.Equal(gapStart.Add(5*time.Minute)) {
+		t.Fatalf("hold %+v after the roll merged, want 12:00 to 12:05", h)
+	}
+}
+
+// The merge's end clears the hold, or after a merge that merged keeps it
+// from now for five minutes.
+func TestClearRollHold(t *testing.T) {
+	r, store, _ := rollGapRunner(t, rollTask)
+	ctx := context.Background()
+	for _, merged := range []bool{false, true} {
+		if err := store.SetRollHold(ctx, "r1", gapStart.Add(-time.Hour), gapStart.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if err := runActivity(t, r, ActivityClearRollHold, "r1", merged); err != nil {
+			t.Fatal(err)
+		}
+		h, ok := store.holds["r1"]
+		switch {
+		case !merged && ok:
+			t.Fatalf("hold %+v after an unmerged merge, want none", h)
+		case merged && (!h.Since.Equal(gapStart) || !h.Until.Equal(gapStart.Add(5*time.Minute))):
+			t.Fatalf("hold %+v after a merge, want 12:00 to 12:05", h)
+		}
+	}
+}
+
+// A factoryd just started knows no session yet: the ones the restart
+// stopped register when Temporal retries them, so the gap waits three
+// minutes from the start before it believes it.
+func TestAwaitSessionGapRightAfterTheStart(t *testing.T) {
+	r, _, c := rollGapRunner(t, rollTask)
+	r.booted = gapStart
+	if err := runActivity(t, r, ActivityAwaitSessionGap, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if c.sleeps != 12 || !c.at.Equal(gapStart.Add(3*time.Minute)) {
+		t.Fatalf("slept %d times, until %s; want 12 polls of 15s", c.sleeps, c.at)
+	}
+	want := []map[string]any{{"step": "roll_waiting", "live": []any{}}, {"step": "roll_gap", "waited_s": float64(180)}}
+	if got := stepsOf(t, r, "r1", "live", "waited_s"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("steps = %v, want %v", got, want)
 	}
 }

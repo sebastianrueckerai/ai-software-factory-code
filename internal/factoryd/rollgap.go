@@ -54,6 +54,15 @@ const rollGapSlack = 30 * time.Minute
 // before Temporal ends it, and before GateWatch alerts.
 const rollWaitSlack = 5 * time.Minute
 
+// rollSettle is how long a roll's hold outlasts its merge: Flux reads main
+// once a minute, so factoryd restarts up to two minutes after the merge.
+const rollSettle = 5 * time.Minute
+
+// rollBoot is how long after factoryd's start a roll's gap waits anyway:
+// the sessions the restart stopped register only when Temporal retries
+// them, within their 2-minute heartbeat timeout and the 10 s retry interval.
+const rollBoot = 3 * time.Minute
+
 // rollAdmission is how long a session AwaitRollHold let start counts as
 // live before its RunSession counts it.
 const rollAdmission = time.Minute
@@ -97,10 +106,11 @@ func (r *Runner) AwaitSessionGap(ctx context.Context, taskID string) error {
 		return err
 	}
 	live := r.liveSessions(taskID)
-	if len(live) > 0 {
+	booting := func() bool { return r.clock().Before(r.booted.Add(rollBoot)) }
+	if len(live) > 0 || booting() {
 		r.record(ctx, taskID, "roll_waiting", map[string]any{"live": live})
 	}
-	for len(live) > 0 {
+	for len(live) > 0 || booting() {
 		now := r.clock()
 		if !now.Before(until) {
 			log.Printf("roll %s: no session gap within %s: merging with %v running", taskID, bound, live)
@@ -147,8 +157,13 @@ func (r *Runner) AwaitRollHold(ctx context.Context, taskID string) error {
 	}
 }
 
-// ClearRollHold ends a roll's hold: its merge ended.
-func (r *Runner) ClearRollHold(ctx context.Context, taskID string) error {
+// ClearRollHold ends a roll's hold: its merge ended. A merge that merged
+// keeps it rollSettle from now, until the restart the merge brings.
+func (r *Runner) ClearRollHold(ctx context.Context, taskID string, merged bool) error {
+	if merged {
+		now := r.clock()
+		return r.store.SetRollHold(ctx, taskID, now, now.Add(rollSettle))
+	}
 	return r.store.ClearRollHold(ctx, taskID)
 }
 
@@ -192,7 +207,7 @@ func (r *Runner) liveSessions(except string) []string {
 	now := r.clock()
 	r.liveMu.Lock()
 	defer r.liveMu.Unlock()
-	var out []string
+	out := []string{}
 	for id := range r.running {
 		if id != except {
 			out = append(out, id)

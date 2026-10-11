@@ -605,7 +605,8 @@ const (
 	// versionRollGap (change id "roll-gap", ruling 269): a roll's merge
 	// waits for a gap between sessions (AwaitSessionGap, whose hold keeps
 	// new sessions from starting, raced by the terminal signals) and
-	// ClearRollHold follows every merge; its card says so (RollGapNote).
+	// ClearRollHold follows every merge, which a merged one keeps a while
+	// (rollSettle); its card says so (RollGapNote).
 	// Every code and plan session first waits while a roll holds sessions
 	// (AwaitRollHold), outside its agent time.
 	versionRollGap workflow.Version = 1
@@ -1334,7 +1335,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		var res MergeResult
 		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.taskID, t.pr.Number, commit, approver)
 		if gap {
-			if err := workflow.ExecuteActivity(t.short, ActivityClearRollHold, t.taskID).Get(t.ctx, nil); err != nil {
+			if err := workflow.ExecuteActivity(t.short, ActivityClearRollHold, t.taskID, res.Merged).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("clear roll hold", "task", t.taskID, "error", err)
 			}
 		}

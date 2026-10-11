@@ -135,9 +135,9 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			g.steps = append(g.steps, "gap")
 			return nil
 		})
-	g.env.OnActivity(ActivityClearRollHold, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) error {
-			g.steps = append(g.steps, "clear")
+	g.env.OnActivity(ActivityClearRollHold, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, merged bool) error {
+			g.steps = append(g.steps, map[bool]string{false: "clear", true: "settle"}[merged])
 			return nil
 		})
 	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
