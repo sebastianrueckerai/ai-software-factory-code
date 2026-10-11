@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -40,7 +42,10 @@ func (s *fakePulseStore) EnsureChatTask(_ context.Context, name, repository stri
 	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository}, nil
 }
 
-func (s *fakePulseStore) Record(_ context.Context, e Event) (int64, error) {
+func (s *fakePulseStore) Record(ctx context.Context, e Event) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	s.mu.Lock()
 	e.ID, e.At = int64(len(s.events)+1), time.Now()
 	s.events = append(s.events, e)
@@ -74,11 +79,15 @@ func (s *fakePulseStore) NewestPulse(context.Context, string) (Pulse, bool, erro
 }
 
 // pulseGateway is the gateway in memory: each call streams the next of
-// answers as the model's text, the last one again once they run out.
+// answers as the model's text, the last one again once they run out,
+// unless statuses refuses it with its status, or hang holds it until it
+// is cancelled.
 type pulseGateway struct {
-	mu      sync.Mutex
-	answers []string
-	calls   []pulseCall
+	mu       sync.Mutex
+	answers  []string
+	statuses []int
+	hang     bool
+	calls    []pulseCall
 }
 
 type pulseCall struct {
@@ -93,9 +102,16 @@ func (g *pulseGateway) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	g.mu.Lock()
-	answer := g.answers[min(len(g.calls), len(g.answers)-1)]
+	n, answer := len(g.calls), g.answers[min(len(g.calls), len(g.answers)-1)]
 	g.calls = append(g.calls, pulseCall{time.Now(), r.Header.Clone(), req})
 	g.mu.Unlock()
+	if g.hang {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	}
+	if n < len(g.statuses) {
+		return &http.Response{StatusCode: g.statuses[n], Body: io.NopCloser(strings.NewReader(`{"error":{"message":"rate limited"}}`)), Request: r}, nil
+	}
 	chunk, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]string{"content": answer}}}})
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("data: " + string(chunk) + "\n\ndata: [DONE]\n\n")), Request: r}, nil
 }
@@ -108,11 +124,13 @@ const goodPulse = `{"sentence": "#5 Redirect-stats needs your answer.", "bullets
 // model answering answers in turn, a card waiting on a human while
 // waiting says so (nil: never), stopped at end.
 type pulseScript struct {
-	seed    func(s *fakePulseStore, start time.Time)
-	events  []time.Duration
-	answers []string
-	waiting func(since time.Duration) bool
-	end     time.Duration
+	seed     func(s *fakePulseStore, start time.Time)
+	events   []time.Duration
+	answers  []string
+	statuses []int
+	hang     bool
+	waiting  func(since time.Duration) bool
+	end      time.Duration
 }
 
 // run plays sc and answers the store, the calls, and their times since
@@ -120,7 +138,7 @@ type pulseScript struct {
 func (sc pulseScript) run(t *testing.T) (store *fakePulseStore, g *pulseGateway, at []time.Duration) {
 	synctest.Test(t, func(t *testing.T) {
 		start := time.Now()
-		store, g = &fakePulseStore{bus: NewEventBus()}, &pulseGateway{answers: sc.answers}
+		store, g = &fakePulseStore{bus: NewEventBus()}, &pulseGateway{answers: sc.answers, statuses: sc.statuses, hang: sc.hang}
 		if g.answers == nil {
 			g.answers = []string{goodPulse}
 		}
@@ -243,6 +261,43 @@ func TestPulseKeepsThePreviousOnANonJSONAnswer(t *testing.T) {
 	}
 }
 
+// A failing gateway backs off: three 429s then a 200 make calls 2 s after
+// the event, then 60, 120 and 240 s after each failed one, whatever events
+// come meanwhile; the first failure and the recovery log one line each.
+func TestPulseBacksOffAFailingGateway(t *testing.T) {
+	var buf strings.Builder
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&buf)
+	_, _, at := pulseScript{events: seconds(0, 70, 100, 200), statuses: []int{429, 429, 429}, end: 450 * time.Second}.run(t)
+	log.SetOutput(os.Stderr)
+	if want := seconds(2, 62, 182, 422); !slices.Equal(at, want) {
+		t.Errorf("calls at %v, want %v", at, want)
+	}
+	var lines []string
+	for line := range strings.Lines(buf.String()) {
+		if _, after, ok := strings.Cut(line, "pulse of linkshort: "); ok {
+			lines = append(lines, strings.TrimSpace(after))
+		}
+	}
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "status 429: ") || !strings.HasSuffix(lines[0], "; the last pulse stays, the next tries back off") ||
+		lines[1] != "computed again after 3 failed tries" {
+		t.Errorf("log lines = %q", lines)
+	}
+}
+
+// A computation cut off by the shutdown still records its closing pulse
+// event, so no browser keeps the typing indicator.
+func TestPulseClosesACutOffComputation(t *testing.T) {
+	store, g, _ := pulseScript{events: seconds(0), hang: true, end: 5 * time.Second}.run(t)
+	var kinds []string
+	for _, e := range store.events {
+		kinds = append(kinds, e.Kind)
+	}
+	if len(g.calls) != 1 || !slices.Equal(kinds, []string{"card_moved", "pulse_computing", "pulse"}) {
+		t.Fatalf("%d calls, events %v: want the pulse event after the cut-off call", len(g.calls), kinds)
+	}
+}
+
 // prominent is whether a card waits on a human, whatever the model says.
 func TestPulseProminentFollowsTheWaitingCard(t *testing.T) {
 	store, _, _ := pulseScript{events: seconds(0, 10), end: 20 * time.Second, waiting: func(d time.Duration) bool { return d < 5*time.Second },
@@ -308,5 +363,35 @@ func TestPGStorePulses(t *testing.T) {
 	}
 	if events, err := s.ProjectEvents(ctx, "linkshort/linkshort", 0, 10); err != nil || len(events) != 1 || events[0].Kind != EventCardMoved {
 		t.Fatalf("ProjectEvents = %+v, %v: want the card_moved only", events, err)
+	}
+	// a new pulse deletes its project's pulses and pulse events older than a day
+	old := time.Now().Add(-25 * time.Hour)
+	for _, kind := range []string{EventCardMoved, EventPulseComputing, EventPulse} {
+		if _, err := s.Record(ctx, Event{At: old, Repository: "linkshort/linkshort", Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE pulses SET at = $1 WHERE id IN (1, 3)`, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPulse(ctx, Pulse{Repository: "linkshort/linkshort", Sentence: "Fourth."}); err != nil {
+		t.Fatal(err)
+	}
+	var pulses, kept []string
+	rows, err := s.db.QueryContext(ctx, `SELECT sentence FROM pulses ORDER BY id`)
+	for err == nil && rows.Next() {
+		var p string
+		err = rows.Scan(&p)
+		pulses = append(pulses, p)
+	}
+	events, err2 := s.db.QueryContext(ctx, `SELECT kind || CASE WHEN at < now() - interval '1 day' THEN ' old' ELSE '' END FROM events ORDER BY id`)
+	for err2 == nil && events.Next() {
+		var e string
+		err2 = events.Scan(&e)
+		kept = append(kept, e)
+	}
+	if err != nil || err2 != nil || !slices.Equal(pulses, []string{"#5 needs your answer.", "Other.", "Fourth."}) ||
+		!slices.Equal(kept, []string{"card_moved", "pulse_computing", "pulse", "card_moved old"}) {
+		t.Fatalf("pulses %v, events %v (%v, %v): want the old first pulse and the old pulse events gone", pulses, kept, err, err2)
 	}
 }

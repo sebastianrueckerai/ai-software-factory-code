@@ -36,7 +36,8 @@ const (
 	pulseRate     = 10 * time.Second
 	pulseFallback = time.Minute
 	pulseActive   = time.Hour
-	pulseSentence = 140 // characters
+	pulseBackoff  = 15 * time.Minute // the longest wait after failed computations
+	pulseSentence = 140              // characters
 	pulseBullet   = 100
 	pulseTokens   = 1024
 	pulseBuffer   = 64
@@ -123,11 +124,15 @@ func (pl *Pulser) Run(ctx context.Context) {
 
 // watch computes p's pulse when pulseNext says, from its events on the bus
 // (the pulse's own aside) and its newest event and pulse at the start.
+// After n failed computations in a row it waits 60 s × 2^(n-1), at most
+// 15 min, from the end of the last one, whatever events come, and logs
+// the first failure and the recovery only.
 func (pl *Pulser) watch(ctx context.Context, p Project) {
 	ch := make(chan Event, pulseBuffer)
 	cancel := pl.Bus.Subscribe(p.Repository, ch)
 	defer func() { cancel() }()
-	var lastRun, lastEvent, first time.Time
+	var lastRun, lastEvent, first, retry time.Time
+	failures := 0
 	if es, err := pl.Store.ProjectEvents(ctx, p.Repository, 0, 1); err != nil {
 		log.Printf("pulse of %s: its newest event: %v", p.Name, err)
 	} else if len(es) > 0 {
@@ -145,6 +150,9 @@ func (pl *Pulser) watch(ctx context.Context, p Project) {
 	defer timer.Stop()
 	for {
 		at, ok := pulseNext(time.Now(), lastRun, lastEvent, first)
+		if at.Before(retry) {
+			at = retry
+		}
 		timer.Stop()
 		var due <-chan time.Time
 		if ok {
@@ -167,8 +175,24 @@ func (pl *Pulser) watch(ctx context.Context, p Project) {
 				first = lastEvent
 			}
 		case <-due:
-			lastRun, first = time.Now(), time.Time{}
-			pl.compute(ctx, p)
+			first = time.Time{}
+			err := pl.compute(ctx, p)
+			if ctx.Err() != nil {
+				return
+			}
+			lastRun = time.Now()
+			switch {
+			case err == nil && failures > 0:
+				log.Printf("pulse of %s: computed again after %d failed tries", p.Name, failures)
+			case err != nil && failures == 0:
+				log.Printf("pulse of %s: %v; the last pulse stays, the next tries back off", p.Name, err)
+			}
+			if err == nil {
+				failures, retry = 0, time.Time{}
+				continue
+			}
+			retry = lastRun.Add(min(pulseFallback<<min(failures, 4), pulseBackoff))
+			failures++
 		}
 	}
 }
@@ -198,30 +222,30 @@ func pulseNext(now, lastRun, lastEvent, first time.Time) (time.Time, bool) {
 
 // compute is one pulse of p while its chat task has budget: the
 // pulse_computing event, the model's pulse filed, and the pulse event
-// with the newest pulse, the last one when this one failed.
-func (pl *Pulser) compute(ctx context.Context, p Project) {
+// with the newest pulse, the last one when this one failed or was cut off.
+func (pl *Pulser) compute(ctx context.Context, p Project) error {
 	v, ok, err := pl.Store.CurrentPolicy(ctx)
 	if err != nil || !ok {
-		log.Printf("pulse of %s: the policy in force: loaded %v, %v", p.Name, ok, err)
-		return
+		return fmt.Errorf("the policy in force: loaded %v, %v", ok, err)
 	}
 	task, err := pl.Store.EnsureChatTask(ctx, p.Name, p.Repository, v.Document.ChatOf(v.Projects[p.Name]).MonthlyEUR, time.Now())
 	if err != nil {
-		log.Printf("pulse of %s: its chat task: %v", p.Name, err)
-		return
+		return fmt.Errorf("its chat task: %w", err)
 	}
 	if task.SpentEUR >= task.BudgetEUR {
-		return
+		return fmt.Errorf("the chat task's budget of €%.2f is spent", task.BudgetEUR)
 	}
 	pl.event(ctx, p, EventPulseComputing, nil)
 	row, err := pl.pulse(ctx, p, task.ID)
+	closing := context.WithoutCancel(ctx)
 	if err != nil {
-		log.Printf("pulse of %s: %v; the last pulse stays", p.Name, err)
-		if row, _, err = pl.Store.NewestPulse(ctx, p.Repository); err != nil {
-			log.Printf("pulse of %s: its newest pulse: %v", p.Name, err)
+		var newest error
+		if row, _, newest = pl.Store.NewestPulse(closing, p.Repository); newest != nil {
+			log.Printf("pulse of %s: its newest pulse: %v", p.Name, newest)
 		}
 	}
-	pl.event(ctx, p, EventPulse, map[string]any{"sentence": row.Sentence, "bullets": row.Bullets, "prominent": row.Prominent})
+	pl.event(closing, p, EventPulse, map[string]any{"sentence": row.Sentence, "bullets": row.Bullets, "prominent": row.Prominent})
+	return err
 }
 
 // pulse asks the model for p's pulse on chat task taskID's account and
@@ -289,15 +313,30 @@ func cut(s string, n int) string {
 	return string(r)
 }
 
-// AddPulse files p; the row's id and time come back in it.
+// AddPulse files p, whose id and time come back in it, and deletes its
+// repository's pulses and pulse events older than a day.
 func (s *PGStore) AddPulse(ctx context.Context, p Pulse) (Pulse, error) {
 	b, err := json.Marshal(append([]string{}, p.Bullets...))
 	if err != nil {
 		return p, err
 	}
-	err = s.db.QueryRowContext(ctx, `INSERT INTO pulses (repository, sentence, bullets, prominent) VALUES ($1, $2, $3::jsonb, $4) RETURNING id, at`,
-		p.Repository, p.Sentence, b, p.Prominent).Scan(&p.ID, &p.At)
-	return p, err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return p, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op once committed
+	if err := tx.QueryRowContext(ctx, `INSERT INTO pulses (repository, sentence, bullets, prominent) VALUES ($1, $2, $3::jsonb, $4) RETURNING id, at`,
+		p.Repository, p.Sentence, b, p.Prominent).Scan(&p.ID, &p.At); err != nil {
+		return p, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pulses WHERE repository = $1 AND at < now() - interval '1 day'`, p.Repository); err != nil {
+		return p, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE repository = $1 AND kind IN ('`+EventPulse+`', '`+EventPulseComputing+`')
+		AND at < now() - interval '1 day'`, p.Repository); err != nil {
+		return p, err
+	}
+	return p, tx.Commit()
 }
 
 // NewestPulse is repository's newest pulse; false when it has none.
