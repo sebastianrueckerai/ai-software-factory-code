@@ -124,9 +124,9 @@ var (
 	roles     = []string{RoleFoundation, RoleFeature, RoleIntegration}
 	// acceptedComment is PlanAcceptedComment of any revision
 	acceptedComment = regexp.MustCompile(`^Plan revision [0-9]+ accepted\.$`)
-	// deployLine is a spec's line asking for a deployment: "Deploy:" or a
-	// Deploy heading
-	deployLine = regexp.MustCompile(`(?im)^[ \t]*(deploy:|#+[ \t]+deploy\b)`)
+	// deployLine is a spec's line asking for a deployment: "Deploy:" or
+	// "Deployment:", or a Deploy or Deployment heading
+	deployLine = regexp.MustCompile(`(?im)^[ \t]*(deploy(ment)?[ \t]*:|#+[ \t]+deploy(ment)?\b)`)
 )
 
 // ErrNoDeployOwner refuses a plan whose spec has a Deploy line and no card

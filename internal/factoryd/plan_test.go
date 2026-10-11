@@ -1246,6 +1246,9 @@ func TestDeployOwner(t *testing.T) {
 		{"lower case, indented", "Uptime\n\n  deploy: staging only.", both, true, "redirects"},
 		{"other paths", deploySpec, near, true, ""},
 		{"a sentence", "Uptime\n\nSee the deployment notes. We deploy: later.\nDeployment notes: none.", deployPlan(), false, ""},
+		{"Deployment heading", "Uptime\n\n## Deployment\n\nOne replica.", deployPlan(), true, "redirects"},
+		{"Deployment line", "Uptime\n\nDeployment: one replica", testPlan(), true, ""},
+		{"blank before the colon", "Uptime\n\nDeploy : x", deployPlan(), true, "redirects"},
 	} {
 		if needed, owner := deployOwner(c.spec, c.p); needed != c.needed || owner != c.owner {
 			t.Errorf("%s: deployOwner = %v %q, want %v %q", c.name, needed, owner, c.needed, c.owner)

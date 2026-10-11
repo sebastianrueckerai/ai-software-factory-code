@@ -795,7 +795,7 @@ func TestAcceptPlanNoDeployOwner(t *testing.T) {
 		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime\n\nDeploy: one Deployment.", Repository: "sf/code", IssueNumber: 21}})
 	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string) error { return factoryd.ErrNoDeployOwner }
 	refused := "the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ and whose brief names " +
-		"the manifests' changes (the Secret, the environment, the volume, the service)"
+		"the manifests' changes (the Secret, the environment, the volume, the service). The planner revises the plan; no change request is needed."
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "sha256": {"sha-2"}}), ck)
 	if rec.Code != http.StatusConflict || rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {

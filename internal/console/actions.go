@@ -387,8 +387,9 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 // workflow is signalled, then the acceptance commented as the member (the
 // plan's wait reads that comment as no change request, in either order).
 // A stale revision answers factoryd.ErrStalePlan; a plan without the
-// deploy owner its spec needs answers factoryd's sentence with 409 (the
-// workflow refuses it to the planner).
+// deploy owner its spec needs answers factoryd's sentence with 409, and
+// that the planner revises it with no change request (the workflow
+// refuses it to the planner).
 func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision int, sha string) (string, error) {
 	if err := c.approves(ctx, a, "accept a plan"); err != nil {
 		return "", err
@@ -405,7 +406,7 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 	case errors.As(err, &stale):
 		return "", stale
 	case errors.Is(err, factoryd.ErrNoDeployOwner):
-		return "", refuse(http.StatusConflict, err.Error())
+		return "", refuse(http.StatusConflict, err.Error()+". The planner revises the plan; no change request is needed.")
 	case err != nil:
 		log.Printf("console: %s accepts revision %d of plan %s: %v", a.s.user, revision, t.ID, err)
 		return "", refuse(http.StatusConflict, "The plan could not be accepted; see the factoryd log.")
