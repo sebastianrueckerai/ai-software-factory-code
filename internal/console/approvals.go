@@ -29,12 +29,20 @@ type approvalCard struct {
 	SpecLines   string
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
+	Questions   []planQuestion
+	Open        string // "<n> questions open" while any waits for its answer
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
 	// Filter is the board's filter, which the card's forms keep.
 	Filter   boardFilter
 	CSRF     string
 	Approver bool
+}
+
+// planQuestion is a plan's question as its card shows it, numbered from 1.
+type planQuestion struct {
+	Index int
+	factoryd.PlanQuestion
 }
 
 // specLines are the plan card's first lines of a spec.
@@ -83,6 +91,20 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
 	}
 	k.PlanSummary, k.PlanRows = summary, rows
+	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
+	if err != nil {
+		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
+	}
+	open := 0
+	for i, q := range qs {
+		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
+		if q.Answer == "" {
+			open++
+		}
+	}
+	if open > 0 {
+		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
+	}
 	return nil
 }
 

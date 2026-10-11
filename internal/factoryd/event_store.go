@@ -25,6 +25,7 @@ const (
 	EventCardFiled            = "card_filed"
 	EventCardMoved            = "card_moved"
 	EventQuestionAnswered     = "question_answered"
+	EventPlanQuestionAnswered = "plan_question_answered"
 	EventPlanStarted          = "plan_started"
 	EventPlanAccepted         = "plan_accepted"
 	EventPlanChangesRequested = "plan_changes_requested"

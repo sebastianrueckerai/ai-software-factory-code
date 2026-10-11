@@ -54,9 +54,11 @@ type TaskSignal struct {
 	Body    string
 	PR      int64
 	Comment int64 // the issue comment's id, for human_comment
-	// Revision and SHA256 are the plan revision plan_accepted accepts.
+	// Revision and SHA256 are the plan revision plan_accepted accepts,
+	// Revision and Index the plan question plan_answered answers.
 	Revision int
 	SHA256   string
+	Index    int
 }
 
 // Activity names, registered by Runner.RegisterActivities.
@@ -378,6 +380,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
+	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -637,6 +640,10 @@ const (
 	// the providerRefusals-th refusal in a row goes to a human instead. A
 	// run from before the change takes a refusal as no push.
 	versionProviderWait workflow.Version = 1
+	// versionPlanAnswers (change id "plan-answers", ruling 264): the plan's
+	// wait takes the members' answers to its questions (SignalPlanAnswered)
+	// and sends the planner back once none is open.
+	versionPlanAnswers workflow.Version = 1
 )
 
 // providerRefusals is how many sessions in a row the provider may refuse
@@ -687,6 +694,7 @@ type taskRun struct {
 	answerSlice       workflow.Version
 	rollGap           workflow.Version
 	providerWait      workflow.Version
+	planAnswers       workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

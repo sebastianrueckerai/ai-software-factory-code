@@ -489,9 +489,12 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 		return "", refuse(http.StatusBadRequest, "the form names no plan revision; reload the board")
 	}
 	var stale factoryd.ErrStalePlan
+	var open factoryd.ErrOpenQuestions
 	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.s.user); {
 	case errors.As(err, &stale):
 		return "", stale
+	case errors.As(err, &open):
+		return "", refuse(http.StatusConflict, open.Error())
 	case errors.Is(err, factoryd.ErrNoDeployOwner):
 		return "", refuse(http.StatusConflict, err.Error()+". The planner revises the plan; no change request is needed.")
 	case err != nil:
@@ -504,6 +507,46 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 	log.Printf("console: %s accepted revision %d of plan %s via %s", a.s.user, revision, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanAccepted, map[string]any{"revision": revision})
 	return fmt.Sprintf("Accepted revision %d of plan #%d; factoryd files its cards.", revision, t.IssueNumber), nil
+}
+
+// maxPlanAnswer bounds a member's answer to a plan's question, one line.
+const maxPlanAnswer = 1000
+
+// doAnswerPlanQuestion answers question idx of revision revision of plan
+// id as the member, a writer of its project: factoryd stores the answer
+// and signals the plan's workflow, then the answer is posted on the issue
+// as theirs (factoryd.PlanAnswerComment), which intake knows for no change
+// request.
+func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, revision, idx int, answer string) (string, error) {
+	answer = strings.Join(strings.Fields(answer), " ")
+	if answer == "" || utf8.RuneCountInString(answer) > maxPlanAnswer {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d characters is required", maxPlanAnswer))
+	}
+	t, err := c.planIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
+	var stale factoryd.ErrStalePlan
+	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, answer, a.s.user); {
+	case errors.As(err, &stale):
+		return "", refuse(http.StatusConflict, stale.Error())
+	case errors.Is(err, factoryd.ErrAnswered):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Question %d of plan #%d is answered already.", idx, t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d revision %d has no question %d.", t.IssueNumber, revision, idx))
+	case err != nil:
+		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
+		return "", refuse(http.StatusConflict, "The answer could not be recorded; see the factoryd log.")
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, map[string]any{"revision": revision, "index": idx, "answer": answer})
+	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, answer), nil); err != nil {
+		return "", &forgejoRefusal{"post the answer on the issue (the answer is recorded)", err}
+	}
+	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
+	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
 // doRequestChanges posts a writer's change request on plan id's issue

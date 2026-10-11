@@ -64,7 +64,8 @@ type fakeStore struct {
 	createFails int
 	deps        map[string][]string // task → the tasks it depends on
 	plans       map[string][]PlanRevision
-	queue       []queueEntry // the merge queues, oldest first
+	questions   map[string][]PlanQuestion // by "task revision"
+	queue       []queueEntry              // the merge queues, oldest first
 	holds       map[string]RollHold
 }
 
@@ -1732,4 +1733,36 @@ func TestPGStoreProviderRefusal(t *testing.T) {
 			t.Errorf("ProviderRefusal(%s) = %q, %v, %v; want %q", task, reason, ok, err, want)
 		}
 	}
+}
+
+func (s *fakeStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error {
+	k := fmt.Sprintf("%s %d", id, revision)
+	if _, ok := s.questions[k]; !ok {
+		if s.questions == nil {
+			s.questions = map[string][]PlanQuestion{}
+		}
+		s.questions[k] = slices.Clone(qs)
+	}
+	return nil
+}
+
+func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
+	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
+}
+
+func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
+	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+	switch {
+	case idx < 1 || idx > len(qs):
+		return ErrNotFound
+	case qs[idx-1].Answer != "":
+		return ErrAnswered
+	}
+	qs[idx-1].Answer, qs[idx-1].AnsweredBy, qs[idx-1].AnsweredAt = answer, by, time.Now()
+	return nil
+}
+
+func (s *fakeStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
+	qs, _ := s.PlanQuestions(ctx, id, revision)
+	return len(qs) - len(slices.DeleteFunc(qs, func(q PlanQuestion) bool { return q.Answer == "" })), nil
 }

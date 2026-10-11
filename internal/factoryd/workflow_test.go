@@ -179,10 +179,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCreateChildren: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 			return ChildrenResult{}, nil
 		},
-		ActivityAwaitSessionGap: func(ctx context.Context, taskID string) error { return nil },
-		ActivityAwaitRollHold:   func(ctx context.Context, taskID string) error { return nil },
-		ActivityClearRollHold:   func(ctx context.Context, taskID string, merged bool) error { return nil },
-		ActivityProviderWait:    func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
+		ActivityOpenPlanQuestions: func(ctx context.Context, taskID string, revision int) (int, error) { return 0, nil },
+		ActivityAwaitSessionGap:   func(ctx context.Context, taskID string) error { return nil },
+		ActivityAwaitRollHold:     func(ctx context.Context, taskID string) error { return nil },
+		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
+		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

@@ -709,7 +709,7 @@ const planSession = 5 * time.Minute
 // planHarness is the workflow harness on a plan card: its RunPlan answers
 // results in order, RequestPlan posts revision n as comment 699+n,
 // CreateChildren files three cards unless refuse says why not, or answers
-// children's result when set.
+// children's result when set, OpenPlanQuestions answers open in order.
 type planHarness struct {
 	*workflowHarness
 	plans    [][]string // RunPlan's findings, per call
@@ -717,6 +717,8 @@ type planHarness struct {
 	requests []int
 	created  []string
 	refuse   [][]string // CreateChildren's refusals, in order
+	open     []int      // OpenPlanQuestions' answers, in order
+	asked    []int      // the revisions OpenPlanQuestions was asked about
 	children func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
 }
 
@@ -748,6 +750,13 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 				return ChildrenResult{Refused: r}, nil
 			}
 			return ChildrenResult{Issues: []int64{2, 3, 4}}, nil
+		})
+	h.env.OnActivity(ActivityOpenPlanQuestions, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, revision int) (int, error) {
+			h.asked = append(h.asked, revision)
+			n := h.open[0]
+			h.open = h.open[1:]
+			return n, nil
 		})
 	return h
 }

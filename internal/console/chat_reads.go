@@ -76,6 +76,17 @@ func (t *turn) cardText(in toolInput) (string, error) {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
 		}
 	}
+	_, qs, err := t.c.planQuestions(ctx, k)
+	if err != nil {
+		return "", err
+	}
+	asked := "\nQuestions:"
+	for i, q := range qs {
+		if q.Answer == "" {
+			b.WriteString(asked + "\n" + factoryd.QuestionLine(i+1, q))
+			asked = ""
+		}
+	}
 	if k.PRNumber > 0 {
 		fmt.Fprintf(&b, "\npull request #%d %s/pulls/%d", k.PRNumber, base, k.PRNumber)
 		if head := prHead(steps); head != "" {

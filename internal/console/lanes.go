@@ -276,6 +276,18 @@ func (c *Console) acceptPlan(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// planAnswer posts a writer's answer to a question of the plan
+// (doAnswerPlanQuestion).
+func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
+	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
+	idx, _ := strconv.Atoi(r.PostFormValue("index"))
+	if _, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("answer")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+}
+
 // planChanges posts a writer's change request on the plan
 // (doRequestChanges).
 func (c *Console) planChanges(w http.ResponseWriter, r *http.Request) {

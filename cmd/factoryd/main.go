@@ -373,6 +373,9 @@ func main() {
 		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
 			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
 		},
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
+		},
 		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
 			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
 		},

@@ -68,7 +68,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	text := t.AgentSummary
 	if text == "" {
 		var why string
-		if text, why, _, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil); err != nil {
+		if text, why, _, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil, nil); err != nil {
 			return ReportResult{}, err
 		}
 		if text == "" {
@@ -110,14 +110,14 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 		"factoryd %s, analyzer task %s: a report, no code changed.\n\n%s\n\n%s", t.Source, t.ID, fenced(r.untrusted(t, text)), marker))
 }
 
-// reportSession runs one worker in report mode, with guide and findings,
-// in the task's own sandbox: the read token on the repository, no push
-// token, no fork. Its report is the agent's last message, or why a stop
-// ended it (escalated: a stop for a human); with none, why the session
-// ended without one.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings []string) (report, why string, escalated bool, err error) {
+// reportSession runs one worker in report mode, with guide, findings and
+// a human's answers, in the task's own sandbox: the read token on the
+// repository, no push token, no fork. Its report is the agent's last
+// message, or why a stop ended it (escalated: a stop for a human); with
+// none, why the session ended without one.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (report, why string, escalated bool, err error) {
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings}
+	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return "", "", false, err
 	}

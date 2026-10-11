@@ -106,6 +106,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
 		ActivityCreateChildren:              r.CreateChildren,
+		ActivityOpenPlanQuestions:           r.OpenPlanQuestions,
 		ActivityAwaitSessionGap:             r.AwaitSessionGap,
 		ActivityAwaitRollHold:               r.AwaitRollHold,
 		ActivityClearRollHold:               r.ClearRollHold,

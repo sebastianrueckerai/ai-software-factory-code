@@ -938,16 +938,44 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 	if !onPR && !trusted && t.Author != "" && c.Author == t.Author {
 		kind = IntakePosterComment // information for a request, whatever the author's access; never authority
 	}
+	answer := false
+	if !onPR {
+		if answer, err = in.planAnswer(ctx, t, c); err != nil {
+			return err
+		}
+	}
 	e, fresh, err := in.record(ctx, IntakeEvent{
-		TaskID: t.ID, Kind: kind, Author: c.Author, Body: c.Body, DeliveryID: delivery, CommentID: c.ID, Trusted: trusted,
+		TaskID: t.ID, Kind: kind, Author: c.Author, Body: c.Body, DeliveryID: delivery, CommentID: c.ID, Trusted: trusted, Signalled: answer,
 	})
 	if err != nil {
 		return err
 	}
-	if fresh && !onPR {
+	if fresh && !onPR && !answer {
 		in.countAnswer(ctx, t, c.Author, trusted, c.ID)
 	}
 	return in.signalEvent(ctx, t.ID, e, number)
+}
+
+// planAnswer is whether c is the console's comment of its author's answer
+// to a question of plan task t's newest revision (PlanAnswerComment). The
+// console stored the answer before it commented and signalled the
+// workflow itself: the comment is recorded as signalled, no change
+// request.
+func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool, error) {
+	var idx int
+	if _, err := fmt.Sscanf(c.Body, "Answer %d:", &idx); err != nil || t.Lane != policy.LanePlan {
+		return false, nil
+	}
+	rev, ok, err := in.Store.PlanRevision(ctx, t.ID, 0)
+	if err != nil || !ok {
+		return false, err
+	}
+	qs, err := in.Store.PlanQuestions(ctx, t.ID, rev.Revision)
+	if err != nil || idx < 1 || idx > len(qs) {
+		return false, err
+	}
+	q := qs[idx-1]
+	return q.Answer != "" && q.AnsweredBy == c.Author && c.Body == PlanAnswerComment(idx, q.Answer), nil
 }
 
 // countAnswer counts a new issue comment that answers a task waiting on a

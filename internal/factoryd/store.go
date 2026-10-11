@@ -335,6 +335,18 @@ type Store interface {
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
 	// PlanRevision is revision n of task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+	// PutPlanQuestions stores revision's questions of plan task id, numbered
+	// from 1, unless it has them already.
+	PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error
+	// PlanQuestions are revision's questions of plan task id in order,
+	// each with its answer once given.
+	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)
+	// AnswerPlanQuestion records by's answer to question idx of revision:
+	// ErrAnswered when it has one, ErrNotFound when there is no such
+	// question.
+	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error
+	// OpenPlanQuestions is how many of revision's questions have no answer.
+	OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its
 	// key, and returns the plan's card of that key.
 	CreatePlanCard(ctx context.Context, t Task) (Task, error)

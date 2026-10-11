@@ -33,10 +33,15 @@ const (
 	// SignalPlanRejected is the console's Reject (RejectPlan): Author the
 	// writer, Body why. The plan task ends failed.
 	SignalPlanRejected = "plan_rejected"
+	// SignalPlanAnswered is the console's answer to a plan's question
+	// (AnswerPlan): Author the member, Revision and Index the question.
+	SignalPlanAnswered = "plan_answered"
 
 	ActivityRunPlan        = "RunPlan"
 	ActivityRequestPlan    = "RequestPlan"
 	ActivityCreateChildren = "CreateChildren"
+	// ActivityOpenPlanQuestions counts a revision's open questions.
+	ActivityOpenPlanQuestions = "OpenPlanQuestions"
 )
 
 // The roles of a plan's cards.
@@ -55,12 +60,26 @@ const (
 	maxCardDirs       = 10
 	maxCardAcceptance = 10
 	maxAcceptanceItem = 300
+	maxQuestions      = 5
+	maxQuestionText   = 300
 )
 
 // Plan is the planner's answer: one fenced json block of its last message.
 type Plan struct {
-	Summary string     `json:"summary"`
-	Cards   []PlanCard `json:"cards"`
+	Summary   string         `json:"summary"`
+	Cards     []PlanCard     `json:"cards"`
+	Questions []PlanQuestion `json:"questions,omitempty"`
+}
+
+// PlanQuestion is an open point the spec leaves to the member, with the
+// choices the planner offers; the store adds the member's answer, "" until
+// it is given.
+type PlanQuestion struct {
+	Text       string    `json:"text"`
+	Choices    []string  `json:"choices"`
+	Answer     string    `json:"-"`
+	AnsweredBy string    `json:"-"`
+	AnsweredAt time.Time `json:"-"`
 }
 
 // PlanCard is one card of a plan: one pull request, one session.
@@ -228,7 +247,44 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 	for _, c := range p.Cards {
 		out = append(out, cardFindings(c, limits)...)
 	}
-	return p, out
+	return p, append(out, questionFindings(p.Questions)...)
+}
+
+// questionFindings are the findings on a plan's questions: 0 to 5, each
+// with a text of 1 to 300 characters and 2 to 5 distinct choices of 1 to
+// 60.
+func questionFindings(qs []PlanQuestion) []string {
+	var out []string
+	if len(qs) > maxQuestions {
+		out = append(out, fmt.Sprintf("plan: %d questions; want 0 to %d", len(qs), maxQuestions))
+	}
+	for i, q := range qs {
+		add := func(format string, args ...any) {
+			out = append(out, fmt.Sprintf("plan: question %d: "+format, append([]any{i + 1}, args...)...))
+		}
+		switch n := utf8.RuneCountInString(q.Text); {
+		case n == 0:
+			add("text empty")
+		case n > maxQuestionText:
+			add("text over %d characters", maxQuestionText)
+		}
+		if n := len(q.Choices); n < 2 || n > maxChoices {
+			add("%d choices; want 2 to %d", n, maxChoices)
+		}
+		seen := map[string]int{}
+		for j, c := range q.Choices {
+			seen[c]++
+			switch n := utf8.RuneCountInString(c); {
+			case n == 0:
+				add("choice %d is empty", j+1)
+			case n > maxChoice:
+				add("choice %d is over %d characters", j+1, maxChoice)
+			case seen[c] == 2:
+				add("choice %q is offered twice", c)
+			}
+		}
+	}
+	return out
 }
 
 // cardFindings are one card's findings on its own fields.
@@ -481,10 +537,22 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(p.Questions) > 0 {
+		b.WriteString("\nQuestions:\n")
+		for i, q := range p.Questions {
+			b.WriteString(QuestionLine(i+1, q) + "\n")
+		}
+	}
 	for _, c := range order {
 		fmt.Fprintf(&b, "\n<details><summary>%s: %s</summary>\n\n%s\n\n%s</details>\n", cell(c.Key), cell(c.Title), strings.TrimSpace(c.Brief), cardFacts(c))
 	}
 	return b.String()
+}
+
+// QuestionLine is question n of a plan as its comment and the project
+// agent list it.
+func QuestionLine(n int, q PlanQuestion) string {
+	return fmt.Sprintf("%d. %s (choices: %s)", n, q.Text, strings.Join(q.Choices, " / "))
 }
 
 // cardFacts are a card's directories, acceptance tests and size as its
@@ -523,7 +591,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"Your last message is the whole result: one fenced ```json block and nothing else, holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		fmt.Sprintf("The plan has 2 to %d cards. ", shape.MaxCards) +
 		"key: lowercase letters, digits and dashes, 2 to 32, unique. role: foundation, feature or integration. "
 	if shape.Foundation {
@@ -546,7 +614,9 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent; "+
 		"a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests. "+
 		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards). Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
+		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards). "+
+		"questions: 0 to 5 open points the spec leaves to the member, each with 2 to 5 short choices; the member's answers come back to you as a block of answers "+
+		"with your last plan, and a plan with questions cannot be accepted until they are answered. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
 		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
 }
@@ -558,6 +628,13 @@ func PlanAcceptedComment(revision int) string {
 	return fmt.Sprintf("Plan revision %d accepted.", revision)
 }
 
+// PlanAnswerComment is the console's comment, as the member, on the plan's
+// issue when they answer question idx: intake knows it for no change
+// request by the answer stored before it.
+func PlanAnswerComment(idx int, answer string) string {
+	return fmt.Sprintf("Answer %d: %s", idx, answer)
+}
+
 // ErrStalePlan refuses an acceptance of a revision that is no longer the
 // newest; its message is the card's.
 type ErrStalePlan struct{ Newest int }
@@ -566,9 +643,49 @@ func (e ErrStalePlan) Error() string {
 	return fmt.Sprintf("the plan changed to revision %d; reload", e.Newest)
 }
 
+// ErrOpenQuestions refuses an acceptance of a revision whose questions
+// are not all answered; its message is the card's.
+type ErrOpenQuestions struct{ Issue, Revision, Open int }
+
+func (e ErrOpenQuestions) Error() string {
+	return fmt.Sprintf("plan #%d revision %d has %d unanswered questions; answer them first", e.Issue, e.Revision, e.Open)
+}
+
+// openQuestions refuses revision of plan task t while any of its
+// questions is open.
+func openQuestions(ctx context.Context, store Store, t Task, revision int) error {
+	n, err := store.OpenPlanQuestions(ctx, t.ID, revision)
+	if err == nil && n > 0 {
+		err = ErrOpenQuestions{Issue: int(t.IssueNumber), Revision: revision, Open: n}
+	}
+	return err
+}
+
+// AnswerPlan is the console's answer by a member to question idx of plan
+// revision revision, which must be the newest (ErrStalePlan): the answer
+// is stored (ErrAnswered for a second one), then the plan task's workflow
+// signalled, which sends the planner back once none is open.
+func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision, idx int, answer, by string) error {
+	if _, err := pendingPlan(ctx, store, taskID); err != nil {
+		return err
+	}
+	newest, ok, err := store.PlanRevision(ctx, taskID, 0)
+	if err != nil {
+		return err
+	}
+	if !ok || newest.Revision != revision {
+		return ErrStalePlan{Newest: newest.Revision}
+	}
+	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, answer, by); err != nil {
+		return err
+	}
+	return wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: idx})
+}
+
 // AcceptPlan is the console's Accept plan, by an approver: it signals the
 // plan task's workflow when revision (at sha) is the newest and awaits
-// acceptance; a newer revision refuses it with ErrStalePlan. A plan
+// acceptance; a newer revision refuses it with ErrStalePlan, an open
+// question with ErrOpenQuestions. A plan
 // without the deploy owner its spec needs is signalled all the same, so
 // CreateChildren refuses it back to the planner, and answers
 // ErrNoDeployOwner.
@@ -585,6 +702,9 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	}
 	t, _, err := store.Task(ctx, taskID)
 	if err != nil {
+		return err
+	}
+	if err := openQuestions(ctx, store, t, revision); err != nil {
 		return err
 	}
 	var p Plan
@@ -641,6 +761,64 @@ func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevis
 	}
 	p.Plan = plan
 	return p, err == nil, err
+}
+
+// ErrAnswered refuses a second answer to a plan's question.
+var ErrAnswered = errors.New("the question is answered already")
+
+func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error {
+	b, err := json.Marshal(qs)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices)
+		SELECT $1, $2, i, q->>'text', q->'choices' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	return err
+}
+
+func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PlanQuestion
+	for rows.Next() {
+		var q PlanQuestion
+		var choices []byte
+		var at sql.NullTime
+		if err := rows.Scan(&q.Text, &choices, &q.Answer, &q.AnsweredBy, &at); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(choices, &q.Choices); err != nil {
+			return nil, err
+		}
+		q.AnsweredAt = at.Time
+		out = append(out, q)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
+	var answered, asked bool
+	err := s.db.QueryRowContext(ctx, `WITH done AS (UPDATE plan_questions SET answer = $4, answered_by = $5, answered_at = now()
+			WHERE task_id = $1 AND revision = $2 AND idx = $3 AND answer IS NULL RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3)`,
+		id, revision, idx, answer, by).Scan(&answered, &asked)
+	switch {
+	case err != nil || answered:
+		return err
+	case asked:
+		return ErrAnswered
+	}
+	return ErrNotFound
+}
+
+func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plan_questions WHERE task_id = $1 AND revision = $2 AND answer IS NULL`, id, revision).Scan(&n)
+	return n, err
 }
 
 func (s *PGStore) CreatePlanCard(ctx context.Context, t Task) (Task, error) {
@@ -807,12 +985,17 @@ func (t *taskRun) planComments(floor int64) []string {
 // awaitPlan waits, at no cost, for the approvers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
 // findings the next planner session starts with. An accepted revision
-// files its cards and ends the task done; a refused acceptance, or a
-// writer's comment, goes back to the planner.
+// files its cards and ends the task done; a refused acceptance, a
+// writer's comment, or the answer that leaves no question of the revision
+// open (versionPlanAnswers) goes back to the planner.
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findings []string) {
+	signals := []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected}
+	if t.planAnswers >= versionPlanAnswers {
+		signals = append(signals, SignalPlanAnswered)
+	}
 	for {
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected} {
+		for _, n := range signals {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
@@ -844,11 +1027,42 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 			}
 			return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil
 		}
+		answered, err := t.planAnswered(ref)
+		if err != nil {
+			return "failed", "count the plan's open questions: " + errMessage(err), nil
+		}
 		findings = t.planComments(floor)
-		if len(findings) > 0 {
+		if answered || len(findings) > 0 {
 			return "", "", findings
 		}
 	}
+}
+
+// planAnswered takes the members' answers signalled so far: whether one
+// answered a question of revision ref and none of its questions is open
+// any more. An answer to another revision is recorded and ignored.
+func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
+	if t.planAnswers < versionPlanAnswers {
+		return false, nil
+	}
+	current := false
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
+		detail := map[string]any{"signal": SignalPlanAnswered, "author": sig.Author, "revision": sig.Revision, "index": sig.Index}
+		if sig.Revision != ref.Revision {
+			detail["ignored"] = fmt.Sprintf("the plan changed to revision %d", ref.Revision)
+		}
+		current = current || sig.Revision == ref.Revision
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+		}
+	}
+	if !current {
+		return false, nil
+	}
+	var open int
+	err := workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
+	return err == nil && open == 0, err
 }
 
 // recordPlanSignal records an approver's or writer's plan signal on the
@@ -868,6 +1082,12 @@ func (t *taskRun) recordPlanSignal(name string, sig TaskSignal, ignored string) 
 	}
 }
 
+// OpenPlanQuestions is how many of plan revision's questions have no
+// answer.
+func (r *Runner) OpenPlanQuestions(ctx context.Context, taskID string, revision int) (int, error) {
+	return r.store.OpenPlanQuestions(ctx, taskID, revision)
+}
+
 // planShape is the plan lane's shape of the process task t follows in
 // version v, and the process's name.
 func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
@@ -883,9 +1103,10 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 	return *lane.Plan, name, nil
 }
 
-// RunPlan is one planner session under the pinned version, with findings
-// and the last plan: a valid plan becomes the task's next revision, an
-// invalid one comes back as its findings.
+// RunPlan is one planner session under the pinned version, with findings,
+// the last plan and the members' answers to its questions: a valid plan
+// becomes the task's next revision, an invalid one comes back as its
+// findings.
 func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -903,10 +1124,20 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
+	var answers []string
 	if ok {
 		findings = append(slices.Clone(findings), fmt.Sprintf("your last plan, revision %d: answer the whole plan again, changed as the findings ask:\n```json\n%s\n```", last.Revision, last.Plan))
+		qs, err := r.store.PlanQuestions(ctx, taskID, last.Revision)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		for _, q := range qs {
+			if q.Answer != "" {
+				answers = append(answers, q.Text+": "+q.Answer)
+			}
+		}
 	}
-	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings)
+	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -933,7 +1164,11 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
-	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	step := map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha}
+	if len(answers) > 0 {
+		step["answers"] = answers
+	}
+	r.record(ctx, taskID, "plan_revision", step)
 	return PlanResult{Revision: n, SHA256: sha}, nil
 }
 
@@ -958,6 +1193,9 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
 		return PlanRef{}, terminalError("task %s: plan revision %d: %v", taskID, rev.Revision, err)
+	}
+	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
+		return PlanRef{}, err
 	}
 	comment, err := r.postPlan(ctx, t, repo, rev.Revision, p, nil)
 	if err != nil {
@@ -992,6 +1230,31 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	return PlanRef{Revision: rev.Revision, SHA256: rev.SHA256, Comment: comment}, nil
 }
 
+// askQuestions stores revision's questions of plan task t, sanitised as
+// the plan's comment is (a clicked choice is posted as the member's
+// comment), and records one question_asked row each, once.
+func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
+	have, err := r.store.PlanQuestions(ctx, t.ID, revision)
+	if err != nil || len(have) > 0 || len(qs) == 0 {
+		return err
+	}
+	asked := make([]PlanQuestion, len(qs))
+	for i, q := range qs {
+		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices))}
+		for j, c := range q.Choices {
+			asked[i].Choices[j] = r.untrusted(t, c)
+		}
+	}
+	if err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil {
+		return err
+	}
+	for i, q := range asked {
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
+			map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": i + 1})
+	}
+	return nil
+}
+
 // postPlan puts revision's comment on the plan's issue, sanitised, with
 // the cards' issues once filed: it edits the comment its marker finds, or
 // posts it.
@@ -1015,7 +1278,8 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 
 // CreateChildren files the cards of the plan task's accepted revision,
 // once however often it runs: it judges the revision again, the deploy
-// owner its spec needs included (a finding refuses the acceptance: the
+// owner its spec needs and its answered questions included (a finding
+// refuses the acceptance: the
 // approval ends, the planner gets it); files
 // each card in topological order as a backlog task row and a bot issue
 // found by its marker or filed; records the edges in Forgejo and
@@ -1043,6 +1307,13 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits)
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
+	}
+	var unanswered ErrOpenQuestions
+	switch err := openQuestions(ctx, r.store, t, revision); {
+	case errors.As(err, &unanswered):
+		findings = append(findings, unanswered.Error())
+	case err != nil:
+		return ChildrenResult{}, err
 	}
 	if len(findings) > 0 {
 		note := fmt.Sprintf("accepting revision %d was refused: %s", revision, strings.Join(findings, "; "))

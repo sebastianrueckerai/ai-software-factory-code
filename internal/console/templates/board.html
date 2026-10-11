@@ -133,12 +133,27 @@
 </table>
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
+{{range $q := .Questions}}{{if $q.Answer}}<p class="answered">{{$q.Text}}: {{$q.Answer}} ({{$q.AnsweredBy}})</p>
+{{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
+<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
+{{range $q.Choices}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
+<button type="submit" name="answer" value="{{.}}">{{.}}</button>
+</form>
+{{end}}</div>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
+<label for="answer-{{$.ID}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
+<input type="text" id="answer-{{$.ID}}-{{$q.Index}}" name="answer" maxlength="1000" required>
+<button type="submit">Answer</button>
+</form></fieldset>
+{{end}}{{end}}{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <input type="hidden" name="revision" value="{{.PlanSpec.Revision}}">
 <input type="hidden" name="sha256" value="{{.PlanSpec.SHA256}}">
 <p class="meta">factoryd files one card per planned card in the backlog; Start plan moves them to ready.</p>
-<button type="submit" aria-label="Accept revision {{.PlanSpec.Revision}} of plan #{{.Issue}}">Accept plan</button>
+{{with .Open}}<p class="meta">{{.}}</p>
+{{end}}<button type="submit" aria-label="Accept revision {{.PlanSpec.Revision}} of plan #{{.Issue}}"{{if .Open}} disabled{{end}}>Accept plan</button>
 </form>{{else}}<p class="meta">Only the project's approvers may accept a plan.</p>{{end}}
 <form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}

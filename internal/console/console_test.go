@@ -223,8 +223,10 @@ type fakeTasks struct {
 	mu    sync.Mutex
 	tasks []factoryd.BoardTask
 	plans map[string][]factoryd.PlanRevision // by task, oldest first
-	deps  map[string][]string                // the tasks a task depends on
-	read  func(s *fakeTasks, id string)
+	// questions are the plans' questions by "task revision"
+	questions map[string][]factoryd.PlanQuestion
+	deps      map[string][]string // the tasks a task depends on
+	read      func(s *fakeTasks, id string)
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -267,6 +269,27 @@ func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.
 		}
 	}
 	return factoryd.PlanRevision{}, false, nil
+}
+
+func (s *fakeTasks) PlanQuestions(_ context.Context, id string, revision int) ([]factoryd.PlanQuestion, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
+}
+
+// answer is factoryd.PGStore.AnswerPlanQuestion on the fake's questions.
+func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+	switch {
+	case idx < 1 || idx > len(qs):
+		return factoryd.ErrNotFound
+	case qs[idx-1].Answer != "":
+		return factoryd.ErrAnswered
+	}
+	qs[idx-1].Answer, qs[idx-1].AnsweredBy = answer, by
+	return nil
 }
 
 func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
@@ -704,6 +727,18 @@ func newRig(t *testing.T) *rig {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, by))
+			return nil
+		},
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
+			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
+				return factoryd.ErrStalePlan{Newest: newest.Revision}
+			}
+			if err := r.tasks.answer(taskID, revision, idx, answer, by); err != nil {
+				return err
+			}
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_answered %s %d %d by %s", taskID, revision, idx, by))
 			return nil
 		},
 		RejectPlan: func(_ context.Context, taskID, by, why string) error {
