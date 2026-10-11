@@ -236,10 +236,11 @@ func (t *turn) run(id string) {
 		row := factoryd.ChatMessage{Role: "assistant", Content: answer.Content}
 		proposed := false
 		var results []factoryd.OperatorMessage
-		for _, call := range answer.ToolCalls {
+		for i, call := range answer.ToolCalls {
 			result, p := t.call(call)
 			proposed = proposed || p
-			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments, Result: result})
+			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
+			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments, Result: result})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if !t.save(row) {
@@ -421,7 +422,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	for _, m := range history {
 		om := factoryd.OperatorMessage{Role: m.Role, Content: m.Content}
 		for _, call := range m.ToolCalls {
-			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
+			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: objectArgs(call.Arguments)})
 		}
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
@@ -491,6 +492,17 @@ func (c *Console) spendLine(ctx context.Context, p factoryd.Project) (string, er
 		limit = v.Document.Budget.MonthEUR
 	}
 	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", s.EUR, limit, s.EUR-s.ChatEUR, s.ChatEUR), nil
+}
+
+// objectArgs is a tool call's arguments as the conversation keeps and
+// replays them: {} for any that are no JSON object, which a backend that
+// parses the history would refuse.
+func objectArgs(args string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) == nil && m != nil {
+		return args
+	}
+	return "{}"
 }
 
 // eventLine is event e as the agent reads it.

@@ -1340,8 +1340,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   an `undo` token where one exists), then `done`, or `error`, which ends
   it. The loop calls the gateway with purpose `operator` on the project's
   chat task `t-chat-<name>-<yyyy-mm>` (kind `chat`, capability `chat`, the
-  block's `monthly_eur` as budget, filed by the month's first message, no
-  card and no workflow), at most 8 calls a turn, each after a budget
+  block's `monthly_eur` as budget, filed by the month's first message,
+  which closes the month before's, no card and no workflow), at most 8
+  calls a turn, each after a budget
   check. Its tools (`policy.ChatTools`) are the reads `board`, `card`,
   `history`, `card_history`, `costs`, `diff` and one per console action,
   run as the human through `actions.go`, each refusing a card of another
@@ -1360,7 +1361,12 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   block of `policy.yaml` or a project file (`model`, `monthly_eur`,
   `confirm`; defaults in `policy.DefaultChat`) sets the rest; a project
   file's keys replace the policy's, its `monthly_eur` at most the
-  policy's.
+  policy's. By default the OK is asked for `new_card`, `move_card`,
+  `answer` and `steer` (text injected into the board could otherwise make
+  the agent answer a waiting card or message a running session as the
+  member), `start_plan`, `retry`, `accept_plan`, `request_changes`,
+  `reject_plan`, `approve_merge` and `deny_merge`; `confirm: []` asks for
+  none.
 
 ## Projects (task 65, ruling 179)
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -95,7 +96,7 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
 	}
-	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"lane", in.Lane}, {"action", in.Action},
+	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
@@ -104,7 +105,7 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 	if in.Revision > 0 {
 		parts = append(parts, fmt.Sprintf("revision %d", in.Revision))
 	}
-	return strings.Join(parts, ", "), nil
+	return sanitize.Inbound(strings.Join(parts, ", ")), nil
 }
 
 // cardTitle is the face's title of t: the summary a writer set, the plan

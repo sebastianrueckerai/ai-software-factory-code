@@ -71,9 +71,10 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// record writes what a just did as one event row, their login the actor.
+// record writes what a just did as one event row, their login the actor,
+// even once they left: the action took effect.
 func (c *Console) record(ctx context.Context, a actor, repository, taskID string, issue int64, kind string, detail map[string]any) {
-	c.event(ctx, factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
+	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
 		Actor: a.s.user, Via: a.via, Detail: detail})
 }
 

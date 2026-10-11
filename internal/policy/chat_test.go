@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,7 +15,8 @@ func TestChatDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := ChatConfig{Model: "operator", MonthlyEUR: 5,
-		Confirm: []string{"new_card", "move_card", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge"}}
+		Confirm: []string{"new_card", "move_card", "answer", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
+			"approve_merge", "deny_merge"}}
 	if got := tree.Document.ChatOf(tree.Projects["linkshort"]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChatOf(linkshort) = %+v, want %+v", got, want)
 	}
@@ -76,5 +78,27 @@ func TestChatBlockRefusals(t *testing.T) {
 				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// The policy store keeps the tree as JSON: an empty confirm list comes
+// back empty, so it still runs every tool at once, and an absent one
+// still takes the policy's.
+func TestChatConfirmSurvivesTheStoresJSON(t *testing.T) {
+	tree := Tree{Document: Document{Chat: &ChatConfig{Confirm: []string{"new_card"}}},
+		Projects: map[string]ProjectConfig{"empty": {Chat: &ChatConfig{Confirm: []string{}}}, "absent": {Chat: &ChatConfig{MonthlyEUR: 2}}}}
+	b, err := json.Marshal(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Tree
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if got := back.Document.ChatOf(back.Projects["empty"]).Confirm; got == nil || len(got) != 0 {
+		t.Fatalf("an empty confirm after the round trip = %#v, want []string{}", got)
+	}
+	if got := back.Document.ChatOf(back.Projects["absent"]).Confirm; !reflect.DeepEqual(got, []string{"new_card"}) {
+		t.Fatalf("an absent confirm after the round trip = %#v, want the policy's [new_card]", got)
 	}
 }

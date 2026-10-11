@@ -71,7 +71,7 @@ type ChatConfig struct {
 	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
 	// Confirm are the tools a member must OK: a call proposes, and the
 	// member's Do it runs it. An empty list runs every tool at once.
-	Confirm []string `yaml:"confirm,omitempty" json:"confirm,omitempty"`
+	Confirm []string `yaml:"confirm,omitempty" json:"confirm"`
 }
 
 // ChatTools are the project agent's tools, one per console action and
@@ -85,7 +85,8 @@ var ChatModels = []string{"operator"}
 
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
-	Confirm: []string{"new_card", "move_card", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge"}}
+	Confirm: []string{"new_card", "move_card", "answer", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
+		"approve_merge", "deny_merge"}}
 
 // ChatOf is project p's chat block: DefaultChat, the policy's keys over
 // it, then the project file's.

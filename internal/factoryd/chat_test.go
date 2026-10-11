@@ -26,7 +26,7 @@ func chatStore(t *testing.T) *PGStore {
 
 // A project's chat task is filed once a month, running, with the month's
 // budget; a later call that month changes nothing, the next month files a
-// new task, and neither is a card of the board.
+// new task and closes the last month's, and none is a card of the board.
 func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	oct := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
@@ -42,9 +42,19 @@ func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	if err != nil || again.ID != got.ID || again.BudgetEUR != 5 {
 		t.Fatalf("the month's second call = %+v, %v: want the first task, budget 5", again, err)
 	}
+	other, err := s.EnsureChatTask(ctx, "code", "sf/code", 5, oct)
+	if err != nil {
+		t.Fatal(err)
+	}
 	nov, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 3, time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
-	if err != nil || nov.ID != "t-chat-linkshort-2026-11" || nov.BudgetEUR != 3 {
+	if err != nil || nov.ID != "t-chat-linkshort-2026-11" || nov.BudgetEUR != 3 || nov.Status != "running" {
 		t.Fatalf("November = %+v, %v", nov, err)
+	}
+	if was, _, err := s.Task(ctx, got.ID); err != nil || was.Status != "closed" || was.FinishedAt == nil {
+		t.Fatalf("October once November is filed = %+v, %v: want closed, finished", was, err)
+	}
+	if code, _, err := s.Task(ctx, other.ID); err != nil || code.Status != "running" {
+		t.Fatalf("another project's chat task = %+v, %v: want it running", code, err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-card", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", IssueNumber: 4}); err != nil {
 		t.Fatal(err)
