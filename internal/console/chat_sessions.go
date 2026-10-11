@@ -216,7 +216,7 @@ func stepLine(i int, ev harness.Event, start time.Time) string {
 			sum = textutil.Truncate(compact(args), 80)
 		}
 	case harness.EventFileChange:
-		sum = oneLine(textAt(d, "path"))
+		sum = textutil.Truncate(oneLine(textAt(d, "path")), 200)
 		if n, ok := d["bytes"].(float64); ok {
 			sum += fmt.Sprintf(", %d bytes", int(n))
 		}
@@ -352,14 +352,16 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 		return "", err
 	}
 	var files []string
+	seen := map[string]bool{}
 	var spend float64
 	stat, n := "none", 0
 	eachStep(body, func(i int, ev harness.Event) {
 		n = i
 		switch ev.Kind {
 		case harness.EventFileChange:
-			if p := textAt(ev.Detail, "path"); p != "" && !slices.Contains(files, p) {
-				files = append(files, p)
+			if p := textAt(ev.Detail, "path"); p != "" && !seen[p] {
+				seen[p] = true
+				files = append(files, textutil.Truncate(oneLine(p), 200))
 			}
 		case harness.EventModelCall:
 			spend += numAt(ev.Detail, "cost")

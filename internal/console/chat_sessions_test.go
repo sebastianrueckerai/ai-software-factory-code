@@ -285,3 +285,18 @@ func TestChatSessionTooLarge(t *testing.T) {
 	status, _ := refused(t, r, "session_step", toolInput{TaskID: "t-r", N: 1, From: 1})
 	equal(t, "a step of a large transcript", status, http.StatusConflict)
 }
+
+// A path the agent wrote is cut at 200 bytes in a step's line and in the
+// session's files, which count it once.
+func TestChatSessionLongPath(t *testing.T) {
+	r, g := newSessionsRig(t)
+	long := strings.Repeat("p", 300)
+	r.objects["sessions/t-r/s2.jsonl"] = []byte(`{"time":"2026-10-11T10:14:00Z","kind":"file_change","detail":{"path":"` + long + `","bytes":10}}` + "\n" +
+		`{"time":"2026-10-11T10:15:00Z","kind":"file_change","detail":{"path":"` + long + `","bytes":12}}` + "\n")
+	cut := strings.Repeat("p", 200) + "…"
+	equal(t, "the reads of a long path", reads(t, r, g, "session_steps", `{"task_id":"t-r"}`, "session", `{"task_id":"t-r"}`), []string{
+		"1 1:00 file_change: " + cut + ", 10 bytes\n2 2:00 file_change: " + cut + ", 12 bytes\nsteps 1 to 2 of 2",
+		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted 2026-10-11 10:13 UTC, took 27 min\n" +
+			"summary: added the p95\nfiles changed: " + cut + " (1)\ndiff: none\nspend: €0.0000\n2 steps",
+	})
+}
