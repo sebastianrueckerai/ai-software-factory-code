@@ -12,8 +12,8 @@ function busy(el) {
   }
   return false;
 }
-// The board's own requests, the fallback poll and the swaps the stream
-// asks for, skip a busy board.
+// The board's own requests, its poll and the swaps the stream asks for,
+// skip a busy board.
 document.addEventListener("htmx:beforeRequest", function (e) {
   if (e.detail.elt.id === "board" && busy(e.detail.elt)) e.preventDefault();
 });
@@ -97,24 +97,24 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 })();
 
 // The board follows its project's event stream: an event swaps the cards
-// it names from GET /cards/{id}, or the whole board when the card is not
-// on it or its place changed, and card_filed, project_merged and a
-// reconnect swap the board. The board of every project polls every 3 s
-// instead, and so does a board whose stream failed (closed, or in error
-// for 30 s), which the footer says. A swap a busy card or board would wipe
-// waits until it is no longer busy.
+// it names from GET /cards/{id} at once, or the whole board when the card
+// is not on it or its place changed, and card_filed, project_merged and a
+// reconnect swap the board. Beside the stream the board polls every 30 s
+// (its template's hx-trigger), so its minute counters tick and whatever
+// the events do not carry is at most 30 s old. The board of every project
+// polls every 3 s instead, and so does a board whose stream failed
+// (closed, or in error for 30 s), which the footer says. A swap a busy
+// card or board would wipe waits until it is no longer busy.
 (function () {
   var polling = false, missed = {}, latest = {}, asked = 0;
   function board() { return document.getElementById("board"); }
   function poll() {
     var b = board();
-    if (!polling || !b || b.hasAttribute("hx-trigger")) return;
-    b.setAttribute("hx-get", "/board" + b.dataset.query);
+    if (!polling || !b || b.getAttribute("hx-trigger") === "every 3s") return;
     b.setAttribute("hx-trigger", "every 3s");
-    b.setAttribute("hx-swap", "outerHTML");
     htmx.process(b);
   }
-  // a swapped-in board comes without the poll's attributes
+  // a swapped-in board comes with the 30 s poll only
   document.addEventListener("htmx:afterSettle", poll);
   function swapBoard() {
     var b = board();

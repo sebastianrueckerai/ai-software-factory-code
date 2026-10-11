@@ -1,4 +1,4 @@
-{{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
+{{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}" hx-get="/board{{.Query}}" hx-trigger="every 30s" hx-swap="outerHTML">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <section aria-labelledby="human-lane">

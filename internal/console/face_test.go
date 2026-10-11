@@ -540,7 +540,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		return `action="` + action + `" hx-post="` + action + `" hx-target="#board" hx-swap="outerHTML"`
 	}
 	for _, want := range []string{
-		`data-query="?accent=teal&amp;project=linkshort"`,
+		`data-query="?accent=teal&amp;project=linkshort" hx-get="/board?accent=teal&amp;project=linkshort" hx-trigger="every 30s"`,
 		htmx("/cards/t-c2/lane") + ` class="inline move" data-move="ready">` + filter,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-plan/start-plan") + ` class="inline">` + filter,
