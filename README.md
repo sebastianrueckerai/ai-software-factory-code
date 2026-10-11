@@ -1348,12 +1348,14 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `card` (the card in full, with a pointer to the read holding its
   reviews, audit, checks, plan and sessions), `history`, `card_history`,
   `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
-  issues and the filed cards' states), `pr` (the newest checks' jobs, the
+  issues and the filed cards' states, and for a revision without questions
+  the earlier revision's answers it was built from), `pr` (the newest checks' jobs, the
   model reviews, the audit, the files' diff stat, the diff on request),
   `file` (a file at a ref, read raw through the member's token, cut at 64
   KiB, a binary one refused), `session`, `session_steps`, `session_step`,
-  `session_search` (a session's summary, its steps one line each, steps
-  in full, a search of the transcripts; transcripts over 8 MiB are only
+  `session_search` (a session's summary with why it started, its steps one
+  line each, steps in full, a search of the transcripts and, with no step
+  matching, of the sessions' ends; transcripts over 8 MiB are only
   searched) and `ci` (a commit's combined CI status with each job's, main's
   head unless a ref or sha names another, through the member's token) and
   one per console action,
@@ -1379,7 +1381,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   member), `start_plan`, `retry`, `accept_plan`, `request_changes`,
   `reject_plan`, `approve_merge`, `deny_merge`, `invite`, `github_export`,
   `close`, `edit`, `grant_session` and `set_dependency`; `confirm: []` asks
-  for none. `close` closes the card's issue as the member (the face's Close
+  for none. `accept_plan` without a revision takes the plan's newest, which
+  its proposal names with its sha256; a newer revision before Do it makes
+  it stale. `close` closes the card's issue as the member (the face's Close
   button too), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` answers a card at its session
   cap, and `set_dependency` adds or removes a dependency of a card that has

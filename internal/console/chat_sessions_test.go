@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // sessionsTimeline is t-r's timeline with two sessions: s1 on
@@ -50,7 +52,8 @@ func newSessionsRig(t *testing.T) (*rig, *chatGateway) {
 }
 
 const (
-	s1Summary = "session 1 of 2 (s1), attempt 1, model coding-cheap: no_push\nstarted 2026-10-11 10:00 UTC, took 12 min\n" +
+	s1Summary = "session 1 of 2 (s1), attempt 1, model coding-cheap: no_push\nstarted because: the card's first session\n" +
+		"started 2026-10-11 10:00 UTC, took 12 min\n" +
 		"summary: stopped without a push\nsupervisor and messages:\n  4:00 nudged after 3 identical read calls\n" +
 		"  5:00 repetition tripped: change approach\n  5:01 the supervisor's message\n  6:00 message from sebastian\n"
 	s1Steps = "1 0:05 model call, 1500 tokens, €0.0100\n" +
@@ -96,7 +99,8 @@ func TestChatSessionRead(t *testing.T) {
 	r, g := newSessionsRig(t)
 	equal(t, "the session reads", reads(t, r, g, "session", `{"task_id":"t-r"}`, "session", `{"task_id":"t-r","n":1}`,
 		"session", `{"task_id":"t-r","n":3}`, "session", `{"task_id":"t-m"}`), []string{
-		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted 2026-10-11 10:13 UTC, took 27 min\n" +
+		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
+			"started 2026-10-11 10:13 UTC, took 27 min\n" +
 			"summary: added the p95\nfiles changed: stats.go (1)\ndiff: 2 files, +40 -8\nspend: €0.0250\n4 steps",
 		s1Summary + "files changed: a.go (1)\ndiff: 1 file, +10 -2\nspend: €0.0100\n6 steps",
 		"Refused: Card #11 has no session 3; it has had 2 sessions.",
@@ -110,7 +114,8 @@ func TestChatSessionRead(t *testing.T) {
 	r.objects["sessions/t-r/timeline.jsonl"] = []byte(sessionsTimeline +
 		`{"step":"session_start","time":"2026-10-11T10:41:00Z","session":"s3","parent":"s2","model":"coding-frontier","attempt":3}` + "\n")
 	equal(t, "a running session without a transcript", reads(t, r, g, "session", `{"task_id":"t-r"}`, "session_search", `{"task_id":"t-r","query":"zzz"}`), []string{
-		"session 3 of 3 (s3), attempt 3, model coding-frontier: running\nrunning since 2026-10-11 10:41 UTC\nno transcript for session 3",
+		"session 3 of 3 (s3), attempt 3, model coding-frontier: running\n" +
+			"started because: the previous session's push went back to the agent\nrunning since 2026-10-11 10:41 UTC\nno transcript for session 3",
 		"no hit for \"zzz\"\nno transcript for session 3",
 	})
 	status, msg := refused(t, r, "session_steps", toolInput{TaskID: "t-r"})
@@ -296,7 +301,158 @@ func TestChatSessionLongPath(t *testing.T) {
 	cut := strings.Repeat("p", 200) + "…"
 	equal(t, "the reads of a long path", reads(t, r, g, "session_steps", `{"task_id":"t-r"}`, "session", `{"task_id":"t-r"}`), []string{
 		"1 1:00 file_change: " + cut + ", 10 bytes\n2 2:00 file_change: " + cut + ", 12 bytes\nsteps 1 to 2 of 2",
-		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted 2026-10-11 10:13 UTC, took 27 min\n" +
+		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
+			"started 2026-10-11 10:13 UTC, took 27 min\n" +
 			"summary: added the p95\nfiles changed: " + cut + " (1)\ndiff: none\nspend: €0.0000\n2 steps",
+	})
+}
+
+// startsTimeline is t-r's timeline of twelve sessions, each started for
+// another reason: the first after the card's creation, then a review's
+// findings, a grant, a change request, the provider's wait, a session
+// without a push, a push the gates sent back, an answer after the checks'
+// findings, a merge conflict, the checks' findings, a denied merge and a
+// review's findings after an answer.
+// What lies before the previous session's end or after the session's
+// start, a finding to the card, a session's own findings and another pull
+// request's signal start none.
+const startsTimeline = `{"step":"event","time":"2026-10-11T09:00:00Z","event":"card_created","by":"sebastian","issue":11}
+{"step":"session_start","time":"2026-10-11T10:00:00Z","session":"a1","attempt":1}
+{"step":"session_end","time":"2026-10-11T10:10:00Z","session":"a1","attempt":1,"outcome":"pushed"}
+{"step":"model_review","time":"2026-10-11T10:11:00Z","verdict":"concerns","round":1}
+{"step":"stage_findings","time":"2026-10-11T10:11:01Z","stage":"review","round":1,"to":"agent","findings":["cache.go: evict"]}
+{"step":"session_start","time":"2026-10-11T10:12:00Z","session":"a2","attempt":2}
+{"step":"session_end","time":"2026-10-11T10:20:00Z","session":"a2","attempt":2,"outcome":"no_push"}
+{"step":"stage_findings","time":"2026-10-11T10:20:01Z","stage":"session","round":1,"to":"card","attempt":2,"findings":["no push"]}
+{"step":"escalated","time":"2026-10-11T10:20:02Z"}
+{"step":"signal","time":"2026-10-11T10:25:01Z","signal":"human_comment","author":"sebastian","comment":7}
+{"step":"session_start","time":"2026-10-11T10:26:00Z","session":"a3","attempt":3}
+{"step":"session_end","time":"2026-10-11T10:30:00Z","session":"a3","attempt":3,"outcome":"pushed"}
+{"step":"signal","time":"2026-10-11T10:31:00Z","signal":"changes_requested","author":"alice","pr":9}
+{"step":"session_start","time":"2026-10-11T10:32:00Z","session":"a4","attempt":4}
+{"step":"session_end","time":"2026-10-11T10:35:00Z","session":"a4","attempt":4,"outcome":"provider_refused"}
+{"step":"provider_refused","time":"2026-10-11T10:35:01Z","status":429,"reason":"slow down","backoff_s":60}
+{"step":"session_start","time":"2026-10-11T10:40:00Z","session":"a5","attempt":4}
+{"step":"session_end","time":"2026-10-11T10:45:00Z","session":"a5","attempt":4,"outcome":"no_push"}
+{"step":"stage_findings","time":"2026-10-11T10:45:01Z","stage":"supervisor:no_progress","round":1,"to":"agent","attempt":4,"findings":["stalled"]}
+{"step":"session_start","time":"2026-10-11T10:46:00Z","session":"a6","attempt":5}
+{"step":"session_end","time":"2026-10-11T10:50:00Z","session":"a6","attempt":5,"outcome":"pushed"}
+{"step":"signal","time":"2026-10-11T10:51:00Z","signal":"changes_requested","author":"alice","pr":10,"ignored":"not the task's pull request"}
+{"step":"stage_findings","time":"2026-10-11T10:52:00Z","stage":"review","round":2,"to":"card","findings":["cache.go: bound"]}
+{"step":"session_start","time":"2026-10-11T10:55:00Z","session":"a7","attempt":6}
+{"step":"session_end","time":"2026-10-11T11:00:00Z","session":"a7","attempt":6,"outcome":"pushed"}
+{"step":"stage_findings","time":"2026-10-11T11:00:30Z","stage":"checks","round":3,"to":"agent","findings":["vet fails"]}
+{"step":"session_start","time":"2026-10-11T11:02:00Z","session":"a8","attempt":7}
+{"step":"session_end","time":"2026-10-11T11:05:00Z","session":"a8","attempt":7,"outcome":"pushed"}
+{"step":"merge_conflict","time":"2026-10-11T11:06:00Z","pr":9,"commit":"c8","approver":"sebastian","refusal":"conflict in go.mod"}
+{"step":"session_start","time":"2026-10-11T11:07:00Z","session":"a9","attempt":8}
+{"step":"session_end","time":"2026-10-11T11:10:00Z","session":"a9","attempt":8,"outcome":"pushed"}
+{"step":"stage_findings","time":"2026-10-11T11:10:30Z","stage":"checks","round":4,"to":"agent","findings":["vet fails"]}
+{"step":"session_start","time":"2026-10-11T11:12:00Z","session":"a10","attempt":9}
+{"step":"session_end","time":"2026-10-11T11:15:00Z","session":"a10","attempt":9,"outcome":"pushed"}
+{"step":"session_start","time":"2026-10-11T11:17:00Z","session":"a11","attempt":10}
+{"step":"session_end","time":"2026-10-11T11:20:00Z","session":"a11","attempt":10,"outcome":"pushed"}
+{"step":"stage_findings","time":"2026-10-11T11:21:30Z","stage":"review","round":5,"to":"agent","findings":["cache.go: evict"]}
+{"step":"session_start","time":"2026-10-11T11:22:00Z","session":"a12","attempt":11}
+`
+
+// The session read's second line is why the session started: the newest
+// reason between the previous session's end (the card's creation for the
+// first) and its start, from the card's timeline and its events; with
+// none, how the previous session ended. A card a retry filed starts its
+// first session for the retry; a planner's sessions start for factoryd's
+// findings on the plan, an answer to its question or a change request.
+func TestChatSessionStartedBecause(t *testing.T) {
+	r, g := newSessionsRig(t)
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(startsTimeline)
+	at := func(s string) time.Time { v, _ := time.Parse(time.RFC3339, s); return v }
+	for _, e := range []factoryd.Event{
+		{Kind: factoryd.EventSessionGranted, Actor: "sebastian", Via: factoryd.ViaChat, At: at("2026-10-11T10:25:00Z")},
+		{Kind: factoryd.EventQuestionAnswered, Actor: "alice", Via: factoryd.ViaWebhook, At: at("2026-10-11T10:42:00Z")},
+		{Kind: factoryd.EventQuestionAnswered, Actor: "sebastian", Via: factoryd.ViaButton, At: at("2026-10-11T11:01:00Z")},
+		{Kind: factoryd.EventMergeDenied, Actor: "sebastian", Via: factoryd.ViaButton, At: at("2026-10-11T11:16:00Z")},
+		{Kind: factoryd.EventQuestionAnswered, Actor: "alice", Via: factoryd.ViaWebhook, At: at("2026-10-11T11:18:00Z")},
+		{Kind: factoryd.EventQuestionAnswered, Actor: "sebastian", Via: factoryd.ViaChat, At: at("2026-10-11T11:21:00Z")},
+	} {
+		e.Repository, e.TaskID, e.IssueNumber = "sf/code", "t-r", 11
+		if _, err := r.events.Record(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var calls []string
+	for n := 1; n <= 12; n++ {
+		calls = append(calls, "session", fmt.Sprintf(`{"task_id":"t-r","n":%d}`, n))
+	}
+	var second []string
+	for _, s := range reads(t, r, g, calls...) {
+		second = append(second, strings.Split(s, "\n")[1])
+	}
+	equal(t, "why each session started", second, []string{
+		"started because: the card's first session",
+		"started because: the review's findings",
+		"started because: a granted session (sebastian)",
+		"started because: a change request",
+		"started because: the provider answered again",
+		"started because: the previous session ended without a push",
+		"started because: the previous session's push went back to the agent",
+		"started because: the member's answer (sebastian)",
+		"started because: a merge conflict with main",
+		"started because: the checks' findings",
+		"started because: a change request",
+		"started because: the review's findings",
+	})
+
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"event","time":"2026-10-11T09:00:00Z","event":"card_created","by":"sebastian","issue":11,"replaces":"t-q"}
+{"step":"session_start","time":"2026-10-11T09:01:00Z","session":"b1","attempt":1}
+`)
+	equal(t, "a retry's first session", strings.Split(reads(t, r, g, "session", `{"task_id":"t-r"}`)[0], "\n")[1],
+		"started because: a retry")
+
+	r.objects["sessions/t-m/timeline.jsonl"] = []byte(`{"step":"session_start","time":"2026-10-11T12:00:00Z","session":"p1","mode":"report"}
+{"step":"session_end","time":"2026-10-11T12:05:00Z","session":"p1","mode":"report","outcome":"done"}
+{"step":"plan_refused","time":"2026-10-11T12:06:00Z","revision":1,"by":"sebastian","findings":["no card owns deploy/"]}
+{"step":"session_start","time":"2026-10-11T12:07:00Z","session":"p2","mode":"report"}
+{"step":"session_end","time":"2026-10-11T12:10:00Z","session":"p2","mode":"report","outcome":"done"}
+{"step":"session_start","time":"2026-10-11T12:12:00Z","session":"p3","mode":"report"}
+{"step":"session_end","time":"2026-10-11T12:15:00Z","session":"p3","mode":"report","outcome":"done"}
+{"step":"session_start","time":"2026-10-11T12:17:00Z","session":"p4","mode":"report"}
+`)
+	for _, e := range []factoryd.Event{
+		{Kind: factoryd.EventPlanQuestionAnswered, Actor: "sebastian", Via: factoryd.ViaChat, At: at("2026-10-11T12:11:00Z")},
+		{Kind: factoryd.EventPlanChangesRequested, Actor: "alice", Via: factoryd.ViaButton, At: at("2026-10-11T12:16:00Z")},
+	} {
+		e.Repository, e.TaskID, e.IssueNumber = "sf/code", "t-m", 5
+		if _, err := r.events.Record(t.Context(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second = nil
+	for _, s := range reads(t, r, g, "session", `{"task_id":"t-m","n":2}`, "session", `{"task_id":"t-m","n":3}`, "session", `{"task_id":"t-m","n":4}`) {
+		second = append(second, strings.Split(s, "\n")[1])
+	}
+	equal(t, "a planner's sessions", second, []string{
+		"started because: factoryd's findings on the plan",
+		"started because: the member's answer (sebastian)",
+		"started because: a change request",
+	})
+}
+
+// A search without a step hit reads the session's end, whose summary
+// holds a failed session's error: its first matching line, of the session
+// the search named or, over every session, of each by its number.
+func TestChatSessionSearchEnd(t *testing.T) {
+	r, g := newSessionsRig(t)
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(strings.Replace(sessionsTimeline, `"summary":"stopped without a push"`,
+		`"summary":"the provider refused the call\nAPIError: Repetitive output detected (status 400)"`, 1))
+	equal(t, "searches the steps miss", reads(t, r, g,
+		"session_search", `{"task_id":"t-r","query":"repetitive","n":1}`,
+		"session_search", `{"task_id":"t-r","query":"repetitive"}`,
+		"session_search", `{"task_id":"t-r","query":"repetitive","n":2}`,
+		"session_search", `{"task_id":"t-r","query":"ed","n":1}`,
+	), []string{
+		"no step matches; the session's end says: APIError: Repetitive output detected (status 400)",
+		"no step matches; session 1's end says: APIError: Repetitive output detected (status 400)",
+		`no hit for "repetitive"`,
+		"no step matches; the session's end says: the provider refused the call",
 	})
 }

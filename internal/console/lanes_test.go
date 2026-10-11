@@ -789,16 +789,77 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 	}
 }
 
+// accept_plan without a revision proposes the plan's newest, named with
+// its sha256 (a given sha256 kept), and Do it accepts that one: a
+// revision the planner added since makes it stale. A stale revision given
+// is refused at Do it; where the chat confirms nothing, the call accepts
+// the newest at once. The card names the revision its plan request waits
+// on.
+func TestChatAcceptsTheNewestRevision(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
+		Lane: policy.LanePlan, Process: "spec", Objective: "Uptime checker.", Repository: "sf/code", IssueNumber: 22}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 3, "3c0ffee11"), planRevision("t-plan", 4, "11e3f66aa")}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-plan",
+		Project: "sf/code", Status: "pending", Spec: json.RawMessage(`{"revision":4,"sha256":"11e3f66aa"}`)})
+	equal(t, "the plan card", reads(t, r, g, "card", `{"task_id":"t-plan"}`), []string{
+		`#22 t-plan "Uptime checker" waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
+			"lane plan of process spec\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\n" +
+			"plan request 20 pending for revision 4\nplan: see plan\nobjective: Uptime checker."})
+
+	const pinned = `{"task_id":"t-plan","revision":4,"sha256":"11e3f66aa"}`
+	proposal := `proposal {"arguments":` + pinned + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 4 sha 11e3f66…","id":"TOKEN","tool":"accept_plan"}`
+	proposed, done, _ := proposeAndDo(t, r, g, "accept_plan", `{"task_id":"t-plan"}`)
+	equal(t, "the proposal", proposed, []string{proposal, `done {}`})
+	equal(t, "Do it", done, ran("accept_plan", pinned, "Accepted revision 4 of plan #22; factoryd files its cards."))
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 4 11e3f66aa by sebastian") {
+		t.Errorf("calls %v", r.fg.calls)
+	}
+
+	r.fg.calls = nil
+	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", `{"task_id":"t-plan","sha256":"11e3f66aa"}`)
+	equal(t, "a sha256 without a revision", [][]string{proposed, done}, [][]string{{proposal, `done {}`},
+		ran("accept_plan", pinned, "Accepted revision 4 of plan #22; factoryd files its cards.")})
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 4 11e3f66aa by sebastian") {
+		t.Errorf("a sha256 without a revision: calls %v", r.fg.calls)
+	}
+
+	const stale = `{"task_id":"t-plan","revision":3,"sha256":"3c0ffee11"}`
+	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", stale)
+	equal(t, "a stale revision", [][]string{proposed, done}, [][]string{
+		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
+		{`tool {"arguments":` + stale + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 4; reload"}`, `done {}`}})
+
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan"}`)}}
+	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
+	r.tasks.mu.Lock()
+	r.tasks.plans["t-plan"] = append(r.tasks.plans["t-plan"], planRevision("t-plan", 5, "5d00d00"))
+	r.tasks.mu.Unlock()
+	_, done, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "a revision after the proposal", [][]string{proposed, done}, [][]string{{proposal, `done {}`},
+		{`tool {"arguments":` + pinned + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 5; reload"}`, `done {}`}})
+
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	r.fg.calls = nil
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan"}`)}, {say("Accepted.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 5 5d00d00 by sebastian") {
+		t.Errorf("unconfirmed: calls %v", r.fg.calls)
+	}
+}
+
 // Stage 16 item 3.6: factoryd's refusal of a plan without a deploy owner
 // is the member's sentence: the button answers it with 409, the chat's
-// Do it as its refusal.
+// Do it as its refusal, whole on the stream's tool line too.
 func TestAcceptPlanNoDeployOwner(t *testing.T) {
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
 		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime\n\nDeploy: one Deployment.", Repository: "sf/code", IssueNumber: 21}})
 	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string) error { return factoryd.ErrNoDeployOwner }
 	refused := "the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ and whose brief names " +
-		"the manifests' changes (the Secret, the environment, the volume, the service). The planner revises the plan; no change request is needed."
+		"the manifests' changes (the Secret, the environment, the volume, the service). The planner revises the plan; no change request is needed. " +
+		"The next revision replaces this one: read the plan again before you accept."
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "sha256": {"sha-2"}}), ck)
 	if rec.Code != http.StatusConflict || rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {
@@ -810,4 +871,6 @@ func TestAcceptPlanNoDeployOwner(t *testing.T) {
 	equal(t, "Do it", events, []string{
 		`tool {"arguments":{"task_id":"t-plan","revision":2,"sha256":"sha-2"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`,
 		`done {}`})
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
+	equal(t, "the Do it's result", stored[0].ToolCalls[0].Result, "Refused: "+refused)
 }

@@ -30,6 +30,7 @@ const (
 	searchHits    = 20
 	filesListed   = 50
 	excerptSide   = 100
+	startEvents   = 500
 )
 
 // sessionRef is one of a card's sessions by its timeline, N its number
@@ -77,6 +78,76 @@ func sessionsOf(steps []map[string]any) []sessionRef {
 		}
 	}
 	return out
+}
+
+// startedBecause is why session s of all started: the newest answer,
+// grant, finding sent to the agent, change request, merge conflict,
+// provider wait or retry between the previous session's end (the card's
+// creation for the first) and s's start, in the card's timeline steps and
+// its events; with none, how the previous session ended.
+func startedBecause(all []sessionRef, s sessionRef, steps []map[string]any, events []factoryd.Event) string {
+	var prev *sessionRef
+	var since, newest time.Time
+	if s.N > 1 {
+		prev = &all[s.N-2]
+		if since = prev.Ended; since.IsZero() {
+			since = prev.Started
+		}
+	}
+	why := ""
+	take := func(at time.Time, reason string) {
+		if reason != "" && at.After(since) && !at.After(s.Started) && !at.Before(newest) {
+			why, newest = reason, at
+		}
+	}
+	for _, m := range steps {
+		reason := ""
+		switch m["step"] {
+		case "stage_findings":
+			if stage := textAt(m, "stage"); textAt(m, "to") == "agent" && stage != "session" && !strings.HasPrefix(stage, "supervisor:") {
+				reason = "the " + stage + "'s findings"
+				if strings.HasSuffix(stage, "s") {
+					reason = "the " + stage + "' findings"
+				}
+			}
+		case "signal":
+			if m["signal"] == factoryd.SignalChangesRequested && m["ignored"] == nil {
+				reason = "a change request"
+			}
+		case "merge_conflict":
+			reason = "a merge conflict with main"
+		case factoryd.StepProviderRefused:
+			reason = "the provider answered again"
+		case "plan_refused", "plan_invalid":
+			reason = "factoryd's findings on the plan"
+		case factoryd.StepEvent:
+			if m["event"] == factoryd.EventCardCreated && textAt(m, "replaces") != "" {
+				reason = "a retry"
+			}
+		}
+		take(stepTime(m), reason)
+	}
+	for _, e := range events {
+		reason := ""
+		switch e.Kind {
+		case factoryd.EventQuestionAnswered, factoryd.EventPlanQuestionAnswered:
+			reason = "the member's answer (" + e.Actor + ")"
+		case factoryd.EventSessionGranted:
+			reason = "a granted session (" + e.Actor + ")"
+		case factoryd.EventMergeDenied, factoryd.EventPlanChangesRequested:
+			reason = "a change request"
+		}
+		take(e.At, reason)
+	}
+	switch {
+	case why != "":
+		return why
+	case prev == nil:
+		return "the card's first session"
+	case prev.Outcome == string(factoryd.OutcomePushed):
+		return "the previous session's push went back to the agent"
+	}
+	return "the previous session ended without a push"
 }
 
 // sessions are card in's timeline and sessions, refused when in.N
@@ -295,6 +366,10 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	events, err := t.c.cfg.Events.TaskEvents(t.r.Context(), k.ID, startEvents)
+	if err != nil {
+		return "", err
+	}
 	s := sessionAt(all, in.N)
 	var b strings.Builder
 	fmt.Fprintf(&b, "session %d of %d (%s)", s.N, len(all), s.ID)
@@ -305,6 +380,7 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	if s.Commit != "" {
 		b.WriteString(", commit " + s.Commit)
 	}
+	b.WriteString("\nstarted because: " + startedBecause(all, s, steps, events))
 	const day = "2006-01-02 15:04 UTC"
 	if s.Ended.IsZero() {
 		fmt.Fprintf(&b, "\nrunning since %s", s.Started.UTC().Format(day))
@@ -493,6 +569,26 @@ func search(s sessionRef, body []byte, re *regexp.Regexp, hits *[]string, total 
 	})
 }
 
+// endHits are the lines of the sessions' ends, a failed session's error
+// among them, that re matches: each session's first, named by its number
+// when the search reads more than one session.
+func endHits(all []sessionRef, re *regexp.Regexp) []string {
+	var out []string
+	for _, s := range all {
+		for _, l := range strings.Split(s.Summary, "\n") {
+			if at := re.FindStringIndex(l); at != nil {
+				whose := "the session's"
+				if len(all) > 1 {
+					whose = fmt.Sprintf("session %d's", s.N)
+				}
+				out = append(out, "no step matches; "+whose+" end says: "+excerpt(l, at[0], at[1]))
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (t *turn) searchText(in toolInput) (string, error) {
 	if n := utf8.RuneCountInString(in.Query); n < 2 || n > 200 {
 		return "", refuse(http.StatusBadRequest, "The query is 2 to 200 characters.")
@@ -521,6 +617,8 @@ func (t *turn) searchText(in toolInput) (string, error) {
 	answer := fmt.Sprintf("no hit for %q", in.Query)
 	if len(hits) > 0 {
 		answer = strings.Join(hits, "\n")
+	} else if ends := endHits(all, re); len(ends) > 0 {
+		answer = strings.Join(ends, "\n")
 	}
 	if total > len(hits) {
 		answer += fmt.Sprintf("\n... and %d more", total-len(hits))

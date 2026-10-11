@@ -128,15 +128,21 @@ func (t *turn) card(in toolInput) (factoryd.Task, error) {
 	return t.c.cardIn(t.r.Context(), t.a, in.TaskID)
 }
 
-// describe is one line saying what a proposal of tool with in would do;
-// a card of another project refuses it.
-func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
+// describe is one line saying what a proposal of tool with in would do,
+// in pinned to the plan revision an accept_plan names; a card of another
+// project refuses it.
+func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	parts := []string{tool.title}
 	var k factoryd.Task
 	if in.TaskID != "" {
 		var err error
-		if k, err = t.card(in); err != nil {
+		if k, err = t.card(*in); err != nil {
 			return "", err
+		}
+		if tool.name == "accept_plan" {
+			if err := t.pinPlan(in); err != nil {
+				return "", err
+			}
 		}
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
 	}
@@ -158,7 +164,11 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		}
 	}
 	if in.Revision > 0 {
-		parts = append(parts, fmt.Sprintf("revision %d", in.Revision))
+		rev := fmt.Sprintf("revision %d", in.Revision)
+		if in.SHA256 != "" {
+			rev += " sha " + textutil.Truncate(in.SHA256, 7)
+		}
+		parts = append(parts, rev)
 	}
 	if tool.name == "answer" {
 		bt, _, err := t.c.cfg.Tasks.BoardTask(t.r.Context(), in.TaskID)
@@ -179,6 +189,26 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		}
 	}
 	return sanitize.Inbound(strings.Join(parts, ", ")), nil
+}
+
+// pinPlan sets the plan revision in names, the newest for none, and its
+// sha256 unless in names one; a card with no such revision keeps in.
+func (t *turn) pinPlan(in *toolInput) error {
+	if in.Revision > 0 && in.SHA256 != "" {
+		return nil
+	}
+	k, err := t.card(*in)
+	if err != nil {
+		return err
+	}
+	rev, ok, err := t.c.cfg.Tasks.PlanRevision(t.r.Context(), k.ID, in.Revision)
+	if ok {
+		in.Revision = rev.Revision
+		if in.SHA256 == "" {
+			in.SHA256 = rev.SHA256
+		}
+	}
+	return err
 }
 
 // numbered is a question's choices on one line, each with its number, so
@@ -504,12 +534,15 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "accept_plan", title: "Accept a plan", write: true,
-		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the plan revision the member saw", "minimum": 1},
-			"sha256": str("that revision's sha256, from the plan tool")},
-		required: []string{"task_id", "revision", "sha256"},
-		about:    "Accept a plan's revision, which factoryd then files as cards (an approver's action).",
+		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the plan revision the member saw (default the newest)", "minimum": 1},
+			"sha256": str("that revision's sha256, from the plan tool (default the revision's)")},
+		required: []string{"task_id"},
+		about:    "Accept a plan's revision, the newest unless revision names one, which factoryd then files as cards (an approver's action); the proposal names the revision and its sha256.",
 		fits:     "a plan awaiting acceptance",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			if err := t.pinPlan(&in); err != nil {
+				return "", nil, err
+			}
 			note, err := t.c.doAcceptPlan(t.r.Context(), t.a, in.TaskID, in.Revision, in.SHA256)
 			return note, nil, err
 		}},

@@ -306,12 +306,17 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	case slices.Contains(t.cfg.Confirm, tool.name):
 		t.took(in.Token)
-		desc, err := t.describe(tool, in)
+		asked := in
+		desc, err := t.describe(tool, &in)
 		if err != nil {
 			result = "Refused: " + t.sentence(err)
 			break
 		}
 		raw := json.RawMessage(cmp.Or(args, "{}"))
+		if in != asked {
+			pinned, _ := json.Marshal(in)
+			raw = json.RawMessage(masked(string(pinned)))
+		}
 		id := t.keep("proposal", tool.name, raw, desc)
 		if id == "" {
 			result = "The proposal could not be stored; nothing runs."
@@ -427,8 +432,14 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 		arguments, _ = json.Marshal(args)
 	}
 	first, _, _ := strings.Cut(result, "\n")
+	// a refusal is read whole, within reason: a Forgejo message is not bounded
+	limit := 300
+	if strings.HasPrefix(first, "Refused: ") {
+		limit = 2000
+	}
+	first = textutil.Truncate(first, limit)
 	t.send("tool", map[string]any{"name": name, "arguments": arguments,
-		"duration_ms": took.Milliseconds(), "result": textutil.Truncate(first, 300)})
+		"duration_ms": took.Milliseconds(), "result": first})
 }
 
 // sentence is err as the member and the agent read it.

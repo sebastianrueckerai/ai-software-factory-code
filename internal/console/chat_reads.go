@@ -99,6 +99,10 @@ func (t *turn) cardText(in toolInput) (string, error) {
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s request %d pending", q.Kind, q.ID)
+		var plan factoryd.PlanSpec
+		if q.Kind == factoryd.ApprovalPlan && json.Unmarshal(q.Spec, &plan) == nil && plan.Revision > 0 {
+			fmt.Fprintf(&b, " for revision %d", plan.Revision)
+		}
 		var spec factoryd.MergeSpec
 		if q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
 			fmt.Fprintf(&b, " for pull request #%d, risk %s", q.PRNumber, spec.RiskClass)
@@ -238,6 +242,22 @@ func (t *turn) planText(in toolInput) (string, error) {
 		b.WriteString("\n" + factoryd.QuestionLine(i+1, q))
 		if q.Answer != "" {
 			fmt.Fprintf(&b, " answered: %s (%s)", q.Answer, q.AnsweredBy)
+		}
+	}
+	for n := rev.Revision - 1; len(qs) == 0 && n > 0; n-- {
+		earlier, err := t.c.cfg.Tasks.PlanQuestions(ctx, plan.ID, n)
+		if err != nil {
+			return "", err
+		}
+		var answers []string
+		for i, q := range earlier {
+			if q.Answer != "" {
+				answers = append(answers, fmt.Sprintf("\n%d. %s -> %s (%s)", i+1, q.Text, q.Answer, q.AnsweredBy))
+			}
+		}
+		if len(answers) > 0 {
+			fmt.Fprintf(&b, "\nbuilt from the answers of revision %d:%s", n, strings.Join(answers, ""))
+			break
 		}
 	}
 	for _, row := range rows {

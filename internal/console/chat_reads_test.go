@@ -114,12 +114,7 @@ func refused(t *testing.T, r *rig, name string, in toolInput) (int, string) {
 // plan with no revision yet.
 func TestChatPlanRead(t *testing.T) {
 	r, g := newReadsRig(t)
-	plan := "revision 1, sha256 5e1f\nsummary: An API, then its web UI.\n" +
-		`api foundation "API layer" small depends on none issue #21` + "\n" +
-		`web feature "Web UI" medium depends on api issue #22` + "\n" +
-		`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
-		`#21 t-c1 "api" running (runs an agent session), gate session (an agent works in a sandbox), €0.50 of €2.00` + "\n" +
-		`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`
+	plan := "revision 1, sha256 5e1f\nsummary: An API, then its web UI.\n" + readsPlanRows
 	equal(t, "the plan reads", reads(t, r, g, "plan", `{"task_id":"t-p"}`, "plan", `{"task_id":"t-c1"}`, "plan", `{"task_id":"t-m"}`),
 		[]string{plan, "card of plan #20\n" + plan, "Refused: Card #5 is no plan and belongs to none."})
 	status, _ := refused(t, r, "plan", toolInput{TaskID: "t-m"})
@@ -129,6 +124,44 @@ func TestChatPlanRead(t *testing.T) {
 	r.tasks.mu.Unlock()
 	status, msg := refused(t, r, "plan", toolInput{TaskID: "t-c2"})
 	equal(t, "a plan without a revision", []any{status, msg}, []any{http.StatusConflict, "Plan #20 has no revision yet."})
+}
+
+// readsPlanRows are plan t-p's rows and its filed cards as the plan read
+// lists them.
+const readsPlanRows = `api foundation "API layer" small depends on none issue #21` + "\n" +
+	`web feature "Web UI" medium depends on api issue #22` + "\n" +
+	`accept integration "Acceptance tests" small depends on api, web not filed` + "\n" +
+	`#21 t-c1 "api" running (runs an agent session), gate session (an agent works in a sandbox), €0.50 of €2.00` + "\n" +
+	`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00`
+
+// A revision without questions of its own lists the answers of the
+// newest earlier revision with answered ones, which the planner built it
+// from; a revision with its own questions lists only those.
+func TestChatPlanBuiltFromAnswers(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	second, third := r.tasks.plans["t-p"][0], r.tasks.plans["t-p"][0]
+	second.Revision, second.SHA256 = 2, "6a2b"
+	third.Revision, third.SHA256 = 3, "7c3d"
+	r.tasks.plans["t-p"] = append(r.tasks.plans["t-p"], second)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": {
+		{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Answer: "Postgres", AnsweredBy: "sebastian"},
+		{Text: "How long are links kept?", Choices: []string{"30 days", "forever"}, Answer: "30 days", AnsweredBy: "alice"}}}
+	r.tasks.mu.Unlock()
+	const summary = "summary: An API, then its web UI.\n"
+	const built = "built from the answers of revision 1:\n1. Which database? -> Postgres (sebastian)\n2. How long are links kept? -> 30 days (alice)\n"
+	equal(t, "revision 2 without questions", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
+		[]string{"revision 2, sha256 6a2b\n" + summary + built + readsPlanRows})
+	r.tasks.mu.Lock()
+	r.tasks.plans["t-p"] = append(r.tasks.plans["t-p"], third)
+	r.tasks.mu.Unlock()
+	equal(t, "revision 3 after a revision 2 without questions", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
+		[]string{"revision 3, sha256 7c3d\n" + summary + built + readsPlanRows})
+	r.tasks.mu.Lock()
+	r.tasks.questions["t-p 3"] = []factoryd.PlanQuestion{{Text: "Which cache?", Choices: []string{"none", "redis"}}}
+	r.tasks.mu.Unlock()
+	equal(t, "revision 3 with its own question", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
+		[]string{"revision 3, sha256 7c3d\n" + summary + "1. Which cache? (choices: none / redis)\n" + readsPlanRows})
 }
 
 // The card read is the card in full: its state, gate and spend, lane,
