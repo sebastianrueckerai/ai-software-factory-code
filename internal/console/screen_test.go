@@ -154,7 +154,7 @@ func TestStatusLineFigures(t *testing.T) {
 	const title = `title="spend this UTC month against the project's month cap"`
 	code := `<p class="status-line" aria-label="Status of the project">
 <strong class="pname">ai-software-factory-code</strong>
-<span class="state" data-state="working"><span aria-hidden="true">●</span> working</span>
+<span class="state" data-state="waiting on you"><span aria-hidden="true">●</span> waiting on you</span>
 <span class="fig">2 working</span>
 <a href="#needs-you" class="fig need">5 need you</a>
 <a href="/costs" class="fig" ` + title + `>€5.50 / €50.00</a>

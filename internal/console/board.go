@@ -1067,10 +1067,10 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	s := &d.Status
 	s.Project = p.Name
 	switch {
-	case s.Working > 0:
-		s.State = "working"
 	case s.NeedYou > 0:
 		s.State = "waiting on you"
+	case s.Working > 0:
+		s.State = "working"
 	default:
 		s.State = "idle"
 	}
