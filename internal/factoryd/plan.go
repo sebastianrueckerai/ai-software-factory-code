@@ -213,9 +213,9 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	add := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
 	}
-	switch c.Size {
-	case "small", "medium", "large":
-	case "":
+	switch {
+	case slices.Contains(policy.CardSizes, c.Size):
+	case c.Size == "":
 		add(`size "": want small, medium or large`)
 	default:
 		add("size %s: split it; a card is one package, one page or one set of endpoints", c.Size)

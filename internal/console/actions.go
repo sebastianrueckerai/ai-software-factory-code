@@ -156,7 +156,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "lane must be backlog, plan, ready or human")
 	case priority != "" && !slices.Contains(priorities, priority):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "unknown priority")
-	case size != "" && !slices.Contains([]string{"small", "medium", "large"}, size):
+	case size != "" && !slices.Contains(policy.CardSizes, size):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
 	}
 	detail := map[string]any{"lane": lane, "title": title}

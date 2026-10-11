@@ -1384,6 +1384,8 @@ func TestIntakeBudgetBySize(t *testing.T) {
 		{"Build it.", 0, 5},
 		{"Size: small\nBUDGET: 7", 0, 7},
 		{"Size: small\nSize: large", 0, 2},
+		{"notes\nsize: 100MB\n\nSize: large", 0, 10},
+		{"Budget: abc\nBudget: 7", 0, 7},
 		{"The size: large is not a line of its own", 0, 5},
 	} {
 		in, store, _ := newTestIntake(t)
