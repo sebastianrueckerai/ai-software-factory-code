@@ -184,7 +184,11 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		ask.Choices = offeredChoices(in.TaskID, ask.Choices)
+		if ask.Kind == AskInfo {
+			ask.Choices = nil // the issue's author answers on Forgejo, where no button shows
+		} else {
+			ask.Choices = offeredChoices(in.TaskID, ask.Choices)
+		}
 		t, ok, err := store.Task(r.Context(), in.TaskID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -1163,21 +1163,26 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 }
 
-// The agent's choices ride with its escalation: on the intake event the
+// The agent's choices ride with its escalation, sanitised like the reason
+// since a click posts one as the member's comment: on the intake event the
 // board reads, on the timeline's escalated step, and in the question_asked
-// row's detail beside the question and the comment. An escalation without
-// choices records none.
+// row's detail beside the question and the comment. A healed re-ask's row
+// names the question it asks again; an escalation without choices records
+// none.
 func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open", []string{"a.txt", "b.txt", "c.txt"}); err != nil {
-		t.Fatal(err)
+	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", healedReason} {
+		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := execActivity(t, r, ActivityEscalate, "t1", "supervisor escalated: the check cannot pass\n\nProgress: 3 commands"); err != nil {
 		t.Fatal(err)
 	}
-	if e := store.intakeEvents; len(e) != 2 || !slices.Equal(e[0].Choices, []string{"a.txt", "b.txt", "c.txt"}) || e[1].Choices != nil {
+	sane := []string{"a.txt", "b.txt", "ask ＠mallory"}
+	if e := store.intakeEvents; len(e) != 3 || !slices.Equal(e[0].Choices, sane) || !slices.Equal(e[1].Choices, sane) || e[2].Choices != nil {
 		t.Fatalf("intake events = %+v", e)
 	}
 	var steps []string
@@ -1187,14 +1192,16 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 			steps = append(steps, fmt.Sprint(m["comment"], " ", m["choices"]))
 		}
 	}
-	if want := []string{"701 [a.txt b.txt c.txt]", "702 <nil>"}; !slices.Equal(steps, want) {
+	if want := []string{"701 [a.txt b.txt ask ＠mallory]", "702 [a.txt b.txt ask ＠mallory]", "703 <nil>"}; !slices.Equal(steps, want) {
 		t.Fatalf("escalated steps = %q, want %q", steps, want)
 	}
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "c.txt"}, "comment": int64(701)}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(701)}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "supervisor escalated: the check cannot pass", "comment": int64(702)}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702)}},
+		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"question": "supervisor escalated: the check cannot pass", "comment": int64(703)}},
 	}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)

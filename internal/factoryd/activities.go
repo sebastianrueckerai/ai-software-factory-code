@@ -521,8 +521,24 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
+	question := escalationQuestion(reason)
+	if reason == healedReason {
+		// the restart's sentence asks nothing: the row names the question it asks again
+		events, err := r.store.IntakeEvents(ctx, taskID)
+		if err != nil {
+			log.Printf("task %s: the question a healed run asks again: %v", taskID, err)
+		}
+		_, again, _ := answersFrom(events)
+		question = cmp.Or(again, question)
+	}
+	// a clicked choice is posted as the member's comment: agent text,
+	// sanitised like the reason
+	choices = slices.Clone(choices)
+	for i, c := range choices {
+		choices[i] = r.untrusted(t, c)
+	}
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": id}
+	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id}
 	if len(choices) > 0 {
 		step["choices"], asked["choices"] = choices, choices
 	}

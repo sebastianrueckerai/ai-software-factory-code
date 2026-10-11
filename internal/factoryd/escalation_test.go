@@ -259,6 +259,15 @@ func TestEscalationHandlerChoices(t *testing.T) {
 			t.Errorf("%s: log %q, want %q", tc.name, got, tc.logged)
 		}
 	}
+	// the issue's author answers an information request on Forgejo: it keeps no choices
+	store.intakeEvents = nil
+	s := &fakeSessions{}
+	rec := httptest.NewRecorder()
+	EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
+		`{"task_id":"t-run","kind":"info_request","question":"Which browser?","tried":"the steps","needs":"the version","choices":["Firefox","Chrome"]}`)))
+	if rec.Code != http.StatusAccepted || len(s.asks) != 1 || s.asks[0].Choices != nil || len(store.intakeEvents) != 1 || store.intakeEvents[0].Choices != nil {
+		t.Fatalf("info request = %d, delivered %+v, stored %+v; want no choices", rec.Code, s.asks, store.intakeEvents)
+	}
 }
 
 // An escalation counts as delivered only once the session took it: one the

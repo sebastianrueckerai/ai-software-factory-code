@@ -587,6 +587,33 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 }
 
+// A choice list of more than 5 entries or over 1 KiB is dropped before
+// factoryd, whose body cap would refuse the question with it: the question
+// is delivered without choices, never refused. 1024 bytes pass.
+func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	many := make([]string, 300)
+	for i := range many {
+		many[i] = strings.Repeat("x", 230)
+	}
+	for _, tc := range []struct {
+		name    string
+		choices []string
+		want    []string
+	}{
+		{"300 choices", many, nil},
+		{"1025 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 425)}, nil},
+		{"1024 bytes", []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}, []string{strings.Repeat("a", 600), strings.Repeat("b", 424)}},
+	} {
+		before := len(e.escalator.calls)
+		text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "none named", "recommendation": "MIT", "choices": tc.choices})
+		if isErr || !strings.HasPrefix(text, "escalated; this session will end") || len(e.escalator.calls) != before+1 ||
+			e.escalator.calls[before] != "42|escalation|Which license?|none named|MIT||" || !slices.Equal(e.escalator.choices[before], tc.want) {
+			t.Errorf("%s: %q, delivered %q with choices %q; want the question with %d", tc.name, text, e.escalator.calls[before:], e.escalator.choices[before:], len(tc.want))
+		}
+	}
+}
+
 // The recommendation is required, at most 2000 bytes (ruling 149); a
 // refused call reaches no factoryd.
 func TestEscalateNeedsARecommendation(t *testing.T) {

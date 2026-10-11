@@ -166,6 +166,13 @@ const (
 	maxRecommendation = 2000
 )
 
+// maxChoices and maxChoicesBytes bound the choices passed on to factoryd,
+// which checks each one where it stores them.
+const (
+	maxChoices      = 5
+	maxChoicesBytes = 1 << 10
+)
+
 // toolServer is the MCP server of one request. Every tool is listed; a
 // call the task's classes, caps or headroom do not allow is refused with
 // the reason, as a tool error the agent reads.
@@ -516,7 +523,16 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
 			"question, reason and recommendation are required, question and reason at most %d bytes, the recommendation at most %d", maxQuestion, maxRecommendation))
 	}
-	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: in.Choices}, "escalated",
+	choices, size := in.Choices, 0
+	for _, ch := range choices {
+		size += len(ch)
+	}
+	if len(choices) > maxChoices || size > maxChoicesBytes {
+		// factoryd's body cap would refuse the question with them
+		log.Printf("task %s: escalate_to_human's %d choices of %d bytes are dropped: at most %d of %d bytes in all", c.task.ID, len(choices), size, maxChoices, maxChoicesBytes)
+		choices = nil
+	}
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices}, "escalated",
 		"escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now.")
 }
 
