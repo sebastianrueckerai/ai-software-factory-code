@@ -173,7 +173,7 @@ var chatView = (function () {
   }
   function queueHTML(items) {
     return items.map(function (text, i) {
-      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + "\">" + esc(text) +
+      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + ": " + esc(text) + "\">" + esc(text) +
         "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
     }).join("");
   }
@@ -352,7 +352,7 @@ var chatView = (function () {
     area.rows = 2;
     area.value = b.textContent;
     area.dataset.edit = b.dataset.edit;
-    area.setAttribute("aria-label", b.getAttribute("aria-label"));
+    area.setAttribute("aria-label", "Queued message " + (Number(b.dataset.edit) + 1));
     b.replaceWith(area);
     area.focus();
   });

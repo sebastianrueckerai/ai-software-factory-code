@@ -831,10 +831,11 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // stream is down, and a board fragment that carries the status line out
 // of band. console.js under node, which the test needs: it follows the
 // stream under the board's query; a first open asks for nothing, a
-// reconnect for the board once, and no timer for anything; counters set
-// the status line and the columns' counts; the agent's text and a steer
-// reach the drawer's Chat once each, and another session's text loads
-// the tab again.
+// reconnect for the board once and the drawer's Chat it shows, and no
+// timer for anything; counters set the status line and the columns'
+// counts; the agent's text and a steer reach the drawer's Chat once each,
+// and another session's text and the card's new status load the tab
+// again.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -903,6 +904,8 @@ event(text);
 requests = [];
 event({id: 7, at: "2026-10-11T10:06:00Z", task_id: "t-run", kind: "card_steered", actor: "sebastian", detail: {text: "Merge it."}});
 event({id: 0, at: "2026-10-11T10:07:00Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-3", text: "Again."}});
+event({id: 8, at: "2026-10-11T10:08:00Z", task_id: "t-run", kind: "task_status", actor: "factoryd", detail: {status: "in-review"}});
+event({id: 9, at: "2026-10-11T10:08:00Z", task_id: "t-other", kind: "task_status", actor: "factoryd", detail: {status: "done"}});
 out.after = requests;
 out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
 out.timers = timers;
@@ -912,9 +915,9 @@ console.log(JSON.stringify(out));`
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code"],"timers":0,` +
+	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],"timers":0,` +
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
-		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],` +
+		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."]}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)

@@ -163,16 +163,19 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     if (line) line.innerHTML = d.status;
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
   }
+  // chat loads the drawer's Chat again while it shows card id's session,
+  // any card's for ""
+  function chat(id) {
+    var log = document.getElementById("session-log");
+    if (log && (!id || log.dataset.task === id)) htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
+  }
   // said adds the agent's text or a steer to the drawer's Chat while it
   // shows that card's session, once; another session's text loads the
   // tab again
   function said(e) {
     var log = document.getElementById("session-log"), d = e.detail, agent = e.kind === "session_said";
     if (!log || log.dataset.task !== e.task_id) return;
-    if (agent && d.session !== log.dataset.session) {
-      htmx.ajax("GET", "/cards/" + encodeURIComponent(e.task_id) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
-      return;
-    }
+    if (agent && d.session !== log.dataset.session) return chat(e.task_id);
     var key = agent ? d.session + "@" + e.at : "e" + e.id, box = document.getElementById("drawer");
     if (log.querySelector("[data-key=\"" + CSS.escape(key) + "\"]")) return;
     var end = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
@@ -190,8 +193,12 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     var es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query), opened = false;
     es.onopen = function () {
       document.getElementById("live").textContent = "";
-      // the replay after a reconnect holds at most the newest 500 events
-      if (opened) swapBoard();
+      // the replay after a reconnect holds at most the newest 500 events;
+      // the agent's text is never replayed, so the Chat is read again
+      if (opened) {
+        swapBoard();
+        chat("");
+      }
       opened = true;
     };
     es.onerror = function () {
@@ -205,6 +212,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
         if (e.kind === "card_steered") said(e);
+        // a new status may end the session, and its steer box with it
+        if (e.kind === "task_status") chat(e.task_id);
         swapCard(e.task_id);
       }
     });

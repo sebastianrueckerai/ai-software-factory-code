@@ -1602,6 +1602,7 @@ type drawerData struct {
 	Session                    *sessionRef
 	Said                       []said
 	Steers                     bool   // the session runs and takes the member's messages
+	Note                       string // what the member's action did
 	Problem                    string // what the tab could not read
 }
 
@@ -1628,21 +1629,23 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, activity, files or chat", http.StatusBadRequest)
 		return
 	}
-	c.drawer(w, r, tab)
+	c.drawer(w, r, tab, "")
 }
 
 // steerCard hands the member's message from the drawer's Chat to card
-// id's running session (doSteer) and answers the tab again.
+// id's running session (doSteer) and answers the tab again with its note.
 func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
-	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
+	note, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text"))
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.drawer(w, r, "chat")
+	c.drawer(w, r, "chat", note)
 }
 
-// drawer renders the card drawer on tab, "" for the card's default.
-func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
+// drawer renders the card drawer on tab, "" for the card's default, with
+// note, what the member's action did.
+func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note string) {
 	bt, k, v, ok := c.writableCard(w, r, http.StatusForbidden)
 	if !ok {
 		return
@@ -1654,7 +1657,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 	}
 	ctx := r.Context()
-	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
+	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
 	problem := func(what string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
 		d.Problem = "The " + what + " could not be read; see the factoryd log."

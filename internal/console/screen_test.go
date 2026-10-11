@@ -703,8 +703,9 @@ Next: the tests.</p></div>
 
 // A steer from the drawer is the member's own act, so no proposal: the
 // steer function at once, its row with the text, and the Chat tab again
-// with the message in it; a card that runs no session refuses it and
-// records nothing.
+// with the message in it and the steer's note; a GitHub token in it
+// reaches neither the session, the row, the stream nor the answer; a
+// card that runs no session refuses it and records nothing.
 func TestDrawerSteer(t *testing.T) {
 	r, _ := drawerRig(t)
 	var steered []string
@@ -730,23 +731,44 @@ func TestDrawerSteer(t *testing.T) {
 		t.Errorf("steered %q", steered)
 	}
 	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Chat", true),
+		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
+<p class="note" role="status">The session of #11 has your message.</p>`,
 		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><p class="who">sebastian · ` + row.At.UTC().Format("01-02 15:04") +
 			`Z</p><p class="said">Rebase on main first.</p></div>`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the steer's answer lacks %s:\n%s", want, rec.Body)
 		}
 	}
+
+	const token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	_, br := streamOf(t, r, "")
+	rec = r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"Push with " + token + " now."}}), ck)
+	all := r.events.all()
+	row = all[len(all)-1]
+	if rec.Code != http.StatusOK || row.Detail["text"] != "Push with [token] now." || steered[1] != "t-run sebastian: Push with [token] now." {
+		t.Errorf("a steer with a token = %d, row %v, steered %q", rec.Code, row.Detail, steered)
+	}
+	if got := strings.Join(nextMessage(t, br), "\n"); !strings.Contains(got, `"detail":{"text":"Push with [token] now."}`) || strings.Contains(got, token) {
+		t.Errorf("the stream carries %s", got)
+	}
+	if body := rec.Body.String(); strings.Contains(body, token) || !strings.Contains(body, `<p class="said">Push with [token] now.</p>`) ||
+		!strings.Contains(body, `<p class="note" role="status">The session of #11 has your message. I removed a GitHub token from it; it was not stored or sent.</p>`) {
+		t.Errorf("the answer to a steer with a token:\n%s", body)
+	}
 	before = r.events.count()
 	if rec := r.do(post("/tasks/t-pr/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
-		len(steered) != 1 || r.events.count() != before {
+		len(steered) != 2 || r.events.count() != before {
 		t.Errorf("a steer to a card in review = %d, steered %q, %d rows: %s", rec.Code, steered, r.events.count()-before, rec.Body)
 	}
 }
 
 // The drawer and its steer are its project's writers': 403 to anyone
-// else, 404 for an unknown card, 400 for an unknown tab.
+// else and to a steer without the form token, 404 for an unknown card,
+// 400 for an unknown tab.
 func TestDrawerRefusals(t *testing.T) {
 	r, ck := drawerRig(t)
+	steered := 0
+	r.c.cfg.Steer = func(context.Context, string, string, string) error { steered++; return nil }
 	for path, code := range map[string]int{"/cards/t-nope/drawer": http.StatusNotFound, "/cards/t-run/drawer?tab=steps": http.StatusBadRequest} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck); rec.Code != code {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, code)
@@ -757,6 +779,17 @@ func TestDrawerRefusals(t *testing.T) {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab="+tab, nil), ak); rec.Code != http.StatusForbidden {
 			t.Errorf("alice, no writer of the code project, opens %s: %d, want 403", tab, rec.Code)
 		}
+	}
+	before := r.events.count()
+	ak, as := r.as(t, "alice")
+	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {as.csrf}, "text": {"hello"}}), ak); rec.Code != http.StatusForbidden {
+		t.Errorf("alice steers t-run: %d, want 403", rec.Code)
+	}
+	if rec := r.do(post("/tasks/t-run/steer", url.Values{"text": {"hello"}}), ck); rec.Code != http.StatusForbidden {
+		t.Errorf("a steer without the form token: %d, want 403", rec.Code)
+	}
+	if steered != 0 || r.events.count() != before {
+		t.Errorf("refused steers reached the session %d times and left %d rows", steered, r.events.count()-before)
 	}
 }
 

@@ -176,9 +176,9 @@ console.log(JSON.stringify({
 		{"afterNew", older},
 		{"one", ""},
 		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
-		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1">a &lt;b&gt;</button>` +
+		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
-			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2">c</button>` +
+			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: c">c</button>` +
 			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
 	} {
 		if got[c.name] != c.want {

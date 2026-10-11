@@ -6,7 +6,8 @@
 <nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
 <div id="drawer-panel" class="drawer-body" role="tabpanel">
-{{with .Problem}}<p class="problem" role="alert">{{.}}</p>
+{{with .Note}}<p class="note" role="status">{{.}}</p>
+{{end}}{{with .Problem}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{if eq .Tab "overview"}}<h3 class="headline">{{.Headline}}</h3>
 {{with .Provenance}}<p class="provenance">{{.}}</p>
 {{end}}{{with .Body}}<p class="objective-body">{{.}}</p>
