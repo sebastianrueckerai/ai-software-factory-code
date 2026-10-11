@@ -568,8 +568,10 @@ func (e ErrStalePlan) Error() string {
 
 // AcceptPlan is the console's Accept plan, by an approver: it signals the
 // plan task's workflow when revision (at sha) is the newest and awaits
-// acceptance; a newer revision refuses it with ErrStalePlan, a plan
-// without the deploy owner its spec needs with ErrNoDeployOwner.
+// acceptance; a newer revision refuses it with ErrStalePlan. A plan
+// without the deploy owner its spec needs is signalled all the same, so
+// CreateChildren refuses it back to the planner, and answers
+// ErrNoDeployOwner.
 func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
@@ -589,10 +591,11 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if err := json.Unmarshal(newest.Plan, &p); err != nil {
 		return err
 	}
-	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
+	err = wf.Signal(ctx, taskID, SignalPlanAccepted, TaskSignal{Author: by, Revision: revision, SHA256: sha})
+	if needed, owner := deployOwner(t.Objective, p); err == nil && needed && owner == "" {
 		return ErrNoDeployOwner
 	}
-	return wf.Signal(ctx, taskID, SignalPlanAccepted, TaskSignal{Author: by, Revision: revision, SHA256: sha})
+	return err
 }
 
 // RejectPlan is the console's Reject, by a writer: the plan task ends

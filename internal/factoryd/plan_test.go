@@ -708,7 +708,8 @@ const planSession = 5 * time.Minute
 
 // planHarness is the workflow harness on a plan card: its RunPlan answers
 // results in order, RequestPlan posts revision n as comment 699+n,
-// CreateChildren files three cards unless refuse says why not.
+// CreateChildren files three cards unless refuse says why not, or answers
+// children's result when set.
 type planHarness struct {
 	*workflowHarness
 	plans    [][]string // RunPlan's findings, per call
@@ -716,6 +717,7 @@ type planHarness struct {
 	requests []int
 	created  []string
 	refuse   [][]string // CreateChildren's refusals, in order
+	children func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
 }
 
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
@@ -737,6 +739,9 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h.env.OnActivity(ActivityCreateChildren, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 			h.created = append(h.created, fmt.Sprintf("%d %s %d", revision, approver, pin))
+			if h.children != nil {
+				return h.children(ctx, revision, approver, pin)
+			}
 			if len(h.refuse) > 0 {
 				r := h.refuse[0]
 				h.refuse = h.refuse[1:]
@@ -1295,23 +1300,43 @@ func TestAcceptRefusesPlanWithoutDeployOwner(t *testing.T) {
 	}
 }
 
-// The console's Accept plan refuses a plan without a deploy owner against
-// a Deploy spec before the signal, with the finding's text.
-func TestAcceptPlanAnswersNoDeployOwner(t *testing.T) {
+// The console's Accept plan on a plan without the deploy owner its Deploy
+// spec needs answers the finding at once and still signals: the
+// workflow's CreateChildren refuses it (the approval denied, no card
+// filed) and the planner revises in exactly one new session with the
+// finding; with an owner Accept plan only signals.
+func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	ctx := context.Background()
-	store := newFakeStore()
-	store.tasks["t-plan"] = Task{ID: "t-plan", Objective: deploySpec}
-	raw, sha, _ := planSHA(testPlan())
-	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	r, store, _, fj := newPlanRunner(t, testPlan())
+	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
+	store.plans["t-plan"][0].SHA256 = "sha-1"
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	wf := &signalRecorder{}
-	err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian")
-	if !errors.Is(err, ErrNoDeployOwner) || err.Error() != noDeployOwner || len(wf.signals) != 0 {
+	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian")
+	if !errors.Is(err, ErrNoDeployOwner) || err.Error() != noDeployOwner || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 1 sha-1 "}) {
 		t.Fatalf("accept without an owner: %v, signals %v", err, wf.signals)
 	}
-	raw, sha, _ = planSHA(deployPlan())
+
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.children = func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error) {
+		return r.CreateChildren(ctx, "t-plan", revision, approver, pin)
+	}
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.created, []string{"1 sebastian 7"}) {
+		t.Fatalf("plans %q created %v", h.plans, h.created)
+	}
+	if store.approvals[0].Status != "denied" || fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 {
+		t.Fatalf("approval %+v, issues up to #%d, rows %d, comments %v", store.approvals[0], fj.next, len(store.tasks), fj.comments)
+	}
+
+	raw, sha, _ := planSHA(deployPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 " + sha + " "}) {
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
 		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
 	}
 }
