@@ -1369,7 +1369,7 @@ func TestReproCommand(t *testing.T) {
 // An issue's body asks for its card's budget by a line "Size: <size>" or
 // "Budget: <n> [EUR]" (policy budget 5 by default, 15 at most): a size
 // gives its budget, an asked one wins over it, at most the project's card
-// maximum, else a large card's 10.
+// maximum, else a large card's 10. The last valid line of each key wins.
 func TestIntakeBudgetBySize(t *testing.T) {
 	for _, tc := range []struct {
 		body    string
@@ -1383,9 +1383,11 @@ func TestIntakeBudgetBySize(t *testing.T) {
 		{"Size: giant", 0, 5},
 		{"Build it.", 0, 5},
 		{"Size: small\nBUDGET: 7", 0, 7},
-		{"Size: small\nSize: large", 0, 2},
+		{"Size: large\nSize: small", 0, 2},
+		{"Size: small\n\nSize: large", 0, 10},
 		{"notes\nsize: 100MB\n\nSize: large", 0, 10},
 		{"Budget: abc\nBudget: 7", 0, 7},
+		{"Budget: 7\nBudget: abc", 0, 7},
 		{"The size: large is not a line of its own", 0, 5},
 	} {
 		in, store, _ := newTestIntake(t)

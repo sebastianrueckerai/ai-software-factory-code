@@ -335,20 +335,22 @@ func ReproCommand(body string) string {
 	return ""
 }
 
-// askedBudget is what the issue body asks for its card's budget: its first
-// line "Size: <size>" naming a card size and its first line "Budget: <n>"
-// or "Budget: <n> EUR" with n above 0, keys in any case; "" and 0 for none.
+// askedBudget is what the issue body asks for its card's budget: its last
+// line "Size: <size>" naming a card size and its last line "Budget: <n>" or
+// "Budget: <n> EUR" with n above 0, keys in any case; "" and 0 for none.
+// The last wins: the console appends the form's size line to the member's
+// text.
 func askedBudget(body string) (size string, eur float64) {
 	for l := range strings.Lines(body) {
 		key, v, _ := strings.Cut(strings.ToLower(l), ":")
 		v = strings.TrimSpace(v)
 		switch strings.TrimSpace(key) {
 		case "size":
-			if size == "" && slices.Contains(policy.CardSizes, v) {
+			if slices.Contains(policy.CardSizes, v) {
 				size = v
 			}
 		case "budget":
-			if n, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(v, "eur")), 64); eur == 0 && err == nil && n > 0 {
+			if n, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(v, "eur")), 64); err == nil && n > 0 {
 				eur = n
 			}
 		}
