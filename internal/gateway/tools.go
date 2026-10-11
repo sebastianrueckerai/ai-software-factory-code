@@ -529,7 +529,7 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 	}
 	if len(choices) > maxChoices || size > maxChoicesBytes {
 		// factoryd's body cap would refuse the question with them
-		log.Printf("task %s: escalate_to_human's %d choices of %d bytes are dropped: at most %d of %d bytes in all", c.task.ID, len(choices), size, maxChoices, maxChoicesBytes)
+		log.Printf("task %s: escalate_to_human's choices are dropped: more than %d, or over %d bytes in all", c.task.ID, maxChoices, maxChoicesBytes)
 		choices = nil
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices}, "escalated",
