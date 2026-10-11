@@ -24,6 +24,10 @@ type Task struct {
 	// Repository is the task's owner/name: the project of its resource
 	// envelope.
 	Repository string
+	// ModelAlias is the alias of the task's current session
+	// (tasks.model_alias), set before its pod starts: the one alias its
+	// agent may call.
+	ModelAlias string
 }
 
 type AuditRow struct {
@@ -96,8 +100,8 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	var t Task
 	var classes []byte
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities, repository FROM tasks WHERE id = $1`, id,
-	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes, &t.Repository)
+		`SELECT id, budget_eur::float8, spent_eur::float8, status, required_capabilities, repository, model_alias FROM tasks WHERE id = $1`, id,
+	).Scan(&t.ID, &t.BudgetEUR, &t.SpentEUR, &t.Status, &classes, &t.Repository, &t.ModelAlias)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}

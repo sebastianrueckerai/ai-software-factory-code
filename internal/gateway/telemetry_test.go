@@ -206,7 +206,7 @@ func (failingAudit) InsertAudit(context.Context, AuditRow) error { return errors
 func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	rig := newTelemetryRig(t)
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ID: "t1", BudgetEUR: 5, Status: "running", Repository: "sf/demo"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t1", BudgetEUR: 5, Status: "running", Repository: "sf/demo"})
 	store.setPolicy(testPolicy(3, 1))
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "u"}}, Store: rig.tel.Audited(store),
 		Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices, Telemetry: rig.tel})

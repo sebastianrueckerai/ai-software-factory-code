@@ -969,6 +969,11 @@ func TestChatCompletions(t *testing.T) {
 			}
 			store := newMemStore()
 			if tt.task != nil {
+				// the task's session runs on the alias the case calls;
+				// TestAgentCallsOnlyItsSessionAlias refuses any other
+				var req struct{ Model string }
+				json.Unmarshal([]byte(tt.reqBody), &req)
+				task.ModelAlias = req.Model
 				store.tasks[task.ID] = task
 			}
 			if tt.noPolicy {
@@ -1115,7 +1120,7 @@ func TestChatCompletions(t *testing.T) {
 
 func TestKeyCachedPerTask(t *testing.T) {
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -1176,7 +1181,7 @@ func TestBlockedKeyIsReMinted(t *testing.T) {
 	}))
 	defer up.Close()
 
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -1224,8 +1229,8 @@ func TestKeyMintsDoNotSerializeTasks(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
 	store := newMemStore(
-		Task{Classes: coder, ID: "slow", BudgetEUR: 10, Status: "running"},
-		Task{Classes: coder, ID: "fast", BudgetEUR: 10, Status: "running"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "slow", BudgetEUR: 10, Status: "running"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "fast", BudgetEUR: 10, Status: "running"},
 	)
 	release := make(chan struct{})
 	minter := &fakeMinter{hold: map[string]chan struct{}{"slow": release}}
@@ -1306,7 +1311,7 @@ func TestUsageScannerBoundsItsBuffer(t *testing.T) {
 
 func TestKeyRemintedForNewServiceAccount(t *testing.T) {
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	id := Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
@@ -1337,7 +1342,7 @@ func TestBodyLimit(t *testing.T) {
 	t.Cleanup(func() { maxBodyBytes = old })
 
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{TaskID: "42"}},
 		Store:      store,
@@ -1407,20 +1412,42 @@ func TestRoutes(t *testing.T) {
 
 func ptr(f float64) *float64 { return &f }
 
+// An agent calls only its session's alias (tasks.model_alias): on a task
+// whose session runs on coding-cheap, coding-frontier, which its class
+// lists, is refused 403 naming both aliases before any hold or upstream
+// call, and coding-cheap goes through. A factoryd call keeps its purpose's
+// alias (TestFactorydReviewCall).
+func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
+	rr := doChat(t, s.Routes("test"), chatBody("coding-frontier"))
+	_, bodies, _ := stub.seen()
+	want := `model "coding-frontier" is not the model "coding-cheap" of the task's session (tasks.model_alias); a stronger model comes only by the climb`
+	if a := store.auditRows(); rr.Code != http.StatusForbidden || len(a) != 1 || a[0].Decision != "refused_capability" || a[0].Reason != want ||
+		len(store.reqs) != 0 || len(bodies) != 0 {
+		t.Fatalf("coding-frontier = %d %s, audit %+v, %d holds, %d upstream calls; want 403 refused_capability: %s", rr.Code, rr.Body.String(), a, len(store.reqs), len(bodies), want)
+	}
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("coding-cheap = %d %s, want 200 through LiteLLM", rr.Code, rr.Body.String())
+	}
+}
+
 // A settled call books LiteLLM's cost with the provider's usage and the
 // bytes of the body sent upstream: a stream's usage from its final chunk,
 // any other call's from its body, its cost from the header.
 func TestSettledCallRecordsItsUsage(t *testing.T) {
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
 	stub.setResp(stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream"}})
 	doChat(t, s.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`)
 	stub.setResp(stubResp{status: http.StatusOK, headers: map[string]string{"x-litellm-response-cost": "0.25"},
 		body: `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":4}}}`})
-	doChat(t, s.Routes("test"), chatBody("coding-frontier"))
+	doChat(t, s.Routes("test"), chatBody("coding-cheap"))
 	_, bodies, _ := stub.seen()
-	if len(bodies) != 2 || !reflect.DeepEqual(store.ledger, []ledgerRow{{"42", "coding-cheap", 0.125, "model"}, {"42", "coding-frontier", 0.25, "model"}}) ||
+	if len(bodies) != 2 || !reflect.DeepEqual(store.ledger, []ledgerRow{{"42", "coding-cheap", 0.125, "model"}, {"42", "coding-cheap", 0.25, "model"}}) ||
 		!reflect.DeepEqual(store.usages, []policy.Usage{{PromptTokens: 3, OutputTokens: 1, BodyBytes: len(bodies[0])}, {PromptTokens: 10, CachedTokens: 4, OutputTokens: 2, BodyBytes: len(bodies[1])}}) {
 		t.Fatalf("ledger = %+v with usages %+v", store.ledger, store.usages)
 	}
@@ -1435,8 +1462,8 @@ const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 func TestDayCapAcrossTasks(t *testing.T) {
 	stub := newStubUpstream(t)
 	store := newMemStore(
-		Task{Classes: coder, ID: "a", BudgetEUR: 5, Status: "running"},
-		Task{Classes: coder, ID: "b", BudgetEUR: 5, Status: "running"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "a", BudgetEUR: 5, Status: "running"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "b", BudgetEUR: 5, Status: "running"},
 	)
 	store.setPolicy(testPolicy(3, 1))
 	minter := &fakeMinter{}
@@ -1485,9 +1512,9 @@ func TestDayCapAcrossTasks(t *testing.T) {
 func TestProjectCapAcrossTasks(t *testing.T) {
 	stub := newStubUpstream(t)
 	store := newMemStore(
-		Task{Classes: coder, ID: "a", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
-		Task{Classes: coder, ID: "b", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
-		Task{Classes: coder, ID: "c", BudgetEUR: 5, Status: "running", Repository: "notes/notes"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "a", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "b", BudgetEUR: 5, Status: "running", Repository: "linkshort/linkshort"},
+		Task{Classes: coder, ModelAlias: "coding-cheap", ID: "c", BudgetEUR: 5, Status: "running", Repository: "notes/notes"},
 	)
 	pv := testPolicy(3, 20)
 	pv.Projects = map[string]policy.ProjectConfig{
@@ -1547,7 +1574,7 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 func TestPolicyCachedForAtMost30s(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0"}})
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
 	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
@@ -1591,7 +1618,7 @@ func withMaxTokens(t *testing.T, body string, limit int) string {
 func TestKeyRemintedOnPolicyVersionAndDay(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: minter, LiteLLMURL: stub.URL, Prices: testPrices})
 	now := time.Date(2026, 9, 27, 23, 59, 0, 0, time.UTC)
@@ -1640,7 +1667,7 @@ func TestConcurrentCallsCannotShareTheLastHeadroom(t *testing.T) {
 	defer up.Close()
 	// 0.135 free: the first call holds 132e-6 + 32768 * 4e-6 = 0.131204,
 	// leaving 0.003796, below 1024 output tokens
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 0.135, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 0.135, Status: "running"})
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: up.URL, Prices: testPrices})
 
 	codes := make(chan int, 2)
@@ -1682,7 +1709,7 @@ func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
 		w.Write([]byte(`{}`))
 	}))
 	defer up.Close()
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "u"}}, Store: store, Minter: minter, LiteLLMURL: up.URL, Prices: testPrices})
 	now := time.Date(2026, 9, 27, 23, 59, 0, 0, time.UTC)
@@ -1760,7 +1787,7 @@ func TestFactorydReviewCall(t *testing.T) {
 		noToken  bool
 	}{
 		"authorised": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier",
 			resp: stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}},
 			want: want{status: 200, decision: "allowed", upstream: 1,
@@ -1768,52 +1795,52 @@ func TestFactorydReviewCall(t *testing.T) {
 		},
 		// the audit (ruling 188) learns the deployment that answered
 		"audit": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "audit", model: "coding-frontier",
 			resp: stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125", "x-litellm-model-name": "zai/glm-5.3"}},
 			want: want{status: 200, decision: "allowed", upstream: 1, deployment: "zai/glm-5.3",
 				ledger: []ledgerRow{{"42", "audit/coding-frontier", 0.125, policy.KindModel}}, spent: 2.125},
 		},
 		"the audit model for the review": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "coding-frontier",
 			want: want{status: 403, decision: "refused_capability", header: "refused_capability", spent: 2},
 		},
 		"at the budget cap": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 2, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 2, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier",
 			want: want{status: 402, decision: "refused_budget", header: "refused_budget", spent: 2},
 		},
 		"upstream error": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier",
 			resp: stubResp{status: 500, body: `{"error":"provider down"}`},
 			want: want{status: 500, decision: "error_upstream", upstream: 1, spent: 2},
 		},
 		"not the review alias": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "supervisor",
 			want: want{status: 403, decision: "refused_capability", header: "refused_capability", spent: 2},
 		},
 		"a finished task": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "done"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "done"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier",
 			want: want{status: 402, decision: "refused_task_status", header: "refused_task_status", spent: 2},
 		},
 		"unknown purpose": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "session", model: "review-frontier", authKind: "factoryd",
 			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
 		},
 		// the headers without the token are an agent's call: its JWT is
 		// checked, and fails here
 		"a wrong token with the factoryd headers": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: "not-the-token",
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: "not-the-token",
 			purpose: "review", model: "review-frontier",
 			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
 		},
 		"no factoryd token configured": {
-			task: Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
+			task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "review", model: "review-frontier", noToken: true,
 			want: want{status: 401, decision: "refused_auth", header: "refused_auth", spent: 2},
 		},
@@ -1898,11 +1925,11 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 			ledger: []ledgerRow{{"t-chat-x-2026-10", "operator/operator", 0.125, policy.KindModel}}},
 		"the pulse": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposePulse, status: 200,
 			ledger: []ledgerRow{{"t-chat-x-2026-10", "pulse/pulse", 0.125, policy.KindModel}}},
-		"the pulse on an agent task": {task: Task{Classes: coder, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposePulse,
+		"the pulse on an agent task": {task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposePulse,
 			status: 403, header: "refused_capability"},
 		"its budget spent": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, SpentEUR: 5, Status: "running"},
 			status: 402, header: "refused_budget"},
-		"an agent task": {task: Task{Classes: coder, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"},
+		"an agent task": {task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"},
 			status: 403, header: "refused_capability"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1934,7 +1961,7 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}})
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	store.setPolicy(factoryPolicy())
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
@@ -1993,7 +2020,7 @@ func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
 	}))
 	defer up.Close()
 
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
 		Store:      store,
@@ -2055,7 +2082,7 @@ func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
 func TestKeyMintClientCanceledAnswers499(t *testing.T) {
 	stub := newStubUpstream(t)
 	hold := make(chan struct{})
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{hold: map[string]chan struct{}{"42": hold}, err: errors.New("litellm down")}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -2127,7 +2154,7 @@ func TestRekeyClientCanceledAnswers499(t *testing.T) {
 	}))
 	defer up.Close()
 
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -2207,7 +2234,7 @@ func TestRekeyFailureStays502WhenConnected(t *testing.T) {
 	}))
 	defer up.Close()
 
-	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	minter := &fakeMinter{}
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},

@@ -43,7 +43,7 @@ func TestPGStore(t *testing.T) {
 
 	// factoryd owns task rows; seed one the way it would.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app', 'coding-cheap')`,
 	); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
 	}
-	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/app"}
+	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/app", ModelAlias: "coding-cheap"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
@@ -174,7 +174,7 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	}
 	defer s.db.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
-		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app')`); err != nil {
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'coding-cheap')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {

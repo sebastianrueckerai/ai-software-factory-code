@@ -238,6 +238,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
+	// a stronger model comes only by the climb, which starts a session on it
+	if purpose == "" && chatReq.Model != task.ModelAlias {
+		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
+			fmt.Sprintf("model %q is not the model %q of the task's session (tasks.model_alias); a stronger model comes only by the climb", chatReq.Model, task.ModelAlias),
+			chatReq.Model, http.StatusForbidden, "permission_error")
+		return
+	}
 	if want := pv.Document.FactoryModel(task.Classes, purpose); purpose != "" && (want == "" || chatReq.Model != want) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
 			fmt.Sprintf("model %q is not the %s model %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
