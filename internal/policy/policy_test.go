@@ -595,7 +595,8 @@ func TestCardBudget(t *testing.T) {
 		{b, &ProjectBudget{TaskMaxEUR: 3}, "", 0, 3},
 		{b, &ProjectBudget{MonthEUR: 50}, "small", 9, 9},
 		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "medium", 0, 4},
-		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "", 0, 5},
+		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "", 0, 4},
+		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, &ProjectBudget{TaskMaxEUR: 15}, "", 0, 4},
 	} {
 		if got := CardBudget(tc.b, tc.p, tc.size, tc.requested); got != tc.want {
 			t.Errorf("CardBudget(%+v, %+v, %q, %g) = %g, want %g", tc.b, tc.p, tc.size, tc.requested, got, tc.want)
