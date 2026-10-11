@@ -101,23 +101,20 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
-// The board follows its project's event stream, and nothing polls: an
+// The board follows its project's event stream, and no timer runs: an
 // event swaps the cards it names from GET /cards/{id} at once, or the
 // whole board when the card is not on it or its place changed, and
-// card_filed, project_merged and a reconnect swap the board, whose answer
-// carries the status line too. counters sets the status line and the
-// columns' counts the server read after the events that change them; the
-// agent's text and the steers reach the drawer's Chat. A swap a busy card
-// or board would wipe waits, looked at again every 3 s until it is no
-// longer busy; the footer says when the stream is down.
+// card_filed, project_merged, event board (a face changed with time, or
+// events came to a member who only reads) and a reconnect swap the board,
+// whose answer carries the status line too. counters sets the status line
+// and the columns' counts the server read; the agent's text and the
+// steers reach the drawer's Chat. A swap a busy card or board would wipe
+// waits until the member leaves a field, closes a fold or the drawer; the
+// footer says when the stream is down.
 (function () {
-  var missed = {}, latest = {}, asked = 0, waiting = null;
+  var missed = {}, latest = {}, asked = 0;
   function board() { return document.getElementById("board"); }
-  function later() {
-    if (!waiting) waiting = setTimeout(retry, 3000);
-  }
   function retry() {
-    waiting = null;
     var ids = Object.keys(missed);
     missed = {};
     ids.forEach(function (id) {
@@ -125,11 +122,14 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else swapBoard();
     });
   }
+  document.addEventListener("focusout", retry);
+  document.addEventListener("toggle", retry, true);
+  document.addEventListener("drawerclosed", retry);
   function swapBoard() {
     var b = board();
     if (busy(b)) {
       missed[""] = true;
-      return later();
+      return;
     }
     htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"});
   }
@@ -139,7 +139,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     for (var i = 0; i < cards.length; i++) {
       if (busy(cards[i])) {
         missed[id] = true;
-        return later();
+        return;
       }
     }
     var n = latest[id] = ++asked;
@@ -218,6 +218,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       }
     });
     es.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
+    es.addEventListener("board", function () { swapBoard(); });
   }
   // The pulse under the status line: pulse_computing shows its typing
   // indicator, pulse swaps its line in, and its fold stays as the member
@@ -265,6 +266,7 @@ function showDrawer() {
   d.hidden = !m;
   if (!m) {
     d.textContent = "";
+    document.dispatchEvent(new Event("drawerclosed"));
     return;
   }
   htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer", {target: "#drawer", swap: "innerHTML"}).then(function () {

@@ -192,7 +192,7 @@ var heartbeat = 25 * time.Second
 const streamBuffer = 16
 
 // countersWait is how long a stream gathers events before it reads the
-// board's counters again; a test shortens it.
+// board again; a test shortens it.
 var countersWait = 2 * time.Second
 
 // countersJSON are the board's figures the stream keeps live: the status
@@ -202,17 +202,11 @@ type countersJSON struct {
 	Counts []int  `json:"counts"`
 }
 
-// counters are the counters of the board under f as the stream's member
-// sees it, as JSON; "" when the board cannot be read.
-func (c *Console) counters(r *http.Request, f boardFilter) string {
-	d, err := c.boardOf(r, f)
-	if err != nil {
-		log.Printf("console: the counters of %s: %v", f.Project, err)
-		return ""
-	}
+// counters are d's counters as JSON; "" when they cannot be rendered.
+func (c *Console) counters(d boardData) string {
 	var status strings.Builder
 	if err := c.tmpl.ExecuteTemplate(&status, "status", d); err != nil {
-		log.Printf("console: the counters of %s: %v", f.Project, err)
+		log.Printf("console: the counters of %s: %v", d.Project, err)
 		return ""
 	}
 	b, err := json.Marshal(countersJSON{status.String(), d.counts()})
@@ -220,6 +214,21 @@ func (c *Console) counters(r *http.Request, f boardFilter) string {
 		return ""
 	}
 	return string(b)
+}
+
+// follows reports whether the request's member sees project p's board,
+// which its stream follows, and whether they write it: they write it,
+// write the factory's own code, or read its repository (boardOf's rule).
+func (c *Console) follows(r *http.Request, p factoryd.Project) (sees, writes bool, err error) {
+	s := current(r)
+	if writes, err = c.mayMoveCached(r.Context(), p.Repository, s.user, policy.MovedByWriters); err != nil || writes {
+		return writes, writes, err
+	}
+	if _, factory, err := c.writer(r.Context(), s.user); err != nil || factory {
+		return factory, false, err
+	}
+	sees, err = c.reads(r.Context(), s, p)
+	return sees, false, err
 }
 
 // sseWriter writes s to w and flushes it, each write cut off after window:
@@ -237,22 +246,43 @@ func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error
 	}
 }
 
-// projectEventsStream answers GET /projects/{name}/events/stream to a
-// writer of the project: one SSE message per new events row, event
-// "event", its id the row's, its data the feed's row; a live-only event
-// (session_said) without an id. A reconnect's Last-Event-ID replays the
-// rows after it from the table, oldest first and at most the newest
-// eventLimitMax of them; a first connect replays nothing. countersWait
-// after a live event other than the pulse's, event "counters" carries the
-// board's counters under the query's filter when they changed. Each
-// heartbeat checks the session and the write right again, and the stream
+// projectEventsStream answers GET /projects/{name}/events/stream to whoever
+// sees the project's board. A writer gets one SSE message per new events
+// row, event "event", its id the row's, its data the feed's row, and a
+// live-only event (session_said) without an id; a reconnect's
+// Last-Event-ID replays the rows after it from the table, oldest first
+// and at most the newest eventLimitMax of them; a first connect replays
+// nothing. A member who only reads it gets the pulse's rows alone, as the
+// others carry steers and the agent's text. countersWait after a live
+// event other than the pulse's and the agent's text, and at every
+// heartbeat (ruling 288), the stream reads the board under the query's
+// filter: event "counters" carries its counters when they changed, and a
+// data-less event "board" says a card's face changed with time alone,
+// and, to a member who only reads, that events came. Each heartbeat checks
+// the session and the member's sight of the project again, and the stream
 // ends once either is gone.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
-	p, ok := c.writtenProject(w, r)
-	if !ok {
+	ctx, user := r.Context(), current(r).user
+	p, ok, err := c.projectOf(ctx, r.PathValue("name"))
+	switch {
+	case err != nil:
+		log.Printf("console: projects: %v", err)
+		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
+		return
+	case !ok:
+		http.NotFound(w, r)
 		return
 	}
-	ctx, user := r.Context(), current(r).user
+	sees, writes, err := c.follows(r, p)
+	switch {
+	case err != nil:
+		log.Printf("console: may %s see %s: %v", user, p.Repository, err)
+		http.Error(w, "cannot check who sees the project", http.StatusServiceUnavailable)
+		return
+	case !sees:
+		http.Error(w, "you read no project "+p.Name, http.StatusForbidden)
+		return
+	}
 	ch := make(chan factoryd.Event, streamBuffer)
 	cancel := c.cfg.Bus.Subscribe(p.Repository, ch)
 	defer cancel()
@@ -270,9 +300,28 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	}
 	f := urlFilter(r)
 	f.Project = p.Name
-	var due <-chan time.Time
-	var last string
-	// still writes the project: an error keeps the stream, a refusal ends it
+	// look reads the board once; its first read learns the faces
+	var counters, faces string
+	look := func(events bool) error {
+		d, err := c.boardOf(r, f)
+		if err != nil {
+			log.Printf("console: the stream of %s reads no board: %v", p.Repository, err)
+			return nil
+		}
+		if now := c.counters(d); now != "" && now != counters {
+			counters = now
+			if err := write("event: counters\ndata: " + now + "\n\n"); err != nil {
+				return err
+			}
+		}
+		was := faces
+		faces = d.faces()
+		if was != "" && was != faces || events && !writes {
+			return write("event: board\ndata:\n\n")
+		}
+		return nil
+	}
+	// still sees the project: an error keeps the stream, a refusal ends it
 	allowed := func() bool {
 		if c.session(r) == nil {
 			return false
@@ -281,8 +330,12 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		if err == nil && !login {
 			return false
 		}
-		may, err := c.mayMoveCached(ctx, p.Repository, user, policy.MovedByWriters)
-		return err != nil || may
+		sees, now, err := c.follows(r, p)
+		if err != nil {
+			return true
+		}
+		writes = now
+		return sees
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -292,7 +345,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var replayed int64
-	if after, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); err == nil && after > 0 {
+	if after, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); err == nil && after > 0 && writes {
 		replayed = after
 		rows, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, after, eventLimitMax)
 		if err != nil {
@@ -305,6 +358,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 			replayed = max(replayed, rows[i].ID)
 		}
 	}
+	var due <-chan time.Time
 	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
 	for {
@@ -315,25 +369,23 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			pulse := e.Kind == factoryd.EventPulse || e.Kind == factoryd.EventPulseComputing
 			// live events may come out of id order: skip only the replayed ones
-			if e.ID == 0 || e.ID > replayed {
+			if (writes || pulse) && (e.ID == 0 || e.ID > replayed) {
 				if err := send(e); err != nil {
 					return
 				}
 			}
-			if due == nil && e.Kind != factoryd.EventPulse && e.Kind != factoryd.EventPulseComputing {
+			if due == nil && !pulse && e.Kind != factoryd.EventSessionSaid {
 				due = time.After(countersWait)
 			}
 		case <-due:
 			due = nil
-			if now := c.counters(r, f); now != "" && now != last {
-				last = now
-				if write("event: counters\ndata: "+now+"\n\n") != nil {
-					return
-				}
+			if look(true) != nil {
+				return
 			}
 		case <-tick.C:
-			if !allowed() || write(": ping\n\n") != nil {
+			if !allowed() || write(": ping\n\n") != nil || look(false) != nil {
 				return
 			}
 		}

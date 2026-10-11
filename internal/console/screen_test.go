@@ -226,10 +226,10 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 </select>`) || !strings.Contains(body, `data-card="t-run"`) || strings.Contains(body, `/tasks/t-run/summary"`) {
 		t.Error("alice reading the code project: the select lacks it, or the board lacks its card or offers her its forms")
 	}
-	// her board follows no stream she may not read and opens no drawer
-	if !strings.Contains(body, `<div id="board" data-project="" data-query="?project=ai-software-factory-code"`) ||
+	// her board follows the stream read-only and opens no drawer
+	if !strings.Contains(body, `<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code"`) ||
 		!strings.Contains(body, `<strong class="title" title="fix the cache">fix the cache</strong>`) {
-		t.Error("alice reading the code project follows its stream or links its cards to the drawer")
+		t.Error("alice reading the code project does not follow its stream or links its cards to the drawer")
 	}
 	bk, _ := r.as(t, "bob")
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), bk).Body.String()

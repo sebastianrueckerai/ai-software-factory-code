@@ -1,4 +1,4 @@
-{{define "board"}}<div id="board" data-project="{{if .Writes}}{{.Project}}{{end}}" data-query="{{.Query}}">
+{{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 {{if .Status.Project}}{{with .Pulse}}<div id="pulse" class="pulse{{if .Prominent}} prominent{{end}}"><details class="pulse-fold">

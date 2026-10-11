@@ -560,7 +560,7 @@ type boardData struct {
 	// on it carries back so an action keeps the view.
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
-	Writes      bool     // the viewer writes the shown project: its stream and drawer are theirs
+	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
 	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
 	ToggleQuery string   // the filter with the other view
 	Projects    []string // the projects the viewer writes, and the shown one
@@ -586,6 +586,33 @@ func (d boardData) counts() []int {
 		out = append(out, col.Count())
 	}
 	return out
+}
+
+// faces is what of the board's cards changes with time alone, for the
+// stream to compare: each face's stale ring, wait on the provider, retry
+// or hold, checks and minute ages.
+func (d boardData) faces() string {
+	var b strings.Builder
+	add := func(k card) {
+		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge)
+	}
+	for _, col := range d.Columns {
+		for _, k := range col.Cards {
+			add(k)
+		}
+		for _, n := range col.Needs {
+			if n.Approval == nil {
+				add(n.Card)
+			}
+		}
+	}
+	for _, k := range d.HumanTasks {
+		add(k)
+	}
+	for _, n := range d.Escalations {
+		add(n.Card)
+	}
+	return b.String()
 }
 
 // boardLimit bounds the tasks one board render reads.

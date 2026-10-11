@@ -72,7 +72,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 	plain := r.c.cfg.HTTP
 	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
 	other := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck)
-	if other.Code != http.StatusOK || !strings.Contains(other.Body.String(), `data-project=""`) {
+	if other.Code != http.StatusOK || !strings.Contains(other.Body.String(), `data-project="ai-software-factory-code"`) || strings.Contains(other.Body.String(), `class="open"`) {
 		t.Fatalf("the factory's board for bob, who reads it = %d, want it read-only:\n%s", other.Code, other.Body)
 	}
 	r.c.cfg.HTTP = plain

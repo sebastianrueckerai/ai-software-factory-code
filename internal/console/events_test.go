@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -541,15 +543,156 @@ func TestStreamAnswersEventStreamForWriter(t *testing.T) {
 	}
 }
 
-// The stream answers 403 for a non-writer.
-func TestStreamAnswers403ForNonWriter(t *testing.T) {
+// The stream answers 403 to a member who neither writes the project, nor
+// the factory's code, nor reads its repository.
+func TestStreamAnswers403ForNonMember(t *testing.T) {
 	r := newRig(t)
-	ck, _ := r.loggedIn(t)
-	r.repoWriters["sf/code"] = []string{"someone-else"}
+	members(r)
+	ck, _ := memberLogin(t, r, "bob")
 	req := httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/events/stream", nil)
-	rec := r.do(req, ck)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("non-writer = %d, want 403", rec.Code)
+	if rec := r.do(req, ck); rec.Code != http.StatusForbidden {
+		t.Fatalf("bob, who sees no code project = %d, want 403", rec.Code)
+	}
+}
+
+// readingForgejo shows the member repository sf/code while reads holds,
+// as Forgejo does a repository they read.
+type readingForgejo struct {
+	reads atomic.Bool
+	base  http.RoundTripper
+}
+
+func (f *readingForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code" && f.reads.Load() {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"full_name":"sf/code"}`)), Request: r}, nil
+	}
+	return f.base.RoundTrip(r)
+}
+
+// skipPings is the stream's next message other than the heartbeat; the
+// test fails after 40 heartbeats in a row.
+func skipPings(t *testing.T, br *bufio.Reader) []string {
+	t.Helper()
+	for range 40 {
+		if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+			return got
+		}
+	}
+	t.Fatal("40 heartbeats and nothing else")
+	return nil
+}
+
+// A member who only reads the project follows its stream read-only: no
+// replay and no rows but the pulse's, as the others carry steers and the
+// agent's text, and event board after them, which swaps their board; each
+// heartbeat checks that they still read it, and the stream ends once they
+// do not.
+func TestStreamFollowsReadOnly(t *testing.T) {
+	wait, beat := countersWait, heartbeat
+	countersWait, heartbeat = 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
+	r := newRig(t)
+	members(r)
+	forgejo := &readingForgejo{base: http.DefaultTransport}
+	forgejo.reads.Store(true)
+	r.c.cfg.HTTP = &http.Client{Transport: forgejo}
+	ctx := context.Background()
+	row := func(kind string, detail map[string]any) {
+		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-c", IssueNumber: 5, Kind: kind, Actor: "alice", Via: factoryd.ViaButton, At: at, Detail: detail})
+	}
+	row(factoryd.EventCardMoved, nil)
+	row(factoryd.EventCardMoved, nil)
+	memberLogin(t, r, "bob")
+	resp, br := streamOf(t, r, "1")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bob, who reads the code project = %d, want 200", resp.StatusCode)
+	}
+	r.events.bus.Publish(factoryd.Event{Repository: "sf/code", TaskID: "t-c", Kind: factoryd.EventSessionSaid, Actor: factoryd.FactoryDecider,
+		Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"session": "s-1", "text": "the agent's text"}})
+	row(factoryd.EventCardSteered, map[string]any{"text": "a writer's steer"})
+	for got := skipPings(t, br); !slices.Equal(got, []string{"event: board", "data:"}); got = skipPings(t, br) {
+		if len(got) == 0 || got[0] != "event: counters" {
+			t.Fatalf("bob's stream sent %q before event board", got)
+		}
+	}
+	row(factoryd.EventPulse, map[string]any{"sentence": "All is well."})
+	for got := skipPings(t, br); ; got = skipPings(t, br) {
+		if len(got) == 3 && got[0] == "id: 4" && strings.Contains(got[2], `"kind":"pulse"`) {
+			break
+		}
+		if len(got) == 0 || got[0] != "event: counters" && got[0] != "event: board" {
+			t.Fatalf("bob's stream sent %q, want the pulse's row", got)
+		}
+	}
+	forgejo.reads.Store(false)
+	for range 10 {
+		switch got := nextMessage(t, br); {
+		case slices.Equal(got, []string{"read: EOF"}):
+			return
+		case slices.Equal(got, []string{": ping"}), len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
+		default:
+			t.Fatalf("after bob lost the project the stream sent %q", got)
+		}
+	}
+	t.Fatal("the stream outlived bob's read right")
+}
+
+// A writer who loses the project's write right but still sees its board
+// gets no row from the next heartbeat on.
+func TestStreamStopsRowsToAFormerWriter(t *testing.T) {
+	wait, beat := countersWait, heartbeat
+	countersWait, heartbeat = time.Hour, 30*time.Millisecond
+	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
+	r := newRig(t)
+	_, br := streamOf(t, r, "")
+	r.repoWriters["sf/code"] = nil
+	r.c.mu.Lock()
+	clear(r.c.moves)
+	r.c.mu.Unlock()
+	if got := skipPings(t, br); len(got) == 0 || got[0] != "event: counters" {
+		t.Fatalf("the first look sent %q", got)
+	}
+	r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	for pings := 0; pings < 2; {
+		switch got := nextMessage(t, br); {
+		case slices.Equal(got, []string{": ping"}):
+			pings++
+		case len(got) > 0 && got[0] == "event: board":
+		default:
+			t.Fatalf("the former writer's stream sent %q", got)
+		}
+	}
+}
+
+// Ruling 288: each heartbeat reads the board too, so what changes with
+// time alone reaches the page without a request of its own: the counters
+// when they changed, and event board when a card's face did (its minute
+// age here); the agent's text reads nothing.
+func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
+	wait, beat := countersWait, heartbeat
+	countersWait, heartbeat = 10*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
+	r := newRig(t)
+	running := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Objective: "fix the cache",
+		CreatedAt: time.Now().Add(-5 * time.Minute)}
+	r.tasks.set("", running)
+	_, br := streamOf(t, r, "")
+	r.events.bus.Publish(factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventSessionSaid, Actor: factoryd.FactoryDecider,
+		Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"session": "s-1", "text": "Reading."}})
+	if got := nextMessage(t, br); len(got) != 2 || got[0] != "event: event" {
+		t.Fatalf("first %q, want the agent's text", got)
+	}
+	for _, want := range []string{": ping", "event: counters"} {
+		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
+			t.Fatalf("got %q, want %s", got, want)
+		}
+	}
+	running.CreatedAt = running.CreatedAt.Add(-time.Hour)
+	r.tasks.set("", running)
+	for _, want := range [][]string{{": ping"}, {"event: board", "data:"}} {
+		if got := nextMessage(t, br); !slices.Equal(got, want) {
+			t.Fatalf("after the card's age changed: %q, want %q", got, want)
+		}
 	}
 }
 
@@ -712,12 +855,14 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 	clear(r.c.sessions)
 	r.c.mu.Unlock()
 	// a heartbeat already under way when the session went may still arrive
-	for range 2 {
-		got := nextMessage(t, br)
-		if slices.Equal(got, []string{"read: EOF"}) {
+	for pings := 0; pings < 2; {
+		switch got := nextMessage(t, br); {
+		case slices.Equal(got, []string{"read: EOF"}):
 			return
-		}
-		if !slices.Equal(got, []string{": ping"}) {
+		case slices.Equal(got, []string{": ping"}):
+			pings++
+		case len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
+		default:
 			t.Fatalf("after the session ended the stream sent %q", got)
 		}
 	}
@@ -835,7 +980,8 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // timer for anything; counters set the status line and the columns'
 // counts; the agent's text and a steer reach the drawer's Chat once each,
 // and another session's text and the card's new status load the tab
-// again.
+// again; event board swaps the board, and a swap the open drawer holds
+// back runs once it closes.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -878,6 +1024,7 @@ EventSource.CLOSED = 2;
 var sandbox = {EventSource: EventSource, CSS: {escape: function (s) { return s; }}, location: {hash: ""}, history: {replaceState: function () {}},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
+  Event: function (type) { this.type = type; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
   htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return Promise.resolve(); }, swap: function () {}, process: function () {}},
   window: {addEventListener: function () {}},
@@ -885,7 +1032,8 @@ var sandbox = {EventSource: EventSource, CSS: {escape: function (s) { return s; 
     getElementById: function (id) { return byID[id] || null; },
     querySelectorAll: function (sel) { return sel === "#board .count" ? counts : []; },
     createElement: function () { return el(); },
-    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
+    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
 require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
 var es = sources[0], out = {url: es.url};
@@ -907,6 +1055,14 @@ event({id: 0, at: "2026-10-11T10:07:00Z", task_id: "t-run", kind: "session_said"
 event({id: 8, at: "2026-10-11T10:08:00Z", task_id: "t-run", kind: "task_status", actor: "factoryd", detail: {status: "in-review"}});
 event({id: 9, at: "2026-10-11T10:08:00Z", task_id: "t-other", kind: "task_status", actor: "factoryd", detail: {status: "done"}});
 out.after = requests;
+requests = [];
+byID.drawer.hidden = false;
+event({id: 10, at: "2026-10-11T10:09:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+es.on.board({data: ""});
+out.held = requests.slice();
+byID.drawer.hidden = true;
+listeners.drawerclosed.forEach(function (fn) { fn(); });
+out.released = requests;
 out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
 out.timers = timers;
 console.log(JSON.stringify(out));`
@@ -918,6 +1074,7 @@ console.log(JSON.stringify(out));`
 	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],"timers":0,` +
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
+		`"held":[],"released":["GET /board?project=code"],` +
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."]}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
