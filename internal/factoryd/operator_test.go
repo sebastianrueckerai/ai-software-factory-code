@@ -97,6 +97,49 @@ func TestOperatorStreamsTextAndParallelToolCalls(t *testing.T) {
 	}
 }
 
+// Two tool calls as LiteLLM streamed them from DashScope's qwen3.8-max:
+// each call's first delta carries its id and name, the next an empty id,
+// the rest argument fragments with no id; every delta has an empty
+// content, and the usage chunk comes after the finish.
+func TestOperatorReadsLiteLLMsToolCallChunks(t *testing.T) {
+	g := &operatorGateway{chunks: append(strings.Split(`{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","role":"assistant","tool_calls":[{"id":"call_54f7167caa6f46a1b64f0989","function":{"arguments":"","name":"set_accent"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"id":"","function":{"arguments":""},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"{\"accent\": \"teal"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\""},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":", \"task_id\": "},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\"t-da71"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"898f"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"5152"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\""},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"}"},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":""},"type":"function","index":0}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"id":"call_eaf618fe29974f1eb33434ab","function":{"arguments":"","name":"set_summary"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"{\"summary\": "},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\"smoke test"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\""},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":", \"task_id\": "},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\"t-da71"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"898f"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"5152"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"\""},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":"}"},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"","tool_calls":[{"function":{"arguments":""},"type":"function","index":1}]}}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","object":"chat.completion.chunk","created":1791694136,"model":"operator","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+{"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":103,"prompt_tokens":4799,"total_tokens":4902,"prompt_tokens_details":{"cached_tokens":4608,"text_tokens":4799},"cost":0.0021520000000000003}}`, "\n"), "[DONE]")}
+	var pieces []string
+	answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", []OperatorMessage{{Role: "user", Content: "teal and smoke test"}}, nil,
+		func(s string) { pieces = append(pieces, s) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := OperatorMessage{Role: "assistant", ToolCalls: []OperatorCall{
+		{ID: "call_54f7167caa6f46a1b64f0989", Name: "set_accent", Arguments: `{"accent": "teal", "task_id": "t-da71898f5152"}`},
+		{ID: "call_eaf618fe29974f1eb33434ab", Name: "set_summary", Arguments: `{"summary": "smoke test", "task_id": "t-da71898f5152"}`}}}
+	if !reflect.DeepEqual(answer, want) || pieces != nil {
+		t.Fatalf("answer = %+v, pieces %q", answer, pieces)
+	}
+}
+
 // A refusal comes back as the gateway's decision, any other status, a
 // failed stream or one cut before [DONE] as an error naming it.
 func TestOperatorStreamFailures(t *testing.T) {
