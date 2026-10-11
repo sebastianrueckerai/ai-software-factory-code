@@ -192,3 +192,108 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     }
   });
 })();
+
+// Card drawer: opens beside the board when a card's title is clicked,
+// loaded with hx-get from GET /cards/{id}/drawer?tab=...; #card=<id> in
+// the URL opens it on load, Escape closes it.
+(function () {
+  var drawer = null;
+  function openDrawer(id, tab) {
+    if (!drawer) drawer = document.getElementById("drawer");
+    if (!drawer) return;
+    tab = tab || "overview";
+    drawer.hidden = false;
+    htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer?tab=" + tab, {target: "#drawer", swap: "innerHTML"});
+    history.replaceState(null, "", "#card=" + id);
+  }
+  function closeDrawer() {
+    if (!drawer) drawer = document.getElementById("drawer");
+    if (drawer) {
+      drawer.hidden = true;
+      drawer.innerHTML = "";
+    }
+    if (location.hash.indexOf("#card=") === 0) {
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+  }
+  document.addEventListener("click", function (e) {
+    var title = e.target.closest && e.target.closest(".card .title");
+    if (title) {
+      var card = title.closest("[data-card]");
+      if (card) {
+        e.preventDefault();
+        openDrawer(card.dataset.card);
+      }
+    }
+    if (e.target.closest && e.target.closest(".close-drawer")) {
+      closeDrawer();
+    }
+  });
+  document.addEventListener("DOMContentLoaded", function () {
+    var hash = location.hash;
+    if (hash.indexOf("#card=") === 0) {
+      openDrawer(hash.slice(6));
+    }
+  });
+  window.closeDrawer = closeDrawer;
+})();
+
+// Keyboard shortcuts: w toggles wide view, Escape closes drawer or overlay,
+// ? shows the keys overlay.
+(function () {
+  var overlay = null;
+  function toggleWide() {
+    var params = new URLSearchParams(location.search);
+    if (params.get("view") === "wide") {
+      params.delete("view");
+    } else {
+      params.set("view", "wide");
+    }
+    location.search = params.toString();
+  }
+  function showKeys() {
+    if (!overlay) overlay = document.getElementById("keys-overlay");
+    if (overlay) overlay.hidden = false;
+  }
+  function hideKeys() {
+    if (!overlay) overlay = document.getElementById("keys-overlay");
+    if (overlay) overlay.hidden = true;
+  }
+  document.addEventListener("keydown", function (e) {
+    if (e.target.matches("input, textarea, select")) return;
+    if (e.key === "w" || e.key === "W") {
+      e.preventDefault();
+      toggleWide();
+    } else if (e.key === "Escape") {
+      if (window.closeDrawer) window.closeDrawer();
+      hideKeys();
+    } else if (e.key === "?") {
+      e.preventDefault();
+      showKeys();
+    }
+  });
+  document.addEventListener("click", function (e) {
+    if (e.target.closest && e.target.closest(".keys-toggle")) {
+      showKeys();
+    }
+    if (e.target.closest && e.target.closest(".close-overlay")) {
+      hideKeys();
+    }
+  });
+})();
+
+// View toggle: remembered in localStorage.
+(function () {
+  var stored = localStorage.getItem("board-view");
+  if (stored && !new URLSearchParams(location.search).has("view")) {
+    var params = new URLSearchParams(location.search);
+    params.set("view", stored);
+    history.replaceState(null, "", location.pathname + "?" + params.toString());
+  }
+  document.addEventListener("DOMContentLoaded", function () {
+    var params = new URLSearchParams(location.search);
+    var view = params.get("view") || "";
+    if (view) localStorage.setItem("board-view", view);
+    else localStorage.removeItem("board-view");
+  });
+})();

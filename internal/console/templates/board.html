@@ -1,6 +1,14 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}" hx-get="/board{{.Query}}" hx-trigger="every 30s" hx-swap="outerHTML">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
+{{if and (ne .View "wide") .Status.State}}
+<p class="status-line">
+<span class="state">{{.Status.State}}</span> · 
+<a href="{{.Status.ProjectURL}}">{{printf "€%.2f / €%.2f" .Status.SpendEUR .Status.MonthCap}}</a> · 
+<span>{{.Status.Working}} working</span> · 
+<a href="{{.Status.NeedYouURL}}">{{.Status.NeedYou}} need you</a>
+</p>
+{{end}}
 <section aria-labelledby="human-lane">
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">

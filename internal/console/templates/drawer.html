@@ -1,0 +1,57 @@
+<div class="drawer-content">
+<header class="drawer-header">
+<h2>{{.Card.Title}}</h2>
+<nav class="tabs">
+<a href="/cards/{{.Card.ID}}/drawer?tab=overview" {{if eq .Tab "overview"}}class="active"{{end}} hx-get="/cards/{{.Card.ID}}/drawer?tab=overview" hx-target="#drawer" hx-swap="innerHTML">Overview</a>
+<a href="/cards/{{.Card.ID}}/drawer?tab=activity" {{if eq .Tab "activity"}}class="active"{{end}} hx-get="/cards/{{.Card.ID}}/drawer?tab=activity" hx-target="#drawer" hx-swap="innerHTML">Activity</a>
+<a href="/cards/{{.Card.ID}}/drawer?tab=files" {{if eq .Tab "files"}}class="active"{{end}} hx-get="/cards/{{.Card.ID}}/drawer?tab=files" hx-target="#drawer" hx-swap="innerHTML">Files</a>
+</nav>
+<button type="button" class="close-drawer" aria-label="Close drawer">✕</button>
+</header>
+<div class="drawer-body">
+{{if eq .Tab "overview"}}
+<h3 class="objective">{{.Card.Objective}}</h3>
+{{with .Card.AgentSummary}}<p class="agent-summary">{{.}}</p>{{end}}
+{{with .Card.Plan}}
+<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
+<thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
+<tbody>{{range .Cards}}<tr><td>{{.PlanKey}}</td><td>{{.Source}}</td><td>{{.Title}}</td><td></td><td></td></tr>{{end}}</tbody>
+</table>
+{{end}}
+<p class="links">{{if .Card.PRURL}}<a href="{{.Card.PRURL}}">PR #{{.Card.PRNumber}}</a> · {{end}}<a href="/tasks/{{.Card.ID}}/timeline">Full timeline</a></p>
+{{else if eq .Tab "activity"}}
+{{if .Gates}}
+<table class="gates">
+<caption>Gates and durations</caption>
+<thead><tr><th scope="col">Gate</th><th scope="col">Attempt</th><th scope="col">Start</th><th scope="col">Duration</th><th scope="col">Outcome</th></tr></thead>
+<tbody>{{range .Gates}}<tr><td>{{.Gate}}</td><td>{{.Attempt}}</td><td>{{.Start}}</td><td>{{.Duration}}</td><td>{{.Outcome}}</td></tr>{{end}}</tbody>
+</table>
+{{end}}
+{{if .Entries}}
+<section class="steps">
+<h3>Steps</h3>
+{{range .Entries}}<div class="step">
+<time>{{.Time}}</time> <strong>{{.Step}}</strong>
+{{with .Detail}}<pre>{{.}}</pre>{{end}}
+{{with .Reason}}<p class="reason">{{.}}</p>{{end}}
+{{template "supervised" .Supervisor}}
+</div>{{end}}
+</section>
+{{end}}
+{{else if eq .Tab "files"}}
+{{if .NoPR}}
+<p>No pull request yet.</p>
+{{else if .FilesErr}}
+<p class="problem">{{.FilesErr}}</p>
+{{else if .Files}}
+<table class="files">
+<caption>Changed files</caption>
+<thead><tr><th scope="col">File</th><th scope="col">Status</th><th scope="col">+/-</th></tr></thead>
+<tbody>{{range .Files}}<tr><td><code>{{.Name}}</code></td><td>{{.Status}}</td><td>+{{.Additions}} -{{.Deletions}}</td></tr>{{end}}</tbody>
+</table>
+{{else}}
+<p>No files changed.</p>
+{{end}}
+{{end}}
+</div>
+</div>

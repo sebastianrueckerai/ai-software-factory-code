@@ -199,4 +199,36 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .edit-form label { display: contents; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
 .edit-icon { text-decoration: none; }
-.summary-edit .edit-icon { color: var(--text-muted); font-weight: 600; }
+.summary-edit .edit-icon { color: var(--text-muted); font-weight: 600; }/* Status line: quantitative summary above the board */
+.status-line { display: flex; gap: .5rem; align-items: center; padding: .5rem; background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 6px; margin-bottom: 1rem; font-size: .9rem; }
+.status-line .state { font-weight: 600; text-transform: capitalize; }
+.status-line a { color: var(--accent); text-decoration: none; }
+.status-line a:hover { text-decoration: underline; }
+
+/* View toggle and keys button in the filter bar */
+.view-toggle, .keys-toggle { display: inline-block; padding: .35rem .8rem; margin: 0; border: 1px solid var(--accent); background: var(--bg-raised); color: var(--accent); border-radius: 4px; cursor: pointer; text-decoration: none; font: inherit; }
+.view-toggle:hover, .keys-toggle:hover { background: var(--accent); color: var(--bg); }
+
+/* Card drawer: opens beside the board, about 45 percent width */
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 45%; max-width: 48rem; background: var(--bg); border-left: 1px solid var(--line-strong); box-shadow: -2px 0 8px rgba(0,0,0,.15); overflow-y: auto; z-index: 100; padding: 1rem; }
+.drawer[hidden] { display: none; }
+.drawer-header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--line-subtle); padding-bottom: .5rem; }
+.drawer-header h2 { margin: 0; flex: 1; font-size: 1.1rem; }
+.close-drawer { background: transparent; border: none; color: var(--text-muted); font-size: 1.2rem; cursor: pointer; padding: .25rem; }
+.close-drawer:hover { color: var(--text); }
+.tabs { display: flex; gap: .25rem; }
+.tabs a { padding: .35rem .75rem; border: 1px solid var(--line-subtle); border-radius: 4px; text-decoration: none; color: var(--text-muted); font-size: .85rem; }
+.tabs a.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.tabs a:hover:not(.active) { background: var(--bg-raised); }
+.drawer-body { font-size: .9rem; }
+.files td code { word-break: break-all; }
+
+/* Keyboard shortcuts overlay */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.overlay[hidden] { display: none; }
+.overlay-content { background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; padding: 1.5rem; max-width: 24rem; }
+.overlay-content h3 { margin-top: 0; }
+.overlay-content dl { display: grid; grid-template-columns: auto 1fr; gap: .5rem 1rem; margin: 1rem 0; }
+.overlay-content dt kbd { background: var(--bg-raised); border: 1px solid var(--line-subtle); border-radius: 4px; padding: .1rem .4rem; font-family: ui-monospace, monospace; }
+.overlay-content dd { margin: 0; }
+.close-overlay { margin-top: 1rem; }

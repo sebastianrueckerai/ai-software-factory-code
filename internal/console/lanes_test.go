@@ -133,8 +133,14 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	}
 
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	if strings.Contains(code, ">Plan <span") || !strings.Contains(code, ">Backlog <span") || !strings.Contains(code, ">Ready <span") {
-		t.Errorf("maintenance has no lane plan: the code project's board shows exactly backlog and ready")
+	// Five-column view when viewing one project: no lane columns
+	if strings.Contains(code, ">Backlog <span") || strings.Contains(code, ">Plan <span") || strings.Contains(code, ">Ready <span") {
+		t.Errorf("five-column view should not show lane columns")
+	}
+	for _, col := range []string{"Needs you", "Queued", "Working", "Verifying", "Done"} {
+		if !strings.Contains(code, ">"+col+" <span") {
+			t.Errorf("five-column view lacks %q column", col)
+		}
 	}
 	if strings.Contains(code, "card 2") || strings.Contains(code, "Link shortener") || !strings.Contains(code, "fix the cache") {
 		t.Errorf("the code project's board shows another project's cards, or not its own")

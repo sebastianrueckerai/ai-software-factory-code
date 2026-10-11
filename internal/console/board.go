@@ -70,8 +70,23 @@ type verdictForm struct {
 	CSRF, Back string
 }
 
+// fiveColumns are the project screen's five columns: a view over task
+// states, never a new state. Each maps one or more statuses into a
+// column; the lane is a chip on the card, and the fine state (waiting on
+// the author, failed, closed, retrying, stale) a second chip.
+var fiveColumns = []struct {
+	Title    string
+	Statuses []string
+}{
+	{"Needs you", []string{"waiting-human"}},
+	{"Queued", []string{"backlog", "queued", "waiting-deps"}},
+	{"Working", []string{"running", "closing"}},
+	{"Verifying", []string{"in-review"}},
+	{"Done", []string{"done", "failed", "closed"}},
+}
+
 // stateColumns follow the lane columns, in board order; closing counts as
-// running.
+// running. Kept for the wide view.
 var stateColumns = []struct{ Title, Status string }{
 	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting on the author", "waiting-poster"},
 	{"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
@@ -332,6 +347,19 @@ func (f boardFilter) query() string {
 	return "?" + q.Encode()
 }
 
+// statusLine is the project screen's quantitative summary above the board:
+// the project's state word, counts of working and needing-you cards, and
+// spend against the month cap.
+type statusLine struct {
+	State      string // "working", "waiting on you", or "idle"
+	Working    int
+	NeedYou    int
+	SpendEUR   float64
+	MonthCap   float64
+	ProjectURL string // link to /costs
+	NeedYouURL string // link to the Needs you column
+}
+
 type boardData struct {
 	User  string
 	CSRF  string
@@ -342,12 +370,14 @@ type boardData struct {
 	boardFilter
 	Query       string // the filter as a URL query for the poll's hx-get
 	Projects    []string
+	Status      statusLine
 	Columns     []column
 	HumanTasks  []card
 	Escalations []card
 	Approvals   []approvalCard
 	Problems    []string
 	Approver    bool // may authorize spend (ruling 128)
+	View        string // "" (default five columns) or "wide" (lanes first)
 }
 
 // boardLimit bounds the tasks one board render reads.
@@ -415,11 +445,16 @@ var errNoProject = errors.New("no such project")
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	accent := r.URL.Query().Get("accent")
+	view := r.URL.Query().Get("view")
 	if accent != "" && !factoryd.IsAccent(accent) {
 		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
 		return
 	}
-	d, err := c.boardOf(r, project, accent)
+	if view != "" && view != "wide" {
+		http.Error(w, "view must be wide or empty", http.StatusBadRequest)
+		return
+	}
+	d, err := c.boardOf(r, project, accent, view)
 	switch {
 	case errors.Is(err, errNoProject):
 		http.Error(w, "no project "+project+" takes agent tasks", http.StatusNotFound)
@@ -443,13 +478,22 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // success (a reload resends nothing), else the page.
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
 	f := formFilter(r)
+	view := r.PostFormValue("view")
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
-		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
+		q := f.query()
+		if view != "" {
+			if q == "" {
+				q = "?view=" + view
+			} else {
+				q += "&view=" + view
+			}
+		}
+		http.Redirect(w, r, "/"+q, http.StatusSeeOther)
 		return
 	}
-	d, err := c.boardOf(r, f.Project, f.Accent)
+	d, err := c.boardOf(r, f.Project, f.Accent, view)
 	if errors.Is(err, errNoProject) {
-		d, err = c.boardOf(r, "", f.Accent)
+		d, err = c.boardOf(r, "", f.Accent, view)
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
@@ -685,14 +729,15 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 }
 
 // boardOf is the board of project ("" every project) and accent ("" every
-// accent) as the session's human sees it: the lanes of the shown projects'
-// processes in the fixed order backlog, plan, ready, then the state
-// columns.
-func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
+// accent) as the session's human sees it. When view is "wide", the lanes
+// of the shown projects' processes come first (backlog, plan, ready),
+// then the state columns. Otherwise (the default), the five columns map
+// task states into Needs you, Queued, Working, Verifying, Done.
+func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardData, error) {
 	ctx := r.Context()
 	f := boardFilter{Project: project, Accent: accent}
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, boardFilter: f, Query: f.query(), Approver: v.approver}
+	d := boardData{User: v.user, CSRF: v.csrf, boardFilter: f, Query: f.query(), Approver: v.approver, View: view}
 	if err != nil {
 		return d, err
 	}
@@ -708,24 +753,34 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 		shown = all[i : i+1]
 	}
 	inView := func(repository string) bool { return project == "" || repository == shown[0].Repository }
-	lanes := map[string]bool{}
-	for _, p := range shown {
-		for _, l := range p.Lanes {
-			lanes[l.Name] = true
-		}
-	}
+	
+	// Five columns only when viewing one project and not explicitly wide
+	wide := view == "wide" || project == ""
 	byLane, byStatus := map[string]int{}, map[string]int{}
-	for _, name := range policy.LaneNames {
-		if lanes[name] {
-			byLane[name] = len(d.Columns)
-			d.Columns = append(d.Columns, column{Title: laneTitles[name], Lane: name})
+	if wide {
+		lanes := map[string]bool{}
+		for _, p := range shown {
+			for _, l := range p.Lanes {
+				lanes[l.Name] = true
+			}
+		}
+		for _, name := range policy.LaneNames {
+			if lanes[name] {
+				byLane[name] = len(d.Columns)
+				d.Columns = append(d.Columns, column{Title: laneTitles[name], Lane: name})
+			}
+		}
+		for _, col := range stateColumns {
+			byStatus[col.Status] = len(d.Columns)
+			d.Columns = append(d.Columns, column{Title: col.Title})
+		}
+		byStatus["closing"] = byStatus["running"]
+	} else {
+		for i, col := range fiveColumns {
+			byStatus[col.Title] = i
+			d.Columns = append(d.Columns, column{Title: col.Title})
 		}
 	}
-	for _, col := range stateColumns {
-		byStatus[col.Status] = len(d.Columns)
-		d.Columns = append(d.Columns, column{Title: col.Title})
-	}
-	byStatus["closing"] = byStatus["running"]
 
 	tasks, err := c.cfg.Tasks.BoardTasks(ctx, time.Now().Add(-finishedSince), boardLimit)
 	if err != nil {
@@ -738,6 +793,7 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 		v.byID[bt.ID] = bt.Task
 	}
 	escalations := map[string]factoryd.BoardTask{}
+	var working, needYou int
 	for _, bt := range tasks {
 		t := bt.Task
 		// the accent filter narrows the board to one accent; a card with
@@ -753,18 +809,35 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 			}
 			continue
 		}
-		i, ok := byStatus[t.Status]
-		switch t.Status {
-		case "backlog":
-			i, ok = byLane[policy.LaneBacklog]
-		case "queued", "waiting-deps":
-			if i, ok = byLane[t.Lane]; !ok {
-				i, ok = byLane[policy.LaneReady]
+		
+		if wide {
+			i, ok := byStatus[t.Status]
+			switch t.Status {
+			case "backlog":
+				i, ok = byLane[policy.LaneBacklog]
+			case "queued", "waiting-deps":
+				if i, ok = byLane[t.Lane]; !ok {
+					i, ok = byLane[policy.LaneReady]
+				}
+			}
+			if ok {
+				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
+			}
+		} else {
+			colIdx := fiveColumnForStatus(t.Status, t.Author, v.user)
+			if colIdx >= 0 && colIdx < len(d.Columns) {
+				d.Columns[colIdx].Cards = append(d.Columns[colIdx].Cards, k)
 			}
 		}
-		if ok {
-			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
+		
+		// Count for status line
+		if t.Status == "running" || t.Status == "closing" {
+			working++
 		}
+		if t.Status == "waiting-human" || (t.Status == "waiting-poster" && t.Author == v.user) {
+			needYou++
+		}
+		
 		if t.Status == "waiting-human" && v.planned[t.ID] {
 			escalations[t.ID] = bt
 		} else if v.escalated(t) {
@@ -796,8 +869,89 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 			fn(&d.Escalations[i])
 		}
 	})
+	
+	// Compute status line for the project screen
+	if !wide && len(shown) == 1 {
+		d.Status = c.computeStatusLine(ctx, shown[0], working, needYou)
+	}
+	
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
+}
+
+// fiveColumnForStatus maps a task's status into one of the five columns.
+// For waiting-poster, it goes to "Needs you" when the viewer is the author,
+// otherwise to "Queued".
+func fiveColumnForStatus(status, author, viewer string) int {
+	switch status {
+	case "waiting-human":
+		return 0 // Needs you
+	case "waiting-poster":
+		if author == viewer {
+			return 0 // Needs you
+		}
+		return 1 // Queued
+	case "backlog", "queued", "waiting-deps":
+		return 1 // Queued
+	case "running", "closing":
+		return 2 // Working
+	case "in-review":
+		return 3 // Verifying
+	case "done", "failed", "closed":
+		return 4 // Done
+	}
+	return -1
+}
+
+// computeStatusLine builds the project screen's quantitative summary.
+func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, working, needYou int) statusLine {
+	sl := statusLine{
+		Working:    working,
+		NeedYou:    needYou,
+		ProjectURL: "/costs",
+		NeedYouURL: "#col-0",
+	}
+	
+	// Determine state word
+	if working > 0 {
+		sl.State = "working"
+	} else if needYou > 0 {
+		sl.State = "waiting on you"
+	} else {
+		sl.State = "idle"
+	}
+	
+	// Get spend from ledger for this UTC month
+	now := time.Now().UTC()
+	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	costs, err := c.cfg.Costs.Costs(ctx, from, now)
+	if err != nil {
+		log.Printf("console: status line costs: %v", err)
+	} else {
+		// Sum today's spend for the project
+		today := now.Format(policy.DateLayout)
+		for _, day := range costs.Days {
+			if day.Day == today {
+				sl.SpendEUR = day.Total
+				break
+			}
+		}
+	}
+	
+	// Get month cap from policy or project file
+	pol, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
+	if err != nil || !ok {
+		log.Printf("console: status line policy: loaded %v, %v", ok, err)
+	} else {
+		_, cap := pol.Tree.ProjectCap(p.Repository)
+		if !math.IsInf(cap, 1) {
+			sl.MonthCap = cap
+		} else {
+			sl.MonthCap = pol.Document.Budget.MonthEUR
+		}
+	}
+	
+	return sl
 }
 
 type timelineEntry struct {
@@ -1131,4 +1285,138 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
 	c.render(w, "card", k)
+}
+
+// drawerData is the card drawer's content for one tab.
+type drawerData struct {
+	User     string
+	CSRF     string
+	Card     card
+	Tab      string // "overview", "activity", or "files"
+	Entries  []timelineEntry
+	Gates    []gateRow
+	Longest  int
+	Files    []prFile
+	NoPR     bool
+	FilesErr string
+}
+
+// prFile is a pull request's changed file from Forgejo's API.
+type prFile struct {
+	Name       string
+	Additions  int
+	Deletions  int
+	Status     string
+}
+
+// cardDrawer answers GET /cards/{id}/drawer?tab=... for writers of the
+// card's project (403 otherwise, 404 for an unknown card), with three tabs:
+// Overview, Activity, Files.
+func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
+	ctx, id := r.Context(), r.PathValue("id")
+	tab := r.URL.Query().Get("tab")
+	if tab == "" {
+		tab = "overview"
+	}
+	if tab != "overview" && tab != "activity" && tab != "files" {
+		http.Error(w, "tab must be overview, activity or files", http.StatusBadRequest)
+		return
+	}
+	
+	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
+	switch {
+	case err != nil:
+		log.Printf("console: drawer %s: %v", id, err)
+		http.Error(w, "cannot read the task", http.StatusInternalServerError)
+		return
+	case !ok:
+		http.NotFound(w, r)
+		return
+	}
+	
+	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
+	switch {
+	case err != nil:
+		log.Printf("console: may %s write %s: %v", current(r).user, bt.Repository, err)
+		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
+		return
+	case !may:
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	
+	q := r.URL.Query()
+	v, _, err := c.viewOf(r, boardFilter{Project: q.Get("project"), Accent: q.Get("accent")})
+	if err != nil {
+		log.Printf("console: drawer %s: %v", id, err)
+		http.Error(w, "cannot read the card", http.StatusInternalServerError)
+		return
+	}
+	v.byID[bt.ID] = bt.Task
+	
+	k := c.boardCard(ctx, v, bt)
+	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
+	
+	d := drawerData{
+		User: current(r).user,
+		CSRF: current(r).csrf,
+		Card: k,
+		Tab:  tab,
+	}
+	
+	switch tab {
+	case "overview":
+		// The card already has all the expanded content
+	case "activity":
+		steps, err := c.readTimeline(ctx, bt.ID)
+		if err != nil {
+			log.Printf("console: drawer %s timeline: %v", id, err)
+		} else {
+			for _, m := range steps {
+				d.Entries = append(d.Entries, entry(m))
+			}
+			d.Gates, d.Longest = gateRows(steps, bt.Task, time.Now())
+		}
+	case "files":
+		if bt.PRNumber == 0 {
+			d.NoPR = true
+		} else {
+			files, err := c.prFiles(r, bt.Repository, bt.PRNumber)
+			if err != nil {
+				log.Printf("console: drawer %s files: %v", id, err)
+				d.FilesErr = "could not read the pull request's files"
+			} else {
+				d.Files = files
+			}
+		}
+	}
+	
+	c.render(w, "drawer.html", d)
+}
+
+// prFiles reads the pull request's changed files from Forgejo's API.
+func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFile, error) {
+	repo, err := factoryd.SplitRepo(repository)
+	if err != nil {
+		return nil, err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr)
+	var raw []map[string]any
+	if err := c.asUser(r, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
+		return nil, err
+	}
+	var out []prFile
+	for _, f := range raw {
+		name, _ := f["filename"].(string)
+		additions, _ := f["additions"].(float64)
+		deletions, _ := f["deletions"].(float64)
+		status, _ := f["status"].(string)
+		out = append(out, prFile{
+			Name:      name,
+			Additions: int(additions),
+			Deletions: int(deletions),
+			Status:    status,
+		})
+	}
+	return out, nil
 }

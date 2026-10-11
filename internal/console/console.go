@@ -230,6 +230,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /projects/{name}/events", c.auth(c.projectEvents))
 	c.mux.Handle("GET /projects/{name}/events/stream", c.auth(c.projectEventsStream))
 	c.mux.Handle("GET /cards/{id}", c.auth(c.cardFragment))
+	c.mux.Handle("GET /cards/{id}/drawer", c.auth(c.cardDrawer))
 	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	c.mux.Handle("GET /projects/{name}/chat", c.auth(c.chatGet))
