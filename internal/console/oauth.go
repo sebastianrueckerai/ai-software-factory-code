@@ -191,18 +191,23 @@ func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
 	return s.access, nil
 }
 
-// asUser calls the Forgejo API as the session's human, decoding the answer
-// into out when non-nil. A refused refresh ends the session.
+// asUser calls the Forgejo API as the request's human (as).
 func (c *Console) asUser(r *http.Request, method, path string, payload any, want int, out any) error {
-	s := current(r)
-	tok, err := c.accessToken(r.Context(), s)
+	return c.as(r.Context(), current(r), method, path, payload, want, out)
+}
+
+// as calls the Forgejo API as member s, decoding the answer into out when
+// non-nil, or keeping it whole in a *[]byte. A refused refresh ends the
+// session.
+func (c *Console) as(ctx context.Context, s *session, method, path string, payload any, want int, out any) error {
+	tok, err := c.accessToken(ctx, s)
 	if err != nil {
 		if errors.Is(err, errLoggedOut) {
-			c.drop(r)
+			c.end(s)
 		}
 		return err
 	}
-	return c.api(r.Context(), tok, method, path, payload, want, out)
+	return c.api(ctx, tok, method, path, payload, want, out)
 }
 
 // apiError is an answer of Forgejo's API other than the one wanted.
@@ -256,6 +261,10 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 	}
 	if res.StatusCode != want {
 		return &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
+	}
+	if raw, ok := out.(*[]byte); ok {
+		*raw = b
+		return nil
 	}
 	if out != nil {
 		if err := json.Unmarshal(b, out); err != nil {

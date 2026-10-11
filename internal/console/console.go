@@ -137,6 +137,10 @@ type Config struct {
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics
+	// Steer hands a writer's message to a task's running session
+	// (factoryd's Runner.MessageSession); nil offers the project agent no
+	// steer.
+	Steer func(ctx context.Context, taskID, user, text string) error
 }
 
 // Console is the console's http.Handler.
@@ -198,15 +202,15 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
 	c.mux.Handle("POST /tasks/{id}/accent", c.auth(c.setAccent))
 	c.mux.Handle("POST /cards/{id}/lane", c.auth(c.moveCard))
-	c.mux.Handle("POST /tasks/{id}/start-plan", c.auth(c.spend("start a plan", c.startPlan)))
-	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.spend("accept a plan", c.acceptPlan)))
+	c.mux.Handle("POST /tasks/{id}/start-plan", c.auth(c.startPlan))
+	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.acceptPlan))
 	c.mux.Handle("POST /tasks/{id}/plan/changes", c.auth(c.planChanges))
 	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
-	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.spend("retry a card", c.retryCard)))
+	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.costs))
 	c.mux.Handle("GET /policy", c.auth(c.policy))
-	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.spend("approve", c.approve)))
+	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
 	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
 	c.mux.Handle("GET /resources", c.auth(c.resources))
 	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.spend("promote", c.promote)))
@@ -305,6 +309,17 @@ func (c *Console) drop(r *http.Request) {
 	}
 }
 
+// end ends session s, whatever its cookie.
+func (c *Console) end(s *session) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, v := range c.sessions {
+		if v == s {
+			delete(c.sessions, k)
+		}
+	}
+}
+
 // writer reports whether user is on the repository's writer list, read at
 // most once a minute by one request while the others wait for it; when
 // Forgejo fails, the last list serves for up to five minutes.
@@ -334,17 +349,21 @@ func (c *Console) writer(ctx context.Context, user string) (bool, error) {
 	return slices.Contains(writers, user), nil
 }
 
-// approver reports whether the session's human may authorize spend: a name
-// on the policy's approvers (ruling 128). Unreadable policy: no.
-func (c *Console) approver(r *http.Request) bool {
-	v, _ := c.inForce(r)
-	return slices.Contains(v.Document.Approvers, current(r).user)
+// approver reports whether the session's human may authorize spend
+// (isApprover).
+func (c *Console) approver(r *http.Request) bool { return c.isApprover(r.Context(), current(r).user) }
+
+// isApprover reports whether user may authorize spend: a name on the
+// policy's approvers (ruling 128). Unreadable policy: no.
+func (c *Console) isApprover(ctx context.Context, user string) bool {
+	v, _ := c.inForce(ctx)
+	return slices.Contains(v.Document.Approvers, user)
 }
 
 // inForce is the policy version being enforced; unreadable, an empty one
 // (no approvers, no processes) and false.
-func (c *Console) inForce(r *http.Request) (policy.Version, bool) {
-	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
+func (c *Console) inForce(ctx context.Context) (policy.Version, bool) {
+	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
 	if err != nil || !ok {
 		log.Printf("console: the policy in force: loaded %v, %v", ok, err)
 		return policy.Version{}, false

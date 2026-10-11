@@ -399,6 +399,7 @@ func main() {
 		},
 		ReconcileError: registrar.ReconcileError,
 		Metrics:        metrics,
+		Steer:          runner.MessageSession,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

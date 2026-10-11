@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -496,9 +495,9 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
 		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
-	pol, _ := c.inForce(r)
+	pol, _ := c.inForce(ctx)
 	v.approver = slices.Contains(pol.Document.Approvers, s.user)
-	all, err := c.coderProjects(r)
+	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
 	}
@@ -995,14 +994,14 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
 }
 
-// labels lists repo's labels as the human, all pages.
-func (c *Console) labels(r *http.Request, repo factoryd.Repo) (map[string]int64, error) {
-	asUser := func(_ context.Context, method, path string, _ []byte, want int) ([]byte, error) {
+// labels lists repo's labels as member s, all pages.
+func (c *Console) labels(ctx context.Context, s *session, repo factoryd.Repo) (map[string]int64, error) {
+	asUser := func(ctx context.Context, method, path string, _ []byte, want int) ([]byte, error) {
 		var raw json.RawMessage
-		err := c.asUser(r, method, path, nil, want, &raw)
+		err := c.as(ctx, s, method, path, nil, want, &raw)
 		return raw, err
 	}
-	ls, err := factoryd.GetPages[factoryd.RepoLabel](r.Context(), asUser,
+	ls, err := factoryd.GetPages[factoryd.RepoLabel](ctx, asUser,
 		fmt.Sprintf("/api/v1/repos/%s/%s/labels?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name)))
 	if err != nil {
 		return nil, err
@@ -1018,13 +1017,13 @@ var priorities = []string{"priority/p0", "priority/p1", "priority/p2", "priority
 
 // coderProjects are the projects agents work on, by name: the new-task
 // form's choices, the first its default.
-func (c *Console) coderProjects(r *http.Request) ([]factoryd.Project, error) {
-	ps, err := c.cfg.Projects.Projects(r.Context())
+func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error) {
+	ps, err := c.cfg.Projects.Projects(ctx)
 	return slices.DeleteFunc(ps, func(p factoryd.Project) bool { return !p.Coder() }), err
 }
 
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
-	ps, err := c.coderProjects(r)
+	ps, err := c.coderProjects(r.Context())
 	if err != nil {
 		log.Printf("console: projects: %v", err)
 		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
@@ -1034,7 +1033,7 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no project takes agent tasks", http.StatusServiceUnavailable)
 		return
 	}
-	labels, err := c.labels(r, ps[0].Repo())
+	labels, err := c.labels(r.Context(), current(r), ps[0].Repo())
 	if err != nil {
 		c.forgejoFailed(w, r, "read the labels", err)
 		return
@@ -1062,119 +1061,23 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 		"Projects": ps, "Priorities": offered, "Lanes": lanes})
 }
 
-// createTask files the issue as the human, labelled with the lane's label
-// (backlog, plan or agent, or human for the human lane) and the priority
-// when chosen; the webhook or the heal pass makes it a task.
+// createTask files the issue as the human (doFileCard).
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
-	title := strings.TrimSpace(r.PostFormValue("title"))
-	body := r.PostFormValue("body")
-	lane := r.PostFormValue("lane")
-	priority := r.PostFormValue("priority")
-	switch {
-	case title == "" || utf8.RuneCountInString(title) > 255:
-		http.Error(w, "a title of 1 to 255 characters is required", http.StatusBadRequest)
-		return
-	case len(body) > 64<<10:
-		http.Error(w, "the description is longer than 64 KiB", http.StatusBadRequest)
-		return
-	case laneLabels[lane] == "" && lane != factoryd.LaneHuman:
-		http.Error(w, "lane must be backlog, plan, ready or human", http.StatusBadRequest)
-		return
-	case priority != "" && !slices.Contains(priorities, priority):
-		http.Error(w, "unknown priority", http.StatusBadRequest)
-		return
-	}
-	ps, err := c.coderProjects(r)
+	_, issue, err := c.doFileCard(r.Context(), button(r), r.PostFormValue("project"), r.PostFormValue("title"),
+		r.PostFormValue("body"), r.PostFormValue("lane"), r.PostFormValue("priority"))
 	if err != nil {
-		log.Printf("console: projects: %v", err)
-		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
+		c.fail(w, r, err)
 		return
 	}
-	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == r.PostFormValue("project") })
-	if i < 0 {
-		http.Error(w, "choose a project agents work on", http.StatusBadRequest)
-		return
-	}
-	label := factoryd.LaneHuman
-	if lane != factoryd.LaneHuman {
-		if !slices.ContainsFunc(ps[i].Lanes, func(l policy.Lane) bool { return l.Name == lane }) {
-			http.Error(w, "project "+ps[i].Name+" has no lane "+lane, http.StatusBadRequest)
-			return
-		}
-		label = laneLabels[lane]
-	}
-	repo := ps[i].Repo()
-	labels, err := c.labels(r, repo)
-	if err != nil {
-		c.forgejoFailed(w, r, "read the labels", err)
-		return
-	}
-	var ids []int64
-	for _, name := range []string{label, priority} {
-		if name == "" {
-			continue
-		}
-		id, ok := labels[name]
-		if !ok {
-			http.Error(w, "label "+name+" does not exist on "+repo.String(), http.StatusConflict)
-			return
-		}
-		ids = append(ids, id)
-	}
-	var issue struct {
-		Number int64 `json:"number"`
-	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
-	if err := c.asUser(r, http.MethodPost, path, map[string]any{"title": title, "body": body, "labels": ids},
-		http.StatusCreated, &issue); err != nil {
-		c.forgejoFailed(w, r, "file the issue", err)
-		return
-	}
-	log.Printf("console: %s filed %s#%d (%s)", current(r).user, repo, issue.Number, lane)
-	c.act(r, repo.String(), "", issue.Number, factoryd.EventCardFiled, map[string]any{"lane": lane, "title": title})
-	http.Redirect(w, r, "/?filed="+strconv.FormatInt(issue.Number, 10), http.StatusSeeOther)
+	http.Redirect(w, r, "/?filed="+strconv.FormatInt(issue, 10), http.StatusSeeOther)
 }
 
-// answer posts the human's answer to an escalation as an issue comment
-// under their own name; intake's human_comment path resumes the task.
+// answer posts the human's answer to an escalation (doAnswer).
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	text := strings.TrimSpace(r.PostFormValue("answer"))
-	if text == "" || len(text) > 64<<10 {
-		http.Error(w, "an answer of up to 64 KiB is required", http.StatusBadRequest)
+	if _, err := c.doAnswer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer")); err != nil {
+		c.fail(w, r, err)
 		return
 	}
-	t, ok, err := c.cfg.Tasks.Task(r.Context(), r.PathValue("id"))
-	if err != nil {
-		http.Error(w, "cannot read the task", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
-		http.Error(w, "task "+t.ID+" is not waiting for an answer", http.StatusConflict)
-		return
-	}
-	repo, err := factoryd.SplitRepo(t.Repository)
-	if err != nil {
-		log.Printf("console: task %s: %v", t.ID, err)
-		http.Error(w, "the task names no repository", http.StatusInternalServerError)
-		return
-	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), t.IssueNumber)
-	var posted struct {
-		ID int64 `json:"id"`
-	}
-	if err := c.asUser(r, http.MethodPost, path, map[string]string{"body": text}, http.StatusCreated, &posted); err != nil {
-		c.forgejoFailed(w, r, "post the answer", err)
-		return
-	}
-	log.Printf("console: %s answered the escalation of %s", current(r).user, t.ID)
-	// One action, one row: the event names the comment this button posted,
-	// so intake records no second question_answered when its webhook
-	// delivers that very comment.
-	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, commentDetail(posted.ID))
 	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
 }
 

@@ -1400,6 +1400,15 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	if rec := r.do(post("/resources/11/release", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("release by a writer = %d", rec.Code)
 	}
+	// a deny needs no approver, but a writer of the request's project
+	if rec := r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}}), ck); rec.Code != http.StatusForbidden ||
+		r.approvals.get(3).Status != "pending" {
+		t.Fatalf("deny by a factory writer who writes no sf/code = %d, request %s", rec.Code, r.approvals.get(3).Status)
+	}
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "alice")
+	r.c.mu.Lock()
+	r.c.moves = nil
+	r.c.mu.Unlock()
 	if rec := r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("deny by a writer = %d", rec.Code)
 	}
