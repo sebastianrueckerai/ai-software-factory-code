@@ -93,9 +93,10 @@ the agents work on.
   `POST /push {token}` on port 8091 (same bearer; 409 until the worker
   asks, one token only); the worker waits 30 s at most and pushes
   `factory/<id>` to the fork `factory-agent/<repo>`.
-  The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep
-  and the Go 1.25 toolchain (ruling 99, the same pin as the runner
-  image); its egress (`workerEgressSpec`) is default-deny plus the
+  The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
+  the Go 1.25 toolchain (ruling 99, the same pin as the runner
+  image) and PostgreSQL 17's server for `scripts/pg-test.sh`; its
+  egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
   and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
   there) by name on 443, SigNoz's collector pods on 4318 when factoryd has
@@ -1727,10 +1728,17 @@ day's headroom.
 ## Build and test
 
     go build ./...
-    go test -race ./...
+    make test
 
-The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
-`GATEWAY_TEST_DATABASE_URL` set to a throwaway Postgres (they wipe it).
+`make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the line
+`pr.yml` and `ci.yml` run, and `bash check` runs it after vet, gofmt and
+gosec. The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
+`GATEWAY_TEST_DATABASE_URL` set to a throwaway Postgres (they wipe it):
+`scripts/pg-test.sh` starts one (PostgreSQL 17's `initdb`, `pg_ctl` and
+`postgres`, on `PATH` or in `/usr/lib/postgresql/17/bin`; the runner and
+sandbox images carry them, main CI installs them) in a temporary
+directory, listening only on a unix socket there, sets both variables to
+its `postgres` database, runs the command and removes it all again.
 Each package behind `FACTORYD_TEST_DATABASE_URL` migrates its own database
 `factory_test_<package>`, dropped and created empty at its first test
 (`internal/schema/schematest`), so the packages run in parallel; that
@@ -1785,7 +1793,8 @@ ephemeral runner registration are torn down when the pod finishes or its
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go 1.25 toolchain, gosec, `buildctl` and `crane`, and nothing that builds
+node, the Go 1.25 toolchain, gosec, PostgreSQL 17's server for
+`scripts/pg-test.sh`, `buildctl` and `crane`, and nothing that builds
 images: no rootless BuildKit comes up under gVisor, and a root build pod
 in the cluster was the one exception the admission policy had to make.
 Image builds run outside the cluster instead (ruling 110,

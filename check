@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# The repository's checks as pr.yml runs them; an agent runs `bash check`
+# before it ends.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+go vet ./...
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then echo "gofmt -w these files:"; echo "$unformatted"; exit 1; fi
+go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet ./...
+make test
