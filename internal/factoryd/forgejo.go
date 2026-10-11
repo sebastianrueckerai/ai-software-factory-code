@@ -486,6 +486,7 @@ const actionTasksPage = 50
 // event (the push) created the run, Stopped when its last job finished.
 type ActionRun struct {
 	ID        int64     `json:"id"`
+	Index     int64     `json:"index_in_repo"` // the run number
 	CommitSHA string    `json:"commit_sha"`
 	PrettyRef string    `json:"prettyref"` // the branch of a push run
 	Event     string    `json:"event"`

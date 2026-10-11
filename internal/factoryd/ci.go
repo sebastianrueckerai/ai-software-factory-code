@@ -141,7 +141,9 @@ type CISpawner struct {
 	// smokeDone maps each smoke job decided (staging opened, the runner
 	// torn down, or never served) to the handle of the attempt decided,
 	// while Forgejo still lists the job: a re-run is a new attempt.
-	smokeDone map[int64]string
+	// smokeMissed maps a job to the attempt whose task was not yet listed,
+	// logged once.
+	smokeDone, smokeMissed map[int64]string
 }
 
 // ciReclaimWindow: a job whose runner served another waiting job is still
@@ -165,7 +167,7 @@ func NewCISpawner(cfg CIConfig, forgejo *Forgejo, kube Kube, builds *BuildVMs) (
 	if builds == nil {
 		return nil, fmt.Errorf("ci spawner: build VMs are required")
 	}
-	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, smokeDone: map[int64]string{}}, nil
+	return &CISpawner{cfg: cfg, kube: kube, forgejo: forgejo, builds: builds, now: time.Now, tornDown: map[int64]time.Time{}, vmTries: map[int64]int{}, smokeDone: map[int64]string{}, smokeMissed: map[int64]string{}}, nil
 }
 
 // Run polls until ctx ends. A poll failure logs and waits for the next
@@ -257,10 +259,11 @@ func smokeLabel(project string) string { return project + "-smoke" }
 
 // serveSmoke serves each staging project's smokeLabel jobs (roadmap 162).
 // Forgejo 15 lists a waiting job without its run, so a smoke runner takes
-// only the job attempt it was spawned for (--handle) and starts without
-// staging; once it took the job, admitSmoke reads the job's run. A smoke
-// namespace whose job Forgejo no longer lists waiting or running is torn
-// down: a bound runner never serves another job.
+// only the job attempt it was spawned for (--handle, also the namespace's
+// CIHandleLabel) and starts without staging; once it took the job,
+// admitSmoke reads the job's run. A smoke namespace whose job Forgejo no
+// longer lists waiting or running, or lists waiting as another attempt, is
+// torn down: a bound runner never serves another job.
 func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) {
 	listed := map[int64]bool{}
 	complete := true
@@ -286,11 +289,15 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) 
 				log.Printf("ci spawner: job %d (%s) names no handle to bind a runner to: not served", job.ID, label)
 				s.smokeDone[job.ID] = ""
 			case job.Status == "waiting":
-				served, err := s.served(ctx, job.ID)
+				nss, err := s.kube.ListNamespacesByLabel(ctx, "factory.ai/task", jobLabel(job.ID))
 				switch {
 				case err != nil:
 					log.Printf("ci spawner: check job %d served: %v", job.ID, err)
-				case served:
+				case len(nss) > 0 && (nss[0].Terminating || nss[0].Labels[CIHandleLabel] == job.Handle):
+				case len(nss) > 0:
+					// cancelled and re-run: the runner waits on a dead attempt
+					log.Printf("ci spawner: %s: bound to attempt %s, its job now waits as %s: torn down", nss[0].Name, nss[0].Labels[CIHandleLabel], job.Handle)
+					s.teardown(ctx, nss[0].Name, repos)
 				case *slots <= 0:
 					log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, label, s.cfg.MaxConcurrent)
 				default:
@@ -308,9 +315,11 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) 
 	if !complete {
 		return
 	}
-	for id := range s.smokeDone {
-		if !listed[id] {
-			delete(s.smokeDone, id)
+	for _, m := range []map[int64]string{s.smokeDone, s.smokeMissed} {
+		for id := range m {
+			if !listed[id] {
+				delete(m, id)
+			}
 		}
 	}
 	names, err := s.kube.ListNamespacesByLabel(ctx, CIRoleLabel, ciRoleSmoke)
@@ -330,13 +339,14 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) 
 
 // admitSmoke decides a smoke job its runner took: a run that is a push to
 // main opens staging's egress to the runner, any other run tears it down.
+// Only a runner bound to the attempt that runs is decided on.
 func (s *CISpawner) admitSmoke(ctx context.Context, r CIRepo, job CIJob, repos []CIRepo) {
-	served, err := s.served(ctx, job.ID)
+	nss, err := s.kube.ListNamespacesByLabel(ctx, "factory.ai/task", jobLabel(job.ID))
 	if err != nil {
 		log.Printf("ci spawner: check job %d served: %v", job.ID, err)
 		return
 	}
-	if !served {
+	if len(nss) == 0 || nss[0].Terminating || nss[0].Labels[CIHandleLabel] != job.Handle {
 		return
 	}
 	tasks, err := s.forgejo.ActionTasks(ctx, r.Token, r.Repo.Owner, r.Repo.Name, 1)
@@ -346,10 +356,15 @@ func (s *CISpawner) admitSmoke(ctx context.Context, r CIRepo, job CIJob, repos [
 	}
 	i := slices.IndexFunc(tasks, func(t ActionTask) bool { return t.ID == job.TaskID })
 	if i < 0 {
-		log.Printf("ci spawner: job %d: its task %d is not among %s's newest tasks", job.ID, job.TaskID, r.Repo)
+		if s.smokeMissed[job.ID] != job.Handle {
+			log.Printf("ci spawner: job %d: its task %d is not among %s's newest tasks", job.ID, job.TaskID, r.Repo)
+			s.smokeMissed[job.ID] = job.Handle
+		}
 		return
 	}
 	run := tasks[i].RunNumber
+	// the filters only narrow the answer: a Forgejo that drops one answers
+	// the newest runs, so the run's own fields decide
 	runs, err := s.forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name,
 		url.Values{"run_number": {strconv.FormatInt(run, 10)}, "event": {"push"}, "ref": {"refs/heads/main"}})
 	if err != nil {
@@ -357,7 +372,7 @@ func (s *CISpawner) admitSmoke(ctx context.Context, r CIRepo, job CIJob, repos [
 		return
 	}
 	ns := s.namespaceFor(job.ID)
-	if len(runs) != 1 {
+	if !slices.ContainsFunc(runs, func(x ActionRun) bool { return x.Index == run && x.Event == "push" && x.PrettyRef == "main" }) {
 		log.Printf("ci spawner: job %d (%s) is in run %d, no push to main: no staging, its runner torn down", job.ID, smokeLabel(r.Project), run)
 		s.smokeDone[job.ID] = job.Handle
 		s.teardown(ctx, ns, repos)
@@ -451,6 +466,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 	}
 	if kind.smoke {
 		labels[CIRoleLabel] = ciRoleSmoke
+		labels[CIHandleLabel] = kind.handle
 	}
 	if err := s.kube.CreateNamespace(ctx, ns, labels); err != nil {
 		return fmt.Errorf("create namespace: %w", err)
@@ -526,9 +542,11 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 		{"pull secret", func() error {
 			return copyPullSecret(ctx, s.kube, s.cfg.FactoryNamespace, s.cfg.PullSecret, ns)
 		}},
-		{"cache claim", func() error {
+	}
+	if !kind.smoke {
+		steps = append(steps, ciSetupStep{"cache claim", func() error {
 			return s.kube.Create(ctx, core+"/persistentvolumeclaims", cacheClaim(repo.Cache))
-		}},
+		}})
 	}
 	if vm != nil {
 		steps = append(steps, ciSetupStep{"buildkit client secret", func() error {
@@ -738,16 +756,12 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		map[string]any{"name": "RUNNER_UUID", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": ciSecretName, "key": "uuid"}}},
 	}
-	for _, e := range cacheEnv {
-		env = append(env, e)
-	}
 	mounts := []any{
 		map[string]any{"name": "workspace", "mountPath": "/workspace"},
 		map[string]any{"name": "home", "mountPath": "/home/runner"},
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
 		map[string]any{"name": "registration", "mountPath": "/var/run/secrets/ci", "readOnly": true},
 	}
-	mounts = append(mounts, cacheMounts...)
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
@@ -758,7 +772,15 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 		map[string]any{"name": "registration", "secret": map[string]any{"secretName": ciSecretName}},
 	}
-	volumes = append(volumes, cacheVolumes(cache)...)
+	// pull request jobs write the project's CI cache: the smoke runner,
+	// which staging admits, reads nothing from it
+	if !kind.smoke {
+		for _, e := range cacheEnv {
+			env = append(env, e)
+		}
+		mounts = append(mounts, cacheMounts...)
+		volumes = append(volumes, cacheVolumes(cache)...)
+	}
 	securityContext := map[string]any{
 		"runAsNonRoot":             true,
 		"runAsUser":                1000,
@@ -865,6 +887,9 @@ const (
 	// on 8080 only such pods of its own project.
 	CIRoleLabel = "factory.ai/ci-role"
 	ciRoleSmoke = "smoke"
+	// CIHandleLabel names the job attempt a smoke namespace's runner is
+	// bound to.
+	CIHandleLabel = "factory.ai/ci-handle"
 )
 
 // ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89

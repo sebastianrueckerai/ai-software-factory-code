@@ -174,13 +174,14 @@ func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string
 	return names, nil
 }
 
-// NamespaceInfo is a listed namespace's name and whether the API server has
-// stamped metadata.deletionTimestamp on it: a Terminating namespace still
-// matches its label selector and still shows in a list while its contents
-// are being garbage-collected away.
+// NamespaceInfo is a listed namespace's name, its labels and whether the
+// API server has stamped metadata.deletionTimestamp on it: a Terminating
+// namespace still matches its label selector and still shows in a list
+// while its contents are being garbage-collected away.
 type NamespaceInfo struct {
 	Name        string
 	Terminating bool
+	Labels      map[string]string
 }
 
 func (k *InClusterKube) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
@@ -196,8 +197,9 @@ func (k *InClusterKube) listNamespaces(ctx context.Context, key, value string) (
 	var list struct {
 		Items []struct {
 			Metadata struct {
-				Name              string `json:"name"`
-				DeletionTimestamp string `json:"deletionTimestamp"`
+				Name              string            `json:"name"`
+				DeletionTimestamp string            `json:"deletionTimestamp"`
+				Labels            map[string]string `json:"labels"`
 			} `json:"metadata"`
 		} `json:"items"`
 	}
@@ -206,7 +208,7 @@ func (k *InClusterKube) listNamespaces(ctx context.Context, key, value string) (
 	}
 	out := make([]NamespaceInfo, 0, len(list.Items))
 	for _, it := range list.Items {
-		out = append(out, NamespaceInfo{Name: it.Metadata.Name, Terminating: it.Metadata.DeletionTimestamp != ""})
+		out = append(out, NamespaceInfo{Name: it.Metadata.Name, Terminating: it.Metadata.DeletionTimestamp != "", Labels: it.Metadata.Labels})
 	}
 	return out, nil
 }

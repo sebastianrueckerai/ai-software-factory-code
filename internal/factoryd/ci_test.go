@@ -1319,60 +1319,57 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	}
 }
 
-// A staging project's <project>-smoke job gets a runner bound to the job's
-// attempt, labelled the smoke runner and without staging. Once it took the
-// job, staging's egress follows only when the job's run is a push to main;
-// a pull request's runner is torn down, the reason logged once. A job
-// without a handle is never served, and a bound runner whose job is gone
-// is torn down.
-func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
-	logs := captureLog(t)
-	var mu sync.Mutex
-	jobs := []CIJob{
-		{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-11"},
-		{ID: 12, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-12"},
-		{ID: 13, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-13"},
-		{ID: 14, RunsOn: []string{"demo-smoke"}, Status: "waiting"},
-	}
-	tasks := []ActionTask{{ID: 502, RunNumber: 8}, {ID: 501, RunNumber: 7}}
-	runs := []struct {
-		number     string
-		event, ref string
-	}{{"7", "push", "refs/heads/main"}, {"8", "pull_request", "refs/pull/3/head"}}
-	var deleted []string
-	next := int64(100)
+// smokeHub scripts demo/demo's Forgejo for the smoke runner: its jobs, its
+// newest tasks, and its runs, answered whatever the query's filters (a
+// Forgejo that drops an unknown filter answers the newest runs).
+type smokeHub struct {
+	mu       sync.Mutex
+	jobs     []CIJob
+	tasks    []ActionTask
+	runs     []ActionRun
+	runsFail bool
+	deleted  []string
+	next     int64
+}
+
+func (h *smokeHub) set(f func(h *smokeHub)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	f(h)
+}
+
+func (h *smokeHub) spawner(t *testing.T, kube *fakeKube) (*CISpawner, CIRepo) {
+	t.Helper()
+	h.next = 100
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
+		h.mu.Lock()
+		defer h.mu.Unlock()
 		if r.Header.Get("Authorization") != "token projects-tok" {
 			t.Errorf("%s %s with %q, want the project's token", r.Method, r.URL.Path, r.Header.Get("Authorization"))
 		}
-		q := r.URL.Query()
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/actions/runners/jobs"):
 			var out []CIJob
-			for _, j := range jobs {
-				if slices.Contains(j.RunsOn, q.Get("labels")) {
+			for _, j := range h.jobs {
+				if slices.Contains(j.RunsOn, r.URL.Query().Get("labels")) {
 					out = append(out, j)
 				}
 			}
 			json.NewEncoder(w).Encode(nonNil(out))
 		case r.URL.Path == "/api/v1/repos/demo/demo/actions/tasks":
-			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": tasks})
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": nonNil(h.tasks)})
 		case r.URL.Path == "/api/v1/repos/demo/demo/actions/runs":
-			out := []map[string]any{}
-			for _, run := range runs {
-				if run.number == q.Get("run_number") && run.event == q.Get("event") && run.ref == q.Get("ref") {
-					out = append(out, map[string]any{"id": 70, "event": run.event})
-				}
+			if h.runsFail {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": out})
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": nonNil(h.runs)})
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo/demo/actions/runners":
-			next++
+			h.next++
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprintf(w, `{"id":%d,"uuid":"u","token":"t"}`, next)
+			fmt.Fprintf(w, `{"id":%d,"uuid":"u","token":"t"}`, h.next)
 		case r.Method == http.MethodDelete:
-			deleted = append(deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo/demo/actions/runners/"))
+			h.deleted = append(h.deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo/demo/actions/runners/"))
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo/demo/actions/runners":
 			io.WriteString(w, "[]")
@@ -1380,8 +1377,7 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 		}
 	}))
-	defer srv.Close()
-	kube := newFakeKube()
+	t.Cleanup(srv.Close)
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	repo := CIRepo{Repo: Repo{Owner: "demo", Name: "demo"}, Token: "projects-tok", Project: "demo", Cache: "cache-ci-demo", Staging: "demo-staging"}
@@ -1391,15 +1387,47 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return spawner, repo
+}
+
+func smokeJob(id int64, status, handle string, task int64) CIJob {
+	return CIJob{ID: id, RunsOn: []string{"demo-smoke"}, Status: status, Handle: handle, TaskID: task}
+}
+
+// demoRuns are the newest runs of demo/demo: run 7 a push to main, run 8 a
+// pull request, run 9 a push to another branch, run 10 a pull request's
+// pull_request_target workflow, which runs on main.
+var demoRuns = []ActionRun{{ID: 70, Index: 7, Event: "push", PrettyRef: "main"},
+	{ID: 80, Index: 8, Event: "pull_request", PrettyRef: "#3"}, {ID: 90, Index: 9, Event: "push", PrettyRef: "feature"},
+	{ID: 100, Index: 10, Event: "pull_request", PrettyRef: "main"}}
+
+// A staging project's <project>-smoke job gets a runner bound to the job's
+// attempt, labelled the smoke runner and with its handle, without staging
+// and without the project's CI cache, which pull request jobs write. Once
+// it took the job, staging's egress follows only when the job's run, read
+// by its own fields, is a push to main; any other run's runner is torn
+// down, the reason logged once. A job without a handle is never served; a
+// bound runner whose job is gone, or whose job waits again as another
+// attempt, is torn down.
+func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
+	logs := captureLog(t)
+	kube := newFakeKube()
+	hub := &smokeHub{jobs: []CIJob{smokeJob(11, "waiting", "h-11", 0), smokeJob(12, "waiting", "h-12", 0), smokeJob(13, "waiting", "h-13", 0),
+		smokeJob(14, "waiting", "", 0), smokeJob(15, "waiting", "h-15", 0), smokeJob(16, "waiting", "h-16", 0), smokeJob(17, "waiting", "h-17", 0)},
+		tasks: []ActionTask{{ID: 504, RunNumber: 10}, {ID: 503, RunNumber: 9}, {ID: 502, RunNumber: 8}, {ID: 501, RunNumber: 7}}, runs: demoRuns}
+	spawner, repo := hub.spawner(t, kube)
 
 	spawner.poll(context.Background())
-	for _, id := range []string{"11", "12", "13"} {
+	for _, id := range []string{"11", "12", "13", "15", "16", "17"} {
 		ns := "factory-agents-ci-" + id
-		if l := kube.createdNs[ns]; l[CIRoleLabel] != "smoke" || l[CIProjectLabel] != "demo" {
-			t.Fatalf("%s labels = %v, want the smoke role of project demo", ns, l)
+		if l := kube.createdNs[ns]; l[CIRoleLabel] != "smoke" || l[CIProjectLabel] != "demo" || l[CIHandleLabel] != "h-"+id {
+			t.Fatalf("%s labels = %v, want the smoke role of project demo and handle h-%s", ns, l, id)
 		}
 		if egress := string(mustJSON(kube.cnps[ns+"/ci-egress"])); strings.Contains(egress, "demo-staging") {
 			t.Fatalf("%s reaches staging before its run is read: %s", ns, egress)
+		}
+		if claim := kube.objects["/api/v1/namespaces/"+ns+"/persistentvolumeclaims"]; claim != nil {
+			t.Fatalf("%s claims %v, want no cache", ns, claim)
 		}
 	}
 	if _, ok := kube.createdNs["factory-agents-ci-14"]; ok {
@@ -1409,20 +1437,37 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 	if got, want := pod["metadata"].(map[string]any)["labels"], map[string]string{"app.kubernetes.io/name": "ci-runner", CIRoleLabel: "smoke"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("smoke pod labels = %v, want %v", got, want)
 	}
-	args := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]
+	spec := pod["spec"].(map[string]any)
+	container := spec["containers"].([]any)[0].(map[string]any)
 	wantArgs := []any{"one-job", "--url", "http://forgejo-http.forgejo.svc.cluster.local:3000", "--uuid", "$(RUNNER_UUID)",
 		"--token-url", "file:/var/run/secrets/ci/token", "--label", "demo-smoke:host", "--handle", "h-11", "--wait"}
-	if !reflect.DeepEqual(args, wantArgs) {
-		t.Fatalf("smoke runner args = %v, want %v", args, wantArgs)
+	if !reflect.DeepEqual(container["args"], wantArgs) {
+		t.Fatalf("smoke runner args = %v, want %v", container["args"], wantArgs)
+	}
+	var vols, mounts, env []string
+	for _, v := range spec["volumes"].([]any) {
+		vols = append(vols, v.(map[string]any)["name"].(string))
+	}
+	for _, m := range container["volumeMounts"].([]any) {
+		mounts = append(mounts, m.(map[string]any)["mountPath"].(string))
+	}
+	for _, e := range container["env"].([]any) {
+		env = append(env, e.(map[string]any)["name"].(string))
+	}
+	if want := []string{"workspace", "home", "tmp", "registration"}; !reflect.DeepEqual(vols, want) {
+		t.Errorf("smoke pod volumes = %v, want %v", vols, want)
+	}
+	if want := []string{"/workspace", "/home/runner", "/tmp", "/var/run/secrets/ci"}; !reflect.DeepEqual(mounts, want) {
+		t.Errorf("smoke runner mounts = %v, want %v", mounts, want)
+	}
+	if want := []string{"HOME", "RUNNER_UUID"}; !reflect.DeepEqual(env, want) {
+		t.Errorf("smoke runner env = %v, want %v (no PATH naming /cache)", env, want)
 	}
 
-	mu.Lock()
-	jobs = []CIJob{
-		{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "running", Handle: "h-11", TaskID: 501},
-		{ID: 12, RunsOn: []string{"demo-smoke"}, Status: "running", Handle: "h-12", TaskID: 502},
-		{ID: 14, RunsOn: []string{"demo-smoke"}, Status: "waiting"},
-	}
-	mu.Unlock()
+	hub.set(func(h *smokeHub) {
+		h.jobs = []CIJob{smokeJob(11, "running", "h-11", 501), smokeJob(12, "running", "h-12", 502), smokeJob(14, "waiting", "", 0),
+			smokeJob(15, "waiting", "h-15b", 0), smokeJob(16, "running", "h-16", 503), smokeJob(17, "running", "h-17", 504)}
+	})
 	spawner.poll(context.Background())
 	spawner.poll(context.Background())
 
@@ -1432,33 +1477,98 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 	if want := []string{"factory-agents-ci-11/ci-egress"}; !reflect.DeepEqual(kube.applies, want) {
 		t.Fatalf("applied egress = %v, want %v once", kube.applies, want)
 	}
-	if want := []string{"factory-agents-ci-12", "factory-agents-ci-13"}; !reflect.DeepEqual(kube.deletedNs, want) {
+	// the second poll walks the jobs in order (12 refused, 15 a new
+	// attempt, 16 and 17 refused), then sweeps 13; the third spawns 15 again
+	if want := []string{"factory-agents-ci-12", "factory-agents-ci-15", "factory-agents-ci-16", "factory-agents-ci-17", "factory-agents-ci-13"}; !reflect.DeepEqual(kube.deletedNs, want) {
 		t.Fatalf("deleted namespaces = %v, want %v", kube.deletedNs, want)
 	}
-	mu.Lock()
-	if want := []string{"102", "103"}; !reflect.DeepEqual(deleted, want) {
-		t.Fatalf("deregistered runners = %v, want %v", deleted, want)
+	hub.set(func(h *smokeHub) {
+		if want := []string{"102", "104", "105", "106", "103"}; !reflect.DeepEqual(h.deleted, want) {
+			t.Fatalf("deregistered runners = %v, want %v", h.deleted, want)
+		}
+	})
+	if args := fmt.Sprint(kube.pods["factory-agents-ci-15/"+ciPodName].spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]); !strings.Contains(args, "--handle h-15b --wait") {
+		t.Fatalf("job 15's new attempt: runner args = %s, want it bound to h-15b", args)
 	}
-	mu.Unlock()
 	for _, line := range []string{
 		"ci spawner: job 12 (demo-smoke) is in run 8, no push to main: no staging, its runner torn down",
+		"ci spawner: job 16 (demo-smoke) is in run 9, no push to main: no staging, its runner torn down",
+		"ci spawner: job 17 (demo-smoke) is in run 10, no push to main: no staging, its runner torn down",
 		"ci spawner: job 14 (demo-smoke) names no handle to bind a runner to: not served",
 		"ci spawner: factory-agents-ci-13: its smoke job is neither waiting nor running: torn down",
+		"ci spawner: factory-agents-ci-15: bound to attempt h-15, its job now waits as h-15b: torn down",
 	} {
 		if n := strings.Count(logs.String(), line); n != 1 {
 			t.Errorf("%q logged %d times, want once; log:\n%s", line, n, logs)
 		}
 	}
 
-	// a re-run of job 11 is a new attempt: a new runner, bound to it
+	// a re-run of job 11 after its runner finished is a new attempt
 	kube.pods["factory-agents-ci-11/"+ciPodName].phase = "Succeeded"
-	mu.Lock()
-	jobs[0] = CIJob{ID: 11, RunsOn: []string{"demo-smoke"}, Status: "waiting", Handle: "h-11b"}
-	mu.Unlock()
+	hub.set(func(h *smokeHub) { h.jobs[0] = smokeJob(11, "waiting", "h-11b", 0) })
 	spawner.poll(context.Background())
-	pod = kube.pods["factory-agents-ci-11/"+ciPodName].spec
-	if args := fmt.Sprint(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]); !strings.Contains(args, "--handle h-11b --wait") {
+	if args := fmt.Sprint(kube.pods["factory-agents-ci-11/"+ciPodName].spec["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["args"]); !strings.Contains(args, "--handle h-11b --wait") {
 		t.Fatalf("re-run's runner args = %s, want it bound to h-11b", args)
+	}
+}
+
+// Staging stays closed while factoryd cannot tie the running attempt to
+// the runner or read its run: the job running as another attempt than the
+// runner's, its task not yet among the newest (logged once per attempt),
+// the runs unreadable, the policy not applied. The runner keeps its
+// namespace, and staging opens once the run reads as a push to main.
+func TestCISpawnerKeepsStagingClosedUntilItReadsThePush(t *testing.T) {
+	logs := captureLog(t)
+	kube := newFakeKube()
+	hub := &smokeHub{jobs: []CIJob{smokeJob(21, "waiting", "h-21", 0)}, tasks: []ActionTask{{ID: 600, RunNumber: 8}}, runs: demoRuns}
+	spawner, repo := hub.spawner(t, kube)
+	spawner.poll(context.Background())
+
+	const ns = "factory-agents-ci-21"
+	closed := func(step string) {
+		t.Helper()
+		if _, ok := kube.namespaces[ns]; !ok {
+			t.Fatalf("%s: %s was torn down", step, ns)
+		}
+		if len(kube.applies) != 0 || strings.Contains(string(mustJSON(kube.cnps[ns+"/ci-egress"])), "demo-staging") {
+			t.Fatalf("%s: staging opened (%v)", step, kube.applies)
+		}
+	}
+	hub.set(func(h *smokeHub) {
+		h.jobs = []CIJob{smokeJob(21, "running", "h-21x", 601)}
+		h.tasks = []ActionTask{{ID: 601, RunNumber: 7}}
+	})
+	spawner.poll(context.Background())
+	closed("another attempt running")
+
+	hub.set(func(h *smokeHub) {
+		h.jobs = []CIJob{smokeJob(21, "running", "h-21", 601)}
+		h.tasks = []ActionTask{{ID: 600, RunNumber: 8}}
+	})
+	spawner.poll(context.Background())
+	spawner.poll(context.Background())
+	closed("task 601 not listed")
+	if line := "ci spawner: job 21: its task 601 is not among demo/demo's newest tasks"; strings.Count(logs.String(), line) != 1 {
+		t.Errorf("%q logged %d times over two polls, want once; log:\n%s", line, strings.Count(logs.String(), line), logs)
+	}
+
+	hub.set(func(h *smokeHub) { h.tasks = []ActionTask{{ID: 601, RunNumber: 7}}; h.runsFail = true })
+	spawner.poll(context.Background())
+	closed("runs unreadable")
+
+	hub.set(func(h *smokeHub) { h.runsFail = false })
+	kube.applyErr = errors.New("apply refused")
+	spawner.poll(context.Background())
+	closed("policy not applied")
+
+	kube.applyErr = nil
+	spawner.poll(context.Background())
+	spawner.poll(context.Background())
+	if want := []string{ns + "/ci-egress"}; !reflect.DeepEqual(kube.applies, want) {
+		t.Fatalf("applied egress = %v, want %v once", kube.applies, want)
+	}
+	if got, want := string(mustJSON(kube.cnps[ns+"/ci-egress"])), string(mustJSON(spawner.ciEgressSpec(nil, repo, "demo-staging"))); got != want {
+		t.Fatalf("egress = %s, want %s", got, want)
 	}
 }
 

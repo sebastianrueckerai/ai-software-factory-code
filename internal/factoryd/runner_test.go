@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,6 +52,7 @@ type fakeKube struct {
 	createdNs    map[string]map[string]string // survives deletion
 	objects      map[string]map[string]any    // Create path → object
 	saErr        error                        // injected CreateServiceAccount failure
+	applyErr     error                        // injected ApplyCiliumNetworkPolicy failure
 	getErr       map[string]error             // ns/name → injected GetSecretData failure
 	statusErr    map[string]error             // ns/name → injected PodStatus failure
 	initFinished map[string]time.Time         // ns/name → the first init container's successful finish
@@ -157,7 +159,7 @@ func (k *fakeKube) ListNamespacesByLabel(ctx context.Context, key, value string)
 	for name, labels := range k.namespaces {
 		v, ok := labels[key]
 		if value == "" && ok || v == value {
-			out = append(out, NamespaceInfo{Name: name, Terminating: k.terminating[name]})
+			out = append(out, NamespaceInfo{Name: name, Terminating: k.terminating[name], Labels: maps.Clone(labels)})
 		}
 	}
 	slices.SortFunc(out, func(a, b NamespaceInfo) int { return cmp.Compare(a.Name, b.Name) })
@@ -206,6 +208,9 @@ func (k *fakeKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name
 	defer k.mu.Unlock()
 	if _, ok := k.namespaces[namespace]; !ok {
 		return ErrNotFound
+	}
+	if k.applyErr != nil {
+		return k.applyErr
 	}
 	k.cnps[namespace+"/"+name] = spec
 	k.applies = append(k.applies, namespace+"/"+name)
