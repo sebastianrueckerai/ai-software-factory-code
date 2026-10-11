@@ -9,14 +9,16 @@ import (
 // BoardTask is a task on the console's board with the reason of its
 // latest escalation ("" when it never escalated), its open escalation
 // alert (0 when none awaits a verdict), a card in waiting-deps the issues
-// it waits on (WaitingOn: "#3, #5"), and the entries ahead of it in its
-// merge queue.
+// it waits on (WaitingOn: "#3, #5"), the issues of every card it waits on
+// whether or not it got there yet (Dependencies: "#3, #5", for the face's
+// "blocked by n" chip), and the entries ahead of it in its merge queue.
 type BoardTask struct {
 	Task
 	Escalation      string
 	EscalatedAt     time.Time
 	EscalationAlert int64
 	WaitingOn       string
+	Dependencies    string
 	QueueAhead      int
 }
 
@@ -32,6 +34,8 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 		        WHERE a.task_id = tasks.id AND a.kind = $4 AND a.verdict IS NULL ORDER BY a.id DESC LIMIT 1), 0),
 		        CASE WHEN status = 'waiting-deps' THEN COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
+		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
+		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0), ''),
 		        (SELECT count(*) FROM merge_queue me JOIN merge_queue o ON o.project = me.project
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id)
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.body, e.created_at AS at FROM intake_events e
@@ -50,7 +54,7 @@ func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([
 		var b BoardTask
 		var at sql.NullTime
 		t, err := scanTask(func(dest ...any) error {
-			return rows.Scan(append(dest, &b.Escalation, &at, &b.EscalationAlert, &b.WaitingOn, &b.QueueAhead)...)
+			return rows.Scan(append(dest, &b.Escalation, &at, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead)...)
 		})
 		b.EscalatedAt = at.Time
 		if err != nil {

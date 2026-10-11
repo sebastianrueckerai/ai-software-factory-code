@@ -130,12 +130,12 @@ func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, 
 
 // planCards are accepted plan t's cards; Start plan while any is in the
 // backlog, for an approver who may move them into ready (mayStart).
-func (c *Console) planCards(ctx context.Context, t factoryd.Task, mayStart bool, csrf, project string) (*planCards, error) {
+func (c *Console) planCards(ctx context.Context, t factoryd.Task, mayStart bool, csrf string) (*planCards, error) {
 	cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}
-	p := &planCards{Project: project}
+	p := &planCards{}
 	for _, k := range cards {
 		p.Cards = append(p.Cards, c.card(k))
 		if k.Status == "backlog" {

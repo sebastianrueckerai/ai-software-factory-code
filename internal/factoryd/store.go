@@ -79,7 +79,23 @@ type Task struct {
 	Lane, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// HumanSummary is what a writer of the task's project says the card
+	// is about, shown on its face instead of the generated title; "" when
+	// nothing is set (the column is NULL).
+	HumanSummary string
+	// Accent is the card's colour label (one of Accents), "" when none.
+	// It never changes a state rendering and never enters a brief.
+	Accent string
 }
+
+// Accents are the accent colours a human may put on a card, in the order
+// the console offers them. Their hues are fixed and never a status's hue
+// at that status's chroma (see console.css); an accent outside this list
+// is refused.
+var Accents = []string{"red", "orange", "amber", "green", "teal", "blue", "violet", "pink"}
+
+// IsAccent reports whether name is one of Accents.
+func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 
 // Report tells a report task (ruling 185) by its source: a plan's cards
 // have a parent too and are no report.
@@ -461,7 +477,8 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, kind, issue_number, source, pr_number,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, '')`
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
+	COALESCE(human_summary, ''), COALESCE(accent, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -470,7 +487,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey); err != nil {
+		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -605,6 +622,19 @@ func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, err
 
 func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_summary = $2 WHERE id = $1`, id, summary)
+	return oneRow(res, err, "task "+id)
+}
+
+// SetHumanSummary sets task id's human summary; "" restores the generated
+// title by storing NULL.
+func (s *PGStore) SetHumanSummary(ctx context.Context, id, summary string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET human_summary = NULLIF($2, '') WHERE id = $1`, id, summary)
+	return oneRow(res, err, "task "+id)
+}
+
+// SetTaskAccent sets task id's accent colour; "" removes it (NULL).
+func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET accent = NULLIF($2, '') WHERE id = $1`, id, accent)
 	return oneRow(res, err, "task "+id)
 }
 

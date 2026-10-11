@@ -236,6 +236,37 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	}
 }
 
+// SetHumanSummary stores task id's human summary; "" restores the
+// generated title (the column back to NULL).
+func (s *fakeTasks) SetHumanSummary(_ context.Context, id, summary string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			if summary == "" {
+				s.tasks[i].HumanSummary = ""
+				return nil
+			}
+			s.tasks[i].HumanSummary = summary
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+// SetTaskAccent stores task id's accent colour; "" removes it.
+func (s *fakeTasks) SetTaskAccent(_ context.Context, id, accent string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Accent = accent
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
 // setStatus changes task id's row to status; a read hook already holds the
 // lock, so it takes none.
 func (s *fakeTasks) setStatus(id, status string) {
@@ -793,7 +824,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-q", Kind: "agent", Status: "queued", Objective: "queued work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 11},
-		{ID: "t-r", Kind: "agent", Status: "closing", Objective: "closing work", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 0.000543, PRNumber: 12},
+		{ID: "t-r", Kind: "agent", Status: "closing", Objective: "closing work", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 1.23, PRNumber: 12},
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", BudgetEUR: 5, IssueNumber: 13},
 		{ID: "t-v", Kind: "agent", Status: "in-review", Objective: "review work", Repository: "sf/code", BudgetEUR: 5},
 		{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code", BudgetEUR: 5},
@@ -823,7 +854,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		`href="https://git.example/sf/code/issues/11"`, `href="https://git.example/sf/code/pulls/12"`,
-		`href="/tasks/t-q/timeline"`, "spent 0.0005 / 5.0000 EUR",
+		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00 EUR",
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
 		`hx-get="/board"`, `hx-trigger="every 3s"`, `<script src="/static/htmx.min.js"`,
@@ -835,7 +866,10 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
-	if strings.Count(body, `action="/tasks/`) != 1 {
+	if strings.Count(body, `action="/tasks/`) < 1 {
+		t.Error("want at least one task form on the board")
+	}
+	if strings.Count(body, `/answer"`) != 1 {
 		t.Error("want exactly one answer box: the escalated agent task")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
@@ -1496,7 +1530,7 @@ func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Lane: "ready", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if c := col(t, body, "Ready"); !strings.Contains(c, "links api") || !strings.Contains(c, `<p class="waiting">waiting on #3, #5</p>`) {
+	if c := col(t, body, "Ready"); !strings.Contains(c, "links api") || !strings.Contains(c, `<span class="chip waiting">waiting on #3, #5</span>`) {
 		t.Fatalf("Ready column = %s, want the card waiting on #3, #5", c)
 	}
 }

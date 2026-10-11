@@ -104,7 +104,7 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	for title, want := range map[string][]string{
 		"Backlog": {"card 2", "card 3", "an improvement"},
 		"Plan":    {"Another spec"},
-		"Ready":   {"card 4", `<p class="waiting">waiting on #3, #5</p>`},
+		"Ready":   {"card 4", `<span class="chip waiting">waiting on #3, #5</span>`},
 		"Running": {"fix the cache", `<span class="badge">ready</span>`},
 		"Done":    {"Link shortener", `<span class="badge">plan</span>`, "card 5", `<span class="badge">ready</span>`},
 	} {
@@ -125,7 +125,7 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 			t.Fatalf("card %s missing", n)
 		}
 	}
-	if got := strings.Count(body, `<p class="meta">part of plan #1</p>`); got != 4 {
+	if got := strings.Count(body, `<span class="chip plan">part of plan #1</span>`); got != 4 {
 		t.Errorf("%d cards read part of plan #1, want its 4 cards", got)
 	}
 	if !strings.Contains(body, `<option value="linkshort">linkshort</option>`) || !strings.Contains(body, `<option value="" selected>every project</option>`) {
@@ -175,7 +175,7 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<form method="post" action="/cards/t-c2/lane" hx-post="/cards/t-c2/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="ready">` +
-			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value=""><input type="hidden" name="lane" value="ready">`,
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value=""><input type="hidden" name="accent" value=""><input type="hidden" name="lane" value="ready">`,
 		`<button type="submit" aria-label="Move #2 to lane ready">→ Ready</button>`,
 		`draggable="true" data-card="t-c2"`, `data-lane="backlog"`, `data-lane="plan"`,
 	} {
@@ -680,7 +680,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	failed := col(t, body, "Failed")
 	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#board" hx-swap="outerHTML" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="">` +
-		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
+		`<input type="hidden" name="accent" value=""><button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
 		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
 	}

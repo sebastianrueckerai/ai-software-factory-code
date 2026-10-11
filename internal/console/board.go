@@ -23,8 +23,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// eur2 is money to the cent, as a card's face reads spend against budget.
 var funcs = template.FuncMap{
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
@@ -85,26 +87,192 @@ type card struct {
 	GateText        string
 	EscalationAlert int64  // the escalation's open alert
 	WaitingOn       string // a card in waiting-deps: the issues it waits on
-	Badge           string // the card's starting lane, in a column after the lanes
-	PlanIssue       int64  // a plan's card: the plan's issue
-	Moves           []move // a backlog card: the starting lanes the viewer may move it into
-	Plan            *planCards
-	Retry           *retry // a failed plan card's Retry, for an approver who may move it into ready
-	Activity        string // the task's newest event as one line, or the intake_events body
+	// ModelAlias and AgentSummary are the embedded Task's own fields, read
+	// straight off it: the model chip on the face, the agent's last word
+	// in the expanded view.
+	Badge              string // the card's starting lane, in a column after the lanes
+	PlanIssue          int64  // a plan's card: the plan's issue
+	Moves              []move // a backlog card: the starting lanes the viewer may move it into
+	Plan               *planCards
+	Retry              *retry // a failed plan card's Retry, for an approver who may move it into ready
+	Activity           string // the task's newest event as one line, or the escalation's question
+	WaitingForActivity bool   // the activity line stands for the wait's reason
+	// Title is the face's first line: human_summary when a writer set
+	// one, the plan key of a planned card, else the objective's first
+	// clause.
+	Title string
+	// StatusClass is the pill's class, one hue per state.
+	StatusClass string
+	// Checks is "n/n" from the task's newest checks step, "" where the
+	// card has no timeline with one.
+	Checks string
+	// NearBudget is spend at 80 percent of the budget or more.
+	NearBudget bool
+	// Stale is a card without an event for the stale window: an amber
+	// ring, and these words on its activity line.
+	Stale     bool
+	StaleText string
+	// Children roll up an accepted plan: n running, n done, n waiting.
+	Children string
+	// Blocked is how many cards this one waits on; BlockedOn names their
+	// issues in its title attribute ("#3, #5").
+	Blocked   int
+	BlockedOn string
+	// Accent is the card's colour label (one of factoryd.Accents), ""
+	// when none: no chip, no edge. It never changes a state rendering.
+	Accent string
+	// MayWriteSummary is whether the viewer writes the task's project, so
+	// the expanded view carries its forms with a CSRF token for them;
+	// CSRF is that token (an escalation copy keeps it for its answer
+	// form, which reads the page's own token).
+	MayWriteSummary bool
+	CSRF            string
+	// Project and Accent are the board's filter the card's forms carry
+	// back; Accents are the choices its accent select offers.
+	boardFilter
+	Accents []string
 }
 
-// move is a backlog card's button into a starting lane.
-type move struct{ Lane, Title, CSRF, Project string }
+// titleClause is the face's title from the objective: up to the first
+// full stop that ends a sentence — one followed by a space, or one at the
+// very end — or 80 characters when there is none. A dot inside a file name
+// or a version ("internal/console/board.go", "v1.2") ends no sentence, so
+// the clause keeps it.
+func titleClause(objective string) string {
+	s := strings.TrimSpace(objective)
+	if i := strings.Index(s, ". "); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	} else if strings.HasSuffix(s, ".") {
+		s = strings.TrimSpace(strings.TrimSuffix(s, "."))
+	}
+	if r := []rune(s); len(r) > 80 {
+		s = strings.TrimRight(string(r[:80]), " ,;:")
+	}
+	return s
+}
+
+// statusClasses are the pill's classes, one hue per state: running the
+// accent blue, a wait amber, review violet, done green, failed red, closed
+// grey; waiting-poster wears the hollow pill. closing counts as running.
+var statusClasses = map[string]string{
+	"running": "st-running", "closing": "st-running", "queued": "st-queued",
+	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
+	"in-review": "st-review", "done": "st-done", "failed": "st-failed",
+	"closed": "st-closed", "backlog": "st-backlog", "plan": "st-plan",
+	"waiting-deps": "st-waiting",
+}
+
+func statusClass(status string) string { return cmp.Or(statusClasses[status], "st-other") }
+
+// nearBudgetShare is the share of its budget from which a card's spend is
+// shown prominent with the warning sign and the words "near its budget".
+const nearBudgetShare = 0.8
+
+// staleAfter bounds how long a card may hold no event before its face
+// wears the amber ring.
+const staleAfter = 30 * time.Minute
+
+// newestChecksCount is the task's newest checks step: passed over total of
+// its jobs; "" when the steps hold none or it named no counts.
+func newestChecksCount(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if s, _ := steps[i]["step"].(string); s != "checks" {
+			continue
+		}
+		jobs, _ := steps[i]["jobs"].([]any)
+		var passed int
+		for _, j := range jobs {
+			job, _ := j.(map[string]any)
+			if st, _ := job["status"].(string); st == "success" {
+				passed++
+			}
+		}
+		if len(jobs) == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%d/%d", passed, len(jobs))
+	}
+	return ""
+}
+
+// faceTimelines reads the newest checks step onto every card that has a
+// session to have one: each agent card not yet final, at most once per
+// render. A timeline that cannot be read keeps the card without the chip —
+// the object store answers no body for a task that never wrote a timeline,
+// and reading is best-effort here, never a reason to fail the board.
+func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
+	read := map[string]string{}
+	set := func(k *card) {
+		if k.Kind != "agent" || factoryd.Final(k.Status) {
+			return
+		}
+		if _, ok := read[k.ID]; !ok {
+			steps, err := c.readTimeline(ctx, k.ID)
+			if err != nil {
+				log.Printf("console: timeline of %s for its checks: %v", k.ID, err)
+				read[k.ID] = ""
+			} else {
+				read[k.ID] = newestChecksCount(steps)
+			}
+		}
+		k.Checks = read[k.ID]
+	}
+	everyCard(set)
+}
+
+// depsCount is how many issues a "#3, #5" list names (0 an empty one).
+func depsCount(list string) int {
+	if list == "" {
+		return 0
+	}
+	return strings.Count(list, "#")
+}
+
+// planRollup is an accepted plan's children as one line: only the parts
+// with cards in them, in the order running, done, waiting.
+func planRollup(cards []card) string {
+	var running, done, waiting int
+	for _, k := range cards {
+		switch {
+		case k.Status == "running" || k.Status == "closing":
+			running++
+		case k.Status == "done":
+			done++
+		case strings.HasPrefix(k.Status, "waiting"):
+			waiting++
+		}
+	}
+	var parts []string
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("%d running", running))
+	}
+	if done > 0 {
+		parts = append(parts, fmt.Sprintf("%d done", done))
+	}
+	if waiting > 0 {
+		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
+	}
+	return strings.Join(parts, " \u00b7 ")
+}
+
+// move is a backlog card's button into a starting lane. The board's filter
+// rides on the form in the template, read from the page's data.
+type move struct {
+	Lane, Title string
+	CSRF        string
+}
 
 // retry is a failed plan card's Retry button.
-type retry struct{ CSRF, Project string }
+type retry struct {
+	CSRF string
+}
 
 // planCards are an accepted plan's cards and, for an approver while any
 // is in the backlog, Start plan (CSRF set).
 type planCards struct {
-	Cards         []card
-	Backlog       int
-	CSRF, Project string
+	Cards   []card
+	Backlog int
+	CSRF    string
 }
 
 type column struct {
@@ -113,12 +281,37 @@ type column struct {
 	Cards []card
 }
 
+// boardFilter is what the board was asked to show: the project and the
+// accent; every form on it carries it back, so an action keeps the view.
+type boardFilter struct {
+	Project, Accent string
+}
+
+// query is the filter as a URL query, empty when it names nothing.
+func (f boardFilter) query() string {
+	q := url.Values{}
+	if f.Project != "" {
+		q.Set("project", f.Project)
+	}
+	if f.Accent != "" {
+		q.Set("accent", f.Accent)
+	}
+	if q.Encode() == "" {
+		return ""
+	}
+	return "?" + q.Encode()
+}
+
 type boardData struct {
-	User        string
-	CSRF        string
-	Filed       string
-	Note        string // what the human's last action did
-	Project     string // the one project shown; "" every project
+	User  string
+	CSRF  string
+	Filed string
+	Note  string // what the human's last action did
+	// Project and Accent are the board's filter, which every form on it
+	// carries back so an action keeps the view; Accents are the choices
+	// its select offers.
+	boardFilter
+	Accents     []string
 	Projects    []string
 	Columns     []column
 	HumanTasks  []card
@@ -149,6 +342,17 @@ func (c *Console) card(t factoryd.Task) card {
 	}
 	if t.Gate != "" && t.GateSince != nil {
 		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
+	}
+	k.StatusClass = statusClass(t.Status)
+	k.Accent = t.Accent
+	k.Title = cmp.Or(t.HumanSummary, func() string {
+		if t.PlanKey != "" {
+			return t.PlanKey
+		}
+		return titleClause(t.Objective)
+	}())
+	if t.BudgetEUR > 0 {
+		k.NearBudget = t.SpentEUR >= nearBudgetShare*t.BudgetEUR
 	}
 	return k
 }
@@ -182,7 +386,12 @@ var errNoProject = errors.New("no such project")
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
-	d, err := c.boardOf(r, project)
+	accent := r.URL.Query().Get("accent")
+	if accent != "" && !factoryd.IsAccent(accent) {
+		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
+		return
+	}
+	d, err := c.boardOf(r, project, accent)
 	switch {
 	case errors.Is(err, errNoProject):
 		http.Error(w, "no project "+project+" takes agent tasks", http.StatusNotFound)
@@ -205,18 +414,25 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // of the tasks they name; a browser's form a redirect to the board after a
 // success (a reload resends nothing), else the page.
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
-	project := r.PostFormValue("project")
+	project, accent := r.PostFormValue("project"), r.PostFormValue("accent")
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
 		back := "/"
+		q := url.Values{}
 		if project != "" {
-			back += "?project=" + url.QueryEscape(project)
+			q.Set("project", project)
+		}
+		if accent != "" {
+			q.Set("accent", accent)
+		}
+		if q.Encode() != "" {
+			back += "?" + q.Encode()
 		}
 		http.Redirect(w, r, back, http.StatusSeeOther)
 		return
 	}
-	d, err := c.boardOf(r, project)
+	d, err := c.boardOf(r, project, accent)
 	if errors.Is(err, errNoProject) {
-		d, err = c.boardOf(r, "")
+		d, err = c.boardOf(r, "", accent)
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
@@ -238,12 +454,14 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	c.render(w, name, d)
 }
 
-// boardOf is the board of project ("" every project) as the session's
-// human sees it: the lanes of the shown projects' processes in the fixed
-// order backlog, plan, ready, then the state columns.
-func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
+// boardOf is the board of project ("" every project) and accent ("" every
+// accent) as the session's human sees it: the lanes of the shown projects'
+// processes in the fixed order backlog, plan, ready, then the state
+// columns.
+func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
 	ctx, s := r.Context(), current(r)
-	d := boardData{User: s.user, CSRF: s.csrf, Project: project}
+	f := boardFilter{Project: project, Accent: accent}
+	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Accents: factoryd.Accents}
 	v, _ := c.inForce(r)
 	d.Approver = slices.Contains(v.Document.Approvers, s.user)
 	all, err := c.coderProjects(r)
@@ -325,8 +543,20 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 		if !inView(t.Repository) {
 			continue
 		}
+		// the accent filter narrows the board to one accent; a card with
+		// none is in no accent's board, and an accent never changes how a
+		// state renders.
+		if accent != "" && t.Accent != accent {
+			continue
+		}
 		k := c.card(t)
 		k.WaitingOn = bt.WaitingOn
+		// "blocked by n" counts the dependencies that are not done yet;
+		// WaitingOn already says so for a card in waiting-deps, where the
+		// face shows that chip and never both.
+		if bt.Dependencies != "" && bt.WaitingOn == "" {
+			k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
+		}
 		if t.Gate == factoryd.GateMergeQueue {
 			k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
 		}
@@ -353,7 +583,7 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 					d.Problems = append(d.Problems, "who may move a card could not be checked: the move buttons are hidden")
 				}
 				if err == nil && why == "" {
-					k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf, Project: project})
+					k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf})
 				}
 			}
 		case "queued", "waiting-deps":
@@ -366,16 +596,18 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 			}
 		}
 		if t.Lane == policy.LanePlan && t.Status == "done" {
-			if k.Plan, err = c.planCards(ctx, t, mayReady(t), s.csrf, project); err != nil {
+			if k.Plan, err = c.planCards(ctx, t, mayReady(t), s.csrf); err != nil {
 				log.Printf("console: the cards of plan %s: %v", t.ID, err)
 				d.Problems = append(d.Problems, "the cards of plan "+t.ID+" could not be read")
+			} else {
+				k.Children = planRollup(k.Plan.Cards)
 			}
 		}
 		// a retry that stopped before its replacement got an issue is finished by the next
 		replacement, retried := byID[factoryd.RetryID(t.ID)]
 		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
 			mayReady(t) {
-			k.Retry = &retry{CSRF: s.csrf, Project: project}
+			k.Retry = &retry{CSRF: s.csrf}
 		}
 		if ok {
 			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
@@ -411,40 +643,97 @@ func (c *Console) boardOf(r *http.Request, project string) (boardData, error) {
 	}
 	collect(d.HumanTasks)
 	collect(d.Escalations)
-	if len(ids) > 0 {
-		newest := map[string]factoryd.Event{}
-		if c.cfg.Events != nil {
-			got, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
-			if err != nil {
-				log.Printf("console: newest events: %v", err)
-			} else {
-				newest = got
-			}
-		}
-		// A card with no event keeps its escalation's first line, the
-		// question it waits on an answer to; a card with neither claims
-		// nothing.
-		setActivity := func(k *card) {
-			if e, ok := newest[k.ID]; ok {
-				k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
-				return
-			}
-			if k.Reason != "" {
-				q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
-				k.Activity = q
-			}
-		}
-		setAll := func(ks []card) {
-			for i := range ks {
-				setActivity(&ks[i])
-			}
-		}
+	// everyCard is each card of the board once, so a face's checks count,
+	// its staleness ring and the summary editor can be filled per card.
+	everyCard := func(fn func(*card)) {
 		for i := range d.Columns {
-			setAll(d.Columns[i].Cards)
+			for j := range d.Columns[i].Cards {
+				fn(&d.Columns[i].Cards[j])
+			}
 		}
-		setAll(d.HumanTasks)
-		setAll(d.Escalations)
+		for i := range d.HumanTasks {
+			fn(&d.HumanTasks[i])
+		}
+		for i := range d.Escalations {
+			fn(&d.Escalations[i])
+		}
 	}
+	newest := map[string]factoryd.Event{}
+	if len(ids) > 0 && c.cfg.Events != nil {
+		got, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
+		if err != nil {
+			log.Printf("console: newest events: %v", err)
+		} else {
+			newest = got
+		}
+	}
+	// A card with no event keeps its escalation's first line, the
+	// question it waits on an answer to; a card with neither claims
+	// nothing. On a waiting card that reason is what the human owes it:
+	// it stands in place of the newest event. The stale ring — one whose
+	// newest event is older than half an hour wears it, one that never had
+	// an event its own age — comes only on a card that is running its
+	// work: never a final one, never one in the backlog or the plan lane.
+	setActivity := func(k *card) {
+		ring := func(d time.Duration) bool { return d >= staleAfter }
+		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan"
+		reason := func() string {
+			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
+			return q
+		}
+		if e, ok := newest[k.ID]; ok {
+			k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
+			k.Stale = live && ring(time.Since(e.At))
+			if k.Stale {
+				k.StaleText = "nothing for over " + minutes(time.Since(e.At))
+			}
+			if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
+				k.Activity = reason()
+				k.WaitingForActivity = true
+			}
+			return
+		}
+		k.Stale = live && ring(time.Since(k.CreatedAt))
+		if k.Stale {
+			k.StaleText = "no event yet, " + minutes(time.Since(k.CreatedAt)) + " on the card"
+		}
+		if k.Reason != "" {
+			k.Activity = reason()
+			k.StaleText = ""
+		}
+	}
+	everyCard(setActivity)
+	c.faceTimelines(ctx, everyCard)
+	// mayWrite is whether the viewer writes that repository, asked at most
+	// once per repository per render through the move cache.
+	mayWrite := func(repository string) bool {
+		ok, err := c.mayMoveCached(ctx, repository, s.user, policy.MovedByWriters)
+		if err != nil {
+			log.Printf("console: may %s write %s: %v", s.user, repository, err)
+			return false
+		}
+		return ok
+	}
+	writes := map[string]bool{}
+	mayWriteOnce := func(repository string) bool {
+		if _, ok := writes[repository]; !ok {
+			writes[repository] = mayWrite(repository)
+		}
+		return writes[repository]
+	}
+	setForms := func(k *card) {
+		k.MayWriteSummary = mayWriteOnce(k.Repository)
+		if k.MayWriteSummary {
+			k.CSRF = s.csrf
+		}
+		k.boardFilter, k.Accents = f, d.Accents
+		if k.Plan != nil {
+			for i := range k.Plan.Cards {
+				k.Plan.Cards[i].boardFilter = f
+			}
+		}
+	}
+	everyCard(setForms)
 	return d, nil
 }
 
@@ -457,8 +746,8 @@ type timelineEntry struct {
 }
 
 // readTimeline reads the task's timeline steps, oldest first.
-func (c *Console) readTimeline(r *http.Request, taskID string) ([]map[string]any, error) {
-	body, err := c.cfg.Timelines.Get(r.Context(), "sessions/"+taskID+"/timeline.jsonl")
+func (c *Console) readTimeline(ctx context.Context, taskID string) ([]map[string]any, error) {
+	body, err := c.cfg.Timelines.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +916,7 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	steps, err := c.readTimeline(r, t.ID)
+	steps, err := c.readTimeline(r.Context(), t.ID)
 	if err != nil {
 		log.Printf("console: timeline of %s: %v", t.ID, err)
 		http.Error(w, "cannot read the timeline", http.StatusBadGateway)

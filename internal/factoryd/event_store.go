@@ -35,6 +35,8 @@ const (
 	EventResourceReleased     = "resource_released"
 	EventProjectFiled         = "project_filed"
 	EventProjectMerged        = "project_merged"
+	EventSummarySet           = "summary_set"
+	EventAccentSet            = "accent_set"
 )
 
 // Event is one row of the events table: what happened, to which card or

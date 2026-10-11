@@ -1,5 +1,5 @@
 {{define "head"}}<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,8 +12,9 @@
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
 <header>
 <a class="home" href="/">Factory console</a>
-{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a> <a href="/projects">Projects</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a></nav>
-<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
+{{if .CSRF}}<nav aria-label="Main"><a href="/">Board</a> <a href="/tasks/new">New task</a> <a href="/projects">Projects</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a></nav>{{end}}
+<button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to the light theme" title="Dark theme is the default; your choice is remembered">Theme: dark</button>
+{{if .CSRF}}<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
 </header>
 <main>
 <p id="flash" class="problem" role="alert" hidden></p>
@@ -24,19 +25,8 @@
 </html>
 {{end}}
 
-{{define "card"}}<article class="card"{{if .Moves}} draggable="true" data-card="{{.ID}}"{{end}}>
-<h4>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a> {{end}}{{.Objective}}</h4>
-<p class="meta">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}<span class="status">{{.Status}}</span> · spent {{eur4 .SpentEUR}} / {{eur4 .BudgetEUR}} EUR{{if .Total}} · {{.Total}} in all{{end}}{{if .GateText}} · <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
-{{if .Activity}}<p class="meta activity">{{.Activity}}</p>{{end}}
-{{if .PlanIssue}}<p class="meta">part of plan #{{.PlanIssue}}</p>{{end}}
-{{if .WaitingOn}}<p class="waiting">waiting on {{.WaitingOn}}</p>{{end}}
-{{with .Plan}}<ul class="children" aria-label="The plan's cards">{{range .Cards}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>
-{{if .CSRF}}<form method="post" action="/tasks/{{$.ID}}/start-plan" hx-post="/tasks/{{$.ID}}/start-plan" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><button type="submit" aria-label="Start plan #{{$.IssueNumber}}: {{.Backlog}} in backlog">Start plan ({{.Backlog}} in backlog)</button></form>{{end}}{{end}}
-{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}
-{{range .Moves}}<form method="post" action="/cards/{{$.ID}}/lane" hx-post="/cards/{{$.ID}}/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="{{.Lane}}"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="lane" value="{{.Lane}}"><button type="submit" aria-label="Move #{{$.IssueNumber}} to lane {{.Lane}}">→ {{.Title}}</button></form>{{end}}
-<p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
-</article>{{end}}
-
 {{define "supervised"}}{{if .Action}}<strong>{{.Action}}</strong>: {{.Diagnosis}}{{end}}{{end}}
+
 {{define "verdict"}}<form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="real"><button type="submit" aria-label="Alert {{.ID}}: a real problem">real problem</button></form>
 <form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="noise"><button type="submit" class="deny" aria-label="Alert {{.ID}}: noise">noise</button></form>{{end}}
+

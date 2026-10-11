@@ -61,6 +61,11 @@ type Tasks interface {
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
+	// SetHumanSummary is a writer's summary of task id; "" restores the
+	// generated title (the column back to NULL).
+	SetHumanSummary(ctx context.Context, id, summary string) error
+	// SetTaskAccent is a writer's colour label on task id; "" removes it.
+	SetTaskAccent(ctx context.Context, id, accent string) error
 }
 
 // Config wires the console. ForgejoURL serves the code exchange and API
@@ -184,6 +189,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /tasks/new", c.auth(c.newTaskForm))
 	c.mux.Handle("POST /tasks", c.auth(c.createTask))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
+	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
+	c.mux.Handle("POST /tasks/{id}/accent", c.auth(c.setAccent))
 	c.mux.Handle("POST /cards/{id}/lane", c.auth(c.moveCard))
 	c.mux.Handle("POST /tasks/{id}/start-plan", c.auth(c.spend("start a plan", c.startPlan)))
 	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.spend("accept a plan", c.acceptPlan)))

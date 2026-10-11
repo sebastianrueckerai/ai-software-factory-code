@@ -77,3 +77,23 @@ document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
+
+// Theme toggle: dark is the default; the choice is remembered in localStorage.
+(function () {
+  var stored = localStorage.getItem("theme");
+  var theme = stored === "light" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", theme);
+  var btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  function label() {
+    btn.textContent = "Theme: " + theme;
+    btn.setAttribute("aria-label", "Switch to the " + (theme === "dark" ? "light" : "dark") + " theme");
+  }
+  label();
+  btn.addEventListener("click", function () {
+    theme = theme === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("theme", theme);
+    label();
+  });
+})();
