@@ -54,16 +54,15 @@ type capFacts struct {
 	capped, merge, plan       bool
 }
 
-// capFactsOf reads t's facts; a card not waiting on a human has none, and
-// a failed read leaves its fact unknown, which wrongState reads as a
-// question.
+// capFactsOf reads t's facts, only for a card waiting on a human; a failed
+// read leaves its fact unknown, which wrongState reads as a question.
 func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 	if t.Status != "waiting-human" {
 		return capFacts{}
 	}
-	f := capFacts{attempts: t.Usage.Attempts, extra: t.Usage.ExtraAttempts}
+	sessions := 0
 	if v, ok := c.inForce(ctx); ok {
-		f.sessions = v.Document.Limits.Sessions
+		sessions = v.Document.Limits.Sessions
 	}
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
@@ -73,11 +72,22 @@ func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
 	}
-	for _, q := range all {
+	return capFactsFrom(t, sessions, bt.Escalation, all)
+}
+
+// capFactsFrom are t's facts from the policy's sessions, its newest
+// escalation and the pending approval requests; a card not waiting on a
+// human has none.
+func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []factoryd.ApprovalRequest) capFacts {
+	if t.Status != "waiting-human" {
+		return capFacts{}
+	}
+	f := capFacts{attempts: t.Usage.Attempts, sessions: sessions, extra: t.Usage.ExtraAttempts}
+	for _, q := range pending {
 		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
 		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan
 	}
-	f.capped = !f.merge && !f.plan && (factoryd.AtSessionCap(bt.Escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
+	f.capped = !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
 

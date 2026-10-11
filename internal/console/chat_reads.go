@@ -62,7 +62,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		fmt.Fprintf(&b, "\nissue %s/issues/%d", base, k.IssueNumber)
 	}
 	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, v.Document.Limits.Sessions+k.Usage.ExtraAttempts)
-	if f := t.c.capFactsOf(ctx, k); f.capped {
+	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
 		fmt.Fprintf(&b, "\nat its session cap: %d of %d sessions used, %d granted", f.attempts, f.sessions, f.extra)
 	}
 	for _, d := range deps {

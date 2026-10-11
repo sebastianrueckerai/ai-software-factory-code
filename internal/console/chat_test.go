@@ -642,6 +642,32 @@ func TestChatProposalRunsOnDoIt(t *testing.T) {
 	equal(t, "deleted", r.fg.deleted, []string{"/api/v1/repos/sf/code/issues/5/labels/1"})
 }
 
+// The undo of a move refuses once factoryd took the card into the lane:
+// the refusal names the card's state and the action that fits it, and no
+// label comes off and no row is recorded.
+func TestChatUndoOfAMoveTheCardLeft(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"start #5"}})
+	_, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-m" {
+			r.tasks.tasks[i].Status = "running"
+		}
+	}
+	r.tasks.mu.Unlock()
+	before := r.events.count()
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
+	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo move_card","result":"Refused: Card #5 runs an agent session, ` +
+		`not a card still in the backlog: steer sends its session a message; its pull request comes when the session ends."}`, `done {}`})
+	chatRows(t, r.events, before, "sebastian")
+	if len(r.fg.deleted) != 0 {
+		t.Fatalf("a refused undo took a label off: %q", r.fg.deleted)
+	}
+}
+
 // A tool no confirm names runs at once with its undo token; the stream
 // carries the turn's events in their order. The undo restores the
 // summary with one row, once. The conversation keeps every call with its
