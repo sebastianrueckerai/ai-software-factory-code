@@ -309,12 +309,12 @@ func equal(t *testing.T, what string, got, want any) {
 }
 
 const boardText = `Backlog (1):
-  #5 t-m "Fix the cache" backlog, €0.40 of €3.00
+  #5 t-m "Fix the cache" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00
 Ready (0):
 Running (1):
-  #11 t-r "Speed up the board" running
+  #11 t-r "Speed up the board" running (runs an agent session)
 Waiting on a human (1):
-  #13 t-e "Use a replica?" waiting-human
+  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Waiting on the author (0):
 In review (0):
 Done (0):
@@ -322,7 +322,7 @@ Failed (0):
 Closed (0):
 Human lane (0):
 Escalated, waiting on an answer (1):
-  #13 t-e "Use a replica?" waiting-human
+  #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Approval requests waiting (2):
   resource request 3 of t-res
   merge request 4 of t-m (#5), pull request #9`
@@ -403,7 +403,7 @@ func TestChatReadThenReply(t *testing.T) {
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("#5 waits in the backlog.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog, €0.40 of €3.00"}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00"}`,
 		`text {"text":"#5 waits in the backlog."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -412,12 +412,69 @@ func TestChatReadThenReply(t *testing.T) {
 	equal(t, "the second call's last messages", msgs[2:], []map[string]any{
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
-		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog, €0.40 of €3.00\n" +
+		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
 			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\n" +
 			"objective: Fix the cache. It drops entries.\n" +
 			"merge request 4 waiting for pull request #9, risk high; the model review: approve, adds the column safely; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it."},
 	})
+}
+
+// TestSystemTool checks that the system tool renders the manual from the
+// code: the hand-written paragraph, the card states, the gates in order,
+// the tools with their fits and OK markers, the process, budgets and
+// chat bounds. It records no event.
+func TestSystemTool(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "system", `{}`)}, {say("read it.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is this?"}})
+	calls := g.calls()
+	if len(calls) != 2 {
+		t.Fatalf("%d model calls, want 2", len(calls))
+	}
+	msgs := messages(t, calls[1])
+	var result string
+	for _, m := range msgs {
+		if m["role"] == "tool" {
+			result, _ = m["content"].(string)
+			break
+		}
+	}
+	if result == "" {
+		t.Fatal("no tool result in second call")
+	}
+	for _, want := range []string{
+		"Signals and members file cards",
+		"backlog: waits in the backlog until a member moves it into a lane",
+		"waiting-human: waits on a human: an answer, an approval or a decision",
+		"approve_merge, needs OK, a pending merge request",
+		"card, any card",
+		"sessions per card: 3",
+	} {
+		if !strings.Contains(result, want) {
+			t.Errorf("system result lacks %q:\n%s", want, result)
+		}
+	}
+	idxScreening := strings.Index(result, "screening:")
+	idxChecks := strings.Index(result, "checks:")
+	idxMerge := strings.Index(result, "merge:")
+	if idxScreening < 0 || idxChecks < 0 || idxMerge < 0 {
+		t.Fatalf("gate order incomplete: screening=%d checks=%d merge=%d in\n%s",
+			idxScreening, idxChecks, idxMerge, result)
+	}
+	if !(idxScreening < idxChecks && idxChecks < idxMerge) {
+		t.Errorf("gate order wrong: screening=%d checks=%d merge=%d",
+			idxScreening, idxChecks, idxMerge)
+	}
+	confirmLine := "new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge"
+	if !strings.Contains(result, confirmLine) {
+		t.Errorf("system result lacks confirm list %q:\n%s", confirmLine, result)
+	}
+	if r.events.count() != before {
+		t.Errorf("events count = %d, want %d (system is a read)", r.events.count(), before)
+	}
 }
 
 // A tool the chat's confirm names proposes and runs nothing; the

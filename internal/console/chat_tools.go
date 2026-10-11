@@ -547,6 +547,12 @@ func (t *turn) diff(in toolInput) (string, error) {
 	return string(raw), nil
 }
 
+var allTools func() []chatTool
+
+func init() {
+	allTools = func() []chatTool { return tools }
+}
+
 func (t *turn) systemText() (string, error) {
 	v, ok := t.c.inForce(t.r.Context())
 	if !ok {
@@ -575,7 +581,11 @@ func (t *turn) systemText() (string, error) {
 	for _, c := range t.cfg.Confirm {
 		confirmSet[c] = true
 	}
-	for _, tool := range t.c.chatTools() {
+	hasSteer := t.c.cfg.Steer != nil
+	for _, tool := range allTools() {
+		if tool.name == "steer" && !hasSteer {
+			continue
+		}
 		line := "  " + tool.name
 		if confirmSet[tool.name] {
 			line += ", needs OK"
@@ -585,6 +595,7 @@ func (t *turn) systemText() (string, error) {
 		}
 		b.WriteString(line + "\n")
 	}
+	fmt.Fprintf(&b, "\nTools needing OK: %s\n", strings.Join(t.cfg.Confirm, ", "))
 	b.WriteString("\nProcess")
 	if t.p.Process != "" {
 		fmt.Fprintf(&b, " %s", t.p.Process)
