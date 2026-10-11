@@ -194,7 +194,6 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
-	held map[string]heldToken // the chat's proposals' tokens: a restart forgets them
 }
 
 // writerLists are each project's writers by repository and the factory's
@@ -228,7 +227,7 @@ func New(cfg Config) (*Console, error) {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(),
-		sessions: map[string]*session{}, runs: map[string]*projectRun{}, held: map[string]heldToken{}}
+		sessions: map[string]*session{}, runs: map[string]*projectRun{}}
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err

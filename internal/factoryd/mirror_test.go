@@ -210,31 +210,6 @@ func TestMirrorStates(t *testing.T) {
 	}
 }
 
-// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a scrub
-// takes the secret out of the member's messages on the project, texts and
-// tool calls, and leaves another member's and another project's alone.
-func TestPGStoreScrubChatMessages(t *testing.T) {
-	s, ctx := chatStore(t), context.Background()
-	calls := []ChatToolCall{{ID: "call_1", Name: "comment", Arguments: `{"text":"ghp_s3cret"}`, Result: "Commented."}}
-	for _, m := range []struct{ repo, login string }{{"sf/code", "anna"}, {"sf/code", "bob"}, {"linkshort/linkshort", "anna"}} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, ChatMessage{Role: "assistant", Content: "with ghp_s3cret.", ToolCalls: calls}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.ScrubChatMessages(ctx, "sf/code", "anna", "ghp_s3cret"); err != nil {
-		t.Fatal(err)
-	}
-	var got []string
-	for _, m := range []struct{ repo, login string }{{"sf/code", "anna"}, {"sf/code", "bob"}, {"linkshort/linkshort", "anna"}} {
-		ms, _ := s.ChatMessages(ctx, m.repo, m.login, 0, 10)
-		got = append(got, ms[0].Content+" "+ms[0].ToolCalls[0].Arguments+" "+ms[0].ToolCalls[0].Result)
-	}
-	want := []string{`with [token]. {"text":"[token]"} Commented.`, `with ghp_s3cret. {"text":"ghp_s3cret"} Commented.`, `with ghp_s3cret. {"text":"ghp_s3cret"} Commented.`}
-	if !slices.Equal(got, want) {
-		t.Fatalf("after the scrub %q, want %q", got, want)
-	}
-}
-
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): an import
 // row may hold no token, a public source's or one the migrate used; an
 // export row must hold one.

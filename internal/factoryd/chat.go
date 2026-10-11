@@ -209,15 +209,6 @@ func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, 
 	return out, nil
 }
 
-// ScrubChatMessages replaces secret with [token] in login's conversation
-// on repository, its texts and its tool calls.
-func (s *PGStore) ScrubChatMessages(ctx context.Context, repository, login, secret string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages
-		SET content = replace(content, $3, '[token]'), tool_calls = replace(tool_calls::text, $3, '[token]')::jsonb
-		WHERE repository = $1 AND login = $2 AND (strpos(content, $3) > 0 OR strpos(tool_calls::text, $3) > 0)`, repository, login, secret)
-	return err
-}
-
 // ProjectSpend is a project's ledger spend in one UTC month, and the part
 // its chat tasks booked.
 type ProjectSpend struct {

@@ -18,7 +18,7 @@
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{end}}{{else}}none{{end}}</li>{{end}}
 {{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
 </ul>
-{{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export">
+{{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export" id="export-{{.Name}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>GitHub repository <input name="remote" required placeholder="owner/name" autocomplete="off"></label>
 <label>GitHub login <input name="username" required autocomplete="off"></label>

@@ -42,6 +42,13 @@ func (f *fakeMirrors) Mirror(_ context.Context, project, direction string) (fact
 	return m, ok, nil
 }
 
+func (f *fakeMirrors) MirrorToken(_ context.Context, project, direction string) (factoryd.Mirror, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m, ok := f.rows[project+" "+direction]
+	return m, ok, nil
+}
+
 func (f *fakeMirrors) PutMirror(_ context.Context, m factoryd.Mirror) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,15 +113,15 @@ func (f *fakeMirrors) took() []string {
 
 const ghToken = "ghp_5ecretV4lue"
 
-// The chat's github_export proposes with the remote alone in its
-// description; no stream line, conversation row, proposal row, event or
-// log line holds the token, not even the member's own message once the
-// call took it, nor a token under a key in another case. Do it replaces
-// an earlier push mirror to the remote, adds the new one with the token,
-// syncs it, stores the row and leaves one github_export_set row with the
-// remote. A member who is no approver is refused, and so is a seed
-// project, with nothing reaching Forgejo; after a restart, which forgets
-// the held token, a Do it asks again.
+// The chat's github_export takes the remote alone and pushes with the
+// login and token the projects page's form stored. Without a token its
+// proposal is refused with the form's link and nothing reaches Forgejo;
+// with one, Do it replaces an earlier push mirror to the remote, adds the
+// new one with the stored token, syncs it, stores the row and leaves one
+// github_export_set row with the remote. A token gone before Do it, a
+// member who is no approver and a seed project are refused with nothing
+// reaching Forgejo. No stream line, conversation row, proposal row, event
+// or log line holds the token.
 func TestChatGithubExport(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -126,22 +133,34 @@ func TestChatGithubExport(t *testing.T) {
 		{RemoteName: "remote_mirror_other", RemoteAddress: "https://github.com/acme/other.git"}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	g.replies = [][]string{{call(1, "github_export", `{"remote":"acme/app","username":"u","token":"`+ghToken+`"}`)}}
-	_, events, tokens := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app as u, token " + ghToken}})
-	const masked = `{"remote":"acme/app","token":"[token]","username":"u"}`
-	equal(t, "stream", events, []string{
-		`proposal {"arguments":` + masked + `,"description":"Export to GitHub, remote acme/app","id":"TOKEN","tool":"github_export"}`, `done {}`})
-	stored, _ := chat.ChatMessages(t.Context(), "demo-app/demo-app", "sebastian", 0, 2)
-	equal(t, "the member's message", stored[0].Content, "export to acme/app as u, token [token]")
-	equal(t, "the stored call's arguments", stored[1].ToolCalls[0].Arguments, masked)
-	row, _ := chat.proposal(tokens[0])
-	equal(t, "the proposal's args", string(row.Args), masked)
-	equal(t, "Forgejo calls before Do it", r.mirrors.took(), []string(nil))
+	const args = `{"remote":"acme/app"}`
+	tool := func(result string) string {
+		return `tool {"arguments":` + args + `,"duration_ms":0,"name":"github_export","result":"` + result + `"}`
+	}
+	none := "Refused: demo-app has no GitHub token for an export. Set the export's token on the project page: https://console.example/projects#export-demo-app"
+	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it first.")}}
+	_, events, _ := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
+	equal(t, "without a token", events, []string{tool(none), `text {"text":"Set it first."}`, `done {}`})
+	var params any
+	for _, d := range g.calls()[0]["tools"].([]any) {
+		if f := d.(map[string]any)["function"].(map[string]any); f["name"] == "github_export" {
+			params = f["parameters"]
+		}
+	}
+	equal(t, "the tool's parameters", params, map[string]any{"type": "object", "required": []any{"remote"},
+		"properties": map[string]any{"remote": map[string]any{"type": "string", "description": "the GitHub repository, owner/name"}}})
+	equal(t, "Forgejo calls without a token", r.mirrors.took(), []string(nil))
 
+	r.mirrors.rows["demo-app export"] = factoryd.Mirror{Project: "demo-app", Direction: factoryd.MirrorExport, Remote: "acme/old",
+		Username: "u", Token: ghToken, State: "synced"}
+	g.replies = [][]string{{call(1, "github_export", args)}}
+	_, events, tokens := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
+	equal(t, "stream", events, []string{
+		`proposal {"arguments":` + args + `,"description":"Export to GitHub, remote acme/app","id":"TOKEN","tool":"github_export"}`, `done {}`})
+	equal(t, "Forgejo calls before Do it", r.mirrors.took(), []string(nil))
 	_, done, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
 	set := "GitHub export of demo-app to acme/app is set: Forgejo pushes every branch and tag on each commit and every 8 h."
-	equal(t, "Do it", done, []string{`tool {"arguments":` + masked + `,"duration_ms":0,"name":"github_export","result":"` + set + `"}`,
-		`applied {"result":"` + set + `","tool":"github_export"}`, `done {}`})
+	equal(t, "Do it", done, []string{tool(set), `applied {"result":"` + set + `","tool":"github_export"}`, `done {}`})
 	equal(t, "Forgejo calls", r.mirrors.took(), []string{"PushMirrors demo-app/demo-app", "DeletePushMirror demo-app/demo-app remote_mirror_old",
 		"AddPushMirror demo-app/demo-app https://github.com/acme/app.git u " + ghToken, "SyncPushMirrors demo-app/demo-app"})
 	equal(t, "the row", r.mirrors.rows["demo-app export"], factoryd.Mirror{Project: "demo-app",
@@ -149,56 +168,32 @@ func TestChatGithubExport(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app"}})
 
+	g.replies = [][]string{{call(1, "github_export", args)}}
+	_, _, tokens = chatPost(t, r, ck, s, demo, url.Values{"message": {"export it again"}})
+	delete(r.mirrors.rows, "demo-app export")
+	_, gone, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
+	equal(t, "Do it once the token is gone", gone, []string{tool(none), `done {}`})
+
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
 	ak, as := r.as(t, "anna")
-	g.replies = [][]string{{call(1, "github_export", `{"remote":"acme/app","username":"u","Token":"`+ghToken+`"}`)}}
-	_, asked, tokens := chatPost(t, r, ak, as, demo, url.Values{"message": {"export it"}})
-	const cased = `{"Token":"[token]","remote":"acme/app","username":"u"}`
-	row, _ = chat.proposal(tokens[0])
-	equal(t, "a Token key's proposal", []any{asked[0][:len("proposal ")+len(`{"arguments":`)+len(cased)], string(row.Args)},
-		[]any{`proposal {"arguments":` + cased, cased})
-	_, refused, _ := chatPost(t, r, ak, as, demo+"/proposals/"+tokens[0], nil)
-	no := "Refused: Only the approvers of project demo-app may export it to GitHub."
-	equal(t, "anna's Do it", refused, []string{`tool {"arguments":` + cased + `,"duration_ms":0,"name":"github_export","result":"` + no + `"}`, `done {}`})
-	equal(t, "Forgejo calls of anna's", r.mirrors.took(), []string(nil))
+	g.replies = [][]string{{call(1, "github_export", args)}, {say("Ask an approver.")}}
+	_, refused, _ := chatPost(t, r, ak, as, demo, url.Values{"message": {"export it"}})
+	equal(t, "anna's", refused, []string{tool("Refused: Only the approvers of project demo-app may export it to GitHub."),
+		`text {"text":"Ask an approver."}`, `done {}`})
 
 	g.project = ""
-	g.replies = [][]string{{call(1, "github_export", `{"remote":"acme/code","username":"u","token":"`+ghToken+`"}`)}}
-	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"export the factory"}})
-	_, seed, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
-	own := "Refused: ai-software-factory-code is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)"
-	equal(t, "the seed project's Do it", seed, []string{`tool {"arguments":{"remote":"acme/code","token":"[token]","username":"u"},"duration_ms":0,` +
-		`"name":"github_export","result":"` + own + `"}`, `done {}`})
-	equal(t, "Forgejo calls of the seed's", r.mirrors.took(), []string(nil))
+	g.replies = [][]string{{call(1, "github_export", args)}, {say("It is the factory's own.")}}
+	_, seed, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"export the factory"}})
+	equal(t, "the seed project's", seed, []string{
+		tool("Refused: ai-software-factory-code is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)"),
+		`text {"text":"It is the factory's own."}`, `done {}`})
+	equal(t, "Forgejo calls of the refused", r.mirrors.took(), []string(nil))
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app"}})
 
-	said, _ := json.Marshal([]any{chat.msgs, chat.proposals, r.events.all(), events, done, asked, refused, seed})
+	said, _ := json.Marshal([]any{chat.msgs, chat.proposals, r.events.all(), g.calls(), events, done, gone, refused, seed})
 	if strings.Contains(string(said)+logs.String(), ghToken) {
 		t.Fatalf("the token was kept or said:\n%s\n%s", said, logs.String())
-	}
-
-	g.project = "demo-app"
-	g.replies = [][]string{{call(1, "github_export", `{"remote":"acme/app","username":"u","token":"`+ghToken+`"}`)}}
-	_, _, tokens = chatPost(t, r, ck, s, demo, url.Values{"message": {"export it again"}})
-	clear(r.c.held)
-	_, gone, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
-	stored, _ = chat.ChatMessages(t.Context(), "demo-app/demo-app", "sebastian", 0, 1)
-	equal(t, "Do it after a restart", []any{gone, stored[0].ToolCalls[0].Result, r.mirrors.took()},
-		[]any{[]string{`done {}`}, "The token is gone with a restart of factoryd; ask again with it.", []string(nil)})
-}
-
-// A held token lives as long as its proposal: each hold forgets the
-// expired ones.
-func TestHeldTokensExpire(t *testing.T) {
-	r := newRig(t)
-	r.c.held["old"] = heldToken{"ghp_0ld0ld0ld", time.Now().Add(-time.Second)}
-	r.c.held["live"] = heldToken{"ghp_l1vel1ve", time.Now().Add(time.Minute)}
-	start := time.Now()
-	r.c.hold("new", ghToken)
-	if _, ok := r.c.held["old"]; ok || r.c.held["live"].token != "ghp_l1vel1ve" || r.c.held["new"].token != ghToken ||
-		r.c.held["new"].until.Before(start.Add(chatTTL)) || r.c.held["new"].until.After(time.Now().Add(chatTTL)) {
-		t.Fatalf("held = %+v, want live and new, new until 30 minutes on", r.c.held)
 	}
 }
 
@@ -294,16 +289,6 @@ func TestStatusLineGithubExport(t *testing.T) {
 	if got := line(); !strings.HasSuffix(got, "\n<span class=\"fig\">GitHub: failed</span>\n") {
 		t.Fatalf("status line = %q, want it to end with GitHub: failed", got)
 	}
-}
-
-func (f *fakeChat) ScrubChatMessages(_ context.Context, repository, login, secret string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for i, m := range f.msgs[repository+" "+login] {
-		b, _ := json.Marshal(m)
-		json.Unmarshal([]byte(strings.ReplaceAll(string(b), secret, "[token]")), &f.msgs[repository+" "+login][i])
-	}
-	return nil
 }
 
 // The form asks for a GitHub repository and a token. With them it files

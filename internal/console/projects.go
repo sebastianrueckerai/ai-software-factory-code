@@ -518,8 +518,6 @@ func apiStatus(err error) int {
 var (
 	githubRepo  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 	githubLogin = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
-	// githubToken is every GitHub token's shape, whose scrub out of a
-	// conversation's JSON cannot break it
 	githubToken = regexp.MustCompile(`^[A-Za-z0-9_-]{8,255}$`)
 )
 
@@ -528,12 +526,10 @@ var (
 // and every 8 h, in place of a push mirror p had to it or to its last
 // export's remote: an approver's action, as a token leaves the factory.
 func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Project, remote, username, token string) (string, error) {
-	if err := c.approves(ctx, a, p.Repository, "export it to GitHub"); err != nil {
+	if err := c.exportable(ctx, a, p); err != nil {
 		return "", err
 	}
 	switch {
-	case p.Objects != policy.ObjectsFactory:
-		return "", refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)")
 	case !githubRepo.MatchString(remote):
 		return "", refuse(http.StatusBadRequest, "remote must be a GitHub repository, owner/name")
 	case !githubLogin.MatchString(username):
@@ -565,6 +561,24 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	}
 	c.record(ctx, a, p.Repository, "", 0, factoryd.EventGithubExportSet, map[string]any{"remote": remote})
 	return note, nil
+}
+
+// exportable refuses a GitHub export of project p unless a approves it
+// and p is no seed project.
+func (c *Console) exportable(ctx context.Context, a actor, p factoryd.Project) error {
+	if err := c.approves(ctx, a, p.Repository, "export it to GitHub"); err != nil {
+		return err
+	}
+	if p.Objects != policy.ObjectsFactory {
+		return refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)")
+	}
+	return nil
+}
+
+// exportForm is the sentence sending a member to the projects page's
+// export form of project, where an approver sets the export's token.
+func (c *Console) exportForm(project string) string {
+	return "Set the export's token on the project page: " + strings.TrimSuffix(c.cfg.PublicURL, "/") + "/projects#export-" + project
 }
 
 // doRemoveGithubExport deletes project p's push mirror to GitHub and its

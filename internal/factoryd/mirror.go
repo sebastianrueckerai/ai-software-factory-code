@@ -25,7 +25,8 @@ const (
 
 // Mirror is a project's project_mirrors row: Remote is the GitHub
 // repository, owner/name; State the registrar's reading of its last sync.
-// Token is set only by MirrorToken, the registrar's read.
+// Token is set only by MirrorToken, the registrar's and the chat export's
+// read.
 type Mirror struct {
 	Project, Direction, Remote, Username, Token, State, LastError string
 	LastUpdate                                                    time.Time
@@ -48,7 +49,8 @@ func (s *PGStore) Mirror(ctx context.Context, project, direction string) (Mirror
 }
 
 // MirrorToken is project's mirror of direction with its token: the
-// registrar's read, never a handler's or a tool's.
+// registrar's read and the chat export's, which pushes with the token the
+// projects page's form stored; never a page's or a tool answer's.
 func (s *PGStore) MirrorToken(ctx context.Context, project, direction string) (Mirror, bool, error) {
 	return s.mirror(ctx, project, direction, `token`)
 }

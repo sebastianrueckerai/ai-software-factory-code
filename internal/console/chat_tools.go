@@ -38,8 +38,6 @@ type toolInput struct {
 	SHA       string `json:"sha,omitempty"`
 	WithDiff  bool   `json:"with_diff,omitempty"`
 	Remote    string `json:"remote,omitempty"`
-	Username  string `json:"username,omitempty"`
-	Token     string `json:"token,omitempty"`
 	From      int    `json:"from,omitempty"`
 	To        int    `json:"to,omitempty"`
 	Query     string `json:"query,omitempty"`
@@ -129,9 +127,15 @@ func (t *turn) card(in toolInput) (factoryd.Task, error) {
 }
 
 // describe is one line saying what a proposal of tool with in would do,
-// in pinned to the plan revision an accept_plan names; a card of another
-// project refuses it.
+// in pinned to the plan revision an accept_plan names, an approve_merge's
+// with its warning; a card of another project refuses it, and so does a
+// github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
+	if tool.name == "github_export" {
+		if _, err := t.exportToken(); err != nil {
+			return "", err
+		}
+	}
 	parts := []string{tool.title}
 	var k factoryd.Task
 	if in.TaskID != "" {
@@ -188,7 +192,76 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			}
 		}
 	}
-	return sanitize.Inbound(strings.Join(parts, ", ")), nil
+	desc := strings.Join(parts, ", ")
+	if tool.name == "approve_merge" && k.ID != "" {
+		steps, err := t.c.readTimeline(t.r.Context(), k.ID)
+		if err != nil {
+			return "", err
+		}
+		desc += mergeWarning(steps)
+	}
+	return sanitize.Inbound(desc), nil
+}
+
+// mergeShown bounds the review findings a merge's warning names.
+const mergeShown = 5
+
+// mergeWarning is the warning a merge proposal ends with, after a card's
+// timeline steps: the newest review's findings, each on one line, and the
+// checks of the newest run neither green nor skipped; "" for none.
+func mergeWarning(steps []map[string]any) string {
+	var w strings.Builder
+	if m := newest(steps, "model_review"); m != nil {
+		findings, _ := m["findings"].([]any)
+		var shown []string
+		for i, f := range findings {
+			if i == mergeShown {
+				shown = append(shown, fmt.Sprintf("and %d more", len(findings)-i))
+				break
+			}
+			shown = append(shown, textutil.Truncate(strings.Join(strings.Fields(fmt.Sprint(f)), " "), 200))
+		}
+		if len(shown) > 0 {
+			fmt.Fprintf(&w, " The review has %s: %s.", textutil.Plural(len(findings), "open finding", "open findings"), strings.Join(shown, "; "))
+		}
+	}
+	var failing []string
+	if m := newest(steps, "checks"); m != nil {
+		jobs, _ := m["jobs"].([]any)
+		for _, j := range jobs {
+			job, _ := j.(map[string]any)
+			if status, _ := job["status"].(string); status != "success" && status != "skipped" {
+				name, _ := job["name"].(string)
+				failing = append(failing, name)
+			}
+		}
+	}
+	if len(failing) > 0 {
+		w.WriteString(" Failing checks: " + strings.Join(failing, ", ") + ".")
+	}
+	if w.Len() == 0 {
+		return ""
+	}
+	return ". Warning:" + w.String()
+}
+
+// exportToken is the project's export with the login and token the
+// projects page's form stored, which the chat's export pushes with:
+// refused where the console refuses the export and without a token,
+// naming the form.
+func (t *turn) exportToken() (factoryd.Mirror, error) {
+	if err := t.c.exportable(t.r.Context(), t.a, t.p); err != nil {
+		return factoryd.Mirror{}, err
+	}
+	m, ok, err := t.c.cfg.Mirrors.MirrorToken(t.r.Context(), t.p.Name, factoryd.MirrorExport)
+	switch {
+	case err != nil:
+		log.Printf("console: the export of %s: %v", t.p.Name, err)
+		return m, refuse(http.StatusInternalServerError, "cannot read the project's export")
+	case !ok || m.Token == "":
+		return m, refuse(http.StatusConflict, t.p.Name+" has no GitHub token for an export. "+t.c.exportForm(t.p.Name))
+	}
+	return m, nil
 }
 
 // pinPlan sets the plan revision in names, the newest for none, and its
@@ -614,13 +687,16 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "github_export", title: "Export to GitHub", write: true,
-		params: map[string]any{"remote": str("the GitHub repository, owner/name"), "username": str("the GitHub login the token belongs to"),
-			"token": str("a GitHub token that may push to the repository; the member gives it")},
-		required: []string{"remote", "username", "token"},
-		about:    "Make Forgejo push the project's repository to a GitHub repository on every commit and every 8 h, in place of the project's last export (an approver's action). The token is never shown or stored in the conversation.",
-		fits:     "a factory project, for an approver",
+		params: map[string]any{"remote": str("the GitHub repository, owner/name")}, required: []string{"remote"},
+		about: "Make Forgejo push the project's repository to a GitHub repository on every commit and every 8 h, in place of the project's last export, " +
+			"with the GitHub login and token an approver set on the projects page's export form (an approver's action).",
+		fits: "a factory project, for an approver",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, in.Username, in.Token)
+			m, err := t.exportToken()
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, m.Username, m.Token)
 			return note, nil, err
 		}},
 	{name: "close", title: "Close a card", write: true,

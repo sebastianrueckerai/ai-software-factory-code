@@ -1,15 +1,18 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
 	"regexp"
 	"slices"
@@ -422,6 +425,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, want := range []string{
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
+		"The member decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
 		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, close, edit, grant_session, set_dependency. " +
 			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
@@ -1419,4 +1423,101 @@ func TestWrongState(t *testing.T) {
 			t.Errorf("%s: %v, want 409 %q", tc.t.Status, err, tc.want)
 		}
 	}
+}
+
+// Every GitHub token shape becomes [token], a bare prefix and another
+// service's key stay: 36 base62 characters after a classic, OAuth, user,
+// server or refresh prefix (a refresh token runs to 76), 22 and more of
+// [A-Za-z0-9_] after github_pat_ (82 in a real one).
+func TestScrubTokens(t *testing.T) {
+	const c36 = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	const c76 = c36 + c36 + "S9t0"
+	pat := "github_pat_11ABCDEFG0123456789abc_" + c36 + c36[:23]
+	if len(c36) != 36 || len(c76) != 76 || len(pat) != 93 {
+		t.Fatalf("fixture lengths %d %d %d", len(c36), len(c76), len(pat))
+	}
+	for _, tc := range []struct{ in, want string }{
+		{"ghp_" + c36, "[token]"},
+		{"gho_" + c36, "[token]"},
+		{"ghu_" + c36, "[token]"},
+		{"ghs_" + c36, "[token]"},
+		{"ghr_" + c76, "[token]"},
+		{pat, "[token]"},
+		{"export it with ghp_" + c36 + ", please.", "export it with [token], please."},
+		{"use gho_" + c36 + " or " + pat + " to push", "use [token] or [token] to push"},
+		{"ghp_ tokens expire; ghp_" + c36[:35] + " is too short", "ghp_ tokens expire; ghp_" + c36[:35] + " is too short"},
+		{"github_pat_ and github_pat_short stay", "github_pat_ and github_pat_short stay"},
+		{"glpat-" + c36 + " and sk-" + c36, "glpat-" + c36 + " and sk-" + c36},
+	} {
+		got, scrubbed := scrubTokens(tc.in)
+		if got != tc.want || scrubbed != (tc.in != tc.want) {
+			t.Errorf("scrubTokens(%q) = %q, %v; want %q, %v", tc.in, got, scrubbed, tc.want, tc.in != tc.want)
+		}
+	}
+}
+
+// A GitHub token in the member's message reaches neither the store nor
+// the model: the request and the stored row hold [token]. The turn starts
+// with the server's line naming the projects page's export form, kept in
+// the conversation after the member's message; the model reads it from
+// the next turn on.
+func TestChatScrubsAGitHubToken(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r, chat, g := newChatRig(t)
+	g.project = "demo-app"
+	ck, s := r.loggedIn(t)
+	const token = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+	g.replies = [][]string{{say("Noted.")}, {say("Yes.")}}
+	_, events, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"export to acme/app, my token is " + token}})
+	const notice = "I removed a GitHub token from your message; it was not stored or sent. " +
+		"Set the export's token on the project page: https://console.example/projects#export-demo-app"
+	equal(t, "stream", events, []string{`text {"text":"` + notice + `\n\n"}`, `text {"text":"Noted."}`, `done {}`})
+	scrubbed := map[string]any{"role": "user", "content": "export to acme/app, my token is [token]"}
+	equal(t, "the model's messages after the system's", messages(t, g.calls()[0])[1:], []map[string]any{scrubbed})
+	stored, _ := chat.ChatMessages(t.Context(), "demo-app/demo-app", "sebastian", 0, 3)
+	equal(t, "the stored rows", []string{stored[0].Content, stored[1].Content, stored[2].Content},
+		[]string{"export to acme/app, my token is [token]", notice, "Noted."})
+	chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"done?"}})
+	equal(t, "the next turn's messages after the system's", messages(t, g.calls()[1])[1:], []map[string]any{scrubbed,
+		{"role": "assistant", "content": notice}, {"role": "assistant", "content": "Noted."}, {"role": "user", "content": "done?"}})
+	said, _ := json.Marshal([]any{g.calls(), chat.msgs, events})
+	if strings.Contains(string(said)+logs.String(), token) {
+		t.Fatalf("the token was kept or sent:\n%s\n%s", said, logs.String())
+	}
+}
+
+// An approve_merge proposal shows the member the facts they decide on:
+// the newest review's findings, each on one line and five at most, and
+// the checks not green on the newest run, skipped ones aside. #11 has two
+// findings and vet failing, #5 seven findings and two checks failing, #13
+// neither, so no warning.
+func TestApproveMergeProposalWarns(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.objects["sessions/t-m/timeline.jsonl"] = []byte(`{"step":"checks","commit":"abc","state":"success","jobs":[{"name":"test","status":"success"}]}
+{"step":"model_review","commit":"abc","verdict":"approve","findings":["old"]}
+{"step":"checks","commit":"abd","state":"failure","jobs":[{"name":"test","status":"failure"},{"name":"lint","status":"success"},{"name":"security","status":"cancelled"},{"name":"deploy","status":"skipped"}]}
+{"step":"model_review","commit":"abd","verdict":"concerns","findings":["a.go: one","b.go: two\n  and its second line","c.go: three","d.go: four","e.go: five","f.go: six","g.go: seven"]}
+`)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-r"}`, "approve_merge", `{"task_id":"t-m"}`, "approve_merge", `{"task_id":"t-e"}`)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"Approve the merges of #11, #5 and #13"}})
+	const (
+		r11 = `Approve a merge, #11 t-r "Speed up the board". Warning: The review has 2 open findings: cache.go:12: key the entries by tenant; ` +
+			`cache_test.go: add a test of two tenants. Failing checks: vet.`
+		r5 = `Approve a merge, #5 t-m "Fix the cache". Warning: The review has 7 open findings: a.go: one; b.go: two and its second line; ` +
+			`c.go: three; d.go: four; e.go: five; and 2 more. Failing checks: test, security.`
+		r13 = `Approve a merge, #13 t-e "Use a replica?"`
+	)
+	proposal := func(task, desc string) string {
+		b, _ := json.Marshal(map[string]any{"id": "TOKEN", "tool": "approve_merge", "arguments": json.RawMessage(`{"task_id":"` + task + `"}`), "description": desc})
+		return "proposal " + string(b)
+	}
+	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), `done {}`})
+	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
+	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")
+	long := strings.Repeat("y", 250)
+	equal(t, "a long finding", mergeWarning([]map[string]any{{"step": "model_review", "findings": []any{long}}}),
+		". Warning: The review has 1 open finding: "+long[:200]+"….")
 }
