@@ -54,6 +54,72 @@ type Document struct {
 	// Forgejo host and the project's environment hosts always may. Any
 	// other link is defanged (hxxps://evil[.]example).
 	LinkHosts []string `yaml:"link_hosts,omitempty" json:"link_hosts"`
+	// Chat is the project agent's block: its model, its monthly budget and
+	// the tools that need the member's OK. Absent: DefaultChat.
+	Chat *ChatConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
+}
+
+// ChatConfig is the project agent's block of policy.yaml and of a project
+// file, whose keys replace the policy's: a preference, not a cap, but for
+// monthly_eur, which may not exceed the policy's.
+type ChatConfig struct {
+	// Model is the LiteLLM alias the project agent calls (purpose
+	// operator).
+	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+	// MonthlyEUR is the budget of the project's chat task each UTC month;
+	// absent or 0: the policy's.
+	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
+	// Confirm are the tools a member must OK: a call proposes, and the
+	// member's Do it runs it. An empty list runs every tool at once.
+	Confirm []string `yaml:"confirm,omitempty" json:"confirm,omitempty"`
+}
+
+// ChatTools are the project agent's tools, one per console action and
+// the reads.
+var ChatTools = []string{"board", "card", "history", "card_history", "costs", "diff",
+	"new_card", "move_card", "answer", "comment", "steer", "retry", "start_plan", "accept_plan",
+	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent"}
+
+// ChatModels are the aliases a chat block may name.
+var ChatModels = []string{"operator"}
+
+// DefaultChat is the chat block of a policy without one.
+var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
+	Confirm: []string{"new_card", "move_card", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge"}}
+
+// ChatOf is project p's chat block: DefaultChat, the policy's keys over
+// it, then the project file's.
+func (d Document) ChatOf(p ProjectConfig) ChatConfig {
+	c := DefaultChat
+	for _, b := range []*ChatConfig{d.Chat, p.Chat} {
+		if b == nil {
+			continue
+		}
+		c.Model = cmp.Or(b.Model, c.Model)
+		c.MonthlyEUR = cmp.Or(b.MonthlyEUR, c.MonthlyEUR)
+		if b.Confirm != nil {
+			c.Confirm = b.Confirm
+		}
+	}
+	return c
+}
+
+func (c *ChatConfig) validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.Model != "" && !slices.Contains(ChatModels, c.Model) {
+		return fmt.Errorf("chat.model %q: want one of %v", c.Model, ChatModels)
+	}
+	if c.MonthlyEUR < 0 {
+		return errors.New("chat.monthly_eur must not be negative")
+	}
+	for _, t := range c.Confirm {
+		if !slices.Contains(ChatTools, t) {
+			return fmt.Errorf("chat.confirm: unknown tool %q (known: %v)", t, ChatTools)
+		}
+	}
+	return nil
 }
 
 // Limits bound a task's work; a task keeps the limits of the version it
@@ -468,10 +534,11 @@ const (
 	PurposeSupervisor     = "supervisor"
 	PurposeGateSupervisor = "gate-supervisor"
 	PurposeAudit          = "audit"
+	PurposeOperator       = "operator"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator}
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -593,6 +660,9 @@ func (d Document) Validate() error {
 	if len(d.Classes) == 0 {
 		return errors.New("policy: no capability classes")
 	}
+	if err := d.Chat.validate(); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
 	if err := d.Risk.validate(); err != nil {
 		return err
 	}
@@ -631,8 +701,8 @@ func (d Document) Validate() error {
 		}
 	}
 	for name, c := range d.Classes {
-		if name == "" {
-			return errors.New("policy: a capability class has an empty name")
+		if name == "" || name == ClassChat {
+			return fmt.Errorf("policy: a capability class may not be named %q", name)
 		}
 		if len(c.Models) == 0 {
 			return fmt.Errorf("policy: class %s allows no models", name)
@@ -738,9 +808,20 @@ func (d Document) AllowsModel(classes []string, model string) bool {
 	return false
 }
 
+// ClassChat is the capability of a project's chat task, which no policy
+// class may take: the task's one model is the operator purpose's.
+const ClassChat = "chat"
+
 // FactoryModel is the alias factoryd calls for purpose on a task of
-// classes: the first of classes that names one; "" when none does.
+// classes: the first of classes that names one; "" when none does. The
+// project agent's (operator) is the chat block's, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
+	if purpose == PurposeOperator {
+		if slices.Contains(classes, ClassChat) {
+			return d.ChatOf(ProjectConfig{}).Model
+		}
+		return ""
+	}
 	for _, c := range classes {
 		cl := d.Classes[c]
 		var alias string

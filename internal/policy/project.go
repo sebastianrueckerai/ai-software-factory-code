@@ -238,6 +238,9 @@ type ProjectConfig struct {
 	// Absent: a coding card starts on the first rung. The planner and
 	// report sessions keep their own rung.
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+	// Chat is the project agent's block for this project; its keys
+	// replace the policy's.
+	Chat *ChatConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
 }
 
 // ProjectBudget caps a project's spend in EUR.
@@ -420,6 +423,9 @@ func (p ProjectConfig) Validate(name string) error {
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)
 	}
+	if err := p.Chat.validate(); err != nil {
+		bad("%v", err)
+	}
 	switch p.Objects {
 	case ObjectsFactory:
 		if strings.HasPrefix(name, "factory-") || name == "flux-system" || name == "sf" {
@@ -504,6 +510,9 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 	}
 	if b := p.Budget; b != nil {
 		number("budget.month_eur", b.MonthEUR, d.Budget.MonthEUR, "budget.month_eur")
+	}
+	if p.Chat != nil {
+		number("chat.monthly_eur", p.Chat.MonthlyEUR, d.ChatOf(ProjectConfig{}).MonthlyEUR, "chat.monthly_eur")
 	}
 	return errors.Join(errs...)
 }

@@ -1854,6 +1854,47 @@ func TestFactorydReviewCall(t *testing.T) {
 	}
 }
 
+// The project agent's call (purpose operator) is a chat task's: it runs on
+// the chat block's alias, books under the task, and stops at its budget;
+// an agent task's account takes no operator call.
+func TestOperatorCallOnTheChatTask(t *testing.T) {
+	prices := fakePrices{"operator": testPrice, "coding-frontier": testPrice, "review-frontier": testPrice, "supervisor": testPrice}
+	chat := []string{policy.ClassChat}
+	for name, tc := range map[string]struct {
+		task   Task
+		status int
+		header string
+		ledger []ledgerRow
+	}{
+		"the chat task": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, status: 200,
+			ledger: []ledgerRow{{"t-chat-x-2026-10", "operator/operator", 0.125, policy.KindModel}}},
+		"its budget spent": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, SpentEUR: 5, Status: "running"},
+			status: 402, header: "refused_budget"},
+		"an agent task": {task: Task{Classes: coder, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"},
+			status: 403, header: "refused_capability"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+			store := newMemStore(tc.task)
+			store.setPolicy(factoryPolicy())
+			minter := &fakeMinter{}
+			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: testFactorydToken})
+			rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, tc.task.ID, policy.PurposeOperator, chatBody("operator"))
+			if rr.Code != tc.status || rr.Header().Get(HeaderDecision) != tc.header {
+				t.Fatalf("status %d decision %q, want %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), tc.status, tc.header, rr.Body)
+			}
+			if !reflect.DeepEqual(store.ledger, tc.ledger) {
+				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.ledger)
+			}
+			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "operator") {
+				t.Fatalf("mints = %+v, want one key on the operator alias only", calls)
+			}
+		})
+	}
+}
+
 // The factoryd token is no agent's: a sandbox's JWT never reaches the
 // review alias, and factoryd's key is its own, so a review or supervisor
 // call during a session neither retires nor shares the session's key.
