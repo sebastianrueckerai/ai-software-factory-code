@@ -55,7 +55,7 @@ func (c *Console) costs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s := current(r)
-	c.render(w, "costs.html", map[string]any{"User": s.user, "CSRF": s.csrf,
+	c.render(w, "costs.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true,
 		"From": ledger.From, "To": ledger.To, "Kinds": ledgerKinds, "Days": rows, "Tasks": ledger.Tasks,
 		"Today": todayTotal, "DayCap": v.Document.Budget.DayEUR, "PolicyID": v.ID})
 }
@@ -86,7 +86,7 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 		projects = append(projects, project{name, v.Projects[name]})
 	}
 	s := current(r)
-	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Version": v, "Projects": projects,
+	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Version": v, "Projects": projects,
 		"LoadedAt":    v.LoadedAt.UTC().Format(time.RFC3339),
 		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "Dir": c.cfg.ConfigDir,
 		"At":   c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(v.Commit) + "/" + c.cfg.ConfigDir,

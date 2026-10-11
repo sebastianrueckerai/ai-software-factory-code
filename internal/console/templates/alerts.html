@@ -1,7 +1,7 @@
 {{template "head" .}}
 <h2>Alerts</h2>
 <p>The newest {{.Limit}} alerts: activities past their policy bound (the gate supervisor's action is the verdict of a machine gate's), session supervisor trips (the supervisor's action is the verdict) and escalations to a human (an approver gives the verdict).</p>
-{{if not .Approver}}<p class="meta">Only the policy's approvers may judge an alert.</p>{{end}}
+{{if not .Approver}}<p class="meta">Only the factory's approvers may judge an alert.</p>{{end}}
 <table>
 <caption class="visually-hidden">Alerts, newest first</caption>
 <thead><tr><th scope="col">Alert</th><th scope="col">Kind</th><th scope="col">Task</th><th scope="col">Source</th><th scope="col">Raised</th><th scope="col">Resolved</th><th scope="col">Verdict</th><th scope="col">Supervisor</th></tr></thead>

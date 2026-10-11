@@ -50,7 +50,7 @@ type Registrar struct {
 	Forgejo *Forgejo
 	Kube    ProjectKube
 	Store   ProjectStore
-	Policy  func() policy.Document
+	Policy  func() policy.Tree
 	// WebhookURL is factoryd's intake as Forgejo reaches it;
 	// WebhookSecret signs the deliveries.
 	WebhookURL, WebhookSecret string
@@ -339,7 +339,7 @@ func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
 	return "missing: the seed makes it, factoryd never does", nil
 }
 
-func (run *reconcileRun) approvers() []string { return run.r.Policy().Approvers }
+func (run *reconcileRun) approvers() []string { return run.r.Policy().ApproversOf(run.p.Repository) }
 
 // forgejo keeps the repository's objects and reports its Actions secrets'
 // names; false: it stopped before reading them.
@@ -516,9 +516,11 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 	return Updated, f.AddProjectCollaborator(ctx, repo, user, "write")
 }
 
-// pruneCollaborators removes every direct collaborator but the bot, the
-// merge user and the approvers: factoryd owns a factory project's list
-// (ruling 203), so an approver dropped from the policy leaves.
+// pruneCollaborators removes every direct collaborator who administers
+// the repository (permission admin or owner) but the bot, the merge user
+// and the approvers: factoryd owns who administers a factory project's
+// repository (ruling 203), and a member, a collaborator with write, stays
+// (ruling 254).
 func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
 	keep := append([]string{f.BotUser, run.r.MergeUser}, run.approvers()...)
@@ -529,6 +531,13 @@ func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error)
 	var gone []string
 	for _, u := range users {
 		if slices.ContainsFunc(keep, func(k string) bool { return strings.EqualFold(k, u) }) {
+			continue
+		}
+		perm, err := f.CollaboratorPermission(ctx, repo, u)
+		if err != nil {
+			return "", err
+		}
+		if perm != "admin" && perm != "owner" {
 			continue
 		}
 		if err := f.RemoveProjectCollaborator(ctx, repo, u); err != nil {

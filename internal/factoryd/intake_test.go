@@ -155,8 +155,8 @@ func testBudget() policy.Budget {
 
 // testPolicy is intake's policy: testBudget, and alice the one approver
 // (sebastian writes the code repository and approves nothing).
-func testPolicy() policy.Document {
-	return policy.Document{Budget: testBudget(), Approvers: []string{"alice"}}
+func testPolicy() policy.Tree {
+	return policy.Tree{Document: policy.Document{Budget: testBudget(), Approvers: []string{"alice"}}}
 }
 
 func newTestIntake(t *testing.T) (*Intake, *fakeStore, *[]string) {
@@ -1391,8 +1391,8 @@ func TestIntakeBudgetBySize(t *testing.T) {
 		{"The size: large is not a line of its own", 0, 5},
 	} {
 		in, store, _ := newTestIntake(t)
-		in.Policy = func() policy.Document {
-			return policy.Document{Budget: policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}}
+		in.Policy = func() policy.Tree {
+			return policy.Tree{Document: policy.Document{Budget: policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}}}
 		}
 		p := seedProject("sf/ai-software-factory-code")
 		if tc.project > 0 {

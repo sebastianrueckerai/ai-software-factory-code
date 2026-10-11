@@ -441,6 +441,12 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if got := project.Properties["objects"].Enum; !reflect.DeepEqual(got, []any{"factory", "seed"}) {
 		t.Errorf("objects enum = %v", got)
 	}
+	if a := project.Properties["approvers"]; a == nil || a.Items == nil || a.Items.Type != "string" || !strings.Contains(a.Description, "the policy's approvers") {
+		t.Errorf("project approvers = %+v, want a list of user names that falls back to the policy's", a)
+	}
+	if got := root["policy.schema.json"].Properties["chat"].Properties["confirm"].Items.Enum; !slices.Contains(got, any("invite")) {
+		t.Errorf("chat confirm enum = %v, want invite in it", got)
+	}
 	pol := root["policy.schema.json"]
 	tools := pol.Properties["classes"].AdditionalProperties.Properties["tools"]
 	if tools.PropertyNames == nil || len(tools.PropertyNames.Enum) != len(PaidTools)+len(FreeTools) {

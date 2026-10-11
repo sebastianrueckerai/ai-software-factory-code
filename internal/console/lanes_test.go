@@ -393,9 +393,10 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		t.Errorf("the plan card's three forms do not keep the filter:\n%s", filtered)
 	}
 
+	r.repoWriters["linkshort/linkshort"] = append(r.repoWriters["linkshort/linkshort"], "alice")
 	ak, as := r.as(t, "alice")
 	alice := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ak).Body.String(), "Needs you")
-	if strings.Contains(alice, "/plan/accept") || !strings.Contains(alice, "Only the policy's approvers may accept a plan.") ||
+	if strings.Contains(alice, "/plan/accept") || !strings.Contains(alice, "Only the project's approvers may accept a plan.") ||
 		!strings.Contains(alice, "/plan/changes") || !strings.Contains(alice, "/plan/reject") {
 		t.Errorf("alice's plan card: accept hidden, changes and reject shown:\n%s", alice)
 	}
@@ -748,7 +749,7 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 		return r.do(req, ck)
 	}
 	r.fg.calls = nil
-	if rec := retry(ak, as.csrf); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the policy's approvers may authorize spend." ||
+	if rec := retry(ak, as.csrf); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project linkshort may retry a card." ||
 		len(r.retried) != 0 || len(r.fg.calls) != 0 {
 		t.Fatalf("alice retries: %d %q, retried %v, forgejo %v", rec.Code, rec.Body, r.retried, r.fg.calls)
 	}

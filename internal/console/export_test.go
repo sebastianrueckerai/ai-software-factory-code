@@ -152,7 +152,7 @@ func TestChatGithubExport(t *testing.T) {
 	equal(t, "a Token key's proposal", []any{asked[0][:len("proposal ")+len(`{"arguments":`)+len(cased)], string(row.Args)},
 		[]any{`proposal {"arguments":` + cased, cased})
 	_, refused, _ := chatPost(t, r, ak, as, demo+"/proposals/"+tokens[0], nil)
-	no := "Refused: Only the policy's approvers may authorize spend."
+	no := "Refused: Only the approvers of project demo-app may export it to GitHub."
 	equal(t, "anna's Do it", refused, []string{`tool {"arguments":` + cased + `,"duration_ms":0,"name":"github_export","result":"` + no + `"}`, `done {}`})
 	equal(t, "Forgejo calls of anna's", r.mirrors.took(), []string(nil))
 

@@ -83,7 +83,7 @@ func (c *Console) login(w http.ResponseWriter, r *http.Request) {
 
 // callback completes the flow: the signed login cookie must hold the
 // query's state, the code is exchanged in-cluster with the client secret
-// and the cookie's verifier, and only a writer gets a session.
+// and the cookie's verifier, and only a writer of a project gets a session.
 func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, verifier, ok := c.pendingLogin(r)
@@ -117,14 +117,14 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.user = user.Login
-	ok, err := c.writer(r.Context(), s.user)
+	ok, _, err := c.writer(r.Context(), s.user)
 	if err != nil {
 		log.Printf("console: writers: %v", err)
 		http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
 		return
 	}
 	if !ok {
-		log.Printf("console: %s is not a writer of the factory's repository: login refused", s.user)
+		log.Printf("console: %s writes no project: login refused", s.user)
 		c.forbidden(w, s.user)
 		return
 	}

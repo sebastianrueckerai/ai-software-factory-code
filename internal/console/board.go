@@ -554,7 +554,8 @@ type boardData struct {
 	Escalations []need
 	Approvals   []approvalCard
 	Problems    []string
-	Approver    bool // may authorize spend (ruling 128)
+	Approver    bool // may authorize the shown project's spend (rulings 128, 254)
+	Factory     bool // writes the factory's own code: the layout links the factory-level pages
 }
 
 // boardLimit bounds the tasks one board render reads.
@@ -694,8 +695,8 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	c.render(w, name, d)
 }
 
-// boardView is what the cards of one render share: the viewer, whether
-// they approve, the policy in force, the board's filter (which every
+// boardView is what the cards of one render share: the viewer, the
+// policy in force, the board's filter (which every
 // card's forms carry back),
 // the projects agents work on by repository, the tasks read so far by id,
 // the pending approval requests and the tasks they card (planned: by a
@@ -703,7 +704,6 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 // one card; problems are what the board says it could not do.
 type boardView struct {
 	user, csrf      string
-	approver        bool
 	policy          policy.Version
 	filter          boardFilter
 	byRepo          map[string]factoryd.Project
@@ -721,7 +721,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
 		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
 	v.policy, _ = c.inForce(ctx)
-	v.approver = slices.Contains(v.policy.Document.Approvers, s.user)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
@@ -752,10 +751,15 @@ func (v *boardView) escalated(t factoryd.Task) bool {
 	return t.Status == "waiting-human" && !v.planned[t.ID]
 }
 
+// approves: the viewer approves repository's project (ruling 254).
+func (v *boardView) approves(repository string) bool {
+	return slices.Contains(v.policy.ApproversOf(repository), v.user)
+}
+
 // mayReady: the viewer, an approver, may move t's cards into ready, as
 // Start plan and Retry do.
 func (c *Console) mayReady(ctx context.Context, v *boardView, t factoryd.Task) bool {
-	if !v.approver {
+	if !v.approves(t.Repository) {
 		return false
 	}
 	_, proc := processOf(v.byRepo, t)
@@ -929,7 +933,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, Approver: v.approver}
+	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r)}
 	if err != nil {
 		return d, err
 	}
@@ -963,7 +967,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	case !slices.Contains(d.Projects, shown.Name):
 		d.Projects = append(d.Projects, shown.Name)
 	}
-	f.Project, d.Writes = shown.Name, writable[shown.Name]
+	f.Project, d.Writes, d.Approver = shown.Name, writable[shown.Name], v.approves(shown.Repository)
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
 	wide := f.wide()
@@ -1008,7 +1012,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
 	escalation := func(k card) need {
-		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: v.approver, Back: "/" + d.Query}
+		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: d.Factory && c.approver(r), Back: "/" + d.Query}
 	}
 	for _, bt := range tasks {
 		t := bt.Task
@@ -1355,6 +1359,10 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if err := c.writes(r.Context(), button(r), t.Repository, "task "+t.ID); err != nil {
+		c.fail(w, r, err)
+		return
+	}
 	steps, err := c.readTimeline(r.Context(), t.ID)
 	if err != nil {
 		log.Printf("console: timeline of %s: %v", t.ID, err)
@@ -1366,7 +1374,7 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, entry(m))
 	}
 	gates, longest := gateRows(steps, t, time.Now())
-	c.render(w, "timeline.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf,
+	c.render(w, "timeline.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": c.factoryWriter(r),
 		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
 }
 
@@ -1437,7 +1445,7 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 			lanes = append(lanes, laneOption{name, laneTitles[name], strings.Join(in, " ")})
 		}
 	}
-	c.render(w, "new.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf,
+	c.render(w, "new.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": true,
 		"Projects": ps, "Priorities": offered, "Lanes": lanes})
 }
 
@@ -1589,7 +1597,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
-				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approver)
+				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approves(a.Project))
 				d.Merge = &m
 			}
 		}

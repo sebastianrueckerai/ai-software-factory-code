@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -444,5 +445,39 @@ func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("a refused task reached Forgejo or the store: %v", events)
+	}
+}
+
+type projectRows []factoryd.Project
+
+func (p projectRows) Projects(context.Context) ([]factoryd.Project, error) { return p, nil }
+
+// The console's writer lists (ruling 254): every project agents work on,
+// and the factory's own code project, which lists factoryd's namespace;
+// a project whose writers cannot be read is left out, but the own one's
+// failure fails the lists.
+func TestConsoleWriters(t *testing.T) {
+	coder := func(name, repo string, ns ...string) factoryd.Project {
+		return factoryd.Project{Name: name, Repository: repo, Objects: policy.ObjectsSeed, Agents: policy.AgentsCoder, File: true, Namespaces: ns}
+	}
+	rows := projectRows{coder("code", "sf/code", "factory"), coder("demo", "demo/demo"), coder("broken", "x/broken"),
+		{Name: "infra", Repository: "sf/infra", Objects: policy.ObjectsSeed, Agents: policy.AgentsNone, File: true}}
+	failing := "x/broken"
+	writersOf := func(_ context.Context, p factoryd.Project) ([]string, error) {
+		if p.Repository == failing {
+			return nil, errors.New("forgejo: 502")
+		}
+		return []string{"w-" + p.Name}, nil
+	}
+	own, lists, err := consoleWriters(rows, writersOf, "factory")(context.Background())
+	if err != nil || own != "sf/code" || !reflect.DeepEqual(lists, map[string][]string{"sf/code": {"w-code"}, "demo/demo": {"w-demo"}}) {
+		t.Fatalf("lists = %q, %v, %v; want the code project's and demo's, the broken one left out", own, lists, err)
+	}
+	failing = "sf/code"
+	if _, _, err := consoleWriters(rows, writersOf, "factory")(context.Background()); err == nil {
+		t.Fatal("the own project's writers failed, the lists did not")
+	}
+	if _, _, err := consoleWriters(rows, writersOf, "elsewhere")(context.Background()); err == nil {
+		t.Fatal("no project lists the namespace, the lists did not fail")
 	}
 }

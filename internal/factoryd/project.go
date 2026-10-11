@@ -147,7 +147,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 }
 
 // NotifyOrApprovers is who the project's pings go to: its notify list,
-// else the policy's approvers.
+// else its approvers.
 func (p Project) NotifyOrApprovers(approvers []string) []string {
 	if len(p.Notify) > 0 {
 		return p.Notify

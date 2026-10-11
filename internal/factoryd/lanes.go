@@ -81,11 +81,11 @@ func laneLabelled(names []string, lane string) bool {
 }
 
 // MayMove reports whether user may put a card of repository into a lane
-// moved by movedBy: writers write the repository, approvers are the
-// policy's.
+// moved by movedBy: writers write the repository, approvers are its
+// project's.
 func (in *Intake) MayMove(ctx context.Context, repository, user, movedBy string) (bool, error) {
 	if movedBy == policy.MovedByApprovers {
-		return slices.Contains(in.Policy().Approvers, user), nil
+		return slices.Contains(in.Policy().ApproversOf(repository), user), nil
 	}
 	return in.trusted(ctx, repository, user)
 }
@@ -149,7 +149,7 @@ func (in *Intake) enterOnCreation(ctx context.Context, p Project, task Task, nam
 	byLabel := name == policy.LanePlan || slices.Contains(names, LabelAgent)
 	allowed := lane.MovedBy == policy.MovedByWriters && (task.AuthorWriter || !byLabel)
 	if lane.MovedBy == policy.MovedByApprovers {
-		allowed = slices.Contains(in.Policy().Approvers, task.Author)
+		allowed = slices.Contains(in.Policy().ApproversOf(task.Repository), task.Author)
 	}
 	if !allowed {
 		return task, refusal(lane, task.Repository, task.Author), nil

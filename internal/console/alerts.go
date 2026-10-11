@@ -23,11 +23,11 @@ func (c *Console) alerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := current(r)
-	c.render(w, "alerts.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Alerts": rows, "Approver": c.approver(r),
+	c.render(w, "alerts.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Alerts": rows, "Approver": c.approver(r),
 		"Limit": alertsLimit})
 }
 
-// verdict is an approver's verdict on an open escalation alert.
+// verdict is a factory approver's verdict on an open escalation alert.
 func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -37,7 +37,7 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 	user := current(r).user
 	if !c.approver(r) {
 		log.Printf("console: %s is no approver: verdict on alert %d refused", user, id)
-		http.Error(w, "Only the policy's approvers may judge an alert.", http.StatusForbidden)
+		http.Error(w, "Only the factory's approvers may judge an alert.", http.StatusForbidden)
 		return
 	}
 	v := r.PostFormValue("verdict")

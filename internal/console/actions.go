@@ -106,14 +106,18 @@ func (c *Console) writes(ctx context.Context, a actor, repository, subject strin
 	return nil
 }
 
-// approves refuses a spend action, what, to anyone but the policy's
-// approvers (ruling 128).
-func (c *Console) approves(ctx context.Context, a actor, what string) error {
-	if !c.isApprover(ctx, a.s.user) {
-		log.Printf("console: %s is no approver: %s refused", a.s.user, what)
-		return refuse(http.StatusForbidden, "Only the policy's approvers may authorize spend.")
+// approves refuses an approver's action, what, on repository's project to
+// anyone but its approvers (rulings 128, 254).
+func (c *Console) approves(ctx context.Context, a actor, repository, what string) error {
+	if c.isApprover(ctx, a.s.user, repository) {
+		return nil
 	}
-	return nil
+	log.Printf("console: %s is no approver of %s: %s refused", a.s.user, repository, what)
+	name := repository
+	if p, ok, err := c.projectAt(ctx, repository); err == nil && ok {
+		name = p.Name
+	}
+	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", name, what))
 }
 
 // processOfCard is the name and lanes of the process card t follows.
@@ -281,11 +285,11 @@ func (c *Console) doUnmoveCard(ctx context.Context, a actor, id, lane string) (s
 // agent as the member (section 1.5): each label event is a move into
 // ready.
 func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, error) {
-	if err := c.approves(ctx, a, "start a plan"); err != nil {
-		return "", err
-	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.approves(ctx, a, t.Repository, "start a plan"); err != nil {
 		return "", err
 	}
 	accepted, ok := c.awaitAcceptedPlan(ctx, t)
@@ -337,11 +341,11 @@ func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, 
 // and labels the replacement agent as the member: the label event is its
 // move into ready, which intake judges.
 func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, error) {
-	if err := c.approves(ctx, a, "retry a card"); err != nil {
-		return "", err
-	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.approves(ctx, a, t.Repository, "retry a card"); err != nil {
 		return "", err
 	}
 	_, proc, err := c.processOfCard(ctx, t)
@@ -391,11 +395,11 @@ func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task
 // that the planner revises it with no change request (the workflow
 // refuses it to the planner).
 func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision int, sha string) (string, error) {
-	if err := c.approves(ctx, a, "accept a plan"); err != nil {
-		return "", err
-	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.approves(ctx, a, t.Repository, "accept a plan"); err != nil {
 		return "", err
 	}
 	if revision < 1 || sha == "" {
@@ -430,6 +434,9 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	if err != nil {
 		return "", err
 	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
+	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
 		return "", &forgejoRefusal{"post the change request", err}
 	}
@@ -446,6 +453,9 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	if err := c.cfg.RejectPlan(ctx, t.ID, a.s.user, note); err != nil {
@@ -472,6 +482,9 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", refuse(http.StatusConflict, "task "+t.ID+" is not waiting for an answer")
+	}
+	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
+		return "", err
 	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
@@ -662,11 +675,11 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // pull request, and only once Forgejo has it is the workflow signalled,
 // which merges as factory-merge.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
-	if err := c.approves(ctx, a, "approve"); err != nil {
-		return "", err
-	}
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
+		return "", err
+	}
+	if err := c.approves(ctx, a, q.Project, "authorize spend"); err != nil {
 		return "", err
 	}
 	switch q.Kind {
@@ -759,4 +772,35 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": action})
 	return fmt.Sprintf("Denied pull request #%d (%s).", q.PRNumber, strings.ReplaceAll(action, "_", " ")), nil
+}
+
+// doInvite makes login a member of the chat's project, an approver's
+// action: a write collaborator of its repository, added with the token
+// registration keeps project repositories with, since the approver's own
+// may not administer it (ruling 254). A seed project's collaborators are
+// Forgejo's to keep.
+func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, error) {
+	if !policy.ForgejoLogin(login) {
+		return "", refuse(http.StatusBadRequest, "a Forgejo user name of 1 to 40 letters, digits, dots, dashes and underscores is required")
+	}
+	p, ok, err := c.projectAt(ctx, a.repository)
+	switch {
+	case err != nil:
+		log.Printf("console: projects: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+	case !ok:
+		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
+	}
+	if err := c.approves(ctx, a, p.Repository, "invite a member"); err != nil {
+		return "", err
+	}
+	if p.Objects == policy.ObjectsSeed {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s is a seed project, whose collaborators Forgejo keeps: invite %s there.", p.Name, login))
+	}
+	if err := c.cfg.AddCollaborator(ctx, p.Repo(), login, "write"); err != nil {
+		return "", &forgejoRefusal{"add " + login + " as a collaborator", err}
+	}
+	log.Printf("console: %s invited %s to %s via %s", a.s.user, login, p.Repository, a.via)
+	c.record(ctx, a, p.Repository, "", 0, factoryd.EventMemberInvited, map[string]any{"login": login})
+	return login + " is a member; the console admits them within a minute.", nil
 }

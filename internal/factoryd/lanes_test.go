@@ -190,6 +190,32 @@ func TestDefaultEntryApproverPosterEntersReady(t *testing.T) {
 	}
 }
 
+// A project file's approvers move its approvers' lanes in place of the
+// policy's (ruling 254): bob, the file's, may and his issue enters ready;
+// alice, the policy's, may not and hers waits in the backlog. A
+// repository no file names keeps the policy's.
+func TestTheProjectsApproversMoveItsLanes(t *testing.T) {
+	in, store, _ := laneIntake(t, "gated", approversLanes)
+	in.Policy = func() policy.Tree {
+		tree := testPolicy()
+		tree.Projects = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/ai-software-factory-code", Approvers: []string{"bob"}}}
+		return tree
+	}
+	for _, c := range []struct {
+		repository, user string
+		want             bool
+	}{{"sf/ai-software-factory-code", "bob", true}, {"sf/ai-software-factory-code", "alice", false}, {"nobody/else", "alice", true}, {"nobody/else", "bob", false}} {
+		if got, err := in.MayMove(context.Background(), c.repository, c.user, policy.MovedByApprovers); err != nil || got != c.want {
+			t.Errorf("MayMove(%s, %s) = %v, %v, want %v", c.repository, c.user, got, err, c.want)
+		}
+	}
+	post(t, in, "issues", issueOpenedBody(7, "bob", nil, "It breaks", "body"))
+	post(t, in, "issues", issueOpenedBody(8, "alice", nil, "It breaks", "body"))
+	if bob, alice := card(store, 7), card(store, 8); bob.Lane != "ready" || bob.Status != "queued" || alice.Lane != "backlog" || alice.Status != "backlog" {
+		t.Fatalf("bob's card %s/%s, alice's %s/%s: want ready/queued and backlog/backlog", bob.Lane, bob.Status, alice.Lane, alice.Status)
+	}
+}
+
 // Taking backlog off a card leaves it no lane label, which asks for ready:
 // the sender is judged; an outsider's removal is refused, a writer's
 // starts the card.

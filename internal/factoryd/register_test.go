@@ -563,7 +563,7 @@ func newRegisterRig(t *testing.T) *registerRig {
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
 	kv := &fakeKV{data: map[string]string{"username": "sebastian", "password": "admin-pw"}}
 	reg := &Registrar{Forgejo: f, Kube: kube, Store: store, OpenBao: kv,
-		Policy:     func() policy.Document { return policy.Document{Approvers: []string{"sebastian"}} },
+		Policy:     approversTree("sebastian"),
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: "https://git.aisoftwarefactory.world",
 		RegistryHost: "git.aisoftwarefactory.world", MergeUser: "factory-merge", ProjectsUser: "factory-projects"}
@@ -971,7 +971,7 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 	rig.store.m[p.Name] = changed
 	rig.reg.WebhookSecret = "re-seeded"
 	rig.fj.users["alice"] = true
-	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian", "alice"}} }
+	rig.reg.Policy = approversTree("sebastian", "alice")
 	rig.logs.Reset()
 	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
 		t.Fatal(err)
@@ -993,35 +993,67 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 	}
 }
 
-// Backlog 24 (ruling 203): factoryd owns a factory project's
-// collaborator list. An approver dropped from the policy and a
-// collaborator added by hand leave; the bot, the merge user and the
-// approvers stay.
-func TestReconcileRemovesCollaboratorsItDoesNotKeep(t *testing.T) {
+// approversTree is a configuration whose policy names approvers and whose
+// project files name none.
+func approversTree(approvers ...string) func() policy.Tree {
+	return func() policy.Tree { return policy.Tree{Document: policy.Document{Approvers: approvers}} }
+}
+
+// demoApprovers is a configuration whose policy names sebastian and whose
+// demo-app file names approvers (ruling 254).
+func demoApprovers(approvers ...string) func() policy.Tree {
+	return func() policy.Tree {
+		return policy.Tree{Document: policy.Document{Approvers: []string{"sebastian"}},
+			Projects: map[string]policy.ProjectConfig{"demo-app": {Repository: "demo-app/demo-app", Approvers: approvers}}}
+	}
+}
+
+// A project file's approvers, not the policy's, become the project's
+// collaborators and main's whitelists, so Forgejo takes their approving
+// review for factory-merge's merge (ruling 254).
+func TestRegistrationTakesTheProjectsApprovers(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.fj.users["bob"] = true
+	rig.reg.Policy = demoApprovers("bob")
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	main := rig.fj.protection["main"]
+	if !reflect.DeepEqual(main["approvals_whitelist_username"], []any{"bob"}) || !reflect.DeepEqual(main["push_whitelist_usernames"], []any{"bob", "factory-merge"}) ||
+		!reflect.DeepEqual(main["merge_whitelist_usernames"], []any{"bob", "factory-merge"}) {
+		t.Errorf("protection main = %v, want bob whitelisted", main)
+	}
+	if rig.fj.collabs["bob"] != "write" || rig.fj.collabs["sebastian"] != "" {
+		t.Errorf("collaborators = %v, want bob and not the policy's sebastian", rig.fj.collabs)
+	}
+	if !strings.Contains(rig.logs.String(), "project demo-app: collaborator bob: created\n") {
+		t.Errorf("log lacks bob's collaboration:\n%s", rig.logs)
+	}
+}
+
+// Backlog 24 (ruling 203), members (ruling 254): factoryd owns who
+// administers a factory project's repository. A member (permission write)
+// stays; a collaborator with admin who is not the bot, the merge user or
+// an approver of the project leaves.
+func TestReconcileRemovesOnlyAdminsItDoesNotKeep(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
-	rig.fj.users["alice"] = true
-	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian", "alice"}} }
+	rig.fj.users["bob"] = true
+	rig.reg.Policy = demoApprovers("bob")
 	p, err := rig.reg.Register(ctx, "demo-app", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rig.fj.collabs["alice"] != "write" {
-		t.Fatalf("collaborators after Register = %v", rig.fj.collabs)
-	}
-	rig.reg.Policy = func() policy.Document { return policy.Document{Approvers: []string{"sebastian"}} }
-	rig.fj.collabs["mallory"] = "read"
+	rig.fj.collabs = map[string]string{"factory-agent": "admin", "factory-merge": "admin", "bob": "write", "mallory": "admin", "dave": "write"}
 	rig.logs.Reset()
 	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"factory-agent": "write", "factory-merge": "write", "sebastian": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
+	if want := map[string]string{"factory-agent": "admin", "factory-merge": "admin", "bob": "write", "dave": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
 		t.Fatalf("collaborators = %v, want %v", rig.fj.collabs, want)
 	}
-	for _, want := range []string{"project demo-app: collaborators: removed alice, mallory\n", "project demo-app: protection main: updated\n"} {
-		if !strings.Contains(rig.logs.String(), want) {
-			t.Errorf("log lacks %q:\n%s", want, rig.logs)
-		}
+	if !strings.Contains(rig.logs.String(), "project demo-app: collaborators: removed mallory\n") {
+		t.Errorf("log lacks mallory's removal:\n%s", rig.logs)
 	}
 	rig.logs.Reset()
 	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {

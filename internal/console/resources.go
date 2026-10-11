@@ -131,7 +131,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 	}
 	slices.SortFunc(projects, func(a, b *projectView) int { return cmp.Compare(a.Project, b.Project) })
 	s := current(r)
-	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": projects, "Approver": c.approver(r)})
+	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Approver": c.approver(r)})
 }
 
 func (c *Console) resourceID(w http.ResponseWriter, r *http.Request) (int64, bool) {

@@ -2,7 +2,7 @@
 <h2>New project</h2>
 <form method="post" action="/projects" class="newtask">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<p>Writes the project's file, checks it as the factory's loader will, and files it on the infra repository as a pull request from you. The panel after it shows each step. Only the policy's approvers may file one: a project is standing spend.</p>
+<p>Writes the project's file, checks it as the factory's loader will, and files it on the infra repository as a pull request from you. The panel after it shows each step. Only the factory's approvers may file one: a project is standing spend.</p>
 {{if .Refused}}<div class="problem" role="alert"><p>The factory's check refused the file:</p>
 <ul>{{range .Refused}}<li><code>{{.}}</code></li>{{end}}</ul></div>{{end}}
 <label for="name">Name</label>
@@ -23,6 +23,6 @@
 <option value="human"{{if eq .Form.MergeRule "human"}} selected{{end}}>human</option>
 <option value="auto"{{if eq .Form.MergeRule "auto"}} selected{{end}}>auto</option>
 </select>
-{{if .Approver}}<button type="submit">File the project</button>{{else}}<p class="meta">Only the policy's approvers may file a project.</p>{{end}}
+{{if .Approver}}<button type="submit">File the project</button>{{else}}<p class="meta">Only the factory's approvers may file a project.</p>{{end}}
 </form>
 {{template "foot"}}

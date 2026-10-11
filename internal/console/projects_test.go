@@ -65,7 +65,7 @@ func TestProjectsPage(t *testing.T) {
 	for _, want := range []string{
 		`<h3 id="project-demo-app">demo-app</h3>`, `Settings from <a href="` + at + `demo-app.yaml">projects/demo-app.yaml</a>.`,
 		"Repository: demo-app/demo-app", "Objects: factory", "Agents: coder", "Merge rule: auto",
-		"Notify: sebastian (the policy's approvers)", "Namespaces: demo-staging, demo-prod",
+		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
 		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h",
 		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 servers, 5.9900 EUR a month",

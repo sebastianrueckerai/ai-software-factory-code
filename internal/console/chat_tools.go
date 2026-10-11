@@ -29,6 +29,7 @@ type toolInput struct {
 	SHA256   string `json:"sha256,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 	Accent   string `json:"accent,omitempty"`
+	Login    string `json:"login,omitempty"`
 	N        int    `json:"n,omitempty"`
 	Ref      string `json:"ref,omitempty"`
 	Path     string `json:"path,omitempty"`
@@ -123,7 +124,7 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"action", in.Action},
-		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}} {
+		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -463,6 +464,14 @@ var tools = []chatTool{
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
 			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
 		}},
+	{name: "invite", title: "Invite a member", write: true,
+		params: map[string]any{"login": str("the Forgejo user name")}, required: []string{"login"},
+		about: "Make a Forgejo user a member of the project: a write collaborator of its repository, whom the console admits within a minute (an approver's action).",
+		fits:  "an approver of the project",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doInvite(t.r.Context(), t.a, in.Login)
+			return note, nil, err
+		}},
 	{name: "github_export", title: "Export to GitHub", write: true,
 		params: map[string]any{"remote": str("the GitHub repository, owner/name"), "username": str("the GitHub login the token belongs to"),
 			"token": str("a GitHub token that may push to the repository; the member gives it")},
@@ -578,7 +587,7 @@ func (t *turn) systemText() (string, error) {
 		}
 		fmt.Fprintf(&b, "  merge rule: %s\n", t.p.MergeRule)
 	}
-	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.Tree.Document.Approvers, ", "))
+	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.ApproversOf(t.p.Repository), ", "))
 	budget := v.Tree.Document.Budget
 	fmt.Fprintf(&b, "  task budget: €%.2f default, €%.2f maximum\n", budget.TaskDefaultEUR, budget.TaskMaxEUR)
 	if _, eur := v.ProjectCap(t.p.Repository); !math.IsInf(eur, 1) {

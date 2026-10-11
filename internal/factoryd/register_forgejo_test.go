@@ -29,7 +29,7 @@ func TestRegisterOnForgejo(t *testing.T) {
 	a := AdminAuth{User: adminUser, Password: os.Getenv("FORGEJO_TEST_ADMIN_PASSWORD")}
 	reg := &Registrar{Forgejo: f, Kube: newFakeProjectKube(), Store: store,
 		OpenBao:    &fakeKV{data: map[string]string{"username": a.User, "password": a.Password}},
-		Policy:     func() policy.Document { return policy.Document{Approvers: []string{adminUser}} },
+		Policy:     func() policy.Tree { return policy.Tree{Document: policy.Document{Approvers: []string{adminUser}}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: base, RegistryHost: "git.example",
 		MergeUser: "factory-merge", ProjectsUser: "factory-projects",

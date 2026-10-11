@@ -30,6 +30,8 @@ type projectRow struct {
 	File string
 	// Mirror is a factory project's GitHub export, nil for none.
 	Mirror *factoryd.Mirror
+	// Approver: the viewer approves the project, so sets its export.
+	Approver bool
 }
 
 // projects shows every project read-only (ruling 183): its file's
@@ -50,7 +52,7 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 	}
 	var rows []projectRow
 	for _, p := range ps {
-		row := projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.Document.Approvers), NotifyDefault: len(p.Notify) == 0,
+		row := projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.ApproversOf(p.Repository)), NotifyDefault: len(p.Notify) == 0,
 			GatewayYAML: factoryd.ListenerYAML(p)}
 		if p.File {
 			row.File = c.fileLink(v, p.Name)
@@ -60,6 +62,7 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		row.Approver = slices.Contains(v.ApproversOf(p.Repository), current(r).user)
 		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
 			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
 			if err != nil {
@@ -74,8 +77,8 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	s := current(r)
-	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": rows,
-		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil, "Approver": c.approver(r)})
+	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": rows,
+		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil})
 }
 
 // projectRun is what the status panel keeps in memory of a new project:
@@ -107,7 +110,7 @@ func (c *Console) renderNewProject(w http.ResponseWriter, r *http.Request, code 
 	s := current(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(code)
-	c.render(w, "project_new.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Form": p, "Refused": refused,
+	c.render(w, "project_new.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Form": p, "Refused": refused,
 		"Processes": slices.Sorted(maps.Keys(v.Tree.Processes)), "Templates": slices.Sorted(maps.Keys(v.Tree.Templates)),
 		"Approver": c.approver(r)})
 }
@@ -220,6 +223,7 @@ type step struct {
 
 type statusPanel struct {
 	Name, User, CSRF string
+	Factory          bool // the layout's factory-level links: the panel is a factory-level page
 	Steps            []step
 	Final            bool
 	CanMerge         bool
@@ -231,7 +235,7 @@ type statusPanel struct {
 func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 	ctx := r.Context()
 	s := current(r)
-	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf}
+	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf, Factory: true}
 	pulled := step{Name: "Pull request opened", State: stepWaiting,
 		Tip:    "The project's file as a pull request on the infra repository, filed as you; the factory checked it as its loader will.",
 		Detail: "No pull request from branch project-" + name + " into main yet."}
@@ -473,7 +477,7 @@ var (
 // and every 8 h, in place of a push mirror p had to it or to its last
 // export's remote: an approver's action, as a token leaves the factory.
 func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Project, remote, username, token string) (string, error) {
-	if err := c.approves(ctx, a, "export "+p.Name+" to GitHub"); err != nil {
+	if err := c.approves(ctx, a, p.Repository, "export it to GitHub"); err != nil {
 		return "", err
 	}
 	switch {
@@ -515,7 +519,7 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 // doRemoveGithubExport deletes project p's push mirror to GitHub and its
 // row: an approver's action.
 func (c *Console) doRemoveGithubExport(ctx context.Context, a actor, p factoryd.Project) (string, error) {
-	if err := c.approves(ctx, a, "remove the GitHub export of "+p.Name); err != nil {
+	if err := c.approves(ctx, a, p.Repository, "remove its GitHub export"); err != nil {
 		return "", err
 	}
 	m, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)

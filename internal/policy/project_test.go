@@ -261,6 +261,8 @@ func TestProjectConfigValidate(t *testing.T) {
 		"seed secrets": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Secrets: []string{"a/b"}, Tokens: &SeedTokens{Read: SecretConfig}}
 		}, "objects seed: environments, quota and secrets"},
+		"approver no login": {"demo-app", func(p *ProjectConfig) { p.Approvers = []string{"no spaces here"} }, `approvers "no spaces here": distinct Forgejo user names`},
+		"approver twice":    {"demo-app", func(p *ProjectConfig) { p.Approvers = []string{"bob", "bob"} }, `approvers "bob": distinct Forgejo user names`},
 		"seed unknown merge": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: "root"}}
 		}, `tokens.merge "root"`},
@@ -277,5 +279,21 @@ func TestProjectConfigValidate(t *testing.T) {
 		Tokens: &SeedTokens{Read: SecretConfig}}
 	if err := seed.Validate("x"); err != nil {
 		t.Fatalf("a seed project in a factory namespace: %v", err)
+	}
+}
+
+// A project file's approvers are the project's; a file without them, or
+// a repository no file names, has the policy's.
+func TestApproversOf(t *testing.T) {
+	files := fixtureTree(t)
+	files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], "approvers: [bob]\n"...)
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for repo, want := range map[string][]string{"demo-app/demo-app": {"bob"}, "linkshort/linkshort": {"sebastian"}, "nobody/else": {"sebastian"}} {
+		if got := tree.ApproversOf(repo); !reflect.DeepEqual(got, want) {
+			t.Errorf("ApproversOf(%s) = %v, want %v", repo, got, want)
+		}
 	}
 }

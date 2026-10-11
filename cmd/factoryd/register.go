@@ -85,12 +85,12 @@ func registerMain(args []string) {
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
 	}
-	reg := newRegistrar(store, newForgejo(), kube, func() policy.Document {
+	reg := newRegistrar(store, newForgejo(), kube, func() policy.Tree {
 		v, _, err := store.CurrentPolicy(ctx)
 		if err != nil {
 			log.Printf("current policy: %v", err)
 		}
-		return v.Document
+		return v.Tree
 	}, mustSecret("FORGEJO_WEBHOOK_SECRET"))
 	if err := registerProject(ctx, args, os.Stdout, reg); err != nil {
 		log.Fatalf("register-project: %v", err)
@@ -115,8 +115,8 @@ func newForgejo() *factoryd.Forgejo {
 	}
 }
 
-func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, doc func() policy.Document, webhookSecret string) *factoryd.Registrar {
-	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Policy: doc,
+func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, tree func() policy.Tree, webhookSecret string) *factoryd.Registrar {
+	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Policy: tree,
 		WebhookURL:       env("FACTORYD_WEBHOOK_URL", "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo"),
 		WebhookSecret:    webhookSecret,
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -354,23 +355,28 @@ func (s *fakeTasks) setStatus(id, status string) {
 	}
 }
 
+// fakeWriters are the writers of the factory's own code project (sf/code),
+// users, and of the others, by repository.
 type fakeWriters struct {
-	mu    sync.Mutex
-	users []string
-	asked int
-	err   error
-	delay time.Duration
+	mu     sync.Mutex
+	users  []string
+	others map[string][]string
+	asked  int
+	err    error
+	delay  time.Duration
 }
 
-func (w *fakeWriters) list(context.Context) ([]string, error) {
+func (w *fakeWriters) list(context.Context) (string, map[string][]string, error) {
 	time.Sleep(w.delay)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.asked++
 	if w.err != nil {
-		return nil, w.err
+		return "", nil, w.err
 	}
-	return w.users, nil
+	all := map[string][]string{"sf/code": w.users}
+	maps.Copy(all, w.others)
+	return "sf/code", all, nil
 }
 
 type fakeObjects map[string][]byte
@@ -511,6 +517,8 @@ type fakeLedger struct {
 	monthCaps map[string]float64 // budget.month_eur by project file
 	processes map[string]policy.Process
 	chat      *policy.ChatConfig // the policy's chat block
+	approvers []string           // the policy's; nil: sebastian
+	files     map[string]policy.ProjectConfig
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -551,6 +559,10 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
 			Processes: l.processes}}
+	maps.Copy(v.Tree.Projects, l.files)
+	if l.approvers != nil {
+		v.Document.Approvers = l.approvers
+	}
 	for name, eur := range l.monthCaps {
 		p := v.Tree.Projects[name]
 		p.Budget = &policy.ProjectBudget{MonthEUR: eur}
@@ -582,6 +594,7 @@ type rig struct {
 	retried     []string // "task by user" per RetryPlanCard
 	retryErr    error
 	metrics     *sdkmetric.ManualReader
+	invited     []string // "repository user permission" per AddCollaborator
 }
 
 var monthly = 8.99
@@ -657,6 +670,10 @@ func newRig(t *testing.T) *rig {
 		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
+		},
+		AddCollaborator: func(_ context.Context, repo factoryd.Repo, user, permission string) error {
+			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
+			return nil
 		},
 	})
 	if err != nil {
@@ -843,7 +860,7 @@ func TestNonWriterGets403AndNoSession(t *testing.T) {
 	if cb.Code != http.StatusForbidden || ck == nil || ck.MaxAge >= 0 || len(r.c.sessions) != 0 {
 		t.Fatalf("non-writer: %d, cookie %+v, %d sessions: want 403, cookie deleted, none", cb.Code, ck, len(r.c.sessions))
 	}
-	if !strings.Contains(cb.Body.String(), "mallory cannot write the factory's own repository") {
+	if !strings.Contains(cb.Body.String(), "mallory writes none of the factory's projects") {
 		t.Fatalf("403 body: %s", cb.Body)
 	}
 }
@@ -1506,7 +1523,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	// alice writes no project's repository: she asks for the code project
 	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if strings.Contains(board, "/approve\"") || !strings.Contains(board, `action="/approvals/3/deny"`) ||
-		!strings.Contains(board, "Only the policy's approvers may approve.") {
+		!strings.Contains(board, "Only the project's approvers may approve.") {
 		t.Fatalf("board for a non-approver: approve buttons %v, deny %v", strings.Contains(board, "/approve\""),
 			strings.Contains(board, "/deny\""))
 	}
@@ -1811,7 +1828,7 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 	}
 }
 
-// Only the policy's approvers judge alerts: no buttons, and a 403.
+// Only the factory's approvers judge alerts: no buttons, and a 403.
 func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	r := newRig(t)
 	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
@@ -1821,7 +1838,7 @@ func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	r.tasks.tasks[0].EscalationAlert = 3
 	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
 	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(page, "/verdict") || strings.Contains(board, "/verdict") || !strings.Contains(page, "Only the policy's approvers may judge an alert.") {
+	if strings.Contains(page, "/verdict") || strings.Contains(board, "/verdict") || !strings.Contains(page, "Only the factory's approvers may judge an alert.") {
 		t.Fatal("a non-approver is offered the verdict buttons")
 	}
 	for _, v := range []string{"real", "maybe"} {

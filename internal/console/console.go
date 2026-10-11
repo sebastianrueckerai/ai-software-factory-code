@@ -1,6 +1,6 @@
 // Package console is the human's view of the factory at
 // console.aisoftwarefactory.world (task 54): Forgejo OAuth2 login for the
-// repository's writers, the board, new tasks filed as the human, the
+// projects' writers (ruling 254), the board, new tasks filed as the human, the
 // human's answers to escalations, approvals, and the agent resources. It is served by factoryd on its own port;
 // every Forgejo write goes out with the logged-in human's token.
 package console
@@ -85,9 +85,11 @@ type Config struct {
 	// SessionKey signs the login cookie (HMAC-SHA256), at least 32 bytes.
 	SessionKey []byte
 	Tasks      Tasks
-	// Writers are the users who may log in: the writers of the factory's
-	// own project, the one deploying into factoryd's namespace.
-	Writers   func(ctx context.Context) ([]string, error)
+	// Writers are each project's writers by repository, and own is the
+	// factory's own code project's repository (the one deploying into
+	// factoryd's namespace): a writer of any project may log in, a writer
+	// of own also reaches the factory-level pages (ruling 254).
+	Writers   func(ctx context.Context) (own string, writers map[string][]string, err error)
 	Timelines factoryd.ObjectStore
 	Policies  Policies
 	Costs     Costs
@@ -153,6 +155,10 @@ type Config struct {
 	Pulses Pulses
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
+	// AddCollaborator makes user a collaborator of repo with permission
+	// as the token registration keeps project repositories with
+	// (factoryd's Forgejo.AddProjectCollaborator): an invited member.
+	AddCollaborator func(ctx context.Context, repo factoryd.Repo, user, permission string) error
 }
 
 // Console is the console's http.Handler.
@@ -163,7 +169,7 @@ type Console struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
-	writers  []string
+	writers  writerLists
 	writersT time.Time
 	flight   singleflight.Group
 	moves    map[string]answer // the board's MayMove answers
@@ -172,6 +178,13 @@ type Console struct {
 	// memory for the status panel.
 	runs map[string]*projectRun
 	held map[string]heldToken // the chat's proposals' tokens: a restart forgets them
+}
+
+// writerLists are each project's writers by repository and the factory's
+// own code project's repository (Config.Writers).
+type writerLists struct {
+	own string
+	by  map[string][]string
 }
 
 type session struct {
@@ -209,7 +222,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /logout", c.auth(c.logout))
 	c.mux.Handle("GET /{$}", c.auth(c.board))
 	c.mux.Handle("GET /board", c.auth(c.board))
-	c.mux.Handle("GET /tasks/new", c.auth(c.newTaskForm))
+	c.mux.Handle("GET /tasks/new", c.auth(c.factory(c.newTaskForm)))
 	c.mux.Handle("POST /tasks", c.auth(c.createTask))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
 	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
@@ -221,24 +234,24 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
 	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
-	c.mux.Handle("GET /costs", c.auth(c.costs))
-	c.mux.Handle("GET /policy", c.auth(c.policy))
+	c.mux.Handle("GET /costs", c.auth(c.factory(c.costs)))
+	c.mux.Handle("GET /policy", c.auth(c.factory(c.policy)))
 	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
 	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
-	c.mux.Handle("GET /resources", c.auth(c.resources))
-	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.spend("promote", c.promote)))
-	c.mux.Handle("POST /resources/{id}/release", c.auth(c.release))
-	c.mux.Handle("GET /alerts", c.auth(c.alerts))
-	c.mux.Handle("GET /projects", c.auth(c.projects))
-	c.mux.Handle("GET /projects/new", c.auth(c.newProjectForm))
-	c.mux.Handle("POST /projects", c.auth(c.spend("add a project", c.createProject)))
-	c.mux.Handle("GET /projects/{name}/status", c.auth(c.projectStatus))
+	c.mux.Handle("GET /resources", c.auth(c.factory(c.resources)))
+	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.factory(c.spend("promote", c.promote))))
+	c.mux.Handle("POST /resources/{id}/release", c.auth(c.factory(c.release)))
+	c.mux.Handle("GET /alerts", c.auth(c.factory(c.alerts)))
+	c.mux.Handle("GET /projects", c.auth(c.factory(c.projects)))
+	c.mux.Handle("GET /projects/new", c.auth(c.factory(c.newProjectForm)))
+	c.mux.Handle("POST /projects", c.auth(c.factory(c.spend("add a project", c.createProject))))
+	c.mux.Handle("GET /projects/{name}/status", c.auth(c.factory(c.projectStatus)))
 	c.mux.Handle("GET /projects/{name}/events", c.auth(c.projectEvents))
 	c.mux.Handle("GET /projects/{name}/events/stream", c.auth(c.projectEventsStream))
 	c.mux.Handle("GET /cards/{id}", c.auth(c.cardFragment))
 	c.mux.Handle("GET /cards/{id}/drawer", c.auth(c.cardDrawer))
-	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
-	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
+	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.factory(c.spend("merge a project's file", c.mergeProject))))
+	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.factory(c.verdict)))
 	c.mux.Handle("GET /projects/{name}/chat", c.auth(c.chatGet))
 	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
 	c.mux.Handle("POST /projects/{name}/chat/new", c.auth(c.chatNew))
@@ -265,7 +278,7 @@ func (c *Console) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type ctxKey struct{}
 
-// auth admits a request with a live session of a current writer and, for
+// auth admits a request with a live session of a writer of any project and, for
 // anything but GET, the session's CSRF token in the form or the
 // X-CSRF-Token header (htmx sends it from hx-headers).
 func (c *Console) auth(next http.HandlerFunc) http.Handler {
@@ -294,7 +307,7 @@ func (c *Console) auth(next http.HandlerFunc) http.Handler {
 				return
 			}
 		}
-		ok, err := c.writer(r.Context(), s.user)
+		ok, _, err := c.writer(r.Context(), s.user)
 		if err != nil {
 			log.Printf("console: writers: %v", err)
 			http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
@@ -345,44 +358,78 @@ func (c *Console) end(s *session) {
 	}
 }
 
-// writer reports whether user is on the repository's writer list, read at
-// most once a minute by one request while the others wait for it; when
-// Forgejo fails, the last list serves for up to five minutes.
-func (c *Console) writer(ctx context.Context, user string) (bool, error) {
+// writer reports whether user writes any project and whether they write
+// the factory's own, from the writer lists read at most once a minute by
+// one request while the others wait for it; when Forgejo fails, the last
+// lists serve for up to five minutes.
+func (c *Console) writer(ctx context.Context, user string) (admitted, factory bool, err error) {
 	c.mu.Lock()
-	writers, at := c.writers, c.writersT
+	lists, at := c.writers, c.writersT
 	c.mu.Unlock()
 	if time.Since(at) >= writersTTL {
 		v, err, _ := c.flight.Do("writers", func() (any, error) {
-			list, err := c.cfg.Writers(context.WithoutCancel(ctx))
+			own, by, err := c.cfg.Writers(context.WithoutCancel(ctx))
+			l := writerLists{own, by}
 			if err == nil {
 				c.mu.Lock()
-				c.writers, c.writersT = list, time.Now()
+				c.writers, c.writersT = l, time.Now()
 				c.mu.Unlock()
 			}
-			return list, err
+			return l, err
 		})
 		switch {
 		case err == nil:
-			writers = v.([]string)
-		case writers != nil && time.Since(at) < writersStale:
-			log.Printf("console: writers: %v; serving the list of %s", err, at.UTC().Format(time.RFC3339))
+			lists = v.(writerLists)
+		case lists.by != nil && time.Since(at) < writersStale:
+			log.Printf("console: writers: %v; serving the lists of %s", err, at.UTC().Format(time.RFC3339))
 		default:
-			return false, err
+			return false, false, err
 		}
 	}
-	return slices.Contains(writers, user), nil
+	for _, users := range lists.by {
+		admitted = admitted || slices.Contains(users, user)
+	}
+	return admitted, slices.Contains(lists.by[lists.own], user), nil
 }
 
-// approver reports whether the session's human may authorize spend
-// (isApprover).
-func (c *Console) approver(r *http.Request) bool { return c.isApprover(r.Context(), current(r).user) }
+// factory refuses a factory-level page or action to anyone but the
+// writers of the factory's own code project (ruling 254).
+func (c *Console) factory(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch _, ok, err := c.writer(r.Context(), current(r).user); {
+		case err != nil:
+			log.Printf("console: writers: %v", err)
+			http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
+		case !ok:
+			http.Error(w, "Only the writers of the factory's own code see the factory's pages.", http.StatusForbidden)
+		default:
+			next(w, r)
+		}
+	}
+}
 
-// isApprover reports whether user may authorize spend: a name on the
-// policy's approvers (ruling 128). Unreadable policy: no.
-func (c *Console) isApprover(ctx context.Context, user string) bool {
+// factoryWriter reports whether the request's human writes the factory's
+// own code project: the layout links the factory-level pages for them.
+func (c *Console) factoryWriter(r *http.Request) bool {
+	_, ok, _ := c.writer(r.Context(), current(r).user)
+	return ok
+}
+
+// approver reports whether the session's human approves the factory's
+// own code project: the factory-level pages' spend and verdicts.
+func (c *Console) approver(r *http.Request) bool {
+	c.mu.Lock()
+	own := c.writers.own
+	c.mu.Unlock()
+	return c.isApprover(r.Context(), current(r).user, own)
+}
+
+// isApprover reports whether user approves repository's project: a name on
+// its file's approvers, else the policy's (ruling 254). Unreadable
+// policy: no.
+func (c *Console) isApprover(ctx context.Context, user, repository string) bool {
 	v, _ := c.inForce(ctx)
-	return slices.Contains(v.Document.Approvers, user)
+	return slices.Contains(v.ApproversOf(repository), user)
 }
 
 // inForce is the policy version being enforced; unreadable, an empty one
@@ -396,12 +443,13 @@ func (c *Console) inForce(ctx context.Context) (policy.Version, bool) {
 	return v, true
 }
 
-// spend refuses a spend action to anyone but the policy's approvers.
+// spend refuses a factory-level spend action to anyone but the factory's
+// approvers.
 func (c *Console) spend(what string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !c.approver(r) {
 			log.Printf("console: %s is no approver: %s refused", current(r).user, what)
-			http.Error(w, "Only the policy's approvers may authorize spend.", http.StatusForbidden)
+			http.Error(w, "Only the factory's approvers may authorize spend.", http.StatusForbidden)
 			return
 		}
 		next(w, r)

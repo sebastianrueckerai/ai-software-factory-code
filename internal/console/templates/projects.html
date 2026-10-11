@@ -1,7 +1,7 @@
 {{template "head" .}}
 <h2>Projects</h2>
 <p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits. The settings are the project's file in the configuration: change them <a href="{{.New}}">in Git</a>. <a href="/projects/new">New project</a> files a new project's file as a pull request and shows each step up to its board: the merge, the Forgejo organisation, repository, CI user and tokens made with the Forgejo admin's login, and the rest registration sets up.</p>
-{{range .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
+{{range $p := .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
 <h3 id="project-{{.Name}}">{{.Name}}</h3>
 {{if .File}}<p class="meta">Settings from <a href="{{.File}}">projects/{{.Name}}.yaml</a>.</p>
 <ul>
@@ -9,16 +9,16 @@
 <li>Objects: {{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</li>
 <li>Agents: {{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</li>
 <li>Merge rule: {{.MergeRule}}</li>
-<li>Notify: {{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the policy's approvers){{end}}</li>
+<li>Notify: {{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the project's approvers){{end}}</li>
 <li>Namespaces: {{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</li>
 {{if eq .Objects "factory"}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
 <li>Environments: {{range $i, $e := .Environments}}{{if $i}}; {{end}}{{$e.Namespace}}: {{$e.Path}}{{if $e.Hostname}} at {{$e.Hostname}}{{end}}{{else}}none{{end}}</li>
 <li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: the reconcile registers it with the Forgejo admin's login from OpenBao{{end}}</li>
-{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{.State}}{{if $.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
+{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{.State}}{{if $p.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{end}}{{else}}none{{end}}</li>{{end}}
 {{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
 </ul>
-{{if and $.Export $.Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export">
+{{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>GitHub repository <input name="remote" required placeholder="owner/name" autocomplete="off"></label>
 <label>GitHub login <input name="username" required autocomplete="off"></label>

@@ -119,6 +119,18 @@ func (t Tree) ProjectCap(repository string) (string, float64) {
 	return name, p.Budget.MonthEUR
 }
 
+// ApproversOf are the approvers of repository's project: its file's,
+// else the policy's.
+func (t Tree) ApproversOf(repository string) []string {
+	if _, p, _ := t.ProjectOf(repository); len(p.Approvers) > 0 {
+		return p.Approvers
+	}
+	return t.Document.Approvers
+}
+
+// ForgejoLogin reports whether u is a Forgejo user name.
+func ForgejoLogin(u string) bool { return forgejoLogin.MatchString(u) }
+
 // EnvelopeOf is the envelope of repository's project, the default one for
 // a repository no file names.
 func (t Tree) EnvelopeOf(repository string) Envelope {
@@ -192,8 +204,13 @@ type ProjectConfig struct {
 	// requests (ruling 188); absent: it does not.
 	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`
 	// Notify are the Forgejo users told about the project's cards; empty:
-	// the policy's approvers.
+	// the project's approvers.
 	Notify []string `yaml:"notify,omitempty" json:"notify"`
+	// Approvers are the Forgejo users who may authorize the project's
+	// spend in the console (approve its merges and resource requests,
+	// accept and start its plans) and invite its members; empty: the
+	// policy's approvers.
+	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
 	// Namespaces are the cluster namespaces the project deploys into.
 	Namespaces []string `yaml:"namespaces,omitempty" json:"namespaces"`
 	// Environments are the project's deploy directories, one Flux
@@ -365,6 +382,11 @@ func (p ProjectConfig) Validate(name string) error {
 	for _, u := range p.Notify {
 		if !forgejoLogin.MatchString(u) {
 			bad("notify %q: not a Forgejo user name", u)
+		}
+	}
+	for i, u := range p.Approvers {
+		if !forgejoLogin.MatchString(u) || slices.Contains(p.Approvers[:i], u) {
+			bad("approvers %q: distinct Forgejo user names", u)
 		}
 	}
 	for i, ns := range p.Namespaces {

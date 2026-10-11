@@ -37,9 +37,10 @@ type Intake struct {
 	Workflows Workflows
 	BotUser   string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
-	// Policy is the policy in force: a new task's budget, the approvers
-	// who may move a card into a lane moved by the approvers.
-	Policy func() policy.Document
+	// Policy is the configuration in force: a new task's budget, each
+	// project's approvers, who may move a card into a lane moved by the
+	// approvers.
+	Policy func() policy.Tree
 	// Projects are where the heal pass looks for open issues no webhook
 	// turned into a task: every active project's repository.
 	Projects interface {
@@ -497,7 +498,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Budget, p.Budget, size, eur),
+		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, eur),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
@@ -610,7 +611,7 @@ func (in *Intake) writeUp(ctx context.Context, p Project, t Task, defaultBranch 
 	if err != nil {
 		return err
 	}
-	_, err = openReport(ctx, in.Store, in.Workflows, in.Policy().Budget, t, SourcePresort, backlog.WriteUp, sha)
+	_, err = openReport(ctx, in.Store, in.Workflows, in.Policy().Document.Budget, t, SourcePresort, backlog.WriteUp, sha)
 	return err
 }
 

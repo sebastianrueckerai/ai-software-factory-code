@@ -249,11 +249,12 @@ func main() {
 
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
-		Secret: webhookSecret, Policy: func() policy.Document { return policyLoader.Current().Document }, Projects: store, Metrics: metrics,
+		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
 		Timeline: runner.Timeline(),
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
-	// runs and its rolls are watched, its writers log into the console
+	// runs and its rolls are watched, its writers reach the console's
+	// factory-level pages
 	own, ok, err := factoryd.OwnProject(context.Background(), store, kube.Namespace())
 	if err != nil || !ok {
 		log.Fatalf("no project file lists factoryd's namespace %s (%v)", kube.Namespace(), err)
@@ -262,7 +263,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	runner.BootSweep(ctx)
-	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document }, webhookSecret)
+	registrar := newRegistrar(store, forgejo, kube, func() policy.Tree { return policyLoader.Current().Tree }, webhookSecret)
 	registrar.Mirrors = store
 	webhookIntake.MainPushed = registrar.MainPushed
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
@@ -360,17 +361,11 @@ func main() {
 		ClientSecret:     consoleClientSecret,
 		SessionKey:       []byte(consoleSessionKey),
 		Tasks:            store,
-		Writers: func(ctx context.Context) ([]string, error) {
-			p, ok, err := factoryd.OwnProject(ctx, store, kube.Namespace())
-			if err != nil || !ok {
-				return nil, errors.Join(fmt.Errorf("no project file lists namespace %s", kube.Namespace()), err)
-			}
-			return forgejo.Writers(ctx, p)
-		},
-		Timelines: objects,
-		Policies:  store,
-		Costs:     store,
-		Approvals: store,
+		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace()),
+		Timelines:        objects,
+		Policies:         store,
+		Costs:            store,
+		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
@@ -409,6 +404,9 @@ func main() {
 			*factoryd.PGStore
 			*factoryd.Forgejo
 		}{store, forgejo},
+		// the projects token registration keeps the repositories with, which
+		// may add a collaborator where the approver's own token may not
+		AddCollaborator: forgejo.AddProjectCollaborator,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)
@@ -444,6 +442,43 @@ func main() {
 	log.Printf("factoryd %s listening on %s", version, *addr)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
+	}
+}
+
+// consoleWriters are the console's writer lists: the writers of every
+// project agents work on, by repository, and the factory's own code
+// project, the one listing factoryd's namespace ns. A project whose
+// writers cannot be read is logged and left out, its members refused until
+// it reads again; the own project's failure fails the lists, and the
+// console serves its last ones.
+func consoleWriters(store interface {
+	Projects(ctx context.Context) ([]factoryd.Project, error)
+}, writersOf func(context.Context, factoryd.Project) ([]string, error), ns string) func(context.Context) (string, map[string][]string, error) {
+	return func(ctx context.Context) (string, map[string][]string, error) {
+		own, ok, err := factoryd.OwnProject(ctx, store, ns)
+		if err != nil || !ok {
+			return "", nil, errors.Join(fmt.Errorf("no project file lists namespace %s", ns), err)
+		}
+		ps, err := store.Projects(ctx)
+		if err != nil {
+			return "", nil, err
+		}
+		writers := map[string][]string{}
+		for _, p := range ps {
+			if !p.Coder() && p.Repository != own.Repository {
+				continue
+			}
+			list, err := writersOf(ctx, p)
+			switch {
+			case err != nil && p.Repository == own.Repository:
+				return "", nil, err
+			case err != nil:
+				log.Printf("console: the writers of %s are left out: %v", p.Repository, err)
+				continue
+			}
+			writers[p.Repository] = list
+		}
+		return own.Repository, writers, nil
 	}
 }
 

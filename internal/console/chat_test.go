@@ -421,7 +421,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, want := range []string{
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
-		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, github_export. " +
+		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export. " +
 			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
 	} {
@@ -566,7 +566,8 @@ func TestSystemTool(t *testing.T) {
 		"\n  card, any card\n",
 		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n",
 		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
-		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, github_export\n",
+		"\n  invite, needs OK, an approver of the project\n",
+		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n"+
 			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n")
@@ -735,7 +736,7 @@ func TestChatRoleRefusal(t *testing.T) {
 	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-m"}`)}, {say("Only an approver may.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"approve #5"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"approve_merge","result":"Refused: Only the policy's approvers may authorize spend."}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"approve_merge","result":"Refused: Only the approvers of project ai-software-factory-code may authorize spend."}`,
 		`text {"text":"Only an approver may."}`, `done {}`})
 	chatRows(t, r.events, before, "anna")
 	if len(r.fg.reviews) != 0 || r.approvals.get(4).Status != "pending" {

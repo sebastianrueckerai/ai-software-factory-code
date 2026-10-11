@@ -594,7 +594,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 // RequestInfo asks the issue's author for what the agent needs (ruling
 // 150): state waiting-poster, mirrored on the issue, and a comment with the
 // request that mentions the author and the project's notify list (the
-// policy's approvers when it is empty), whose Forgejo bells ring; an
+// project's approvers when it is empty), whose Forgejo bells ring; an
 // info_request alert. It returns the comment's id: only later comments
 // answer it.
 func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64, error) {
@@ -608,7 +608,7 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-poster")
 	}
-	notify := r.cfg.Policy().Document.Approvers
+	notify := r.cfg.Policy().ApproversOf(t.Repository)
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 		return 0, err
 	} else if ok {

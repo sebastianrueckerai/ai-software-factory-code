@@ -63,11 +63,20 @@ type eventJSON struct {
 // projectOf is the project of that name among the configuration's; false
 // when no project has it.
 func (c *Console) projectOf(ctx context.Context, name string) (factoryd.Project, bool, error) {
+	return c.projectWhere(ctx, func(p factoryd.Project) bool { return p.Name == name })
+}
+
+// projectAt is the project of repository.
+func (c *Console) projectAt(ctx context.Context, repository string) (factoryd.Project, bool, error) {
+	return c.projectWhere(ctx, func(p factoryd.Project) bool { return p.Repository == repository })
+}
+
+func (c *Console) projectWhere(ctx context.Context, match func(factoryd.Project) bool) (factoryd.Project, bool, error) {
 	ps, err := c.cfg.Projects.Projects(ctx)
 	if err != nil {
 		return factoryd.Project{}, false, err
 	}
-	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == name })
+	i := slices.IndexFunc(ps, match)
 	if i < 0 {
 		return factoryd.Project{}, false, nil
 	}
@@ -226,7 +235,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		if c.session(r) == nil {
 			return false
 		}
-		login, err := c.writer(ctx, user)
+		login, _, err := c.writer(ctx, user)
 		if err == nil && !login {
 			return false
 		}

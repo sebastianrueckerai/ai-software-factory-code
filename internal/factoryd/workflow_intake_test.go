@@ -318,15 +318,16 @@ func (f *requestInfoForgejo) srv(t *testing.T) *httptest.Server {
 
 // RequestInfo end to end against fakes: waiting-poster mirrored, the
 // comment with the request and every mention (author, then the project's
-// notify list, or the approvers when it is empty), the anchor for a
-// healed run, the info_request alert.
+// notify list, or the project's approvers when it is empty: its file's,
+// else the policy's), the anchor for a healed run, the info_request alert.
 func TestRequestInfo(t *testing.T) {
 	for name, tc := range map[string]struct {
-		notify   []string
-		mentions string
+		notify, approvers []string
+		mentions          string
 	}{
-		"notify list":          {[]string{"alice", "visitor"}, "cc @visitor @alice"},
-		"empty: the approvers": {nil, "cc @visitor @sebastian"},
+		"notify list":                    {[]string{"alice", "visitor"}, []string{"bob"}, "cc @visitor @alice"},
+		"empty: the policy's approvers":  {nil, nil, "cc @visitor @sebastian"},
+		"empty: the project's approvers": {nil, []string{"bob"}, "cc @visitor @bob"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor"}
@@ -335,6 +336,7 @@ func TestRequestInfo(t *testing.T) {
 			r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 			v := testPolicyVersion()
 			v.Document.Approvers = []string{"sebastian"}
+			v.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo", Approvers: tc.approvers}}
 			r.cfg.Policy = func() policy.Version { return v }
 			store.projects = []Project{{Name: "repo", Repository: "sf/repo", MergeRule: "auto", Notify: tc.notify}}
 			reason := "The agent asks the issue's author: Which browser?\nTried: the steps\nNeeds: the version"
