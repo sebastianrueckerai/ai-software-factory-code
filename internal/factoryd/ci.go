@@ -83,6 +83,9 @@ type CIRepo struct {
 	// Cache is the claim of the project's CI cache (design 4.6), apart from
 	// its agents' cache-<project>: the checks gate merges
 	Cache string
+	// Staging is the namespace of the project's staging environment, which
+	// its main workflow smoke-tests; "" none.
+	Staging string
 }
 
 // CIReposOf serves every project agents work on.
@@ -102,6 +105,9 @@ func CIReposOf(f *Forgejo, projects interface {
 			r := CIRepo{Repo: p.Repo(), Token: f.Access(p).Actions, Cache: "cache-ci-" + p.Name}
 			if p.Objects == policy.ObjectsFactory {
 				r.Project = p.Name
+				if e, ok := p.Staging(); ok {
+					r.Staging = e.Namespace
+				}
 			}
 			out = append(out, r)
 		}
@@ -371,7 +377,7 @@ func (s *CISpawner) setupNamespace(ctx context.Context, ns string, jobID int64, 
 			return s.kube.CreateServiceAccount(ctx, ns, "ci-runner")
 		}},
 		{"egress policy", func() error {
-			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm, repo.Project != ""))
+			return s.kube.CreateCiliumNetworkPolicy(ctx, ns, "ci-egress", s.ciEgressSpec(vm, repo))
 		}},
 		{"runner registration secret", func() error {
 			// forgejo-runner reads its token from a file (--token-url
@@ -731,8 +737,10 @@ const (
 // A build job additionally reaches its own VM's buildkitd, the read-only
 // build cache (its own policy refuses writes) and, since BuildKit fetches
 // registry tokens through the client session, Docker Hub's token service;
-// layers and release downloads are the VM's.
-func (s *CISpawner) ciEgressSpec(vm *BuildVM, project bool) map[string]any {
+// layers and release downloads are the VM's. A project's job reaches its
+// staging namespace's Services, which the main workflow smoke-tests.
+func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo) map[string]any {
+	project := repo.Project != ""
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
@@ -753,6 +761,9 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, project bool) map[string]any {
 	}
 	if project {
 		dnsNames = append(dnsNames, map[string]any{"matchName": factorydHost}, map[string]any{"matchName": forgejoSSHHost})
+	}
+	if repo.Staging != "" {
+		dnsNames = append(dnsNames, map[string]any{"matchPattern": "*." + repo.Staging + ".svc.cluster.local"})
 	}
 
 	toFQDNs := make([]any, 0, len(fqdns))
@@ -802,6 +813,13 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, project bool) map[string]any {
 			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{
 				"k8s:io.kubernetes.pod.namespace": s.cfg.FactoryNamespace, "k8s:app": "factoryd"}}},
 			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "8080", "protocol": "TCP"}}}},
+		})
+	}
+	if repo.Staging != "" {
+		egress = append(egress, map[string]any{
+			"toEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": repo.Staging}}},
+			"toPorts": []any{map[string]any{"ports": []any{map[string]any{"port": "80", "protocol": "TCP"},
+				map[string]any{"port": "443", "protocol": "TCP"}, map[string]any{"port": "8080", "protocol": "TCP"}}}},
 		})
 	}
 	if vm != nil {

@@ -71,8 +71,10 @@ type Project struct {
 	// write:repository limited to it (MergeToken, the merge).
 	ReadTokenHash  string
 	HookSecretHash string
-	// HostKeyHash is sha256 hex of the FACTORY_SSH_HOST_KEY secret set.
+	// HostKeyHash is sha256 hex of the FACTORY_SSH_HOST_KEY secret set;
+	// StagingHash of STAGING_URL and STAGING_SECRETS.
 	HostKeyHash string
+	StagingHash string
 	PullToken   string
 	GitToken    string
 	MergeToken  string
@@ -97,6 +99,19 @@ func (p Project) CIUser() string { return "ci-" + p.Name }
 
 // Environment is one Flux Kustomization of a project.
 type Environment = policy.Environment
+
+// StagingPath is the environment a template's main CI rolls and
+// smoke-tests (templates/ts-go/.forgejo/workflows/ci.yml).
+const StagingPath = "deploy/staging"
+
+// Staging is the project's environment at StagingPath.
+func (p Project) Staging() (Environment, bool) {
+	i := slices.IndexFunc(p.Environments, func(e Environment) bool { return e.Path == StagingPath })
+	if i < 0 {
+		return Environment{}, false
+	}
+	return p.Environments[i], true
+}
 
 // Repo is the project's repository.
 func (p Project) Repo() Repo {
@@ -195,10 +210,10 @@ type ProjectStore interface {
 
 // ProjectTokens: an empty field leaves the stored one.
 type ProjectTokens struct {
-	ReadTokenHash, HookSecretHash, HostKeyHash, PullToken, GitToken, MergeToken string
+	ReadTokenHash, HookSecretHash, HostKeyHash, StagingHash, PullToken, GitToken, MergeToken string
 }
 
-const projectColumns = `name, read_token_hash, hook_secret_hash, host_key_hash, pull_token, git_token, merge_token, created_at, updated_at, ready_at`
+const projectColumns = `name, read_token_hash, hook_secret_hash, host_key_hash, staging_hash, pull_token, git_token, merge_token, created_at, updated_at, ready_at`
 
 // Projects are the current configuration's projects with their rows, and
 // the rows no file names.
@@ -216,7 +231,7 @@ func (s *PGStore) Projects(ctx context.Context) ([]Project, error) {
 	for rows.Next() {
 		var p Project
 		var ready sql.NullTime
-		if err := rows.Scan(&p.Name, &p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.PullToken, &p.GitToken, &p.MergeToken,
+		if err := rows.Scan(&p.Name, &p.ReadTokenHash, &p.HookSecretHash, &p.HostKeyHash, &p.StagingHash, &p.PullToken, &p.GitToken, &p.MergeToken,
 			&p.CreatedAt, &p.UpdatedAt, &ready); err != nil {
 			return nil, err
 		}
@@ -273,8 +288,8 @@ func (s *PGStore) SetProjectTokens(ctx context.Context, name string, t ProjectTo
 	res, err := s.db.ExecContext(ctx, `UPDATE projects SET read_token_hash = COALESCE(NULLIF($2, ''), read_token_hash),
 		hook_secret_hash = COALESCE(NULLIF($3, ''), hook_secret_hash), pull_token = COALESCE(NULLIF($4, ''), pull_token),
 		git_token = COALESCE(NULLIF($5, ''), git_token), merge_token = COALESCE(NULLIF($6, ''), merge_token),
-		host_key_hash = COALESCE(NULLIF($7, ''), host_key_hash), updated_at = now()
-		WHERE name = $1`, name, t.ReadTokenHash, t.HookSecretHash, t.PullToken, t.GitToken, t.MergeToken, t.HostKeyHash)
+		host_key_hash = COALESCE(NULLIF($7, ''), host_key_hash), staging_hash = COALESCE(NULLIF($8, ''), staging_hash), updated_at = now()
+		WHERE name = $1`, name, t.ReadTokenHash, t.HookSecretHash, t.PullToken, t.GitToken, t.MergeToken, t.HostKeyHash, t.StagingHash)
 	return oneRow(res, err, "project "+name)
 }
 

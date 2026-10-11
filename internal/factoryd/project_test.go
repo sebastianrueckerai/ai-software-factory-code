@@ -176,7 +176,7 @@ func TestPGProjects(t *testing.T) {
 		cols = append(cols, c)
 	}
 	rows.Close()
-	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "ready_at", "updated_at"}; !slices.Equal(cols, want) {
+	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "ready_at", "staging_hash", "updated_at"}; !slices.Equal(cols, want) {
 		t.Fatalf("projects columns = %v, want %v", cols, want)
 	}
 	var envelopes bool
@@ -193,7 +193,7 @@ func TestPGProjects(t *testing.T) {
 	if created, err := s.EnsureProjectRows(ctx, []string{"demo-app"}); err != nil || len(created) != 0 {
 		t.Fatalf("second EnsureProjectRows = %v, %v", created, err)
 	}
-	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{HookSecretHash: "k1", GitToken: "g1", MergeToken: "m1", HostKeyHash: "s1"}); err != nil {
+	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{HookSecretHash: "k1", GitToken: "g1", MergeToken: "m1", HostKeyHash: "s1", StagingHash: "t1"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetProjectTokens(ctx, "demo-app", ProjectTokens{PullToken: "p1"}); err != nil {
@@ -212,7 +212,7 @@ func TestPGProjects(t *testing.T) {
 	want := demoProject()
 	want.Envelope = policy.Envelope{MonthlyEUR: 5, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 2, Standing: policy.Standing{ServerTypes: []string{}}}
 	want.Egress = []string{"api.example.com"}
-	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken, want.HostKeyHash = "h1", "k1", "p1", "g1", "m1", "s1"
+	want.ReadTokenHash, want.HookSecretHash, want.PullToken, want.GitToken, want.MergeToken, want.HostKeyHash, want.StagingHash = "h1", "k1", "p1", "g1", "m1", "s1", "t1"
 	want.CreatedAt, want.UpdatedAt = got.CreatedAt, got.UpdatedAt
 	if err != nil || !ok || !reflect.DeepEqual(got, want) {
 		t.Fatalf("project = %+v, %v, %v\nwant %+v", got, ok, err, want)

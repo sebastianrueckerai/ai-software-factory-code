@@ -1511,14 +1511,22 @@ ready"), which nothing clears; for a factory project:
   `forgejo-ssh.forgejo:22` finds it at every reconcile, its sha256 in
   `host_key_hash`, so a rebuild that makes new host keys updates every project
   and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
-  2222). As the bot: its private fork
+  2222); with a `deploy/staging` environment, after the cluster objects,
+  `STAGING_URL` (`http://<name>.<namespace>.svc.cluster.local:8080`, the
+  template's Service) and `STAGING_SECRETS`, one `KEY=value` line per
+  `secrets` entry with the staging namespace's value (a comment line when
+  there are none: Forgejo refuses an empty secret), for the template's smoke
+  test, written again when the sha256 of both in `staging_hash` changes; no
+  value is logged. As the bot: its private fork
   `factory-agent/<name>` and the boot labels. A project whose registration
   failed waits here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
   pod security `restricted`; RoleBinding `factoryd` (ClusterRole
   `factoryd-project`); the CiliumNetworkPolicy `project`, a default deny that
-  admits in the namespace itself, the edge gateway's Envoy and the CNPG
-  operator (8000, 5432), and out the namespace itself, DNS, the API server
+  admits in the namespace itself, the edge gateway's Envoy, the CNPG
+  operator (8000, 5432) and, in the `deploy/staging` environment's
+  namespace, the project's own CI runners (pods `ci-runner` in namespaces
+  labelled `factory.ai/ci-project=<name>`) on 8080, and out the namespace itself, DNS, the API server
   (CNPG's instance manager), the SigNoz collector on 4318 and anything on
   443; ResourceQuota `project` (CPU and memory bound requests and limits
   alike, storage the claims' requests); LimitRange `project` (defaults
@@ -1636,7 +1644,10 @@ pull requests, and a factory project's own main workflow too, which never
 touches `sf`'s privileged org runner. A factory project's runs get two more
 callees: Forgejo's SSH
 (`forgejo-ssh.forgejo`, the pod's 2222) for the deploy-key push and factoryd
-on 8080 for the alerts endpoint; their namespace carries
+on 8080 for the alerts endpoint, and with a `deploy/staging` environment
+that namespace's pods on 80, 443 and 8080 and its Services' names
+(`*.<namespace>.svc.cluster.local`) for the smoke test, never prod; their
+namespace carries
 `factory.ai/ci-project=<name>`, which factoryd's ingress admits. The
 registration secret in a CI namespace names the repository its runner is
 registered in (none: the code repository's).

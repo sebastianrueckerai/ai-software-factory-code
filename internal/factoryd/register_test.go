@@ -345,6 +345,10 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			// Forgejo reserves the prefixes FORGEJO_, GITEA_ and GITHUB_
 			w.WriteHeader(http.StatusBadRequest)
 			io.WriteString(w, `{"message":"invalid secret name"}`)
+		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut && body["data"] == "":
+			// CreateOrUpdateSecretOption.Data is binding:"Required"
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			io.WriteString(w, `[{"fieldNames":["Data"],"classification":"RequiredError","message":"Required"}]`)
 		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut:
 			s.secrets[strings.TrimPrefix(p, repo+"/actions/secrets/")] = body["data"].(string)
 			w.WriteHeader(http.StatusCreated)
@@ -482,7 +486,7 @@ func (s *memProjects) SetProjectTokens(_ context.Context, name string, t Project
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.m[name]
-	for _, f := range []struct{ from, to *string }{{&t.ReadTokenHash, &p.ReadTokenHash}, {&t.HookSecretHash, &p.HookSecretHash}, {&t.HostKeyHash, &p.HostKeyHash},
+	for _, f := range []struct{ from, to *string }{{&t.ReadTokenHash, &p.ReadTokenHash}, {&t.HookSecretHash, &p.HookSecretHash}, {&t.HostKeyHash, &p.HostKeyHash}, {&t.StagingHash, &p.StagingHash},
 		{&t.PullToken, &p.PullToken}, {&t.GitToken, &p.GitToken}, {&t.MergeToken, &p.MergeToken}} {
 		if *f.from != "" {
 			*f.to = *f.from
@@ -585,6 +589,7 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		"webhook: created", "collaborator factory-agent: created", "collaborator factory-merge: no change", "collaborator sebastian: created",
 		"protection main: created", "branch deploy: waiting: main has no commit yet", "protection deploy: waiting: main has no commit yet",
 		"fork factory-agent/demo-app: ready", "deploy key: created", "actions secret FACTORY_READ_TOKEN: created", "actions secret REGISTRY_USER: no change",
+		"actions secrets STAGING_URL, STAGING_SECRETS: created",
 		"namespace demo-staging: created", "demo-staging networkpolicy: created", "demo-prod resourcequota: created",
 		"demo-staging secret forgejo-registry: created", "demo-prod secret demo-write-token/token: created",
 		"flux secret demo-app-git: created", "flux gitrepository: created", "demo-prod flux kustomization: created",
@@ -1067,6 +1072,103 @@ func TestProjectEgressReachesOnlyTheFilesHosts(t *testing.T) {
 	}
 	if strings.Contains(string(b), "world") {
 		t.Errorf("egress still reaches world: %s", b)
+	}
+}
+
+// The staging namespace admits the project's own CI runners on 8080, the
+// smoke test's way in; its other rules and prod's policy stay as they were.
+func TestStagingAdmitsTheProjectsCIRunners(t *testing.T) {
+	p := Project{Name: "uptime", Namespaces: []string{"uptime-staging", "uptime-prod"},
+		Environments: []Environment{{Namespace: "uptime-staging", Path: "deploy/staging"}, {Namespace: "uptime-prod", Path: "deploy/prod"}}}
+	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}]}]},{"toEntities":["kube-apiserver"]},{"toEndpoints":[{"matchLabels":{"app.kubernetes.io/component":"otel-collector","k8s:io.kubernetes.pod.namespace":"platform"}}],"toPorts":[{"ports":[{"port":"4318","protocol":"TCP"}]}]}],"endpointSelector":{},"ingress":[{"fromEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}]},{"fromEntities":["ingress"]},{"fromEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"cnpg-system"}}],"toPorts":[{"ports":[{"port":"8000","protocol":"TCP"},{"port":"5432","protocol":"TCP"}]}]}]}`
+	want := strings.TrimSuffix(before, "]}") + `,{"fromEndpoints":[{"matchLabels":{"app.kubernetes.io/name":"ci-runner","k8s:io.cilium.k8s.namespace.labels.factory.ai/ci-project":"uptime"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}]}`
+	if got := string(mustJSON(ProjectNetworkPolicy(p, "uptime-staging"))); got != want {
+		t.Fatalf("staging:\n%s\nwant\n%s", got, want)
+	}
+	if got, want := string(mustJSON(ProjectNetworkPolicy(p, "uptime-prod"))), strings.ReplaceAll(before, "uptime-staging", "uptime-prod"); got != want {
+		t.Fatalf("prod:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// Registration mirrors the staging namespace's generated secrets into the
+// Actions secret STAGING_SECRETS, KEY=value lines, and the staging
+// Service's address into STAGING_URL; a reconcile finding both as it left
+// them writes nothing, a changed value is written again, and no value
+// reaches the log.
+func TestStagingSecretsMirrored(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	p := demoProject()
+	p.Secrets = []string{"demo-admin/ADMIN_TOKEN"}
+	rig.store.m[p.Name] = p
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	value := rig.kube.secrets["demo-staging/demo-admin"]["ADMIN_TOKEN"]
+	if len(value) != 64 || value == rig.kube.secrets["demo-prod/demo-admin"]["ADMIN_TOKEN"] {
+		t.Fatalf("generated staging %q, prod %q", value, rig.kube.secrets["demo-prod/demo-admin"]["ADMIN_TOKEN"])
+	}
+	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN="+value+"\n" {
+		t.Fatalf("STAGING_SECRETS = %q", got)
+	}
+	if got := rig.fj.secrets["STAGING_URL"]; got != "http://demo-app.demo-staging.svc.cluster.local:8080" {
+		t.Fatalf("STAGING_URL = %q", got)
+	}
+	staged := func() (n int) {
+		for _, w := range rig.fj.writes {
+			if strings.Contains(w, "/actions/secrets/STAGING_") {
+				n++
+			}
+		}
+		return n
+	}
+	if n := staged(); n != 2 {
+		t.Fatalf("%d STAGING_ writes, want 2: %v", n, rig.fj.writes)
+	}
+
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	if n := staged(); n != 2 {
+		t.Fatalf("an unchanged value written again: %v", rig.fj.writes)
+	}
+	if !strings.Contains(rig.logs.String(), "project demo-app: actions secrets STAGING_URL, STAGING_SECRETS: no change\n") {
+		t.Fatalf("second run:\n%s", rig.logs)
+	}
+
+	rig.kube.secrets["demo-staging/demo-admin"]["ADMIN_TOKEN"] = "set-by-hand"
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "ADMIN_TOKEN=set-by-hand\n" || staged() != 4 ||
+		!strings.Contains(rig.logs.String(), "project demo-app: actions secrets STAGING_URL, STAGING_SECRETS: updated\n") {
+		t.Fatalf("after a changed value: %q, %d writes\n%s", got, staged(), rig.logs)
+	}
+	for _, v := range []string{value, "set-by-hand"} {
+		if strings.Contains(rig.logs.String(), v) {
+			t.Fatalf("the log holds the value %s:\n%s", v, rig.logs)
+		}
+	}
+}
+
+// Forgejo refuses an empty Actions secret, so a project without secrets
+// gets one comment line, once.
+func TestStagingSecretsWithoutSecrets(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	p := demoProject()
+	p.Secrets = nil
+	rig.store.m[p.Name] = p
+	for range 2 {
+		if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rig.fj.secrets["STAGING_SECRETS"]; got != "# projects/demo-app.yaml names no secrets\n" {
+		t.Fatalf("STAGING_SECRETS = %q", got)
+	}
+	if n := strings.Count(strings.Join(rig.fj.writes, "\n"), "/actions/secrets/STAGING_SECRETS by"); n != 1 {
+		t.Fatalf("STAGING_SECRETS written %d times: %v", n, rig.fj.writes)
 	}
 }
 

@@ -539,6 +539,25 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 }
 
+// A project's runner reaches its staging namespace's pods on 80, 443 and
+// 8080 and resolves the Services there (the template's smoke test); one
+// without a staging environment keeps exactly the policy it had.
+func TestCIEgressReachesTheProjectsStaging(t *testing.T) {
+	s := &CISpawner{cfg: testCIConfig()}
+	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"3000","protocol":"TCP"}]}]},{"toFQDNs":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"}],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}],"rules":{"dns":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"},{"matchName":"forgejo-http.forgejo.svc.cluster.local"},{"matchName":"factoryd.factory.svc.cluster.local"},{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}]}}]},{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"2222","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:app":"factoryd","k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}],"egressDeny":[{"toCIDR":["169.254.169.254/32"]}],"endpointSelector":{"matchLabels":{"app.kubernetes.io/name":"ci-runner"}}}`
+	if got := string(mustJSON(s.ciEgressSpec(nil, CIRepo{Project: "uptime"}))); got != before {
+		t.Fatalf("without staging:\n%s\nwant\n%s", got, before)
+	}
+	want := strings.Replace(before, `{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}`,
+		`{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"},{"matchPattern":"*.uptime-staging.svc.cluster.local"}`, 1)
+	want = strings.Replace(want, `"k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}`,
+		`"k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]},`+
+			`{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"uptime-staging"}}],"toPorts":[{"ports":[{"port":"80","protocol":"TCP"},{"port":"443","protocol":"TCP"},{"port":"8080","protocol":"TCP"}]}]}`, 1)
+	if got := string(mustJSON(s.ciEgressSpec(nil, CIRepo{Project: "uptime", Staging: "uptime-staging"}))); got != want {
+		t.Fatalf("with staging uptime-staging:\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestCISpawnerPullSecretCopiedNoOtherCredentials(t *testing.T) {
 	kube := newFakeKube()
 	hub := &ciHub{jobs: []CIJob{{ID: 30, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
@@ -1243,7 +1262,8 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	builds, _, _ := newTestBuildVMs(t, 2)
 	store := &memProjects{m: map[string]Project{
-		"demo-app":                  {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "g"},
+		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "g",
+			Environments: []Environment{{Namespace: "demo-app-staging", Path: "deploy/staging"}, {Namespace: "demo-app-prod", Path: "deploy/prod"}}},
 		"waiting":                   {Name: "waiting", Repository: "waiting/waiting", Objects: "factory", Agents: "coder", File: true},
 		"gone":                      {Name: "gone", Repository: "gone/gone", GitToken: "g"},
 		"ai-software-factory-infra": {Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none", File: true, Tokens: policy.SeedTokens{Read: policy.SecretConfig}},
@@ -1269,6 +1289,12 @@ func TestCISpawnerServesEveryProjectRepository(t *testing.T) {
 		if !strings.Contains(project, want) || strings.Contains(code, want) {
 			t.Errorf("%s: in the project's egress %v, in the code's %v", want, strings.Contains(project, want), strings.Contains(code, want))
 		}
+	}
+	// staging, never prod: the smoke test reaches the Service STAGING_URL names
+	if !strings.Contains(project, "k8s:io.kubernetes.pod.namespace:demo-app-staging") || strings.Contains(project, "demo-app-prod") ||
+		strings.Contains(code, "demo-app-staging") {
+		t.Errorf("staging in the project's egress %v, prod %v, staging in the code's %v", strings.Contains(project, "demo-app-staging"),
+			strings.Contains(project, "demo-app-prod"), strings.Contains(code, "demo-app-staging"))
 	}
 	if !strings.Contains(project, "matchName:registry.npmjs.org") || !strings.Contains(code, "matchName:registry.npmjs.org") {
 		t.Errorf("the npm registry: in the project's egress %v, in the code's %v", strings.Contains(project, "registry.npmjs.org"), strings.Contains(code, "registry.npmjs.org"))

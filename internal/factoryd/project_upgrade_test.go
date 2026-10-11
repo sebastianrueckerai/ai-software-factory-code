@@ -50,7 +50,7 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 		cols = append(cols, c)
 	}
 	rows.Close()
-	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "ready_at", "updated_at"}; !slices.Equal(cols, want) {
+	if want := []string{"created_at", "git_token", "hook_secret_hash", "host_key_hash", "merge_token", "name", "pull_token", "read_token_hash", "ready_at", "staging_hash", "updated_at"}; !slices.Equal(cols, want) {
 		t.Fatalf("columns after 0032 = %v", cols)
 	}
 	var tokens string

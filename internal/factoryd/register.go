@@ -104,8 +104,10 @@ var ProjectHookEvents = []string{"push", "issues", "issue_assign", "issue_label"
 	"pull_request_review_request"}
 
 // A project's Actions secrets: the registry login of its CI user, the
-// factory read token, and the deploy key its main workflow pushes its
-// roll commits with (the job token pushes nothing to a whitelisted main).
+// factory read token, the deploy key its main workflow pushes its roll
+// commits with (the job token pushes nothing to a whitelisted main), and
+// what its smoke test needs: staging's address and the KEY=value lines of
+// staging's generated secrets.
 const (
 	SecretRegistryUser     = "REGISTRY_USER"
 	SecretRegistryPassword = "REGISTRY_PASSWORD"
@@ -114,7 +116,9 @@ const (
 	// SecretSSHHostKey is Forgejo's SSH host key as a scan finds it, type
 	// and key, so no workflow pins a key a rebuild changes (ruling 165);
 	// Forgejo refuses secret names starting FORGEJO_, GITEA_ or GITHUB_
-	SecretSSHHostKey = "FACTORY_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
+	SecretSSHHostKey     = "FACTORY_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
+	SecretStagingURL     = "STAGING_URL"
+	SecretStagingSecrets = "STAGING_SECRETS" // #nosec G101 -- an Actions secret name, not a credential value
 )
 
 // Waiting is an object that needs the project's registration first.
@@ -248,8 +252,14 @@ func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error
 	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" {
 		run.register(ctx, rotate)
 	}
-	run.forgejo(ctx)
+	secrets, ok := run.forgejo(ctx)
 	run.cluster(ctx)
+	if _, staging := run.p.Staging(); ok && staging {
+		object := "actions secrets " + SecretStagingURL + ", " + SecretStagingSecrets
+		if c, err := run.staging(ctx, secrets); !run.fail(object, err) {
+			run.line(object, c)
+		}
+	}
 	if !run.unclean {
 		run.fail("ready_at", r.Store.SetProjectReady(ctx, p.Name))
 	}
@@ -325,16 +335,18 @@ func (run *reconcileRun) seedWebhook(ctx context.Context) (Change, error) {
 
 func (run *reconcileRun) approvers() []string { return run.r.Policy().Approvers }
 
-func (run *reconcileRun) forgejo(ctx context.Context) {
+// forgejo keeps the repository's objects and reports its Actions secrets'
+// names; false: it stopped before reading them.
+func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 	f, repo := run.r.Forgejo, run.p.Repo()
 	object := "repository " + repo.String()
 	exists, admin, err := f.ProjectRepoAccess(ctx, repo)
 	if run.fail(object, err) {
-		return
+		return nil, false
 	}
 	if !exists || !admin {
 		run.line(object, Waiting)
-		return
+		return nil, false
 	}
 	run.line(object, Unchanged)
 	steps := []struct {
@@ -386,13 +398,13 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 	for _, step := range steps {
 		c, err := step.do()
 		if run.fail(step.object, err) {
-			return
+			return nil, false
 		}
 		run.line(step.object, c)
 	}
 	names, err := f.ActionSecretNames(ctx, repo)
 	if run.fail("actions secrets", err) {
-		return
+		return nil, false
 	}
 	if c, err := run.deployKey(ctx, names); !run.fail("deploy key", err) {
 		run.line("deploy key", c)
@@ -412,6 +424,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) {
 		}
 		run.line("actions secret "+name, c)
 	}
+	return names, true
 }
 
 // seedFromTemplate commits the project's template, rendered, as main's
@@ -654,6 +667,50 @@ func (run *reconcileRun) hostKey(ctx context.Context, secrets []string) (Change,
 	return Created, nil
 }
 
+// staging keeps STAGING_URL, the staging Service's address (the
+// template's Service is named after the project), and STAGING_SECRETS,
+// one KEY=value line per secrets entry with staging's value, which the
+// smoke test sources; the row keeps their hash. Forgejo refuses an empty
+// secret, so a project without secrets gets a comment line.
+func (run *reconcileRun) staging(ctx context.Context, secrets []string) (Change, error) {
+	p := run.p
+	e, _ := p.Staging()
+	var lines strings.Builder
+	for _, entry := range p.Secrets {
+		name, key, _ := strings.Cut(entry, "/")
+		data, err := run.r.Kube.GetSecretData(ctx, e.Namespace, name)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return "", err
+		}
+		v, ok := data[key]
+		if !ok {
+			return Change("waiting: " + e.Namespace + " has no secret " + entry + " yet"), nil
+		}
+		lines.WriteString(key + "=" + v + "\n")
+	}
+	if len(p.Secrets) == 0 {
+		lines.WriteString("# projects/" + p.Name + ".yaml names no secrets\n")
+	}
+	url := "http://" + p.Name + "." + e.Namespace + ".svc.cluster.local:8080"
+	hash := HashToken(url + "\n" + lines.String())
+	has := slices.Contains(secrets, SecretStagingURL) && slices.Contains(secrets, SecretStagingSecrets)
+	if has && p.StagingHash == hash {
+		return Unchanged, nil
+	}
+	f := run.r.Forgejo
+	if err := errors.Join(f.PutActionSecret(ctx, p.Repo(), SecretStagingURL, url),
+		f.PutActionSecret(ctx, p.Repo(), SecretStagingSecrets, lines.String())); err != nil {
+		return "", err
+	}
+	if err := run.r.Store.SetProjectTokens(ctx, p.Name, ProjectTokens{StagingHash: hash}); err != nil {
+		return "", err
+	}
+	if has {
+		return Updated, nil
+	}
+	return Created, nil
+}
+
 // readToken keeps FACTORY_READ_TOKEN and its hash on the row. A secret or
 // hash missing makes a new token; only the reconcile that stores its hash
 // sets the secret, so two racing never leave them apart.
@@ -717,7 +774,7 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 		run.apply(ctx, ns+" networkpolicy", "/apis/cilium.io/v2/namespaces/"+ns+"/ciliumnetworkpolicies/"+projectObject, map[string]any{
 			"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
 			"metadata": map[string]any{"name": projectObject, "namespace": ns, "labels": labels},
-			"spec":     ProjectNetworkPolicy(ns, p.Egress),
+			"spec":     ProjectNetworkPolicy(p, ns),
 		})
 		run.apply(ctx, ns+" resourcequota", core+"/resourcequotas/"+projectObject, map[string]any{
 			"apiVersion": "v1", "kind": "ResourceQuota",
@@ -781,15 +838,17 @@ func (run *reconcileRun) cluster(ctx context.Context) {
 
 // ProjectNetworkPolicy is a project namespace's default deny (the deployer
 // role writes no network policy, so the project cannot widen it): in, from
-// its own namespace, the edge gateway's Envoy and the CNPG operator; out,
-// to its own namespace, DNS, the API server (CNPG's instance manager), the
-// SigNoz collector and the project file's egress hosts on 443.
-func ProjectNetworkPolicy(ns string, egress []string) map[string]any {
+// its own namespace, the edge gateway's Envoy, the CNPG operator and, in
+// staging, the project's CI runners on 8080 (the smoke test); out, to its
+// own namespace, DNS, the API server (CNPG's instance manager), the SigNoz
+// collector and the project file's egress hosts on 443.
+func ProjectNetworkPolicy(p Project, ns string) map[string]any {
+	egress := p.Egress
 	own := []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": ns}}}
 	ports := func(proto string, ps ...string) []any {
 		var out []any
-		for _, p := range ps {
-			out = append(out, map[string]any{"port": p, "protocol": proto})
+		for _, port := range ps {
+			out = append(out, map[string]any{"port": port, "protocol": proto})
 		}
 		return []any{map[string]any{"ports": out}}
 	}
@@ -813,16 +872,18 @@ func ProjectNetworkPolicy(ns string, egress []string) map[string]any {
 		}
 		out = append(out, map[string]any{"toFQDNs": names, "toPorts": ports("TCP", "443")})
 	}
-	return map[string]any{
-		"endpointSelector": map[string]any{},
-		"ingress": []any{
-			map[string]any{"fromEndpoints": own},
-			map[string]any{"fromEntities": []any{"ingress"}},
-			map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": "cnpg-system"}}},
-				"toPorts": ports("TCP", "8000", "5432")},
-		},
-		"egress": out,
+	in := []any{
+		map[string]any{"fromEndpoints": own},
+		map[string]any{"fromEntities": []any{"ingress"}},
+		map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{"k8s:io.kubernetes.pod.namespace": "cnpg-system"}}},
+			"toPorts": ports("TCP", "8000", "5432")},
 	}
+	if e, ok := p.Staging(); ok && e.Namespace == ns {
+		in = append(in, map[string]any{"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{
+			"app.kubernetes.io/name": "ci-runner", "k8s:io.cilium.k8s.namespace.labels." + CIProjectLabel: p.Name}}},
+			"toPorts": ports("TCP", "8080")})
+	}
+	return map[string]any{"endpointSelector": map[string]any{}, "ingress": in, "egress": out}
 }
 
 // Kustomization applies e's path into its namespace as the namespace's
