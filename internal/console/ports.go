@@ -74,11 +74,11 @@ type Events interface {
 }
 
 // Chat is the project agent's store (factoryd.PGStore): each project's
-// chat task, each member's conversation, its proposals and undos, and a
+// chat task, each member's conversations, their proposals and undos, and a
 // project's month spend.
 type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
-	AddChatMessage(ctx context.Context, repository, login string, conversation int64, m factoryd.ChatMessage) error
+	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) error
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)

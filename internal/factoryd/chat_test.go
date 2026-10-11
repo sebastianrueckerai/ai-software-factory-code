@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -20,7 +21,7 @@ func chatStore(t *testing.T) *PGStore {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_proposals, ledger, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_conversations, chat_proposals, ledger, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -88,7 +89,7 @@ func TestPGStoreChatMessages(t *testing.T) {
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", ToolCalls: calls}},
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", Content: "One card, #4."}},
 	} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, 0, m.m); err != nil {
+		if err := s.AddChatMessage(ctx, m.repo, m.login, m.m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -277,58 +278,101 @@ func TestPGStorePurgeProposals(t *testing.T) {
 	}
 }
 
-// Conversations are scoped by member and project; NewConversation starts
-// at max+1; ChatMessages reads only the named conversation.
+// A member's rows land in their current conversation: 1 until they start
+// a new one, which is one past their highest with rows, so a second start
+// without a message keeps the number. ChatMessages reads the current one
+// unless told another, Conversations lists those with rows, newest first,
+// and another member's or project's conversation stays as it was.
 func TestPGStoreChatConversations(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
-	for _, m := range []struct{ repo, login, content string }{
-		{"sf/code", "anna", "first"},
-		{"sf/code", "anna", "second"},
-		{"sf/code", "bob", "bob's"},
-	} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, 0, ChatMessage{Role: "user", Content: m.content}); err != nil {
+	add := func(repo, login, content string) {
+		t.Helper()
+		if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: content}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cur, err := s.CurrentConversation(ctx, "sf/code", "anna")
-	if err != nil || cur != 1 {
-		t.Fatalf("current = %d, %v, want 1", cur, err)
+	read := func(repo, login string, conversation int64) []string {
+		t.Helper()
+		msgs, err := s.ChatMessages(ctx, repo, login, conversation, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, m := range msgs {
+			out = append(out, fmt.Sprintf("%d %s", m.Conversation, m.Content))
+		}
+		return out
 	}
-	next, err := s.NewConversation(ctx, "sf/code", "anna")
-	if err != nil || next != 2 {
-		t.Fatalf("new = %d, %v, want 2", next, err)
+	number := func(what string, n int64, err error, want int64) {
+		t.Helper()
+		if err != nil || n != want {
+			t.Fatalf("%s = %d, %v, want %d", what, n, err, want)
+		}
 	}
-	if err := s.AddChatMessage(ctx, "sf/code", "anna", 0, ChatMessage{Role: "user", Content: "third"}); err != nil {
+	n, err := s.CurrentConversation(ctx, "sf/code", "anna")
+	number("anna's current before any row", n, err, 1)
+	add("sf/code", "anna", "first")
+	add("sf/code", "anna", "second")
+	add("sf/code", "bob", "bob's")
+	add("linkshort/linkshort", "anna", "elsewhere")
+	n, err = s.NewConversation(ctx, "sf/code", "anna")
+	number("anna's new conversation", n, err, 2)
+	add("sf/code", "anna", "third")
+	if got, want := read("sf/code", "anna", 0), []string{"2 third"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("anna's current conversation = %q, want %q", got, want)
+	}
+	if got, want := read("sf/code", "anna", 1), []string{"1 first", "1 second"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("anna's conversation 1 = %q, want %q", got, want)
+	}
+	old, err := s.ChatMessages(ctx, "sf/code", "anna", 1, 100)
+	if err != nil {
 		t.Fatal(err)
 	}
-	c1, err := s.ChatMessages(ctx, "sf/code", "anna", 1, 100)
-	if err != nil || len(c1) != 2 {
-		t.Fatalf("conversation 1 = %d messages, %v, want 2", len(c1), err)
-	}
-	c2, err := s.ChatMessages(ctx, "sf/code", "anna", 2, 100)
-	if err != nil || len(c2) != 1 || c2[0].Content != "third" {
-		t.Fatalf("conversation 2 = %+v, %v, want third", c2, err)
-	}
-	bob, err := s.ChatMessages(ctx, "sf/code", "bob", 0, 100)
-	if err != nil || len(bob) != 1 || bob[0].Content != "bob's" {
-		t.Fatalf("bob = %+v, %v", bob, err)
+	third, err := s.ChatMessages(ctx, "sf/code", "anna", 2, 100)
+	if err != nil {
+		t.Fatal(err)
 	}
 	list, err := s.Conversations(ctx, "sf/code", "anna")
-	if err != nil || len(list) != 2 || list[0].Number != 2 || list[1].Number != 1 || list[0].Messages != 1 || list[1].Messages != 2 {
-		t.Fatalf("conversations = %+v, %v, want [2(1), 1(2)]", list, err)
+	if want := []ChatConversation{{Number: 2, FirstAt: third[0].At, LastAt: third[0].At, Messages: 1},
+		{Number: 1, FirstAt: old[0].At, LastAt: old[1].At, Messages: 2}}; err != nil || !reflect.DeepEqual(list, want) {
+		t.Fatalf("anna's conversations = %+v, %v, want %+v", list, err, want)
+	}
+	n, err = s.NewConversation(ctx, "sf/code", "anna")
+	number("anna's next conversation", n, err, 3)
+	n, err = s.NewConversation(ctx, "sf/code", "anna")
+	number("anna's next conversation, pressed again", n, err, 3)
+	n, err = s.CurrentConversation(ctx, "sf/code", "anna")
+	number("anna's current", n, err, 3)
+	if got := read("sf/code", "anna", 0); got != nil {
+		t.Fatalf("anna's new conversation = %q, want none", got)
+	}
+	n, err = s.CurrentConversation(ctx, "sf/code", "bob")
+	number("bob's current", n, err, 1)
+	if got, want := read("sf/code", "bob", 0), []string{"1 bob's"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("bob's conversation = %q, want %q", got, want)
+	}
+	n, err = s.CurrentConversation(ctx, "linkshort/linkshort", "anna")
+	number("anna's current on linkshort", n, err, 1)
+	if got, want := read("linkshort/linkshort", "anna", 0), []string{"1 elsewhere"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("anna's conversation on linkshort = %q, want %q", got, want)
 	}
 }
 
-// ProposalStates answers pending, used or expired for each token; a
-// missing row counts as expired.
+// ProposalStates answers each token's state in the order asked: pending
+// while unused and unexpired, used once taken, expired after its time; a
+// token with no proposal row of the member on the project counts as
+// expired, as does an undo's.
 func TestPGStoreProposalStates(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	for _, p := range []ChatProposal{
-		{Token: "pending", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(30 * time.Minute)},
-		{Token: "used", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(30 * time.Minute)},
-		{Token: "expired", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(-time.Minute)},
+		{Token: "pending", Kind: "proposal", Login: "anna", ExpiresAt: now},
+		{Token: "used", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "expired", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(-time.Second)},
+		{Token: "bobs", Kind: "proposal", Login: "bob", ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "undo", Kind: "undo", Login: "anna", ExpiresAt: now.Add(30 * time.Minute)},
 	} {
+		p.Repository, p.Tool, p.Args = "sf/code", "new_card", json.RawMessage(`{}`)
 		if err := s.PutProposal(ctx, p); err != nil {
 			t.Fatal(err)
 		}
@@ -336,14 +380,12 @@ func TestPGStoreProposalStates(t *testing.T) {
 	if _, err := s.TakeProposal(ctx, "proposal", "used", "sf/code", "anna", now); err != nil {
 		t.Fatal(err)
 	}
-	states, err := s.ProposalStates(ctx, "sf/code", "anna", []string{"pending", "used", "expired", "missing"}, now)
-	if err != nil {
-		t.Fatal(err)
+	states, err := s.ProposalStates(ctx, "sf/code", "anna", []string{"pending", "used", "expired", "missing", "bobs", "undo"}, now)
+	want := []ProposalState{{"pending", "pending"}, {"used", "used"}, {"expired", "expired"}, {"missing", "expired"}, {"bobs", "expired"}, {"undo", "expired"}}
+	if err != nil || !reflect.DeepEqual(states, want) {
+		t.Fatalf("states = %+v, %v, want %+v", states, err, want)
 	}
-	want := map[string]string{"pending": "pending", "used": "used", "expired": "expired", "missing": "expired"}
-	for _, s := range states {
-		if want[s.Token] != s.State {
-			t.Errorf("%s = %s, want %s", s.Token, s.State, want[s.Token])
-		}
+	if states, err := s.ProposalStates(ctx, "sf/code", "anna", nil, now); err != nil || len(states) != 0 {
+		t.Fatalf("states of no token = %+v, %v, want none", states, err)
 	}
 }

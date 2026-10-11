@@ -118,7 +118,7 @@ func (t *turn) fail(msg string) {
 // save appends m to the member's conversation, even once they left; false
 // once the turn failed.
 func (t *turn) save(m factoryd.ChatMessage) bool {
-	if err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.a.s.user, 0, m); err != nil {
+	if err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.a.s.user, m); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
 		return false
@@ -126,30 +126,34 @@ func (t *turn) save(m factoryd.ChatMessage) bool {
 	return true
 }
 
-// chatGetAnswer is GET /chat's JSON body: the conversation's messages and
-// each proposal's state.
+// chatGetAnswer is GET /chat's JSON body: the conversation read, its
+// messages and the state of each proposal among them.
 type chatGetAnswer struct {
-	Messages  []factoryd.ChatMessage   `json:"messages"`
-	Proposals []factoryd.ProposalState `json:"proposals,omitempty"`
+	Conversation int64                    `json:"conversation"`
+	Messages     []factoryd.ChatMessage   `json:"messages"`
+	Proposals    []factoryd.ProposalState `json:"proposals,omitempty"`
 }
 
-// chatGet answers GET /projects/{name}/chat: the member's conversation on
-// the project, its last chatHistory messages, oldest first, as JSON. An
-// optional ?conversation=N reads an older one. Each proposed tool call's
-// token gets a state: pending, used or expired.
+// chatGet answers GET /projects/{name}/chat: the member's current
+// conversation on the project, or the one ?conversation names, its last
+// chatHistory messages, oldest first, and each proposal's state among
+// them, pending, used or expired, as JSON.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
 	var conv int64
+	var err error
 	if s := r.URL.Query().Get("conversation"); s != "" {
-		n, err := strconv.ParseInt(s, 10, 64)
-		if err != nil || n < 1 {
+		if conv, err = strconv.ParseInt(s, 10, 64); err != nil || conv < 1 {
 			http.Error(w, "conversation must be a positive integer", http.StatusBadRequest)
 			return
 		}
-		conv = n
+	} else if conv, err = c.cfg.Chat.CurrentConversation(r.Context(), t.p.Repository, t.a.s.user); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
+		return
 	}
 	msgs, err := c.cfg.Chat.ChatMessages(r.Context(), t.p.Repository, t.a.s.user, conv, chatHistory)
 	if err != nil {
@@ -168,7 +172,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	answer := chatGetAnswer{Messages: msgs}
+	answer := chatGetAnswer{Conversation: conv, Messages: msgs}
 	if len(tokens) > 0 {
 		states, err := c.cfg.Chat.ProposalStates(r.Context(), t.p.Repository, t.a.s.user, tokens, time.Now())
 		if err != nil {
@@ -204,7 +208,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot file the chat's task", http.StatusInternalServerError)
 		return
 	}
-	if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, 0, factoryd.ChatMessage{Role: "user", Content: text}); err != nil {
+	if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text}); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
 		return

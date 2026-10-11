@@ -68,18 +68,10 @@ var chatView = (function () {
     return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + Number(ms) + " ms") + (first ? " · " + esc(first) : "") +
       "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre></details>";
   }
-  function proposalHTML(p, state) {
-    var foot;
-    if (state === "pending") {
-      foot = "<p class=\"pfoot\"><button type=\"button\" class=\"doit\" data-doit>Do it</button> <button type=\"button\" class=\"skip\" data-skip>Skip</button></p>";
-    } else if (state) {
-      foot = "<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>";
-    } else {
-      foot = "<p class=\"pfoot\"><button type=\"button\" class=\"doit\" data-doit>Do it</button> <button type=\"button\" class=\"skip\" data-skip>Skip</button></p>";
-    }
+  function proposalHTML(p) {
     return "<div class=\"proposal\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" +
-      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(JSON.stringify(p.arguments)) + "</pre></details>" +
-      foot + "</div>";
+      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>" +
+      "<p class=\"pfoot\"><button type=\"button\" class=\"doit\" data-doit>Do it</button> <button type=\"button\" class=\"skip\" data-skip>Skip</button></p></div>";
   }
   // appliedHTML is a write that took effect, or an undo's when undone
   function appliedHTML(a, undone) {
@@ -87,11 +79,12 @@ var chatView = (function () {
       (a.undo ? " <button type=\"button\" class=\"undo\" data-undo=\"" + esc(a.undo) + "\">Undo</button>" : "") + "</p>";
   }
   // historyHTML is the stored conversation, oldest first: each member's
-  // line, and the agent's rows between two of them as one message.
-  // proposalStates maps token to state for pending/used/expired rendering.
-  function historyHTML(msgs, login, proposalStates) {
+  // line, and the agent's rows between two of them as one message. A
+  // proposed call whose state in proposals is pending offers its Do it as
+  // the stream's does; a used or expired one says so under its block.
+  function historyHTML(msgs, login, proposals) {
     var states = {};
-    (proposalStates || []).forEach(function (p) { states[p.token] = p.state; });
+    (proposals || []).forEach(function (p) { states[p.token] = p.state; });
     var out = [], parts = null, at;
     function close() {
       if (parts) out.push(agentHTML(at, parts.join("")));
@@ -109,21 +102,28 @@ var chatView = (function () {
       }
       if (m.content) parts.push(saidHTML(m.content));
       (m.tool_calls || []).forEach(function (c) {
-        if (c.proposal) {
-          var state = states[c.proposal];
-          if (state === "pending") {
-            parts.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments, description: c.result.replace(/^Proposed to [^:]+: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}, state));
-          } else {
-            parts.push(toolHTML(c.name, c.arguments, null, c.result));
-            if (state) parts.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
-          }
-        } else {
-          parts.push(toolHTML(c.name, c.arguments, null, c.result));
+        var state = c.proposal && states[c.proposal];
+        if (state === "pending") {
+          parts.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
+            description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
+          return;
         }
+        parts.push(toolHTML(c.name, c.arguments, null, c.result));
+        if (state) parts.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
     close();
     return out.join("");
+  }
+  // conversationsHTML is the options of the select that reads an older
+  // conversation: the current one first, then each of list but current;
+  // "" when list holds no other
+  function conversationsHTML(list, current) {
+    var older = (list || []).filter(function (c) { return c.number !== current; });
+    if (!older.length) return "";
+    return "<option value=\"\">Current conversation</option>" + older.map(function (c) {
+      return "<option value=\"" + esc(c.number) + "\">Conversation " + esc(c.number) + " · " + stamp(c.first_at) + " · " + esc(c.messages) + " messages</option>";
+    }).join("");
   }
   function eventStream(contentType) {
     return /^text\/event-stream/.test(contentType || "");
@@ -143,7 +143,7 @@ var chatView = (function () {
     return {events: events, rest: rest};
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, eventStream: eventStream, sse: sse};
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, conversationsHTML: conversationsHTML, eventStream: eventStream, sse: sse};
 })();
 
 (function () {
@@ -151,8 +151,9 @@ var chatView = (function () {
   if (!panel) return;
   var log = document.getElementById("chat-log"), screen = document.getElementById("screen");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input");
+  var fresh = document.getElementById("chat-new"), select = document.getElementById("chat-conversations");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
-  var streaming = false;
+  var streaming = false, readOnly = false;
 
   function showPane(name) {
     screen.dataset.pane = name;
@@ -180,7 +181,8 @@ var chatView = (function () {
   function setStreaming(on) {
     streaming = on;
     log.setAttribute("aria-busy", String(on));
-    form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = on; });
+    form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = on || readOnly; });
+    fresh.disabled = select.disabled = on;
     log.querySelectorAll("button").forEach(function (b) { b.disabled = on; });
   }
   function read(reader, onEvent) {
@@ -330,80 +332,51 @@ var chatView = (function () {
     }
   });
 
-  var readOnly = false;
-
-  function loadConversation(conv) {
-    var url = conv ? base + "?conversation=" + encodeURIComponent(conv) : base;
+  // load replaces the log with conversation n's history, the current
+  // one's for "", and an older one's is read-only; then the select lists
+  // the older ones
+  var intro = log.innerHTML;
+  function load(n) {
+    readOnly = n !== "";
     setStreaming(true);
+    var url = base + (readOnly ? "?conversation=" + encodeURIComponent(n) : "");
     return fetch(url, {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + url + ": " + resp.status);
       return resp.json();
     }).then(function (data) {
-      var msgs = data.messages || [];
-      if (msgs.length) log.innerHTML = chatView.historyHTML(msgs, login, data.proposals);
-      else log.innerHTML = "";
+      log.innerHTML = data.messages.length ? chatView.historyHTML(data.messages, login, data.proposals) : intro;
+      if (readOnly) add(log, "<p class=\"meta chat-old\">an old conversation; start a new one to continue</p>");
       scrollEnd(true);
-      readOnly = !!conv;
-      if (form) {
-        input.disabled = readOnly;
-        form.querySelector("button[type=submit]").disabled = readOnly;
-        var note = log.querySelector(".old-conversation-note");
-        if (note) note.remove();
-        if (readOnly) {
-          var p = document.createElement("p");
-          p.className = "meta old-conversation-note";
-          p.textContent = "This is an old conversation; start a new one to continue.";
-          log.insertBefore(p, log.firstChild);
-        }
-      }
       countOpen();
+      if (!readOnly) return listConversations(data.conversation);
     }).catch(function () {
       add(log, "<p class=\"chat-error\">The conversation could not be read; reload the page.</p>");
     }).then(function () {
       setStreaming(false);
     });
   }
-
-  function loadConversations() {
+  function listConversations(current) {
     return fetch(base + "/conversations", {headers: {Accept: "application/json"}}).then(function (resp) {
-      if (!resp.ok) return [];
+      if (!resp.ok) throw new Error("GET " + base + "/conversations: " + resp.status);
       return resp.json();
     }).then(function (list) {
-      var sel = document.getElementById("chat-conversations");
-      if (!sel) return;
-      sel.innerHTML = "";
-      if (!list || list.length <= 1) {
-        sel.hidden = true;
-        return;
-      }
-      sel.hidden = false;
-      list.forEach(function (c) {
-        var opt = document.createElement("option");
-        opt.value = String(c.number);
-        opt.textContent = "Conversation " + c.number + " (" + c.messages + " messages)";
-        sel.appendChild(opt);
-      });
+      select.innerHTML = chatView.conversationsHTML(list, current);
+      select.hidden = !select.innerHTML;
+    }).catch(function () {
+      select.hidden = true;
     });
   }
+  fresh.addEventListener("click", function () {
+    fetch(base + "/new", {method: "POST", headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+      if (!resp.ok) throw new Error("POST " + base + "/new: " + resp.status);
+      return load("");
+    }).catch(function () {
+      add(log, "<p class=\"chat-error\">A new conversation could not be started; try again.</p>");
+    });
+  });
+  select.addEventListener("change", function () {
+    load(select.value);
+  });
 
-  var newBtn = document.getElementById("chat-new");
-  if (newBtn && form) {
-    newBtn.addEventListener("click", function () {
-      if (streaming) return;
-      fetch(base + "/new", {method: "POST",
-        headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
-        if (!resp.ok) return;
-        loadConversations().then(function () { loadConversation(); });
-      });
-    });
-  }
-  var convSel = document.getElementById("chat-conversations");
-  if (convSel) {
-    convSel.addEventListener("change", function () {
-      if (streaming) return;
-      loadConversation(convSel.value);
-    });
-  }
-
-  loadConversations().then(function () { loadConversation(); });
+  load("");
 })();

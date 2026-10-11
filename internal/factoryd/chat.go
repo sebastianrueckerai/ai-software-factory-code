@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -26,8 +25,8 @@ func ChatTaskID(name string, at time.Time) string {
 
 // ChatMessage is one row of a member's conversation with the project
 // agent: the member's text (role user), or the agent's text and the tool
-// calls it made with their results (role assistant). Conversation is the
-// conversation number, 1 when none was set.
+// calls it made with their results (role assistant), in the member's
+// conversation numbered Conversation.
 type ChatMessage struct {
 	ID           int64          `json:"id"`
 	Role         string         `json:"role"`
@@ -70,46 +69,26 @@ func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, b
 	return got, err
 }
 
-// CurrentConversation is login's current conversation number on repository,
-// 1 when none. It checks the tracking table first, then falls back to the
-// highest conversation with messages.
+// currentConversation is the current conversation of login $2 on
+// repository $1: the one they started last, 1 before they started one.
+const currentConversation = `coalesce((SELECT current FROM chat_conversations WHERE repository = $1 AND login = $2), 1)`
+
+// CurrentConversation is login's current conversation on repository.
 func (s *PGStore) CurrentConversation(ctx context.Context, repository, login string) (int64, error) {
 	var n int64
-	err := s.db.QueryRowContext(ctx, `SELECT conversation FROM chat_current_conversation WHERE repository = $1 AND login = $2`,
-		repository, login).Scan(&n)
-	if err == nil {
-		return n, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
-	}
-	var maxConv sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, `SELECT max(conversation) FROM chat_messages WHERE repository = $1 AND login = $2`,
-		repository, login).Scan(&maxConv); err != nil {
-		return 0, err
-	}
-	if !maxConv.Valid {
-		return 1, nil
-	}
-	return maxConv.Int64, nil
+	err := s.db.QueryRowContext(ctx, `SELECT `+currentConversation, repository, login).Scan(&n)
+	return n, err
 }
 
-// NewConversation starts conversation max+1 for login on repository and
-// answers it. It updates the tracking table so CurrentConversation sees
-// the new conversation immediately.
+// NewConversation makes login's current conversation on repository the
+// one after their highest with messages, and answers it: started again
+// before a message, it stays the same.
 func (s *PGStore) NewConversation(ctx context.Context, repository, login string) (int64, error) {
-	cur, err := s.CurrentConversation(ctx, repository, login)
-	if err != nil {
-		return 0, err
-	}
-	next := cur + 1
-	_, err = s.db.ExecContext(ctx, `INSERT INTO chat_current_conversation (repository, login, conversation) VALUES ($1, $2, $3)
-		ON CONFLICT (repository, login) DO UPDATE SET conversation = $3`,
-		repository, login, next)
-	if err != nil {
-		return 0, err
-	}
-	return next, nil
+	var n int64
+	err := s.db.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, current)
+		SELECT $1, $2, coalesce(max(conversation), 1) + 1 FROM chat_messages WHERE repository = $1 AND login = $2
+		ON CONFLICT (repository, login) DO UPDATE SET current = excluded.current RETURNING current`, repository, login).Scan(&n)
+	return n, err
 }
 
 // ChatConversation is one conversation of a member on a project.
@@ -140,9 +119,8 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 	return out, rows.Err()
 }
 
-// AddChatMessage appends m to login's conversation on repository. When
-// conversation is 0, the current one is used.
-func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, conversation int64, m ChatMessage) error {
+// AddChatMessage appends m to login's current conversation on repository.
+func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) error {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(m.ToolCalls)
@@ -151,31 +129,17 @@ func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, 
 		}
 		calls = b
 	}
-	if conversation == 0 {
-		var err error
-		conversation, err = s.CurrentConversation(ctx, repository, login)
-		if err != nil {
-			return err
-		}
-	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation) VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
-		repository, login, m.Role, m.Content, calls, conversation)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation)
+		VALUES ($1, $2, $3, $4, $5::jsonb, `+currentConversation+`)`, repository, login, m.Role, m.Content, calls)
 	return err
 }
 
 // ChatMessages are the newest limit messages of login's conversation on
-// repository, oldest first. When conversation is 0, the current one is
-// used.
+// repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	if conversation == 0 {
-		cur, err := s.CurrentConversation(ctx, repository, login)
-		if err != nil {
-			return nil, err
-		}
-		conversation = cur
-	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation FROM (
-		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3 ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
+		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
+		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
 	if err != nil {
 		return nil, err
@@ -205,22 +169,11 @@ type ProposalState struct {
 	State string `json:"state"`
 }
 
-// ProposalStates answers the state of each token for login on repository
-// at now: pending, used or expired. A missing row counts as expired.
+// ProposalStates is the state of each of tokens, login's proposals on
+// repository, at now, in their order; a token with no such row is expired.
 func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]ProposalState, error) {
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	args := make([]any, 0, len(tokens)+4)
-	args = append(args, repository, login, now, now)
-	placeholders := make([]string, len(tokens))
-	for i, t := range tokens {
-		args = append(args, t)
-		placeholders[i] = fmt.Sprintf("$%d", i+5)
-	}
-	q := fmt.Sprintf(`SELECT token, used_at, expires_at FROM chat_proposals
-		WHERE repository = $1 AND login = $2 AND token IN (%s)`, strings.Join(placeholders, ", ")) // #nosec G201 -- placeholders are positional params only
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := s.db.QueryContext(ctx, `SELECT token, used_at, expires_at FROM chat_proposals
+		WHERE kind = 'proposal' AND repository = $1 AND login = $2 AND token = ANY($3)`, repository, login, tokens)
 	if err != nil {
 		return nil, err
 	}
