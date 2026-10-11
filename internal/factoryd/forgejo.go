@@ -1440,26 +1440,19 @@ func (f *Forgejo) RepoDefaultBranch(ctx context.Context, owner, repo string) (st
 	return res.DefaultBranch, nil
 }
 
-// PullRequestFiles lists the paths pull request number changes, every
-// page; a rename or copy lists its old name too, so a file moved out of a
-// guarded directory still counts against it. (The compare API's file list
-// carries no previous name.)
-func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, number int64) ([]string, error) {
-	files, err := GetPages[struct {
-		Filename         string `json:"filename"`
-		PreviousFilename string `json:"previous_filename"`
-	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", owner, repo, number))
-	if err != nil {
-		return nil, err
-	}
-	var paths []string
-	for _, c := range files {
-		paths = append(paths, c.Filename)
-		if c.PreviousFilename != "" && c.PreviousFilename != c.Filename {
-			paths = append(paths, c.PreviousFilename)
-		}
-	}
-	return paths, nil
+// PRFile is a file a pull request changes: its name, its old name on a
+// rename or copy, and its lines added and deleted.
+type PRFile struct {
+	Filename         string `json:"filename"`
+	PreviousFilename string `json:"previous_filename"`
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+}
+
+// PullRequestFiles lists the files pull request number changes, every
+// page. (The compare API's file list carries no previous name.)
+func (f *Forgejo) PullRequestFiles(ctx context.Context, owner, repo string, number int64) ([]PRFile, error) {
+	return GetPages[PRFile](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", owner, repo, number))
 }
 
 // diffCut opens the note PullRequestDiff appends to a diff it cut.

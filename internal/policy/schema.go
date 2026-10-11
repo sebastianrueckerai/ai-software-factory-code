@@ -36,7 +36,7 @@ func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
 // minimums and maximums bound integer fields, keyed Type.Field.
 var (
-	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "PlanShape.MaxCards": 2}
+	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Risk.LargeLines": 0, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "PlanShape.MaxCards": 2}
 	maximums = map[string]float64{"PlanShape.MaxCards": 20}
 )
 

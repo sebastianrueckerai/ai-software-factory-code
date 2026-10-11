@@ -888,15 +888,16 @@ func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	}
 }
 
-// A renamed file lists both of its names; the list is read page by page.
-func TestForgejoPullRequestFilesCountsRenamesTwice(t *testing.T) {
+// Each file comes with its old name on a rename and its lines added and
+// deleted; the list is read page by page.
+func TestForgejoPullRequestFilesAnswersNamesAndLines(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/repos/sf/repo/pulls/7/files" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
 		servePage(w, r, 2,
-			`{"filename":"README.md","status":"modified"}`,
-			`{"filename":"ci.yml","previous_filename":".forgejo/workflows/ci.yml","status":"renamed"}`,
+			`{"filename":"README.md","status":"modified","additions":40,"deletions":3}`,
+			`{"filename":"ci.yml","previous_filename":".forgejo/workflows/ci.yml","status":"renamed","additions":5,"deletions":5}`,
 			`{"filename":"k8s/x.yaml","previous_filename":"","status":"added"}`)
 	}))
 	defer srv.Close()
@@ -905,8 +906,10 @@ func TestForgejoPullRequestFilesCountsRenamesTwice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"README.md", "ci.yml", ".forgejo/workflows/ci.yml", "k8s/x.yaml"}; !slices.Equal(got, want) {
-		t.Fatalf("files = %v, want %v", got, want)
+	want := []PRFile{{Filename: "README.md", Additions: 40, Deletions: 3}, {Filename: "ci.yml", PreviousFilename: ".forgejo/workflows/ci.yml", Additions: 5, Deletions: 5},
+		{Filename: "k8s/x.yaml"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("files = %+v, want %+v", got, want)
 	}
 }
 

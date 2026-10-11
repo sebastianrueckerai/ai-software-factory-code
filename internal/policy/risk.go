@@ -11,7 +11,8 @@ import (
 // Risk classifies a pull request by the paths it changes (architecture 7):
 // each changed path takes the class of the first rule with a matching glob,
 // else Default, and the pull request takes the most severe class among its
-// paths. Classes are listed most severe first. Only auto, on class normal,
+// paths, or class large over LargeLines. Classes are listed most severe
+// first. Only auto, on class normal,
 // merges without a human, and only where the project's merge rule is auto
 // and the reproduction and the model review say so (ruling 149).
 type Risk struct {
@@ -21,6 +22,12 @@ type Risk struct {
 	Rules []RiskRule `yaml:"rules,omitempty" json:"rules"`
 	// Default is the class of a path no rule matches.
 	Default string `yaml:"default" json:"default"`
+	// LargeLines: a pull request changing more lines than this, added and
+	// deleted, is class large (requires_approval: a human splits or
+	// accepts it) unless a more severe class applies; 0 is off. Class
+	// large needs no entry in classes, where it ranks just above class
+	// normal; listed, it ranks where it is listed.
+	LargeLines int `yaml:"large_lines,omitempty" json:"large_lines"`
 }
 
 // RiskClass is a named class and what it means for the pull request.
@@ -54,6 +61,22 @@ const (
 // ClassNormal is the one class outcome auto is allowed on.
 const ClassNormal = "normal"
 
+// ClassLarge is the built-in class of a pull request over LargeLines.
+const ClassLarge = "large"
+
+// classes are Classes with class large, unless listed, just above class
+// normal, else last.
+func (r Risk) classes() []RiskClass {
+	if slices.ContainsFunc(r.Classes, func(c RiskClass) bool { return c.Name == ClassLarge }) {
+		return r.Classes
+	}
+	i := slices.IndexFunc(r.Classes, func(c RiskClass) bool { return c.Name == ClassNormal })
+	if i < 0 {
+		i = len(r.Classes)
+	}
+	return slices.Insert(slices.Clone(r.Classes), i, RiskClass{Name: ClassLarge, Outcome: OutcomeRequiresApproval})
+}
+
 func (r Risk) validate() error {
 	if len(r.Classes) == 0 {
 		return errors.New("policy: risk.classes is empty")
@@ -73,6 +96,9 @@ func (r Risk) validate() error {
 			return fmt.Errorf("policy: risk class %s: outcome auto is allowed on class %s only", c.Name, ClassNormal)
 		}
 		names = append(names, c.Name)
+	}
+	if r.LargeLines < 0 {
+		return fmt.Errorf("policy: risk.large_lines %d: want 0 (off) or more", r.LargeLines)
 	}
 	if !slices.Contains(names, r.Default) {
 		return fmt.Errorf("policy: risk.default %q is not a risk class", r.Default)
@@ -106,10 +132,12 @@ type Classification struct {
 	Migrations []string  `json:"migrations"`
 }
 
-// Classify classifies the changed paths (a rename lists both names).
-func (r Risk) Classify(changed []string) Classification {
+// Classify classifies the changed paths (a rename lists both names) and
+// lines, added and deleted; class large takes every path.
+func (r Risk) Classify(changed []string, lines int) Classification {
+	classes := r.classes()
 	rank := func(name string) int {
-		return slices.IndexFunc(r.Classes, func(c RiskClass) bool { return c.Name == name })
+		return slices.IndexFunc(classes, func(c RiskClass) bool { return c.Name == name })
 	}
 	best := rank(r.Default)
 	byClass := map[int][]string{}
@@ -118,14 +146,17 @@ func (r Risk) Classify(changed []string) Classification {
 		i := rank(r.classOf(p))
 		byClass[i] = append(byClass[i], p)
 		best = min(best, i)
-		if r.Classes[i].Migration {
+		if classes[i].Migration {
 			migrations = append(migrations, p)
 		}
+	}
+	if large := rank(ClassLarge); r.LargeLines > 0 && lines > r.LargeLines && large < best {
+		best, byClass[large] = large, slices.Clone(changed)
 	}
 	slices.Sort(migrations)
 	paths := byClass[best]
 	slices.Sort(paths)
-	return Classification{Class: r.Classes[best], Paths: slices.Compact(paths), Migrations: slices.Compact(migrations)}
+	return Classification{Class: classes[best], Paths: slices.Compact(paths), Migrations: slices.Compact(migrations)}
 }
 
 func (r Risk) classOf(p string) string {

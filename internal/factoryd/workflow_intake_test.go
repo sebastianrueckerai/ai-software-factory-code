@@ -46,6 +46,9 @@ func TestAutoMerge(t *testing.T) {
 		"class high": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "high", policy.OutcomeRequiresApproval
 		}, false, "risk class high is requires_approval"},
+		"class large": {func(g *GateResults, _ *Review) {
+			g.Policy.Class, g.Policy.Outcome, g.Policy.Lines, g.Policy.LargeLines = policy.ClassLarge, policy.OutcomeRequiresApproval, 1200, 1000
+		}, false, "large change: 1200 lines over 1000; split it or accept it"},
 		"class migration": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "migration", policy.OutcomeRequiresApproval
 		}, false, "risk class migration is requires_approval"},

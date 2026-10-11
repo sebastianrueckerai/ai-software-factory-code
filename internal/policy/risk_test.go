@@ -35,7 +35,7 @@ func TestClassify(t *testing.T) {
 		"k8s is high, over normal":                     {[]string{"k8s/factoryd.yaml", "main.go"}, "high", []string{"k8s/factoryd.yaml"}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := d.Risk.Classify(tc.changed)
+			c := d.Risk.Classify(tc.changed, 0)
 			if c.Class.Name != tc.class || !reflect.DeepEqual(c.Paths, tc.paths) || !reflect.DeepEqual(c.Migrations, tc.migrations) {
 				t.Fatalf("Classify(%v) = %+v, want class %s paths %v migrations %v", tc.changed, c, tc.class, tc.paths, tc.migrations)
 			}
@@ -51,10 +51,10 @@ func TestClassifyFirstRuleWins(t *testing.T) {
 		Rules:   []RiskRule{{Paths: []string{"docs/**"}, Class: "b"}, {Paths: []string{"**/*.yml"}, Class: "a"}},
 		Default: "b",
 	}
-	if c := r.Classify([]string{"docs/x.yml"}); c.Class.Name != "b" {
+	if c := r.Classify([]string{"docs/x.yml"}, 0); c.Class.Name != "b" {
 		t.Fatalf("docs/x.yml = %s, want b (first rule)", c.Class.Name)
 	}
-	if c := r.Classify([]string{"k8s/x.yml"}); c.Class.Name != "a" {
+	if c := r.Classify([]string{"k8s/x.yml"}, 0); c.Class.Name != "a" {
 		t.Fatalf("k8s/x.yml = %s, want a", c.Class.Name)
 	}
 }
@@ -71,6 +71,7 @@ func TestParseRejectsBadRisk(t *testing.T) {
 		"bad glob":        {"risk: {classes: [{name: a, outcome: forbidden}], rules: [{class: a, paths: [\"[x\"]}], default: a}\n", "not a valid glob"},
 		"absolute glob":   {"risk: {classes: [{name: a, outcome: forbidden}], rules: [{class: a, paths: [/k8s]}], default: a}\n", "relative glob"},
 		"unknown key":     {"risk: {classes: [{name: a, outcome: forbidden, auto: true}], default: a}\n", "field auto not found"},
+		"negative lines":  {"risk: {classes: [{name: a, outcome: forbidden}], default: a, large_lines: -1}\n", "risk.large_lines -1"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(base + tc.risk))
@@ -95,6 +96,7 @@ func TestParseAutoOnlyOnNormal(t *testing.T) {
 		"forbidden auto":   {"risk: {classes: [{name: forbidden, outcome: auto}, {name: normal, outcome: requires_approval}], default: normal}\n", false},
 		"normal approval":  {"risk: {classes: [{name: normal, outcome: requires_approval}], default: normal}\n", true},
 		"normal forbidden": {"risk: {classes: [{name: normal, outcome: forbidden}], default: normal}\n", true},
+		"large auto":       {"risk: {classes: [{name: large, outcome: auto}, {name: normal, outcome: requires_approval}], default: normal}\n", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Parse([]byte(base + tc.risk + rest))
@@ -130,6 +132,7 @@ const infraRisk = `risk:
         "**/AGENTS.md", "**/CLAUDE.md", "**/opencode.json", "**/opencode.jsonc", "**/CODEOWNERS",
         ".*/**"]
   default: normal
+  large_lines: 1000
 `
 
 // The copy above is the infra repository's block: with INFRA_FACTORY_DIR
@@ -181,7 +184,7 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		".gitignore", ".golangci.yml",
 		"k8s/factoryd.yaml", "deploy/prod/app.yaml", "cmd/x/Dockerfile",
 	} {
-		if c := d.Risk.Classify([]string{p, "README.md"}); c.Class.Name != "high" || !slices.Equal(c.Paths, []string{p}) {
+		if c := d.Risk.Classify([]string{p, "README.md"}, 0); c.Class.Name != "high" || !slices.Equal(c.Paths, []string{p}) {
 			t.Errorf("Classify(%s) = %s %v, want high on %s", p, c.Class.Name, c.Paths, p)
 		}
 	}
@@ -197,8 +200,55 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		"docs/agents.md":             "normal",
 		"src/Gemfile.example":        "normal",
 	} {
-		if c := d.Risk.Classify([]string{p}); c.Class.Name != want {
+		if c := d.Risk.Classify([]string{p}, 0); c.Class.Name != want {
 			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
 		}
+	}
+}
+
+// Over large_lines changed lines a pull request is class large, which
+// needs a human, unless a more severe class applies: large never
+// downgrades. 0 is off.
+func TestClassifyLargeLines(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + infraRisk + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		changed        []string
+		lines          int
+		class, outcome string
+		paths          []string
+	}{
+		"over":           {[]string{"internal/a.go", "README.md"}, 1200, "large", OutcomeRequiresApproval, []string{"README.md", "internal/a.go"}},
+		"under":          {[]string{"internal/a.go"}, 900, "normal", OutcomeAuto, []string{"internal/a.go"}},
+		"at the limit":   {[]string{"internal/a.go"}, 1000, "normal", OutcomeAuto, []string{"internal/a.go"}},
+		"high wins":      {[]string{"k8s/x.yaml", "internal/a.go"}, 1200, "high", OutcomeRequiresApproval, []string{"k8s/x.yaml"}},
+		"forbidden wins": {[]string{".forgejo/x"}, 1200, "forbidden", OutcomeForbidden, []string{".forgejo/x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := d.Risk.Classify(tc.changed, tc.lines)
+			if c.Class.Name != tc.class || c.Class.Outcome != tc.outcome || !slices.Equal(c.Paths, tc.paths) {
+				t.Fatalf("Classify(%v, %d) = %+v, want %s %s on %v", tc.changed, tc.lines, c, tc.class, tc.outcome, tc.paths)
+			}
+		})
+	}
+	d.Risk.LargeLines = 0
+	if c := d.Risk.Classify([]string{"internal/a.go"}, 5000); c.Class.Name != "normal" {
+		t.Fatalf("large_lines 0, 5000 lines: class %s, want normal", c.Class.Name)
+	}
+}
+
+// A policy may list class large itself, where its place is its rank.
+func TestLargeListed(t *testing.T) {
+	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
+	d, err := Parse([]byte(base + "risk: {classes: [{name: large, outcome: requires_approval}, {name: high, outcome: requires_approval}, {name: normal, outcome: auto}], " +
+		"rules: [{class: high, paths: [k8s/**]}], default: normal, large_lines: 10}\n" + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := d.Risk.Classify([]string{"k8s/x.yaml"}, 11); c.Class.Name != "large" || !slices.Equal(c.Paths, []string{"k8s/x.yaml"}) {
+		t.Fatalf("large listed above high, 11 lines: %+v, want large", c)
 	}
 }

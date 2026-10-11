@@ -36,8 +36,15 @@ type PolicyGate struct {
 	Paths         []string
 	Migrations    []string
 	Changed       int
+	Lines         int // added and deleted
+	LargeLines    int // the policy's risk.large_lines
 	PolicyVersion int64
 	MergeRule     string
+}
+
+// large: the pull request is class large by its lines.
+func (g PolicyGate) large() bool {
+	return g.Class == policy.ClassLarge && g.LargeLines > 0 && g.Lines > g.LargeLines
 }
 
 // ReproResult is GateReproduction's verdict: Ran false when the task
@@ -103,7 +110,10 @@ func AutoMerge(g GateResults, rv Review) (ok bool, unmet []string) {
 	if g.Policy.MergeRule != policy.MergeAuto {
 		unmet = append(unmet, "the project's merge rule is "+cmp.Or(g.Policy.MergeRule, policy.MergeHuman))
 	}
-	if g.Policy.Outcome != policy.OutcomeAuto {
+	switch {
+	case g.Policy.large():
+		unmet = append(unmet, fmt.Sprintf("large change: %d lines over %d; split it or accept it", g.Policy.Lines, g.Policy.LargeLines))
+	case g.Policy.Outcome != policy.OutcomeAuto:
 		unmet = append(unmet, fmt.Sprintf("risk class %s is %s", g.Policy.Class, g.Policy.Outcome))
 	}
 	if !g.ChecksPassed {
@@ -255,7 +265,7 @@ func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string)
 }
 
 // GatePolicy classifies the pull request's changed paths (a rename counts
-// both names) under the version the task pinned (pin; 0 is the version in
+// both names) and lines under the version the task pinned (pin; 0 is the version in
 // force), records the class on the
 // task and comments it on the pull request. A forbidden class is returned,
 // not an error: the workflow fails the task with the reason.
@@ -270,17 +280,27 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 			return PolicyGate{}, err
 		}
 	}
-	paths, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
+	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return PolicyGate{}, err
+	}
+	// a file moved out of a guarded directory still counts against it
+	var paths []string
+	lines := 0
+	for _, f := range files {
+		paths = append(paths, f.Filename)
+		if f.PreviousFilename != "" && f.PreviousFilename != f.Filename {
+			paths = append(paths, f.PreviousFilename)
+		}
+		lines += f.Additions + f.Deletions
 	}
 	v, err := r.pinnedVersion(ctx, pin)
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	c := v.Document.Risk.Classify(paths)
+	c := v.Document.Risk.Classify(paths, lines)
 	g := PolicyGate{Class: c.Class.Name, Outcome: c.Class.Outcome, Paths: c.Paths, Migrations: c.Migrations,
-		Changed: len(paths), PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
+		Changed: len(paths), Lines: lines, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 		return PolicyGate{}, err
 	} else if ok {
@@ -289,10 +309,12 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if err := r.store.SetTaskRisk(ctx, t.ID, g.Class); err != nil {
 		return PolicyGate{}, err
 	}
-	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths.\n\n", v.ID, g.Class, g.Outcome, g.Changed)
+	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths, %d changed lines.\n\n", v.ID, g.Class, g.Outcome, g.Changed, g.Lines)
 	switch {
 	case g.Outcome == policy.OutcomeForbidden:
 		msg += "Agents may not change these paths:\n" + listPaths(g.Paths)
+	case g.large():
+		msg += fmt.Sprintf("A large change, over the policy's %d lines: a human splits or accepts it.", g.LargeLines)
 	case g.Outcome == policy.OutcomeAuto && g.MergeRule == policy.MergeAuto:
 		msg += "The project's merge rule is auto: factory-merge merges when the model review approves and the reproduction failed at the base and passes at the head, " +
 			"or the agent recorded the fault it fixed and the review finds the change a strict improvement; otherwise a human approves the merge."
@@ -303,7 +325,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		return PolicyGate{}, err
 	}
 	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
-		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "policy_version": v.ID, "merge_rule": g.MergeRule}))
+		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule}))
 	return g, nil
 }
 

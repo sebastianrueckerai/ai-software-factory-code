@@ -446,6 +446,9 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if tools.PropertyNames == nil || len(tools.PropertyNames.Enum) != len(PaidTools)+len(FreeTools) {
 		t.Errorf("tools property names = %+v", tools.PropertyNames)
 	}
+	if ll := pol.Properties["risk"].Properties["large_lines"]; ll == nil || ll.Type != "integer" || ll.Minimum == nil || *ll.Minimum != 0 || slices.Contains(pol.Properties["risk"].Required, "large_lines") {
+		t.Errorf("risk.large_lines = %+v, want an optional integer from 0", ll)
+	}
 	if got := pol.Properties["limits"].Properties["agent_time"]; got.Type != "string" || got.Pattern == "" {
 		t.Errorf("agent_time = type %q pattern %q, want a duration string", got.Type, got.Pattern)
 	}

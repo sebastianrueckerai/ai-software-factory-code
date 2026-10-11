@@ -198,6 +198,35 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	startedWithin(t, objects, "gate_policy", from)
 }
 
+// The gate counts the changed lines, added and deleted: over the policy's
+// large_lines the pull request is class large and its comment says why.
+func TestGatePolicyCountsLines(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"internal/a.go","additions":40,"deletions":3}`, `{"filename":"README.md","additions":5,"deletions":5}`}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	v := testPolicyVersion()
+	v.Document.Risk.LargeLines = 50
+	r.cfg.Policy = func() policy.Version { return v }
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if g.Class != policy.ClassLarge || g.Outcome != policy.OutcomeRequiresApproval || g.Lines != 53 || g.LargeLines != 50 || !slices.Equal(g.Paths, []string{"README.md", "internal/a.go"}) {
+		t.Fatalf("gate = %+v, want class large over 53 lines of 50", g)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.RiskClass != policy.ClassLarge {
+		t.Fatalf("risk class = %q", got.RiskClass)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "53 changed lines") || !strings.Contains(fj.comments[0], "over the policy's 50") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_policy"); step["lines"] != float64(53) {
+		t.Fatalf("gate_policy step = %v, want lines 53", step)
+	}
+	v.Document.Risk.LargeLines = 0
+	val, err = execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Class != "normal" || g.Lines != 53 || strings.Contains(fj.comments[1], "over the policy's") || !strings.Contains(fj.comments[1], "53 changed lines") {
+		t.Fatalf("large_lines 0: gate = %+v, comment %q, want normal over 53 lines", g, fj.comments[1])
+	}
+}
+
 // A rename out of .forgejo counts under its old name: forbidden, and the
 // comment names the path.
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
