@@ -1735,15 +1735,16 @@ func TestPGStoreProviderRefusal(t *testing.T) {
 	}
 }
 
-func (s *fakeStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error {
+func (s *fakeStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) (bool, error) {
 	k := fmt.Sprintf("%s %d", id, revision)
-	if _, ok := s.questions[k]; !ok {
-		if s.questions == nil {
-			s.questions = map[string][]PlanQuestion{}
-		}
-		s.questions[k] = slices.Clone(qs)
+	if _, ok := s.questions[k]; ok {
+		return false, nil
 	}
-	return nil
+	if s.questions == nil {
+		s.questions = map[string][]PlanQuestion{}
+	}
+	s.questions[k] = slices.Clone(qs)
+	return true, nil
 }
 
 func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {

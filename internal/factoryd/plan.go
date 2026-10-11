@@ -661,10 +661,16 @@ func openQuestions(ctx context.Context, store Store, t Task, revision int) error
 	return err
 }
 
+// ErrAnswerUnsignalled is a plan's answer stored whose workflow the
+// console could not signal.
+var ErrAnswerUnsignalled = errors.New("the answer is recorded, but the plan's workflow was not signalled")
+
 // AnswerPlan is the console's answer by a member to question idx of plan
 // revision revision, which must be the newest (ErrStalePlan): the answer
 // is stored (ErrAnswered for a second one), then the plan task's workflow
-// signalled, which sends the planner back once none is open.
+// signalled, which sends the planner back once none is open. The last
+// answer resolves the plan's approval as superseded: Accept cannot file
+// the revision the planner revises with the answers.
 func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision, idx int, answer, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
@@ -679,7 +685,13 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, answer, by); err != nil {
 		return err
 	}
-	return wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: idx})
+	if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: idx}); err != nil {
+		return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
+	}
+	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
+		return err
+	}
+	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
 }
 
 // AcceptPlan is the console's Accept plan, by an approver: it signals the
@@ -766,14 +778,18 @@ func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevis
 // ErrAnswered refuses a second answer to a plan's question.
 var ErrAnswered = errors.New("the question is answered already")
 
-func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error {
+func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) (bool, error) {
 	b, err := json.Marshal(qs)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices)
 		SELECT $1, $2, i, q->>'text', q->'choices' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
@@ -1232,11 +1248,10 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 
 // askQuestions stores revision's questions of plan task t, sanitised as
 // the plan's comment is (a clicked choice is posted as the member's
-// comment), and records one question_asked row each, once.
+// comment), and records one question_asked row each when it stored them.
 func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
-	have, err := r.store.PlanQuestions(ctx, t.ID, revision)
-	if err != nil || len(have) > 0 || len(qs) == 0 {
-		return err
+	if len(qs) == 0 {
+		return nil
 	}
 	asked := make([]PlanQuestion, len(qs))
 	for i, q := range qs {
@@ -1245,7 +1260,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 			asked[i].Choices[j] = r.untrusted(t, c)
 		}
 	}
-	if err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil {
+	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
 		return err
 	}
 	for i, q := range asked {

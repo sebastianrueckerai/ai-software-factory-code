@@ -86,9 +86,9 @@ func TestPGStorePlanQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked := questionPlan().Questions
-	for range 2 { // a healed RequestPlan puts them again
-		if err := s.PutPlanQuestions(ctx, "t-plan", 1, asked); err != nil {
-			t.Fatal(err)
+	for i, want := range []bool{true, false} { // a healed RequestPlan puts them again
+		if inserted, err := s.PutPlanQuestions(ctx, "t-plan", 1, asked); inserted != want || err != nil {
+			t.Fatalf("put %d: inserted %v (%v), want %v", i+1, inserted, err, want)
 		}
 	}
 	got, err := s.PlanQuestions(ctx, "t-plan", 1)
@@ -165,20 +165,29 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	}
 }
 
-// signalLog keeps every signal with its payload.
-type signalLog struct{ got []string }
+// signalLog keeps every signal with its payload; err fails each.
+type signalLog struct {
+	got []string
+	err error
+}
 
 func (w *signalLog) Start(context.Context, string) error { return nil }
 func (w *signalLog) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
+	if w.err != nil {
+		return w.err
+	}
 	w.got = append(w.got, fmt.Sprintf("%s %s %s revision %d index %d", taskID, name, sig.Author, sig.Revision, sig.Index))
 	return nil
 }
 
 // AnswerPlan stores a member's answer to a question of the newest revision,
-// then signals the plan's workflow; a second answer, an unknown question
-// or a stale revision is refused before any signal. Accept plan refuses a
-// revision with an open question before it signals, and CreateChildren's
-// judgement refuses it the same way.
+// then signals the plan's workflow; the last answer resolves the plan's
+// approval as superseded, so Accept cannot file the revision the planner
+// revises with the answers. A second answer, an unknown question or a
+// stale revision is refused before any signal; a failed signal after the
+// stored answer is ErrAnswerUnsignalled. Accept plan refuses a revision
+// with an open question before it signals, and CreateChildren's judgement
+// refuses it the same way.
 func TestAnswerPlanAndAcceptance(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
@@ -188,8 +197,8 @@ func TestAnswerPlanAndAcceptance(t *testing.T) {
 	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	wf := &signalLog{}
-	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 1, "60 seconds", "alice"); err != nil {
-		t.Fatal(err)
+	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 1, "60 seconds", "alice"); err != nil || store.approvals[0].Status != "pending" {
+		t.Fatalf("the first answer: %v, approval %+v", err, store.approvals[0])
 	}
 	for idx, want := range map[int]error{1: ErrAnswered, 3: ErrNotFound} {
 		if err := AnswerPlan(ctx, store, wf, "t-plan", 1, idx, "5 minutes", "bob"); !errors.Is(err, want) {
@@ -204,17 +213,30 @@ func TestAnswerPlanAndAcceptance(t *testing.T) {
 	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 2, "30 days", "bob"); err != nil {
 		t.Fatal(err)
 	}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian"); err != nil {
-		t.Fatal(err)
+	if a := store.approvals[0]; a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != "superseded: the planner revises revision 1 with the answers" {
+		t.Fatalf("the approval after the last answer %+v", a)
+	}
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian"); err == nil || err.Error() != "task t-plan has no plan waiting for acceptance" {
+		t.Fatalf("accept once the planner revises: %v", err)
 	}
 	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)
 	if qs[0].Answer != "60 seconds" || qs[0].AnsweredBy != "alice" || !slices.Equal(wf.got, []string{"t-plan plan_answered alice revision 1 index 1",
-		"t-plan plan_answered bob revision 1 index 2", "t-plan plan_accepted sebastian revision 1 index 0"}) {
+		"t-plan plan_answered bob revision 1 index 2"}) {
 		t.Fatalf("questions %+v, signals %q", qs, wf.got)
 	}
+	// revision 2 asks one question and waits: an answer to revision 1 is
+	// stale; one whose signal fails is recorded all the same
 	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "sha-2")
-	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 2, "30 days", "bob"); err == nil || err.Error() != "the plan changed to revision 2; reload" || len(wf.got) != 3 {
+	store.PutPlanQuestions(ctx, "t-plan", 2, questionPlan().Questions[:1])
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 2, "30 days", "bob"); err == nil || err.Error() != "the plan changed to revision 2; reload" || len(wf.got) != 2 {
 		t.Fatalf("a stale revision: %v, signals %q", err, wf.got)
+	}
+	wf.err = errors.New("temporal down")
+	err := AnswerPlan(ctx, store, wf, "t-plan", 2, 1, "60 seconds", "alice")
+	if qs, _ := store.PlanQuestions(ctx, "t-plan", 2); !errors.Is(err, ErrAnswerUnsignalled) ||
+		err.Error() != "the answer is recorded, but the plan's workflow was not signalled: temporal down" || qs[0].Answer != "60 seconds" || store.approvals[1].Status != "pending" {
+		t.Fatalf("a failed signal: %v, questions %+v, approval %+v", err, qs, store.approvals[1])
 	}
 
 	r, rstore, _, fj := newPlanRunner(t, questionPlan())
@@ -299,15 +321,29 @@ func TestPlanLoopAnswersSendThePlannerBack(t *testing.T) {
 	}
 }
 
+// An answer that arrives with the Reject stays unread by the plan's wait
+// and is drained when the run ends: no unhandled signal.
+func TestPlanLoopDrainsAnAnswerAtTheEnd(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.signalAfter(time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "bob", Revision: 1, Index: 1})
+	if final := h.run(t); final != "failed" || strings.Contains(h.logs.String(), "unhandled signals") {
+		t.Fatalf("finals %v, logs:\n%s", h.finals, h.logs)
+	}
+}
+
 // A member's answer to a plan's question, which the console posts as
 // "Answer <n>: <answer>" once it stored the answer, is no change request:
 // intake records it as signalled (the console signalled the workflow),
-// sends no human_comment and counts no question_answered. A comment
-// naming an open question or another answer, or any other comment on the
-// plan, is one.
+// sends no human_comment and records no question_answered row, but counts
+// as an escalation answer, in whichever revision it answered (a late,
+// healed one included). A comment naming an open question or another
+// answer, or any other comment on the plan, is a change request.
 func TestIntakeKnowsAPlanAnswer(t *testing.T) {
 	ctx := context.Background()
 	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	in.Metrics = m
 	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", IssueNumber: 20, Status: "waiting-human", Kind: "agent", Lane: policy.LanePlan}
 	raw, sha, _ := planSHA(questionPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
@@ -315,17 +351,23 @@ func TestIntakeKnowsAPlanAnswer(t *testing.T) {
 	store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "60 seconds", "sebastian")
 	rec := &fakeEventRecorder{}
 	in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: rec, Store: store}
-	for i, body := range []string{PlanAnswerComment(1, "60 seconds"), "Answer 2: 30 days", "Answer 1: 5 minutes", "split the web card"} {
+	comment := func(id int, body string) {
 		b, _ := json.Marshal(map[string]any{"action": "created", "issue": map[string]any{"number": 20}, "repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
-			"comment": map[string]any{"id": 91 + i, "user": map[string]string{"login": "sebastian"}, "body": body}})
+			"comment": map[string]any{"id": id, "user": map[string]string{"login": "sebastian"}, "body": body}})
 		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
-			t.Fatalf("comment %d: status %d", 91+i, rr.Code)
+			t.Fatalf("comment %d: status %d", id, rr.Code)
 		}
 	}
+	for i, body := range []string{PlanAnswerComment(1, "60 seconds"), "Answer 2: 30 days", "Answer 1: 5 minutes", "split the web card"} {
+		comment(91+i, body)
+	}
+	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "sha-2")
+	comment(95, PlanAnswerComment(1, "60 seconds"))
 	want := []string{"t-plan human_comment sebastian #0 c92: Answer 2: 30 days", "t-plan human_comment sebastian #0 c93: Answer 1: 5 minutes",
 		"t-plan human_comment sebastian #0 c94: split the web card"}
-	if got := workflowsOf(in).signals; !slices.Equal(got, want) || len(store.intakeEvents) != 4 || !store.intakeEvents[0].Signalled ||
+	if got := workflowsOf(in).signals; !slices.Equal(got, want) || len(store.intakeEvents) != 5 || !store.intakeEvents[0].Signalled || !store.intakeEvents[4].Signalled ||
 		!slices.Equal(answerEvents(rec, "t-plan"), []string{"sebastian webhook 92", "sebastian webhook 93", "sebastian webhook 94"}) {
 		t.Fatalf("signals %q, want %q; intake events %+v; question_answered rows %q", got, want, store.intakeEvents, answerEvents(rec, "t-plan"))
 	}
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=escalation_answer,lane=plan,process=none": 5})
 }

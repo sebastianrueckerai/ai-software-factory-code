@@ -230,6 +230,16 @@ func (t *turn) planText(in toolInput) (string, error) {
 		issues[c.PlanKey] = c.IssueNumber
 	}
 	fmt.Fprintf(&b, "revision %d, sha256 %s\nsummary: %s", rev.Revision, rev.SHA256, summary)
+	qs, err := t.c.cfg.Tasks.PlanQuestions(ctx, plan.ID, rev.Revision)
+	if err != nil {
+		return "", err
+	}
+	for i, q := range qs {
+		b.WriteString("\n" + factoryd.QuestionLine(i+1, q))
+		if q.Answer != "" {
+			fmt.Fprintf(&b, " answered: %s (%s)", q.Answer, q.AnsweredBy)
+		}
+	}
 	for _, row := range rows {
 		issue := "not filed"
 		if n := issues[row.Key]; n > 0 {

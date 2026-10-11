@@ -426,7 +426,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}

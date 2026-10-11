@@ -336,8 +336,8 @@ type Store interface {
 	// PlanRevision is revision n of task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	// PutPlanQuestions stores revision's questions of plan task id, numbered
-	// from 1, unless it has them already.
-	PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) error
+	// from 1, unless it has them already, and reports whether it did.
+	PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) (bool, error)
 	// PlanQuestions are revision's questions of plan task id in order,
 	// each with its answer once given.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)

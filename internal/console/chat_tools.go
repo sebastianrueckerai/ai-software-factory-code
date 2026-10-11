@@ -397,7 +397,7 @@ var tools = []chatTool{
 		fits:  "a card with a pull request",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "A plan's newest revision: its number and sha256 (which accept_plan takes), its summary, each card's key, role, title, size, dependencies and issue once filed, and each filed card's state; for a card of a plan, its plan's.",
+		about: "A plan's newest revision: its number and sha256 (which accept_plan takes), its summary, its questions with their answers, each card's key, role, title, size, dependencies and issue once filed, and each filed card's state; for a card of a plan, its plan's.",
 		fits:  "a plan card or a card of a plan",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
 	{name: "pr", title: "Read a pull request",

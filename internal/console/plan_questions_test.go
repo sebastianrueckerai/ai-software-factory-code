@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -86,13 +87,23 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 			t.Errorf("revision %s question %s %q: %d %q, calls %v; want %d %q", tc.revision, tc.index, tc.text, rec.Code, rec.Body, r.fg.calls, tc.status, tc.want)
 		}
 	}
-	// the last answer, typed on two lines, is one; the plan may be accepted
+	// the last answer, typed on two lines, is one
 	if rec := answer("2", "2", " 30\n days "); rec.Code != http.StatusSeeOther || r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Fatalf("the second answer: %d, comment %q", rec.Code, r.fg.comments[comments])
 	}
 	if card := board(); strings.Contains(card, " open</p>") || strings.Contains(card, " disabled>Accept plan") ||
 		!strings.Contains(card, `<p class="answered">How long are the results kept?: 30 days (sebastian)</p>`) {
 		t.Errorf("the card once answered:\n%s", card)
+	}
+	// an answer stored whose signal failed: 502, the answer recorded,
+	// request_changes the way on
+	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string) error {
+		return fmt.Errorf("%w: temporal down", factoryd.ErrAnswerUnsignalled)
+	}
+	if rec := answer("2", "1", "5 minutes"); rec.Code != http.StatusBadGateway || rec.Body.String() !=
+		"The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.\n" ||
+		r.fg.comments[comments] != "Answer 2: 30 days" {
+		t.Errorf("an unsignalled answer: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
 	}
 }
 
@@ -133,10 +144,11 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	r.tasks.mu.Unlock()
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: "t-p", Project: "sf/code",
 		Status: "pending", Spec: []byte(`{"revision":1,"sha256":"5e1f"}`)})
-	card := reads(t, r, g, "card", `{"task_id":"t-p"}`)[0]
-	if want := "\nQuestions:\n1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)\n" +
-		"2. How long are the results kept? (choices: 7 days / 30 days)"; !strings.Contains(card, want) {
-		t.Fatalf("the card read =\n%s\nwant it to hold\n%s", card, want)
+	read := reads(t, r, g, "card", `{"task_id":"t-p"}`, "plan", `{"task_id":"t-p"}`)
+	q1, q2 := "1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)", "2. How long are the results kept? (choices: 7 days / 30 days)"
+	if card, plan := read[0], read[1]; !strings.Contains(card, "\nQuestions:\n"+q1+"\n"+q2) ||
+		!strings.Contains(plan, "\nsummary: An API, then its web UI.\n"+q1+"\n"+q2+"\napi foundation") {
+		t.Fatalf("the card read =\n%s\nthe plan read =\n%s\nwant both to hold the questions", card, plan)
 	}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
@@ -151,6 +163,9 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/20/comments"], "Answer 1: 60 seconds")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20,
 		Kind: factoryd.EventPlanQuestionAnswered, Detail: map[string]any{"revision": 1, "index": 1, "answer": "60 seconds"}})
+	if plan := reads(t, r, g, "plan", `{"task_id":"t-p"}`)[0]; !strings.Contains(plan, "\n"+q1+" answered: 60 seconds (sebastian)\n"+q2+"\napi") {
+		t.Fatalf("the plan read after the answer =\n%s", plan)
+	}
 	for in, want := range map[toolInput][]any{
 		{TaskID: "t-p", Question: 2, Text: "7 days"}:              {http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool."},
 		{TaskID: "t-p", Revision: 2, Question: 2, Text: "7 days"}: {http.StatusConflict, "the plan changed to revision 1; reload"},
