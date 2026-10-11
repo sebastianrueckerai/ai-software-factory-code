@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"reflect"
 	"testing"
@@ -56,13 +58,13 @@ func TestPGStore(t *testing.T) {
 
 	// a hold and its release book the task and the ledger together
 	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "coding-cheap",
-		InTokens: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6}, WantOut: 1024, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
+		Bytes: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6}, WantOut: 1024, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
 	if err != nil || h.MaxOut != 1024 || h.Headroom != 8 {
 		t.Fatalf("TakeHold = (%+v, %v), want 1024 tokens under headroom 8", h, err)
 	}
 	cost := 0.5
 	// the hold is 1000 × 1e-6 + 1024 × 4e-6 = 0.005096 EUR: 0.5 is over it
-	if b, err := s.ReleaseHold(ctx, h, &cost); err != nil || b.Spent != 2.5 ||
+	if b, err := s.ReleaseHold(ctx, h, &cost, policy.Usage{}); err != nil || b.Spent != 2.5 ||
 		b.OverHold != "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.005096 EUR; booked in full" {
 		t.Fatalf("ReleaseHold = (%+v, %v), want spent 2.5, flagged", b, err)
 	}
@@ -151,5 +153,47 @@ func TestPGStore(t *testing.T) {
 		`SELECT policy_version_id, output_limit, hold_eur::float8 FROM audit WHERE decision = 'allowed'`).Scan(&auditVersion, &limit, &held); err != nil ||
 		auditVersion != v.ID || limit != 1024 || held != h.EUR {
 		t.Fatalf("audit = version %d, limit %d, hold %v (%v); want %d, 1024, %v", auditVersion, limit, held, err, v.ID, h.EUR)
+	}
+}
+
+// A settled stream books LiteLLM's cost from its final chunk, which prices
+// the cached tokens at the cache-read rate: on an alias of 0.30 in, 0.03
+// cache read and 1.50 out EUR per million, 140,000 prompt tokens, 131,600 of
+// them cached, and 900 output tokens cost 8,400 × 0.30e-6 + 131,600 ×
+// 0.03e-6 + 900 × 1.50e-6 = 0.00252 + 0.003948 + 0.00135 = 0.007818 EUR,
+// booked with the usage and the bytes sent upstream.
+func TestSettledStreamBooksItsUsage(t *testing.T) {
+	dsn := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("GATEWAY_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {
+		t.Fatal(err)
+	}
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, headers: map[string]string{"Content-Type": "text/event-stream"},
+		body: "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":140000,\"completion_tokens\":900,\"prompt_tokens_details\":{\"cached_tokens\":131600},\"cost\":0.007818}}\n\n" +
+			"data: [DONE]\n\n"})
+	srv := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "sa"}}, Store: s, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
+		Prices: fakePrices{"coding-cheap": {In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: 32768}}})
+	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	_, bodies, _ := stub.seen()
+	var row string
+	if err := s.db.QueryRowContext(ctx, `SELECT eur::text || ' ' || prompt_tokens || ' ' || cached_tokens || ' ' || output_tokens || ' ' || body_bytes
+		FROM ledger WHERE task_id = 't1'`).Scan(&row); err != nil || len(bodies) != 1 || row != fmt.Sprintf("0.007818 140000 131600 900 %d", len(bodies[0])) {
+		t.Fatalf("ledger row = %q (%v), want 0.007818 EUR, 140000 prompt, 131600 cached, 900 output tokens and the upstream body's bytes", row, err)
 	}
 }

@@ -62,6 +62,16 @@ DO $$ BEGIN
     END IF;
 END $$;
 
+-- a model call's usage as the provider reported it and its request
+-- body's bytes; 0 on every other row
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'ledger' AND column_name = 'body_bytes' AND table_schema = current_schema()) THEN
+        ALTER TABLE ledger ADD COLUMN prompt_tokens integer NOT NULL DEFAULT 0, ADD COLUMN cached_tokens integer NOT NULL DEFAULT 0,
+            ADD COLUMN output_tokens integer NOT NULL DEFAULT 0, ADD COLUMN body_bytes integer NOT NULL DEFAULT 0;
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS ledger_day ON ledger (day);
 CREATE INDEX IF NOT EXISTS ledger_task ON ledger (task_id);
 

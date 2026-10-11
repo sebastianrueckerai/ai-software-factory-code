@@ -271,12 +271,12 @@ func TestFitResource(t *testing.T) {
 		t.Fatalf("tool call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, Project: "linkshort"}); !errors.As(err, &ref) ||
-		ref.Reason != "free headroom 0.001000 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.001000) fits 250 output tokens after at most 0 input tokens, below the minimum call of 1024; "+
+		ref.Reason != "free headroom 0.001000 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.001000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024; "+
 			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit" {
 		t.Fatalf("model call past the project's month = %v", err)
 	}
 	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
-		ref.Reason != "free headroom 0.001000 EUR (task 0.001000, day 1.000000, month 1.000000) fits 250 output tokens after at most 0 input tokens, below the minimum call of 1024" {
+		ref.Reason != "free headroom 0.001000 EUR (task 0.001000, day 1.000000, month 1.000000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024" {
 		t.Fatalf("model call past the task's budget without a project cap = %v", err)
 	}
 }
@@ -358,7 +358,7 @@ func TestFit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := p
 			pr.MaxOutput = tc.maxOutput
-			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{InTokens: 1000, Price: pr, WantOut: tc.want})
+			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{Bytes: 1000, Price: pr, WantOut: tc.want})
 			if tc.refused != "" {
 				var r *Refusal
 				if !errors.As(err, &r) || r.Decision != tc.refused {
@@ -370,6 +370,44 @@ func TestFit(t *testing.T) {
 				t.Fatalf("Fit = (%+v, %v), want %d tokens for %g EUR", h, err, tc.wantOut, tc.wantEUR)
 			}
 		})
+	}
+}
+
+// Hand-derived at in 0.30, cache read 0.03, out 1.50 EUR per million: a
+// 495,000-byte request after a call of 480,000 bytes and 135,000 prompt
+// tokens is about 495,000 × 135,000 / 480,000 = 139,218.75 tokens: 135,000
+// at the cache-read price (0.00405), 4,218.75 at the input price
+// (0.001265625) and the margin of a quarter, 34,804.6875 tokens, at the
+// input price (0.01044140625): 0.01575703125, plus 4,096 output tokens
+// (0.006144) = 0.02190103125 EUR. The first call of a task holds the
+// 495,000 bytes as tokens at the input price: 0.1485 + 0.006144.
+func TestFitCalibrated(t *testing.T) {
+	p := Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6}
+	earlier := Usage{PromptTokens: 135000, CachedTokens: 131600, OutputTokens: 900, BodyBytes: 480000}
+	free := Free{Task: 1, Day: 5, Month: 5, Project: inf}
+	for _, tc := range []struct {
+		name    string
+		earlier Usage
+		want    float64
+	}{
+		{"calibrated by the earlier call", earlier, 0.02190103125},
+		{"the first call keeps the byte bound", Usage{}, 0.154644},
+		{"an earlier call without usage keeps the byte bound", Usage{BodyBytes: 480000}, 0.154644},
+	} {
+		h, err := Fit(free, HoldRequest{Bytes: 495000, Earlier: tc.earlier, Price: p, WantOut: 4096})
+		if err != nil || h.MaxOut != 4096 || math.Abs(h.EUR-tc.want) > 1e-12 {
+			t.Errorf("%s: Fit = (%+v, %v), want 4096 tokens for %v EUR", tc.name, h, err, tc.want)
+		}
+	}
+	var r *Refusal
+	free.Task = 0.015
+	if _, err := Fit(free, HoldRequest{Bytes: 495000, Earlier: earlier, Price: p, WantOut: 4096}); !errors.As(err, &r) ||
+		r.Reason != "free headroom 0.015000 EUR (task 0.015000, day 5.000000, month 5.000000) fits 0 output tokens after a request of 495000 bytes (about 139219 prompt tokens), below the minimum call of 1024" {
+		t.Errorf("calibrated refusal = %v", err)
+	}
+	if _, err := Fit(free, HoldRequest{Bytes: 495000, Price: p, WantOut: 4096}); !errors.As(err, &r) ||
+		r.Reason != "free headroom 0.015000 EUR (task 0.015000, day 5.000000, month 5.000000) fits 0 output tokens after a request of 495000 bytes (at most 495000 prompt tokens), below the minimum call of 1024" {
+		t.Errorf("first-call refusal = %v", err)
 	}
 }
 
@@ -407,14 +445,14 @@ func TestParseModelInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]Price{
-		"coding-cheap":    {In: 2.8e-7, Out: 4.7e-7, MaxOutput: 131072},
-		"coding-frontier": {In: 1.4e-6, Out: 5e-6},
-		"long-context":    {In: 3e-6, Out: 7e-6},
-		"tiered":          {In: 8e-7, Out: 9e-6},
-		"cache-write":     {In: 1.25e-6, Out: 2e-6},
-		"off-peak":        {In: 3e-7, Out: 1.2e-6, MaxOutput: 393216},
-		"off-peak-dearer": {In: 4e-7, Out: 5e-7},
-		"off-peak-flat":   {In: 5e-7, Out: 1.2e-6},
+		"coding-cheap":    {In: 2.8e-7, CacheRead: 2e-7, Out: 4.7e-7, MaxOutput: 131072},
+		"coding-frontier": {In: 1.4e-6, CacheRead: 1.4e-6, Out: 5e-6},
+		"long-context":    {In: 3e-6, CacheRead: 3e-6, Out: 7e-6},
+		"tiered":          {In: 8e-7, CacheRead: 1e-8, Out: 9e-6},
+		"cache-write":     {In: 1.25e-6, CacheRead: 1.25e-6, Out: 2e-6},
+		"off-peak":        {In: 3e-7, CacheRead: 6e-9, Out: 1.2e-6, MaxOutput: 393216},
+		"off-peak-dearer": {In: 4e-7, CacheRead: 4e-7, Out: 5e-7},
+		"off-peak-flat":   {In: 5e-7, CacheRead: 5e-7, Out: 1.2e-6},
 	}
 	if !reflect.DeepEqual(prices, want) {
 		t.Fatalf("prices = %+v, want %+v", prices, want)
@@ -443,7 +481,7 @@ func TestPriceBook(t *testing.T) {
 	defer srv.Close()
 	b := &PriceBook{BaseURL: srv.URL, MasterKey: "mk", TTL: time.Hour}
 	ctx := context.Background()
-	if p, err := b.Price(ctx, "a"); err != nil || p != (Price{In: 1e-6, Out: 4e-6}) {
+	if p, err := b.Price(ctx, "a"); err != nil || p != (Price{In: 1e-6, CacheRead: 1e-6, Out: 4e-6}) {
 		t.Fatalf("Price(a) = (%+v, %v)", p, err)
 	}
 	if _, err := b.Price(ctx, "b"); err == nil || !strings.Contains(err.Error(), "cannot price") {

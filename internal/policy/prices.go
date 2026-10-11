@@ -15,15 +15,17 @@ import (
 )
 
 // Price is an alias's worst case over its LiteLLM deployments, per token:
-// input, output (the higher of the output and reasoning rates) and the
-// largest output limit (0 = none published). Costs are LiteLLM's USD prices
-// booked 1:1 as EUR.
+// input, a cached prompt token's (the input rate where a deployment
+// publishes no cache-read rate), output (the higher of the output and
+// reasoning rates) and the largest output limit (0 = none published).
+// Costs are LiteLLM's USD prices booked 1:1 as EUR.
 type Price struct {
 	In        float64
+	CacheRead float64
 	Out       float64
 	MaxOutput int
 
-	inSet bool // parsing: an input rate was seen
+	inSet, cacheSet bool // parsing: an input, a cache-read rate was seen
 }
 
 // PriceBook reads prices from LiteLLM's GET /model/info, the figures
@@ -126,6 +128,7 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 		}
 		p := prices[d.ModelName]
 		p.In = max(p.In, dp.In)
+		p.CacheRead = max(p.CacheRead, dp.CacheRead)
 		p.Out = max(p.Out, dp.Out)
 		p.MaxOutput = max(p.MaxOutput, dp.MaxOutput)
 		prices[d.ModelName] = p
@@ -139,8 +142,7 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 // deploymentPrice is one deployment's worst case over every per-token rate
 // LiteLLM can bill a text call with: the base, long-context
 // (*_above_*_tokens), service-tier, cache-write, tiered_pricing and
-// off_peak_pricing rates.
-// Cache reads are cheaper than input and left out. Any other cost field
+// off_peak_pricing rates, and apart the cache-read rate. Any other cost field
 // carrying a value (per query, second, image, character, ...) is a charge
 // the hold cannot bound, and so is any cost multiplier (regional uplifts):
 // the deployment counts as unpriced.
@@ -196,15 +198,18 @@ func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 	if p.Out <= 0 || !p.inSet {
 		return Price{}, errors.New("no input or output price")
 	}
-	p.inSet = false
+	if !p.cacheSet {
+		p.CacheRead = p.In
+	}
+	p.inSet, p.cacheSet = false, false
 	return p, nil
 }
 
 func (p *Price) addRate(k string, raw json.RawMessage) error {
-	var input, output bool
+	var input, cache, output bool
 	switch {
 	case strings.HasPrefix(k, "cache_read_input_token_cost"):
-		return nil
+		cache = true
 	case strings.HasPrefix(k, "input_cost_per_token"), strings.HasPrefix(k, "cache_creation_input_token_cost"):
 		input = true
 	case strings.HasPrefix(k, "output_cost_per_token"), strings.HasPrefix(k, "output_cost_per_reasoning_token"):
@@ -221,6 +226,9 @@ func (p *Price) addRate(k string, raw json.RawMessage) error {
 	}
 	if input {
 		p.In, p.inSet = max(p.In, v), true
+	}
+	if cache {
+		p.CacheRead, p.cacheSet = max(p.CacheRead, v), true
 	}
 	if output {
 		p.Out = max(p.Out, v)

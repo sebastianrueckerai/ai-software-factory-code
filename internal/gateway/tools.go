@@ -280,7 +280,7 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	// the provider billed whether or not the agent is still listening; a
 	// cost past the hold (the arguments were bounded to it) is booked in
 	// full, so the caps refuse the next call from the true headroom
-	b, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost)
+	b, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost, policy.Usage{})
 	if err != nil {
 		note += fmt.Sprintf("; hold %d not released: %v", hold.ID, err)
 		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants

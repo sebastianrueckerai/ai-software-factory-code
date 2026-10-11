@@ -230,7 +230,7 @@ func TestHolds(t *testing.T) {
 		('a', 0.02, 0.01, 'running'), ('b', 1, 0, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", InTokens: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
+	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", Bytes: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
 
 	// task a: 0.01 free; 1000 input tokens cost 0.001, 0.009 buys 2250 output tokens
 	h, err := TakeHold(ctx, db, req)
@@ -247,12 +247,12 @@ func TestHolds(t *testing.T) {
 	}
 	// released at its real cost, the rest is free again
 	cost := 0.004
-	b, err := ReleaseHold(ctx, db, h, &cost)
+	b, err := ReleaseHold(ctx, db, h, &cost, Usage{})
 	if err != nil || !near(b.Spent, 0.014) || !near(b.Booked, 0.004) || b.OverHold != "" {
 		t.Fatalf("release = (%+v, %v), want spent 0.014, booked 0.004, no flag", b, err)
 	}
 	// released once only
-	if b, err := ReleaseHold(ctx, db, h, &cost); err != nil || !near(b.Spent, 0.014) || b.Booked != 0 {
+	if b, err := ReleaseHold(ctx, db, h, &cost, Usage{}); err != nil || !near(b.Spent, 0.014) || b.Booked != 0 {
 		t.Fatalf("second release = (%+v, %v), want spent unchanged at 0.014, nothing booked", b, err)
 	}
 	// 0.006 free: 0.005 after the input buys 1250 tokens
@@ -261,7 +261,7 @@ func TestHolds(t *testing.T) {
 		t.Fatalf("hold after release = (%+v, %v), want 1250 tokens", h2, err)
 	}
 	// unknown cost: the hold is booked in full
-	if b, err := ReleaseHold(ctx, db, h2, nil); err != nil || !near(b.Spent, 0.02) || !near(b.Booked, 0.006) || b.OverHold != "" {
+	if b, err := ReleaseHold(ctx, db, h2, nil, Usage{}); err != nil || !near(b.Spent, 0.02) || !near(b.Booked, 0.006) || b.OverHold != "" {
 		t.Fatalf("release without a cost = (%+v, %v), want spent 0.02, the hold's 0.006 booked, no flag", b, err)
 	}
 
@@ -273,7 +273,7 @@ func TestHolds(t *testing.T) {
 	}
 	bReq := req
 	bReq.TaskID, bReq.DayEUR = "b", 0.01
-	bReq.InTokens = 0
+	bReq.Bytes = 0
 	if _, err := TakeHold(ctx, db, bReq); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
 		t.Fatalf("hold under a full day = %v, want refused_day_cap", err)
 	}
@@ -303,14 +303,14 @@ func TestHolds(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, hb.ID); err != nil {
 		t.Fatal(err)
 	}
-	if b, err := ReleaseHold(ctx, db, hb, &cost); err != nil || !near(b.Spent, 0.003) {
+	if b, err := ReleaseHold(ctx, db, hb, &cost, Usage{}); err != nil || !near(b.Spent, 0.003) {
 		t.Fatalf("release of a swept hold = (%v, %v), want b's spent 0.003 (the sweep's)", b.Spent, err)
 	}
 	// a swept hold of 0.001 whose call cost 0.004: the sweep booked 0.001,
 	// the release books the 0.003 above it
 	swept := Hold{ID: -1, TaskID: "b", Kind: KindModel, Ref: "y", EUR: 0.001}
 	over := 0.004
-	b, err = ReleaseHold(ctx, db, swept, &over)
+	b, err = ReleaseHold(ctx, db, swept, &over, Usage{})
 	if err != nil || !near(b.Spent, 0.006) || !near(b.Booked, 0.003) || b.OverHold != "COST OVER HOLD: model y cost 0.004000 EUR against a hold of 0.001000 EUR; booked in full" {
 		t.Fatalf("late release above the swept hold = (%+v, %v), want b's spent 0.006, flagged", b, err)
 	}
@@ -322,7 +322,7 @@ func TestHolds(t *testing.T) {
 		}
 		before := 0.0
 		db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 'b'`).Scan(&before)
-		if b, err := ReleaseHold(ctx, db, h, &bad); err != nil || !near(b.Spent, before+0.004) {
+		if b, err := ReleaseHold(ctx, db, h, &bad, Usage{}); err != nil || !near(b.Spent, before+0.004) {
 			t.Fatalf("release at cost %v = (%v, %v), want the hold 0.004 booked on top of %v", bad, b.Spent, err, before)
 		}
 	}
@@ -340,6 +340,57 @@ func TestHolds(t *testing.T) {
 		"b model z 0.004", "b model z 0.004", "b model z 0.004"}
 	if !reflect.DeepEqual(ledger, want) {
 		t.Fatalf("ledger = %q, want %q", ledger, want)
+	}
+}
+
+// A model call's ledger row keeps its usage and request bytes, and the
+// task's next hold on the same ref calibrates from the newest row with
+// usage (the figures of TestFitCalibrated); a row without usage, another
+// ref's and another task's do not count.
+func TestModelHoldCalibrates(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('c', 5, 'running'), ('d', 5, 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	req := HoldRequest{TaskID: "c", Kind: KindModel, Ref: "coding-cheap", Bytes: 480000, Price: Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6},
+		WantOut: 4096, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
+	// 480,000 × 0.30e-6 + 4,096 × 1.50e-6
+	h, err := TakeHold(ctx, db, req)
+	if err != nil || !near(h.EUR, 0.150144) {
+		t.Fatalf("first hold = (%+v, %v), want 0.150144 EUR", h, err)
+	}
+	cost := 0.007818
+	if _, err := ReleaseHold(ctx, db, h, &cost, Usage{PromptTokens: 135000, CachedTokens: 131600, OutputTokens: 900, BodyBytes: 480000}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('c', 'model', 'coding-cheap', 0.02, 0, 0, 0, 500000), ('c', 'model', 'review/coding-cheap', 0.01, 1000, 0, 10, 2000),
+		('d', 'model', 'coding-cheap', 0.01, 5000, 0, 10, 100000)`); err != nil {
+		t.Fatal(err)
+	}
+	req.Bytes = 495000
+	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.02190103125) {
+		t.Fatalf("calibrated hold = (%+v, %v), want 0.02190103125 EUR", h, err)
+	}
+	req.Ref = "coding-frontier"
+	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.154644) {
+		t.Fatalf("first hold on another ref = (%+v, %v), want the byte bound's 0.154644 EUR", h, err)
+	}
+	calls, err := ModelCalls(ctx, db, "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range calls {
+		if calls[i].At.IsZero() {
+			t.Fatalf("call %d has no time", i)
+		}
+		calls[i].At = time.Time{}
+	}
+	want := []ModelCall{{Ref: "coding-cheap", EUR: 0.007818, Usage: Usage{135000, 131600, 900, 480000}},
+		{Ref: "coding-cheap", EUR: 0.02, Usage: Usage{BodyBytes: 500000}}, {Ref: "review/coding-cheap", EUR: 0.01, Usage: Usage{1000, 0, 10, 2000}}}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("model calls = %+v, want %+v", calls, want)
 	}
 }
 
@@ -367,11 +418,11 @@ func TestToolHolds(t *testing.T) {
 		t.Fatalf("third hold = %v, want refused_tool_requests", err)
 	}
 	// a free call still books a row: it was a request
-	if b, err := ReleaseHold(ctx, db, h1, &zeroEUR); err != nil || b.Spent != 0 {
+	if b, err := ReleaseHold(ctx, db, h1, &zeroEUR, Usage{}); err != nil || b.Spent != 0 {
 		t.Fatalf("free release = (%v, %v)", b.Spent, err)
 	}
 	cost := 0.005
-	if _, err := ReleaseHold(ctx, db, h2, &cost); err != nil {
+	if _, err := ReleaseHold(ctx, db, h2, &cost, Usage{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := TakeHold(ctx, db, req); !errors.As(err, &r) || r.Decision != "refused_tool_requests" {
@@ -390,7 +441,7 @@ func TestToolHolds(t *testing.T) {
 		t.Fatalf("hold past 0.05 EUR = %v, want refused_tool_eur", err)
 	}
 	// an unknown cost books the hold; the caps count it
-	if b, err := ReleaseHold(ctx, db, h3, nil); err != nil || !near(b.Spent, 0.025) {
+	if b, err := ReleaseHold(ctx, db, h3, nil, Usage{}); err != nil || !near(b.Spent, 0.025) {
 		t.Fatalf("release without a cost = (%v, %v), want spent 0.025", b.Spent, err)
 	}
 	// another tool has its own caps
@@ -572,7 +623,7 @@ func TestProjectCapBoundsHeadroom(t *testing.T) {
 	}
 	// o's hold counts against p/p's cap, b's (q/q) only against the day and
 	// month: 1000 input tokens and 1024 output tokens hold 0.005096
-	model := HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", InTokens: 1000, Price: testPrice, WantOut: 1024, DayEUR: 20, MonthEUR: 50, Project: "p", ProjectEUR: 1}
+	model := HoldRequest{TaskID: "o", Kind: KindModel, Ref: "m", Bytes: 1000, Price: testPrice, WantOut: 1024, DayEUR: 20, MonthEUR: 50, Project: "p", ProjectEUR: 1}
 	h, err = TakeHold(ctx, db, model)
 	if err != nil || h.MaxOut != 1024 || !near(h.EUR, 0.005096) || !near(h.Headroom, 0.1) || h.Bound != RefusedProjectCap {
 		t.Fatalf("o's hold = (%+v, %v), want 1024 tokens, 0.005096 EUR, headroom 0.10 bound by the project's cap", h, err)
@@ -674,7 +725,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 	for _, id := range []string{"run", "rev", "done", "failed", "closing", "wait", "queued"} {
 		for _, kind := range []string{KindTool, KindModel} {
-			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", InTokens: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
+			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", Bytes: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
 				EUR: 0.001, Cap: ToolCap{MaxRequests: 5, MaxEUR: 1}}
 			_, err := TakeHold(ctx, db, req)
 			var r *Refusal

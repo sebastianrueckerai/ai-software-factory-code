@@ -30,9 +30,12 @@ type HoldRequest struct {
 	TaskID string
 	Kind   string // KindModel, KindTool or KindResource
 	Ref    string // the alias of a model call, the name of a tool call
-	// InTokens bounds the input tokens: the request body's byte length,
-	// since a token covers at least one byte.
-	InTokens int
+	// Bytes is a model call's request body length. Earlier is the task's
+	// newest settled call on the same ref with usage, which calibrates the
+	// prompt tokens Bytes carries; without one, a token covers at least
+	// one byte.
+	Bytes    int
+	Earlier  Usage
 	Price    Price
 	WantOut  int // the caller's output limit; 0 = none
 	DayEUR   float64
@@ -47,11 +50,11 @@ type HoldRequest struct {
 	Cap ToolCap
 }
 
-// Hold is headroom taken for one call: EUR at the worst case of InTokens
-// and MaxOut output tokens. Headroom is the smallest of the task's, the
-// day's, the month's and the project's month headroom before any hold, the
-// figure a key's max_budget takes; Bound names which one it is, as the
-// refusal it would cause (refused_budget, refused_day_cap,
+// Hold is headroom taken for one call: EUR at the request's prompt as Fit
+// prices it and MaxOut output tokens. Headroom is the smallest of the
+// task's, the day's, the month's and the project's month headroom before
+// any hold, the figure a key's max_budget takes; Bound names which one it
+// is, as the refusal it would cause (refused_budget, refused_day_cap,
 // refused_month_cap or refused_project_cap).
 type Hold struct {
 	ID       int64
@@ -118,11 +121,28 @@ func refusal(decision, kind, project, reason string) *Refusal {
 
 func (r *Refusal) Error() string { return r.Reason }
 
+// Usage is a model call's prompt, cached prompt and output tokens as the
+// provider reported them, and its request body's bytes.
+type Usage struct {
+	PromptTokens, CachedTokens, OutputTokens, BodyBytes int
+}
+
 // Fit clamps a call's output limit to what the free task, day, month and
-// project headroom can pay for, or refuses it.
+// project headroom can pay for, or refuses it. Calibrated by an earlier
+// call (ruling 274), the prompt is about Bytes times that call's tokens per
+// byte: the part up to that call's prompt tokens, which the provider serves
+// from its cache, at the cache-read price, the rest and a margin of a
+// quarter at the input price. Without one it is at most Bytes tokens at
+// the input price.
 func Fit(f Free, r HoldRequest) (Hold, error) {
 	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
-	inEUR := float64(r.InTokens) * r.Price.In
+	tokens, measure := float64(r.Bytes), "at most"
+	inEUR := tokens * r.Price.In
+	if e := r.Earlier; e.PromptTokens > 0 && e.BodyBytes > 0 {
+		tokens, measure = float64(r.Bytes)*float64(e.PromptTokens)/float64(e.BodyBytes), "about"
+		cached := min(tokens, float64(e.PromptTokens))
+		inEUR = cached*r.Price.CacheRead + (tokens-cached+tokens/4)*r.Price.In
+	}
 	outFit := 0
 	if left := free - inEUR; left > 0 {
 		// the epsilon keeps an exact quotient (0.009/4e-6) from flooring low
@@ -137,8 +157,8 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 	}
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
 		return Hold{}, refusal(decision, KindModel, r.Project, fmt.Sprintf(
-			"free headroom %.6f EUR (%s) fits %d output tokens after at most %d input tokens, below the minimum call of %d",
-			free, f.figures(), max(outFit, 0), r.InTokens, MinCallTokens))
+			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
+			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, MaxOut: maxOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
@@ -204,6 +224,12 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	case KindResource:
 		h, err = FitResource(free, r)
 	default:
+		err = tx.QueryRowContext(ctx,
+			`SELECT prompt_tokens, body_bytes FROM ledger WHERE task_id = $1 AND kind = 'model' AND ref = $2 AND prompt_tokens > 0 AND body_bytes > 0
+			 ORDER BY id DESC LIMIT 1`, r.TaskID, r.Ref).Scan(&r.Earlier.PromptTokens, &r.Earlier.BodyBytes)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return Hold{}, err
+		}
 		h, err = Fit(free, r)
 	}
 	if err != nil {
@@ -317,14 +343,15 @@ type Booking struct {
 }
 
 // ReleaseHold turns a hold into spend: the call's cost when known, else the
-// hold's full amount (a worst case, and settlement only ever raises). A
+// hold's full amount (a worst case, and settlement only ever raises), on a
+// ledger row with the call's usage (a model call's; zero else). A
 // cost that is not a finite non-negative number counts as unknown. It books
 // the task's spent_eur and the ledger row in the transaction that deletes
 // the hold, and returns the task's spend. A tool call's row is written even
 // at 0 EUR: the rows count the task's requests of the tool. A hold the
 // sweep already booked in full books only what the known cost exceeds it
 // by. A known cost above the hold is booked in full and flagged (OverHold).
-func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (Booking, error) {
+func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64, u Usage) (Booking, error) {
 	cost = KnownCost(cost)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -353,8 +380,8 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64) (Bookin
 		return Booking{}, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
 	}
 	if amount > 0 || found && h.Kind == KindTool {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, $2, $3, $4)`,
-			h.TaskID, h.Kind, h.Ref, amount); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, h.TaskID, h.Kind, h.Ref, amount, u.PromptTokens, u.CachedTokens, u.OutputTokens, u.BodyBytes); err != nil {
 			return Booking{}, err
 		}
 	}

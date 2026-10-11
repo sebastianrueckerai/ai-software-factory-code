@@ -176,9 +176,9 @@ func (s *Server) Routes(version string) http.Handler {
 	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
 }
 
-// inTokenSlack covers the bytes the output limit adds to the body after the
-// input bound is taken.
-const inTokenSlack = 64
+// bodySlack covers the bytes the output limit adds to the body after the
+// hold is taken.
+const bodySlack = 64
 
 // handleChat admits a call only if its worst case fits the task's and the
 // day's free headroom: the output limit is clamped to what the headroom can
@@ -269,7 +269,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: task.ID, Kind: policy.KindModel, Ref: ref,
-		InTokens: len(body) + inTokenSlack, Price: price, WantOut: chatReq.WantOut,
+		Bytes: len(body) + bodySlack, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
 		Project:  project, ProjectEUR: projectEUR,
@@ -615,6 +615,7 @@ type modelCall struct {
 	overHold   string        // the booking's flag, on every audit row after it
 	deployment string        // the LiteLLM deployment that answered
 	up         *upstreamCall // nil until the call goes upstream
+	usage      policy.Usage  // the provider's, booked with the cost
 }
 
 var zero = 0.0
@@ -633,7 +634,7 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	if cost == nil {
 		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
 	}
-	b, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost)
+	b, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost, c.usage)
 	if err != nil {
 		reason = fmt.Sprintf("hold %d not released: %v", c.hold.ID, err)
 		log.Printf("task %s: %s", c.task.ID, reason)
@@ -653,6 +654,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 	ctx, up := s.tel.startCall(r.Context(), c.task, "model", c.alias, c.hold.EUR)
 	c.up = up
 	defer up.end()
+	c.usage.BodyBytes = len(body)
 
 	// a cached key can have been blocked under this call (factoryd's
 	// reconcile blocks the task's keys): drop it, mint a fresh one and
@@ -742,19 +744,19 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		// not: it is a cached read that lags, and a stream's headers leave before
 		// its cost exists. A stream's cost arrives in its final usage chunk; a
 		// stream the client broke off never shows it, and books the hold.
+		// Any other answer is one JSON document with its usage.
+		scan := &usageScanner{doc: !stream}
+		s.stream(w, io.TeeReader(res.Body, scan))
 		var cost *float64
 		if stream {
-			usage := &usageScanner{}
-			s.stream(w, io.TeeReader(res.Body, usage))
-			if usage.seen {
-				cost = &usage.cost
-			}
+			cost = scan.usage.Cost
 		} else {
-			s.stream(w, res.Body)
+			scan.parse(scan.pending)
 			if v, err := strconv.ParseFloat(res.Header.Get("x-litellm-response-cost"), 64); err == nil {
 				cost = &v
 			}
 		}
+		c.usage.PromptTokens, c.usage.CachedTokens, c.usage.OutputTokens = scan.usage.Prompt, scan.usage.Details.Cached, scan.usage.Output
 		s.finish(c, cost, "allowed")
 		return
 	}
@@ -793,16 +795,37 @@ const HeaderDeployment = "x-litellm-model-name"
 // is small; a longer line is content, passed through but not inspected.
 const maxSSELine = 1 << 20
 
-// usageScanner watches an SSE stream for the usage chunk's cost.
+// usage is a completion's usage as LiteLLM reports it: the provider's
+// tokens and, in a stream, LiteLLM's cost.
+type usage struct {
+	Cost    *float64 `json:"cost"`
+	Prompt  int      `json:"prompt_tokens"`
+	Output  int      `json:"completion_tokens"`
+	Details struct {
+		Cached int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// usageScanner watches an SSE stream for the usage chunk, or with doc
+// keeps a JSON answer, up to maxSSELine, to parse once it ends.
 type usageScanner struct {
+	doc      bool
 	pending  []byte
 	skipping bool // the current line outgrew maxSSELine
-	cost     float64
-	seen     bool
+	usage    usage
 }
 
 func (u *usageScanner) Write(p []byte) (int, error) {
 	n := len(p)
+	if u.doc {
+		if !u.skipping {
+			u.pending = append(u.pending, p...)
+			if len(u.pending) > maxSSELine {
+				u.pending, u.skipping = nil, true
+			}
+		}
+		return n, nil
+	}
 	for {
 		i := bytes.IndexByte(p, '\n')
 		if i < 0 {
@@ -823,17 +846,20 @@ func (u *usageScanner) Write(p []byte) (int, error) {
 }
 
 func (u *usageScanner) line(l []byte) {
-	data, ok := bytes.CutPrefix(bytes.TrimSpace(l), []byte("data:"))
-	if !ok || !bytes.Contains(data, []byte(`"usage"`)) {
+	if data, ok := bytes.CutPrefix(bytes.TrimSpace(l), []byte("data:")); ok {
+		u.parse(data)
+	}
+}
+
+func (u *usageScanner) parse(data []byte) {
+	if !bytes.Contains(data, []byte(`"usage"`)) {
 		return
 	}
 	var ev struct {
-		Usage *struct {
-			Cost *float64 `json:"cost"`
-		} `json:"usage"`
+		Usage *usage `json:"usage"`
 	}
-	if json.Unmarshal(data, &ev) == nil && ev.Usage != nil && ev.Usage.Cost != nil {
-		u.cost, u.seen = *ev.Usage.Cost, true
+	if json.Unmarshal(data, &ev) == nil && ev.Usage != nil {
+		u.usage = *ev.Usage
 	}
 }
 

@@ -216,3 +216,32 @@ func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, er
 	}
 	return c, rows.Err()
 }
+
+// ModelCall is one model call's ledger row: its ref (the alias, or a
+// factoryd purpose and its alias), when it was booked, its EUR and usage.
+type ModelCall struct {
+	Ref string
+	At  time.Time
+	EUR float64
+	Usage
+}
+
+// ModelCalls are task taskID's model calls in the ledger, oldest first.
+func ModelCalls(ctx context.Context, db *sql.DB, taskID string) ([]ModelCall, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT ref, created_at, eur::float8, prompt_tokens, cached_tokens, output_tokens, body_bytes FROM ledger
+		 WHERE task_id = $1 AND kind = 'model' ORDER BY id`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var calls []ModelCall
+	for rows.Next() {
+		var c ModelCall
+		if err := rows.Scan(&c.Ref, &c.At, &c.EUR, &c.PromptTokens, &c.CachedTokens, &c.OutputTokens, &c.BodyBytes); err != nil {
+			return nil, err
+		}
+		calls = append(calls, c)
+	}
+	return calls, rows.Err()
+}

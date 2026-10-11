@@ -67,6 +67,7 @@ type memStore struct {
 	audits []AuditRow
 	spends map[string]float64
 	ledger []ledgerRow
+	usages []policy.Usage // each ledger row's
 	holds  map[int64]policy.Hold
 	nextID int64
 	// reqs are the hold requests in order
@@ -103,6 +104,11 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	}
 	if t.Status != "running" && t.Status != "in-review" {
 		return policy.Hold{}, &policy.Refusal{Decision: "refused_task_status", Reason: "task " + t.ID + " is " + t.Status}
+	}
+	for i, l := range m.ledger {
+		if u := m.usages[i]; l.taskID == r.TaskID && l.kind == r.Kind && l.ref == r.Ref && u.PromptTokens > 0 && u.BodyBytes > 0 {
+			r.Earlier = u
+		}
 	}
 	m.reqs = append(m.reqs, r)
 	dayTotal, projectTotal := m.day, 0.0
@@ -152,7 +158,7 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	return h, nil
 }
 
-func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) (policy.Booking, error) {
+func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64, u policy.Usage) (policy.Booking, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cost = policy.KnownCost(cost)
@@ -174,6 +180,7 @@ func (m *memStore) ReleaseHold(_ context.Context, h policy.Hold, cost *float64) 
 		m.tasks[h.TaskID] = t
 		m.spends[h.TaskID] = t.SpentEUR
 		m.ledger = append(m.ledger, ledgerRow{h.TaskID, h.Ref, amount, h.Kind})
+		m.usages = append(m.usages, u)
 	}
 	b := policy.Booking{Spent: t.SpentEUR, Booked: amount}
 	if cost != nil {
@@ -1292,8 +1299,8 @@ func TestUsageScannerBoundsItsBuffer(t *testing.T) {
 		}
 	}
 	u.Write([]byte("\ndata: {\"usage\":{\"cost\":0.25}}\n"))
-	if !u.seen || u.cost != 0.25 {
-		t.Fatalf("cost = %v seen = %v, want the usage after the long line: 0.25", u.cost, u.seen)
+	if u.usage.Cost == nil || *u.usage.Cost != 0.25 {
+		t.Fatalf("cost = %v, want the usage after the long line: 0.25", u.usage.Cost)
 	}
 }
 
@@ -1399,6 +1406,25 @@ func TestRoutes(t *testing.T) {
 }
 
 func ptr(f float64) *float64 { return &f }
+
+// A settled call books LiteLLM's cost with the provider's usage and the
+// bytes of the body sent upstream: a stream's usage from its final chunk,
+// any other call's from its body, its cost from the header.
+func TestSettledCallRecordsItsUsage(t *testing.T) {
+	stub := newStubUpstream(t)
+	store := newMemStore(Task{Classes: coder, ID: "42", BudgetEUR: 10, Status: "running"})
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
+	stub.setResp(stubResp{status: http.StatusOK, body: sseBody, headers: map[string]string{"Content-Type": "text/event-stream"}})
+	doChat(t, s.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`)
+	stub.setResp(stubResp{status: http.StatusOK, headers: map[string]string{"x-litellm-response-cost": "0.25"},
+		body: `{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":4}}}`})
+	doChat(t, s.Routes("test"), chatBody("coding-frontier"))
+	_, bodies, _ := stub.seen()
+	if len(bodies) != 2 || !reflect.DeepEqual(store.ledger, []ledgerRow{{"42", "coding-cheap", 0.125, "model"}, {"42", "coding-frontier", 0.25, "model"}}) ||
+		!reflect.DeepEqual(store.usages, []policy.Usage{{PromptTokens: 3, OutputTokens: 1, BodyBytes: len(bodies[0])}, {PromptTokens: 10, CachedTokens: 4, OutputTokens: 2, BodyBytes: len(bodies[1])}}) {
+		t.Fatalf("ledger = %+v with usages %+v", store.ledger, store.usages)
+	}
+}
 
 const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 	"data: {\"choices\":[{\"index\":0,\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"cost\":0.125}}\n\n" +
