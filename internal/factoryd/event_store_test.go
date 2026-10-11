@@ -194,7 +194,7 @@ func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
 	if err != nil || len(stored) != 1 {
 		t.Fatalf("ProjectEvents = %d rows, %v; want 1", len(stored), err)
 	}
-	got := <-ch
+	got := receive(t, ch)
 	if got.ID != id || !got.At.Equal(stored[0].At) || got.At.IsZero() {
 		t.Fatalf("published id %d at %v; want id %d at the stored %v", got.ID, got.At, id, stored[0].At)
 	}
@@ -211,9 +211,10 @@ func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
 
 // Every status or gate change of the store leaves one task_status row by
 // factoryd, with the task's repository and issue and its status and gate
-// after the change, and publishes it; a change whose condition matches no
-// row (a transition from a status the task is not in, a gate on a final
-// task) leaves none.
+// after the change, and publishes it; an update that changes neither (the
+// same gate again, a start of a running task) or whose condition matches
+// no row (a transition from a status the task is not in, a gate on a
+// final task) leaves none.
 func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -256,6 +257,8 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 			"t-s", 7, map[string]any{"status": "running", "gate": GateIntake}},
 		{"SetGate", func() error { return s.SetGate(ctx, "t-s", GateChecks, time.Now()) },
 			"t-s", 7, map[string]any{"status": "running", "gate": GateChecks}},
+		{"SetGate to the gate the task is in", func() error { return s.SetGate(ctx, "t-s", GateChecks, time.Now()) }, "t-s", 7, nil},
+		{"MarkStarted on a running task", func() error { return s.MarkStarted(ctx, "t-s") }, "t-s", 7, nil},
 		{"TransitionTask from a status the task is not in", func() error {
 			if err := s.TransitionTask(ctx, "t-s", []string{"queued"}, "in-review"); !errors.Is(err, ErrNotFound) {
 				return fmt.Errorf("= %v, want ErrNotFound", err)
@@ -296,8 +299,20 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 			e.Repository != "sf/r" || e.IssueNumber != step.issue || !reflect.DeepEqual(e.Detail, step.detail) {
 			t.Errorf("%s: row %+v, want task_status by factoryd of %s #%d with %v", step.name, e, step.task, step.issue, step.detail)
 		}
-		if got := <-published; got.ID != e.ID {
+		if got := receive(t, published); got.ID != e.ID {
 			t.Errorf("%s: published event %d, want the row %d", step.name, got.ID, e.ID)
 		}
+	}
+}
+
+// receive is the next event on ch; the test fails after 5 s without one.
+func receive(t *testing.T, ch chan Event) Event {
+	t.Helper()
+	select {
+	case e := <-ch:
+		return e
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event published within 5 s")
+		return Event{}
 	}
 }
