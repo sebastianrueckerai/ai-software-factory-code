@@ -162,3 +162,46 @@ func TestPGStoreEventRequiresRepositoryAndKind(t *testing.T) {
 		t.Fatal("Record without kind should fail")
 	}
 }
+
+// Record publishes the row it stored: the id it answers and the time the
+// table gave it when the caller set none. A second row naming the same
+// answer comment is no row: Record answers 0 and publishes nothing.
+func TestPGStoreRecordPublishesTheStoredRow(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	bus := NewEventBus()
+	s.SetBus(bus)
+	ch := make(chan Event, 4)
+	defer bus.Subscribe("sf/r", ch)()
+	answer := Event{Repository: "sf/r", TaskID: "t-1", Kind: EventQuestionAnswered, Actor: "alice", Via: ViaButton,
+		Detail: map[string]any{"comment": int64(7)}}
+	id, err := s.Record(ctx, answer)
+	if err != nil || id == 0 {
+		t.Fatalf("Record = %d, %v", id, err)
+	}
+	stored, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
+	if err != nil || len(stored) != 1 {
+		t.Fatalf("ProjectEvents = %d rows, %v; want 1", len(stored), err)
+	}
+	got := <-ch
+	if got.ID != id || !got.At.Equal(stored[0].At) || got.At.IsZero() {
+		t.Fatalf("published id %d at %v; want id %d at the stored %v", got.ID, got.At, id, stored[0].At)
+	}
+	answer.Via = ViaWebhook
+	if id, err := s.Record(ctx, answer); id != 0 || err != nil {
+		t.Fatalf("the same answer again = %d, %v; want 0 and no error", id, err)
+	}
+	select {
+	case e := <-ch:
+		t.Fatalf("the repeated answer published event %d", e.ID)
+	default:
+	}
+}

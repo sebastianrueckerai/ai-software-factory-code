@@ -144,3 +144,59 @@ func TestSpendRepairMigration(t *testing.T) {
 		t.Fatalf("tasks (spent_eur finished_at) = %q, want %q", got, want)
 	}
 }
+
+// The answer-once migration keeps the earliest of two rows naming the same
+// task and answer comment and drops the later one, so its unique index
+// builds on a table the old timing left a duplicate in. Another task's,
+// another comment's, another kind's and a comment-less row all stay.
+func TestEventsAnswerOnceMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "answeronce")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`DROP INDEX events_answer_comment_idx`,
+		`INSERT INTO events (id, repository, task_id, kind, actor, via, detail) VALUES
+		 (1, 'sf/r', 't-a', 'question_answered', 'alice', 'button', '{"comment": 7}'),
+		 (2, 'sf/r', 't-a', 'question_answered', 'alice', 'webhook', '{"comment": 7}'),
+		 (3, 'sf/r', 't-a', 'question_answered', 'alice', 'webhook', '{"comment": 8}'),
+		 (4, 'sf/r', 't-b', 'question_answered', 'alice', 'webhook', '{"comment": 7}'),
+		 (5, 'sf/r', 't-a', 'card_moved', 'alice', 'button', '{"comment": 7}'),
+		 (6, 'sf/r', 't-a', 'question_answered', 'bob', 'webhook', NULL),
+		 (7, 'sf/r', 't-a', 'question_answered', 'bob', 'webhook', NULL)`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261011004000_events_answer_once.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the duplicate: %v", err)
+	}
+	var ids []int64
+	rows, err := db.QueryContext(ctx, `SELECT id FROM events ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if want := []int64{1, 3, 4, 5, 6, 7}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("events left = %v, want %v", ids, want)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail)
+		VALUES ('sf/r', 't-a', 'question_answered', 'carol', 'webhook', '{"comment": 7}')`); err == nil {
+		t.Fatal("a third row of comment 7 was stored; the unique index is missing")
+	}
+}

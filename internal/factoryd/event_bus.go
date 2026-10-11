@@ -1,12 +1,10 @@
 package factoryd
 
-import (
-	"sync"
-)
+import "sync"
 
-// EventBus is the in-process broadcaster: Events.Record fans each row out
-// to the subscribers of its project. One replica is the assumption; a
-// later multi-replica design would replace this with a pubsub bus.
+// EventBus fans each recorded event out to the console streams of its
+// project, in process: factoryd runs as one replica, so every Record and
+// every stream meet in this one bus.
 type EventBus struct {
 	mu   sync.RWMutex
 	subs map[string]map[chan Event]struct{} // by repository
@@ -17,37 +15,51 @@ func NewEventBus() *EventBus {
 	return &EventBus{subs: map[string]map[chan Event]struct{}{}}
 }
 
-// Subscribe registers ch for repository's events and returns a cancel
-// function that removes it. The channel is closed when the subscriber is
-// removed, so a range loop ends.
-func (b *EventBus) Subscribe(repository string, ch chan Event) func() {
+// Subscribe registers ch for repository's events. cancel removes it and
+// closes ch, unless Publish dropped it first.
+func (b *EventBus) Subscribe(repository string, ch chan Event) (cancel func()) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	set := b.subs[repository]
 	if set == nil {
 		set = map[chan Event]struct{}{}
 		b.subs[repository] = set
 	}
 	set[ch] = struct{}{}
-	b.mu.Unlock()
-	return func() {
-		b.mu.Lock()
-		if set, ok := b.subs[repository]; ok {
-			if _, live := set[ch]; live {
-				delete(set, ch)
-				close(ch)
-			}
-		}
-		b.mu.Unlock()
-	}
+	return func() { b.drop(repository, ch) }
 }
 
-// Publish sends e to every subscriber of e.Repository. A slow subscriber
-// blocks the others; one replica keeps the fan-out cheap.
+// drop removes ch from repository's subscribers and closes it, once.
+func (b *EventBus) drop(repository string, ch chan Event) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	set := b.subs[repository]
+	if _, ok := set[ch]; !ok {
+		return
+	}
+	delete(set, ch)
+	if len(set) == 0 {
+		delete(b.subs, repository)
+	}
+	close(ch)
+}
+
+// Publish sends e to every subscriber of e.Repository without blocking
+// Record. A subscriber whose buffer is full is dropped: its stream ends,
+// the browser reconnects with Last-Event-ID, and the replay reads the
+// rows it missed from the table.
 func (b *EventBus) Publish(e Event) {
+	var full []chan Event
 	b.mu.RLock()
-	set := b.subs[e.Repository]
+	for ch := range b.subs[e.Repository] {
+		select {
+		case ch <- e:
+		default:
+			full = append(full, ch)
+		}
+	}
 	b.mu.RUnlock()
-	for ch := range set {
-		ch <- e
+	for _, ch := range full {
+		b.drop(e.Repository, ch)
 	}
 }

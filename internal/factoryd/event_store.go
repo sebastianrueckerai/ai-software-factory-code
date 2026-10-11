@@ -61,7 +61,8 @@ type Event struct {
 // factoryd's Timeline writes a row beside each timeline line. A nil
 // recorder records nothing and lists none.
 type Events interface {
-	// Record inserts e and returns its id.
+	// Record inserts e and returns its id, or 0 and no error when e
+	// names an answer comment already recorded for its task.
 	Record(ctx context.Context, e Event) (int64, error)
 	// ProjectEvents lists repository's events newest first: those with an
 	// id above after (0 = every event), at most limit.
@@ -83,32 +84,24 @@ func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
 		}
 		detail = b
 	}
-	var id int64
-	var err error
-	if e.Kind == EventQuestionAnswered && e.Detail != nil && e.Detail["comment"] != nil {
-		err = s.db.QueryRowContext(ctx,
-			`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-			 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
-			 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind = 'question_answered' DO NOTHING
-			 RETURNING id`,
-			nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
-		}
-	} else {
-		err = s.db.QueryRowContext(ctx,
-			`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-			 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb) RETURNING id`,
-			nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&id)
-	}
-	if err != nil {
+	// only a second row naming the same answer comment conflicts (the
+	// partial unique index of 20261011004000_events_answer_once.sql)
+	err := s.db.QueryRowContext(ctx,
+		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
+		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
+		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind = 'question_answered' DO NOTHING
+		 RETURNING id, at`,
+		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&e.ID, &e.At)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return 0, nil
+	case err != nil:
 		return 0, err
 	}
-	e.ID = id
 	if s.bus != nil {
 		s.bus.Publish(e)
 	}
-	return id, nil
+	return e.ID, nil
 }
 
 // nullTime is t as a SQL NULL when it is the zero time, so the column

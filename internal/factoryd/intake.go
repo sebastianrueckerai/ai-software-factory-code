@@ -929,18 +929,16 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 // an issue comment itself and files its own row naming that comment; the
 // partial unique index on (task_id, detail->>'comment') keeps one row per
 // answer whatever the timing.
-func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool, skip int64) {
-	record := func() {
-		in.recordAnswer(ctx, t, author, skip)
-	}
+func (in *Intake) countAnswer(ctx context.Context, t Task, author string, trusted bool, commentID int64) {
 	switch {
 	case t.Status == "waiting-poster" && author == t.Author:
 		in.intervened(ctx, t, InterventionPosterAnswer)
-		record()
 	case trusted && (t.Status == "waiting-human" || t.Status == "waiting-poster"):
 		in.intervened(ctx, t, InterventionEscalationAnswer)
-		record()
+	default:
+		return
 	}
+	in.recordAnswer(ctx, t, author, commentID)
 }
 
 // recordAnswer writes the question_answered row of the comment (0 = none of
