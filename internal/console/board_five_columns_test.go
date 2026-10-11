@@ -32,15 +32,15 @@ func TestFiveColumnsPlaceCardsCorrectly(t *testing.T) {
 		{ID: "t-closed", Kind: "agent", Status: "closed", Repository: "sf/code", Objective: "closed"},
 	}...)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	
+
 	cols := map[string][]string{
-		"Needs you":   {"waiting human", "waiting poster author"},
-		"Queued":      {"waiting poster other", "backlog", "queued", "waiting deps"},
-		"Working":     {"running", "closing"},
-		"Verifying":   {"in review"},
-		"Done":        {"done", "failed", "closed"},
+		"Needs you": {"waiting human", "waiting poster author"},
+		"Queued":    {"waiting poster other", "backlog", "queued", "waiting deps"},
+		"Working":   {"running", "closing"},
+		"Verifying": {"in review"},
+		"Done":      {"done", "failed", "closed"},
 	}
-	
+
 	for colName, wantObjs := range cols {
 		start := strings.Index(body, ">"+colName+" <span")
 		if start < 0 {
@@ -66,7 +66,7 @@ func TestFiveColumnsCountsInHeaders(t *testing.T) {
 		{ID: "t-3", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "three"},
 	}...)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	
+
 	if !strings.Contains(body, ">Needs you <span class=\"count\">2</span>") {
 		t.Error("Needs you count not 2")
 	}
@@ -90,7 +90,7 @@ func TestStatusLineShowsFourFigures(t *testing.T) {
 		},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	
+
 	if !strings.Contains(body, `class="status-line"`) {
 		t.Fatal("status line missing")
 	}
@@ -115,7 +115,7 @@ func TestWideViewShowsLanesFirst(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "backlog", Lane: "backlog", Repository: "sf/code", Objective: "backlog card"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	
+
 	backlogIdx := strings.Index(body, ">Backlog <span")
 	runningIdx := strings.Index(body, ">Running <span")
 	if backlogIdx < 0 || runningIdx < 0 {
@@ -137,7 +137,7 @@ func TestDrawerThreeTabsForWriter(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "test card", PRNumber: 5})
 	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_start","time":"2026-09-28T10:00:00Z"}
 `)
-	
+
 	for _, tab := range []string{"overview", "activity", "files"} {
 		rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-1/drawer?tab="+tab, nil), ck)
 		if rec.Code != http.StatusOK {
@@ -155,7 +155,7 @@ func TestDrawer403ForNonWriter(t *testing.T) {
 	r.c.mu.Lock()
 	r.c.moves = nil
 	r.c.mu.Unlock()
-	
+
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-1/drawer", nil), ck)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("non-writer drawer = %d, want 403", rec.Code)

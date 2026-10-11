@@ -376,7 +376,7 @@ type boardData struct {
 	Escalations []card
 	Approvals   []approvalCard
 	Problems    []string
-	Approver    bool // may authorize spend (ruling 128)
+	Approver    bool   // may authorize spend (ruling 128)
 	View        string // "" (default five columns) or "wide" (lanes first)
 }
 
@@ -753,7 +753,7 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 		shown = all[i : i+1]
 	}
 	inView := func(repository string) bool { return project == "" || repository == shown[0].Repository }
-	
+
 	// Five columns only when viewing one project and not explicitly wide
 	wide := view == "wide" || project == ""
 	byLane, byStatus := map[string]int{}, map[string]int{}
@@ -809,7 +809,7 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 			}
 			continue
 		}
-		
+
 		if wide {
 			i, ok := byStatus[t.Status]
 			switch t.Status {
@@ -829,7 +829,7 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 				d.Columns[colIdx].Cards = append(d.Columns[colIdx].Cards, k)
 			}
 		}
-		
+
 		// Count for status line
 		if t.Status == "running" || t.Status == "closing" {
 			working++
@@ -837,7 +837,7 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 		if t.Status == "waiting-human" || (t.Status == "waiting-poster" && t.Author == v.user) {
 			needYou++
 		}
-		
+
 		if t.Status == "waiting-human" && v.planned[t.ID] {
 			escalations[t.ID] = bt
 		} else if v.escalated(t) {
@@ -869,12 +869,12 @@ func (c *Console) boardOf(r *http.Request, project, accent, view string) (boardD
 			fn(&d.Escalations[i])
 		}
 	})
-	
+
 	// Compute status line for the project screen
 	if !wide && len(shown) == 1 {
 		d.Status = c.computeStatusLine(ctx, shown[0], working, needYou)
 	}
-	
+
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
 }
@@ -911,7 +911,7 @@ func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, wor
 		ProjectURL: "/costs",
 		NeedYouURL: "#col-0",
 	}
-	
+
 	// Determine state word
 	if working > 0 {
 		sl.State = "working"
@@ -920,7 +920,7 @@ func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, wor
 	} else {
 		sl.State = "idle"
 	}
-	
+
 	// Get spend from ledger for this UTC month
 	now := time.Now().UTC()
 	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
@@ -937,7 +937,7 @@ func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, wor
 			}
 		}
 	}
-	
+
 	// Get month cap from policy or project file
 	pol, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
 	if err != nil || !ok {
@@ -950,7 +950,7 @@ func (c *Console) computeStatusLine(ctx context.Context, p factoryd.Project, wor
 			sl.MonthCap = pol.Document.Budget.MonthEUR
 		}
 	}
-	
+
 	return sl
 }
 
@@ -1303,10 +1303,10 @@ type drawerData struct {
 
 // prFile is a pull request's changed file from Forgejo's API.
 type prFile struct {
-	Name       string
-	Additions  int
-	Deletions  int
-	Status     string
+	Name      string
+	Additions int
+	Deletions int
+	Status    string
 }
 
 // cardDrawer answers GET /cards/{id}/drawer?tab=... for writers of the
@@ -1322,7 +1322,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, activity or files", http.StatusBadRequest)
 		return
 	}
-	
+
 	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
 	switch {
 	case err != nil:
@@ -1333,7 +1333,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	
+
 	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
 	switch {
 	case err != nil:
@@ -1344,7 +1344,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	
+
 	q := r.URL.Query()
 	v, _, err := c.viewOf(r, boardFilter{Project: q.Get("project"), Accent: q.Get("accent")})
 	if err != nil {
@@ -1353,17 +1353,17 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.byID[bt.ID] = bt.Task
-	
+
 	k := c.boardCard(ctx, v, bt)
 	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
-	
+
 	d := drawerData{
 		User: current(r).user,
 		CSRF: current(r).csrf,
 		Card: k,
 		Tab:  tab,
 	}
-	
+
 	switch tab {
 	case "overview":
 		// The card already has all the expanded content
@@ -1390,7 +1390,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	c.render(w, "drawer.html", d)
 }
 
