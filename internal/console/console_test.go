@@ -192,6 +192,11 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		prStr = strings.TrimSuffix(prStr, "/files")
 		var pr int64
 		fmt.Sscanf(prStr, "%d", &pr)
+		page := r.URL.Query().Get("page")
+		if page != "" && page != "1" {
+			w.Write([]byte("[]"))
+			return
+		}
 		if files, ok := f.pullFiles[pr]; ok {
 			json.NewEncoder(w).Encode(files)
 		} else {

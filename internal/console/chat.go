@@ -269,7 +269,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	default:
 		return t.runTool(tool, call.Arguments, in), ""
 	}
-	t.block(call.Name, call.Arguments, 0, result)
+	t.block(call.Name, call.Arguments, 0, result, true)
 	return result, ""
 }
 
@@ -284,7 +284,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 		result = "Refused: " + t.sentence(err)
 	}
 	result = sanitize.Inbound(result)
-	t.block(tool.name, args, time.Since(start), result)
+	t.block(tool.name, args, time.Since(start), result, tool.write)
 	if err != nil || !tool.write {
 		return result
 	}
@@ -303,15 +303,20 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 }
 
 // block sends a tool block: the call, its arguments (as a string when
-// they are no JSON), how long it took, the first line of its result.
-func (t *turn) block(name, args string, took time.Duration, result string) {
+// they are no JSON), how long it took, and the result (full for reads,
+// first line for writes).
+func (t *turn) block(name, args string, took time.Duration, result string, write bool) {
 	arguments := json.RawMessage(cmp.Or(args, "{}"))
 	if !json.Valid(arguments) {
 		arguments, _ = json.Marshal(args)
 	}
-	first, _, _ := strings.Cut(result, "\n")
+	display := result
+	if write {
+		first, _, _ := strings.Cut(result, "\n")
+		display = textutil.Truncate(first, 300)
+	}
 	t.send("tool", map[string]any{"name": name, "arguments": arguments,
-		"duration_ms": took.Milliseconds(), "result": textutil.Truncate(first, 300)})
+		"duration_ms": took.Milliseconds(), "result": display})
 }
 
 // sentence is err as the member and the agent read it.
@@ -385,7 +390,7 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		result = "Refused: " + t.sentence(err)
 	}
-	t.block("undo "+u.Description, "{}", time.Since(start), result)
+	t.block("undo "+u.Description, "{}", time.Since(start), result, true)
 	if err == nil {
 		t.send("applied", map[string]string{"tool": u.Description, "result": out})
 	}

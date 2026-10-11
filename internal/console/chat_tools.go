@@ -490,9 +490,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		return "", err
 	}
 	if len(deps) > 0 {
-		b.WriteString("\ndepends on:")
+		b.WriteString("\ndepends on")
 		for _, d := range deps {
-			fmt.Fprintf(&b, "\n  #%d %s (%s)", d.Issue, d.Key, factoryd.StatusMeaning(d.Status))
+			fmt.Fprintf(&b, " #%d (%s)", d.Issue, factoryd.StatusMeaning(d.Status))
 		}
 	}
 	if bt.Escalation != "" {
@@ -828,8 +828,14 @@ func (t *turn) fileText(in toolInput) (string, error) {
 		}
 		return "", &forgejoRefusal{"read the file", err}
 	}
-	if len(raw) > 0 && raw[0] == 0 {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%d bytes).", in.Path, in.Ref, len(raw)))
+	checkLen := len(raw)
+	if checkLen > 8192 {
+		checkLen = 8192
+	}
+	for i := 0; i < checkLen; i++ {
+		if raw[i] == 0 {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%d bytes).", in.Path, in.Ref, len(raw)))
+		}
 	}
 	content := string(raw)
 	if len(content) > fileLimit {

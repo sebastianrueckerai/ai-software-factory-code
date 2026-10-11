@@ -26,6 +26,14 @@ func makePlanJSON() json.RawMessage {
 
 func newReadToolsRig(t *testing.T) (*rig, *fakeChat, *chatGateway) {
 	r, chat, g := newChatRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-r" {
+			r.tasks.tasks[i].BudgetEUR = 5
+			r.tasks.tasks[i].SpentEUR = 1.23
+		}
+	}
+	r.tasks.mu.Unlock()
 	planRev := factoryd.PlanRevision{
 		TaskID:    "t-p",
 		Revision:  1,
@@ -75,9 +83,9 @@ func newReadToolsRig(t *testing.T) (*rig, *fakeChat, *chatGateway) {
 }
 
 type contentAnswer struct {
-	body   string
-	size   int
-	binary bool
+	body     string
+	size     int
+	binary   bool
 	notFound bool
 }
 
