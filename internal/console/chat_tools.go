@@ -59,6 +59,7 @@ type chatTool struct {
 	required           []string
 	write              bool
 	internal           bool // an undo's inverse only: the agent is not offered it
+	fits               string
 	run                func(t *turn, in toolInput) (string, *inverse, error)
 }
 
@@ -157,9 +158,9 @@ func cardTitle(t factoryd.Task) string {
 
 // cardLine is t on one line for the agent.
 func cardLine(t factoryd.Task) string {
-	s := fmt.Sprintf("#%d %s %q %s", t.IssueNumber, t.ID, cardTitle(t), t.Status)
+	s := fmt.Sprintf("#%d %s %q %s (%s)", t.IssueNumber, t.ID, cardTitle(t), t.Status, factoryd.StatusMeaning(t.Status))
 	if t.Gate != "" {
-		s += ", gate " + t.Gate
+		s += fmt.Sprintf(", gate %s (%s)", t.Gate, factoryd.GateMeaning(t.Gate))
 	}
 	if t.BudgetEUR > 0 {
 		s += fmt.Sprintf(", €%.2f of €%.2f", t.SpentEUR, t.BudgetEUR)
@@ -263,23 +264,34 @@ func eventLines(events []factoryd.Event) string {
 
 // tools are the project agent's tools in policy.ChatTools' order.
 var tools = []chatTool{
+	{name: "system", title: "Read the manual",
+		about: "The factory's manual, rendered from the code: the card states, the gates in order, the tools with the states each fits, this project's process and budgets, the chat's OK list; read it when a state or a refusal is unclear.",
+		fits:  "",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.systemText()
+			return s, nil, err
+		}},
 	{name: "board", title: "Read the board",
 		about: "The project's board as the member sees it: each column with its cards (issue, task id, title, status, gate, spend of budget), the human lane, the escalated cards and the approval requests waiting.",
+		fits:  "any card",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, _, err := t.c.boardText(t.r, t.p)
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "One card in detail: status, lane, gate, spend, its issue and pull request, the objective, the agent's summary, the question it waits on with the choices it offers, its merge request's reviews, its plan's revision and cards, its plan.",
+		fits:  "any card",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
 		about: "The project's newest events, newest first: what was done to which card, by whom and through what (button, chat, factoryd, webhook).",
+		fits:  "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
 			return eventLines(events), nil, err
 		}},
 	{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
 		about: "One card's events, newest first.",
+		fits:  "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			k, err := t.card(in)
 			if err != nil {
@@ -290,18 +302,21 @@ var tools = []chatTool{
 		}},
 	{name: "costs", title: "Read the costs",
 		about: "The project's spend this UTC month against its month cap, the cards' and the chat's apart.",
+		fits:  "any card",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.spendLine(t.r.Context(), t.p)
 			return "The project's " + s + ".", nil, err
 		}},
 	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "The diff of a card's pull request, read from Forgejo as the member; its first 20 KB.",
+		fits:  "any card",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human")},
 		required: []string{"title", "lane"},
 		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
+		fits:     "a lane of the project",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", "")
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
@@ -309,6 +324,7 @@ var tools = []chatTool{
 	{name: "move_card", title: "Move a card", write: true,
 		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
 		about: "Move a backlog card into a starting lane of its process, as the member's label on its issue.",
+		fits:  "a card in the backlog",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doMoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
 			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
@@ -316,6 +332,7 @@ var tools = []chatTool{
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Answer the question a card waits on (it needs you), with one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it.",
+		fits:     "a card waiting on a human with a question or at its session cap",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doAnswer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
@@ -323,6 +340,7 @@ var tools = []chatTool{
 	{name: "comment", title: "Comment on a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Comment on a card's issue as the member.",
+		fits:     "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
@@ -330,18 +348,21 @@ var tools = []chatTool{
 	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Send a message to a running card's agent session, marked as the member's; the agent reads it next.",
+		fits:     "a card running a session",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "File a failed card of a plan again and start the replacement in lane ready (an approver's action).",
+		fits:  "a failed plan card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
 		}},
 	{name: "start_plan", title: "Start a plan", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "Start an accepted plan: its cards still in the backlog go to lane ready (an approver's action).",
+		fits:  "an accepted plan",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doStartPlan(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
@@ -351,6 +372,7 @@ var tools = []chatTool{
 			"sha256": str("that revision's sha256, from the card tool")},
 		required: []string{"task_id", "revision", "sha256"},
 		about:    "Accept a plan's revision, which factoryd then files as cards (an approver's action).",
+		fits:     "a plan awaiting acceptance",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doAcceptPlan(t.r.Context(), t.a, in.TaskID, in.Revision, in.SHA256)
 			return note, nil, err
@@ -358,6 +380,7 @@ var tools = []chatTool{
 	{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Ask the planner for changes to a plan: a comment on its issue as the member.",
+		fits:     "a plan awaiting acceptance",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
@@ -365,12 +388,14 @@ var tools = []chatTool{
 	{name: "reject_plan", title: "Reject a plan", write: true, params: map[string]any{"task_id": taskParam, "note": str("why")},
 		required: []string{"task_id", "note"},
 		about:    "Reject a plan: its task ends failed with the reason.",
+		fits:     "a plan awaiting acceptance",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRejectPlan(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "Approve a card's waiting merge request: the member's approving review on its pull request, then factoryd merges it (an approver's action).",
+		fits:  "a pending merge request",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
@@ -384,6 +409,7 @@ var tools = []chatTool{
 			"action": enum("request_changes sends the card back to its agent, reject closes the pull request and fails the card", "request_changes", "reject")},
 		required: []string{"task_id", "note", "action"},
 		about:    "Deny a card's waiting merge request with the member's reason.",
+		fits:     "a pending merge request",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
@@ -396,6 +422,7 @@ var tools = []chatTool{
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line of up to 255 characters; empty restores the generated title")},
 		required: []string{"task_id", "summary"},
 		about:    "Set the one-line summary a card's face shows instead of its generated title.",
+		fits:     "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetSummary(t.r.Context(), t.a, in.TaskID, in.Summary)
 			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
@@ -404,6 +431,7 @@ var tools = []chatTool{
 		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour; empty removes it", append([]string{""}, factoryd.Accents...)...)},
 		required: []string{"task_id", "accent"},
 		about:    "Set a card's colour label, which shows as a chip and its left edge.",
+		fits:     "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
 			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
@@ -517,4 +545,70 @@ func (t *turn) diff(in toolInput) (string, error) {
 		return string(raw[:diffLimit]) + fmt.Sprintf("\n… the diff goes on for %d more bytes", len(raw)-diffLimit), nil
 	}
 	return string(raw), nil
+}
+
+func (t *turn) systemText() (string, error) {
+	v, ok := t.c.inForce(t.r.Context())
+	if !ok {
+		return "", refuse(http.StatusInternalServerError, "no policy in force")
+	}
+	var b strings.Builder
+	b.WriteString("Signals and members file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; a member steers through the chat, and every tool here is one of the console's actions.\n\n")
+	b.WriteString("Card states:\n")
+	for _, s := range []string{"backlog", "queued", "waiting-deps", "running", "closing", "in-review", "waiting-human", "waiting-poster", "done", "failed", "closed"} {
+		fmt.Fprintf(&b, "  %s: %s\n", s, factoryd.StatusMeaning(s))
+	}
+	b.WriteString("\nGates:\n")
+	proc, hasProc := v.Tree.Processes[t.p.Process]
+	gateOrder := []string{factoryd.GateIntake, factoryd.GateSession}
+	if hasProc {
+		for _, s := range proc.Stages {
+			gateOrder = append(gateOrder, s.Name)
+		}
+	}
+	gateOrder = append(gateOrder, factoryd.GateHuman)
+	for _, g := range gateOrder {
+		fmt.Fprintf(&b, "  %s: %s\n", g, factoryd.GateMeaning(g))
+	}
+	b.WriteString("\nTools:\n")
+	confirmSet := make(map[string]bool)
+	for _, c := range t.cfg.Confirm {
+		confirmSet[c] = true
+	}
+	for _, tool := range t.c.chatTools() {
+		line := "  " + tool.name
+		if confirmSet[tool.name] {
+			line += ", needs OK"
+		}
+		if tool.fits != "" {
+			line += ", " + tool.fits
+		}
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\nProcess")
+	if t.p.Process != "" {
+		fmt.Fprintf(&b, " %s", t.p.Process)
+	}
+	b.WriteString(":\n")
+	if hasProc {
+		for _, l := range proc.Lanes {
+			line := fmt.Sprintf("  lane %s", l.Name)
+			if l.MovedBy != "" {
+				line += ", moved by " + l.MovedBy
+			}
+			b.WriteString(line + "\n")
+		}
+		fmt.Fprintf(&b, "  merge rule: %s\n", t.p.MergeRule)
+	}
+	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.Tree.Document.Approvers, ", "))
+	budget := v.Tree.Document.Budget
+	fmt.Fprintf(&b, "  task budget: €%.2f default, €%.2f maximum\n", budget.TaskDefaultEUR, budget.TaskMaxEUR)
+	pc := v.Tree.Projects[t.p.Name]
+	if pc.Budget != nil && pc.Budget.MonthEUR > 0 {
+		fmt.Fprintf(&b, "  project month cap: €%.2f\n", pc.Budget.MonthEUR)
+	}
+	fmt.Fprintf(&b, "  sessions per card: %d\n", v.Tree.Document.Limits.Sessions)
+	fmt.Fprintf(&b, "  agent time: %s\n", v.Tree.Document.Limits.AgentTime)
+	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d\n", chatRounds, chatMessageMax)
+	return b.String(), nil
 }

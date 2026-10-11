@@ -76,7 +76,7 @@ type ChatConfig struct {
 
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
-var ChatTools = []string{"board", "card", "history", "card_history", "costs", "diff",
+var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
 	"new_card", "move_card", "answer", "comment", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent"}
 
