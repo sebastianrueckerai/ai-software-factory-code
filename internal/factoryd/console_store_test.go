@@ -72,6 +72,66 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 }
 
+// A writer's summary and accent land on the task row and read back on the
+// task and the board; "" stores NULL, which reads back as "".
+func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent"}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (Task, BoardTask) {
+		t.Helper()
+		tk, ok, err := s.Task(ctx, "t-s")
+		if err != nil || !ok {
+			t.Fatalf("Task = %v, %v", ok, err)
+		}
+		board, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+		if err != nil || len(board) != 1 {
+			t.Fatalf("BoardTasks = %+v, %v", board, err)
+		}
+		return tk, board[0]
+	}
+	if tk, b := read(); tk.HumanSummary != "" || tk.Accent != "" || b.HumanSummary != "" || b.Accent != "" {
+		t.Fatalf("a new task has summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	}
+	if err := s.SetHumanSummary(ctx, "t-s", "the cache, at last"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskAccent(ctx, "t-s", "teal"); err != nil {
+		t.Fatal(err)
+	}
+	if tk, b := read(); tk.HumanSummary != "the cache, at last" || tk.Accent != "teal" || b.HumanSummary != "the cache, at last" || b.Accent != "teal" {
+		t.Fatalf("task %q %q, board %q %q; want the cache, at last and teal", tk.HumanSummary, tk.Accent, b.HumanSummary, b.Accent)
+	}
+	if err := s.SetHumanSummary(ctx, "t-s", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskAccent(ctx, "t-s", ""); err != nil {
+		t.Fatal(err)
+	}
+	var cleared bool
+	if err := s.db.QueryRowContext(ctx, `SELECT human_summary IS NULL AND accent IS NULL FROM tasks WHERE id = 't-s'`).Scan(&cleared); err != nil || !cleared {
+		t.Fatalf("cleared = %v, %v; want both columns NULL", cleared, err)
+	}
+	if tk, _ := read(); tk.HumanSummary != "" || tk.Accent != "" {
+		t.Fatalf("after clearing: summary %q, accent %q", tk.HumanSummary, tk.Accent)
+	}
+	if err := s.SetHumanSummary(ctx, "t-gone", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetHumanSummary of no task = %v, want ErrNotFound", err)
+	}
+	if err := s.SetTaskAccent(ctx, "t-gone", "red"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetTaskAccent of no task = %v, want ErrNotFound", err)
+	}
+}
+
 // A task row carries when the work was asked for and the gate it is in;
 // alerts are raised by the machine and a human alert takes one verdict.
 func TestPGStoreGatesAndAlerts(t *testing.T) {

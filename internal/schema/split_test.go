@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,22 @@ func TestEveryMigrationFileSplitsIntoRealStatements(t *testing.T) {
 	}
 	if filesWalked == 0 {
 		t.Fatal("no migration files walked")
+	}
+}
+
+// The console's summary and accent (stage 15, phase 3a) are additive:
+// two nullable columns, nothing else.
+func TestTaskSummaryAccentMigrationOnlyAddsColumns(t *testing.T) {
+	text, err := files.ReadFile("migrations/factoryd/20261010234720_task_summary_accent.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS human_summary text",
+		"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS accent text",
+	}
+	if got := splitStatements(string(text)); !slices.Equal(got, want) {
+		t.Fatalf("statements = %#v, want %#v", got, want)
 	}
 }
 
