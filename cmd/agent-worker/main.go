@@ -280,21 +280,27 @@ func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr err
 	return "failed"
 }
 
-// deliver pushes a finished session's result, or a stopped session's work
-// in progress, and says so in the result.
+// deliver pushes the session's work at every end: a finished session's
+// result, a stopped or failed session's work in progress, and says so in
+// the result; a failed session's summary keeps its failure.
 func deliver(res harness.Result, stopped bool, push func() (string, error), branch string, emit func(harness.Event)) harness.Result {
-	if !res.Success && !stopped {
-		return res
-	}
+	failed := !res.Success && !stopped
 	commit, err := push()
 	switch {
 	case err != nil:
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
-		return harness.Result{Success: false, Summary: "push failed: " + err.Error()}
+		summary := "push failed: " + err.Error()
+		if failed {
+			summary = res.Summary + "; " + summary
+		}
+		return harness.Result{Success: false, Summary: summary}
 	case commit != "":
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushed, Detail: map[string]any{"branch": branch, "commit": commit}})
 	}
 	switch {
+	case failed && commit != "":
+		res.Summary += "; work in progress pushed to " + branch + " at " + commit
+	case failed:
 	case res.Success && commit != "":
 		res.Summary = "pushed branch " + branch + " at " + commit
 	case res.Success:

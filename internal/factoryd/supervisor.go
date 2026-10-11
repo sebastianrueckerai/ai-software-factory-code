@@ -21,7 +21,7 @@ import (
 // detector trips or at a check-in. It picks continue, message or escalate.
 // redirect and retry_stronger are factoryd's own decisions, never the
 // model's: redirect stops the session when a message or nudge cannot be
-// delivered, retry_stronger (the workflow's next ladder rung) ends a
+// delivered or the session loops, retry_stronger (the workflow's next ladder rung) ends a
 // session stuck after a message.
 type SupervisorAction string
 

@@ -240,8 +240,8 @@ type SessionResult struct {
 	// offered with its own escalation.
 	Reason  string
 	Choices []string
-	// Trip is the TripKind the supervisor stopped the session on, "" for
-	// none.
+	// Trip is the TripKind the supervisor stopped the session on, loop for
+	// the provider's refusal of repeated calls too, "" for none.
 	Trip string
 	// Status is the provider's HTTP status of a provider_refused session.
 	Status int `json:",omitempty"`

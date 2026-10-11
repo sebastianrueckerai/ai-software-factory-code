@@ -1078,18 +1078,30 @@ func TestCheckpointLoopEmitsOnlyChanges(t *testing.T) {
 	}
 }
 
-func TestDeliverPushesFinishedOrStoppedSessionsOnly(t *testing.T) {
+// Every session end pushes the work: a failed session's too (the
+// provider's refusal mid-session, Stage 15's lost diff), its summary
+// keeping the failure.
+func TestDeliverPushesEverySessionsWork(t *testing.T) {
 	var emitted []harness.Event
 	emit := func(ev harness.Event) { emitted = append(emitted, ev) }
 	pushes := 0
 	push := func(commit string) func() (string, error) {
 		return func() (string, error) { pushes++; return commit, nil }
 	}
-	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, push("c1"), "factory/t1", emit); res.Summary != "model refused" || pushes != 0 {
-		t.Fatalf("failed session: %+v after %d pushes, want no push", res, pushes)
+	const refused = "APIError: Repetitive tool calls detected in the conversation history (status 400)"
+	res := deliver(harness.Result{Success: false, Summary: refused}, false, push("c1"), "factory/t1", emit)
+	if res.Success || res.Summary != refused+"; work in progress pushed to factory/t1 at c1" || pushes != 1 {
+		t.Fatalf("failed session: %+v after %d pushes, want its work pushed", res, pushes)
 	}
-	res := deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, push("c-wip"), "factory/t1", emit)
-	if res.Success || res.Summary != "stopped; work in progress pushed to factory/t1 at c-wip" || pushes != 1 {
+	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c1" {
+		t.Fatalf("events = %+v, want the pushed event", emitted)
+	}
+	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, push(""), "factory/t1", emit); res.Summary != "model refused" || pushes != 2 {
+		t.Fatalf("failed session without changes: %+v after %d pushes", res, pushes)
+	}
+	emitted = nil
+	res = deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, push("c-wip"), "factory/t1", emit)
+	if res.Success || res.Summary != "stopped; work in progress pushed to factory/t1 at c-wip" || pushes != 3 {
 		t.Fatalf("stopped session: %+v after %d pushes", res, pushes)
 	}
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c-wip" {
@@ -1110,6 +1122,10 @@ func TestDeliverPushesFinishedOrStoppedSessionsOnly(t *testing.T) {
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushFailed || emitted[0].Detail["branch"] != "factory/t1" ||
 		emitted[0].Detail["error"] != "refusing to push: .forgejo/x changes .forgejo/" {
 		t.Fatalf("events = %+v, want one push_failed event with branch and error", emitted)
+	}
+	if res := deliver(harness.Result{Success: false, Summary: refused}, false, failing, "factory/t1", emit); res.Success ||
+		res.Summary != refused+"; push failed: refusing to push: .forgejo/x changes .forgejo/" {
+		t.Fatalf("failed session, refused push: %+v", res)
 	}
 }
 
