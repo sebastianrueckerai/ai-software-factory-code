@@ -1,13 +1,14 @@
 package console
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -18,14 +19,16 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// fakeEvents is factoryd.Events: it keeps every row and answers a project's
-// feed and the newest event of each card. Like PGStore it refuses an event
-// with no repository or no kind, so a handler that forgets the project of
-// its event fails here instead of passing silently.
+// fakeEvents is factoryd.Events: it keeps every row, publishes it on bus
+// as PGStore does, and answers a project's feed and the newest event of
+// each card. Like PGStore it refuses an event with no repository or no
+// kind, so a handler that forgets the project of its event fails here
+// instead of passing silently.
 type fakeEvents struct {
 	mu   sync.Mutex
 	rows []factoryd.Event
 	next int64
+	bus  *factoryd.EventBus
 }
 
 func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -48,6 +51,7 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 		e.At = time.Now()
 	}
 	f.rows = append(f.rows, e)
+	f.bus.Publish(e)
 	return e.ID, nil
 }
 
@@ -100,9 +104,7 @@ func (f *fakeEvents) all() []factoryd.Event {
 
 func newRigWithEvents(t *testing.T) (*rig, *fakeEvents) {
 	r := newRig(t)
-	ev := &fakeEvents{}
-	r.c.cfg.Events = ev
-	return r, ev
+	return r, r.events
 }
 
 // postedDetail is the detail an answer event carries: the comment Forgejo
@@ -117,14 +119,19 @@ type action struct {
 	repo    string
 	taskID  string
 	detail  map[string]any
-	setup   func(*rig)
+	setup   func(*testing.T, *rig)
 	request func(*rig, *session) *http.Request
 }
 
 // boardAction posts form to path, as the board does: htmx off, so a
 // handler that shows the board answers 303.
 func boardAction(name, path, kind, repo, taskID string, detail map[string]any, setup func(*rig), form url.Values) action {
-	return action{name: name, kind: kind, repo: repo, taskID: taskID, detail: detail, setup: setup,
+	return action{name: name, kind: kind, repo: repo, taskID: taskID, detail: detail,
+		setup: func(_ *testing.T, r *rig) {
+			if setup != nil {
+				setup(r)
+			}
+		},
 		request: func(r *rig, s *session) *http.Request {
 			form.Set("csrf", s.csrf)
 			return post(path, form)
@@ -189,44 +196,6 @@ func standingResource(r *rig) {
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
 }
 
-// withInfraForEvents sets up the infra fake for createProject and
-// mergeProject actions in the events table.
-func withInfraForEvents(r *rig) *infraFake {
-	f := &infraFake{mergeStatus: http.StatusOK}
-	next, err := url.Parse(r.fg.srv.URL)
-	if err != nil {
-		panic(err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(next)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		switch {
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
-			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":
-			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"number":12}`))
-		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/infra/pulls/main/project-linkshort":
-			if f.pull == nil {
-				http.Error(w, `{"message":"pull request does not exist"}`, http.StatusNotFound)
-				return
-			}
-			json.NewEncoder(w).Encode(f.pull)
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls/12/merge":
-			w.WriteHeader(f.mergeStatus)
-			w.Write([]byte(f.mergeBody))
-		default:
-			proxy.ServeHTTP(w, req)
-		}
-	}))
-	r.c.cfg.ForgejoURL = srv.URL
-	r.c.cfg.InfraRepo = factoryd.Repo{Owner: "sf", Name: "infra"}
-	r.c.cfg.InfraToken = "config-token"
-	return f
-}
-
 // actions are the seventeen POST handlers, one per event kind of the spine.
 var actions = []action{
 	boardAction("createTask", "/tasks", factoryd.EventCardFiled, "sf/code", "",
@@ -270,8 +239,8 @@ var actions = []action{
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
 	{name: "createProject", kind: factoryd.EventProjectFiled, repo: "linkshort/linkshort",
 		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
-		setup: func(r *rig) {
-			withInfraForEvents(r)
+		setup: func(t *testing.T, r *rig) {
+			withInfra(t, r)
 			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 		},
 		request: func(r *rig, s *session) *http.Request {
@@ -279,8 +248,8 @@ var actions = []action{
 		}},
 	{name: "mergeProject", kind: factoryd.EventProjectMerged, repo: "linkshort/linkshort",
 		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
-		setup: func(r *rig) {
-			f := withInfraForEvents(r)
+		setup: func(t *testing.T, r *rig) {
+			f := withInfra(t, r)
 			f.set(map[string]any{"number": 12, "state": "open", "merged": false})
 			pause := time.Duration(0)
 			r.c.cfg.MergeRetryPause = &pause
@@ -332,9 +301,7 @@ func TestEveryPostHandlerLeavesOneButtonRow(t *testing.T) {
 	for _, a := range actions {
 		t.Run(a.name, func(t *testing.T) {
 			r, ev := newRigWithEvents(t)
-			if a.setup != nil {
-				a.setup(r)
-			}
+			a.setup(t, r)
 			ck, s := r.loggedIn(t)
 			before := ev.count()
 			rec := r.do(a.request(r, s), ck)
@@ -346,8 +313,8 @@ func TestEveryPostHandlerLeavesOneButtonRow(t *testing.T) {
 	}
 }
 
-// The reject path of deny: an action neither request_changes nor reject is
-// refused with 400 and leaves no row.
+// A deny whose action is neither request_changes nor reject is refused
+// with 400 and leaves no row.
 func TestDenyBadActionLeavesNoRow(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, s := r.loggedIn(t)
@@ -472,17 +439,143 @@ func idsOf(events []eventJSON) []int64 {
 	return out
 }
 
+// streamOf opens the code project's stream on a real server as the
+// logged-in human, sending lastID as Last-Event-ID unless it is empty.
+// The stream, the request and the server end with the test.
+func streamOf(t *testing.T, r *rig, lastID string) (*http.Response, *bufio.Reader) {
+	t.Helper()
+	ck, _ := r.loggedIn(t)
+	srv := httptest.NewServer(r.c)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/projects/ai-software-factory-code/events/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(ck)
+	if lastID != "" {
+		req.Header.Set("Last-Event-ID", lastID)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		resp.Body.Close()
+		srv.Close()
+	})
+	return resp, bufio.NewReader(resp.Body)
+}
+
+// nextMessage is the stream's next message, or comment, as its lines up
+// to the blank line that ends it; the test fails after two seconds.
+func nextMessage(t *testing.T, br *bufio.Reader) []string {
+	t.Helper()
+	got := make(chan []string, 1)
+	go func() {
+		var lines []string
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				got <- append(lines, "read: "+err.Error())
+				return
+			}
+			if line = strings.TrimSuffix(line, "\n"); line == "" {
+				got <- lines
+				return
+			}
+			lines = append(lines, line)
+		}
+	}()
+	select {
+	case lines := <-got:
+		return lines
+	case <-time.After(2 * time.Second):
+		t.Fatal("no message on the stream within 2 s")
+		return nil
+	}
+}
+
+// at is a fixed event time, so a message's JSON is known to the byte.
+var at = time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)
+
+// The stream answers a writer with an event stream that is not cached.
+func TestStreamAnswersEventStreamForWriter(t *testing.T) {
+	r := newRig(t)
+	resp, _ := streamOf(t, r, "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stream = %d, want 200", resp.StatusCode)
+	}
+	if ct, cc := resp.Header.Get("Content-Type"), resp.Header.Get("Cache-Control"); ct != "text/event-stream" || cc != "no-cache" {
+		t.Fatalf("Content-Type %q, Cache-Control %q; want text/event-stream, no-cache", ct, cc)
+	}
+}
+
 // The stream answers 403 for a non-writer.
 func TestStreamAnswers403ForNonWriter(t *testing.T) {
 	r := newRig(t)
-	bus := factoryd.NewEventBus()
-	r.c.cfg.Bus = bus
 	ck, _ := r.loggedIn(t)
 	r.repoWriters["sf/code"] = []string{"someone-else"}
 	req := httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/events/stream", nil)
 	rec := r.do(req, ck)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("non-writer = %d, want 403", rec.Code)
+	}
+}
+
+// A Record on the project reaches an open stream as one message: event
+// "event", the row's id, the feed's JSON of the row. A first connect
+// replays nothing (row 1), and another project's row (2) is not sent.
+func TestStreamCarriesARecordedEvent(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-old", Kind: factoryd.EventCardFiled, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	_, br := streamOf(t, r, "")
+	r.events.Record(ctx, factoryd.Event{Repository: "demo-app/demo-app", TaskID: "t-d", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", IssueNumber: 4, Kind: factoryd.EventCardMoved, Actor: "alice",
+		Via: factoryd.ViaButton, At: at, Detail: map[string]any{"lane": "ready"}})
+	want := []string{"id: 3", "event: event",
+		`data: {"id":3,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"t-x","issue_number":4,"kind":"card_moved","actor":"alice","via":"button","detail":{"lane":"ready"}}`}
+	if got := nextMessage(t, br); !slices.Equal(got, want) {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+// Last-Event-ID replays the project's rows after it, oldest first, a
+// missing detail as {}; then the stream goes on live, skipping a live
+// event at or below the last one it sent (row 3, published again as a
+// row recorded between the subscription and the replay would be).
+func TestStreamReplaysAfterLastEventID(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	for _, task := range []string{"t-1", "t-2", "t-3"} {
+		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: task, Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	}
+	_, br := streamOf(t, r, "1")
+	row := func(id int, task string) []string {
+		return []string{fmt.Sprintf("id: %d", id), "event: event", fmt.Sprintf(
+			`data: {"id":%d,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"%s","issue_number":0,"kind":"card_moved","actor":"alice","via":"button","detail":{}}`, id, task)}
+	}
+	for _, want := range [][]string{row(2, "t-2"), row(3, "t-3")} {
+		if got := nextMessage(t, br); !slices.Equal(got, want) {
+			t.Fatalf("replayed %q, want %q", got, want)
+		}
+	}
+	r.events.bus.Publish(r.events.all()[2])
+	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-4", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	if got, want := nextMessage(t, br), row(4, "t-4"); !slices.Equal(got, want) {
+		t.Fatalf("live after the replay %q, want %q", got, want)
+	}
+}
+
+// A quiet stream sends the heartbeat comment within its interval.
+func TestStreamHeartbeat(t *testing.T) {
+	was := heartbeat
+	heartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { heartbeat = was })
+	_, br := streamOf(t, newRig(t), "")
+	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+		t.Fatalf("a quiet stream sent %q, want the comment \": ping\"", got)
 	}
 }
 

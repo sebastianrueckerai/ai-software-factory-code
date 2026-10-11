@@ -481,6 +481,7 @@ type rig struct {
 	resources *fakeResources
 	alerts    *fakeAlerts
 	projects  *fakeProjects
+	events    *fakeEvents
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -518,6 +519,7 @@ func newRig(t *testing.T) *rig {
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
 		}},
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
+		events:      &fakeEvents{bus: factoryd.NewEventBus()},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	c, err := New(Config{
 		Metrics:   metrics,
@@ -526,7 +528,7 @@ func newRig(t *testing.T) *rig {
 		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Events: &fakeEvents{},
+		Projects: r.projects, Events: r.events, Bus: r.events.bus,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()

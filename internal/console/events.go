@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"slices"
@@ -90,31 +91,51 @@ func (c *Console) projectRepository(r *http.Request, name string) string {
 	return name + "/" + name
 }
 
-// projectEvents answers GET /projects/{name}/events: the project's events,
-// newest first, as JSON, to a writer of it under the board's login rule
-// (auth admitted the request only for a logged-in writer; here the project
-// named must be one they write). limit and after page the feed; a bad
-// one, or no such project, is answered.
-func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
+// writtenProject is the project the path names when the session's human
+// writes it; false once the refusal is written (404 for no such project,
+// 403 for one they do not write).
+func (c *Console) writtenProject(w http.ResponseWriter, r *http.Request) (factoryd.Project, bool) {
 	name := r.PathValue("name")
 	p, ok, err := c.projectOf(r.Context(), name)
 	switch {
 	case err != nil:
 		log.Printf("console: projects: %v", err)
 		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
-		return
+		return p, false
 	case !ok:
 		http.NotFound(w, r)
-		return
+		return p, false
 	}
 	may, err := c.mayMoveCached(r.Context(), p.Repository, current(r).user, policy.MovedByWriters)
 	switch {
 	case err != nil:
 		log.Printf("console: may %s write %s: %v", current(r).user, p.Repository, err)
 		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return
+		return p, false
 	case !may:
 		http.Error(w, "you write no project "+name, http.StatusForbidden)
+		return p, false
+	}
+	return p, true
+}
+
+// feedRow is e as the feed and the stream answer it: a missing detail is {}.
+func feedRow(e factoryd.Event) eventJSON {
+	detail := e.Detail
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	return eventJSON{e.ID, e.At.UTC(), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail}
+}
+
+// projectEvents answers GET /projects/{name}/events: the project's events,
+// newest first, as JSON, to a writer of it under the board's login rule
+// (auth admitted the request only for a logged-in writer; here the project
+// named must be one they write). limit and after page the feed; a bad
+// one, or no such project, is answered.
+func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
+	p, ok := c.writtenProject(w, r)
+	if !ok {
 		return
 	}
 	q := r.URL.Query()
@@ -144,11 +165,7 @@ func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]eventJSON, 0, len(events))
 	for _, e := range events {
-		detail := e.Detail
-		if detail == nil {
-			detail = map[string]any{}
-		}
-		out = append(out, eventJSON{e.ID, e.At.UTC(), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail})
+		out = append(out, feedRow(e))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(out); err != nil { // #nosec G104 -- best-effort response write
@@ -156,102 +173,85 @@ func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// heartbeatInterval is the SSE comment interval that keeps the connection
-// through the Gateway (25 s, well under its 60 s idle timeout).
-const heartbeatInterval = 25 * time.Second
+// heartbeat is how often the stream writes a comment line, which keeps an
+// idle stream open through the Gateway; a test shortens it.
+var heartbeat = 25 * time.Second
 
-// projectEventsStream answers GET /projects/{name}/events/stream: an SSE
-// stream of the project's events. Last-Event-ID on reconnect replays the
-// rows after it from the table; a first connect replays nothing. The
-// console server has WriteTimeout 60 s, which would kill every stream
-// after a minute; SetWriteDeadline clears it for this response.
+// streamBuffer is how many events a stream may fall behind before the bus
+// drops it.
+const streamBuffer = 16
+
+// projectEventsStream answers GET /projects/{name}/events/stream to a
+// writer of the project: one SSE message per new events row, event
+// "event", its id the row's, its data the feed's row. A reconnect's
+// Last-Event-ID replays the rows after it from the table, oldest first and
+// at most the newest eventLimitMax of them; a first connect replays
+// nothing.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	p, ok, err := c.projectOf(r.Context(), name)
-	switch {
-	case err != nil:
-		log.Printf("console: projects: %v", err)
-		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
-		return
-	case !ok:
-		http.NotFound(w, r)
+	p, ok := c.writtenProject(w, r)
+	if !ok {
 		return
 	}
-	may, err := c.mayMoveCached(r.Context(), p.Repository, current(r).user, policy.MovedByWriters)
-	switch {
-	case err != nil:
-		log.Printf("console: may %s write %s: %v", current(r).user, p.Repository, err)
-		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return
-	case !may:
-		http.Error(w, "you write no project "+name, http.StatusForbidden)
-		return
-	}
-	if c.cfg.Bus == nil {
-		http.Error(w, "the event bus is not wired", http.StatusServiceUnavailable)
-		return
-	}
+	ch := make(chan factoryd.Event, streamBuffer)
+	cancel := c.cfg.Bus.Subscribe(p.Repository, ch)
+	defer cancel()
 	rc := http.NewResponseController(w)
+	// the console server's WriteTimeout would end every stream after a minute
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-		log.Printf("console: stream %s: clear deadline: %v", p.Repository, err)
+		log.Printf("console: the stream of %s keeps the write deadline: %v", p.Repository, err)
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		log.Printf("console: stream %s: response writer is not a flusher", p.Repository)
+	send := func(e factoryd.Event) error {
+		b, err := json.Marshal(feedRow(e))
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(w, "id: %d\nevent: event\ndata: %s\n\n", e.ID, b); err != nil {
+			return err
+		}
+		return rc.Flush()
+	}
+	if err := rc.Flush(); err != nil {
+		log.Printf("console: the stream of %s: %v", p.Repository, err)
 		return
 	}
-	flusher.Flush()
-	var lastID int64
-	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
-		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
-			lastID = n
-		}
-	}
-	if lastID > 0 {
-		rows, err := c.cfg.Events.ProjectEvents(r.Context(), p.Repository, lastID, eventLimitMax)
+	var last int64
+	if after, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); err == nil && after > 0 {
+		last = after
+		rows, err := c.cfg.Events.ProjectEvents(r.Context(), p.Repository, after, eventLimitMax)
 		if err != nil {
-			log.Printf("console: stream %s: replay: %v", p.Repository, err)
-		} else {
-			for i := len(rows) - 1; i >= 0; i-- {
-				e := rows[i]
-				b, _ := json.Marshal(eventJSON{e.ID, e.At.UTC(), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, e.Detail})
-				fmt.Fprintf(w, "id: %d\nevent: event\ndata: %s\n\n", e.ID, b)
-				flusher.Flush()
+			log.Printf("console: the stream of %s replays nothing: %v", p.Repository, err)
+		}
+		for i := len(rows) - 1; i >= 0; i-- {
+			if err := send(rows[i]); err != nil {
+				return
 			}
+			last = max(last, rows[i].ID)
 		}
 	}
-	ch := make(chan factoryd.Event, 16)
-	cancel := c.cfg.Bus.Subscribe(p.Repository, ch)
-	defer cancel()
-	tick := time.NewTicker(heartbeatInterval)
+	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
-	ctx := r.Context()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-r.Context().Done():
 			return
 		case e, ok := <-ch:
 			if !ok {
 				return
 			}
-			if e.ID <= lastID {
+			if e.ID <= last {
 				continue
 			}
-			lastID = e.ID
-			detail := e.Detail
-			if detail == nil {
-				detail = map[string]any{}
+			if err := send(e); err != nil {
+				return
 			}
-			b, _ := json.Marshal(eventJSON{e.ID, e.At.UTC(), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail})
-			fmt.Fprintf(w, "id: %d\nevent: event\ndata: %s\n\n", e.ID, b)
-			flusher.Flush()
+			last = e.ID
 		case <-tick.C:
-			fmt.Fprintf(w, ": ping\n\n")
-			flusher.Flush()
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
+				return
+			}
 		}
 	}
 }
