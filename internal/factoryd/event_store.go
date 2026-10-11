@@ -78,7 +78,8 @@ type Events interface {
 	// names an answer comment already recorded for its task.
 	Record(ctx context.Context, e Event) (int64, error)
 	// ProjectEvents lists repository's events newest first: those with an
-	// id above after (0 = every event), at most limit.
+	// id above after (0 = every event), at most limit, the pulse's own
+	// aside.
 	ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	// TaskEvents lists task id's events newest first, at most limit.
 	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
@@ -145,7 +146,8 @@ func scanEvent(scan func(dest ...any) error) (Event, error) {
 }
 
 func (s *PGStore) ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error) {
-	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE repository = $1 AND id > $2 ORDER BY id DESC LIMIT $3`,
+	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE repository = $1 AND id > $2
+		AND kind NOT IN ('`+EventPulse+`', '`+EventPulseComputing+`') ORDER BY id DESC LIMIT $3`,
 		repository, after, limit)
 }
 

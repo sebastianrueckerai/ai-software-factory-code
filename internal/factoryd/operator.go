@@ -76,8 +76,17 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 // any other status, an unreadable chunk or a stream that ends before its
 // [DONE] is an error.
 func (m *OperatorModel) Stream(ctx context.Context, taskID, alias string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
-	payload, err := json.Marshal(map[string]any{"model": alias, "messages": messages, "tools": tools,
-		"stream": true, "max_tokens": operatorTokens})
+	return m.stream(ctx, policy.PurposeOperator, operatorTokens, taskID, alias, messages, tools, text)
+}
+
+// stream is Stream for purpose with an answer of at most maxTokens; no
+// tools sends none.
+func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
+	body := map[string]any{"model": alias, "messages": messages, "stream": true, "max_tokens": maxTokens}
+	if len(tools) > 0 {
+		body["tools"] = tools
+	}
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return OperatorMessage{}, err
 	}
@@ -90,7 +99,7 @@ func (m *OperatorModel) Stream(ctx context.Context, taskID, alias string, messag
 	req.Header.Set("Authorization", "Bearer "+m.Token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
-	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeOperator)
+	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
 	client := m.HTTP
 	if client == nil {
 		client = http.DefaultClient
