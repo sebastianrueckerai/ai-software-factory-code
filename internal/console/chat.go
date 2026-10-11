@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -77,6 +78,9 @@ type turn struct {
 	// send writes one event of the stream; after a failed write, which a
 	// member who left causes, it writes no more
 	send func(event string, data any)
+	// tokens are the GitHub tokens the turn's calls carried, which each
+	// save scrubs out of the conversation
+	tokens []string
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -119,10 +123,16 @@ func (t *turn) fail(msg string) {
 // save appends m to the member's conversation, even once they left; false
 // once the turn failed.
 func (t *turn) save(m factoryd.ChatMessage) bool {
-	if err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.a.s.user, m); err != nil {
+	ctx := context.WithoutCancel(t.r.Context())
+	if err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
 		return false
+	}
+	for _, token := range t.tokens {
+		if err := t.c.cfg.Chat.ScrubChatMessages(ctx, t.p.Repository, t.a.s.user, token); err != nil {
+			log.Printf("console: the scrub of a token out of the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		}
 	}
 	return true
 }
@@ -265,7 +275,7 @@ func (t *turn) run(id string) {
 		for i, call := range answer.ToolCalls {
 			result, token := t.call(call)
 			proposed = proposed || token != ""
-			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
+			answer.ToolCalls[i].Arguments = objectArgs(masked(call.Arguments))
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
 				Result: result, Proposal: token})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
@@ -288,30 +298,96 @@ func (t *turn) run(id string) {
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	tool, ok := t.c.chatTool(call.Name)
 	var in toolInput
+	args := masked(call.Arguments)
 	switch {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
 	case json.Unmarshal([]byte(cmp.Or(call.Arguments, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	case slices.Contains(t.cfg.Confirm, tool.name):
+		t.took(in.Token)
 		desc, err := t.describe(tool, in)
 		if err != nil {
 			result = "Refused: " + t.sentence(err)
 			break
 		}
-		args := json.RawMessage(cmp.Or(call.Arguments, "{}"))
-		id := t.keep("proposal", tool.name, args, desc)
+		raw := json.RawMessage(cmp.Or(args, "{}"))
+		id := t.keep("proposal", tool.name, raw, desc)
 		if id == "" {
 			result = "The proposal could not be stored; nothing runs."
 			break
 		}
-		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": args, "description": desc})
+		t.c.hold(id, in.Token)
+		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc})
 		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, desc), id
 	default:
-		return t.runTool(tool, call.Arguments, in), ""
+		t.took(in.Token)
+		return t.runTool(tool, args, in), ""
 	}
-	t.block(call.Name, call.Arguments, 0, result)
+	t.block(call.Name, args, 0, result)
 	return result, ""
+}
+
+// tokenMask stands in for a GitHub token in every row, event and stream
+// line a tool call leaves.
+const tokenMask = "[token]"
+
+// masked is a tool call's arguments with its token, if any, replaced by
+// tokenMask: under every key that decodes into toolInput.Token, which
+// encoding/json matches in any case.
+func masked(args string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) != nil {
+		return args
+	}
+	hidden := false
+	for k, v := range m {
+		if strings.EqualFold(k, "token") && v != nil {
+			m[k], hidden = tokenMask, true
+		}
+	}
+	if !hidden {
+		return args
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// took keeps a token a call carried for the turn's scrubs, unless a
+// scrub of it could take out more than a GitHub token.
+func (t *turn) took(token string) {
+	if githubToken.MatchString(token) {
+		t.tokens = append(t.tokens, token)
+	}
+}
+
+// heldToken is a proposal's token until the proposal expires.
+type heldToken struct {
+	token string
+	until time.Time
+}
+
+// hold keeps token, which no row may hold, for proposal id's Do it until
+// the proposal expires, and forgets the expired ones.
+func (c *Console) hold(id, token string) {
+	if token != "" {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		now := time.Now()
+		maps.DeleteFunc(c.held, func(_ string, h heldToken) bool { return now.After(h.until) })
+		c.held[id] = heldToken{token, now.Add(chatTTL)}
+	}
+}
+
+// unhold puts the token held for proposal id into in once; false when
+// none is held.
+func (c *Console) unhold(id string, in *toolInput) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	h, ok := c.held[id]
+	in.Token = h.token
+	delete(c.held, id)
+	return ok
 }
 
 // runTool runs tool with its arguments args (in, decoded) as the member:
@@ -394,7 +470,10 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	tool, ok := c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
 	if ok && json.Unmarshal(p.Args, &in) == nil {
-		result = t.runTool(tool, string(p.Args), in)
+		result = "The token is gone with a restart of factoryd; ask again with it."
+		if in.Token == "" || c.unhold(p.Token, &in) {
+			result = t.runTool(tool, string(p.Args), in)
+		}
 	}
 	if t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
 		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result}}}) {
@@ -521,11 +600,14 @@ func (t *turn) snapshot() (string, statusLine, error) {
 	if err != nil {
 		return "", statusLine{}, err
 	}
-	s, pulse := d.Status, ""
+	s, pulse, github := d.Status, "", ""
 	if d.Pulse != nil {
 		pulse = "Pulse: " + d.Pulse.Sentence + "\n"
 	}
-	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s\n%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR), pulse, board), s, nil
+	if s.GitHub != "" {
+		github = "; GitHub: " + s.GitHub
+	}
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s\n%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR), github, pulse, board), s, nil
 }
 
 // spendLine is project p's spend this UTC month against its month cap,

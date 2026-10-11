@@ -8,7 +8,8 @@
 {{if .Waiting}}<span class="fig">{{.Waiting}} waiting on the provider</span>
 {{end}}<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
 <a href="/costs" class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</a>
-</p>{{end}}{{end}}
+{{with .GitHub}}<span class="fig">GitHub: {{.}}</span>
+{{end}}</p>{{end}}{{end}}
 {{if .Status.Project}}{{with .Pulse}}<div id="pulse" class="pulse{{if .Prominent}} prominent{{end}}"><details class="pulse-fold">
 <summary title="the most useful thing to know now; click for more"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}}>⚠</span> <span class="pulse-say">{{.Sentence}}</span><span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
 <ul class="pulse-bullets">{{range .Bullets}}<li>{{.}}</li>{{end}}</ul>

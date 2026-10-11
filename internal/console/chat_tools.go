@@ -33,6 +33,9 @@ type toolInput struct {
 	Ref      string `json:"ref,omitempty"`
 	Path     string `json:"path,omitempty"`
 	WithDiff bool   `json:"with_diff,omitempty"`
+	Remote   string `json:"remote,omitempty"`
+	Username string `json:"username,omitempty"`
+	Token    string `json:"token,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -87,9 +90,12 @@ var (
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
-// order: steer only where factoryd can reach a session.
+// order: steer only where factoryd can reach a session, github_export
+// where it keeps exports.
 func (c *Console) chatTools() []chatTool {
-	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool { return t.internal || t.name == "steer" && c.cfg.Steer == nil })
+	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
+		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil
+	})
 }
 
 func (c *Console) chatTool(name string) (chatTool, bool) {
@@ -117,7 +123,7 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"action", in.Action},
-		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}} {
+		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -456,6 +462,16 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
 			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
+		}},
+	{name: "github_export", title: "Export to GitHub", write: true,
+		params: map[string]any{"remote": str("the GitHub repository, owner/name"), "username": str("the GitHub login the token belongs to"),
+			"token": str("a GitHub token that may push to the repository; the member gives it")},
+		required: []string{"remote", "username", "token"},
+		about:    "Make Forgejo push the project's repository to a GitHub repository on every commit and every 8 h, in place of the project's last export (an approver's action). The token is never shown or stored in the conversation.",
+		fits:     "a factory project, for an approver",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, in.Username, in.Token)
+			return note, nil, err
 		}},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

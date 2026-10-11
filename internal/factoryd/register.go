@@ -67,6 +67,9 @@ type Registrar struct {
 	HostKey func(ctx context.Context) (string, error)
 	// OpenBao holds the Forgejo site admin's login at AdminSecret.
 	OpenBao SecretReader
+	// Mirrors are the projects' GitHub mirror rows, whose state each poll
+	// reads from Forgejo; nil reads none.
+	Mirrors MirrorStore
 
 	mu sync.Mutex
 	// reconcileErrs is each factory project's last failed reconcile, by
@@ -189,7 +192,8 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 // ReconcileLoop reconciles every project at its start, at each new policy
 // version (ruling 156) and every interval besides, so a hand edit in
 // Forgejo or the cluster is set back within that interval. It polls the
-// version every poll until ctx ends.
+// version, and reads the GitHub mirrors' states, every poll until ctx
+// ends.
 func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, poll, every time.Duration) {
 	seen, last := int64(0), time.Time{}
 	for {
@@ -197,6 +201,7 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 			seen, last = v, time.Now()
 			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 		}
+		r.mirrorStates(ctx)
 		select {
 		case <-ctx.Done():
 			return

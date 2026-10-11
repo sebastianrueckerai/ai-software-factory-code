@@ -42,6 +42,8 @@ const (
 	EventCardCommented        = "card_commented"
 	EventCommentDeleted       = "comment_deleted"
 	EventCardSteered          = "card_steered"
+	EventGithubExportSet      = "github_export_set"
+	EventGithubExportRemoved  = "github_export_removed"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

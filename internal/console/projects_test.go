@@ -84,8 +84,9 @@ func TestProjectsPage(t *testing.T) {
 			t.Errorf("/projects lacks %q", want)
 		}
 	}
+	settings := strings.ReplaceAll(body, `<form method="post" action="/projects/demo-app/export"`, "")
 	for _, leak := range []string{"secret-git-token", "secret-merge-token", "secret-pull-token", ">h<", "<form method=\"post\" action=\"/projects"} {
-		if strings.Contains(body, leak) {
+		if strings.Contains(settings, leak) {
 			t.Errorf("/projects shows %q", leak)
 		}
 	}

@@ -28,6 +28,8 @@ type projectRow struct {
 	GatewayYAML   string
 	// File links projects/<name>.yaml at the version in force.
 	File string
+	// Mirror is a factory project's GitHub export, nil for none.
+	Mirror *factoryd.Mirror
 }
 
 // projects shows every project read-only (ruling 183): its file's
@@ -58,11 +60,22 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
+			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
+			if err != nil {
+				log.Printf("console: the export of %s: %v", p.Name, err)
+				http.Error(w, "cannot read the projects' exports", http.StatusInternalServerError)
+				return
+			}
+			if ok {
+				row.Mirror = &m
+			}
+		}
 		rows = append(rows, row)
 	}
 	s := current(r)
 	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Projects": rows,
-		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects"})
+		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil, "Approver": c.approver(r)})
 }
 
 // projectRun is what the status panel keeps in memory of a new project:
@@ -445,4 +458,124 @@ func apiStatus(err error) int {
 		return ae.status
 	}
 	return 0
+}
+
+var (
+	githubRepo  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
+	githubLogin = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
+	// githubToken is every GitHub token's shape, whose scrub out of a
+	// conversation's JSON cannot break it
+	githubToken = regexp.MustCompile(`^[A-Za-z0-9_-]{8,255}$`)
+)
+
+// doGithubExport makes Forgejo push project p's repository to GitHub
+// repository remote (owner/name) as username with token, on every commit
+// and every 8 h, in place of a push mirror p had to it or to its last
+// export's remote: an approver's action, as a token leaves the factory.
+func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Project, remote, username, token string) (string, error) {
+	if err := c.approves(ctx, a, "export "+p.Name+" to GitHub"); err != nil {
+		return "", err
+	}
+	switch {
+	case p.Objects != policy.ObjectsFactory:
+		return "", refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)")
+	case !githubRepo.MatchString(remote):
+		return "", refuse(http.StatusBadRequest, "remote must be a GitHub repository, owner/name")
+	case !githubLogin.MatchString(username):
+		return "", refuse(http.StatusBadRequest, "username must be a GitHub login")
+	case !githubToken.MatchString(token):
+		return "", refuse(http.StatusBadRequest, "token must be a GitHub token: 8 to 255 letters, digits, _ or -")
+	}
+	old, _, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
+	if err != nil {
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the project's export")
+	}
+	repo, address := p.Repo(), factoryd.GitHubAddress(remote)
+	if err := c.dropPushMirrors(ctx, repo, address, factoryd.GitHubAddress(old.Remote)); err != nil {
+		return "", err
+	}
+	if err := c.cfg.Mirrors.AddPushMirror(ctx, repo, address, username, token); err != nil {
+		return "", &forgejoRefusal{"add the push mirror", errors.New(strings.ReplaceAll(err.Error(), token, tokenMask))}
+	}
+	if err := c.cfg.Mirrors.PutMirror(ctx, factoryd.Mirror{Project: p.Name, Direction: factoryd.MirrorExport, Remote: remote,
+		Username: username, Token: token, State: "created"}); err != nil {
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot store the project's export")
+	}
+	note := "GitHub export of " + p.Name + " to " + remote + " is set: Forgejo pushes every branch and tag on each commit and every 8 h."
+	if err := c.cfg.Mirrors.SyncPushMirrors(ctx, repo); err != nil {
+		log.Printf("console: the first push of %s to GitHub: %v", repo, err)
+		note += " The first push waits for the next commit."
+	}
+	c.record(ctx, a, p.Repository, "", 0, factoryd.EventGithubExportSet, map[string]any{"remote": remote})
+	return note, nil
+}
+
+// doRemoveGithubExport deletes project p's push mirror to GitHub and its
+// row: an approver's action.
+func (c *Console) doRemoveGithubExport(ctx context.Context, a actor, p factoryd.Project) (string, error) {
+	if err := c.approves(ctx, a, "remove the GitHub export of "+p.Name); err != nil {
+		return "", err
+	}
+	m, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
+	switch {
+	case err != nil:
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the project's export")
+	case !ok:
+		return "", refuse(http.StatusNotFound, p.Name+" has no GitHub export")
+	}
+	if err := c.dropPushMirrors(ctx, p.Repo(), factoryd.GitHubAddress(m.Remote)); err != nil {
+		return "", err
+	}
+	if err := c.cfg.Mirrors.DeleteMirror(ctx, p.Name, factoryd.MirrorExport); err != nil {
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot delete the project's export")
+	}
+	c.record(ctx, a, p.Repository, "", 0, factoryd.EventGithubExportRemoved, map[string]any{"remote": m.Remote})
+	return "GitHub export of " + p.Name + " to " + m.Remote + " is removed.", nil
+}
+
+// dropPushMirrors deletes repo's push mirrors to any of addresses.
+func (c *Console) dropPushMirrors(ctx context.Context, repo factoryd.Repo, addresses ...string) error {
+	ms, err := c.cfg.Mirrors.PushMirrors(ctx, repo)
+	if err != nil {
+		return &forgejoRefusal{"list the push mirrors", err}
+	}
+	for _, m := range ms {
+		if slices.ContainsFunc(addresses, func(a string) bool { return strings.EqualFold(a, m.RemoteAddress) }) {
+			if err := c.cfg.Mirrors.DeletePushMirror(ctx, repo, m.RemoteName); err != nil {
+				return &forgejoRefusal{"delete push mirror " + m.RemoteName, err}
+			}
+		}
+	}
+	return nil
+}
+
+// githubExport answers POST /projects/{name}/export, the projects page's
+// export form.
+func (c *Console) githubExport(w http.ResponseWriter, r *http.Request) {
+	c.projectAction(w, r, func(p factoryd.Project) (string, error) {
+		return c.doGithubExport(r.Context(), button(r), p, r.PostFormValue("remote"), r.PostFormValue("username"), r.PostFormValue("token"))
+	})
+}
+
+// removeGithubExport answers POST /projects/{name}/export/remove.
+func (c *Console) removeGithubExport(w http.ResponseWriter, r *http.Request) {
+	c.projectAction(w, r, func(p factoryd.Project) (string, error) { return c.doRemoveGithubExport(r.Context(), button(r), p) })
+}
+
+// projectAction runs do on the project the path names, which the member
+// writes, and sends them back to the projects page.
+func (c *Console) projectAction(w http.ResponseWriter, r *http.Request, do func(factoryd.Project) (string, error)) {
+	p, ok := c.writtenProject(w, r)
+	if !ok {
+		return
+	}
+	if _, err := do(p); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/projects#project-"+p.Name, http.StatusSeeOther)
 }

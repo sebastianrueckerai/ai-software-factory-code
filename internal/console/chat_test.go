@@ -215,6 +215,7 @@ func (f *fakeChat) proposal(token string) (fakeProposal, bool) {
 // project's chat task, the alias operator, streamed.
 type chatGateway struct {
 	t        *testing.T
+	project  string // the chat's project, ai-software-factory-code when ""
 	mu       sync.Mutex
 	replies  [][]string
 	requests []map[string]any
@@ -228,7 +229,7 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.t.Errorf("model call body: %v", err)
 	}
 	g.requests = append(g.requests, body)
-	task := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
+	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
 	if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
 		body["model"] != "operator" || body["stream"] != true || body["max_tokens"] != float64(4096) {
@@ -420,7 +421,7 @@ func TestChatTextReply(t *testing.T) {
 	for _, want := range []string{
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
-		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge. " +
+		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, github_export. " +
 			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
 	} {
@@ -564,8 +565,8 @@ func TestSystemTool(t *testing.T) {
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
 		"\n  card, any card\n",
 		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n",
-		"\n  approve_merge, needs OK, a pending merge request\n",
-		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge\n",
+		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
+		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, github_export\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n"+
 			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n")

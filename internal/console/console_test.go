@@ -572,6 +572,7 @@ type rig struct {
 	projects  *fakeProjects
 	events    *fakeEvents
 	chat      *fakeChat
+	mirrors   *fakeMirrors
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -610,6 +611,7 @@ func newRig(t *testing.T) *rig {
 		}},
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
 		events:      &fakeEvents{bus: factoryd.NewEventBus()},
+		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	r.chat = &fakeChat{tasks: r.tasks}
 	c, err := New(Config{
@@ -619,7 +621,7 @@ func newRig(t *testing.T) *rig {
 		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat,
+		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors,
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()

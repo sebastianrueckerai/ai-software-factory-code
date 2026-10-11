@@ -514,14 +514,16 @@ func (f boardFilter) query() string {
 
 // statusLine is the shown project's state above the board (ruling 251),
 // which the project agent reads too: its word, its cards working, those
-// waiting on the model provider, what needs the viewer, and its spend this
-// UTC month (the chat's part apart) against its month cap.
+// waiting on the model provider, what needs the viewer, its spend this
+// UTC month (the chat's part apart) against its month cap, and its GitHub
+// export's state word.
 type statusLine struct {
 	Project                   string
 	State                     string
 	Working, Waiting, NeedYou int
 	Spend                     factoryd.ProjectSpend
 	CapEUR                    float64
+	GitHub                    string
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -1147,6 +1149,17 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 		d.Problems = append(d.Problems, "the project's spend this month could not be read")
 	}
 	s.CapEUR = monthCap(v.policy, p.Repository)
+	if c.cfg.Mirrors == nil {
+		return
+	}
+	m, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
+	if err != nil {
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		d.Problems = append(d.Problems, "the project's GitHub export could not be read")
+	}
+	if ok {
+		s.GitHub, _, _ = strings.Cut(m.State, ":")
+	}
 }
 
 // monthCap is repository's month cap: its project file's budget.month_eur,

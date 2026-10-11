@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 )
 
 // Forgejo calls for a project's objects (rulings 156, 164): the projects
@@ -502,4 +503,54 @@ func (f *Forgejo) AdminMintToken(ctx context.Context, a AdminAuth, user, name st
 		return "", fmt.Errorf("forgejo mint %s for %s: no token in the answer (%v)", name, user, err)
 	}
 	return res.SHA1, nil
+}
+
+// PushMirror is one of a repository's push mirrors: LastUpdate is zero
+// before its first sync.
+type PushMirror struct {
+	RemoteName    string    `json:"remote_name"`
+	RemoteAddress string    `json:"remote_address"`
+	LastUpdate    time.Time `json:"last_update"`
+	LastError     string    `json:"last_error"`
+}
+
+// PushMirrors are repo's push mirrors, each address without a login.
+func (f *Forgejo) PushMirrors(ctx context.Context, repo Repo) ([]PushMirror, error) {
+	ms, err := GetPages[PushMirror](ctx, f.projectsCall, "/api/v1/repos/"+repo.String()+"/push_mirrors?")
+	for i := range ms {
+		u, err := url.Parse(ms[i].RemoteAddress)
+		ms[i].RemoteAddress = ""
+		if err == nil {
+			u.User = nil
+			ms[i].RemoteAddress = u.String()
+		}
+		if ms[i].LastUpdate.Unix() <= 0 {
+			ms[i].LastUpdate = time.Time{}
+		}
+	}
+	return ms, err
+}
+
+// AddPushMirror makes Forgejo push repo to address as username with
+// token on every commit and every 8 h.
+func (f *Forgejo) AddPushMirror(ctx context.Context, repo Repo, address, username, token string) error {
+	_, err := f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/push_mirrors", mustJSON(map[string]any{
+		"remote_address": address, "remote_username": username, "remote_password": token, "interval": "8h", "sync_on_commit": true}), anySuccess)
+	return err
+}
+
+// SyncPushMirrors makes Forgejo push repo to each of its push mirrors now.
+func (f *Forgejo) SyncPushMirrors(ctx context.Context, repo Repo) error {
+	_, err := f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/push_mirrors-sync", nil, anySuccess)
+	return err
+}
+
+// DeletePushMirror deletes repo's push mirror name; one already gone is
+// no error.
+func (f *Forgejo) DeletePushMirror(ctx context.Context, repo Repo, name string) error {
+	_, err := f.projectsCall(ctx, http.MethodDelete, "/api/v1/repos/"+repo.String()+"/push_mirrors/"+url.PathEscape(name), nil, anySuccess)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
 }

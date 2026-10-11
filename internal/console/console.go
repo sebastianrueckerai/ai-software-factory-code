@@ -151,6 +151,8 @@ type Config struct {
 	Operator *factoryd.OperatorModel
 	// Pulses are the projects' pulses (factoryd.PGStore); nil shows none.
 	Pulses Pulses
+	// Mirrors are the projects' GitHub exports; nil offers none.
+	Mirrors Mirrors
 }
 
 // Console is the console's http.Handler.
@@ -169,6 +171,7 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
+	held map[string]heldToken // the chat's proposals' tokens: a restart forgets them
 }
 
 type session struct {
@@ -195,7 +198,7 @@ func New(cfg Config) (*Console, error) {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(),
-		sessions: map[string]*session{}, runs: map[string]*projectRun{}}
+		sessions: map[string]*session{}, runs: map[string]*projectRun{}, held: map[string]heldToken{}}
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
@@ -243,6 +246,10 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
 	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
 	c.mux.Handle("GET /projects/{name}/pulse", c.auth(c.pulseGet))
+	if cfg.Mirrors != nil {
+		c.mux.Handle("POST /projects/{name}/export", c.auth(c.githubExport))
+		c.mux.Handle("POST /projects/{name}/export/remove", c.auth(c.removeGithubExport))
+	}
 	return c, nil
 }
 

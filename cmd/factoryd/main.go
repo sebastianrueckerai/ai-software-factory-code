@@ -263,6 +263,7 @@ func main() {
 	defer stop()
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Document { return policyLoader.Current().Document }, webhookSecret)
+	registrar.Mirrors = store
 	webhookIntake.MainPushed = registrar.MainPushed
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
@@ -404,6 +405,10 @@ func main() {
 		Chat:           store,
 		Operator:       operator,
 		Pulses:         store,
+		Mirrors: struct {
+			*factoryd.PGStore
+			*factoryd.Forgejo
+		}{store, forgejo},
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

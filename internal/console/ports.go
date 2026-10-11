@@ -84,8 +84,23 @@ type Chat interface {
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
 	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
+	// ScrubChatMessages replaces secret with [token] in login's messages.
+	ScrubChatMessages(ctx context.Context, repository, login, secret string) error
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
+}
+
+// Mirrors are the projects' GitHub exports: their rows (factoryd.PGStore),
+// whose read answers no token, and Forgejo's push mirrors through the
+// projects token (factoryd.Forgejo).
+type Mirrors interface {
+	Mirror(ctx context.Context, project, direction string) (factoryd.Mirror, bool, error)
+	PutMirror(ctx context.Context, m factoryd.Mirror) error
+	DeleteMirror(ctx context.Context, project, direction string) error
+	PushMirrors(ctx context.Context, repo factoryd.Repo) ([]factoryd.PushMirror, error)
+	AddPushMirror(ctx context.Context, repo factoryd.Repo, address, username, token string) error
+	SyncPushMirrors(ctx context.Context, repo factoryd.Repo) error
+	DeletePushMirror(ctx context.Context, repo factoryd.Repo, name string) error
 }
