@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -266,7 +267,6 @@ func eventLines(events []factoryd.Event) string {
 var tools = []chatTool{
 	{name: "system", title: "Read the manual",
 		about: "The factory's manual, rendered from the code: the card states, the gates in order, the tools with the states each fits, this project's process and budgets, the chat's OK list; read it when a state or a refusal is unclear.",
-		fits:  "",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.systemText()
 			return s, nil, err
@@ -547,10 +547,12 @@ func (t *turn) diff(in toolInput) (string, error) {
 	return string(raw), nil
 }
 
-var allTools func() []chatTool
+// offered is chatTools, set in init: tools' system entry reads it, which
+// a direct reference would make an initialization cycle.
+var offered func(*Console) []chatTool
 
 func init() {
-	allTools = func() []chatTool { return tools }
+	offered = (*Console).chatTools
 }
 
 func (t *turn) systemText() (string, error) {
@@ -561,7 +563,7 @@ func (t *turn) systemText() (string, error) {
 	var b strings.Builder
 	b.WriteString("Signals and members file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; a member steers through the chat, and every tool here is one of the console's actions.\n\n")
 	b.WriteString("Card states:\n")
-	for _, s := range []string{"backlog", "queued", "waiting-deps", "running", "closing", "in-review", "waiting-human", "waiting-poster", "done", "failed", "closed"} {
+	for _, s := range factoryd.Statuses {
 		fmt.Fprintf(&b, "  %s: %s\n", s, factoryd.StatusMeaning(s))
 	}
 	b.WriteString("\nGates:\n")
@@ -581,11 +583,7 @@ func (t *turn) systemText() (string, error) {
 	for _, c := range t.cfg.Confirm {
 		confirmSet[c] = true
 	}
-	hasSteer := t.c.cfg.Steer != nil
-	for _, tool := range allTools() {
-		if tool.name == "steer" && !hasSteer {
-			continue
-		}
+	for _, tool := range offered(t.c) {
 		line := "  " + tool.name
 		if confirmSet[tool.name] {
 			line += ", needs OK"
@@ -595,7 +593,11 @@ func (t *turn) systemText() (string, error) {
 		}
 		b.WriteString(line + "\n")
 	}
-	fmt.Fprintf(&b, "\nTools needing OK: %s\n", strings.Join(t.cfg.Confirm, ", "))
+	confirm := "none"
+	if len(t.cfg.Confirm) > 0 {
+		confirm = strings.Join(t.cfg.Confirm, ", ")
+	}
+	fmt.Fprintf(&b, "\nTools needing OK: %s\n", confirm)
 	b.WriteString("\nProcess")
 	if t.p.Process != "" {
 		fmt.Fprintf(&b, " %s", t.p.Process)
@@ -614,12 +616,11 @@ func (t *turn) systemText() (string, error) {
 	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.Tree.Document.Approvers, ", "))
 	budget := v.Tree.Document.Budget
 	fmt.Fprintf(&b, "  task budget: €%.2f default, €%.2f maximum\n", budget.TaskDefaultEUR, budget.TaskMaxEUR)
-	pc := v.Tree.Projects[t.p.Name]
-	if pc.Budget != nil && pc.Budget.MonthEUR > 0 {
-		fmt.Fprintf(&b, "  project month cap: €%.2f\n", pc.Budget.MonthEUR)
+	if _, eur := v.ProjectCap(t.p.Repository); !math.IsInf(eur, 1) {
+		fmt.Fprintf(&b, "  project month cap: €%.2f\n", eur)
 	}
 	fmt.Fprintf(&b, "  sessions per card: %d\n", v.Tree.Document.Limits.Sessions)
 	fmt.Fprintf(&b, "  agent time: %s\n", v.Tree.Document.Limits.AgentTime)
-	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d\n", chatRounds, chatMessageMax)
+	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d KiB\n", chatRounds, chatMessageMax>>10)
 	return b.String(), nil
 }

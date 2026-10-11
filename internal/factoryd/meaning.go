@@ -1,5 +1,10 @@
 package factoryd
 
+// Statuses are a task's statuses, the final ones last.
+var Statuses = append([]string{"backlog", "queued", "waiting-deps", "running", "closing", "in-review", "waiting-human", "waiting-poster"},
+	FinalStatuses...)
+
+// StatusMeaning is status in one sentence, as the project agent reads it.
 func StatusMeaning(status string) string {
 	switch status {
 	case "backlog":
@@ -29,6 +34,7 @@ func StatusMeaning(status string) string {
 	}
 }
 
+// GateMeaning is gate in one line, as the project agent reads it.
 func GateMeaning(gate string) string {
 	switch gate {
 	case GateIntake:

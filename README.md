@@ -1343,8 +1343,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   block's `monthly_eur` as budget, filed by the month's first message,
   which closes the month before's, no card and no workflow), at most 8
   calls a turn, each after a budget
-  check. Its tools (`policy.ChatTools`) are the reads `board`, `card`,
-  `history`, `card_history`, `costs`, `diff` and one per console action,
+  check. Its tools (`policy.ChatTools`) are the reads `system` (the
+  factory's manual, rendered from the code at call time), `board`,
+  `card`, `history`, `card_history`, `costs`, `diff` and one per console
+  action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
   `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,

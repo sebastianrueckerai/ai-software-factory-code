@@ -1,6 +1,9 @@
 package factoryd
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestStatusMeaning(t *testing.T) {
 	tests := []struct {
@@ -23,6 +26,13 @@ func TestStatusMeaning(t *testing.T) {
 		if got := StatusMeaning(tt.status); got != tt.want {
 			t.Errorf("StatusMeaning(%q) = %q, want %q", tt.status, got, tt.want)
 		}
+	}
+	var listed []string
+	for _, tt := range tests[:11] {
+		listed = append(listed, tt.status)
+	}
+	if !slices.Equal(Statuses, listed) {
+		t.Errorf("Statuses = %v, want %v", Statuses, listed)
 	}
 }
 
