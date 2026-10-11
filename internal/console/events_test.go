@@ -661,16 +661,21 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 	}
 }
 
-// The board template no longer carries hx-trigger="every 3s".
+// The board template no longer carries hx-trigger="every 3s": it names
+// the project its script follows and the filter its swaps carry, and the
+// page has the footer that says when the stream failed.
 func TestBoardTemplateHasNoPoll(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if strings.Contains(body, `hx-trigger="every 3s"`) {
 		t.Error("board still polls")
 	}
-	if !strings.Contains(body, `data-project=""`) {
-		t.Error("board lacks data-project")
+	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`,
+		`<footer id="live" role="status"></footer>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board page lacks %s", want)
+		}
 	}
 }
 

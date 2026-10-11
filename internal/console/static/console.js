@@ -1,26 +1,21 @@
-// The board subscribes to the event stream instead of polling; skip an
-// htmx request while a form on the board is being filled in (text typed,
-// a choice changed, or a field focused) so the swap does not wipe it.
-document.addEventListener("htmx:beforeRequest", function (e) {
-  var board = e.detail.elt;
-  if (board.id !== "board") return;
-  if (board.querySelector("details[open]")) {
-    e.preventDefault();
-    return;
-  }
-  if (board.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) {
-    e.preventDefault();
-    return;
-  }
-  var fields = board.querySelectorAll("input, textarea");
+// busy: a form in el is being filled in (a field focused, text typed, a
+// choice changed) or a card's expanded view in it is open, so a swap of el
+// would wipe or close it.
+function busy(el) {
+  if (el.querySelector("details[open]")) return true;
+  if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
+  var fields = el.querySelectorAll("input, textarea");
   for (var i = 0; i < fields.length; i++) {
     var f = fields[i];
     if (f.type === "hidden") continue;
-    if ((f.type === "radio" || f.type === "checkbox") ? f.checked !== f.defaultChecked : f.value !== f.defaultValue) {
-      e.preventDefault();
-      return;
-    }
+    if ((f.type === "radio" || f.type === "checkbox") ? f.checked !== f.defaultChecked : f.value !== f.defaultValue) return true;
   }
+  return false;
+}
+// The board's own requests, the fallback poll and the swaps the stream
+// asks for, skip a busy board.
+document.addEventListener("htmx:beforeRequest", function (e) {
+  if (e.detail.elt.id === "board" && busy(e.detail.elt)) e.preventDefault();
 });
 
 // A refused board action (a move the lane does not take from you) answers
@@ -48,7 +43,7 @@ document.addEventListener("htmx:beforeRequest", function (e) {
 // for that lane, the same request as its button. Cards without a form for
 // the lane are not dropped there.
 document.addEventListener("dragstart", function (e) {
-  var card = e.target.closest && e.target.closest("[data-card]");
+  var card = e.target.closest && e.target.closest("[data-card][draggable]");
   if (card) e.dataTransfer.setData("text/plain", card.dataset.card);
 });
 function moveForm(e) {
@@ -102,60 +97,99 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
-// The board opens an EventSource on the project's stream; on each event it
-// swaps the card the event names and its activity line. A project-level
-// event (card_filed, project_merged) swaps the whole board. A failed
-// stream falls back to the poll after 30 s without messages and says so in
-// the footer.
+// The board follows its project's event stream: an event swaps the cards
+// it names from GET /cards/{id}, or the whole board when the card is not
+// on it or its place changed, and card_filed, project_merged and a
+// reconnect swap the board. The board of every project polls every 3 s
+// instead, and so does a board whose stream failed (closed, or in error
+// for 30 s), which the footer says. A swap a busy card or board would wipe
+// waits until it is no longer busy.
 (function () {
-  var board = document.getElementById("board");
-  if (!board) return;
-  var project = board.dataset.project;
-  if (!project) return;
-  var url = "/projects/" + encodeURIComponent(project) + "/events/stream";
-  var es = null;
-  var fallbackTimer = null;
-  var footer = document.querySelector("footer");
-  function showFallback() {
-    if (!footer) {
-      footer = document.createElement("footer");
-      document.body.appendChild(footer);
+  var polling = false, missed = {}, latest = {}, asked = 0;
+  function board() { return document.getElementById("board"); }
+  function poll() {
+    var b = board();
+    if (!polling || !b || b.hasAttribute("hx-trigger")) return;
+    b.setAttribute("hx-get", "/board" + b.dataset.query);
+    b.setAttribute("hx-trigger", "every 3s");
+    b.setAttribute("hx-swap", "outerHTML");
+    htmx.process(b);
+  }
+  // a swapped-in board comes without the poll's attributes
+  document.addEventListener("htmx:afterSettle", poll);
+  function swapBoard() {
+    var b = board();
+    if (busy(b)) {
+      missed[""] = true;
+      return;
     }
-    footer.textContent = "The event stream failed; the board polls every 3 s.";
+    htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"});
   }
-  function clearFallback() {
-    if (footer) footer.textContent = "";
-  }
-  function startPoll() {
-    board.setAttribute("hx-get", "/board" + (project ? "?project=" + encodeURIComponent(project) : ""));
-    board.setAttribute("hx-trigger", "every 3s");
-    board.setAttribute("hx-swap", "outerHTML");
-    htmx.process(board);
-  }
-  function openStream() {
-    es = new EventSource(url);
-    var lastMessage = Date.now();
-    es.addEventListener("event", function (e) {
-      lastMessage = Date.now();
-      clearFallback();
-      try {
-        var ev = JSON.parse(e.data);
-        if (ev.kind === "card_filed" || ev.kind === "project_merged") {
-          htmx.ajax("GET", "/board" + (project ? "?project=" + encodeURIComponent(project) : ""), {target: board, swap: "outerHTML"});
-          return;
-        }
-        if (ev.task_id) {
-          htmx.ajax("GET", "/cards/" + encodeURIComponent(ev.task_id), {target: "[data-card=\"" + CSS.escape(ev.task_id) + "\"]", swap: "outerHTML"});
-        }
-      } catch (err) {}
-    });
-    es.onerror = function () {
-      if (Date.now() - lastMessage > 30000) {
-        es.close();
-        showFallback();
-        startPoll();
+  function swapCard(id) {
+    var cards = document.querySelectorAll("[data-card=\"" + CSS.escape(id) + "\"]");
+    if (!cards.length) return swapBoard();
+    for (var i = 0; i < cards.length; i++) {
+      if (busy(cards[i])) {
+        missed[id] = true;
+        return;
       }
-    };
+    }
+    var n = latest[id] = ++asked;
+    fetch("/cards/" + encodeURIComponent(id) + board().dataset.query).then(function (r) {
+      if (!r.ok) throw new Error("GET /cards/" + id + ": " + r.status);
+      return r.text();
+    }).then(function (html) {
+      if (latest[id] !== n) return;
+      var fresh = document.createElement("template");
+      fresh.innerHTML = html;
+      if (!fresh.content.firstElementChild || fresh.content.firstElementChild.dataset.place !== cards[0].dataset.place) return swapBoard();
+      cards.forEach(function (k) {
+        if (k.isConnected) htmx.swap(k, html, {swapStyle: "outerHTML"});
+      });
+    }).catch(swapBoard);
   }
-  openStream();
+  setInterval(function () {
+    var ids = Object.keys(missed);
+    missed = {};
+    ids.forEach(function (id) {
+      if (id) swapCard(id);
+      else swapBoard();
+    });
+  }, 3000);
+  function follow(project) {
+    var es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream");
+    var failing = null, opened = false;
+    function fallBack() {
+      es.close();
+      document.getElementById("live").textContent = "The live stream failed: the board polls every 3 s.";
+      polling = true;
+      poll();
+    }
+    es.onopen = function () {
+      clearTimeout(failing);
+      failing = null;
+      // the replay after a reconnect holds at most the newest 500 events
+      if (opened) swapBoard();
+      opened = true;
+    };
+    es.onerror = function () {
+      if (es.readyState === EventSource.CLOSED) fallBack();
+      else if (!failing) failing = setTimeout(fallBack, 30000);
+    };
+    es.addEventListener("event", function (m) {
+      var e = JSON.parse(m.data);
+      if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
+      else swapCard(e.task_id);
+    });
+  }
+  document.addEventListener("DOMContentLoaded", function () {
+    var b = board();
+    if (!b) return;
+    if (b.dataset.project) {
+      follow(b.dataset.project);
+    } else {
+      polling = true;
+      poll();
+    }
+  });
 })();
