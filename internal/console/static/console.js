@@ -225,7 +225,7 @@ function drawerFailed(e) {
 document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
 document.addEventListener("htmx:afterSwap", function (e) {
-  var shown = e.detail.target.id === "drawer" && e.detail.target.querySelector("[data-drawer]");
+  var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer]");
   if (shown && location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
 });
 
