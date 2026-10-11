@@ -30,6 +30,9 @@ type ProjectKube interface {
 	GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error)
 	Deployments(ctx context.Context, namespace string) ([]DeploymentState, error)
 	NamespaceLabel(ctx context.Context, name, key string) (string, error)
+	// SecretsByLabels lists namespace's Secrets that carry every label of
+	// labels.
+	SecretsByLabels(ctx context.Context, namespace string, labels map[string]string) ([]KubeSecret, error)
 }
 
 // Registrar keeps every project's objects (rulings 156, 164, 179). A
@@ -101,6 +104,14 @@ const (
 	projectObject     = "project"
 	ciTeam            = "ci"
 	deployKeyTitle    = "factory-roll"
+	// Flux's kustomize-controller labels every object it applies with its
+	// Kustomization's name and namespace.
+	fluxNameLabel      = "kustomize.toolkit.fluxcd.io/name"
+	fluxNamespaceLabel = "kustomize.toolkit.fluxcd.io/namespace"
+	// staleImport is how long an import row of a filing whose pull request
+	// never merged keeps its token: a week, so a review over a weekend
+	// keeps its import.
+	staleImport = 7 * 24 * time.Hour
 )
 
 // ProjectHookEvents are every issue and pull request event, and pushes
@@ -205,11 +216,59 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 		}
 		r.mirrorStates(ctx)
+		r.poll(ctx)
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(poll):
 		}
+	}
+}
+
+// poll keeps, between the reconciles, what must not wait for the next:
+// each ready factory project's staging secrets, so a Secret Flux applies
+// reaches CI within the poll, and the import rows of filings whose pull
+// request closed unmerged.
+func (r *Registrar) poll(ctx context.Context) {
+	ps, err := r.Store.Projects(ctx)
+	if err != nil {
+		log.Printf("projects: %v", err)
+		return
+	}
+	files := []string{}
+	for _, p := range ps {
+		if p.File {
+			files = append(files, p.Name)
+		}
+		if _, ok := p.Staging(); ok && p.File && p.Objects == policy.ObjectsFactory && !p.ReadyAt.IsZero() {
+			r.refreshStaging(ctx, p)
+		}
+	}
+	if r.Mirrors == nil {
+		return
+	}
+	gone, err := r.Mirrors.DeleteStaleImports(ctx, files, time.Now().Add(-staleImport))
+	if err != nil {
+		log.Printf("projects: import rows: %v", err)
+	}
+	for _, m := range gone {
+		log.Printf("project %s: import row of github.com/%s deleted: pending over 7 days, and no file projects/%s.yaml", m.Project, m.Remote, m.Project)
+	}
+}
+
+// refreshStaging writes p's staging secrets when their lines changed. A
+// ready project has both; the reconcile restores one deleted by hand.
+func (r *Registrar) refreshStaging(ctx context.Context, p Project) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run := &reconcileRun{r: r, p: p}
+	object := "actions secrets " + SecretStagingURL + ", " + SecretStagingSecrets
+	c, err := run.staging(ctx, []string{SecretStagingURL, SecretStagingSecrets})
+	switch {
+	case err != nil:
+		log.Printf("project %s: %s: %v", p.Name, object, err)
+	case c != Unchanged:
+		run.line(object, c)
 	}
 }
 
@@ -441,7 +500,8 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 // before main's protection exists; a repository with main is never seeded,
 // so no project is seeded twice. An imported repository waits for the
 // copy, gets main from its default branch, then only the template's
-// .forgejo/ files and AGENTS.md it lacks, the factory's CI, in one commit.
+// .forgejo/ files and AGENTS.md it lacks, the factory's CI, and, when it
+// has no deploy/, the template's deploy/ files, in one commit.
 func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	f, p := run.r.Forgejo, run.p
 	has, err := f.ProjectBranchExists(ctx, p.Repo(), "main")
@@ -486,7 +546,18 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 		}
 		return Change(fmt.Sprintf("created %s from template %s", sha, p.Template)), nil
 	}
+	deployed, err := f.ProjectFileExists(ctx, p.Repo(), "main", "deploy")
+	if err != nil {
+		return "", err
+	}
+	message := "Factory workflows"
+	if !deployed {
+		message += " and manifests"
+	}
 	for path := range files {
+		if !deployed && strings.HasPrefix(path, "deploy/") {
+			continue
+		}
 		keep := strings.HasPrefix(path, ".forgejo/") || path == "AGENTS.md"
 		if keep {
 			exists, err := f.ProjectFileExists(ctx, p.Repo(), "main", path)
@@ -502,7 +573,7 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	if len(files) == 0 {
 		return Unchanged, nil
 	}
-	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Factory workflows", files)
+	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", message, files)
 	if err != nil {
 		return "", err
 	}
@@ -725,31 +796,53 @@ func (run *reconcileRun) hostKey(ctx context.Context, secrets []string) (Change,
 
 // staging keeps STAGING_URL, the staging Service's address (the
 // template's Service is named after the project), and STAGING_SECRETS,
-// one KEY='value' line per secrets entry with staging's value, which the
-// smoke test sources as shell (a key that is no shell name gets a comment
-// line instead); the row keeps their hash. Forgejo refuses an empty
-// secret, so a project without secrets gets a comment line.
+// which the smoke test sources as shell: one KEY='value' line per secrets
+// entry with staging's value, then one per key of each Opaque Secret the
+// project's staging Kustomization applied, by Secret name and key, a key
+// already there left out (the file's entry wins). A key that is no shell
+// name gets a comment line instead; the row keeps their hash. Forgejo
+// refuses an empty secret, so with no line at all it gets a comment line.
 func (run *reconcileRun) staging(ctx context.Context, secrets []string) (Change, error) {
 	p := run.p
 	e, _ := p.Staging()
 	var lines strings.Builder
-	for _, entry := range p.Secrets {
-		name, key, _ := strings.Cut(entry, "/")
+	seen := map[string]bool{}
+	add := func(entry, key, v string) {
+		seen[key] = true
 		if !shellName.MatchString(key) {
 			lines.WriteString("# " + entry + ": " + key + " is not a shell variable name\n")
-			continue
-		}
-		data, err := run.r.Kube.GetSecretData(ctx, e.Namespace, name)
-		if err != nil && !errors.Is(err, ErrNotFound) {
-			return "", err
-		}
-		v, ok := data[key]
-		if !ok {
-			return Change("waiting: " + e.Namespace + " has no secret " + entry + " yet"), nil
+			return
 		}
 		lines.WriteString(key + "='" + strings.ReplaceAll(v, "'", `'\''`) + "'\n")
 	}
-	if len(p.Secrets) == 0 {
+	for _, entry := range p.Secrets {
+		name, key, _ := strings.Cut(entry, "/")
+		var v string
+		if shellName.MatchString(key) {
+			data, err := run.r.Kube.GetSecretData(ctx, e.Namespace, name)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return "", err
+			}
+			var ok bool
+			if v, ok = data[key]; !ok {
+				return Change("waiting: " + e.Namespace + " has no secret " + entry + " yet"), nil
+			}
+		}
+		add(entry, key, v)
+	}
+	flux, err := run.r.Kube.SecretsByLabels(ctx, e.Namespace, map[string]string{fluxNameLabel: p.Name, fluxNamespaceLabel: e.Namespace})
+	if err != nil {
+		return "", err
+	}
+	slices.SortFunc(flux, func(a, b KubeSecret) int { return strings.Compare(a.Name, b.Name) })
+	for _, s := range flux {
+		for _, key := range slices.Sorted(maps.Keys(s.Data)) {
+			if s.Type == "Opaque" && !seen[key] {
+				add(s.Name+"/"+key, key, s.Data[key])
+			}
+		}
+	}
+	if lines.Len() == 0 {
 		lines.WriteString("# projects/" + p.Name + ".yaml names no secrets\n")
 	}
 	url := "http://" + p.Name + "." + e.Namespace + ".svc.cluster.local:8080"
@@ -1143,10 +1236,14 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 
 // ensureRepo makes repo: Forgejo's migrate of the GitHub repository that
 // name's import row names while the row waits for it, after which the row
-// forgets the token and says imported, else empty. A non-empty repository
-// already there is an earlier migrate's, finished after its caller left;
-// an empty one may still be copying, so the row waits. A refused migrate
-// leaves the row its token and says failed, the token taken out.
+// forgets the token and says imported, else empty. The row's last update
+// is the migrate's start. A non-empty repository already there is an
+// earlier migrate's, finished after its caller left; an empty one may
+// still be copying, so the row waits, unless the row is pending and its
+// migrate started over twice the migrate's timeout ago (Forgejo syncs
+// branches and tags after the clone while the repository reads empty):
+// the copy of an empty source, which the seed fills whole. A refused
+// migrate leaves the row its token and says failed, the token taken out.
 func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
 	m, ok, err := Mirror{}, false, error(nil)
 	if r.Mirrors != nil {
@@ -1169,9 +1266,11 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 		if err := json.Unmarshal(body, &res); err != nil {
 			return "", err
 		}
-		if res.Empty {
+		if res.Empty && (m.State != "pending" || m.LastUpdate.IsZero() || time.Since(m.LastUpdate) <= 2*migrateTimeout) {
 			return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
 		}
+	} else if err := r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "pending", "", time.Now()); err != nil {
+		return "", err
 	} else if err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token); err != nil {
 		msg := err.Error()
 		if m.Token != "" {

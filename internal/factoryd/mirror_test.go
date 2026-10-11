@@ -153,6 +153,12 @@ func (m *memMirrors) SetMirrorState(_ context.Context, project, direction, state
 	return nil
 }
 
+// DeleteStaleImports keeps every row: the rows' age is Postgres's, so
+// TestPollDeletesStaleImports runs on it.
+func (m *memMirrors) DeleteStaleImports(context.Context, []string, time.Time) ([]Mirror, error) {
+	return nil, nil
+}
+
 func (m *memMirrors) SetMirrorToken(_ context.Context, project, direction, token string) error {
 	if row, ok := m.rows[project+" "+direction]; ok {
 		row.Token = token
@@ -277,14 +283,14 @@ func importedProject() Project {
 const importToken = "ghp_imp0rtT0ken"
 
 // importRig is a registration of demo-app whose row imports acme/app,
-// a GitHub repository with main and a CODEOWNERS of its own.
+// a GitHub repository with main, a CODEOWNERS and manifests of its own.
 func importRig(t *testing.T) (*registerRig, *memMirrors) {
 	rig := newRegisterRig(t)
 	rig.store.m["demo-app"] = importedProject()
 	mirrors := &memMirrors{rows: map[string]Mirror{"demo-app import": {Project: "demo-app", Direction: MirrorImport, Remote: "acme/app",
 		Token: importToken, State: "pending"}}}
 	rig.reg.Mirrors = mirrors
-	rig.fj.source, rig.fj.sourceBranch = []string{"go.mod", "main.go", ".forgejo/CODEOWNERS"}, "main"
+	rig.fj.source, rig.fj.sourceBranch = []string{"go.mod", "main.go", ".forgejo/CODEOWNERS", "deploy/base/kustomization.yaml"}, "main"
 	return rig, mirrors
 }
 
@@ -387,7 +393,7 @@ func TestImportedMain(t *testing.T) {
 		source                      []string
 		want                        map[string]string
 	}{
-		{"master", "master", "Factory workflows", "1mp0rt", []string{"go.mod", ".forgejo/CODEOWNERS"}, factoryWorkflows},
+		{"master", "master", "Factory workflows", "1mp0rt", []string{"go.mod", ".forgejo/CODEOWNERS", "deploy/base/kustomization.yaml"}, factoryWorkflows},
 		{"empty", "main", "Seed from template ts-go (registration)", "5eed", nil, all},
 	} {
 		rig, _ := importRig(t)
@@ -464,5 +470,129 @@ func TestRegisterMirrorsWithoutImport(t *testing.T) {
 	maps.Copy(want, factoryWorkflows)
 	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)" || rig.fj.seeds[0].branch != "main" || !reflect.DeepEqual(rig.fj.seeds[0].files, want) {
 		t.Fatalf("commits %+v, want one seed with %q", rig.fj.seeds, want)
+	}
+}
+
+// The row holds a migrate's start before the migrate. A pending row whose
+// migrate started over twice the migrate's timeout (20 minutes) ago, with
+// the repository still empty, copied an empty source: registration takes
+// it as imported, with no second migrate, and seeds the whole template.
+// Before that, at 2 or 19 minutes, the copy may still run: the
+// registration waits as before, the row as it was.
+func TestRegisterImportEmptySource(t *testing.T) {
+	rig, mirrors := importRig(t)
+	rig.fj.migrateFail = `{"message":"cut"}`
+	before := time.Now().Truncate(time.Second)
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err == nil || len(mirrors.set) != 2 {
+		t.Fatalf("registration error %v, states set %q", err, mirrors.set)
+	}
+	start, ok := strings.CutPrefix(mirrors.set[0], "demo-app import: pending |  | ")
+	if at, err := time.Parse(time.RFC3339, start); !ok || err != nil || at.Before(before) || at.After(time.Now()) ||
+		!strings.HasPrefix(mirrors.set[1], "demo-app import: failed: ") {
+		t.Fatalf("states set %q: want pending with the migrate's start, then failed", mirrors.set)
+	}
+
+	all := map[string]string{"README.md": "# template\n", "deploy/staging/kustomization.yaml": "namespace: demo-staging\n", ".forgejo/CODEOWNERS": "* @demo-app\n"}
+	maps.Copy(all, factoryWorkflows)
+	started := func(ago time.Duration) (*registerRig, *memMirrors, Mirror) {
+		rig, mirrors := importRig(t)
+		rig.fj.repo = true
+		row := mirrors.rows["demo-app import"]
+		row.LastUpdate = time.Now().Add(-ago)
+		mirrors.rows["demo-app import"] = row
+		return rig, mirrors, row
+	}
+	rig, mirrors, _ = started(21 * time.Minute)
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 0 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("migrates %d, import row token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
+	}
+	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)" || rig.fj.seeds[0].branch != "main" ||
+		!reflect.DeepEqual(rig.fj.seeds[0].files, all) {
+		t.Fatalf("commits %+v, want one seed with %q", rig.fj.seeds, all)
+	}
+
+	const msg = "registration: repository demo-app/demo-app: the repository exists, empty: a migrate of github.com/acme/app may still be copying; the next reconcile looks again"
+	for _, ago := range []time.Duration{2 * time.Minute, 19 * time.Minute} {
+		rig, mirrors, want := started(ago)
+		_, err := rig.reg.Register(context.Background(), "demo-app", false)
+		if err == nil || !strings.Contains(err.Error(), msg) {
+			t.Fatalf("started %v ago: registration error %v", ago, err)
+		}
+		if row := mirrors.rows["demo-app import"]; row != want || len(mirrors.set) != 0 || len(rig.fj.migrated) != 0 || len(rig.fj.seeds) != 0 {
+			t.Fatalf("started %v ago: import row %+v, states set %q, migrates %d, seeds %d; want %+v unchanged, none set",
+				ago, row, mirrors.set, len(rig.fj.migrated), len(rig.fj.seeds), want)
+		}
+	}
+}
+
+// An imported repository without deploy/ gets the template's deploy/
+// files, rendered, in the workflows' commit, "Factory workflows and
+// manifests"; one with deploy/ keeps its own: "Factory workflows".
+func TestImportedManifests(t *testing.T) {
+	withManifests := map[string]string{"deploy/base/kustomization.yaml": "resources: [deployment.yaml]\n",
+		"deploy/base/deployment.yaml":       "image: git.aisoftwarefactory.world/demo-app/demo-app\n",
+		"deploy/staging/kustomization.yaml": "namespace: demo-staging\n"}
+	maps.Copy(withManifests, factoryWorkflows)
+	for _, c := range []struct {
+		source  []string
+		message string
+		want    map[string]string
+	}{
+		{[]string{"go.mod", ".forgejo/CODEOWNERS"}, "Factory workflows and manifests", withManifests},
+		{[]string{"go.mod", ".forgejo/CODEOWNERS", "deploy/k8s.yaml"}, "Factory workflows", factoryWorkflows},
+	} {
+		rig, _ := importRig(t)
+		files := rig.store.m["demo-app"].TemplateFiles
+		files["deploy/base/kustomization.yaml"], files["deploy/base/deployment.yaml"] = "resources: [deployment.yaml]\n", "image: [[.Image]]\n"
+		rig.fj.source = c.source
+		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+			t.Fatalf("%v\n%s", err, rig.logs)
+		}
+		if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != c.message || !reflect.DeepEqual(rig.fj.seeds[0].files, c.want) {
+			t.Fatalf("source %q: commits %+v, want one %q with %q", c.source, rig.fj.seeds, c.message, c.want)
+		}
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the poll
+// deletes, with one log line, an import row still pending 7 days after its
+// last write whose project no file names, and its token with it; it keeps
+// a younger one, a filed project's, a failed one and an export row.
+func TestPollDeletesStaleImports(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	logs := captureLog(t)
+	rows := []struct {
+		m   Mirror
+		age string
+	}{
+		{Mirror{Project: "gone", Direction: MirrorImport, Remote: "acme/gone", Token: "ghp_g0neT0ken", State: "pending"}, "169 hours"},
+		{Mirror{Project: "gone", Direction: MirrorExport, Remote: "acme/gone", Username: "u", Token: "ghp-exp0rt", State: "created"}, "169 hours"},
+		{Mirror{Project: "young", Direction: MirrorImport, Remote: "acme/young", State: "pending"}, "167 hours"},
+		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending"}, "169 hours"},
+		{Mirror{Project: "broken", Direction: MirrorImport, Remote: "acme/broken", State: "failed: x"}, "169 hours"},
+	}
+	for _, r := range rows {
+		if err := s.PutMirror(ctx, r.m); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.DeleteMirror(ctx, r.m.Project, r.m.Direction) })
+		if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET updated_at = now() - $3::interval WHERE project = $1 AND direction = $2`,
+			r.m.Project, r.m.Direction, r.age); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s}
+	r.poll(ctx)
+	for i, row := range rows {
+		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok != (i > 0) {
+			t.Errorf("%s %s row kept %v, %v; want %v", row.m.Project, row.m.Direction, ok, err, i > 0)
+		}
+	}
+	const line = "project gone: import row of github.com/acme/gone deleted: pending over 7 days, and no file projects/gone.yaml\n"
+	if !strings.HasSuffix(logs.String(), line) || strings.Count(logs.String(), "import row") != 1 || strings.Contains(logs.String(), "ghp_g0neT0ken") {
+		t.Fatalf("log:\n%s\nwant one line %q", logs, line)
 	}
 }

@@ -330,3 +330,33 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 		t.Fatalf("gone pod's tail err = %v", err)
 	}
 }
+
+// SecretsByLabels selects with every label, sorted, and answers each
+// Secret's name, type and decoded data.
+func TestInClusterKubeSecretsByLabels(t *testing.T) {
+	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sel := r.URL.Query().Get("labelSelector")
+		if r.URL.Path != "/api/v1/namespaces/demo-staging/secrets" || sel != "kustomize.toolkit.fluxcd.io/name=demo-app,kustomize.toolkit.fluxcd.io/namespace=demo-staging" {
+			t.Errorf("GET %s with labelSelector %q", r.URL.Path, sel)
+		}
+		io.WriteString(w, `{"items":[{"metadata":{"name":"admin-token"},"type":"Opaque","data":{"ADMIN_TOKEN":"`+b64("x")+`"}},`+
+			`{"metadata":{"name":"registry"},"type":"kubernetes.io/dockerconfigjson","data":{".dockerconfigjson":"`+b64("{}")+`"}}]}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	got, err := k.SecretsByLabels(context.Background(), "demo-staging", map[string]string{
+		"kustomize.toolkit.fluxcd.io/namespace": "demo-staging", "kustomize.toolkit.fluxcd.io/name": "demo-app"})
+	want := []KubeSecret{{Name: "admin-token", Type: "Opaque", Data: map[string]string{"ADMIN_TOKEN": "x"}},
+		{Name: "registry", Type: "kubernetes.io/dockerconfigjson", Data: map[string]string{".dockerconfigjson": "{}"}}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("SecretsByLabels = %+v, %v\nwant %+v", got, err, want)
+	}
+}

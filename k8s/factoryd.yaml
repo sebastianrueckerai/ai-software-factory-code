@@ -81,6 +81,10 @@ rules:
 - apiGroups: [""]
   resources: [resourcequotas, limitranges, serviceaccounts, secrets]
   verbs: [get, create, patch]
+# the staging secrets pass lists the Secrets Flux applied for the project
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [list]
 - apiGroups: [apps]
   resources: [deployments]
   verbs: [list]

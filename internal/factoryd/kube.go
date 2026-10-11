@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -251,8 +253,47 @@ func (k *InClusterKube) GetSecretData(ctx context.Context, namespace, name strin
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/secrets/"+name, &sec); err != nil {
 		return nil, err
 	}
-	out := make(map[string]string, len(sec.Data))
-	for key, b64 := range sec.Data {
+	return decodeSecret(namespace, name, sec.Data)
+}
+
+// KubeSecret is a listed Secret: its name, type and decoded data.
+type KubeSecret struct {
+	Name, Type string
+	Data       map[string]string
+}
+
+func (k *InClusterKube) SecretsByLabels(ctx context.Context, namespace string, labels map[string]string) ([]KubeSecret, error) {
+	var sel []string
+	for _, key := range slices.Sorted(maps.Keys(labels)) {
+		sel = append(sel, key+"="+labels[key])
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Type string            `json:"type"`
+			Data map[string]string `json:"data"`
+		} `json:"items"`
+	}
+	q := url.Values{"labelSelector": []string{strings.Join(sel, ",")}}
+	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/secrets?"+q.Encode(), &list); err != nil {
+		return nil, err
+	}
+	out := make([]KubeSecret, 0, len(list.Items))
+	for _, it := range list.Items {
+		data, err := decodeSecret(namespace, it.Metadata.Name, it.Data)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, KubeSecret{Name: it.Metadata.Name, Type: it.Type, Data: data})
+	}
+	return out, nil
+}
+
+func decodeSecret(namespace, name string, data map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(data))
+	for key, b64 := range data {
 		raw, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
 			return nil, fmt.Errorf("kube secret %s/%s: %w", namespace, name, err)

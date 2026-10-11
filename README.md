@@ -1534,10 +1534,15 @@ ready"), which nothing clears; for a factory project:
   `STAGING_URL` (`http://<name>.<namespace>.svc.cluster.local:8080`, the
   template's Service) and `STAGING_SECRETS`, one `KEY='value'` line per
   `secrets` entry with the staging namespace's value single-quoted, since the
-  template's smoke test sources it as shell (a key that is no shell
-  variable name gets a comment line and no value; so does a project without
-  entries, since Forgejo refuses an empty secret), written again when the
-  sha256 of both in `staging_hash` changes; no value is logged. As the bot: its private fork
+  template's smoke test sources it as shell, then one per key of each Opaque
+  Secret in the staging namespace that the project's staging Kustomization
+  applied (Flux's labels `kustomize.toolkit.fluxcd.io/name` and
+  `/namespace`), by Secret name and key, a key already written left out, so
+  the file's entry wins (a key that is no shell variable name gets a comment
+  line and no value; with no line at all, one comment line, since Forgejo
+  refuses an empty secret), written again when the sha256 of both in
+  `staging_hash` changes, at the reconcile and, for a ready project, at
+  every one-minute poll between; no value is logged. As the bot: its private fork
   `factory-agent/<name>` and the boot labels. A project whose registration
   failed waits here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
@@ -1606,10 +1611,18 @@ request; the file, the pull request and the `project_filed` event never
 hold the token. Registration then makes the repository with Forgejo's
 migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
 mirror) in place of the empty create, clears the row's token and sets
-`imported <time>`, or `failed: <error>` with the token taken out. The seed
-gives a source whose default branch is not `main` a `main` from it, seeds
-an empty one whole, and otherwise commits only the template's `.forgejo/`
-files and `AGENTS.md` that the copy lacks ("Factory workflows"). The panel
+`imported <time>`, or `failed: <error>` with the token taken out; the row's
+`last_update` holds each migrate's start. A repository already there that
+is empty while the row is pending may still be copying, unless the migrate
+started over 20 minutes ago (twice its timeout, since Forgejo syncs
+branches and tags after the clone while the repository reads empty): then
+it is the copy of an empty source and imported. The seed gives a source
+whose default branch is not `main` a `main` from it, seeds an empty one
+whole, and otherwise commits only the template's `.forgejo/` files and `AGENTS.md` that the copy lacks,
+with the template's `deploy/` when the copy has none ("Factory workflows",
+"Factory workflows and manifests"). An import row still pending 7 days
+after its last write whose project no file names (a pull request closed
+unmerged) is deleted with its token at the next poll. The panel
 shows a fifth step, "Imported from GitHub", between the repository and
 `ready_at`.
 

@@ -227,7 +227,9 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			s.defaultBranch = body["default_branch"].(string)
 			io.WriteString(w, `{}`)
 		case strings.HasPrefix(p, repo+"/contents/") && r.Method == http.MethodGet:
-			if !s.files[strings.TrimPrefix(p, repo+"/contents/")] || r.URL.Query().Get("ref") != "main" {
+			path := strings.TrimPrefix(p, repo+"/contents/")
+			dir := slices.ContainsFunc(slices.Collect(maps.Keys(s.files)), func(f string) bool { return strings.HasPrefix(f, path+"/") })
+			if !s.files[path] && !dir || r.URL.Query().Get("ref") != "main" {
 				http.NotFound(w, r)
 				return
 			}
@@ -402,13 +404,21 @@ type fakeProjectKube struct {
 	labels  map[string]map[string]string // a namespace the infra repository made -> its labels
 	objects map[string]string
 	secrets map[string]map[string]string
+	meta    map[string]secretMeta
 	deploys map[string][]DeploymentState
 	changes []string
 	fail    string // an apply whose path holds it fails
 }
 
 func newFakeProjectKube() *fakeProjectKube {
-	return &fakeProjectKube{objects: map[string]string{}, secrets: map[string]map[string]string{}}
+	return &fakeProjectKube{objects: map[string]string{}, secrets: map[string]map[string]string{}, meta: map[string]secretMeta{}}
+}
+
+// secretMeta is an applied secret's type and labels; a secret set by hand
+// in secrets has none, an unlabelled Opaque one.
+type secretMeta struct {
+	typ    string
+	labels map[string]string
 }
 
 func (k *fakeProjectKube) Apply(_ context.Context, path string, obj map[string]any) (Change, error) {
@@ -437,8 +447,46 @@ func (k *fakeProjectKube) Apply(_ context.Context, path string, obj map[string]a
 			data[key] = string(raw)
 		}
 		k.secrets[ns+"/"+name] = data
+		typ, _ := obj["type"].(string)
+		if typ == "" {
+			typ = "Opaque"
+		}
+		labels, _ := obj["metadata"].(map[string]any)["labels"].(map[string]string)
+		k.meta[ns+"/"+name] = secretMeta{typ, labels}
 	}
 	return c, nil
+}
+
+// SecretsByLabels answers ns's secrets in no order, as a map ranges.
+func (k *fakeProjectKube) SecretsByLabels(_ context.Context, ns string, labels map[string]string) ([]KubeSecret, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var out []KubeSecret
+	for key, data := range k.secrets {
+		in, name, _ := strings.Cut(key, "/")
+		m, ok := k.meta[key]
+		if !ok {
+			m.typ = "Opaque"
+		}
+		if in == ns && !slices.ContainsFunc(slices.Collect(maps.Keys(labels)), func(l string) bool { return m.labels[l] != labels[l] }) {
+			out = append(out, KubeSecret{Name: name, Type: m.typ, Data: maps.Clone(data)})
+		}
+	}
+	return out, nil
+}
+
+// putSecret applies a secret of type typ with labels and data, as Flux or
+// a hand would.
+func (k *fakeProjectKube) putSecret(t *testing.T, ns, name, typ string, labels, data map[string]string) {
+	t.Helper()
+	b64 := map[string]string{}
+	for key, v := range data {
+		b64[key] = base64.StdEncoding.EncodeToString([]byte(v))
+	}
+	if _, err := k.Apply(context.Background(), "/api/v1/namespaces/"+ns+"/secrets/"+name, map[string]any{"type": typ,
+		"metadata": map[string]any{"name": name, "namespace": ns, "labels": labels}, "data": b64}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (k *fakeProjectKube) GetSecretData(_ context.Context, ns, name string) (map[string]string, error) {
@@ -1256,6 +1304,90 @@ func TestStagingSecretsWithoutSecrets(t *testing.T) {
 	}
 	if n := strings.Count(strings.Join(rig.fj.writes, "\n"), "/actions/secrets/STAGING_SECRETS by"); n != 1 {
 		t.Fatalf("STAGING_SECRETS written %d times: %v", n, rig.fj.writes)
+	}
+}
+
+// STAGING_SECRETS takes, after the file's entries, every key of each
+// Opaque Secret Flux applied for the project's staging Kustomization, by
+// Secret name and key; not a Secret of another type, of another
+// Kustomization or without Flux's labels. The poll writes it again when a
+// value changes or a Secret comes, and not when nothing changed or the
+// project is not ready.
+func TestStagingSecretsTakeFluxSecrets(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	p := demoProject()
+	p.Secrets, p.ReadyAt = []string{"demo-db/DB_PASSWORD"}, time.Now()
+	rig.store.m[p.Name] = p
+	flux := map[string]string{fluxNameLabel: "demo-app", fluxNamespaceLabel: "demo-staging"}
+	rig.kube.putSecret(t, "demo-staging", "admin-token", "Opaque", flux, map[string]string{"ADMIN_TOKEN": "x"})
+	rig.kube.putSecret(t, "demo-staging", "registry", "kubernetes.io/dockerconfigjson", flux, map[string]string{"REGISTRY_AUTH": "r"})
+	rig.kube.putSecret(t, "demo-staging", "by-hand", "Opaque", nil, map[string]string{"BY_HAND": "h"})
+	rig.kube.putSecret(t, "demo-staging", "other", "Opaque", map[string]string{fluxNameLabel: "other", fluxNamespaceLabel: "demo-staging"},
+		map[string]string{"OTHER": "o"})
+	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	db := rig.kube.secrets["demo-staging/demo-db"]["DB_PASSWORD"]
+	staged := func(want string, writes int) {
+		t.Helper()
+		got, n := rig.fj.secrets["STAGING_SECRETS"], strings.Count(strings.Join(rig.fj.writes, "\n"), "/actions/secrets/STAGING_SECRETS by")
+		if got != want || n != writes {
+			t.Fatalf("STAGING_SECRETS = %q, written %d times; want %q, %d\n%s", got, n, want, writes, rig.logs)
+		}
+	}
+	if len(db) != 64 {
+		t.Fatalf("generated DB_PASSWORD %q", db)
+	}
+	staged("DB_PASSWORD='"+db+"'\nADMIN_TOKEN='x'\n", 1)
+
+	rig.kube.secrets["demo-staging/admin-token"]["ADMIN_TOKEN"] = "y"
+	rig.reg.poll(ctx)
+	staged("DB_PASSWORD='"+db+"'\nADMIN_TOKEN='y'\n", 2)
+	if !strings.Contains(rig.logs.String(), "project demo-app: actions secrets STAGING_URL, STAGING_SECRETS: updated\n") {
+		t.Fatalf("the poll's write is not logged:\n%s", rig.logs)
+	}
+	rig.reg.poll(ctx)
+	staged("DB_PASSWORD='"+db+"'\nADMIN_TOKEN='y'\n", 2)
+
+	rig.kube.putSecret(t, "demo-staging", "api-keys", "Opaque", flux, map[string]string{"B_KEY": "b", "A_KEY": "a", "bad-key": "z"})
+	rig.reg.poll(ctx)
+	staged("DB_PASSWORD='"+db+"'\nADMIN_TOKEN='y'\nA_KEY='a'\nB_KEY='b'\n# api-keys/bad-key: bad-key is not a shell variable name\n", 3)
+	if strings.Contains(rig.logs.String(), db) {
+		t.Fatalf("the log holds DB_PASSWORD's value:\n%s", rig.logs)
+	}
+	p = rig.store.m["demo-app"]
+	p.ReadyAt = time.Time{}
+	rig.store.m["demo-app"] = p
+	rig.kube.secrets["demo-staging/admin-token"]["ADMIN_TOKEN"] = "z"
+	rig.reg.poll(ctx)
+	staged("DB_PASSWORD='"+db+"'\nADMIN_TOKEN='y'\nA_KEY='a'\nB_KEY='b'\n# api-keys/bad-key: bad-key is not a shell variable name\n", 3)
+}
+
+// A key the file's entries name and a Flux Secret holds too is written
+// once, with the file's value; a file that names none takes the Flux
+// Secret's line alone.
+func TestStagingSecretsFileWins(t *testing.T) {
+	for _, secrets := range [][]string{{"demo-admin/ADMIN_TOKEN"}, nil} {
+		rig := newRegisterRig(t)
+		p := demoProject()
+		p.Secrets = secrets
+		rig.store.m[p.Name] = p
+		rig.kube.putSecret(t, "demo-staging", "admin-token", "Opaque", map[string]string{fluxNameLabel: "demo-app", fluxNamespaceLabel: "demo-staging"},
+			map[string]string{"ADMIN_TOKEN": "x"})
+		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+			t.Fatalf("%v\n%s", err, rig.logs)
+		}
+		want := "ADMIN_TOKEN='x'\n"
+		if v := rig.kube.secrets["demo-staging/demo-admin"]["ADMIN_TOKEN"]; secrets != nil {
+			if len(v) != 64 {
+				t.Fatalf("generated ADMIN_TOKEN %q", v)
+			}
+			want = "ADMIN_TOKEN='" + v + "'\n"
+		}
+		if got := rig.fj.secrets["STAGING_SECRETS"]; got != want {
+			t.Fatalf("secrets %v: STAGING_SECRETS = %q, want %q", secrets, got, want)
+		}
 	}
 }
 
