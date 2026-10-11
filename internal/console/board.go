@@ -85,13 +85,13 @@ var fiveTitles = []string{"Needs you", "Queued", "Working", "Verifying", "Done"}
 
 // fiveColumn is t's column for viewer, -1 for a status none holds: a card
 // waiting on its author needs the viewer when they are the author, else
-// it waits like a queued one.
+// it waits like a queued one; for no viewer (the pulse's) it needs a person.
 func fiveColumn(t factoryd.Task, viewer string) int {
 	switch t.Status {
 	case "waiting-human":
 		return colNeedsYou
 	case "waiting-poster":
-		if t.Author == viewer {
+		if t.Author == viewer || viewer == "" {
 			return colNeedsYou
 		}
 		return colQueued
@@ -1059,7 +1059,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	})
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
-		d.Pulse = c.pulseOf(ctx, shown)
+		d.Pulse = c.pulseOf(r, shown)
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil

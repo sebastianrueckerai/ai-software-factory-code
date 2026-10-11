@@ -85,7 +85,7 @@ func (f readerForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // GET /projects/{name}/pulse answers the newest pulse to a writer and a
 // reader of the project, 403 to a member who does neither, and 404 for no
-// pulse yet or no such project.
+// pulse yet or no such project; the board shows it under the same rule.
 func TestPulseGet(t *testing.T) {
 	const want = `{"id":7,"repository":"sf/code","at":"2026-10-11T09:30:00Z","sentence":"#11 Speed up the board is running; #4 merged at 09:12.",` +
 		`"bullets":["Needs you: nothing","Running: #11 Speed up the board","Since 08:30: #4 done","Spend: €5.50 of the €50 cap"],"prominent":false}`
@@ -116,13 +116,16 @@ func TestPulseGet(t *testing.T) {
 			if got := strings.TrimSpace(rec.Body.String()); rec.Code != tc.code || got != tc.body {
 				t.Fatalf("%d %s, want %d %s", rec.Code, got, tc.code, tc.body)
 			}
+			if shown := pulseBlock(t, r, ck, "?project=ai-software-factory-code") != ""; tc.path == "" && shown != (tc.code == 200) {
+				t.Fatalf("the board shows the pulse: %v, want %v", shown, tc.code == 200)
+			}
 		})
 	}
 }
 
 // The pulse reads the project as the project agent does, seen by no
-// member (no writer check runs), its pulse in the snapshot, and the agent
-// of a chat turn gets the same pulse line.
+// member: no writer check runs and its own last pulse is not in it; the
+// agent of a chat turn gets the pulse line in its snapshot.
 func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.c.cfg.Pulses = fakePulses{"sf/code": calm}
@@ -131,7 +134,7 @@ func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
 		Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton})
 	text, waiting, err := r.c.PulseContext(ctx, projectRows()[0])
 	want := "The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
-		"Pulse: #11 Speed up the board is running; #4 merged at 09:12.\n" + boardText +
+		boardText +
 		"\n\nIts last events, oldest first:\n2026-10-11 09:12 #11 t-r card_moved by sebastian via button"
 	if err != nil || text != want || !waiting {
 		t.Fatalf("PulseContext = %v, %v\n%s\nwant waiting and\n%s", waiting, err, text, want)
@@ -144,5 +147,18 @@ func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what matters now?"}})
 	if system := messages(t, g.calls()[0])[0]["content"].(string); !strings.Contains(system, "\nPulse: "+calm.Sentence+"\nBacklog (1):") {
 		t.Fatalf("the agent's snapshot lacks the pulse:\n%s", system)
+	}
+}
+
+// For the pulse, a card waiting on its author waits on a person, whoever
+// the author is.
+func TestPulseContextCountsACardWaitingOnItsAuthor(t *testing.T) {
+	r := newRig(t)
+	r.approvals.rows = nil
+	for status, want := range map[string]bool{"waiting-poster": true, "queued": false} {
+		r.tasks.set("", factoryd.Task{ID: "t-ask", Kind: "agent", Status: status, Author: "alice", Repository: "sf/code", IssueNumber: 3, Objective: "Ask."})
+		if _, waiting, err := r.c.PulseContext(t.Context(), projectRows()[0]); err != nil || waiting != want {
+			t.Errorf("%s: waiting %v, %v; want %v", status, waiting, err, want)
+		}
 	}
 }

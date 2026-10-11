@@ -17,12 +17,21 @@ type Pulses interface {
 	NewestPulse(ctx context.Context, repository string) (factoryd.Pulse, bool, error)
 }
 
-// pulseOf is project p's newest pulse, nil for none or one unreadable.
-func (c *Console) pulseOf(ctx context.Context, p factoryd.Project) *factoryd.Pulse {
+// pulseOf is project p's newest pulse for the request's member, under
+// GET /pulse's rule; nil for none, one unreadable or a member who neither
+// writes nor reads p.
+func (c *Console) pulseOf(r *http.Request, p factoryd.Project) *factoryd.Pulse {
 	if c.cfg.Pulses == nil {
 		return nil
 	}
-	row, ok, err := c.cfg.Pulses.NewestPulse(ctx, p.Repository)
+	reads, err := c.reads(r.Context(), current(r), p)
+	if err != nil {
+		log.Printf("console: may %s read %s: %v", current(r).user, p.Repository, err)
+	}
+	if !reads {
+		return nil
+	}
+	row, ok, err := c.cfg.Pulses.NewestPulse(r.Context(), p.Repository)
 	if err != nil {
 		log.Printf("console: the pulse of %s: %v", p.Repository, err)
 	}
@@ -76,6 +85,9 @@ func (c *Console) pulseGet(w http.ResponseWriter, r *http.Request) {
 // reads reports whether member s reads project p: they write it, or
 // Forgejo shows them its repository.
 func (c *Console) reads(ctx context.Context, s *session, p factoryd.Project) (bool, error) {
+	if s.user == "" {
+		return false, nil
+	}
 	if writes, err := c.mayMoveCached(ctx, p.Repository, s.user, policy.MovedByWriters); err == nil && writes {
 		return true, nil
 	}
