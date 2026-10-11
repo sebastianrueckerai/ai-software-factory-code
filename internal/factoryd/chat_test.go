@@ -179,8 +179,9 @@ func TestPGStoreTaskEvents(t *testing.T) {
 	}
 }
 
-// A proposal is taken once, by its member, on its project, until it
-// expires: another member's take leaves it, another project's finds none.
+// A proposal is taken once, as its kind, by its member, on its project,
+// until it expires: another member's take leaves it, another project's or
+// another kind's finds none and leaves it too.
 func TestPGStoreTakeProposal(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
@@ -197,16 +198,22 @@ func TestPGStoreTakeProposal(t *testing.T) {
 		}
 		return at
 	}
-	if _, err := s.TakeProposal(ctx, "tok-1", "sf/code", "bob", now); !errors.Is(err, ErrOthersProposal) {
+	if _, err := s.TakeProposal(ctx, "proposal", "tok-1", "sf/code", "bob", now); !errors.Is(err, ErrOthersProposal) {
 		t.Fatalf("bob's take = %v, want ErrOthersProposal", err)
 	}
 	if at := usedAt("tok-1"); at != nil {
 		t.Fatalf("used_at after bob's take = %v, want NULL", at)
 	}
-	if _, err := s.TakeProposal(ctx, "tok-1", "linkshort/linkshort", "anna", now); !errors.Is(err, ErrNoProposal) {
+	if _, err := s.TakeProposal(ctx, "proposal", "tok-1", "linkshort/linkshort", "anna", now); !errors.Is(err, ErrNoProposal) {
 		t.Fatalf("a take on another project = %v, want ErrNoProposal", err)
 	}
-	got, err := s.TakeProposal(ctx, "tok-1", "sf/code", "anna", now)
+	if _, err := s.TakeProposal(ctx, "undo", "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
+		t.Fatalf("a take as an undo = %v, want ErrNoProposal", err)
+	}
+	if at := usedAt("tok-1"); at != nil {
+		t.Fatalf("used_at after the take as an undo = %v, want NULL", at)
+	}
+	got, err := s.TakeProposal(ctx, "proposal", "tok-1", "sf/code", "anna", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +227,7 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	if at := usedAt("tok-1"); at == nil || !at.Equal(now) {
 		t.Fatalf("used_at = %v, want %v", at, now)
 	}
-	if _, err := s.TakeProposal(ctx, "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
+	if _, err := s.TakeProposal(ctx, "proposal", "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
 		t.Fatalf("a second take = %v, want ErrNoProposal", err)
 	}
 	undo := ChatProposal{Token: "tok-2", Kind: "undo", Repository: "sf/code", Login: "anna", Tool: "set_accent",
@@ -228,7 +235,7 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	if err := s.PutProposal(ctx, undo); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.TakeProposal(ctx, "tok-2", "sf/code", "anna", now.Add(time.Second)); !errors.Is(err, ErrNoProposal) {
+	if _, err := s.TakeProposal(ctx, "undo", "tok-2", "sf/code", "anna", now.Add(time.Second)); !errors.Is(err, ErrNoProposal) {
 		t.Fatalf("a take a second after expiry = %v, want ErrNoProposal", err)
 	}
 }
@@ -245,7 +252,7 @@ func TestPGStorePurgeProposals(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.TakeProposal(ctx, "used", "sf/code", "anna", now.Add(-5*time.Minute)); err != nil {
+	if _, err := s.TakeProposal(ctx, "proposal", "used", "sf/code", "anna", now.Add(-5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	n, err := s.PurgeProposals(ctx, now)

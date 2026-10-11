@@ -55,11 +55,11 @@ func (t *turn) keep(kind, tool string, args json.RawMessage, description string)
 // unknown, used, expired, another project's or of the other kind, 403 for
 // another member's, which stays.
 func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
-	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), token, t.p.Repository, t.a.s.user, time.Now())
+	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), kind, token, t.p.Repository, t.a.s.user, time.Now())
 	switch {
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		return p, refuse(http.StatusForbidden, "It is another member's.")
-	case errors.Is(err, factoryd.ErrNoProposal) || err == nil && p.Kind != kind:
+	case errors.Is(err, factoryd.ErrNoProposal):
 		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
 	return p, err
@@ -355,7 +355,7 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	if ok && json.Unmarshal(p.Args, &in) == nil {
 		result = t.runTool(tool, string(p.Args), in)
 	}
-	if t.save(factoryd.ChatMessage{Role: "assistant", Content: p.Description, ToolCalls: []factoryd.ChatToolCall{
+	if t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
 		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result}}}) {
 		t.send("done", struct{}{})
 	}

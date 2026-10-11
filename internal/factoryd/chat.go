@@ -153,16 +153,16 @@ func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
 	return err
 }
 
-// TakeProposal uses token for login on repository at now, once: the row
-// unused and unexpired, marked used. ErrOthersProposal for such a row of
-// another login, which stays unused; ErrNoProposal for none.
-func (s *PGStore) TakeProposal(ctx context.Context, token, repository, login string, now time.Time) (ChatProposal, error) {
-	p := ChatProposal{Token: token, Repository: repository, Login: login}
+// TakeProposal uses token of kind for login on repository at now, once:
+// the row unused and unexpired, marked used. ErrOthersProposal for such a
+// row of another login, which stays unused; ErrNoProposal for none.
+func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
+	p := ChatProposal{Token: token, Kind: kind, Repository: repository, Login: login}
 	var args []byte
 	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
-		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4
-		RETURNING kind, tool, args, description, expires_at`, token, repository, login, now).
-		Scan(&p.Kind, &p.Tool, &args, &p.Description, &p.ExpiresAt)
+		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4 AND kind = $5
+		RETURNING tool, args, description, expires_at`, token, repository, login, now, kind).
+		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt)
 	switch {
 	case err == nil:
 		p.Args = args
@@ -172,7 +172,7 @@ func (s *PGStore) TakeProposal(ctx context.Context, token, repository, login str
 	}
 	var others bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM chat_proposals
-		WHERE token = $1 AND repository = $2 AND used_at IS NULL AND expires_at >= $3)`, token, repository, now).Scan(&others); err != nil {
+		WHERE token = $1 AND repository = $2 AND used_at IS NULL AND expires_at >= $3 AND kind = $4)`, token, repository, now, kind).Scan(&others); err != nil {
 		return ChatProposal{}, err
 	}
 	if others {

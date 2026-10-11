@@ -101,11 +101,11 @@ func (f *fakeChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error
 	return nil
 }
 
-func (f *fakeChat) TakeProposal(_ context.Context, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range f.proposals {
-		if p.Token != token || p.Repository != repository || !p.used.IsZero() || now.After(p.ExpiresAt) {
+		if p.Kind != kind || p.Token != token || p.Repository != repository || !p.used.IsZero() || now.After(p.ExpiresAt) {
 			continue
 		}
 		if p.Login != login {
@@ -630,8 +630,7 @@ func TestChatProposalIsTheMembersOnce(t *testing.T) {
 // A proposal is a row of the store, the member's on the project, and the
 // stored call carries its token, which GET answers. Another member's Do
 // it is refused 403 and another project's route finds none, both leaving
-// it; the member's runs it once, one row via chat, with the proposal's
-// line on the row it stores.
+// it; the member's runs it once, one row via chat.
 func TestChatProposalIsStored(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
@@ -678,7 +677,7 @@ func TestChatProposalIsStored(t *testing.T) {
 	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics"}}
 	chatRows(t, r.events, before, "sebastian", card)
 	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
-	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", Content: desc, At: stored[0].At,
+	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
 		ToolCalls: []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
 		t.Fatalf("a second Do it = %d %q, want 404", code, body)
@@ -724,6 +723,34 @@ func TestChatUndoIsData(t *testing.T) {
 		ev(factoryd.EventAccentSet, map[string]any{"accent": "red"}), ev(factoryd.EventCardCommented, map[string]any{"comment": int64(1)}),
 		ev(factoryd.EventCardMoved, map[string]any{"lane": "ready"}), ev(factoryd.EventAccentSet, map[string]any{"accent": "blue"}),
 		ev(factoryd.EventCommentDeleted, map[string]any{"comment": int64(1)}), ev(factoryd.EventCardMoved, map[string]any{"lane": "backlog"}))
+}
+
+// A token posted to the other kind's route finds none and stays: a
+// proposal's to undo, then an undo's to Do it.
+func TestChatTokenOfTheOtherKind(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"start #5"}})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
+		t.Fatalf("a proposal posted as an undo = %d %q, want 404", code, body)
+	}
+	moved := func(lane string) factoryd.Event {
+		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardMoved, Detail: map[string]any{"lane": lane}}
+	}
+	code, _, undo := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	if code != http.StatusOK {
+		t.Fatalf("Do it after the refused undo = %d, want 200", code)
+	}
+	chatRows(t, r.events, before, "sebastian", moved("ready"))
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+undo[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
+		t.Fatalf("an undo posted as a Do it = %d %q, want 404", code, body)
+	}
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil); code != http.StatusOK {
+		t.Fatalf("the undo after the refused Do it = %d, want 200", code)
+	}
+	chatRows(t, r.events, before, "sebastian", moved("ready"), moved("backlog"))
 }
 
 // A restart keeps proposals and undos, which the store holds: a proposal
