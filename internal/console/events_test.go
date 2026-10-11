@@ -689,7 +689,7 @@ func TestBoardActivityLine(t *testing.T) {
 		factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Process: "maintenance",
 			Objective: "fix the cache", Repository: "sf/code", IssueNumber: 11},
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Process: "maintenance",
-			Objective: "add the feed", Repository: "sf/code", IssueNumber: 12},
+			Objective: "add the feed", Repository: "sf/code", IssueNumber: 12, CreatedAt: time.Now()},
 		factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
 			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13})
 	at := time.Now().Add(-5 * time.Minute)

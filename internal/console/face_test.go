@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -92,11 +94,13 @@ func TestCardFaceSpend(t *testing.T) {
 	r.tasks.set("",
 		factoryd.Task{ID: "t-low", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "low", BudgetEUR: 10, SpentEUR: 7.99},
 		factoryd.Task{ID: "t-at", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "at 80", BudgetEUR: 10, SpentEUR: 8},
+		factoryd.Task{ID: "t-cents", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "at 80 in floats", BudgetEUR: 3, SpentEUR: 2.4},
 		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no budget"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for id, want := range map[string]string{
-		"t-low": `<span class="spend">€7.99 / €10.00</span>`,
-		"t-at":  `<span class="spend near">€8.00 / €10.00 ⚠ near its budget</span>`,
+		"t-low":   `<span class="spend">€7.99 / €10.00</span>`,
+		"t-at":    `<span class="spend near">€8.00 / €10.00 ⚠ near its budget</span>`,
+		"t-cents": `<span class="spend near">€2.40 / €3.00 ⚠ near its budget</span>`,
 	} {
 		if face := faceOf(t, body, id); !strings.Contains(face, want) {
 			t.Errorf("%s lacks %s:\n%s", id, want, face)
@@ -157,12 +161,12 @@ func TestCardFacePlanChildren(t *testing.T) {
 	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "running", Lane: "ready",
 		Process: "spec", Objective: "card 9", Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip children">1 running · 1 done · 1 waiting</span>`) {
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">1 running · 1 done · 1 waiting</span>`) {
 		t.Errorf("the plan's face lacks its rollup:\n%s", face)
 	}
 	r.tasks.tasks = planTasks()[:3]
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); strings.Contains(face, "chip children") {
+	if face := faceOf(t, body, "t-plan"); strings.Contains(face, "chip rollup") {
 		t.Errorf("a plan with only backlog cards shows a rollup:\n%s", face)
 	}
 }
@@ -181,18 +185,120 @@ func TestCardFaceChecks(t *testing.T) {
 	for _, id := range []string{"t-pr", "t-done", "t-nopr"} {
 		r.objects["sessions/"+id+"/timeline.jsonl"] = timeline
 	}
+	r.objects["sessions/t-skip/timeline.jsonl"] = []byte(`{"step":"checks","state":"success","jobs":[{"name":"test","status":"success"},{"name":"docs","status":"skipped"},{"name":"vet","status":"success"}]}
+`)
 	r.tasks.set("",
 		factoryd.Task{ID: "t-pr", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "a pr", PRNumber: 4},
 		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", Objective: "merged", PRNumber: 5},
-		factoryd.Task{ID: "t-nopr", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no pr yet"})
+		factoryd.Task{ID: "t-nopr", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no pr yet"},
+		factoryd.Task{ID: "t-skip", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "a skipped job", PRNumber: 6})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-pr"); !strings.Contains(face, `<span class="checks">2/3 checks</span>`) {
 		t.Errorf("the card in review lacks 2/3 checks:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-skip"); !strings.Contains(face, `<span class="checks">2/2 checks</span>`) {
+		t.Errorf("the card with a skipped job lacks 2/2 checks:\n%s", face)
 	}
 	for _, id := range []string{"t-done", "t-nopr"} {
 		if face := faceOf(t, body, id); strings.Contains(face, `class="checks"`) {
 			t.Errorf("%s shows checks:\n%s", id, face)
 		}
+	}
+}
+
+// countedObjects counts the reads of each object key.
+type countedObjects struct {
+	fakeObjects
+	mu    sync.Mutex
+	reads map[string]int
+}
+
+func (o *countedObjects) Get(ctx context.Context, k string) ([]byte, error) {
+	o.mu.Lock()
+	o.reads[k]++
+	o.mu.Unlock()
+	return o.fakeObjects.Get(ctx, k)
+}
+
+// A card's checks count is read once per checksTTL: a second render within
+// it reads no timeline, one after it reads the timeline again.
+func TestCardFaceChecksCached(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	objects := &countedObjects{fakeObjects: r.objects, reads: map[string]int{}}
+	r.c.cfg.Timelines = objects
+	key := "sessions/t-pr/timeline.jsonl"
+	r.objects[key] = []byte(`{"step":"checks","state":"success","jobs":[{"name":"test","status":"success"}]}` + "\n")
+	r.tasks.set("", factoryd.Task{ID: "t-pr", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "a pr", PRNumber: 4})
+	render := func(wantReads int) {
+		t.Helper()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		if face := faceOf(t, body, "t-pr"); !strings.Contains(face, `<span class="checks">1/1 checks</span>`) {
+			t.Errorf("the card lacks 1/1 checks:\n%s", face)
+		}
+		if got := objects.reads[key]; got != wantReads {
+			t.Errorf("the timeline was read %d times, want %d", got, wantReads)
+		}
+	}
+	render(1)
+	render(1)
+	r.c.mu.Lock()
+	got := r.c.checks["t-pr"]
+	got.at = got.at.Add(-checksTTL)
+	r.c.checks["t-pr"] = got
+	r.c.mu.Unlock()
+	render(2)
+}
+
+// An escalated card renders twice, in the escalations and in its column:
+// its summary and accent fields sit inside their labels with no id, so no
+// id repeats on the page.
+func TestEscalatedCardRepeatsNoID(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("The agent asks: which region?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+		IssueNumber: 13, Objective: "asks"})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if n := strings.Count(body, `data-card="t-e"`); n != 2 {
+		t.Fatalf("the escalated card renders %d times, want 2", n)
+	}
+	ids := map[string]int{}
+	for _, m := range regexp.MustCompile(` id="([^"]+)"`).FindAllStringSubmatch(body, -1) {
+		ids[m[1]]++
+	}
+	for id, n := range ids {
+		if n > 1 {
+			t.Errorf("id %q appears %d times", id, n)
+		}
+	}
+	face := faceOf(t, body, "t-e")
+	for _, want := range []string{
+		`<label><span class="visually-hidden">Summary (up to 255 characters; empty restores the generated title)</span><input type="text" name="summary" maxlength="255" value="" placeholder="asks"></label>`,
+		`<label><span class="visually-hidden">Accent colour (never a state's colour, never in an agent's brief)</span><select name="value">`,
+	} {
+		if !strings.Contains(face, want) {
+			t.Errorf("the face lacks %s:\n%s", want, face)
+		}
+	}
+}
+
+// The face's lines take no paragraph margins, and the accent edge rules
+// come after .card .card with its weight, so the face nested in an
+// escalation keeps its edge.
+func TestCardFaceCSS(t *testing.T) {
+	r := newRig(t)
+	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
+	nested := strings.Index(css, ".card .card {")
+	for _, accent := range factoryd.Accents {
+		if edge := strings.Index(css, ".face.edge-"+accent+" {"); edge < nested {
+			t.Errorf(".face.edge-%s at %d, not after .card .card at %d", accent, edge, nested)
+		}
+		if strings.Contains(css, "\n.edge-"+accent) {
+			t.Errorf("a bare .edge-%s rule loses to .card .card", accent)
+		}
+	}
+	if !strings.Contains(css, ".face > p { margin: 0; }") {
+		t.Error("console.css lacks .face > p { margin: 0; }")
 	}
 }
 
@@ -234,9 +340,12 @@ func TestCardFaceStaleRing(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	quiet := `card_moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
-	for id, words := range map[string]string{"t-quiet": quiet, "t-new": `<p class="activity">no event yet, 45 min on the card</p>`} {
+	for id, words := range map[string]string{"t-quiet": quiet, "t-new": `<p class="activity">no event yet, 45 min on the card</p>`,
+		"t-ask": `<p class="activity">which region? — no event yet, 45 min on the card</p>`} {
 		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
 			t.Errorf("%s lacks the ring or %s:\n%s", id, words, face)
 		}
@@ -268,23 +377,30 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	}
 }
 
-// <html> carries the dark theme, the header the toggle, and the toggle's
+// <html> carries the dark theme, the header the toggle, the head applies
+// the stored theme before the stylesheet with a script that is not
+// deferred, so a light page never paints dark first, and the toggle's
 // script and the light theme's tokens are served.
 func TestThemeOnHTMLAndToggleServed(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`<html lang="en" data-theme="dark">`, `<button type="button" id="theme-toggle"`,
+		"<script src=\"/static/theme.js\"></script>\n<link rel=\"stylesheet\" href=\"/static/console.css\">",
 		`<script src="/static/console.js" defer></script>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the page lacks %s", want)
 		}
 	}
-	js := r.do(httptest.NewRequest(http.MethodGet, "/static/console.js", nil))
-	for _, want := range []string{`localStorage.getItem("theme")`, `localStorage.setItem("theme", theme)`,
-		`document.documentElement.setAttribute("data-theme", theme)`} {
-		if js.Code != http.StatusOK || !strings.Contains(js.Body.String(), want) {
-			t.Errorf("console.js = %d, lacks %s", js.Code, want)
+	for path, wants := range map[string][]string{
+		"/static/theme.js":   {`document.documentElement.setAttribute("data-theme", localStorage.getItem("theme") === "light" ? "light" : "dark")`},
+		"/static/console.js": {`localStorage.setItem("theme", theme)`, `document.documentElement.setAttribute("data-theme", theme)`},
+	} {
+		js := r.do(httptest.NewRequest(http.MethodGet, path, nil))
+		for _, want := range wants {
+			if js.Code != http.StatusOK || !strings.Contains(js.Body.String(), want) {
+				t.Errorf("%s = %d, lacks %s", path, js.Code, want)
+			}
 		}
 	}
 	if css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String(); !strings.Contains(css, "[data-theme=light] {") {
@@ -408,7 +524,8 @@ func TestAccentFilterNarrowsBoard(t *testing.T) {
 func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
-	tasks := append(planTasks(), failedCard())
+	tasks := append(planTasks(), failedCard(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
+		Repository: "linkshort/linkshort", IssueNumber: 30, Objective: "asks"}, Escalation: "The agent asks: which region?"})
 	for i := range tasks {
 		tasks[i].Accent = "teal"
 	}
@@ -432,6 +549,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		htmx("/tasks/t-spec2/plan/reject") + ">\n" + filter,
 		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
 		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit">` + filter,
+		`<form method="post" action="/tasks/t-ask/answer">` + "\n" + filter,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the filtered board lacks %s", want)
@@ -443,6 +561,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	for path, form := range map[string]url.Values{
 		"/tasks/t-c2/summary": {"summary": {"links"}},
 		"/tasks/t-c2/accent":  {"value": {"blue"}},
+		"/tasks/t-ask/answer": {"answer": {"europe"}},
 	} {
 		form.Set("csrf", s.csrf)
 		form.Set("project", "linkshort")

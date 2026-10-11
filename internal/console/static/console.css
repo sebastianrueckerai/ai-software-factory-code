@@ -89,6 +89,7 @@ h4 { font-size: .9rem; margin: 0 0 .25rem; }
 .card .card { border: 0; padding: 0; margin: 0; background: none; }
 .face { display: grid; gap: .15rem; }
 .face > * { min-width: 0; }
+.face > p { margin: 0; }
 .ref { font-weight: 600; white-space: nowrap; }
 .chip { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; font-size: .75rem; color: var(--text-muted); background: var(--bg-raised); overflow-wrap: anywhere; }
 .pill { display: inline-block; padding: 0 .45rem; border-radius: 999px; font-size: .75rem; line-height: 1.5; border: 1px solid transparent; }
@@ -167,17 +168,18 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .step.running::before, button.htmx-request::after { animation-duration: 3s; } }
 /* the card face's accent edge and chip border: the same fixed hue, never
-   a state's rendering. The chip's words keep the muted text (6.2:1 dark,
+   a state's rendering. .face.edge-* outranks .card .card, so the face
+   inside an escalation keeps its edge and the room beside it. The chip's words keep the muted text (6.2:1 dark,
    7.4:1 light): on a dark card red, violet, green and blue sit under
    4.5:1 */
-.edge-red { border-left: 3px solid var(--acc-red); }
-.edge-orange { border-left: 3px solid var(--acc-orange); }
-.edge-amber { border-left: 3px solid var(--acc-amber); }
-.edge-green { border-left: 3px solid var(--acc-green); }
-.edge-teal { border-left: 3px solid var(--acc-teal); }
-.edge-blue { border-left: 3px solid var(--acc-blue); }
-.edge-violet { border-left: 3px solid var(--acc-violet); }
-.edge-pink { border-left: 3px solid var(--acc-pink); }
+.face.edge-red { border-left: 3px solid var(--acc-red); padding-left: .5rem; }
+.face.edge-orange { border-left: 3px solid var(--acc-orange); padding-left: .5rem; }
+.face.edge-amber { border-left: 3px solid var(--acc-amber); padding-left: .5rem; }
+.face.edge-green { border-left: 3px solid var(--acc-green); padding-left: .5rem; }
+.face.edge-teal { border-left: 3px solid var(--acc-teal); padding-left: .5rem; }
+.face.edge-blue { border-left: 3px solid var(--acc-blue); padding-left: .5rem; }
+.face.edge-violet { border-left: 3px solid var(--acc-violet); padding-left: .5rem; }
+.face.edge-pink { border-left: 3px solid var(--acc-pink); padding-left: .5rem; }
 .accent-red { border-color: var(--acc-red); }
 .accent-orange { border-color: var(--acc-orange); }
 .accent-amber { border-color: var(--acc-amber); }
@@ -194,6 +196,7 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .card details { margin-top: .35rem; border-top: 1px solid var(--line-subtle); padding-top: .25rem; font-size: .85rem; }
 .card details summary { cursor: pointer; color: var(--text-muted); }
 .edit-form { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; margin-top: .4rem; }
+.edit-form label { display: contents; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
 .edit-icon { text-decoration: none; }
 .summary-edit .edit-icon { color: var(--text-muted); font-weight: 600; }

@@ -151,6 +151,7 @@ type Console struct {
 	writersT time.Time
 	flight   singleflight.Group
 	moves    map[string]answer // the board's MayMove answers
+	checks   map[string]checks // the cards' checks counts, by task
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun

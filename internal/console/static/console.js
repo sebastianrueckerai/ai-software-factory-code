@@ -77,11 +77,10 @@ document.addEventListener("change", function (e) {
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
-// Theme toggle: dark is the default; the choice is remembered in localStorage.
+// Theme toggle: dark is the default; the choice is remembered in
+// localStorage, which theme.js applies before the first paint.
 (function () {
-  var stored = localStorage.getItem("theme");
-  var theme = stored === "light" ? "light" : "dark";
-  document.documentElement.setAttribute("data-theme", theme);
+  var theme = document.documentElement.getAttribute("data-theme");
   var btn = document.getElementById("theme-toggle");
   if (!btn) return;
   function label() {

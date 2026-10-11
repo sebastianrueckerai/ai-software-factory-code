@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"log"
 	"maps"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -163,9 +164,14 @@ var statusClasses = map[string]string{
 
 func statusClass(status string) string { return cmp.Or(statusClasses[status], "st-other") }
 
-// nearBudgetShare is the share of its budget from which a card's spend is
-// shown prominent with the warning sign and the words "near its budget".
-const nearBudgetShare = 0.8
+// nearBudget: spent is 80 percent of budget or more, both in the whole
+// cents the face shows (0.8 * 3.00 is 2.4000000000000004 in floats, so
+// 2.40 of 3.00 would stay muted): the spend turns prominent with the
+// warning sign and the words "near its budget".
+func nearBudget(spent, budget float64) bool {
+	cents := func(eur float64) int64 { return int64(math.Round(eur * 100)) }
+	return cents(spent)*5 >= cents(budget)*4
+}
 
 // staleAfter bounds how long a card may hold no event before its face
 // wears the amber ring.
@@ -179,44 +185,70 @@ func newestChecksCount(steps []map[string]any) string {
 			continue
 		}
 		jobs, _ := steps[i]["jobs"].([]any)
-		var passed int
+		var passed, ran int
 		for _, j := range jobs {
 			job, _ := j.(map[string]any)
-			if st, _ := job["status"].(string); st == "success" {
+			switch st, _ := job["status"].(string); st {
+			case "skipped":
+				continue
+			case "success":
 				passed++
 			}
+			ran++
 		}
-		if len(jobs) == 0 {
+		if ran == 0 {
 			return ""
 		}
-		return fmt.Sprintf("%d/%d", passed, len(jobs))
+		return fmt.Sprintf("%d/%d", passed, ran)
 	}
 	return ""
 }
 
+// checksTTL is how long a card's checks count is kept: the renders, polls
+// and card swaps within it read the card's timeline once.
+const checksTTL = 30 * time.Second
+
+// checks is a remembered checks count and when it was read.
+type checks struct {
+	count string
+	at    time.Time
+}
+
 // faceTimelines reads the newest checks step onto every card that can
 // have one: a card with a pull request, not yet final, at most once per
-// render. A timeline that cannot be read keeps the card without the chip —
-// the object store answers no body for a task that never wrote a timeline,
-// and reading is best-effort here, never a reason to fail the board.
+// checksTTL. A timeline that cannot be read keeps the card without the
+// chip — the object store answers no body for a task that never wrote a
+// timeline, and reading is best-effort here, never a reason to fail the
+// board.
 func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))) {
-	read := map[string]string{}
-	set := func(k *card) {
+	everyCard(func(k *card) {
 		if k.PRNumber == 0 || factoryd.Final(k.Status) {
 			return
 		}
-		if _, ok := read[k.ID]; !ok {
-			steps, err := c.readTimeline(ctx, k.ID)
-			if err != nil {
+		c.mu.Lock()
+		got, ok := c.checks[k.ID]
+		c.mu.Unlock()
+		if !ok || time.Since(got.at) >= checksTTL {
+			got = checks{at: time.Now()}
+			if steps, err := c.readTimeline(ctx, k.ID); err != nil {
 				log.Printf("console: timeline of %s for its checks: %v", k.ID, err)
-				read[k.ID] = ""
 			} else {
-				read[k.ID] = newestChecksCount(steps)
+				got.count = newestChecksCount(steps)
 			}
+			c.mu.Lock()
+			for id, old := range c.checks {
+				if time.Since(old.at) >= checksTTL {
+					delete(c.checks, id)
+				}
+			}
+			if c.checks == nil {
+				c.checks = map[string]checks{}
+			}
+			c.checks[k.ID] = got
+			c.mu.Unlock()
 		}
-		k.Checks = read[k.ID]
-	}
-	everyCard(set)
+		k.Checks = got.count
+	})
 }
 
 // depsCount is how many issues a "#3, #5" list names (0 an empty one).
@@ -279,6 +311,11 @@ type column struct {
 // accent; every form on it carries it back, so an action keeps the view.
 type boardFilter struct {
 	Project, Accent string
+}
+
+// formFilter is the board's filter a form carried back.
+func formFilter(r *http.Request) boardFilter {
+	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent")}
 }
 
 // query is the filter as a URL query, empty when it names nothing.
@@ -344,7 +381,7 @@ func (c *Console) card(t factoryd.Task) card {
 		return titleClause(t.Objective)
 	}())
 	if t.BudgetEUR > 0 {
-		k.NearBudget = t.SpentEUR >= nearBudgetShare*t.BudgetEUR
+		k.NearBudget = nearBudget(t.SpentEUR, t.BudgetEUR)
 	}
 	return k
 }
@@ -406,25 +443,14 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 // of the tasks they name; a browser's form a redirect to the board after a
 // success (a reload resends nothing), else the page.
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
-	project, accent := r.PostFormValue("project"), r.PostFormValue("accent")
+	f := formFilter(r)
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
-		back := "/"
-		q := url.Values{}
-		if project != "" {
-			q.Set("project", project)
-		}
-		if accent != "" {
-			q.Set("accent", accent)
-		}
-		if q.Encode() != "" {
-			back += "?" + q.Encode()
-		}
-		http.Redirect(w, r, back, http.StatusSeeOther)
+		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
 		return
 	}
-	d, err := c.boardOf(r, project, accent)
+	d, err := c.boardOf(r, f.Project, f.Accent)
 	if errors.Is(err, errNoProject) {
-		d, err = c.boardOf(r, "", accent)
+		d, err = c.boardOf(r, "", f.Accent)
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
@@ -626,7 +652,6 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		}
 		if k.Reason != "" {
 			k.Activity = reason()
-			k.StaleText = ""
 		}
 	}
 	each(setActivity)
@@ -1135,7 +1160,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	// so intake records no second question_answered when its webhook
 	// delivers that very comment.
 	c.act(r, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, commentDetail(posted.ID))
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
 }
 
 func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what string, err error) {
