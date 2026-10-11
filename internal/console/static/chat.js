@@ -142,15 +142,51 @@ var chatView = (function () {
     });
     return {events: events, rest: rest};
   }
+  // queue keeps the messages the member sends while a turn streams, in
+  // order, each editable and removable until it goes out: whenever busy()
+  // is false (the turn before it ended, no edit open) flush starts the
+  // first as its own turn, and shown(items) draws the rest after every
+  // change.
+  function queue(start, busy, shown) {
+    var items = [];
+    function flush() {
+      if (items.length && !busy()) start(items.shift());
+      shown(items.slice());
+    }
+    return {
+      add: function (text) {
+        items.push(text);
+        flush();
+      },
+      edit: function (i, text) {
+        text = text.trim();
+        if (text) items[i] = text;
+        else items.splice(i, 1);
+        flush();
+      },
+      remove: function (i) {
+        items.splice(i, 1);
+        flush();
+      },
+      flush: flush
+    };
+  }
+  function queueHTML(items) {
+    return items.map(function (text, i) {
+      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + "\">" + esc(text) +
+        "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
+    }).join("");
+  }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, conversationsHTML: conversationsHTML, eventStream: eventStream, sse: sse};
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, conversationsHTML: conversationsHTML, eventStream: eventStream, sse: sse,
+    queue: queue, queueHTML: queueHTML};
 })();
 
 (function () {
   var panel = document.getElementById("chat");
   if (!panel) return;
   var log = document.getElementById("chat-log"), screen = document.getElementById("screen");
-  var form = document.getElementById("chat-form"), input = document.getElementById("chat-input");
+  var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
   var fresh = document.getElementById("chat-new"), select = document.getElementById("chat-conversations");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
   var streaming = false, readOnly = false;
@@ -181,9 +217,10 @@ var chatView = (function () {
   function setStreaming(on) {
     streaming = on;
     log.setAttribute("aria-busy", String(on));
-    form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = on || readOnly; });
+    form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = readOnly; });
     fresh.disabled = select.disabled = on;
     log.querySelectorAll("button").forEach(function (b) { b.disabled = on; });
+    if (!on) waiting.flush();
   }
   function read(reader, onEvent) {
     var decoder = new TextDecoder(), buf = "";
@@ -253,8 +290,11 @@ var chatView = (function () {
   }
   function send() {
     var text = input.value.trim();
-    if (!text || streaming) return;
+    if (!text || readOnly) return;
     input.value = "";
+    waiting.add(text);
+  }
+  function turn(text) {
     var start = log.querySelector(".chat-start");
     if (start) start.remove();
     add(log, chatView.userHTML(login, text, new Date()));
@@ -290,6 +330,50 @@ var chatView = (function () {
     flash.hidden = false;
   });
   if (!form) return;
+  // the queue under the input: a click on a message edits it in place
+  // (Enter or leaving it keeps the edit, Escape the message as it was),
+  // its × removes it; an open edit is drawn again once it closes
+  var waiting = chatView.queue(turn, function () {
+    return streaming || readOnly || !!queued.querySelector("textarea");
+  }, function (items) {
+    if (queued.querySelector("textarea")) return;
+    queued.innerHTML = chatView.queueHTML(items);
+    queued.hidden = !items.length;
+  });
+  queued.addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    if (b.hasAttribute("data-remove")) {
+      waiting.remove(Number(b.dataset.remove));
+      input.focus();
+      return;
+    }
+    var area = document.createElement("textarea");
+    area.rows = 2;
+    area.value = b.textContent;
+    area.dataset.edit = b.dataset.edit;
+    area.setAttribute("aria-label", b.getAttribute("aria-label"));
+    b.replaceWith(area);
+    area.focus();
+  });
+  queued.addEventListener("keydown", function (e) {
+    if (e.target.localName !== "textarea") return;
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      input.focus();
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      e.target.dataset.drop = "";
+      input.focus();
+    }
+  });
+  queued.addEventListener("focusout", function (e) {
+    var area = e.target;
+    if (area.localName !== "textarea") return;
+    area.remove();
+    if (area.dataset.drop === undefined) waiting.edit(Number(area.dataset.edit), area.value);
+    else waiting.flush();
+  });
 
   form.addEventListener("submit", function (e) {
     e.preventDefault();

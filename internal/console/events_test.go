@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -467,10 +468,16 @@ func idsOf(events []eventJSON) []int64 {
 // The stream, the request and the server end with the test.
 func streamOf(t *testing.T, r *rig, lastID string) (*http.Response, *bufio.Reader) {
 	t.Helper()
+	return streamAt(t, r, "", lastID)
+}
+
+// streamAt is streamOf under the board's query.
+func streamAt(t *testing.T, r *rig, query, lastID string) (*http.Response, *bufio.Reader) {
+	t.Helper()
 	ck, _ := r.loggedIn(t)
 	srv := httptest.NewServer(r.c)
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/projects/ai-software-factory-code/events/stream", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/projects/ai-software-factory-code/events/stream"+query, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,6 +621,82 @@ func TestStreamKeepsOutOfOrderLiveEvents(t *testing.T) {
 	}
 }
 
+// A live-only event (the agent's text, no row) goes out without an id, so
+// the browser's Last-Event-ID stays the last row's, also after a replay.
+func TestStreamSendsALiveOnlyEvent(t *testing.T) {
+	r := newRig(t)
+	r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	_, br := streamOf(t, r, "1")
+	r.events.bus.Publish(factoryd.Event{Repository: "sf/code", TaskID: "t-x", IssueNumber: 4, Kind: factoryd.EventSessionSaid, Actor: factoryd.FactoryDecider,
+		Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"session": "s-1", "text": "Reading the store."}})
+	want := []string{"event: event", `data: {"id":0,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"t-x","issue_number":4,` +
+		`"kind":"session_said","actor":"factoryd","via":"factoryd","detail":{"session":"s-1","text":"Reading the store."}}`}
+	if got := nextMessage(t, br); !slices.Equal(got, want) {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+// The stream sends the board's counters, the status line's markup and
+// each column's count in the page's order, a moment after a live event
+// and only when they changed, under the board's filter its query names.
+func TestStreamSendsTheCounters(t *testing.T) {
+	wait, beat := countersWait, heartbeat
+	countersWait, heartbeat = 10*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
+	r := newRig(t)
+	running := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Objective: "fix the cache"}
+	r.tasks.set("", running)
+	// the member's write rights are read once, before two streams read the board
+	ck, _ := r.loggedIn(t)
+	r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
+	_, br := streamOf(t, r, "")
+	_, teal := streamAt(t, r, "?accent=teal", "")
+	moved := func() {
+		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	}
+	// next is the next counters message, past the events and the heartbeats
+	next := func(br *bufio.Reader) countersJSON {
+		t.Helper()
+		for {
+			got := nextMessage(t, br)
+			if len(got) == 2 && got[0] == "event: counters" {
+				var c countersJSON
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(got[1], "data: ")), &c); err != nil {
+					t.Fatalf("counters %q: %v", got[1], err)
+				}
+				return c
+			}
+		}
+	}
+	const status = "\n<strong class=\"pname\">ai-software-factory-code</strong>\n" +
+		"<span class=\"state\" data-state=\"waiting on you\"><span aria-hidden=\"true\">●</span> waiting on you</span>\n" +
+		"<span class=\"fig\">1 working</span>\n<a href=\"#needs-you\" class=\"fig need\">2 need you</a>\n" +
+		"<a href=\"/costs\" class=\"fig\" title=\"spend this UTC month against the project's month cap\">€0.00 / €50.00</a>\n"
+	moved()
+	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 1, 0, 0}) {
+		t.Errorf("counters %+v, want %q and 2 0 1 0 0", got, status)
+	}
+	if got := next(teal); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 0, 0, 0}) {
+		t.Errorf("teal's counters %+v, want %q and 2 0 0 0 0", got, status)
+	}
+	// unchanged: two heartbeats pass after the event without counters
+	moved()
+	for pings := 0; pings < 2; {
+		switch got := nextMessage(t, br); {
+		case len(got) > 0 && got[0] == "event: counters":
+			t.Fatalf("unchanged counters sent again: %q", got)
+		case slices.Equal(got, []string{": ping"}):
+			pings++
+		}
+	}
+	queued := factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 12, Objective: "queue it"}
+	r.tasks.set("", running, queued)
+	moved()
+	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 1, 1, 0, 0}) {
+		t.Errorf("counters after a queued card %+v, want 2 1 1 0 0", got)
+	}
+}
+
 // A stream ends by the next heartbeat once its session is gone: expired,
 // or dropped by a logout in another tab.
 func TestStreamEndsWithItsSession(t *testing.T) {
@@ -744,23 +827,97 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 	}
 }
 
-// The board template no longer carries hx-trigger="every 3s": beside the
-// stream it polls every 30 s for the same board, it names the project its
-// script follows and the filter its swaps carry, and the page has the
-// footer that says when the stream failed.
-func TestBoardTemplatePollsSlowly(t *testing.T) {
+// The board polls nothing: no hx-trigger, the footer that says when the
+// stream is down, and a board fragment that carries the status line out
+// of band. console.js under node, which the test needs: it follows the
+// stream under the board's query; a first open asks for nothing, a
+// reconnect for the board once, and no timer for anything; counters set
+// the status line and the columns' counts; the agent's text and a steer
+// reach the drawer's Chat once each, and another session's text loads
+// the tab again.
+func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
-	if strings.Contains(body, `hx-trigger="every 3s"`) {
-		t.Error("board still polls")
-	}
-	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code" ` +
-		`hx-get="/board?project=ai-software-factory-code" hx-trigger="every 30s" hx-swap="outerHTML">`,
+	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`,
 		`<footer id="live" role="status"></footer>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)
 		}
+	}
+	if strings.Contains(body, "hx-trigger") {
+		t.Error("the board page still polls")
+	}
+	frag := r.do(httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil), ck).Body.String()
+	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<p id=\"status-line\" hx-swap-oob=\"innerHTML\">\n<strong class=\"pname\">ai-software-factory-code</strong>") {
+		t.Errorf("the board fragment carries no status line out of band:\n%s", frag)
+	}
+
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var listeners = {}, requests = [], timers = 0, sources = [];
+function el(props) {
+  var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
+    getAttribute: function () { return null; }, addEventListener: function () {},
+    appendChild: function (c) { this.children.push(c); return c; }};
+  return Object.assign(e, props);
+}
+var counts = [el(), el(), el()], log = el({dataset: {task: "t-run", session: "s-2"}});
+log.querySelector = function (sel) {
+  return log.children.some(function (c) { return sel === "[data-key=\"" + c.dataset.key + "\"]"; }) ? {} : null;
+};
+var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
+  drawer: el({hidden: true}), "session-log": log};
+function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
+EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
+EventSource.CLOSED = 2;
+var sandbox = {EventSource: EventSource, CSS: {escape: function (s) { return s; }}, location: {hash: ""}, history: {replaceState: function () {}},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
+  fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
+  htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return Promise.resolve(); }, swap: function () {}, process: function () {}},
+  window: {addEventListener: function () {}},
+  document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
+    getElementById: function (id) { return byID[id] || null; },
+    querySelectorAll: function (sel) { return sel === "#board .count" ? counts : []; },
+    createElement: function () { return el(); },
+    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
+require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
+var es = sources[0], out = {url: es.url};
+es.onopen();
+out.opened = requests.slice();
+es.onopen();
+out.reconnected = requests.slice();
+out.timers = timers;
+es.on.counters({data: JSON.stringify({status: "\n<strong class=\"pname\">code</strong>\n", counts: [2, 0, 1]})});
+out.status = byID["status-line"].innerHTML;
+out.counts = counts.map(function (c) { return c.textContent; });
+function event(e) { es.on.event({data: JSON.stringify(e)}); }
+var text = {id: 0, at: "2026-10-11T10:05:00.25Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-2", text: "Tests pass."}};
+event(text);
+event(text);
+requests = [];
+event({id: 7, at: "2026-10-11T10:06:00Z", task_id: "t-run", kind: "card_steered", actor: "sebastian", detail: {text: "Merge it."}});
+event({id: 0, at: "2026-10-11T10:07:00Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-3", text: "Again."}});
+out.after = requests;
+out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
+out.timers = timers;
+console.log(JSON.stringify(out));`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
+	got, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code"],"timers":0,` +
+		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
+		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],` +
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."]}`
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
 }
 

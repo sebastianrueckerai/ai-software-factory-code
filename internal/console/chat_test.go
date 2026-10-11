@@ -1091,7 +1091,7 @@ func TestChatSteerAndComment(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"The session of #11 has your message."}`,
 		`applied {"result":"The session of #11 has your message.","tool":"steer"}`, `done {}`})
 	equal(t, "steered", steered, []string{"t-r sebastian: Rebase on main first."})
-	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered}
+	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered, Detail: map[string]any{"text": "Rebase on main first."}}
 	chatRows(t, r.events, before, "sebastian", commented, steer)
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the steer's stored result", stored[0].ToolCalls[0].Result, "The session of #11 has your message. It cannot be undone.")

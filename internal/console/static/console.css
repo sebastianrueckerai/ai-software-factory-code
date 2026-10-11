@@ -208,7 +208,8 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 /* the status line: the project's state in words and three figures, each
    linking to its page; normal states whisper, a card that needs you
    speaks */
-.status-line { display: flex; flex-wrap: wrap; gap: .3rem 1.15rem; align-items: baseline; margin: 0 0 .75rem; padding: .45rem .1rem; border-bottom: 1px solid var(--line-subtle); font-variant-numeric: tabular-nums; }
+/* the status line spans the board and the chat, always one line */
+.status-line { display: flex; flex-wrap: nowrap; gap: .3rem 1.15rem; align-items: baseline; margin: 0 0 .75rem; padding: .45rem .1rem; overflow-x: auto; white-space: nowrap; border-bottom: 1px solid var(--line-subtle); font-variant-numeric: tabular-nums; }
 .status-line .pname { font-size: 1.02rem; }
 .status-line .state { font-weight: 600; color: var(--text-muted); }
 .status-line .state[data-state="working"] { color: var(--st-running); }
@@ -218,7 +219,7 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .status-line a.fig.need { color: var(--st-waiting); font-weight: 600; }
 /* the pulse under the status line: muted words when all is well, the
    warning sign, weight and the waiting colour when a card needs a person */
-.pulse { margin: -.75rem 0 .75rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line-subtle); border-left: 4px solid transparent; }
+.pulse { margin: 0 0 .75rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line-subtle); border-left: 4px solid transparent; }
 .pulse summary { display: flex; flex-wrap: wrap; gap: .25rem .6rem; align-items: baseline; cursor: pointer; list-style: none; }
 .pulse summary::-webkit-details-marker { display: none; }
 .pulse-say { color: var(--text-muted); font-size: .88rem; }
@@ -334,6 +335,15 @@ button.undo { margin: 0 0 0 .3rem; padding: 0 .45rem; font-size: .78rem; }
 .chat-form { display: flex; gap: .5rem; align-items: flex-end; margin: 0; padding: .5rem .8rem .6rem; border-top: 1px solid var(--line-subtle); }
 .chat-form textarea { flex: 1; max-width: none; resize: none; border-radius: 8px; }
 .chat-form button { margin: 0; }
+.chat-queue { list-style: none; margin: 0; padding: 0 .8rem .5rem; display: flex; flex-direction: column; gap: .3rem; }
+.chat-queue[hidden] { display: none; }
+.chat-queue li { display: flex; gap: .3rem; align-items: flex-start; }
+.chat-queue .queued-text { flex: 1; margin: 0; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-raised); color: var(--text-muted); border: 1px dashed var(--line-strong); border-radius: 8px; }
+.chat-queue textarea { flex: 1; max-width: none; resize: none; border-radius: 8px; }
+.chat-queue .queued-remove { margin: 0; background: transparent; color: var(--text-muted); border-color: var(--line-subtle); }
+.session-log { margin: .4rem 0; }
+.session-log .said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.drawer .chat-form { padding: .5rem 0 0; }
 @media (min-width: 1200px) {
   .screen.with-chat .lane.five { grid-template-columns: minmax(11rem, 1.4fr) repeat(4, minmax(7.5rem, 1fr)); }
   body:has(.screen.with-chat) .drawer { right: calc(36vw + 1rem); }

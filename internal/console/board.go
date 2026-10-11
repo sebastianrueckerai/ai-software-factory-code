@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -464,6 +465,14 @@ type column struct {
 	Needs []need
 }
 
+// Count is the number the column's head shows: its needs, else its cards.
+func (c column) Count() int {
+	if len(c.Needs) > 0 {
+		return len(c.Needs)
+	}
+	return len(c.Cards)
+}
+
 // need is an item of the human lane, or of the Needs you column: an
 // approval request, an escalated card with its answer form (CSRF, the
 // verdict for an approver and the board to go back to), or a card that
@@ -566,6 +575,19 @@ type boardData struct {
 	Factory     bool // writes the factory's own code: the layout links the factory-level pages
 }
 
+// counts are the board's column counts in the page's order, the wide
+// view's human lane first.
+func (d boardData) counts() []int {
+	var out []int
+	if d.wide() {
+		out = append(out, len(d.Approvals), len(d.Escalations), len(d.HumanTasks))
+	}
+	for _, col := range d.Columns {
+		out = append(out, col.Count())
+	}
+	return out
+}
+
 // boardLimit bounds the tasks one board render reads.
 const boardLimit = 300
 
@@ -651,7 +673,7 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	d.Filed = r.URL.Query().Get("filed")
 	name := "page.html"
 	if r.URL.Path == "/board" {
-		name = "board"
+		name = "board-fragment"
 	}
 	c.render(w, name, d)
 }
@@ -696,7 +718,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	}
 	name := "page.html"
 	if r.Header.Get("HX-Request") != "" {
-		name = "board"
+		name = "board-fragment"
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
@@ -1553,14 +1575,16 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 // drawerTab is a tab of the card drawer: its ?tab= and its title.
 type drawerTab struct{ Name, Title string }
 
-// drawerTabs are the card drawer's tabs, the first its default.
-var drawerTabs = []drawerTab{{"overview", "Overview"}, {"activity", "Activity"}, {"files", "Files"}}
+// drawerTabs are the card drawer's tabs: Chat the default of a running
+// card, Overview of any other.
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"activity", "Activity"}, {"files", "Files"}, {"chat", "Chat"}}
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
 // line and its body, the plan's table, a pending merge's reviews and
 // audit, and the related cards. Activity: the timeline page's gates and
-// steps. Files: the pull request's changed files.
+// steps. Files: the pull request's changed files. Chat: the newest
+// session's messages, and the input that steers it while it runs.
 type drawerData struct {
 	Card                       card
 	Tab                        string
@@ -1574,8 +1598,20 @@ type drawerData struct {
 	Longest                    int
 	Entries                    []timelineEntry
 	Files                      []prFile
-	MoreFiles                  bool   // Files are the first filesPages pages
+	MoreFiles                  bool // Files are the first filesPages pages
+	Session                    *sessionRef
+	Said                       []said
+	Steers                     bool   // the session runs and takes the member's messages
 	Problem                    string // what the tab could not read
+}
+
+// said is a message of a session in the drawer's Chat: the agent's text
+// between its tool calls, or a member's steer. Key is what the stream's
+// copy of it carries, so the live one is not added twice.
+type said struct {
+	Key, Who, Text string
+	Agent          bool
+	At             time.Time
 }
 
 // related is a card the drawer's card relates to, Why, in its live state.
@@ -1584,17 +1620,38 @@ type related struct {
 	Card card
 }
 
-// cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files
+// cardDrawer answers GET /cards/{id}/drawer?tab=overview|activity|files|chat
 // to a writer of the card's project, 403 to anyone else.
 func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
-	tab := cmp.Or(r.URL.Query().Get("tab"), drawerTabs[0].Name)
-	if !slices.ContainsFunc(drawerTabs, func(t drawerTab) bool { return t.Name == tab }) {
-		http.Error(w, "tab must be overview, activity or files", http.StatusBadRequest)
+	tab := r.URL.Query().Get("tab")
+	if tab != "" && !slices.ContainsFunc(drawerTabs, func(t drawerTab) bool { return t.Name == tab }) {
+		http.Error(w, "tab must be overview, activity, files or chat", http.StatusBadRequest)
 		return
 	}
+	c.drawer(w, r, tab)
+}
+
+// steerCard hands the member's message from the drawer's Chat to card
+// id's running session (doSteer) and answers the tab again.
+func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
+	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	c.drawer(w, r, "chat")
+}
+
+// drawer renders the card drawer on tab, "" for the card's default.
+func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	bt, k, v, ok := c.writableCard(w, r, http.StatusForbidden)
 	if !ok {
 		return
+	}
+	if tab == "" {
+		tab = "overview"
+		if bt.Status == "running" {
+			tab = "chat"
+		}
 	}
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
@@ -1639,8 +1696,46 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		if d.Files, d.MoreFiles, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
 			problem("pull request's files", err)
 		}
+	case "chat":
+		var err error
+		if d.Session, d.Said, err = c.sessionChat(r, bt.ID); err != nil {
+			problem("session", err)
+		}
+		d.Steers = d.Session != nil && d.Session.Ended.IsZero() && bt.Status == "running" && c.cfg.Steer != nil
 	}
 	c.render(w, "drawer.html", d)
+}
+
+// sessionChat is card id's newest session, nil before its first, and its
+// messages in time order: the agent's text of each model call in the
+// transcript, and the steers among the card's events from the session's
+// start to its end.
+func (c *Console) sessionChat(r *http.Request, id string) (*sessionRef, []said, error) {
+	steps, err := c.readTimeline(r.Context(), id)
+	all := sessionsOf(steps)
+	if err != nil || len(all) == 0 {
+		return nil, nil, err
+	}
+	s := sessionAt(all, 0)
+	body, err := (&turn{c: c, r: r}).transcript(id, s)
+	var no *refusal
+	if err != nil && !(errors.As(err, &no) && no.status == http.StatusNotFound) {
+		return &s, nil, err
+	}
+	var out []said
+	eachStep(body, func(_ int, ev harness.Event) {
+		if text := textAt(ev.Detail, "text"); ev.Kind == harness.EventModelCall && text != "" {
+			out = append(out, said{Key: s.ID + "@" + ev.Time.UTC().Format(time.RFC3339Nano), Who: "agent", Text: text, Agent: true, At: ev.Time})
+		}
+	})
+	events, err := c.cfg.Events.TaskEvents(r.Context(), id, startEvents)
+	for _, e := range events {
+		if e.Kind == factoryd.EventCardSteered && !e.At.Before(s.Started) && (s.Ended.IsZero() || !e.At.After(s.Ended)) {
+			out = append(out, said{Key: fmt.Sprintf("e%d", e.ID), Who: e.Actor, Text: textAt(e.Detail, "text"), At: e.At})
+		}
+	}
+	slices.SortStableFunc(out, func(a, b said) int { return a.At.Compare(b.At) })
+	return &s, out, err
 }
 
 // objectiveParts is an objective as the drawer shows it: its first line

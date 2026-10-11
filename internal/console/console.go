@@ -251,6 +251,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
 	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
 	c.mux.Handle("POST /tasks/{id}/close", c.auth(c.closeCard))
+	c.mux.Handle("POST /tasks/{id}/steer", c.auth(c.steerCard))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.factory(c.costs)))
 	c.mux.Handle("GET /policy", c.auth(c.factory(c.policy)))

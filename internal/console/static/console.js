@@ -15,8 +15,8 @@ function busy(el) {
   }
   return false;
 }
-// The board's own requests, its poll and the swaps the stream asks for,
-// skip a busy board.
+// The board's own requests, the swaps the stream asks for, skip a busy
+// board.
 document.addEventListener("htmx:beforeRequest", function (e) {
   if (e.detail.elt.id === "board" && busy(e.detail.elt)) e.preventDefault();
 });
@@ -101,31 +101,35 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
-// The board follows its project's event stream: an event swaps the cards
-// it names from GET /cards/{id} at once, or the whole board when the card
-// is not on it or its place changed, and card_filed, project_merged and a
-// reconnect swap the board. Beside the stream the board polls every 30 s
-// (its template's hx-trigger), so its minute counters tick and whatever
-// the events do not carry is at most 30 s old. A board whose stream
-// failed (closed, or in error for 30 s) polls every 3 s instead, which
-// the footer says. A swap a busy card or board would wipe waits until it
-// is no longer busy.
+// The board follows its project's event stream, and nothing polls: an
+// event swaps the cards it names from GET /cards/{id} at once, or the
+// whole board when the card is not on it or its place changed, and
+// card_filed, project_merged and a reconnect swap the board, whose answer
+// carries the status line too. counters sets the status line and the
+// columns' counts the server read after the events that change them; the
+// agent's text and the steers reach the drawer's Chat. A swap a busy card
+// or board would wipe waits, looked at again every 3 s until it is no
+// longer busy; the footer says when the stream is down.
 (function () {
-  var polling = false, missed = {}, latest = {}, asked = 0;
+  var missed = {}, latest = {}, asked = 0, waiting = null;
   function board() { return document.getElementById("board"); }
-  function poll() {
-    var b = board();
-    if (!polling || !b || b.getAttribute("hx-trigger") === "every 3s") return;
-    b.setAttribute("hx-trigger", "every 3s");
-    htmx.process(b);
+  function later() {
+    if (!waiting) waiting = setTimeout(retry, 3000);
   }
-  // a swapped-in board comes with the 30 s poll only
-  document.addEventListener("htmx:afterSettle", poll);
+  function retry() {
+    waiting = null;
+    var ids = Object.keys(missed);
+    missed = {};
+    ids.forEach(function (id) {
+      if (id) swapCard(id);
+      else swapBoard();
+    });
+  }
   function swapBoard() {
     var b = board();
     if (busy(b)) {
       missed[""] = true;
-      return;
+      return later();
     }
     htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"});
   }
@@ -135,7 +139,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     for (var i = 0; i < cards.length; i++) {
       if (busy(cards[i])) {
         missed[id] = true;
-        return;
+        return later();
       }
     }
     var n = latest[id] = ++asked;
@@ -152,40 +156,59 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       });
     }).catch(swapBoard);
   }
-  setInterval(function () {
-    var ids = Object.keys(missed);
-    missed = {};
-    ids.forEach(function (id) {
-      if (id) swapCard(id);
-      else swapBoard();
-    });
-  }, 3000);
-  function follow(project) {
-    var es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream");
-    var failing = null, opened = false;
-    function fallBack() {
-      es.close();
-      document.getElementById("live").textContent = "The live stream failed: the board polls every 3 s.";
-      polling = true;
-      poll();
+  // counters are the status line and the columns' counts as the server
+  // read them, set whatever the board's state: neither holds a form
+  function counters(d) {
+    var line = document.getElementById("status-line"), counts = document.querySelectorAll("#board .count");
+    if (line) line.innerHTML = d.status;
+    if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
+  }
+  // said adds the agent's text or a steer to the drawer's Chat while it
+  // shows that card's session, once; another session's text loads the
+  // tab again
+  function said(e) {
+    var log = document.getElementById("session-log"), d = e.detail, agent = e.kind === "session_said";
+    if (!log || log.dataset.task !== e.task_id) return;
+    if (agent && d.session !== log.dataset.session) {
+      htmx.ajax("GET", "/cards/" + encodeURIComponent(e.task_id) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
+      return;
     }
+    var key = agent ? d.session + "@" + e.at : "e" + e.id, box = document.getElementById("drawer");
+    if (log.querySelector("[data-key=\"" + CSS.escape(key) + "\"]")) return;
+    var end = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
+    var msg = log.appendChild(document.createElement("div"));
+    msg.className = "msg " + (agent ? "agent" : "you");
+    msg.dataset.key = key;
+    var who = msg.appendChild(document.createElement("p")), text = msg.appendChild(document.createElement("p"));
+    who.className = "who";
+    who.textContent = (agent ? "agent" : e.actor) + " · " + new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
+    text.className = "said";
+    text.textContent = d.text || "";
+    if (end) box.scrollTop = box.scrollHeight;
+  }
+  function follow(project, query) {
+    var es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query), opened = false;
     es.onopen = function () {
-      clearTimeout(failing);
-      failing = null;
+      document.getElementById("live").textContent = "";
       // the replay after a reconnect holds at most the newest 500 events
       if (opened) swapBoard();
       opened = true;
     };
     es.onerror = function () {
-      if (es.readyState === EventSource.CLOSED) fallBack();
-      else if (!failing) failing = setTimeout(fallBack, 30000);
+      document.getElementById("live").textContent = es.readyState === EventSource.CLOSED ?
+        "The live stream ended: reload the page to follow the board." : "The live stream is down; it reconnects by itself.";
     };
     es.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
       if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
+      else if (e.kind === "session_said") said(e);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
-      else swapCard(e.task_id);
+      else {
+        if (e.kind === "card_steered") said(e);
+        swapCard(e.task_id);
+      }
     });
+    es.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
   }
   // The pulse under the status line: pulse_computing shows its typing
   // indicator, pulse swaps its line in, and its fold stays as the member
@@ -217,7 +240,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   }
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
-    if (b && b.dataset.project) follow(b.dataset.project);
+    if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);
   });
 })();
 
@@ -247,15 +270,21 @@ function closeDrawer() {
 }
 window.addEventListener("hashchange", showDrawer);
 document.addEventListener("DOMContentLoaded", showDrawer);
-// a drawer refused or unreachable closes, so the board moves again
+// a drawer refused or unreachable closes, so the board moves again; a
+// refused steer leaves it open, its sentence in the flash
 function drawerFailed(e) {
-  if (e.detail.target && e.detail.target.id === "drawer") closeDrawer();
+  if (e.detail.target && e.detail.target.id === "drawer" && e.detail.requestConfig.verb === "get") closeDrawer();
 }
 document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
+// after a tab the focus is on the tab shown, after a steer in its input
 document.addEventListener("htmx:afterSwap", function (e) {
   var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer]");
-  if (shown && location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
+  if (!shown) return;
+  if (location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
+  var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
+  if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
+  else if (from.id === "steer-form" && steer) steer.focus();
 });
 
 // The board's keys, listed by ? : w switches the view, Escape closes the

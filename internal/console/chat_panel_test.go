@@ -11,8 +11,9 @@ import (
 )
 
 // The project agent's panel beside the board: a writer's project page
-// holds it with the input, the tabs of a narrow screen, the chat's keys
-// and its script; a reader's (a project they see but do not write) holds
+// holds it with the input and the queue under it, the tabs of a narrow
+// screen under the status line, which spans both, the chat's keys and its
+// script; a reader's (a project they see but do not write) holds
 // it without the input, the history it may not read or the keys; a member
 // who writes no project, the wide view and a console without the chat's
 // model get no panel.
@@ -48,6 +49,7 @@ func TestChatPanel(t *testing.T) {
 <textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
 <button type="submit">Send</button>
 </form>
+<ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 <script src="/static/chat.js" defer></script>
 </section>
 </div>
@@ -59,6 +61,10 @@ func TestChatPanel(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the writer's page lacks\n%s", want)
 		}
+	}
+	line, tabs := strings.Index(body, `<p id="status-line" class="status-line" aria-label="Status of the project">`), strings.Index(body, `<nav class="tabs screen-tabs"`)
+	if line < 0 || tabs < 0 || !strings.HasSuffix(body[line:tabs], "</p>\n") || strings.Count(body[line:tabs], "</p>") != 1 {
+		t.Errorf("the status line does not stand right above the tabs and the screen")
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/static/chat.js", nil))
 	if js, _ := io.ReadAll(rec.Body); rec.Code != http.StatusOK || !strings.Contains(string(js), "var chatView = ") {
@@ -76,7 +82,7 @@ func TestChatPanel(t *testing.T) {
 </section>`; !strings.Contains(body, want) {
 		t.Errorf("the reader's page lacks\n%s", want)
 	}
-	for _, unwanted := range []string{"chat-form", "chat-input", "data-login", "<kbd>/</kbd>"} {
+	for _, unwanted := range []string{"chat-form", "chat-input", "chat-queue", "data-login", "<kbd>/</kbd>"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the reader's page holds %s", unwanted)
 		}
@@ -101,7 +107,11 @@ func TestChatPanel(t *testing.T) {
 // it and Skip, as the stream's proposal does in the same markup, and a
 // used one is its folded call with the word used. The select of older
 // conversations offers the current one and each other, and is empty when
-// there is no other. Run under node, which the test needs.
+// there is no other. The queue: a message sent while no turn streams goes
+// out at once; three sent during the turn wait, one edited, one removed,
+// and each turn's end sends the next of the rest, in order; its markup
+// labels each edit and remove control. Run under node, which the test
+// needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -120,7 +130,24 @@ console.log(JSON.stringify({
   stream: chatView.proposalHTML({id: "tok1", tool: "new_card", arguments: JSON.parse(args), description: "File a card, title Cache metrics, lane ready"}),
   two: chatView.conversationsHTML([{number: 2, first_at: "2026-10-11T09:30:03Z", last_at: "2026-10-11T09:30:04Z", messages: 2}, one], 2),
   afterNew: chatView.conversationsHTML([one], 2),
-  one: chatView.conversationsHTML([one], 1)
+  one: chatView.conversationsHTML([one], 1),
+  queue: (function () {
+    var started = [], drawn = [], busy = false;
+    var q = chatView.queue(function (text) { started.push(text); busy = true; }, function () { return busy; },
+      function (items) { drawn.push(items.join("|")); });
+    q.add("first");
+    q.add("second");
+    q.add("third");
+    q.add("fourth");
+    q.edit(0, " second, edited ");
+    q.remove(1);
+    for (var i = 0; i < 3; i++) {
+      busy = false;
+      q.flush();
+    }
+    return JSON.stringify({started: started, drawn: drawn});
+  })(),
+  queueHTML: chatView.queueHTML(["a <b>", "c"])
 }));`
 	out, err := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js").Output()
 	if err != nil {
@@ -148,6 +175,11 @@ console.log(JSON.stringify({
 		{"two", older},
 		{"afterNew", older},
 		{"one", ""},
+		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
+		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1">a &lt;b&gt;</button>` +
+			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
+			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2">c</button>` +
+			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
 	} {
 		if got[c.name] != c.want {
 			t.Errorf("%s =\n%s\nwant\n%s", c.name, got[c.name], c.want)

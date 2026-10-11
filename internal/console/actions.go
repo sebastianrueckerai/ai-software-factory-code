@@ -956,7 +956,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 		return "", refuse(http.StatusBadGateway, "The message could not be delivered; see the factoryd log.")
 	}
 	log.Printf("console: %s steered %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSteered, nil)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSteered, map[string]any{"text": text})
 	return fmt.Sprintf("The session of #%d has your message.", t.IssueNumber), nil
 }
 

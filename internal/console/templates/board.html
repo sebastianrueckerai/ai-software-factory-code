@@ -1,15 +1,6 @@
-{{define "board"}}<div id="board" data-project="{{if .Writes}}{{.Project}}{{end}}" data-query="{{.Query}}" hx-get="/board{{.Query}}" hx-trigger="every 30s" hx-swap="outerHTML">
+{{define "board"}}<div id="board" data-project="{{if .Writes}}{{.Project}}{{end}}" data-query="{{.Query}}">
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
-{{with .Status}}{{if .Project}}<p class="status-line" aria-label="Status of the project">
-<strong class="pname">{{.Project}}</strong>
-<span class="state" data-state="{{.State}}"><span aria-hidden="true">●</span> {{.State}}</span>
-<span class="fig">{{.Working}} working</span>
-{{if .Waiting}}<span class="fig">{{.Waiting}} waiting on the provider</span>
-{{end}}<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
-{{if $.Factory}}<a href="/costs" class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</a>{{else}}<span class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</span>{{end}}
-{{with .GitHub}}<span class="fig">GitHub: {{.}}</span>
-{{end}}</p>{{end}}{{end}}
 {{if .Status.Project}}{{with .Pulse}}<div id="pulse" class="pulse{{if .Prominent}} prominent{{end}}"><details class="pulse-fold">
 <summary title="the most useful thing to know now; click for more"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}}>⚠</span> <span class="pulse-say">{{.Sentence}}</span><span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
 <ul class="pulse-bullets">{{range .Bullets}}<li>{{.}}</li>{{end}}</ul>
@@ -31,18 +22,31 @@
 <section aria-labelledby="agent-lane">
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
-{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{len $col.Cards}}</span></h3>
+{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
 {{range $col.Cards}}{{template "card" .}}{{end}}
 </section>
 {{end}}</div>
 </section>
 {{else}}<div class="lane five">
-{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{if $col.Needs}}{{len $col.Needs}}{{else}}{{len $col.Cards}}{{end}}</span></h3>
+{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
 {{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
 {{range $col.Cards}}{{template "card" .}}{{end}}
 </section>
 {{end}}</div>
 {{end}}</div>{{end}}
+
+{{define "status"}}{{with .Status}}
+<strong class="pname">{{.Project}}</strong>
+<span class="state" data-state="{{.State}}"><span aria-hidden="true">●</span> {{.State}}</span>
+<span class="fig">{{.Working}} working</span>
+{{if .Waiting}}<span class="fig">{{.Waiting}} waiting on the provider</span>
+{{end}}<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
+{{if $.Factory}}<a href="/costs" class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</a>{{else}}<span class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</span>{{end}}
+{{with .GitHub}}<span class="fig">GitHub: {{.}}</span>
+{{end}}{{end}}{{end}}
+
+{{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}
+<p id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</p>{{end}}{{end}}
 
 {{define "filter"}}<input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="accent" value="{{.Accent}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{end}}
 

@@ -3,9 +3,9 @@
 <button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer" title="Close (Escape)">✕</button>
 <h2 tabindex="-1">{{with .Card}}{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Title}}{{end}}</h2>
 <p class="drawer-facts">{{with .Card}}<span class="pill {{.StatusClass}}">{{.Status}}</span>{{with .Badge}} <span class="badge">{{.}}</span>{{end}}{{range .Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{with .ModelAlias}} <span class="chip model">{{.}}</span>{{end}}{{if gt .BudgetEUR 0.0}} <span class="spend{{if .NearBudget}} near{{end}}">{{eur2 .SpentEUR}} / {{eur2 .BudgetEUR}}{{if .NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if .PRURL}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a>{{end}}{{end}}</p>
-<nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
+<nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
-<div class="drawer-body" role="tabpanel">
+<div id="drawer-panel" class="drawer-body" role="tabpanel">
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{if eq .Tab "overview"}}<h3 class="headline">{{.Headline}}</h3>
 {{with .Provenance}}<p class="provenance">{{.}}</p>
@@ -24,7 +24,17 @@
 {{end}}<p class="links">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.Card.ID}}/timeline">the full timeline</a></p>
 {{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
 {{template "steps" .}}
-{{end}}{{else if not .Card.PRNumber}}<p class="meta">no pull request yet</p>
+{{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>
+<div id="session-log" class="session-log" role="log" aria-label="The messages of session {{.N}}" data-task="{{$.Card.ID}}" data-session="{{.ID}}">{{range $.Said}}
+<div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><p class="who">{{.Who}} · {{.At.UTC.Format "01-02 15:04Z"}}</p><p class="said">{{.Text}}</p></div>{{end}}
+</div>
+{{if $.Steers}}<form id="steer-form" class="chat-form" hx-post="/tasks/{{$.Card.ID}}/steer" hx-target="#drawer" hx-swap="innerHTML">
+<label for="steer-input" class="visually-hidden">Your message to the running session</label>
+<textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
+<button type="submit">Send</button>
+</form>
+{{end}}{{else}}{{if not $.Problem}}<p class="meta">No session yet</p>
+{{end}}{{end}}{{else if not .Card.PRNumber}}<p class="meta">no pull request yet</p>
 {{else if not .Problem}}<table class="files"><caption>{{if .MoreFiles}}The first {{len .Files}}{{else}}The{{end}} changed files of PR #{{.Card.PRNumber}}</caption>
 <thead><tr><th scope="col">File</th><th scope="col">Change</th><th scope="col">Added</th><th scope="col">Deleted</th></tr></thead>
 <tbody>{{range .Files}}<tr><td><code>{{.Filename}}</code></td><td>{{.Status}}</td><td>+{{.Additions}}</td><td>−{{.Deletions}}</td></tr>

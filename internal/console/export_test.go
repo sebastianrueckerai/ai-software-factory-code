@@ -267,7 +267,7 @@ func TestStatusLineGithubExport(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	line := func() string {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-		start := strings.Index(body, `<p class="status-line"`)
+		start := strings.Index(body, `<p id="status-line" class="status-line"`)
 		return body[start : start+strings.Index(body[start:], "</p>")]
 	}
 	if got := line(); strings.Contains(got, "GitHub") {

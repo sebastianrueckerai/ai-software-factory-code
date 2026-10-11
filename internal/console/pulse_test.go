@@ -37,7 +37,7 @@ func pulseBlock(t *testing.T, r *rig, ck *http.Cookie, query string) string {
 	return body[start : start+strings.Index(body[start:], "</div>")+len("</div>")]
 }
 
-// The pulse sits right under the status line as one line: muted words
+// The pulse opens the board, under the status line, as one line: muted words
 // when all is well, the warning sign and the prominent class when a card
 // waits on a human. Its bullets are in the markup, folded; a project
 // without a pulse shows none.
@@ -56,8 +56,9 @@ func TestPulseLineSubduedAndProminent(t *testing.T) {
 		}
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if line := strings.Index(body, `<p class="status-line"`); line < 0 || strings.Index(body, `<div id="pulse"`) != line+strings.Index(body[line:], "</p>")+len("</p>\n") {
-		t.Errorf("the pulse is not right under the status line")
+	_, inBoard, _ := strings.Cut(body, `<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`)
+	if before, _, ok := strings.Cut(inBoard, `<div id="pulse"`); !ok || strings.TrimSpace(before) != "" || !strings.Contains(body, `<p id="status-line"`) {
+		t.Errorf("the pulse does not open the board under the status line")
 	}
 	waits := calm
 	waits.Sentence, waits.Prominent = "#13 Use a replica? needs your answer.", true

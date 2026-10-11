@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,14 +148,14 @@ func TestStatusLineFigures(t *testing.T) {
 	line := func(query string) string {
 		t.Helper()
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
-		start := strings.Index(body, `<p class="status-line"`)
+		start := strings.Index(body, `<p id="status-line" class="status-line"`)
 		if start < 0 {
 			t.Fatalf("board%s has no status line", query)
 		}
 		return body[start : start+strings.Index(body[start:], "</p>")+len("</p>")]
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
-	code := `<p class="status-line" aria-label="Status of the project">
+	code := `<p id="status-line" class="status-line" aria-label="Status of the project">
 <strong class="pname">ai-software-factory-code</strong>
 <span class="state" data-state="waiting on you"><span aria-hidden="true">●</span> waiting on you</span>
 <span class="fig">2 working</span>
@@ -169,7 +171,7 @@ func TestStatusLineFigures(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-poster", Author: "sebastian", Repository: "demo-app/demo-app"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "linkshort/linkshort"}})
 	r.tasks.tasks = slices.DeleteFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-elsewhere" })
-	if got, want := line("?project=demo-app"), `<p class="status-line" aria-label="Status of the project">
+	if got, want := line("?project=demo-app"), `<p id="status-line" class="status-line" aria-label="Status of the project">
 <strong class="pname">demo-app</strong>
 <span class="state" data-state="waiting on you"><span aria-hidden="true">●</span> waiting on you</span>
 <span class="fig">0 working</span>
@@ -178,7 +180,7 @@ func TestStatusLineFigures(t *testing.T) {
 </p>`; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
-	if got, want := line("?project=linkshort"), `<p class="status-line" aria-label="Status of the project">
+	if got, want := line("?project=linkshort"), `<p id="status-line" class="status-line" aria-label="Status of the project">
 <strong class="pname">linkshort</strong>
 <span class="state" data-state="idle"><span aria-hidden="true">●</span> idle</span>
 <span class="fig">0 working</span>
@@ -374,7 +376,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 	if want := []string{"Backlog", "Plan", "Ready", "Running", "Waiting on a human", "Waiting on the author", "In review", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
-	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide" hx-get="/board?project=linkshort&amp;view=wide" hx-trigger="every 30s" hx-swap="outerHTML">`,
+	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
 		`<section aria-labelledby="human-lane" id="needs-you">`, `class="status-line"`,
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`,
 		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Five columns</a>`} {
@@ -487,7 +489,13 @@ func drawer(t *testing.T, r *rig, ck *http.Cookie, id, tab string) string {
 	return rec.Body.String()
 }
 
-// The drawer's Overview: the three tabs, the objective as its headline, a
+// drawerTabMarkup is the drawer's tab name of card id, selected when on.
+func drawerTabMarkup(id, name, title string, on bool) string {
+	return `<button type="button" role="tab" aria-selected="` + strconv.FormatBool(on) + `" aria-controls="drawer-panel" hx-get="/cards/` + id +
+		`/drawer?tab=` + name + `" hx-target="#drawer" hx-swap="innerHTML">` + title + `</button>`
+}
+
+// The drawer's Overview: the four tabs, the objective as its headline, a
 // planned card's provenance line and its body, the related cards in their
 // live state, each opening in the drawer (blocked by the dependencies not
 // done, part of plan; a plan's children), the plan's table and a pending
@@ -497,19 +505,13 @@ func TestDrawerOverview(t *testing.T) {
 	open := func(id, label string) string {
 		return `<a href="#card=` + id + `" hx-get="/cards/` + id + `/drawer" hx-target="#drawer" hx-swap="innerHTML">` + label + `</a></li>`
 	}
-	tab := func(id, name, title string, on bool) string {
-		selected := "false"
-		if on {
-			selected = "true"
-		}
-		return `<button type="button" role="tab" aria-selected="` + selected + `" hx-get="/cards/` + id + `/drawer?tab=` + name + `" hx-target="#drawer" hx-swap="innerHTML">` + title + `</button>`
-	}
+	tab := drawerTabMarkup
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
 		`<h2 tabindex="-1"><a href="https://git.example/linkshort/linkshort/issues/4">#4</a> k4</h2>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
-			tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
+			tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + tab("t-c4", "chat", "Chat", false) + `</nav>`,
 		`<h3 class="headline">Links API</h3>`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
@@ -622,17 +624,136 @@ func TestDrawerFiles(t *testing.T) {
 	}
 }
 
-// The drawer is its project's writers': 403 to anyone else, 404 for an
-// unknown card, 400 for an unknown tab.
+// The drawer's Chat: a running card opens on it, with its newest
+// session's agent text and the steers sent within that session in time
+// order, each keyed as the stream's copy is, and the input that steers it;
+// a card whose session ended opens on Overview and shows them read-only;
+// a card without a session says so.
+func TestDrawerChat(t *testing.T) {
+	r, ck := drawerRig(t)
+	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
+	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2026-10-11T09:00:00Z","step":"session_start","session":"s-1","model":"coding-standard","attempt":1}
+{"time":"2026-10-11T09:20:00Z","step":"session_end","session":"s-1","outcome":"failed"}
+{"time":"2026-10-11T10:00:00Z","step":"session_start","session":"s-2","model":"coding-frontier","attempt":2}
+`)
+	r.objects["sessions/t-run/s-2.jsonl"] = []byte(`{"time":"2026-10-11T10:01:00.5Z","kind":"model_call","detail":{"text":"Reading the cache first.","cost":0.01}}
+{"time":"2026-10-11T10:01:30Z","kind":"tool_call","detail":{"tool":"read"}}
+{"time":"2026-10-11T10:02:00Z","kind":"model_call","detail":{"cost":0.01}}
+{"time":"2026-10-11T10:04:00Z","kind":"model_call","detail":{"text":"Done <b>here</b>.\nNext: the tests."}}
+`)
+	r.objects["sessions/t-pr/timeline.jsonl"] = []byte(`{"time":"2026-10-11T08:00:00Z","step":"session_start","session":"s-9","model":"coding-cheap","attempt":1}
+{"time":"2026-10-11T08:30:00Z","step":"session_end","session":"s-9","outcome":"pushed"}
+`)
+	r.objects["sessions/t-pr/s-9.jsonl"] = []byte(`{"time":"2026-10-11T08:10:00Z","kind":"model_call","detail":{"text":"Drawing it."}}
+`)
+	at := func(hhmm string) time.Time {
+		v, _ := time.Parse(time.RFC3339, "2026-10-11T"+hhmm+":00Z")
+		return v
+	}
+	for _, e := range []factoryd.Event{
+		{TaskID: "t-run", At: at("09:10"), Kind: factoryd.EventCardSteered, Actor: "alice", Detail: map[string]any{"text": "to the first session"}},
+		{TaskID: "t-run", At: at("10:03"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "Rebase first."}},
+		{TaskID: "t-run", At: at("10:03"), Kind: factoryd.EventCardMoved, Actor: "sebastian"},
+		{TaskID: "t-pr", At: at("08:20"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "Use the grid."}},
+		{TaskID: "t-pr", At: at("08:31"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "too late"}},
+	} {
+		e.Repository, e.Via = "sf/code", factoryd.ViaButton
+		if _, err := r.events.Record(context.Background(), e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	running := drawer(t, r, ck, "t-run", "")
+	for _, want := range []string{
+		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "activity", "Activity", false) +
+			drawerTabMarkup("t-run", "files", "Files", false) + drawerTabMarkup("t-run", "chat", "Chat", true) + `</nav>`,
+		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
+<p class="meta">Session 2 · coding-frontier · running</p>
+<div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
+<div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><p class="who">agent · 10-11 10:01Z</p><p class="said">Reading the cache first.</p></div>
+<div class="msg you" data-key="e2"><p class="who">sebastian · 10-11 10:03Z</p><p class="said">Rebase first.</p></div>
+<div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><p class="who">agent · 10-11 10:04Z</p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
+Next: the tests.</p></div>
+</div>
+<form id="steer-form" class="chat-form" hx-post="/tasks/t-run/steer" hx-target="#drawer" hx-swap="innerHTML">
+<label for="steer-input" class="visually-hidden">Your message to the running session</label>
+<textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
+<button type="submit">Send</button>
+</form>
+</div>`,
+	} {
+		if !strings.Contains(running, want) {
+			t.Errorf("t-run's drawer lacks\n%s\nin\n%s", want, running)
+		}
+	}
+	if ended := drawer(t, r, ck, "t-pr", ""); !strings.Contains(ended, drawerTabMarkup("t-pr", "overview", "Overview", true)) {
+		t.Errorf("a card that runs no session does not open on Overview:\n%s", ended)
+	}
+	if got, want := drawer(t, r, ck, "t-pr", "chat"), `<p class="meta">Session 1 · coding-cheap · pushed</p>
+<div id="session-log" class="session-log" role="log" aria-label="The messages of session 1" data-task="t-pr" data-session="s-9">
+<div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><p class="who">agent · 10-11 08:10Z</p><p class="said">Drawing it.</p></div>
+<div class="msg you" data-key="e4"><p class="who">sebastian · 10-11 08:20Z</p><p class="said">Use the grid.</p></div>
+</div>
+</div>`; !strings.Contains(got, want) {
+		t.Errorf("the ended session's chat lacks\n%s\nin\n%s", want, got)
+	}
+	if got := drawer(t, r, ck, "t-c4", "chat"); !strings.Contains(got, `<p class="meta">No session yet</p>`) || strings.Contains(got, "session-log") {
+		t.Errorf("a card without a session:\n%s", got)
+	}
+}
+
+// A steer from the drawer is the member's own act, so no proposal: the
+// steer function at once, its row with the text, and the Chat tab again
+// with the message in it; a card that runs no session refuses it and
+// records nothing.
+func TestDrawerSteer(t *testing.T) {
+	r, _ := drawerRig(t)
+	var steered []string
+	r.c.cfg.Steer = func(_ context.Context, taskID, user, text string) error {
+		steered = append(steered, taskID+" "+user+": "+text)
+		return nil
+	}
+	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2020-01-01T00:00:00Z","step":"session_start","session":"s-1","model":"coding-frontier","attempt":1}
+`)
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {" Rebase on main first. "}}), ck)
+	rows := r.events.all()[before:]
+	if rec.Code != http.StatusOK || len(rows) != 1 {
+		t.Fatalf("POST steer = %d, %d rows: %s", rec.Code, len(rows), rec.Body)
+	}
+	row := rows[0]
+	if want := (factoryd.Event{ID: row.ID, At: row.At, Repository: "sf/code", TaskID: "t-run", IssueNumber: 11, Kind: factoryd.EventCardSteered,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"text": "Rebase on main first."}}); !reflect.DeepEqual(row, want) {
+		t.Errorf("the steer's row = %+v, want %+v", row, want)
+	}
+	if !slices.Equal(steered, []string{"t-run sebastian: Rebase on main first."}) {
+		t.Errorf("steered %q", steered)
+	}
+	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Chat", true),
+		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><p class="who">sebastian · ` + row.At.UTC().Format("01-02 15:04") +
+			`Z</p><p class="said">Rebase on main first.</p></div>`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("the steer's answer lacks %s:\n%s", want, rec.Body)
+		}
+	}
+	before = r.events.count()
+	if rec := r.do(post("/tasks/t-pr/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck); rec.Code != http.StatusConflict ||
+		len(steered) != 1 || r.events.count() != before {
+		t.Errorf("a steer to a card in review = %d, steered %q, %d rows: %s", rec.Code, steered, r.events.count()-before, rec.Body)
+	}
+}
+
+// The drawer and its steer are its project's writers': 403 to anyone
+// else, 404 for an unknown card, 400 for an unknown tab.
 func TestDrawerRefusals(t *testing.T) {
 	r, ck := drawerRig(t)
-	for path, code := range map[string]int{"/cards/t-nope/drawer": http.StatusNotFound, "/cards/t-run/drawer?tab=chat": http.StatusBadRequest} {
+	for path, code := range map[string]int{"/cards/t-nope/drawer": http.StatusNotFound, "/cards/t-run/drawer?tab=steps": http.StatusBadRequest} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck); rec.Code != code {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, code)
 		}
 	}
 	ak, _ := r.as(t, "alice")
-	for _, tab := range []string{"overview", "activity", "files"} {
+	for _, tab := range []string{"overview", "activity", "files", "chat"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab="+tab, nil), ak); rec.Code != http.StatusForbidden {
 			t.Errorf("alice, no writer of the code project, opens %s: %d, want 403", tab, rec.Code)
 		}

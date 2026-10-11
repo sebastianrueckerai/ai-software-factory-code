@@ -14,7 +14,8 @@
 <a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Five columns{{else}}Wide view{{end}}</a>
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys">?</button>
 </form>
-{{template "chat-tabs" .}}<div id="screen" class="screen{{if .Chat}} with-chat{{end}}" data-pane="board">
+{{if .Status.Project}}<p id="status-line" class="status-line" aria-label="Status of the project">{{template "status" .}}</p>
+{{end}}{{template "chat-tabs" .}}<div id="screen" class="screen{{if .Chat}} with-chat{{end}}" data-pane="board">
 {{template "board" .}}
 {{template "chat" .}}</div>
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>

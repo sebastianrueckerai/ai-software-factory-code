@@ -16,6 +16,7 @@
 <textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
 <button type="submit">Send</button>
 </form>
+<ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 {{end}}<script src="/static/chat.js" defer></script>
 </section>
 {{end}}{{end}}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -190,6 +191,37 @@ var heartbeat = 25 * time.Second
 // drops it.
 const streamBuffer = 16
 
+// countersWait is how long a stream gathers events before it reads the
+// board's counters again; a test shortens it.
+var countersWait = 2 * time.Second
+
+// countersJSON are the board's figures the stream keeps live: the status
+// line's markup and each column's count in the page's order.
+type countersJSON struct {
+	Status string `json:"status"`
+	Counts []int  `json:"counts"`
+}
+
+// counters are the counters of the board under f as the stream's member
+// sees it, as JSON; "" when the board cannot be read.
+func (c *Console) counters(r *http.Request, f boardFilter) string {
+	d, err := c.boardOf(r, f)
+	if err != nil {
+		log.Printf("console: the counters of %s: %v", f.Project, err)
+		return ""
+	}
+	var status strings.Builder
+	if err := c.tmpl.ExecuteTemplate(&status, "status", d); err != nil {
+		log.Printf("console: the counters of %s: %v", f.Project, err)
+		return ""
+	}
+	b, err := json.Marshal(countersJSON{status.String(), d.counts()})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // sseWriter writes s to w and flushes it, each write cut off after window:
 // the server's WriteTimeout would end every stream after a minute.
 func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error {
@@ -207,11 +239,14 @@ func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error
 
 // projectEventsStream answers GET /projects/{name}/events/stream to a
 // writer of the project: one SSE message per new events row, event
-// "event", its id the row's, its data the feed's row. A reconnect's
-// Last-Event-ID replays the rows after it from the table, oldest first and
-// at most the newest eventLimitMax of them; a first connect replays
-// nothing. Each heartbeat checks the session and the write right again,
-// and the stream ends once either is gone.
+// "event", its id the row's, its data the feed's row; a live-only event
+// (session_said) without an id. A reconnect's Last-Event-ID replays the
+// rows after it from the table, oldest first and at most the newest
+// eventLimitMax of them; a first connect replays nothing. countersWait
+// after a live event other than the pulse's, event "counters" carries the
+// board's counters under the query's filter when they changed. Each
+// heartbeat checks the session and the write right again, and the stream
+// ends once either is gone.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	p, ok := c.writtenProject(w, r)
 	if !ok {
@@ -228,8 +263,15 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		if e.ID == 0 {
+			return write(fmt.Sprintf("event: event\ndata: %s\n\n", b))
+		}
 		return write(fmt.Sprintf("id: %d\nevent: event\ndata: %s\n\n", e.ID, b))
 	}
+	f := urlFilter(r)
+	f.Project = p.Name
+	var due <-chan time.Time
+	var last string
 	// still writes the project: an error keeps the stream, a refusal ends it
 	allowed := func() bool {
 		if c.session(r) == nil {
@@ -274,8 +316,19 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// live events may come out of id order: skip only the replayed ones
-			if e.ID > replayed {
+			if e.ID == 0 || e.ID > replayed {
 				if err := send(e); err != nil {
+					return
+				}
+			}
+			if due == nil && e.Kind != factoryd.EventPulse && e.Kind != factoryd.EventPulseComputing {
+				due = time.After(countersWait)
+			}
+		case <-due:
+			due = nil
+			if now := c.counters(r, f); now != "" && now != last {
+				last = now
+				if write("event: counters\ndata: "+now+"\n\n") != nil {
 					return
 				}
 			}
