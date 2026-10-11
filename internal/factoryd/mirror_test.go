@@ -407,3 +407,62 @@ func TestImportedMain(t *testing.T) {
 		}
 	}
 }
+
+// A migrate that outlived its caller left the repository: the next
+// registration takes a non-empty one as the import, with no second
+// migrate, and adds the workflows. An empty one may still be copying: the
+// registration fails, the row as it was, nothing seeded or protected.
+func TestRegisterImportExists(t *testing.T) {
+	rig, mirrors := importRig(t)
+	rig.fj.repo, rig.fj.defaultBranch, rig.fj.branches["main"] = true, "main", "1mp0rt"
+	for _, f := range rig.fj.source {
+		rig.fj.files[f] = true
+	}
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if len(rig.fj.migrated) != 0 || slices.Contains(rig.fj.writes, "POST /api/v1/orgs/demo-app/repos by basic sebastian") {
+		t.Fatalf("migrates %v, writes %q: want neither migrate nor create", rig.fj.migrated, rig.fj.writes)
+	}
+	if row := mirrors.rows["demo-app import"]; row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
+		t.Fatalf("import row: token %q, state %q", row.Token, row.State)
+	}
+	if len(rig.fj.seeds) != 1 || !reflect.DeepEqual(rig.fj.seeds[0].files, factoryWorkflows) || rig.fj.seeds[0].message != "Factory workflows" || rig.fj.seeds[0].branch != "main" {
+		t.Fatalf("commits %+v, want one \"Factory workflows\" with %q", rig.fj.seeds, factoryWorkflows)
+	}
+
+	rig, mirrors = importRig(t)
+	rig.fj.repo = true
+	_, err := rig.reg.Register(context.Background(), "demo-app", false)
+	const msg = "registration: repository demo-app/demo-app: the repository exists, empty: a migrate of github.com/acme/app may still be copying; the next reconcile looks again"
+	if err == nil || !strings.Contains(err.Error(), msg) || rig.reg.ReconcileError("demo-app") != err.Error() {
+		t.Fatalf("registration error %v, reconcile error %q", err, rig.reg.ReconcileError("demo-app"))
+	}
+	want := Mirror{Project: "demo-app", Direction: MirrorImport, Remote: "acme/app", Token: importToken, State: "pending"}
+	if row := mirrors.rows["demo-app import"]; row != want || len(mirrors.set) != 0 {
+		t.Fatalf("import row %+v, states set %q; want %+v unchanged", row, mirrors.set, want)
+	}
+	if len(rig.fj.migrated) != 0 || len(rig.fj.seeds) != 0 || slices.Contains(rig.fj.writes, "POST /api/v1/orgs/demo-app/repos by basic sebastian") ||
+		slices.Contains(rig.fj.writes, "POST /api/v1/repos/demo-app/demo-app/branch_protections by token projects-tok") {
+		t.Fatalf("an empty repository: migrates %v, seeds %d, writes %q", rig.fj.migrated, len(rig.fj.seeds), rig.fj.writes)
+	}
+}
+
+// Mirror rows without an import, production's path: create, seed whole.
+func TestRegisterMirrorsWithoutImport(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.store.m["demo-app"] = importedProject()
+	rig.reg.Mirrors = &memMirrors{rows: map[string]Mirror{"demo-app export": {Project: "demo-app", Direction: MirrorExport, Remote: "acme/app",
+		Username: "u", Token: "ghp-s3cret", State: "created"}}}
+	if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	if len(rig.fj.migrated) != 0 || !slices.Contains(rig.fj.writes, "POST /api/v1/orgs/demo-app/repos by basic sebastian") {
+		t.Fatalf("migrates %v, writes %q: want the create and no migrate", rig.fj.migrated, rig.fj.writes)
+	}
+	want := map[string]string{"README.md": "# template\n", "deploy/staging/kustomization.yaml": "namespace: demo-staging\n", ".forgejo/CODEOWNERS": "* @demo-app\n"}
+	maps.Copy(want, factoryWorkflows)
+	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)" || rig.fj.seeds[0].branch != "main" || !reflect.DeepEqual(rig.fj.seeds[0].files, want) {
+		t.Fatalf("commits %+v, want one seed with %q", rig.fj.seeds, want)
+	}
+}

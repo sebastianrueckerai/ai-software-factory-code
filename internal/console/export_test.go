@@ -306,13 +306,13 @@ func (f *fakeChat) ScrubChatMessages(_ context.Context, repository, login, secre
 	return nil
 }
 
-// The form asks for a GitHub repository and a token. With them it stores
-// the import row first, the token for registration alone, then files the
-// same project file and pull request as without, and the project_filed
-// row names the source; no file, pull request, event or log line holds the
-// token. A row it cannot store files nothing; a bad source or token is
-// refused without the token on the page; a form without a source drops a
-// stale import row of the name.
+// The form asks for a GitHub repository and a token. With them it files
+// the same project file and pull request as without, the import row put
+// between them, the token for registration alone; the project_filed row
+// names the source; no file, pull request, event or log line holds the
+// token. A row it cannot store opens no pull request; a filing Forgejo
+// refuses leaves the row; a bad source or token is refused without the
+// token on the page; a form without a source drops a stale import row.
 func TestNewProjectImportsFromGitHub(t *testing.T) {
 	r := newRig(t)
 	infra := withInfra(t, r)
@@ -373,11 +373,20 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	r.mirrors.put = errors.New("db down")
 	rec := r.do(post("/projects", form("acme/other", ghToken)), ck)
 	infra.mu.Lock()
-	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 1 {
-		t.Errorf("an unstored row: %d, %d contents calls; want 500 and nothing filed", rec.Code, len(infra.contents))
+	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 2 || len(infra.pulls) != 1 {
+		t.Errorf("an unstored row: %d, %d contents and %d pull calls; want 500, two and one", rec.Code, len(infra.contents), len(infra.pulls))
 	}
+	infra.contentsStatus = http.StatusUnprocessableEntity
 	infra.mu.Unlock()
 	r.mirrors.put = nil
+	for _, f := range []url.Values{form("acme/other", ghToken), linkshortForm(s.csrf)} {
+		if rec := r.do(post("/projects", f), ck); rec.Code != http.StatusBadGateway || r.mirrors.rows["linkshort import"] != want {
+			t.Errorf("a refused filing with source %q: %d, import row %+v; want 502 and %+v", f.Get("source"), rec.Code, r.mirrors.rows["linkshort import"], want)
+		}
+	}
+	infra.mu.Lock()
+	infra.contentsStatus = 0
+	infra.mu.Unlock()
 	for _, c := range []struct{ source, token, line string }{
 		{"acme", ghToken, "GitHub repository: owner/name of a repository on GitHub, or none"},
 		{"acme/app", "short", "GitHub token: 8 to 255 letters, digits, _ or -"},

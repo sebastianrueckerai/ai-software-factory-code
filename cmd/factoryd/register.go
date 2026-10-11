@@ -115,8 +115,8 @@ func newForgejo() *factoryd.Forgejo {
 	}
 }
 
-func newRegistrar(store factoryd.ProjectStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, tree func() policy.Tree, webhookSecret string) *factoryd.Registrar {
-	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Policy: tree,
+func newRegistrar(store *factoryd.PGStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, tree func() policy.Tree, webhookSecret string) *factoryd.Registrar {
+	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Mirrors: store, Policy: tree,
 		WebhookURL:       env("FACTORYD_WEBHOOK_URL", "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo"),
 		WebhookSecret:    webhookSecret,
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),

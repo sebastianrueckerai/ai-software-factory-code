@@ -118,6 +118,8 @@ type infraFake struct {
 	mergeBody   string
 	// mergeStatuses answers the merge calls in order, then mergeStatus.
 	mergeStatuses []int
+	// contentsStatus answers the contents calls; 0: 201
+	contentsStatus int
 }
 
 type recorded struct {
@@ -144,6 +146,10 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		switch {
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
 			f.contents = append(f.contents, rec())
+			if f.contentsStatus != 0 {
+				w.WriteHeader(f.contentsStatus)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":

@@ -126,7 +126,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			io.WriteString(w, `{}`)
+			fmt.Fprintf(w, `{"empty":%t}`, len(s.branches) == 0)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/orgs/demo-app/repos":
 			if body["name"] != "demo-app" || body["private"] != true || body["default_branch"] != "main" || body["auto_init"] != nil {
 				t.Errorf("create repo %v", body)

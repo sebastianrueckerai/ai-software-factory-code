@@ -134,8 +134,8 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 // createProject writes the new project's file, judges it the loader's way
 // against infra's head, and files it as the human: a new branch
 // project-<name> off main with the one file, and its pull request. A
-// GitHub repository to start from is stored first, with its token, as the
-// name's import row, which registration reads.
+// GitHub repository to start from is the name's import row, with its
+// token, put once the branch exists, before the pull request.
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
 		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
@@ -178,6 +178,17 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
 		return
 	}
+	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
+	branch := "project-" + p.Name
+	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
+		"branch": "main", "new_branch": branch,
+		"message": fmt.Sprintf("Project %s: add its file (console, %s)", p.Name, user),
+		"files": []map[string]string{{"operation": "create", "path": c.cfg.ConfigDir + "/" + policy.ProjectFile(p.Name),
+			"content": base64.StdEncoding.EncodeToString(file)}},
+	}, http.StatusCreated, nil); err != nil {
+		c.forgejoFailed(w, r, "commit the project's file", err)
+		return
+	}
 	if c.cfg.Mirrors != nil {
 		var err error
 		if p.Source == "" {
@@ -191,17 +202,6 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cannot store the GitHub import; see the factoryd log", http.StatusInternalServerError)
 			return
 		}
-	}
-	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
-	branch := "project-" + p.Name
-	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
-		"branch": "main", "new_branch": branch,
-		"message": fmt.Sprintf("Project %s: add its file (console, %s)", p.Name, user),
-		"files": []map[string]string{{"operation": "create", "path": c.cfg.ConfigDir + "/" + policy.ProjectFile(p.Name),
-			"content": base64.StdEncoding.EncodeToString(file)}},
-	}, http.StatusCreated, nil); err != nil {
-		c.forgejoFailed(w, r, "commit the project's file", err)
-		return
 	}
 	var pull struct {
 		Number int64 `json:"number"`

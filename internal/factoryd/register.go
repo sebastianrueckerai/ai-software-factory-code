@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -438,15 +439,18 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 // seedFromTemplate commits the project's template, rendered, as main's
 // first commit by factory-projects (stage11-design.md section 6). It runs
 // before main's protection exists; a repository with main is never seeded,
-// so no project is seeded twice. An imported repository gets main from
-// its default branch, then only the template's .forgejo/ files and
-// AGENTS.md it lacks, the factory's CI and conventions, in one commit.
+// so no project is seeded twice. An imported repository waits for the
+// copy, gets main from its default branch, then only the template's
+// .forgejo/ files and AGENTS.md it lacks, the factory's CI, in one commit.
 func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	f, p := run.r.Forgejo, run.p
 	has, err := f.ProjectBranchExists(ctx, p.Repo(), "main")
-	imported := false
+	m, imported := Mirror{}, false
 	if err == nil && run.r.Mirrors != nil {
-		_, imported, err = run.r.Mirrors.MirrorToken(ctx, p.Name, MirrorImport)
+		m, imported, err = run.r.Mirrors.MirrorToken(ctx, p.Name, MirrorImport)
+	}
+	if err == nil && imported && !strings.HasPrefix(m.State, "imported") {
+		return "", fmt.Errorf("waiting for the copy of github.com/%s", m.Remote)
 	}
 	if err == nil && imported && !has {
 		has, err = f.MainAsDefault(ctx, p.Repo())
@@ -1139,7 +1143,9 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 
 // ensureRepo makes repo: Forgejo's migrate of the GitHub repository that
 // name's import row names while the row waits for it, after which the row
-// forgets the token and says imported, else empty. A refused migrate
+// forgets the token and says imported, else empty. A non-empty repository
+// already there is an earlier migrate's, finished after its caller left;
+// an empty one may still be copying, so the row waits. A refused migrate
 // leaves the row its token and says failed, the token taken out.
 func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
 	m, ok, err := Mirror{}, false, error(nil)
@@ -1152,7 +1158,21 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 	if !ok || strings.HasPrefix(m.State, "imported") {
 		return r.Forgejo.AdminEnsureRepo(ctx, a, repo)
 	}
-	if err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token); err != nil {
+	exists, body, err := adminExists(ctx, r.Forgejo.adminCall(a), "/api/v1/repos/"+repo.String())
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		var res struct {
+			Empty bool `json:"empty"`
+		}
+		if err := json.Unmarshal(body, &res); err != nil {
+			return "", err
+		}
+		if res.Empty {
+			return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
+		}
+	} else if err := r.Forgejo.AdminMigrateRepo(ctx, a, repo, GitHubAddress(m.Remote), m.Token); err != nil {
 		msg := err.Error()
 		if m.Token != "" {
 			msg = strings.ReplaceAll(msg, m.Token, "[token]")
