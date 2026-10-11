@@ -78,7 +78,7 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
 		return fmt.Errorf("spec: %w", err)
 	}
-	summary, rows, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
+	_, summary, rows, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
 	if err != nil || !ok {
 		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
 	}
@@ -86,18 +86,19 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// planTable is revision n (0 the newest) of plan task id's plan: its
-// summary and its cards in filing order; false when there is none.
-func (c *Console) planTable(ctx context.Context, id string, n int) (string, []factoryd.PlanRow, bool, error) {
+// planTable is revision n (0 the newest) of plan task id's plan: the
+// revision, its summary and its cards in filing order; false when there
+// is none.
+func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, string, []factoryd.PlanRow, bool, error) {
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, id, n)
 	if err != nil || !ok {
-		return "", nil, false, err
+		return rev, "", nil, false, err
 	}
 	var p factoryd.Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return "", nil, false, fmt.Errorf("revision %d of %s: %w", rev.Revision, id, err)
+		return rev, "", nil, false, fmt.Errorf("revision %d of %s: %w", rev.Revision, id, err)
 	}
-	return p.Summary, factoryd.PlanRows(p), true, nil
+	return rev, p.Summary, factoryd.PlanRows(p), true, nil
 }
 
 // approve approves the approval request the path names (doApprove).

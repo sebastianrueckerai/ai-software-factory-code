@@ -1529,7 +1529,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
 		if bt.Lane == policy.LanePlan {
 			var err error
-			if d.PlanSummary, d.PlanRows, _, err = c.planTable(ctx, bt.ID, 0); err != nil {
+			if _, d.PlanSummary, d.PlanRows, _, err = c.planTable(ctx, bt.ID, 0); err != nil {
 				problem("plan", err)
 			}
 		}
@@ -1582,12 +1582,14 @@ func objectiveParts(objective string) (headline, provenance, body string) {
 // plan's cards (k's Plan).
 func (c *Console) relatedCards(ctx context.Context, t factoryd.Task, k card) ([]related, error) {
 	var ids, whys []string
-	deps, err := c.cfg.Tasks.OpenDependencies(ctx, t.ID)
+	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}
 	for _, dep := range deps {
-		ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
+		if dep.Status != "done" {
+			ids, whys = append(ids, dep.TaskID), append(whys, "blocked by")
+		}
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
 		ids, whys = append(ids, t.Parent), append(whys, "part of plan")

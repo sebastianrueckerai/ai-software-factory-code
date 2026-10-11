@@ -393,10 +393,10 @@ func TestChatBoardShowsAHeldCard(t *testing.T) {
 	}
 }
 
-// A read call, then a reply: the tool block streams the full result for
-// read tools and acts on nothing. The second call carries the call and
-// its result, which the inbound sanitiser cleaned of the objective's
-// hidden comment.
+// A read call, then a reply: the tool block streams the result's first
+// line and acts on nothing. The second call carries the call and its
+// result, which the inbound sanitiser cleaned of the objective's hidden
+// comment.
 func TestChatReadThenReply(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -404,30 +404,21 @@ func TestChatReadThenReply(t *testing.T) {
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("#5 waits in the backlog.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\nsessions: 0 of 3\nspend €0.40 of budget €3.00\nobjective: Fix the cache. It drops entries."}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00"}`,
 		`text {"text":"#5 waits in the backlog."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
 	equal(t, "model calls", len(calls), 2)
 	msgs := messages(t, calls[1])
-	if len(msgs) < 4 {
-		t.Fatalf("messages length = %d", len(msgs))
-	}
-	toolMsg := msgs[len(msgs)-1]
-	if toolMsg["role"] != "tool" {
-		t.Errorf("last message role = %v", toolMsg["role"])
-	}
-	content := toolMsg["content"].(string)
-	for _, want := range []string{
-		"#5 t-m \"Fix the cache\" backlog",
-		"sessions: 0 of 3",
-		"spend €0.40 of budget €3.00",
-		"objective: Fix the cache. It drops entries.",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("card content lacks %q:\n%s", want, content)
-		}
-	}
+	equal(t, "the second call's last messages", msgs[2:], []map[string]any{
+		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
+			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
+		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
+			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\n" +
+			"merge request 4 waiting for pull request #9, risk high; " +
+			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
+			"objective: Fix the cache. It drops entries."},
+	})
 }
 
 // cappedPolicies is the rig's policy with a file for the code project
@@ -455,15 +446,9 @@ func TestSystemTool(t *testing.T) {
 		before := r.events.count()
 		g.replies = [][]string{{call(1, "system", `{}`)}, {say("read it.")}}
 		code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how does the factory work?"}})
-		if code != 200 || len(events) != 3 {
-			t.Fatalf("stream = %v", []any{code, events})
-		}
-		if !strings.HasPrefix(events[0], `tool {"arguments":{},"duration_ms":0,"name":"system","result":"`) {
-			t.Errorf("tool event prefix wrong: %s", events[0])
-		}
-		if events[1] != `text {"text":"read it."}` || events[2] != `done {}` {
-			t.Errorf("stream tail = %v", events[1:])
-		}
+		equal(t, "stream", []any{code, events}, []any{200, []string{
+			`tool {"arguments":{},"duration_ms":0,"name":"system","result":"` + first + `"}`,
+			`text {"text":"read it."}`, `done {}`}})
 		chatRows(t, r.events, before, "sebastian")
 		calls := g.calls()
 		equal(t, "model calls", len(calls), 2)
@@ -487,6 +472,7 @@ func TestSystemTool(t *testing.T) {
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
 		"\n  card, any card\n",
+		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n",
 		"\n  approve_merge, needs OK, a pending merge request\n",
 		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
@@ -571,27 +557,13 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		{say("Done.")},
 	}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize #5"}})
-	if len(events) != 7 {
-		t.Fatalf("stream length = %d, want 7: %v", len(events), events)
-	}
-	if events[0] != `text {"text":"Let me look."}` {
-		t.Errorf("event 0 = %s", events[0])
-	}
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"Backlog (1):`) {
-		t.Errorf("event 1 prefix wrong: %s", events[1])
-	}
-	if events[2] != `text {"text":"Setting it."}` {
-		t.Errorf("event 2 = %s", events[2])
-	}
-	if events[3] != `tool {"arguments":{"task_id":"t-m","summary":"Cache fix"},"duration_ms":0,"name":"set_summary","result":"The summary of #5 is set."}` {
-		t.Errorf("event 3 = %s", events[3])
-	}
-	if events[4] != `applied {"result":"The summary of #5 is set.","tool":"set_summary","undo":"TOKEN"}` {
-		t.Errorf("event 4 = %s", events[4])
-	}
-	if events[5] != `text {"text":"Done."}` || events[6] != `done {}` {
-		t.Errorf("events 5-6 = %v", events[5:])
-	}
+	equal(t, "stream", events, []string{
+		`text {"text":"Let me look."}`,
+		`tool {"arguments":{},"duration_ms":0,"name":"board","result":"Backlog (1):"}`,
+		`text {"text":"Setting it."}`,
+		`tool {"arguments":{"task_id":"t-m","summary":"Cache fix"},"duration_ms":0,"name":"set_summary","result":"The summary of #5 is set."}`,
+		`applied {"result":"The summary of #5 is set.","tool":"set_summary","undo":"TOKEN"}`,
+		`text {"text":"Done."}`, `done {}`})
 	summarySet := func(summary string) factoryd.Event {
 		return factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventSummarySet, Detail: map[string]any{"summary": summary}}
 	}
@@ -932,24 +904,12 @@ func TestChatReads(t *testing.T) {
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_moved by sebastian via button {\"lane\":\"ready\"}`
 	costs := "The project's spend this month €2.25 of €50.00: the cards €1.50, the chat €0.75."
-	if len(events) != 6 {
-		t.Fatalf("stream length = %d, want 6: %v", len(events), events)
-	}
-	if events[0] != `tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"`+status+`"}` {
-		t.Errorf("event 0 = %s", events[0])
-	}
-	if events[1] != `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"`+moved+`"}` {
-		t.Errorf("event 1 = %s", events[1])
-	}
-	if events[2] != `tool {"arguments":{},"duration_ms":0,"name":"costs","result":"`+costs+`"}` {
-		t.Errorf("event 2 = %s", events[2])
-	}
-	if !strings.HasPrefix(events[3], `tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go`) {
-		t.Errorf("event 3 prefix wrong: %s", events[3])
-	}
-	if events[4] != `text {"text":"Read."}` || events[5] != `done {}` {
-		t.Errorf("events 4-5 = %v", events[4:])
-	}
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"` + status + `"}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{},"duration_ms":0,"name":"costs","result":"` + costs + `"}`,
+		`tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go"}`,
+		`text {"text":"Read."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	msgs := messages(t, g.calls()[1])
 	equal(t, "the diff the agent reads", msgs[len(msgs)-1]["content"], "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
@@ -1048,15 +1008,9 @@ func TestChatAnswersWithAChoice(t *testing.T) {
 		{call(3, "answer", `{"task_id":"t-e","text":"a shard"}`)}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what does #13 ask?"}})
 	msgs := messages(t, g.calls()[1])
-	got := msgs[len(msgs)-1]["content"].(string)
-	for _, want := range []string{
-		"\nquestion: the agent asks: use a replica?",
-		"\nchoices: 1. a replica; 2. a shard; 3. both",
-		"\nobjective: Use a replica?",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the card the agent reads lacks %q:\n%s", want, got)
-		}
+	if got, want := msgs[len(msgs)-1]["content"].(string), "\nthe question it waits on: the agent asks: use a replica?"+
+		"\nthe choices it offers: 1. a replica; 2. a shard; 3. both\nobjective: Use a replica?"; !strings.Contains(got, want) {
+		t.Fatalf("the card the agent reads =\n%s\nwant it to hold\n%s", got, want)
 	}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"take the second"}})
 	equal(t, "stream", events, []string{

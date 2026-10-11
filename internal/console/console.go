@@ -63,8 +63,10 @@ type Tasks interface {
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
-	// OpenDependencies are the tasks task id depends on that are not done.
-	OpenDependencies(ctx context.Context, id string) ([]factoryd.Dependency, error)
+	// Dependencies are the tasks task id depends on, those not done
+	// first; Dependents those that depend on it.
+	Dependencies(ctx context.Context, id string) ([]factoryd.Dependency, error)
+	Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error)
 	// SetHumanSummary is a writer's summary of task id; "" restores the
 	// generated title (the column back to NULL).
 	SetHumanSummary(ctx context.Context, id, summary string) error

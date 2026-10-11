@@ -60,6 +60,17 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if !slices.Equal(open, want) {
 		t.Fatalf("OpenDependencies = %+v, want %+v", open, want)
 	}
+	all, err := s.Dependencies(ctx, "t-x")
+	if want := []Dependency{want[0], want[1], {TaskID: "t-b", Issue: 3, Status: "done"}}; err != nil || !slices.Equal(all, want) {
+		t.Fatalf("Dependencies = %+v, %v; want %+v, the done one last", all, err, want)
+	}
+	dependents, err := s.Dependents(ctx, "t-a")
+	if want := []Dependency{{TaskID: "t-x", Issue: 7, Status: "waiting-deps"}, {TaskID: "t-y", Issue: 8, Status: "queued"}}; err != nil || !slices.Equal(dependents, want) {
+		t.Fatalf("Dependents(t-a) = %+v, %v; want %+v", dependents, err, want)
+	}
+	if got, err := s.Dependents(ctx, "t-x"); err != nil || len(got) != 0 {
+		t.Fatalf("Dependents(t-x) = %+v, %v; want none", got, err)
+	}
 	if got, err := s.WaitingDependents(ctx, "t-a"); err != nil || !slices.Equal(got, []string{"t-x"}) {
 		t.Fatalf("WaitingDependents(t-a) = %v, %v; want [t-x], the queued card waits on nothing yet", got, err)
 	}

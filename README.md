@@ -1345,8 +1345,13 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   calls a turn, each after a budget
   check. Its tools (`policy.ChatTools`) are the reads `system` (the
   factory's manual, rendered from the code at call time), `board`,
-  `card`, `history`, `card_history`, `costs`, `diff` and one per console
-  action,
+  `card` (the card in full, with a pointer to the read holding its
+  reviews, audit, checks, plan and sessions), `history`, `card_history`,
+  `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
+  issues and the filed cards' states), `pr` (the newest checks' jobs, the
+  model reviews, the audit, the files' diff stat, the diff on request),
+  `file` (a file at a ref, read raw through the member's token, cut at 64
+  KiB, a binary one refused) and one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
   `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,

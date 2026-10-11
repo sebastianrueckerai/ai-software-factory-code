@@ -68,9 +68,29 @@ func (s *PGStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string
 }
 
 func (s *PGStore) OpenDependencies(ctx context.Context, id string) ([]Dependency, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
+	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
 		FROM task_deps d JOIN tasks t ON t.id = d.depends_on
 		WHERE d.task_id = $1 AND t.status <> 'done' ORDER BY t.issue_number, t.id`, id)
+}
+
+// Dependencies are the cards task id depends on, those not done first.
+func (s *PGStore) Dependencies(ctx context.Context, id string) ([]Dependency, error) {
+	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
+		FROM task_deps d JOIN tasks t ON t.id = d.depends_on
+		WHERE d.task_id = $1 ORDER BY t.status = 'done', t.issue_number, t.id`, id)
+}
+
+// Dependents are the cards that depend on task id.
+func (s *PGStore) Dependents(ctx context.Context, id string) ([]Dependency, error) {
+	return s.dependencies(ctx, `SELECT t.id, t.issue_number, COALESCE(t.plan_key, ''), t.status
+		FROM task_deps d JOIN tasks t ON t.id = d.task_id
+		WHERE d.depends_on = $1 ORDER BY t.issue_number, t.id`, id)
+}
+
+// dependencies are the cards query selects (id, issue, plan key, status)
+// for task id.
+func (s *PGStore) dependencies(ctx context.Context, query, id string) ([]Dependency, error) {
+	rows, err := s.db.QueryContext(ctx, query, id)
 	if err != nil {
 		return nil, err
 	}

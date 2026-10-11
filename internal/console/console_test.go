@@ -68,8 +68,6 @@ type fakeForgejo struct {
 	labelled   []string // "path [label ids]"
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
-	pullFiles  map[int64][]prFile
-	contents   map[string]contentAnswer
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -148,6 +146,20 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			files = append(files, map[string]any{"filename": fmt.Sprintf("gen/p%s-%d.go", r.URL.Query().Get("page"), i), "status": "added", "additions": 1})
 		}
 		json.NewEncoder(w).Encode(files)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9/files":
+		pages := map[string]string{"1": `[{"filename":"a.go","status":"modified","additions":40,"deletions":3},` +
+			`{"filename":"b.go","status":"modified","additions":5,"deletions":5}]`}
+		w.Write([]byte(cmp.Or(pages[r.URL.Query().Get("page")], "[]")))
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
+		// the files at main, by their escaped paths
+		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
+			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1)}
+		body, ok := files[strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/")]
+		if !ok || r.URL.Query().Get("ref") != "main" {
+			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
+			return
+		}
+		io.WriteString(w, body)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/linkshort/linkshort/issues":
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -187,34 +199,6 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
 		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/") && strings.HasSuffix(r.URL.Path, "/files"):
-		prStr := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/pulls/")
-		prStr = strings.TrimSuffix(prStr, "/files")
-		var pr int64
-		fmt.Sscanf(prStr, "%d", &pr)
-		page := r.URL.Query().Get("page")
-		if page != "" && page != "1" {
-			w.Write([]byte("[]"))
-			return
-		}
-		if files, ok := f.pullFiles[pr]; ok {
-			json.NewEncoder(w).Encode(files)
-		} else {
-			w.Write([]byte("[]"))
-		}
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/contents/"):
-		path := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/contents/")
-		ref := r.URL.Query().Get("ref")
-		key := ref + ":" + path
-		if ans, ok := f.contents[key]; ok {
-			if ans.notFound {
-				http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
-				return
-			}
-			w.Write([]byte(ans.body))
-		} else {
-			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
-		}
 	default:
 		http.NotFound(w, r)
 	}
@@ -232,12 +216,30 @@ type fakeTasks struct {
 	read  func(s *fakeTasks, id string)
 }
 
-func (s *fakeTasks) OpenDependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+// Dependencies are the tasks task id depends on, those not done first.
+func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var open, done []factoryd.Dependency
+	for _, t := range s.tasks {
+		d := factoryd.Dependency{TaskID: t.ID, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status}
+		switch {
+		case !slices.Contains(s.deps[id], t.ID):
+		case t.Status == "done":
+			done = append(done, d)
+		default:
+			open = append(open, d)
+		}
+	}
+	return append(open, done...), nil
+}
+
+func (s *fakeTasks) Dependents(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []factoryd.Dependency
 	for _, t := range s.tasks {
-		if slices.Contains(s.deps[id], t.ID) && t.Status != "done" {
+		if slices.Contains(s.deps[t.ID], id) {
 			out = append(out, factoryd.Dependency{TaskID: t.ID, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 		}
 	}

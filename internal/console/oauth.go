@@ -232,6 +232,10 @@ func (e *apiError) reason() string {
 	return string(e.body)
 }
 
+// answerMax bounds the answer api reads: it keeps the first answerMax
+// bytes of a longer one.
+const answerMax = 1 << 20
+
 func (c *Console) api(ctx context.Context, token, method, path string, payload any, want int, out any) error {
 	var body io.Reader
 	if payload != nil {
@@ -255,7 +259,7 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	defer res.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	b, err := io.ReadAll(io.LimitReader(res.Body, answerMax))
 	if err != nil {
 		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
