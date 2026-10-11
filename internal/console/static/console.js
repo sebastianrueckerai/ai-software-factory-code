@@ -5,7 +5,7 @@
 function busy(el) {
   var drawer = document.getElementById("drawer");
   if (drawer && !drawer.hidden) return true;
-  if (el.querySelector("details[open]")) return true;
+  if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
   if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
   for (var i = 0; i < fields.length; i++) {
@@ -182,9 +182,38 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     };
     es.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
-      if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
+      if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
+      else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else swapCard(e.task_id);
     });
+  }
+  // The pulse under the status line: pulse_computing shows its typing
+  // indicator, pulse swaps its line in, and its fold stays as the member
+  // left it across the board's swaps.
+  var pulseOpen = false, pulseBusy = false;
+  function showPulse() {
+    var el = document.getElementById("pulse");
+    if (!el) return;
+    el.querySelector(".pulse-fold").open = pulseOpen;
+    el.querySelector(".typing").hidden = !pulseBusy;
+  }
+  document.addEventListener("htmx:afterSettle", showPulse);
+  document.addEventListener("toggle", function (e) {
+    if (e.target.classList && e.target.classList.contains("pulse-fold")) pulseOpen = e.target.open;
+  }, true);
+  function pulse(e) {
+    var el = document.getElementById("pulse"), d = e.detail;
+    pulseBusy = e.kind === "pulse_computing";
+    if (!pulseBusy && d.sentence && !el) return swapBoard();
+    if (!pulseBusy && d.sentence) {
+      el.classList.toggle("prominent", !!d.prominent);
+      el.querySelector(".pulse-sign").hidden = !d.prominent;
+      el.querySelector(".pulse-say").textContent = d.sentence;
+      var ul = el.querySelector(".pulse-bullets");
+      ul.textContent = "";
+      (d.bullets || []).forEach(function (b) { ul.appendChild(document.createElement("li")).textContent = b; });
+    }
+    showPulse();
   }
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();

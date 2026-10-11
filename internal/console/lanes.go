@@ -38,6 +38,9 @@ type answer struct {
 // failure too, is kept for writersTTL per repository, user and moved_by,
 // so a render and the polls after it ask Forgejo once for each.
 func (c *Console) mayMoveCached(ctx context.Context, repository, user, movedBy string) (bool, error) {
+	if user == "" {
+		return false, nil // the pulse's view of the board, no member's
+	}
 	key := repository + "\x00" + user + "\x00" + movedBy
 	c.mu.Lock()
 	a, ok := c.moves[key]

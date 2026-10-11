@@ -216,6 +216,26 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .status-line a.fig { color: var(--text); text-decoration: none; border-bottom: 1px dotted var(--line-strong); }
 .status-line a.fig:hover { color: var(--accent); border-bottom-color: var(--accent); }
 .status-line a.fig.need { color: var(--st-waiting); font-weight: 600; }
+/* the pulse under the status line: muted words when all is well, the
+   warning sign, weight and the waiting colour when a card needs a person */
+.pulse { margin: -.75rem 0 .75rem; padding: .4rem .6rem; border-bottom: 1px solid var(--line-subtle); border-left: 4px solid transparent; }
+.pulse summary { display: flex; flex-wrap: wrap; gap: .25rem .6rem; align-items: baseline; cursor: pointer; list-style: none; }
+.pulse summary::-webkit-details-marker { display: none; }
+.pulse-say { color: var(--text-muted); font-size: .88rem; }
+.pulse.prominent { border-left-color: var(--st-waiting); background: color-mix(in srgb, var(--st-waiting) 12%, var(--bg)); }
+.pulse.prominent .pulse-say { color: var(--text); font-weight: 650; font-size: 1rem; }
+.pulse-sign { color: var(--st-waiting); font-weight: 700; font-size: 1.15em; }
+.pulse-more::after { content: "more"; font-size: .75rem; color: var(--accent); border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 .35rem; }
+.pulse-fold[open] .pulse-more::after { content: "less"; }
+.pulse-bullets { margin: .3rem 0 .1rem; padding-left: 1.4rem; font-size: .87rem; color: var(--text-muted); }
+.pulse-bullets li { margin: .1rem 0; }
+.typing { display: inline-flex; gap: .22rem; align-items: center; height: 1em; }
+.typing[hidden] { display: none; }
+.typing i { width: .38rem; height: .38rem; border-radius: 50%; background: var(--text-muted); animation: typing 1s infinite ease-in-out; }
+.typing i:nth-child(2) { animation-delay: .15s; }
+.typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes typing { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .typing i { animation: none; opacity: .7; } }
 /* the five columns: Needs you a little wider, the human lane's cards in
    it; the wide view keeps the lanes' grid */
 .lane.five { grid-template-columns: minmax(12.5rem, 1.4fr) repeat(4, minmax(8.5rem, 1fr)); gap: .5rem; overflow-x: auto; }

@@ -350,6 +350,7 @@ func main() {
 	}
 	// the console is the only listener the edge gateway reaches; the
 	// webhook and intake API above stay in-cluster
+	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
 	consoleHandler, err := console.New(console.Config{
 		PublicURL:        env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world"),
 		ForgejoURL:       forgejo.BaseURL,
@@ -401,11 +402,13 @@ func main() {
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
 		Chat:           store,
-		Operator:       &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken},
+		Operator:       operator,
+		Pulses:         store,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)
 	}
+	go (&factoryd.Pulser{Store: store, Bus: eventBus, Model: operator, Context: consoleHandler.PulseContext}).Run(ctx)
 	consoleServer := &http.Server{
 		Addr:              *consoleAddr,
 		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", consoleHandler),

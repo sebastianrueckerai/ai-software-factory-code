@@ -486,6 +486,7 @@ type boardData struct {
 	ToggleQuery string   // the filter with the other view
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
+	Pulse       *factoryd.Pulse // the shown project's newest pulse
 	Columns     []column
 	HumanTasks  []card
 	Escalations []need
@@ -1058,6 +1059,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	})
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
+		d.Pulse = c.pulseOf(ctx, shown)
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil

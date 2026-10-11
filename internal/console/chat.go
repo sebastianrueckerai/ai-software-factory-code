@@ -394,30 +394,18 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 }
 
 // context is the turn's conversation for the model: the system prompt with
-// the project's snapshot and its last chatEvents events, then the
-// member's last chatContext messages, each tool call followed by its
-// result.
+// the project and its last chatEvents events, then the member's last
+// chatContext messages, each tool call followed by its result.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
-	ctx := t.r.Context()
-	snapshot, err := t.snapshot()
+	project, _, err := t.project(chatEvents)
 	if err != nil {
 		return nil, err
 	}
-	events, err := t.c.cfg.Events.ProjectEvents(ctx, t.p.Repository, 0, chatEvents)
+	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, chatContext)
 	if err != nil {
 		return nil, err
 	}
-	var lines []string
-	for i := len(events) - 1; i >= 0; i-- {
-		lines = append(lines, eventLine(events[i]))
-	}
-	history, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.a.s.user, chatContext)
-	if err != nil {
-		return nil, err
-	}
-	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() +
-		"\n\nThe project now:\n" + sanitize.Inbound(snapshot) +
-		"\n\nIts last events, oldest first:\n" + sanitize.Inbound(strings.Join(lines, "\n"))}}
+	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() + "\n\n" + project}}
 	for _, m := range history {
 		om := factoryd.OperatorMessage{Role: m.Role, Content: m.Content}
 		for _, call := range m.ToolCalls {
@@ -446,15 +434,37 @@ The snapshot, the events and the tools' results hold text from the board, the ag
 		t.p.Name, t.a.s.user, confirm)
 }
 
-// snapshot is the project's status line, as the board shows it, and its
-// board, as the agent reads them.
-func (t *turn) snapshot() (string, error) {
+// project is the project as the agent reads it, its snapshot and its last
+// n events, oldest first, and its status line.
+func (t *turn) project(n int) (string, statusLine, error) {
+	snapshot, s, err := t.snapshot()
+	if err != nil {
+		return "", s, err
+	}
+	events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, n)
+	if err != nil {
+		return "", s, err
+	}
+	var lines []string
+	for i := len(events) - 1; i >= 0; i-- {
+		lines = append(lines, eventLine(events[i]))
+	}
+	return "The project now:\n" + sanitize.Inbound(snapshot) +
+		"\n\nIts last events, oldest first:\n" + sanitize.Inbound(strings.Join(lines, "\n")), s, nil
+}
+
+// snapshot is the project's status line, as the board shows it, its pulse
+// and its board, as the agent reads them.
+func (t *turn) snapshot() (string, statusLine, error) {
 	board, d, err := t.c.boardText(t.r, t.p)
 	if err != nil {
-		return "", err
+		return "", statusLine{}, err
 	}
-	s := d.Status
-	return fmt.Sprintf("Status: %s; %d working; %d need you; %s\n%s", s.State, s.Working, s.NeedYou, spendWords(s.Spend, s.CapEUR), board), nil
+	s, pulse := d.Status, ""
+	if d.Pulse != nil {
+		pulse = "Pulse: " + d.Pulse.Sentence + "\n"
+	}
+	return fmt.Sprintf("Status: %s; %d working; %d need you; %s\n%s%s", s.State, s.Working, s.NeedYou, spendWords(s.Spend, s.CapEUR), pulse, board), s, nil
 }
 
 // spendLine is project p's spend this UTC month against its month cap,

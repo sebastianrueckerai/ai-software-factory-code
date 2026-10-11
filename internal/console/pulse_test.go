@@ -1,0 +1,148 @@
+package console
+
+import (
+	"cmp"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+)
+
+// fakePulses is the newest pulse of each repository.
+type fakePulses map[string]factoryd.Pulse
+
+func (f fakePulses) NewestPulse(_ context.Context, repository string) (factoryd.Pulse, bool, error) {
+	p, ok := f[repository]
+	return p, ok, nil
+}
+
+var calm = factoryd.Pulse{ID: 7, Repository: "sf/code", At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC),
+	Sentence: "#11 Speed up the board is running; #4 merged at 09:12.",
+	Bullets:  []string{"Needs you: nothing", "Running: #11 Speed up the board", "Since 08:30: #4 done", "Spend: €5.50 of the €50 cap"}}
+
+// pulseBlock is the pulse's markup on the board of query.
+func pulseBlock(t *testing.T, r *rig, ck *http.Cookie, query string) string {
+	t.Helper()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
+	start := strings.Index(body, `<div id="pulse"`)
+	if start < 0 {
+		return ""
+	}
+	return body[start : start+strings.Index(body[start:], "</div>")+len("</div>")]
+}
+
+// The pulse sits right under the status line as one line: muted words
+// when all is well, the warning sign and the prominent class when a card
+// waits on a human. Its bullets are in the markup, folded; a project
+// without a pulse shows none.
+func TestPulseLineSubduedAndProminent(t *testing.T) {
+	r, ck := screenRig(t)
+	r.c.cfg.Pulses = fakePulses{"sf/code": calm}
+	const tail = `<span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
+<ul class="pulse-bullets"><li>Needs you: nothing</li><li>Running: #11 Speed up the board</li><li>Since 08:30: #4 done</li><li>Spend: €5.50 of the €50 cap</li></ul>
+</details></div>`
+	const summary = `<details class="pulse-fold">
+<summary title="the most useful thing to know now; click for more">`
+	for _, query := range []string{"", "?view=wide"} {
+		if got, want := pulseBlock(t, r, ck, query), `<div id="pulse" class="pulse">`+summary+
+			`<span class="pulse-sign" hidden>⚠</span> <span class="pulse-say">#11 Speed up the board is running; #4 merged at 09:12.</span>`+tail; got != want {
+			t.Errorf("board%s: the calm pulse\n%s\nwant\n%s", query, got, want)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if line := strings.Index(body, `<p class="status-line"`); line < 0 || strings.Index(body, `<div id="pulse"`) != line+strings.Index(body[line:], "</p>")+len("</p>\n") {
+		t.Errorf("the pulse is not right under the status line")
+	}
+	waits := calm
+	waits.Sentence, waits.Prominent = "#13 Use a replica? needs your answer.", true
+	r.c.cfg.Pulses = fakePulses{"sf/code": waits}
+	if got, want := pulseBlock(t, r, ck, ""), `<div id="pulse" class="pulse prominent">`+summary+
+		`<span class="pulse-sign">⚠</span> <span class="pulse-say">#13 Use a replica? needs your answer.</span>`+tail; got != want {
+		t.Errorf("the prominent pulse\n%s\nwant\n%s", got, want)
+	}
+	r.c.cfg.Pulses = fakePulses{}
+	if got := pulseBlock(t, r, ck, ""); got != "" {
+		t.Errorf("a project without a pulse shows %s", got)
+	}
+}
+
+// readerForgejo shows the member repository sf/code, as Forgejo does a
+// repository they read.
+type readerForgejo struct{ http.RoundTripper }
+
+func (f readerForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code" {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"full_name":"sf/code"}`)), Request: r}, nil
+	}
+	return f.RoundTripper.RoundTrip(r)
+}
+
+// GET /projects/{name}/pulse answers the newest pulse to a writer and a
+// reader of the project, 403 to a member who does neither, and 404 for no
+// pulse yet or no such project.
+func TestPulseGet(t *testing.T) {
+	const want = `{"id":7,"repository":"sf/code","at":"2026-10-11T09:30:00Z","sentence":"#11 Speed up the board is running; #4 merged at 09:12.",` +
+		`"bullets":["Needs you: nothing","Running: #11 Speed up the board","Since 08:30: #4 done","Spend: €5.50 of the €50 cap"],"prominent":false}`
+	for name, tc := range map[string]struct {
+		writes, reads bool
+		pulses        fakePulses
+		path          string
+		code          int
+		body          string
+	}{
+		"a writer":      {writes: true, pulses: fakePulses{"sf/code": calm}, code: 200, body: want},
+		"a reader":      {reads: true, pulses: fakePulses{"sf/code": calm}, code: 200, body: want},
+		"a non-member":  {pulses: fakePulses{"sf/code": calm}, code: 403, body: "you read no project ai-software-factory-code"},
+		"no pulse yet":  {writes: true, pulses: fakePulses{}, code: 404, body: "the project has no pulse yet"},
+		"no such thing": {writes: true, pulses: fakePulses{"sf/code": calm}, path: "/projects/nothing/pulse", code: 404, body: "404 page not found"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.c.cfg.Pulses = tc.pulses
+			if !tc.writes {
+				r.repoWriters["sf/code"] = nil
+			}
+			if tc.reads {
+				r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
+			}
+			ck, _ := r.loggedIn(t)
+			rec := r.do(httptest.NewRequest(http.MethodGet, cmp.Or(tc.path, "/projects/ai-software-factory-code/pulse"), nil), ck)
+			if got := strings.TrimSpace(rec.Body.String()); rec.Code != tc.code || got != tc.body {
+				t.Fatalf("%d %s, want %d %s", rec.Code, got, tc.code, tc.body)
+			}
+		})
+	}
+}
+
+// The pulse reads the project as the project agent does, seen by no
+// member (no writer check runs), its pulse in the snapshot, and the agent
+// of a chat turn gets the same pulse line.
+func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.c.cfg.Pulses = fakePulses{"sf/code": calm}
+	ctx := t.Context()
+	r.events.Record(ctx, factoryd.Event{At: time.Date(2026, 10, 11, 9, 12, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-r", IssueNumber: 11,
+		Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton})
+	text, waiting, err := r.c.PulseContext(ctx, projectRows()[0])
+	want := "The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+		"Pulse: #11 Speed up the board is running; #4 merged at 09:12.\n" + boardText +
+		"\n\nIts last events, oldest first:\n2026-10-11 09:12 #11 t-r card_moved by sebastian via button"
+	if err != nil || text != want || !waiting {
+		t.Fatalf("PulseContext = %v, %v\n%s\nwant waiting and\n%s", waiting, err, text, want)
+	}
+	if len(r.mayAsked) != 0 {
+		t.Fatalf("the pulse's view asked who writes: %v", r.mayAsked)
+	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("All calm.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what matters now?"}})
+	if system := messages(t, g.calls()[0])[0]["content"].(string); !strings.Contains(system, "\nPulse: "+calm.Sentence+"\nBacklog (1):") {
+		t.Fatalf("the agent's snapshot lacks the pulse:\n%s", system)
+	}
+}

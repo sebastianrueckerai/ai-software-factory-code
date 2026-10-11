@@ -147,6 +147,8 @@ type Config struct {
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat
 	Operator *factoryd.OperatorModel
+	// Pulses are the projects' pulses (factoryd.PGStore); nil shows none.
+	Pulses Pulses
 }
 
 // Console is the console's http.Handler.
@@ -239,6 +241,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
 	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
 	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
+	c.mux.Handle("GET /projects/{name}/pulse", c.auth(c.pulseGet))
 	return c, nil
 }
 
