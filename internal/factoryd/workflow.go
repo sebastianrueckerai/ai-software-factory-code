@@ -640,8 +640,11 @@ const (
 )
 
 // providerRefusals is how many sessions in a row the provider may refuse
-// before a human hears of it.
-const providerRefusals = 6
+// before a human hears of it, with providerRefused opening the reason.
+const (
+	providerRefusals = 6
+	providerRefused  = "the model provider refused the first call of "
+)
 
 // providerBackoff is the wait after the nth refusal in a row: 2 minutes,
 // doubling, at most 30.
@@ -952,13 +955,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
-		refused := t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused
-		if !refused {
-			u.AgentTime += workflow.Now(t.ctx).Sub(began)
-			u.Attempts = attempt
-			t.recordUsage(u)
-		}
-		if refused {
+		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			refusals++
 			if refusals == 1 {
 				workflow.GetLogger(t.ctx).Info("the model provider refused a session's first call; the task waits on it", "task", t.taskID, "status", res.Status, "reason", res.Reason)
@@ -966,7 +963,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if refusals < providerRefusals {
 				t.waitOnProvider(ProviderWait{Status: res.Status, Reason: res.Reason, Backoff: providerBackoff(refusals)})
 			} else {
-				ask := fmt.Sprintf("the model provider refused the first call of %d sessions in a row (status %d): %s", refusals, res.Status, res.Reason)
+				ask := fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", refusals, res.Status, res.Reason)
 				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
 				if final != "" {
 					return t.finish(final, why)
@@ -976,6 +973,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			attempt--
 			continue
 		}
+		u.AgentTime += workflow.Now(t.ctx).Sub(began)
+		u.Attempts = attempt
+		t.recordUsage(u)
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
 			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)

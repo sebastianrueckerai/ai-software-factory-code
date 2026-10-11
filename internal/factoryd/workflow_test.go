@@ -1217,6 +1217,9 @@ func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
 	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason; !slices.Equal(h.escalated, []string{want}) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
+	if got := escalationSource(h.escalated[0]); got != "provider" {
+		t.Fatalf("escalation source = %q, want provider", got)
+	}
 	if len(h.usage) != 0 {
 		t.Fatalf("usage = %+v, want no attempt recorded", h.usage)
 	}

@@ -383,9 +383,9 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
 	}
 	c.mu.Lock()
-	for id, old := range c.checks {
+	for other, old := range c.checks {
 		if time.Since(old.at) >= checksTTL {
-			delete(c.checks, id)
+			delete(c.checks, other)
 		}
 	}
 	if c.checks == nil {
