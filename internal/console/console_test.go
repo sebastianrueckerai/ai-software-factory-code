@@ -70,6 +70,8 @@ type fakeForgejo struct {
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
 	patched    []string // "path {body}" per PATCH of an issue
+
+	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -208,6 +210,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
 		f.deleted = append(f.deleted, r.URL.Path)
 		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/branches/main":
+		fmt.Fprintf(w, `{"name":"main","commit":{"id":%q}}`, ciHead)
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/commits/") && strings.HasSuffix(r.URL.Path, "/status"):
+		// a commit without statuses: Forgejo answers an empty combined status
+		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/commits/"), "/status")
+		io.WriteString(w, cmp.Or(f.statuses[sha], `{"state":"","statuses":null}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
 		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
 	default:

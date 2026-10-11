@@ -1351,10 +1351,12 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   issues and the filed cards' states), `pr` (the newest checks' jobs, the
   model reviews, the audit, the files' diff stat, the diff on request),
   `file` (a file at a ref, read raw through the member's token, cut at 64
-  KiB, a binary one refused), `session`, `session_steps`, `session_step`
-  and `session_search` (a session's summary, its steps one line each, steps
+  KiB, a binary one refused), `session`, `session_steps`, `session_step`,
+  `session_search` (a session's summary, its steps one line each, steps
   in full, a search of the transcripts; transcripts over 8 MiB are only
-  searched) and one per console action,
+  searched) and `ci` (a commit's combined CI status with each job's, main's
+  head unless a ref or sha names another, through the member's token) and
+  one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
   `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,

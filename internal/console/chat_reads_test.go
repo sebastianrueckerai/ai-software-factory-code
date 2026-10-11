@@ -244,10 +244,76 @@ func TestChatFileRead(t *testing.T) {
 	}
 }
 
+// ciHead is main's head in the fake Forgejo.
+var ciHead = "abc1234" + strings.Repeat("0", 33)
+
+// The ci read is a commit's combined status, main's head unless a sha
+// names another: its state, then each status in Forgejo's order with its
+// description and target link, read as the member; a sha skips the
+// branch read, and a bad ref or sha is refused before any read.
+func TestChatCIRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.mu.Lock()
+	r.fg.statuses = map[string]string{
+		ciHead: `{"state":"failure","statuses":[{"context":"ci / checks","status":"success"},` +
+			`{"context":"ci / smoke","status":"failure","description":"Job 'smoke' failed"}]}`,
+		"def5678": `{"state":"success","statuses":[{"context":"ci / checks","status":"success","target_url":"https://git.example/sf/code/actions/runs/7/jobs/0"}]}`,
+	}
+	r.fg.mu.Unlock()
+	equal(t, "the ci reads", reads(t, r, g,
+		"ci", `{}`,
+		"ci", `{"sha":"DEF5678"}`,
+		"ci", `{"ref":"dev"}`,
+		"ci", `{"ref":"main..x"}`,
+		"ci", `{"sha":"xyz1234"}`,
+	), []string{
+		"main at abc1234: failure\nci / checks: success\nci / smoke: failure (Job 'smoke' failed)",
+		"commit def5678: success\nci / checks: success https://git.example/sf/code/actions/runs/7/jobs/0",
+		"Refused: There is no branch dev.",
+		`Refused: The ref must be a branch name under 200 bytes, without "..".`,
+		"Refused: The sha must be 7 to 64 hex digits.",
+	})
+	r.fg.mu.Lock()
+	r.fg.statuses = nil
+	r.fg.mu.Unlock()
+	equal(t, "no statuses", reads(t, r, g, "ci", `{}`), []string{"main at abc1234: no CI status yet"})
+	var asked []string
+	r.fg.mu.Lock()
+	for _, c := range r.fg.calls {
+		if strings.Contains(c, "/branches/") || strings.Contains(c, "/commits/") {
+			asked = append(asked, c)
+		}
+	}
+	r.fg.mu.Unlock()
+	equal(t, "the forgejo reads", asked, []string{
+		"GET /api/v1/repos/sf/code/branches/main Bearer access-1",
+		"GET /api/v1/repos/sf/code/commits/" + ciHead + "/status Bearer access-1",
+		"GET /api/v1/repos/sf/code/commits/def5678/status Bearer access-1",
+		"GET /api/v1/repos/sf/code/branches/dev Bearer access-1",
+		"GET /api/v1/repos/sf/code/branches/main Bearer access-2",
+		"GET /api/v1/repos/sf/code/commits/" + ciHead + "/status Bearer access-2",
+	})
+	for _, c := range []struct {
+		in     toolInput
+		status int
+	}{
+		{toolInput{Ref: strings.Repeat("a", 200)}, http.StatusBadRequest},
+		{toolInput{Ref: strings.Repeat("a", 199)}, http.StatusNotFound},
+		{toolInput{Ref: "..", SHA: "abc1234"}, http.StatusBadRequest},
+		{toolInput{SHA: "abc123"}, http.StatusBadRequest},
+		{toolInput{SHA: strings.Repeat("a", 65)}, http.StatusBadRequest},
+		{toolInput{SHA: "abc123g"}, http.StatusBadRequest},
+	} {
+		if status, msg := refused(t, r, "ci", c.in); status != c.status {
+			t.Errorf("ci %+v refused %d %q, want %d", c.in, status, msg, c.status)
+		}
+	}
+}
+
 // The reads run at once and act on nothing: none is a write, and none is
 // in the default confirm list.
 func TestChatReadsAreNeverProposed(t *testing.T) {
-	for _, name := range []string{"plan", "card", "pr", "file", "session", "session_steps", "session_step", "session_search"} {
+	for _, name := range []string{"plan", "card", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci"} {
 		tool, ok := (&Console{}).chatTool(name)
 		if !ok || tool.write || slices.Contains(policy.DefaultChat.Confirm, name) {
 			t.Errorf("tool %s: offered %v, write %v, confirmed by default %v; want a read run at once", name, ok, tool.write, slices.Contains(policy.DefaultChat.Confirm, name))

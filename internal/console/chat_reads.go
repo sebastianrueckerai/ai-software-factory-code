@@ -341,6 +341,62 @@ func (t *turn) prText(in toolInput) (string, error) {
 	return b.String(), nil
 }
 
+// ciText is the ci tool's answer: the combined status of commit in.SHA,
+// else of ref in.Ref's head (default main), read as the member.
+func (t *turn) ciText(in toolInput) (string, error) {
+	ref, sha := cmp.Or(in.Ref, "main"), strings.ToLower(in.SHA)
+	if len(ref) >= 200 || strings.Contains(ref, "..") {
+		return "", refuse(http.StatusBadRequest, `The ref must be a branch name under 200 bytes, without "..".`)
+	}
+	if sha != "" && (len(sha) < 7 || len(sha) > 64 || strings.Trim(sha, "0123456789abcdef") != "") {
+		return "", refuse(http.StatusBadRequest, "The sha must be 7 to 64 hex digits.")
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	ctx, at := t.r.Context(), fmt.Sprintf("/api/v1/repos/%s/%s/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+	head := "commit "
+	if sha == "" {
+		var branch struct {
+			Commit struct {
+				ID string `json:"id"`
+			} `json:"commit"`
+		}
+		err := t.c.as(ctx, t.a.s, http.MethodGet, at+"branches/"+url.PathEscape(ref), nil, http.StatusOK, &branch)
+		if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no branch %s.", ref))
+		}
+		if err != nil {
+			return "", &forgejoRefusal{"read the branch", err}
+		}
+		sha, head = branch.Commit.ID, ref+" at "
+	}
+	var cs struct {
+		State    string                  `json:"state"`
+		Statuses []factoryd.CommitStatus `json:"statuses"`
+	}
+	if err := t.c.as(ctx, t.a.s, http.MethodGet, at+"commits/"+url.PathEscape(sha)+"/status", nil, http.StatusOK, &cs); err != nil {
+		return "", &forgejoRefusal{"read the commit's status", err}
+	}
+	head += sha[:min(len(sha), 7)]
+	if len(cs.Statuses) == 0 {
+		return head + ": no CI status yet", nil
+	}
+	lines := []string{head + ": " + cs.State}
+	for _, s := range cs.Statuses {
+		line := s.Context + ": " + s.State
+		if s.Description != "" {
+			line += " (" + s.Description + ")"
+		}
+		if s.TargetURL != "" {
+			line += " " + s.TargetURL
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
 // fileLimit bounds the file the agent reads; binarySniff is how much of
 // it a NUL byte marks binary in.
 const (

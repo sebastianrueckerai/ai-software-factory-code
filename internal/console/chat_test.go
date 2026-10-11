@@ -566,7 +566,8 @@ func TestSystemTool(t *testing.T) {
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
 		"\n  card, any card\n",
 		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n"+
-			"  session, a card with a session\n  session_steps, a card with a session\n  session_step, a card with a session\n  session_search, a card with a session\n",
+			"  session, a card with a session\n  session_steps, a card with a session\n  session_step, a card with a session\n  session_search, a card with a session\n"+
+			"  ci, a project with a repository\n",
 		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
 		"\n  invite, needs OK, an approver of the project\n",
 		"\n  close, needs OK, a card that is not final\n  edit, needs OK, a card not in a session\n  grant_session, needs OK, a card at its session cap\n"+

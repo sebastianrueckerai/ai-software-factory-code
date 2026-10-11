@@ -35,6 +35,7 @@ type toolInput struct {
 	N         int    `json:"n,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Path      string `json:"path,omitempty"`
+	SHA       string `json:"sha,omitempty"`
 	WithDiff  bool   `json:"with_diff,omitempty"`
 	Remote    string `json:"remote,omitempty"`
 	Username  string `json:"username,omitempty"`
@@ -437,6 +438,11 @@ var tools = []chatTool{
 		about:    "Search the transcripts of a card's sessions, or of session n, for a text: each hit's session, step and kind with the matching line and the line before and after it; at most 20 hits.",
 		fits:     sessionFits,
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
+	{name: "ci", title: "Read CI",
+		params: map[string]any{"ref": str("a branch (default main)"), "sha": str("a commit, 7 to 64 hex digits (default the ref's head)")},
+		about:  "Main's (or a ref's or commit's) CI result: the head commit, the combined state, and each job's state in the order Forgejo reports, with its target link.",
+		fits:   "a project with a repository",
+		run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
