@@ -179,6 +179,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCreateChildren: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 			return ChildrenResult{}, nil
 		},
+		ActivityAwaitSessionGap: func(ctx context.Context, taskID string) error { return nil },
+		ActivityAwaitRollHold:   func(ctx context.Context, taskID string) error { return nil },
+		ActivityClearRollHold:   func(ctx context.Context, taskID string) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

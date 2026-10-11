@@ -89,6 +89,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
 		ActivityCreateChildren:              r.CreateChildren,
+		ActivityAwaitSessionGap:             r.AwaitSessionGap,
+		ActivityAwaitRollHold:               r.AwaitRollHold,
+		ActivityClearRollHold:               r.ClearRollHold,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -311,6 +314,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err != nil {
 		return SessionResult{}, err
 	}
+	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, err
@@ -1192,6 +1196,11 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	}
 	if !ok || Final(t.Status) {
 		return nil // nothing to finish: gone, or already final
+	}
+	if t.Source == SourceRoll {
+		if err := r.store.ClearRollHold(ctx, taskID); err != nil {
+			return err
+		}
 	}
 	r.forgetNamespace(ctx, taskID)
 	msg := "factoryd: task " + taskID + " failed: " + r.untrusted(t, reason)

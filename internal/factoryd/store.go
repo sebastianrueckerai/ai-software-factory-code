@@ -248,6 +248,12 @@ type Store interface {
 	// MonthCapRefusal is the task's newest refused_month_cap or
 	// refused_project_cap audit row since since, nil for none.
 	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error)
+	// SetRollHold holds new sessions for roll task taskID from since to
+	// until; ClearRollHold ends its hold; RollHold is the newest hold in
+	// force at now, if any.
+	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
+	ClearRollHold(ctx context.Context, taskID string) error
+	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
 	// EnterLane moves backlog card id into starting lane lane: queued at
 	// base sha with the lane's class as its capabilities, in the intake
 	// gate from now; false when the card was not in the backlog.

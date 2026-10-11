@@ -63,6 +63,7 @@ type fakeStore struct {
 	deps        map[string][]string // task → the tasks it depends on
 	plans       map[string][]PlanRevision
 	queue       []queueEntry // the merge queues, oldest first
+	holds       map[string]RollHold
 }
 
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -588,6 +589,29 @@ func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since ti
 		return &r, nil
 	}
 	return nil, nil
+}
+
+func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
+	if s.holds == nil {
+		s.holds = map[string]RollHold{}
+	}
+	s.holds[taskID] = RollHold{TaskID: taskID, Since: since, Until: until}
+	return nil
+}
+
+func (s *fakeStore) ClearRollHold(ctx context.Context, taskID string) error {
+	delete(s.holds, taskID)
+	return nil
+}
+
+func (s *fakeStore) RollHold(ctx context.Context, now time.Time) (RollHold, bool, error) {
+	var newest RollHold
+	for _, h := range s.holds {
+		if h.Until.After(now) && h.Since.After(newest.Since) {
+			newest = h
+		}
+	}
+	return newest, newest.TaskID != "", nil
 }
 
 func (s *fakeStore) SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error {

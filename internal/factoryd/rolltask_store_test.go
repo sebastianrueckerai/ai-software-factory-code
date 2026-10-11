@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -154,5 +155,65 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 	if err := s.DeleteRollRequest(ctx, "a"); err != nil || seen("a") {
 		t.Fatalf("delete a: %v, seen %v", err, seen("a"))
+	}
+}
+
+// A roll's hold is in force until its until; RollHold answers the newest
+// of those in force, none past their until or cleared.
+func TestPGStoreRollHolds(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_holds`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	hold := func(now time.Time) (RollHold, bool) {
+		t.Helper()
+		h, ok, err := s.RollHold(ctx, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h, ok
+	}
+	if h, ok := hold(at); ok {
+		t.Fatalf("hold before any = %+v", h)
+	}
+	if err := s.SetRollHold(ctx, "r1", at, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hold(at.Add(time.Minute)); !ok || h.TaskID != "r1" || !h.Since.Equal(at) || !h.Until.Equal(at.Add(time.Hour)) {
+		t.Fatalf("hold = %+v %v, want r1 from 12:00 to 13:00", h, ok)
+	}
+	if h, ok := hold(at.Add(time.Hour + time.Second)); ok {
+		t.Fatalf("hold a second past its until = %+v", h)
+	}
+	if err := s.SetRollHold(ctx, "r2", at.Add(10*time.Minute), at.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hold(at.Add(20 * time.Minute)); !ok || h.TaskID != "r2" {
+		t.Fatalf("hold of two = %+v %v, want the newer r2", h, ok)
+	}
+	if err := s.ClearRollHold(ctx, "r2"); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hold(at.Add(20 * time.Minute)); !ok || h.TaskID != "r1" {
+		t.Fatalf("hold after clearing r2 = %+v %v, want r1", h, ok)
+	}
+	// a hold set again (the wait's retry) moves its since and until
+	if err := s.SetRollHold(ctx, "r1", at.Add(30*time.Minute), at.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hold(at.Add(2 * time.Hour)); !ok || h.TaskID != "r1" || !h.Since.Equal(at.Add(30*time.Minute)) {
+		t.Fatalf("hold set again = %+v %v, want r1 from 12:30", h, ok)
+	}
+	if err := s.ClearRollHold(ctx, "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if h, ok := hold(at.Add(20 * time.Minute)); ok {
+		t.Fatalf("hold after clearing both = %+v", h)
 	}
 }

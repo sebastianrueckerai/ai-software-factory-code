@@ -102,7 +102,14 @@ type Runner struct {
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
 	sandbox map[string][2]string    // by task: namespace and name of its running sandbox pod
-
+	// what a roll's session gap waits for, by task: its sessions running
+	// here, and when AwaitRollHold let its next session start
+	running  map[string]int
+	admitted map[string]time.Time
+	// now and sleep are the roll gap's and the roll hold's clock; nil is
+	// the wall clock
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send

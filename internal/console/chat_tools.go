@@ -174,6 +174,9 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 				break
 			}
 			b.WriteString("\n  " + cardLine(k.Task))
+			if k.Held {
+				b.WriteString(", " + heldWords)
+			}
 		}
 		b.WriteString("\n")
 	}

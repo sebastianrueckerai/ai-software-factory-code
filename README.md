@@ -2104,7 +2104,18 @@ records the commit it wrote and sets the task's base to the main head the
 branch was cut from, and the head goes through the pull request, the checks (no image build: no
 Dockerfile input changed), the policy gate (`k8s/**` is high) and the
 card. The approver's click, `factory-merge` merges, Flux applies, and the
-roll watcher records the rows. One open roll per repository: newer images
+roll watcher records the rows. The merge waits for a session gap (ruling
+269; the card says so): factoryd runs one replica, so its restart stops
+every running session. `AwaitSessionGap` holds new sessions (a
+`roll_holds` row) and polls every 15 s until no session runs in factoryd,
+the roll's own aside, or until the longest agent time in force (limits,
+classes, processes, projects) plus 30 minutes, when it merges anyway and
+logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
+(`waited_s`). Every code and plan session first waits in `AwaitRollHold`
+while a hold is in force, before its agent time starts (one `held` step;
+the card's chip "waiting for a roll"); report sessions are not held, only
+waited for. The hold ends when the merge ends, merged or not, and when the
+roll ends. One open roll per repository: newer images
 while it is open (and its pull request exists) are folded in as a second
 commit on the same pull request, with a comment and a `roll_folded`
 signal that wakes the approval wait (never a finding) and has the

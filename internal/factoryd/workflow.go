@@ -93,6 +93,9 @@ const (
 	ActivityGateAudit                   = "GateAudit"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
+	ActivityAwaitSessionGap             = "AwaitSessionGap"
+	ActivityAwaitRollHold               = "AwaitRollHold"
+	ActivityClearRollHold               = "ClearRollHold"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -354,6 +357,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
 	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
+	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -598,6 +602,13 @@ const (
 	// own AnswerSlice no longer bounds it. A run from before the change
 	// keeps that field's value instead (grant).
 	versionAnswerSlice workflow.Version = 1
+	// versionRollGap (change id "roll-gap", ruling 269): a roll's merge
+	// waits for a gap between sessions (AwaitSessionGap, whose hold keeps
+	// new sessions from starting, raced by the terminal signals) and
+	// ClearRollHold follows every merge; its card says so (RollGapNote).
+	// Every code and plan session first waits while a roll holds sessions
+	// (AwaitRollHold), outside its agent time.
+	versionRollGap workflow.Version = 1
 )
 
 // minSession is the least agent time a session starts with, or the whole
@@ -633,6 +644,7 @@ type taskRun struct {
 	answerScreening   workflow.Version
 	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
 	answerSlice       workflow.Version
+	rollGap           workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -889,6 +901,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		findings = append(findings, answer...)
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
+		}
+		if v, decided := t.awaitRollHold(); decided {
+			return t.finish(v.final, v.reason)
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
@@ -1310,8 +1325,19 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		if t.v8 >= versionGatesPinned {
 			opts = mergeOptions()
 		}
+		gap := t.rolling && t.rollGap >= versionRollGap
+		if gap {
+			if v, decided := t.awaitSessionGap(); decided {
+				return v
+			}
+		}
 		var res MergeResult
 		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.taskID, t.pr.Number, commit, approver)
+		if gap {
+			if err := workflow.ExecuteActivity(t.short, ActivityClearRollHold, t.taskID).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("clear roll hold", "task", t.taskID, "error", err)
+			}
+		}
 		if decided {
 			return v
 		}
@@ -1353,6 +1379,47 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 				t.approvalRequested = workflow.Now(t.ctx)
 			}
 		}
+	}
+}
+
+// awaitSessionGap is a roll's wait for a session gap before its merge
+// (versionRollGap); a failed wait merges as before it.
+func (t *taskRun) awaitSessionGap() (verdict, bool) {
+	v, decided, err := t.race(rollWaitOptions(), nil, ActivityAwaitSessionGap, t.taskID)
+	if err != nil {
+		workflow.GetLogger(t.ctx).Warn("await session gap", "task", t.taskID, "error", err)
+	}
+	return v, decided
+}
+
+// awaitRollHold waits before a session while a roll holds sessions
+// (versionRollGap), outside the session's agent time; a failed wait lets
+// the session start.
+func (t *taskRun) awaitRollHold() (verdict, bool) {
+	if t.rollGap < versionRollGap {
+		return verdict{}, false
+	}
+	v, decided, err := t.race(rollWaitOptions(), nil, ActivityAwaitRollHold, t.taskID)
+	if err != nil {
+		workflow.GetLogger(t.ctx).Warn("await roll hold", "task", t.taskID, "error", err)
+	}
+	return v, decided
+}
+
+// rollWaitOptions: a roll's waits end at their own bound (gapBound), at
+// most the longest agent time any policy allows and rollGapSlack; they
+// heartbeat every poll, and a factoryd that stops (a roll's merge) has
+// the next one retry them.
+func rollWaitOptions() workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: policy.MaxAgentTime + rollGapSlack + rollWaitSlack,
+		HeartbeatTimeout:    time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumInterval:        time.Minute,
+			MaximumAttempts:        10,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
 	}
 }
 

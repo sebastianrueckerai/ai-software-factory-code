@@ -169,8 +169,10 @@ type card struct {
 	Blocked   int
 	BlockedOn string
 	// Retrying is a card whose newest session ended for a retry and whose
-	// next has not started; Fine are its fine states as chips.
+	// next has not started; Held one whose next session waits for a roll
+	// (held); Fine are its fine states as chips.
 	Retrying bool
+	Held     bool
 	Fine     []fine
 	// MayWriteSummary is whether the viewer writes the task's project, so
 	// the expanded view carries the summary and accent forms; CSRF is the
@@ -193,6 +195,8 @@ type fine struct{ Words, Class string }
 func fineStates(k card, wide bool) []fine {
 	var out []fine
 	switch {
+	case k.Held:
+		out = append(out, fine{heldWords, "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
 	case !wide && k.Status == "waiting-poster":
@@ -293,21 +297,38 @@ func retrying(steps []map[string]any) bool {
 	return false
 }
 
+// heldWords are the chip of a card whose next session waits for a roll.
+const heldWords = "waiting for a roll"
+
+// held: the newest held step of steps, a session waiting while a roll
+// holds sessions, has no session_start after it.
+func held(steps []map[string]any) bool {
+	for i := len(steps) - 1; i >= 0; i-- {
+		switch steps[i]["step"] {
+		case "session_start":
+			return false
+		case "held":
+			return true
+		}
+	}
+	return false
+}
+
 // checksTTL is how long what a card's face reads from its timeline is
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
-// checks is a card's remembered checks count and retry, and when they
-// were read.
+// checks is a card's remembered checks count, retry and hold, and when
+// they were read.
 type checks struct {
-	count    string
-	retrying bool
-	at       time.Time
+	count          string
+	retrying, held bool
+	at             time.Time
 }
 
 // faceTimelines reads the newest checks step onto every card that can
-// have one, a card with a pull request, and whether it is retrying onto
-// every running card: neither final, at most once per checksTTL. A
+// have one, a card with a pull request, and whether it is retrying or
+// held onto every running card: neither final, at most once per checksTTL. A
 // timeline that cannot be read keeps the card without the chips — the
 // object store answers no body for a task that never wrote a timeline,
 // and reading is best-effort here, never a reason to fail the board.
@@ -324,7 +345,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			if steps, err := c.readTimeline(ctx, k.ID); err != nil {
 				log.Printf("console: timeline of %s for its checks: %v", k.ID, err)
 			} else {
-				got.count, got.retrying = newestChecksCount(steps), retrying(steps)
+				got.count, got.retrying, got.held = newestChecksCount(steps), retrying(steps), held(steps)
 			}
 			c.mu.Lock()
 			for id, old := range c.checks {
@@ -341,7 +362,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		if k.PRNumber > 0 {
 			k.Checks = got.count
 		}
-		k.Retrying = got.retrying
+		k.Retrying, k.Held = got.retrying, got.held
 	})
 }
 

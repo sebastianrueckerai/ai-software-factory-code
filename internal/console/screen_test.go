@@ -239,7 +239,8 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 // The lane is a chip on every card of the five columns whose status is
 // another word, and the fine state a second chip in the pill's hues:
 // waiting on the author, retrying (the newest session ended for a retry),
-// stale (no event for half an hour); failed and closed are the pill's own
+// waiting for a roll (its next session held while a roll waits for a
+// session gap), stale (no event for half an hour); failed and closed are the pill's own
 // words. The wide view's columns name the lane and the wait on the
 // author, so there a card wears only what the column leaves unsaid.
 func TestCardLaneAndFineChips(t *testing.T) {
@@ -252,13 +253,20 @@ func TestCardLaneAndFineChips(t *testing.T) {
 	other, stale := task("t-other", "waiting-poster", "ready"), task("t-stale", "running", "ready")
 	other.Author, stale.CreatedAt = "alice", now.Add(-50*time.Minute)
 	r.tasks.tasks = []factoryd.BoardTask{task("t-lane", "queued", "ready"), task("t-back", "backlog", "backlog"), other, task("t-fail", "failed", "ready"),
-		task("t-closed", "closed", ""), task("t-done", "done", "ready"), stale, task("t-retry", "running", "ready"), task("t-again", "running", "ready")}
+		task("t-closed", "closed", ""), task("t-done", "done", "ready"), stale, task("t-retry", "running", "ready"), task("t-again", "running", "ready"),
+		task("t-held", "running", "ready"), task("t-unheld", "running", "ready")}
 	r.objects["sessions/t-retry/timeline.jsonl"] = []byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 `)
 	r.objects["sessions/t-again/timeline.jsonl"] = []byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 {"step":"session_start","attempt":2}
+`)
+	r.objects["sessions/t-held/timeline.jsonl"] = []byte(`{"step":"session_end","attempt":1,"outcome":"retry_stronger"}
+{"step":"held","roll":"t-roll"}
+`)
+	r.objects["sessions/t-unheld/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}
+{"step":"session_start","attempt":1}
 `)
 	chips := func(body, id string) string {
 		t.Helper()
@@ -282,6 +290,8 @@ func TestCardLaneAndFineChips(t *testing.T) {
 		"t-stale":  {`<p class="chips">` + ready + `<span class="pill fine st-stale">stale</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-stale">stale</span> </p>`},
 		"t-retry":  {`<p class="chips">` + ready + `<span class="pill fine st-running">retrying</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-running">retrying</span> </p>`},
 		"t-again":  {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
+		"t-held":   {`<p class="chips">` + ready + `<span class="pill fine st-waiting">waiting for a roll</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-waiting">waiting for a roll</span> </p>`},
+		"t-unheld": {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
 	} {
 		if got := chips(five, id); got != want[0] {
 			t.Errorf("five columns, %s: chips %q, want %q", id, got, want[0])

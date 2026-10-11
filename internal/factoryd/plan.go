@@ -675,6 +675,10 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
 		floor = t.escalation
+		if v, decided := t.awaitRollHold(); decided {
+			final, why, _ := closedBeforeStart(v.final, v.reason)
+			return t.finish(final, why)
+		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)

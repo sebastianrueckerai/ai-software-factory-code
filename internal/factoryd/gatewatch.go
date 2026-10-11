@@ -63,6 +63,7 @@ var activityGates = map[string]string{
 	ActivityGateAudit:        GateAudit,
 	ActivityRunPlan:          GateSession,
 	ActivityRequestPlan:      GateApproval,
+	ActivityAwaitSessionGap:  GateMerge,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
@@ -70,7 +71,8 @@ var activityGates = map[string]string{
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
-	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer}
+	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer,
+	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {
@@ -278,9 +280,13 @@ func activityPin(args []any) int64 {
 
 // PinnedBound is GateWatch.Bound: the bound of the version pin (read with
 // read), the current version for 0 or a version it cannot read, since a
-// bound only decides when to alert.
+// bound only decides when to alert. A roll's waits end at their own bound
+// (gapBound), so theirs is that and rollWaitSlack.
 func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64) time.Duration {
 	return func(ctx context.Context, activity string, pin int64) time.Duration {
+		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
+			return gapBound(current()) + rollWaitSlack
+		}
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {

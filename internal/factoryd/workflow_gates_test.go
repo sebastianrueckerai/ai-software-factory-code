@@ -41,6 +41,7 @@ type gateHarness struct {
 	reviewDelay   time.Duration
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
+	gapDelay      time.Duration // how long AwaitSessionGap takes
 	policyCommits []string
 	policyPins    []int64
 	started       time.Time
@@ -128,6 +129,16 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			g.steps = append(g.steps, "merge")
 			g.merges = append(g.merges, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return g.merge[min(m, len(g.merge))-1], nil
+		})
+	g.env.OnActivity(ActivityAwaitSessionGap, mock.Anything, "t1").After(g.gapDelay).Return(
+		func(ctx context.Context, taskID string) error {
+			g.steps = append(g.steps, "gap")
+			return nil
+		})
+	g.env.OnActivity(ActivityClearRollHold, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) error {
+			g.steps = append(g.steps, "clear")
+			return nil
 		})
 	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {

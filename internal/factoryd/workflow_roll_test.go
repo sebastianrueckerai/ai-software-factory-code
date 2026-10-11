@@ -16,9 +16,15 @@ import (
 // fails the test if called, RollCommit answers heads in order (the last
 // repeating), and the policy classes the k8s/ change high.
 func newRollHarness(t *testing.T, heads ...string) (*gateHarness, *[]string) {
+	return newRollHarnessWith(t, func(*gateHarness) {}, heads...)
+}
+
+// newRollHarnessWith is newRollHarness with setup run before the mocks.
+func newRollHarnessWith(t *testing.T, setup func(*gateHarness), heads ...string) (*gateHarness, *[]string) {
 	g := newGateHarness(t, func(g *gateHarness) {
 		g.gate = PolicyGate{Class: "high", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Changed: 2, Paths: []string{"k8s/factoryd.yaml"}}
 		g.review = Review{Note: "no model review: a roll task makes no model call"}
+		setup(g)
 	})
 	g.state = RunState{Roll: true}
 	g.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
@@ -48,17 +54,21 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	if len(*commits) != 1 || len(g.sessions) != 0 {
 		t.Fatalf("RollCommit calls %v, sessions %v", *commits, g.sessions)
 	}
-	if want := []string{"policy", "repro r1", "review r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) || g.approvals[0].Gates.Policy.Class != "high" {
 		t.Fatalf("merges %v, approval %+v", g.merges, g.approvals[0])
 	}
-	// a roll makes no model call (ruling 178): its review's note is no finding
+	// a roll makes no model call (ruling 178): its review's note is no
+	// finding; the card says the merge waits for a session gap
 	for _, w := range g.approvals[0].WhyHuman {
 		if strings.Contains(w, noVerdict) {
 			t.Fatalf("why human = %q", g.approvals[0].WhyHuman)
 		}
+	}
+	if !slices.Contains(g.approvals[0].WhyHuman, RollGapNote) {
+		t.Fatalf("why human = %q, want %q", g.approvals[0].WhyHuman, RollGapNote)
 	}
 	if !slices.Equal(g.states, []string{"running", "in-review"}) {
 		t.Fatalf("states = %v", g.states)
@@ -76,7 +86,7 @@ func TestWorkflowRollFoldsANewHeadBeforeItsMerge(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r2", "review r2", "approval r2", "merge"}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r2", "review r2", "approval r2", "gap", "merge", "clear"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 || len(g.sessions) != 0 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -132,7 +142,7 @@ func TestWorkflowRollFoldOnAnUnmovedHeadIsNoFinding(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r1", "review r1", "approval r1", "merge"}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -146,5 +156,91 @@ func TestWorkflowRollFailsOnAHumansChangeRequest(t *testing.T) {
 	g.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "not now"})
 	if final := g.run(t); final != "failed" || g.finals[0][1] != "roll: changes requested: reviewer sebastian requested changes: not now" {
 		t.Fatalf("final = %q %v", final, g.finals)
+	}
+}
+
+// Every merge of a roll waits for a session gap first, and its hold ends
+// with the merge, a merge that failed or was refused too: the retry and
+// the next approval wait for a gap again.
+func TestWorkflowRollMergesInASessionGap(t *testing.T) {
+	g, _ := newRollHarness(t, "r1")
+	g.merge = []MergeResult{{Failed: "forgejo answered 502"}, {Refusal: "the approval is stale"}, {Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "clear", "gap", "merge", "clear", "gap", "merge", "clear"}
+	if !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// A roll whose pull request closes while it waits for the gap ends there:
+// no merge; its Finish ends the hold.
+func TestWorkflowRollClosedWhileWaitingForTheGap(t *testing.T) {
+	g, _ := newRollHarnessWith(t, func(g *gateHarness) { g.gapDelay = 2 * time.Hour }, "r1")
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "failed" || !strings.Contains(g.finals[0][1], "closed without merge") {
+		t.Fatalf("final = %q %v", final, g.finals)
+	}
+	if len(g.merges) != 0 || slices.Contains(g.steps, "merge") {
+		t.Fatalf("merges %v, steps %v; want none", g.merges, g.steps)
+	}
+}
+
+// A card's session waits while a roll holds sessions, before the session's
+// agent time starts: the wait is no agent time and needs no session time.
+func TestWorkflowSessionWaitsForARollsHold(t *testing.T) {
+	h := newWorkflowHarness(t)
+	var calls []string
+	h.env.OnActivity(ActivityAwaitRollHold, mock.Anything, "t1").After(2 * time.Hour).Return(
+		func(ctx context.Context, taskID string) error {
+			calls = append(calls, "hold")
+			return nil
+		})
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			calls = append(calls, "session")
+			h.sessions = append(h.sessions, in)
+			return pushed("s1", "c1"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if !slices.Equal(calls, []string{"hold", "session"}) {
+		t.Fatalf("calls = %v, want the hold's wait, then the session", calls)
+	}
+	if len(h.usage) == 0 || h.usage[0].AgentTime != 10*time.Minute {
+		t.Fatalf("usage = %+v, want 10m of agent time, the session's only", h.usage)
+	}
+	if !slices.Equal(h.states, []string{"running", "in-review"}) {
+		t.Fatalf("states = %v, want running while held", h.states)
+	}
+}
+
+// A planner session waits for a roll's hold the same way: no agent time.
+func TestPlanSessionWaitsForARollsHold(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	plansBefore := -1
+	h.env.OnActivity(ActivityAwaitRollHold, mock.Anything, "t1").After(time.Hour).Return(
+		func(ctx context.Context, taskID string) error {
+			plansBefore = len(h.plans)
+			return nil
+		})
+	h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if plansBefore != 0 || len(h.plans) != 1 {
+		t.Fatalf("planner sessions before the hold's wait %d, after %d; want the wait first, then one", plansBefore, len(h.plans))
+	}
+	if len(h.usage) != 1 || h.usage[0].AgentTime != planSession {
+		t.Fatalf("usage %+v, want %s of agent time, the session's only", h.usage, planSession)
 	}
 }

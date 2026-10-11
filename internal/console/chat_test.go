@@ -320,6 +320,24 @@ func TestChatTextReply(t *testing.T) {
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z"}]`})
 }
 
+// A card whose next session waits for a roll reads so in the agent's
+// board, as on the board's face.
+func TestChatBoardShowsAHeldCard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}` + "\n")
+	g.replies = [][]string{{say("One waits.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
+	calls := g.calls()
+	if len(calls) != 1 {
+		t.Fatalf("%d model calls, want 1", len(calls))
+	}
+	system, _ := messages(t, calls[0])[0]["content"].(string)
+	if want := "\n  #11 t-r \"Speed up the board\" running, waiting for a roll\n"; !strings.Contains(system, want) {
+		t.Fatalf("the system message lacks %q:\n%s", want, system)
+	}
+}
+
 // A read call, then a reply: the tool block streams the result's first
 // line and acts on nothing. The second call carries the call and its
 // result, which the inbound sanitiser cleaned of the objective's hidden
