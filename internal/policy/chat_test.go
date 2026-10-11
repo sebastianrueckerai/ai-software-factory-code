@@ -8,7 +8,8 @@ import (
 )
 
 // A tree without a chat block gives every project DefaultChat, and the
-// operator purpose calls its model whatever the task's classes.
+// operator purpose calls its model on a chat task, which calls the pulse's
+// alias too.
 func TestChatDefaults(t *testing.T) {
 	tree, err := ParseTree(fixtureTree(t))
 	if err != nil {
@@ -23,8 +24,8 @@ func TestChatDefaults(t *testing.T) {
 	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeOperator); got != "operator" {
 		t.Fatalf("FactoryModel(chat, operator) = %q, want operator", got)
 	}
-	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{"operator"}) {
-		t.Fatalf("FactoryModels(chat) = %v, want [operator]", got)
+	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{"operator", "pulse"}) {
+		t.Fatalf("FactoryModels(chat) = %v, want [operator pulse]", got)
 	}
 	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeOperator); got != "" {
 		t.Fatalf("FactoryModel(coder, operator) = %q, want none: only a chat task calls the operator", got)

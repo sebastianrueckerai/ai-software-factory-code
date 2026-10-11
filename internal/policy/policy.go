@@ -536,10 +536,14 @@ const (
 	PurposeGateSupervisor = "gate-supervisor"
 	PurposeAudit          = "audit"
 	PurposeOperator       = "operator"
+	PurposePulse          = "pulse"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse}
+
+// PulseModel is the LiteLLM alias of the pulse's calls (purpose pulse).
+const PulseModel = "pulse"
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -810,18 +814,22 @@ func (d Document) AllowsModel(classes []string, model string) bool {
 }
 
 // ClassChat is the capability of a project's chat task, which no policy
-// class may take: the task's one model is the operator purpose's.
+// class may take: its models are the operator and the pulse purposes'.
 const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's, for a chat task only.
+// project agent's (operator) is the chat block's and the pulse's is
+// PulseModel, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator {
-		if slices.Contains(classes, ClassChat) {
-			return d.ChatOf(ProjectConfig{}).Model
+	if purpose == PurposeOperator || purpose == PurposePulse {
+		switch {
+		case !slices.Contains(classes, ClassChat):
+			return ""
+		case purpose == PurposePulse:
+			return PulseModel
 		}
-		return ""
+		return d.ChatOf(ProjectConfig{}).Model
 	}
 	for _, c := range classes {
 		cl := d.Classes[c]
