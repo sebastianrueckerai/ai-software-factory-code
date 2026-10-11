@@ -247,7 +247,7 @@ func TestChatFileRead(t *testing.T) {
 // The reads run at once and act on nothing: none is a write, and none is
 // in the default confirm list.
 func TestChatReadsAreNeverProposed(t *testing.T) {
-	for _, name := range []string{"plan", "card", "pr", "file"} {
+	for _, name := range []string{"plan", "card", "pr", "file", "session", "session_steps", "session_step", "session_search"} {
 		tool, ok := (&Console{}).chatTool(name)
 		if !ok || tool.write || slices.Contains(policy.DefaultChat.Confirm, name) {
 			t.Errorf("tool %s: offered %v, write %v, confirmed by default %v; want a read run at once", name, ok, tool.write, slices.Contains(policy.DefaultChat.Confirm, name))

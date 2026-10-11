@@ -37,6 +37,9 @@ type toolInput struct {
 	Remote   string `json:"remote,omitempty"`
 	Username string `json:"username,omitempty"`
 	Token    string `json:"token,omitempty"`
+	From     int    `json:"from,omitempty"`
+	To       int    `json:"to,omitempty"`
+	Query    string `json:"query,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -80,6 +83,10 @@ func (tool chatTool) def() factoryd.OperatorTool {
 
 func str(about string) map[string]any { return map[string]any{"type": "string", "description": about} }
 
+func stepParam(about string) map[string]any {
+	return map[string]any{"type": "integer", "description": about, "minimum": 1}
+}
+
 func enum(about string, values ...string) map[string]any {
 	return map[string]any{"type": "string", "description": about, "enum": values}
 }
@@ -88,7 +95,10 @@ var (
 	taskParam = str("the card's task id, t-...")
 	nParam    = map[string]any{"type": "integer", "description": "how many, 1 to 100 (default 20)", "minimum": 1, "maximum": 100}
 	textParam = str("the text, as the member writes it")
+	sessionN  = stepParam("the session's number on the card, 1 the first (default the newest)")
 )
+
+const sessionFits = "a card with a session"
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session, github_export
@@ -339,6 +349,31 @@ var tools = []chatTool{
 		about:    "A file of the project's repository at a branch, tag or commit, read from Forgejo as the member; its first 64 KB, a binary file refused.",
 		fits:     "the project's repository",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
+	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
+		about: "One session of a card, the newest unless n numbers one: its model, attempt and outcome, its duration, the agent's closing summary, the supervisor's trips and the messages it got, the files it changed, its diff stat, its spend and its step count.",
+		fits:  sessionFits,
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
+	{name: "session_steps", title: "List a session's steps",
+		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number (default 1)"),
+			"to": stepParam("the last step's number (default from + 99, at most 100 steps)")},
+		required: []string{"task_id"},
+		about:    "A session's transcript as numbered steps, one line each: the time since the session's start, the kind or tool, the duration and a summary without content; the first 100 unless from and to name others.",
+		fits:     sessionFits,
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
+	{name: "session_step", title: "Read a session's steps",
+		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number"),
+			"to": stepParam("the last step's number (default from, at most 20 steps)")},
+		required: []string{"task_id", "from"},
+		about:    "Steps of a session in full, from from to to: a tool call's arguments and error, a model call's text, a command's output, a checkpoint's diff stat; each step cut at 8 KiB, the answer at 32 KiB.",
+		fits:     sessionFits,
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
+	{name: "session_search", title: "Search a card's sessions",
+		params: map[string]any{"task_id": taskParam, "query": str("the text to find, 2 to 200 characters, any case"),
+			"n": stepParam("the session's number on the card (default every session)")},
+		required: []string{"task_id", "query"},
+		about:    "Search the transcripts of a card's sessions, or of session n, for a text: each hit's session, step and kind with the matching line and the line before and after it; at most 20 hits.",
+		fits:     sessionFits,
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human")},

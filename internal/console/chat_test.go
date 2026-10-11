@@ -565,7 +565,8 @@ func TestSystemTool(t *testing.T) {
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
 		"\n  card, any card\n",
-		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n",
+		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n"+
+			"  session, a card with a session\n  session_steps, a card with a session\n  session_step, a card with a session\n  session_search, a card with a session\n",
 		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
 		"\n  invite, needs OK, an approver of the project\n",
 		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export\n",
@@ -784,13 +785,16 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	chatTask := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-ls"}`, "plan", `{"task_id":"t-ls"}`, "pr", `{"task_id":"t-ls"}`, "session", `{"task_id":"t-ls"}`,
+		"session_search", `{"task_id":"t-ls","query":"go"}`, "set_summary", `{"task_id":"t-ls","summary":"x"}`,
 		"move_card", `{"task_id":"t-ls","lane":"ready"}`, "card_history", `{"task_id":"`+chatTask+`"}`)}, {say("None is here.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look at linkshort's card"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"card","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"plan","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"pr","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls"},"duration_ms":0,"name":"session","result":"Refused: There is no card t-ls in this project."}`,
+		`tool {"arguments":{"task_id":"t-ls","query":"go"},"duration_ms":0,"name":"session_search","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","summary":"x"},"duration_ms":0,"name":"set_summary","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","lane":"ready"},"duration_ms":0,"name":"move_card","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
