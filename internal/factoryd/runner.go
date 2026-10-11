@@ -107,11 +107,16 @@ type Runner struct {
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
 // completes only when the session reads it; done closes when the session
-// takes no more.
+// takes no more. worker is where a writer's message to it goes.
 type liveSession struct {
-	ch   chan AgentAsk
-	done chan struct{}
+	ch     chan AgentAsk
+	done   chan struct{}
+	worker sessionWorker
 }
+
+// sessionWorker is a running session's pod and the bearer of its worker's
+// message endpoint.
+type sessionWorker struct{ session, ns, pod, token string }
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
 var ErrNoLiveSession = errors.New("the task has no running session")
@@ -162,10 +167,10 @@ func (r *Runner) sandboxPod(taskID string) (ns, name string, ok bool) {
 	return p[0], p[1], ok
 }
 
-// liveSession registers a running session for EscalateSession until the
-// returned func (idempotent) ends it.
-func (r *Runner) liveSession(taskID string) (<-chan AgentAsk, func()) {
-	ls := &liveSession{ch: make(chan AgentAsk), done: make(chan struct{})}
+// liveSession registers a running session for EscalateSession and
+// MessageSession until the returned func (idempotent) ends it.
+func (r *Runner) liveSession(taskID string, worker sessionWorker) (<-chan AgentAsk, func()) {
+	ls := &liveSession{ch: make(chan AgentAsk), done: make(chan struct{}), worker: worker}
 	r.liveMu.Lock()
 	if r.live == nil {
 		r.live = map[string]*liveSession{}
@@ -487,7 +492,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
 	// the agent's escalate_to_human reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID)
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken})
 	defer unregister()
 	stop := func(trip *Trip) {
 		// a stopping session takes no escalation: the gateway tells the

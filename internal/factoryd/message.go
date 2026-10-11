@@ -120,6 +120,28 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 	return sup.nudgeUndelivered(n, err)
 }
 
+// MessageSession hands text from user, a writer of the task's project, to
+// the task's running session the way the supervisor's message goes (6.6):
+// the worker's POST /message, recorded as a message step from user. A task
+// with no session running in this factoryd answers ErrNoLiveSession, the
+// worker's answers are messageWorker's.
+func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) error {
+	r.liveMu.Lock()
+	ls, ok := r.live[taskID]
+	r.liveMu.Unlock()
+	if !ok {
+		return ErrNoLiveSession
+	}
+	w := ls.worker
+	err := r.messageWorker(ctx, w.ns, w.pod, w.token, "A message from "+user+", a writer of this project: "+text)
+	detail := map[string]any{"session": w.session, "from": user}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	r.record(ctx, taskID, "message", detail)
+	return err
+}
+
 // message sends the supervisor's guidance into the running session and
 // records it on the timeline.
 func (r *Runner) message(ctx context.Context, t Task, s sessionSpec, ns, pod, text string) error {

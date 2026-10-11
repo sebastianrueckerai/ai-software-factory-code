@@ -71,6 +71,18 @@ func (f *fakeEvents) ProjectEvents(_ context.Context, repository string, after i
 	return out, nil
 }
 
+func (f *fakeEvents) TaskEvents(_ context.Context, id string, limit int) ([]factoryd.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.Event
+	for i := len(f.rows) - 1; i >= 0 && len(out) < limit; i-- {
+		if f.rows[i].TaskID == id {
+			out = append(out, f.rows[i])
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[string]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

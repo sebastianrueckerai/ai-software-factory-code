@@ -101,7 +101,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // in.Resync, so a webhook lost while factoryd was down still reaches the
 // workflow, and takes in the agent and human issues no webhook turned
 // into a task (in.ResyncIssues). It wakes every merge queue's head still
-// waiting for its turn, so a lost queue_turn costs at most a pass.
+// waiting for its turn, so a lost queue_turn costs at most a pass. A
+// project's chat task runs no workflow: the pass leaves it be.
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion) {
@@ -118,6 +119,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			continue
 		}
 		for _, t := range tasks {
+			if t.Kind == KindChat {
+				continue
+			}
 			if t.Kind == "human" || status == "backlog" {
 				// no workflow: only a close to take in
 				if status == "waiting-human" || status == "backlog" {

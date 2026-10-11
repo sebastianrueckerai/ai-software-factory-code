@@ -1,7 +1,9 @@
 package factoryd
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -628,5 +630,44 @@ func TestPushAnsweredDuringASupervisorCall(t *testing.T) {
 	}
 	if !sawPush.Load() {
 		t.Fatal("the push request waited for the supervisor's answer")
+	}
+}
+
+// A writer's steer reaches the task's running session on the message path:
+// the worker gets the text, marked as the writer's, with the session's
+// bearer, and the timeline a message step naming the writer. A task with
+// no session running here is refused.
+func TestMessageSessionReachesTheRunningSession(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	kube.pods["agent-t2/worker-t2"] = &fakePod{ns: "agent-t2", name: "worker-t2"}
+	_, unregister := runner.liveSession("t2", sessionWorker{session: "s1", ns: "agent-t2", pod: "worker-t2", token: "bearer-1"})
+	defer unregister()
+	if err := runner.MessageSession(t.Context(), "t2", "anna", "rebase on main first"); err != nil {
+		t.Fatalf("MessageSession = %v", err)
+	}
+	worker.mu.Lock()
+	texts, auth := worker.texts, worker.auth
+	worker.mu.Unlock()
+	if !slices.Equal(texts, []string{"POST /message A message from anna, a writer of this project: rebase on main first"}) ||
+		!slices.Equal(auth, []string{"Bearer bearer-1"}) {
+		t.Fatalf("worker got %q with %q", texts, auth)
+	}
+	b, err := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var step map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(b), &step); err != nil {
+		t.Fatalf("timeline %q: %v", b, err)
+	}
+	if step["step"] != "message" || step["session"] != "s1" || step["from"] != "anna" || step["error"] != nil {
+		t.Fatalf("timeline step = %v, want message of session s1 from anna", step)
+	}
+	if err := runner.MessageSession(t.Context(), "t3", "anna", "hello"); !errors.Is(err, ErrNoLiveSession) {
+		t.Fatalf("MessageSession to a task without a session = %v, want ErrNoLiveSession", err)
 	}
 }

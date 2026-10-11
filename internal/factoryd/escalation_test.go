@@ -217,7 +217,7 @@ func TestEscalationHandler(t *testing.T) {
 // session never reads before it ends is refused, never accepted and lost.
 func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
 	runner := &Runner{}
-	esc, unregister := runner.liveSession("t1")
+	esc, unregister := runner.liveSession("t1", sessionWorker{})
 	go func() {
 		time.Sleep(50 * time.Millisecond)
 		unregister()
@@ -231,7 +231,7 @@ func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
 	default:
 	}
 
-	esc, unregister = runner.liveSession("t1")
+	esc, unregister = runner.liveSession("t1", sessionWorker{})
 	defer unregister()
 	took := make(chan AgentAsk, 1)
 	go func() { took <- <-esc }()

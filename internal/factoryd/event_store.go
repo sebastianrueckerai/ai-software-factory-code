@@ -18,8 +18,9 @@ const (
 	ViaWebhook  = "webhook"
 )
 
-// The kinds a human's action in the console leaves behind, one per POST
-// handler; factoryd's own events keep the names of events.go.
+// The kinds a human's action in the console leaves behind, one per
+// action whether a button or the project agent's tool ran it; factoryd's
+// own events keep the names of events.go.
 const (
 	EventCardFiled            = "card_filed"
 	EventCardMoved            = "card_moved"
@@ -38,6 +39,9 @@ const (
 	EventProjectMerged        = "project_merged"
 	EventSummarySet           = "summary_set"
 	EventAccentSet            = "accent_set"
+	EventCardCommented        = "card_commented"
+	EventCommentDeleted       = "comment_deleted"
+	EventCardSteered          = "card_steered"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate
@@ -71,6 +75,8 @@ type Events interface {
 	// ProjectEvents lists repository's events newest first: those with an
 	// id above after (0 = every event), at most limit.
 	ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
+	// TaskEvents lists task id's events newest first, at most limit.
+	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
 	// NewestTaskEvents are the newest event of each of tasks, keyed by task
 	// id: the board's activity line. A task with no event gets no entry.
 	NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error)
@@ -134,9 +140,17 @@ func scanEvent(scan func(dest ...any) error) (Event, error) {
 }
 
 func (s *PGStore) ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+eventColumns+` FROM events WHERE repository = $1 AND id > $2 ORDER BY id DESC LIMIT $3`,
+	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE repository = $1 AND id > $2 ORDER BY id DESC LIMIT $3`,
 		repository, after, limit)
+}
+
+func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {
+	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, id, limit)
+}
+
+// events runs query, which returns eventColumns, and scans its rows.
+func (s *PGStore) events(ctx context.Context, query string, args ...any) ([]Event, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

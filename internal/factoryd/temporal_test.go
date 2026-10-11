@@ -92,6 +92,27 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	}
 }
 
+// A project's chat task runs no workflow: the heal pass starts none for
+// it, beside the running card it does start.
+func TestHealPassLeavesTheChatTaskBe(t *testing.T) {
+	store := newFakeStore()
+	ctx := context.Background()
+	store.CreateTask(ctx, Task{ID: "tr", Status: "running", Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
+	store.CreateTask(ctx, Task{ID: "t-chat-code-2026-10", Status: "running", Kind: KindChat, Repository: "sf/ai-software-factory-code"})
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
+	fjURL, llURL := back.srv(t)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL))
+	if !slices.Equal(wf.started, []string{"tr"}) {
+		t.Fatalf("started = %v, want only the running card tr", wf.started)
+	}
+	if got, _, _ := store.Task(ctx, "t-chat-code-2026-10"); got.Status != "running" {
+		t.Fatalf("chat task = %q, want it left running", got.Status)
+	}
+}
+
 // A merge or issue close that lands while no run exists (between a
 // failure and the next heal pass) must not be lost: the signal starts the
 // workflow, which reconciles from Forgejo first.
