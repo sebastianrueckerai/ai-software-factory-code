@@ -1233,8 +1233,11 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
 - Spend is the policy's `approvers` (ruling 128; the policy file's
   `approvers: [...]`): only they approve a resource request or a merge,
   or promote. Other writers see the cards without those buttons (a POST
-  gets 403) and may still deny,
-  request changes, reject and release. Forgejo's approvals whitelist on
+  gets 403) and may still deny (a writer of the request's project),
+  request changes, reject and release. Each button's action is one
+  function in `internal/console/actions.go` (`doMoveCard`, `doApprove`,
+  …) with its checks, its Forgejo calls as the human and its one event
+  row; the project agent's tools call the same functions. Forgejo's approvals whitelist on
   main stays the merge authority.
 - `/`: the agent lane (done and failed for 7 days, at most 300 tasks, open
   ones first) in columns: the lanes of the shown projects' processes in
@@ -1329,6 +1332,35 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   task with its lines per kind and ref (a model review is its own line,
   `model review/<alias>`), today against the day cap. `/policy`: the version in force, linked to its file
   in the infra repository for edits.
+- The project agent (stage 15 phase 4a, architecture 5.7): a writer of a
+  project chats at `POST /projects/{name}/chat` (form field `message`;
+  403 for anyone else) and gets the turn as an event stream: `text`
+  pieces, `tool` blocks (name, arguments, duration, the result's first
+  line), `proposal` (id, tool, arguments, description), `applied` (with
+  an `undo` token where one exists), then `done`, or `error`, which ends
+  it. The loop calls the gateway with purpose `operator` on the project's
+  chat task `t-chat-<name>-<yyyy-mm>` (kind `chat`, capability `chat`, the
+  block's `monthly_eur` as budget, filed by the month's first message, no
+  card and no workflow), at most 8 calls a turn, each after a budget
+  check. Its tools (`policy.ChatTools`) are the reads `board`, `card`,
+  `history`, `card_history`, `costs`, `diff` and one per console action,
+  run as the human through `actions.go`, each refusing a card of another
+  project; a tool the `chat.confirm` list names answers a proposal, which
+  `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,
+  `comment`, `set_summary` and `set_accent` answer an undo token for
+  `POST /projects/{name}/chat/undo/{token}`. Both are the member's on
+  that project, used once, for 30 minutes (404 otherwise, 403 for
+  another member's). `steer` reaches a running session on the
+  supervisor's message path (`Runner.MessageSession`). The conversation
+  is `chat_messages`, per project and member, each assistant row with its
+  tool calls and their results; a turn's context is the project's status
+  line and board, its last 30 events and the last 40 messages, every
+  board and tool text through `sanitize.Inbound`.
+  `GET /projects/{name}/chat` answers the last 100 as JSON. The `chat`
+  block of `policy.yaml` or a project file (`model`, `monthly_eur`,
+  `confirm`; defaults in `policy.DefaultChat`) sets the rest; a project
+  file's keys replace the policy's, its `monthly_eur` at most the
+  policy's.
 
 ## Projects (task 65, ruling 179)
 

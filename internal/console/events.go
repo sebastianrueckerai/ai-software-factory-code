@@ -181,6 +181,21 @@ var heartbeat = 25 * time.Second
 // drops it.
 const streamBuffer = 16
 
+// sseWriter writes s to w and flushes it, each write cut off after window:
+// the server's WriteTimeout would end every stream after a minute.
+func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error {
+	rc := http.NewResponseController(w)
+	return func(s string) error {
+		if err := rc.SetWriteDeadline(time.Now().Add(window)); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, s); err != nil {
+			return err
+		}
+		return rc.Flush()
+	}
+}
+
 // projectEventsStream answers GET /projects/{name}/events/stream to a
 // writer of the project: one SSE message per new events row, event
 // "event", its id the row's, its data the feed's row. A reconnect's
@@ -197,18 +212,8 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan factoryd.Event, streamBuffer)
 	cancel := c.cfg.Bus.Subscribe(p.Repository, ch)
 	defer cancel()
-	rc := http.NewResponseController(w)
-	// each write may take two heartbeats, so a stalled client is cut off;
-	// the server's WriteTimeout would end every stream after a minute
-	write := func(s string) error {
-		if err := rc.SetWriteDeadline(time.Now().Add(2 * heartbeat)); err != nil {
-			return err
-		}
-		if _, err := io.WriteString(w, s); err != nil {
-			return err
-		}
-		return rc.Flush()
-	}
+	// each write may take two heartbeats, so a stalled client is cut off
+	write := sseWriter(w, 2*heartbeat)
 	send := func(e factoryd.Event) error {
 		b, err := json.Marshal(feedRow(e))
 		if err != nil {

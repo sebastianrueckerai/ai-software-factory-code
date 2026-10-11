@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -65,6 +66,7 @@ type fakeForgejo struct {
 	closed     []string // "path state"
 	labelled   []string // "path [label ids]"
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
+	deleted    []string // DELETE paths
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -162,6 +164,11 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		f.commentN++
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"id": f.commentN})
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
+		f.deleted = append(f.deleted, r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
+		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
 	default:
 		http.NotFound(w, r)
 	}
@@ -216,10 +223,12 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 	return factoryd.Task{}, false, nil
 }
 
+// BoardTasks lists the cards, as the store does: a chat task is none.
 func (s *fakeTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tasks[:min(limit, len(s.tasks))], nil
+	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat })
+	return cards[:min(limit, len(cards))], nil
 }
 
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
@@ -439,6 +448,7 @@ type fakeLedger struct {
 	from, to  time.Time
 	costs     policy.Costs
 	processes map[string]policy.Process
+	chat      *policy.ChatConfig // the policy's chat block
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -470,7 +480,8 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
-			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
+			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
+			Chat:            l.chat},
 			Projects: map[string]policy.ProjectConfig{
 				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
 					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},

@@ -141,6 +141,10 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
+	// Chat keeps the project agent's conversations and chat tasks, and
+	// Operator is its model; without either the chat answers 404.
+	Chat     Chat
+	Operator *factoryd.OperatorModel
 }
 
 // Console is the console's http.Handler.
@@ -159,6 +163,9 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
+	// proposals wait for their member's Do it and undos are applied
+	// actions' inverses, by token (keep, take).
+	proposals, undos map[string]*pending
 }
 
 type session struct {
@@ -225,6 +232,10 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /cards/{id}", c.auth(c.cardFragment))
 	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.spend("merge a project's file", c.mergeProject)))
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
+	c.mux.Handle("GET /projects/{name}/chat", c.auth(c.chatGet))
+	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
+	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
+	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
 	return c, nil
 }
 

@@ -400,6 +400,8 @@ func main() {
 		ReconcileError: registrar.ReconcileError,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
+		Chat:           store,
+		Operator:       &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken},
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)
