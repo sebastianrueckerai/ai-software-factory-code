@@ -170,9 +170,11 @@ type card struct {
 	BlockedOn string
 	// Retrying is a card whose newest session ended for a retry and whose
 	// next has not started; Held one whose next session waits for a roll
-	// (held); Fine are its fine states as chips.
+	// (held); Provider a running one whose next session waits on the model
+	// provider (onProvider); Fine are its fine states as chips.
 	Retrying bool
 	Held     bool
+	Provider bool
 	Fine     []fine
 	// MayWriteSummary is whether the viewer writes the task's project, so
 	// the expanded view carries the summary and accent forms; CSRF is the
@@ -197,6 +199,8 @@ func fineStates(k card, wide bool) []fine {
 	switch {
 	case k.Held:
 		out = append(out, fine{heldWords, "st-waiting"})
+	case k.Provider:
+		out = append(out, fine{providerWords, "st-waiting"})
 	case k.Retrying:
 		out = append(out, fine{"retrying", "st-running"})
 	case !wide && k.Status == "waiting-poster":
@@ -314,16 +318,34 @@ func held(steps []map[string]any) bool {
 	return false
 }
 
+// providerWords are the chip of a card whose next session waits on the
+// model provider.
+const providerWords = "waiting on the provider"
+
+// onProvider: the newest provider_refused step of steps, a refused
+// session's wait on the model provider, has no session_start after it.
+func onProvider(steps []map[string]any) bool {
+	for i := len(steps) - 1; i >= 0; i-- {
+		switch steps[i]["step"] {
+		case "session_start":
+			return false
+		case factoryd.StepProviderRefused:
+			return true
+		}
+	}
+	return false
+}
+
 // checksTTL is how long what a card's face reads from its timeline is
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
-// checks is a card's remembered checks count, retry and hold, and when
-// they were read.
+// checks is a card's remembered checks count, retry, hold and wait on
+// the provider, and when they were read.
 type checks struct {
-	count          string
-	retrying, held bool
-	at             time.Time
+	count                    string
+	retrying, held, provider bool
+	at                       time.Time
 }
 
 // faceTimelines reads the newest checks step onto every card that can
@@ -337,33 +359,41 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		if factoryd.Final(k.Status) || k.PRNumber == 0 && k.Status != "running" {
 			return
 		}
-		c.mu.Lock()
-		got, ok := c.checks[k.ID]
-		c.mu.Unlock()
-		if !ok || time.Since(got.at) >= checksTTL {
-			got = checks{at: time.Now()}
-			if steps, err := c.readTimeline(ctx, k.ID); err != nil {
-				log.Printf("console: timeline of %s for its checks: %v", k.ID, err)
-			} else {
-				got.count, got.retrying, got.held = newestChecksCount(steps), retrying(steps), held(steps)
-			}
-			c.mu.Lock()
-			for id, old := range c.checks {
-				if time.Since(old.at) >= checksTTL {
-					delete(c.checks, id)
-				}
-			}
-			if c.checks == nil {
-				c.checks = map[string]checks{}
-			}
-			c.checks[k.ID] = got
-			c.mu.Unlock()
-		}
+		got := c.timelineFace(ctx, k.ID)
 		if k.PRNumber > 0 {
 			k.Checks = got.count
 		}
-		k.Retrying, k.Held = got.retrying, got.held
+		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
 	})
+}
+
+// timelineFace is what task id's timeline says for its face, read at most
+// once per checksTTL.
+func (c *Console) timelineFace(ctx context.Context, id string) checks {
+	c.mu.Lock()
+	got, ok := c.checks[id]
+	c.mu.Unlock()
+	if ok && time.Since(got.at) < checksTTL {
+		return got
+	}
+	got = checks{at: time.Now()}
+	if steps, err := c.readTimeline(ctx, id); err != nil {
+		log.Printf("console: timeline of %s for its checks: %v", id, err)
+	} else {
+		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+	}
+	c.mu.Lock()
+	for id, old := range c.checks {
+		if time.Since(old.at) >= checksTTL {
+			delete(c.checks, id)
+		}
+	}
+	if c.checks == nil {
+		c.checks = map[string]checks{}
+	}
+	c.checks[id] = got
+	c.mu.Unlock()
+	return got
 }
 
 // depsCount is how many issues a "#3, #5" list names (0 an empty one).
@@ -482,15 +512,23 @@ func (f boardFilter) query() string {
 }
 
 // statusLine is the shown project's state above the board (ruling 251),
-// which the project agent reads too: its word, its cards working, what
-// needs the viewer, and its spend this UTC month (the chat's part apart)
-// against its month cap.
+// which the project agent reads too: its word, its cards working, those
+// waiting on the model provider, what needs the viewer, and its spend this
+// UTC month (the chat's part apart) against its month cap.
 type statusLine struct {
-	Project          string
-	State            string
-	Working, NeedYou int
-	Spend            factoryd.ProjectSpend
-	CapEUR           float64
+	Project                   string
+	State                     string
+	Working, Waiting, NeedYou int
+	Spend                     factoryd.ProjectSpend
+	CapEUR                    float64
+}
+
+// waiting is "; n waiting on the provider", "" for none.
+func (s statusLine) waiting() string {
+	if s.Waiting == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; %d %s", s.Waiting, providerWords)
 }
 
 type boardData struct {
@@ -982,6 +1020,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
+		case col == colWorking && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
+			d.Status.Waiting++
 		case col == colWorking:
 			d.Status.Working++
 		case col == colNeedsYou && !v.planned[t.ID]:

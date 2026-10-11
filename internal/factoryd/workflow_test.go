@@ -182,6 +182,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityAwaitSessionGap: func(ctx context.Context, taskID string) error { return nil },
 		ActivityAwaitRollHold:   func(ctx context.Context, taskID string) error { return nil },
 		ActivityClearRollHold:   func(ctx context.Context, taskID string, merged bool) error { return nil },
+		ActivityProviderWait:    func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -1134,6 +1135,115 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 		if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
+	}
+}
+
+// providerHarness answers RunSession with results in order and records
+// when each session and each provider wait began.
+func providerHarness(t *testing.T, results ...SessionResult) (h *workflowHarness, began *[]time.Time, waits *[]recordedStep) {
+	h, began, waits = newWorkflowHarness(t), &[]time.Time{}, &[]recordedStep{}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions, *began = append(h.sessions, in), append(*began, h.env.Now())
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			*waits = append(*waits, recordedStep{StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())}, h.env.Now()})
+			return nil
+		})
+	return h, began, waits
+}
+
+var refusedSession = SessionResult{Outcome: OutcomeProviderRefused, SessionID: "s0", Status: 429, Reason: "DashscopeException: budget exhausted (status 429)",
+	Findings: []string{"previous session ended without a pushed commit: DashscopeException: budget exhausted (status 429)"}}
+
+// A provider's refusal at a session's first call is no attempt (ruling
+// 267): the task waits on the provider 2 minutes, then 4, in gate provider
+// (ProviderWait), and runs the session again with the same input; the log
+// says so once at the first refusal and once at the recovery.
+func TestWorkflowProviderRefusalIsNoAttempt(t *testing.T) {
+	h, began, waits := providerHarness(t, refusedSession, refusedSession, pushed("s3", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 3 {
+		t.Fatalf("%d sessions, want 3", len(h.sessions))
+	}
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || len(in.Findings) != 0 || in.ParentSessionID != "" {
+			t.Errorf("session %d = %+v, want attempt 1 with no findings and no parent", i+1, in)
+		}
+	}
+	reason := refusedSession.Reason
+	want := []map[string]any{{"status": 429, "reason": reason, "backoff_s": 120}, {"status": 429, "reason": reason, "backoff_s": 240}}
+	if len(*waits) != 2 || fmt.Sprint((*waits)[0].detail, (*waits)[1].detail) != fmt.Sprint(want[0], want[1]) {
+		t.Fatalf("provider waits = %+v, want %v", *waits, want)
+	}
+	// each wait between the sessions it follows and precedes, as long as its backoff
+	for i, w := range *waits {
+		if !w.at.Equal((*began)[i]) || (*began)[i+1].Sub(w.at) != time.Duration(w.detail["backoff_s"].(int))*time.Second {
+			t.Errorf("wait %d at %v between sessions at %v and %v, want its backoff", i+1, w.at, (*began)[i], (*began)[i+1])
+		}
+	}
+	if len(h.usage) == 0 || slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.Attempts != 1 }) {
+		t.Fatalf("usage = %+v, want every record at attempt 1", h.usage)
+	}
+	logs := h.logs.String()
+	if n, m := strings.Count(logs, "the model provider refused a session's first call"), strings.Count(logs, "the model provider answers again"); n != 1 || m != 1 {
+		t.Fatalf("log: %d refusal lines, %d recovery lines, want one each:\n%s", n, m, logs)
+	}
+}
+
+// Six refusals in a row go to a human with the provider's reason, after
+// waits of 2, 4, 8, 16 and 30 minutes; no attempt is counted.
+func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
+	h, _, waits := providerHarness(t, refusedSession)
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || len(h.sessions) != 6 {
+		t.Fatalf("final = %q after %d sessions, want failed after 6", final, len(h.sessions))
+	}
+	var backoffs []int
+	for _, w := range *waits {
+		backoffs = append(backoffs, w.detail["backoff_s"].(int))
+	}
+	if !slices.Equal(backoffs, []int{120, 240, 480, 960, 1800}) {
+		t.Fatalf("backoffs = %v, want 120 240 480 960 1800", backoffs)
+	}
+	if want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason; !slices.Equal(h.escalated, []string{want}) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(h.usage) != 0 {
+		t.Fatalf("usage = %+v, want no attempt recorded", h.usage)
+	}
+}
+
+// A terminal signal ends the wait on the provider at once.
+func TestWorkflowProviderWaitEndsOnTheIssuesClose(t *testing.T) {
+	h, began, _ := providerHarness(t, refusedSession)
+	h.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || len(h.sessions) != 1 || h.finishAt.Sub((*began)[0]) >= providerBackoff(1) {
+		t.Fatalf("final = %q after %d sessions at %v, want failed after one, within the first wait", final, len(h.sessions), h.finishAt.Sub((*began)[0]))
+	}
+}
+
+// A run from before versionProviderWait takes a refusal as no push.
+func TestWorkflowProviderRefusalBeforeTheChange(t *testing.T) {
+	h, _, waits := providerHarness(t, refusedSession, pushed("s2", "c1"))
+	h.env.OnGetVersion("provider-wait", workflow.DefaultVersion, versionProviderWait).Return(workflow.DefaultVersion)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 || len(*waits) != 0 {
+		t.Fatalf("final = %q, %d sessions, %d waits; want done after 2 sessions, no wait", final, len(h.sessions), len(*waits))
+	}
+	if h.sessions[1].Attempt != 2 || !slices.Equal(h.sessions[1].Findings, refusedSession.Findings) {
+		t.Fatalf("second session = %+v, want attempt 2 with the refusal's findings", h.sessions[1])
 	}
 }
 

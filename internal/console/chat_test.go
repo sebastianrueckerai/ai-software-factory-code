@@ -463,6 +463,27 @@ func TestChatBoardShowsAHeldCard(t *testing.T) {
 	}
 }
 
+// A card waiting on the model provider reads so in the agent's board and
+// on its status line, as on the board.
+func TestChatBoardShowsACardWaitingOnTheProvider(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"provider_refused","status":429,"reason":"budget exhausted","backoff_s":120}` + "\n")
+	g.replies = [][]string{{say("One waits.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
+	calls := g.calls()
+	if len(calls) != 1 {
+		t.Fatalf("%d model calls, want 1", len(calls))
+	}
+	system, _ := messages(t, calls[0])[0]["content"].(string)
+	for _, want := range []string{"\nStatus: waiting on you; 0 working; 1 waiting on the provider; 3 need you; ",
+		"\n  #11 t-r \"Speed up the board\" running (runs an agent session), gate session (an agent works in a sandbox), waiting on the provider\n"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("the system message lacks %q:\n%s", want, system)
+		}
+	}
+}
+
 // A read call, then a reply: the tool block streams the result's first
 // line and acts on nothing. The second call carries the call and its
 // result, which the inbound sanitiser cleaned of the objective's hidden

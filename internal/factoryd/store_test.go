@@ -58,6 +58,8 @@ type fakeStore struct {
 	// by task
 	monthSpend    MonthSpend
 	monthRefusals map[string]policy.Refusal
+	// providerRefusals are ProviderRefusal's answers by task
+	providerRefusals map[string]string
 	// createFails fails that many CreateTask calls
 	createFails int
 	deps        map[string][]string // task → the tasks it depends on
@@ -589,6 +591,11 @@ func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since ti
 		return &r, nil
 	}
 	return nil, nil
+}
+
+func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
+	r, ok := s.providerRefusals[taskID]
+	return r, ok, nil
 }
 
 func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
@@ -1688,6 +1695,41 @@ func TestPGStoreMonthCap(t *testing.T) {
 	for range 2 {
 		if id, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", Fingerprint: month + "/50"}); err != nil || id == 0 {
 			t.Fatalf("SigNoz alert = %d, %v", id, err)
+		}
+	}
+}
+
+// A provider refusal is the first model call an agent made since the
+// session began refused upstream, with no call of it allowed since: a call
+// before the session, a tool's call and factoryd's own calls count not.
+func TestPGStoreProviderRefusal(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, tool, kind, ts) VALUES
+			('a', 'error_upstream', 'upstream 429', '', 'agent', '2026-10-11 05:00:01Z'),
+			('a', 'error_upstream', 'upstream 429', '', 'agent', '2026-10-11 05:00:02Z'),
+			('b', 'allowed', '', '', 'agent', '2026-10-11 05:00:01Z'),
+			('b', 'error_upstream', 'upstream 429', '', 'agent', '2026-10-11 05:00:02Z'),
+			('d', 'refused_budget', 'the task', '', 'agent', '2026-10-11 05:00:01Z'),
+			('d', 'error_upstream', 'upstream 503', '', 'agent', '2026-10-11 05:00:02Z'),
+			('e', 'allowed', '', '', 'agent', '2026-10-11 04:59:59Z'),
+			('e', 'error_upstream', 'upstream 503', '', 'agent', '2026-10-11 05:00:01Z'),
+			('e', 'allowed', '', 'web_search', 'agent', '2026-10-11 05:00:02Z'),
+			('e', 'allowed', '', '', 'supervisor', '2026-10-11 05:00:03Z'),
+			('f', 'error_upstream', 'upstream 429', '', 'agent', '2026-10-11 05:00:01Z'),
+			('f', 'allowed', '', '', 'agent', '2026-10-11 05:00:02Z')`); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 10, 11, 5, 0, 0, 0, time.UTC)
+	for task, want := range map[string]string{"a": "upstream 429", "b": "", "c": "", "d": "", "e": "upstream 503", "f": ""} {
+		reason, ok, err := s.ProviderRefusal(ctx, task, since)
+		if err != nil || ok != (want != "") || reason != want {
+			t.Errorf("ProviderRefusal(%s) = %q, %v, %v; want %q", task, reason, ok, err, want)
 		}
 	}
 }

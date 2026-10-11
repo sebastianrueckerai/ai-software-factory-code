@@ -13,6 +13,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
@@ -248,6 +249,10 @@ type Store interface {
 	// MonthCapRefusal is the task's newest refused_month_cap or
 	// refused_project_cap audit row since since, nil for none.
 	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error)
+	// ProviderRefusal is the reason of the task's agent's first model call
+	// since since when the gateway audited it error_upstream and no model
+	// call of the agent since was allowed; ok false otherwise.
+	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
 	// SetRollHold holds new sessions for roll task taskID from since to
 	// until; ClearRollHold ends its hold; RollHold is the newest hold in
 	// force at now, if any.
@@ -635,6 +640,19 @@ func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time
 		return nil, err
 	}
 	return &r, nil
+}
+
+func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
+	var reason string
+	err := s.db.QueryRowContext(ctx,
+		`WITH calls AS (SELECT id, ts, decision, reason FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND ts >= $3)
+		 SELECT reason FROM (SELECT decision, reason FROM calls ORDER BY ts, id LIMIT 1) first
+		 WHERE decision = 'error_upstream' AND NOT EXISTS (SELECT 1 FROM calls WHERE decision = 'allowed')`,
+		taskID, gateway.AuditKindAgent, since).Scan(&reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return reason, err == nil, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar

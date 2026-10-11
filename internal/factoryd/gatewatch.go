@@ -32,6 +32,7 @@ const (
 	GateCommissioning = "commissioning"
 	GateScreening     = "screening"
 	GateAudit         = "audit"
+	GateProvider      = "provider"
 )
 
 // StepGates are the timeline steps that end a gate, each carrying the
@@ -64,6 +65,7 @@ var activityGates = map[string]string{
 	ActivityRunPlan:          GateSession,
 	ActivityRequestPlan:      GateApproval,
 	ActivityAwaitSessionGap:  GateMerge,
+	ActivityProviderWait:     GateProvider,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
@@ -72,7 +74,7 @@ var activityGates = map[string]string{
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer,
-	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold}
+	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

@@ -96,6 +96,7 @@ const (
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
+	ActivityProviderWait                = "ProviderWait"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -183,7 +184,23 @@ const (
 	OutcomeEscalate      SessionOutcome = "escalate"
 	OutcomeWallClock     SessionOutcome = "wall_clock"
 	OutcomeNeedsInfo     SessionOutcome = "needs_info"
+	// OutcomeProviderRefused: the model provider refused the session's
+	// first call and every one after (ruling 267); the session never
+	// worked, so it is no attempt.
+	OutcomeProviderRefused SessionOutcome = "provider_refused"
 )
+
+// StepProviderRefused is the timeline step of a task waiting on the model
+// provider after a refused session.
+const StepProviderRefused = "provider_refused"
+
+// ProviderWait is a provider_refused session's wait: the provider's
+// status and the worker's message.
+type ProviderWait struct {
+	Status  int
+	Reason  string
+	Backoff time.Duration
+}
 
 // SessionInput is one attempt: StartRef is the commit the worker starts
 // from (empty = the task's base SHA).
@@ -224,6 +241,8 @@ type SessionResult struct {
 	// Trip is the TripKind the supervisor stopped the session on, "" for
 	// none.
 	Trip string
+	// Status is the provider's HTTP status of a provider_refused session.
+	Status int `json:",omitempty"`
 }
 
 type PullRequest struct {
@@ -358,6 +377,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
+	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -610,7 +630,24 @@ const (
 	// Every code and plan session first waits while a roll holds sessions
 	// (AwaitRollHold), outside its agent time.
 	versionRollGap workflow.Version = 1
+	// versionProviderWait (change id "provider-wait", ruling 267): a
+	// provider_refused session is no attempt and takes no agent time: the
+	// task waits on the provider (ProviderWait, then a timer raced by the
+	// terminal signals) and runs the session again with the same input;
+	// the providerRefusals-th refusal in a row goes to a human instead. A
+	// run from before the change takes a refusal as no push.
+	versionProviderWait workflow.Version = 1
 )
+
+// providerRefusals is how many sessions in a row the provider may refuse
+// before a human hears of it.
+const providerRefusals = 6
+
+// providerBackoff is the wait after the nth refusal in a row: 2 minutes,
+// doubling, at most 30.
+func providerBackoff(n int) time.Duration {
+	return min(2*time.Minute<<min(n-1, 4), 30*time.Minute)
+}
 
 // minSession is the least agent time a session starts with, or the whole
 // agent time when that is shorter: pod start and the first build take one
@@ -646,6 +683,7 @@ type taskRun struct {
 	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
 	answerSlice       workflow.Version
 	rollGap           workflow.Version
+	providerWait      workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -690,6 +728,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
+	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
 	// least is the agent time a session needs to start (versionKeepWork)
 	least := min(minSession, t.cfg.WallClockCap)
 	// apply takes a verification's findings for the next session. A
@@ -913,9 +952,30 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
-		u.AgentTime += workflow.Now(t.ctx).Sub(began)
-		u.Attempts = attempt
-		t.recordUsage(u)
+		refused := t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused
+		if !refused {
+			u.AgentTime += workflow.Now(t.ctx).Sub(began)
+			u.Attempts = attempt
+			t.recordUsage(u)
+		}
+		if refused {
+			refusals++
+			if refusals == 1 {
+				workflow.GetLogger(t.ctx).Info("the model provider refused a session's first call; the task waits on it", "task", t.taskID, "status", res.Status, "reason", res.Reason)
+			}
+			if refusals < providerRefusals {
+				t.waitOnProvider(ProviderWait{Status: res.Status, Reason: res.Reason, Backoff: providerBackoff(refusals)})
+			} else {
+				ask := fmt.Sprintf("the model provider refused the first call of %d sessions in a row (status %d): %s", refusals, res.Status, res.Reason)
+				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings, refusals = append(findings, answer...), 0
+			}
+			attempt--
+			continue
+		}
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
 			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)
@@ -947,6 +1007,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			reason = "session failed: " + errMessage(err)
 			continue
 		}
+		if refusals > 0 {
+			workflow.GetLogger(t.ctx).Info("the model provider answers again", "task", t.taskID, "refusals", refusals)
+			refusals = 0
+		}
 		parent = res.SessionID
 		reason = res.Summary
 		switch res.Outcome {
@@ -966,7 +1030,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				t.sessionReturn(res, attempt, last)
 			}
 			continue
-		case OutcomeNoPush, OutcomeRedirect:
+		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused:
 			findings = res.Findings
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
@@ -1010,6 +1074,22 @@ func (t *taskRun) lifecycle() (string, error) {
 		apply(v)
 	}
 	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+}
+
+// waitOnProvider records the wait, which puts the task in gate provider,
+// and waits it out unless a terminal signal comes first.
+func (t *taskRun) waitOnProvider(w ProviderWait) {
+	if err := workflow.ExecuteActivity(t.short, ActivityProviderWait, t.taskID, w).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the provider wait", "task", t.taskID, "error", err)
+	}
+	timerCtx, cancel := workflow.WithCancel(t.ctx)
+	defer cancel()
+	sel := workflow.NewSelector(t.ctx)
+	for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+	}
+	sel.AddFuture(workflow.NewTimer(timerCtx, w.Backoff), func(workflow.Future) {})
+	sel.Select(t.ctx)
 }
 
 // roll runs a roll task from head, its open pull request's head ("" for

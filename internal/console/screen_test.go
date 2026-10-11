@@ -302,6 +302,50 @@ func TestCardLaneAndFineChips(t *testing.T) {
 	}
 }
 
+// A card whose newest session the model provider refused waits on it
+// (ruling 267): its chip says so and the status line counts it as
+// waiting, not working, so a project with no other card working idles;
+// the next session_start makes it working again.
+func TestCardWaitingOnTheProvider(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.rows = nil
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "t-wait", CreatedAt: time.Now()}}}
+	refused := `{"step":"session_start","attempt":1}
+{"step":"session_end","attempt":1,"outcome":"provider_refused"}
+{"step":"provider_refused","status":429,"reason":"budget exhausted","backoff_s":120}
+`
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`<span class="state" data-state="idle"><span aria-hidden="true">●</span> idle</span>
+<span class="fig">0 working</span>
+<span class="fig">1 waiting on the provider</span>
+<a href="#needs-you" class="fig">0 need you</a>`, `<span class="pill fine st-waiting">waiting on the provider</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused + `{"step":"session_start","attempt":1}` + "\n")
+	r.c.mu.Lock()
+	r.c.checks = nil
+	r.c.mu.Unlock()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if want := `<span class="state" data-state="working"><span aria-hidden="true">●</span> working</span>
+<span class="fig">1 working</span>
+<a href="#needs-you"`; !strings.Contains(body, want) || strings.Contains(body, "waiting on the provider") {
+		t.Errorf("after the session_start the board does not show the card working:\n%s", body)
+	}
+	// the sixth refusal asked a human: the card waits on them, not the provider
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-human", Lane: "ready", Repository: "sf/code", Objective: "t-wait", PRNumber: 5, CreatedAt: time.Now()}}}
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused)
+	r.c.mu.Lock()
+	r.c.checks = nil
+	r.c.mu.Unlock()
+	if body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "waiting on the provider") {
+		t.Errorf("a card waiting on a human shows the provider's wait:\n%s", body)
+	}
+}
+
 // The wide view keeps the board as it was, the lanes of the project's
 // process first, under the human lane, with the status line; the view
 // rides on the poll, the script's swaps and every form, and the header's

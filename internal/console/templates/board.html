@@ -5,7 +5,8 @@
 <strong class="pname">{{.Project}}</strong>
 <span class="state" data-state="{{.State}}"><span aria-hidden="true">●</span> {{.State}}</span>
 <span class="fig">{{.Working}} working</span>
-<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
+{{if .Waiting}}<span class="fig">{{.Waiting}} waiting on the provider</span>
+{{end}}<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
 <a href="/costs" class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</a>
 </p>{{end}}{{end}}
 {{if .Status.Project}}{{with .Pulse}}<div id="pulse" class="pulse{{if .Prominent}} prominent{{end}}"><details class="pulse-fold">

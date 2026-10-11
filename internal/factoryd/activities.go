@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -40,6 +42,21 @@ const HeartbeatEvery = 10 * time.Second
 // refused with its content check: every next session sends the same brief and
 // is refused the same way, so only a human changing the wording helps.
 const contentFilterRefusal = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
+
+// providerStatus is the status an error_upstream audit reason names when
+// the provider is out (ruling 267): 429, 402 or 5xx as "upstream <code>",
+// and 502 for a call the gateway could not make at all; 0 for any other.
+func providerStatus(reason string) int {
+	code, ok := strings.CutPrefix(reason, "upstream ")
+	if !ok {
+		return http.StatusBadGateway
+	}
+	switch n, _ := strconv.Atoi(code); {
+	case n == http.StatusTooManyRequests, n == http.StatusPaymentRequired, n >= 500 && n < 600:
+		return n
+	}
+	return 0
+}
 
 // RegisterActivities registers the runner's activities under the names the
 // workflow calls, on a worker or a test environment. No argument or result
@@ -92,6 +109,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityAwaitSessionGap:             r.AwaitSessionGap,
 		ActivityAwaitRollHold:               r.AwaitRollHold,
 		ActivityClearRollHold:               r.ClearRollHold,
+		ActivityProviderWait:                r.ProviderWait,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -397,6 +415,15 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			res.Outcome, res.Reason = OutcomeEscalate, capRefused(*refused)
 		}
 	}
+	if res.Outcome == OutcomeNoPush {
+		reason, ok, err := r.store.ProviderRefusal(ctx, t.ID, startedAt)
+		if err != nil {
+			return SessionResult{}, err
+		}
+		if status := providerStatus(reason); ok && status != 0 {
+			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, status, cmp.Or(res.Summary, reason)
+		}
+	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
@@ -658,6 +685,12 @@ func (r *Runner) Timeline() *Timeline { return r.timeline }
 // timeline.
 func (r *Runner) RecordStep(ctx context.Context, taskID, step string, detail map[string]any) error {
 	return r.timeline.Append(ctx, taskID, step, detail)
+}
+
+// ProviderWait records that the task waits w.Backoff on the model
+// provider; its schedule puts the task in gate provider (activityGates).
+func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
+	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
 }
 
 func earliest(a, b time.Time) time.Time {

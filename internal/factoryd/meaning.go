@@ -44,7 +44,7 @@ func GateMeaning(gate string) string {
 	case GateChecks:
 		return "the pull request's CI"
 	case GatePolicy:
-		return "risk class from the changed paths"
+		return "risk class from the changed paths and lines"
 	case GateMigration:
 		return "schema migrations flagged for review"
 	case GateReproduction:
@@ -67,6 +67,8 @@ func GateMeaning(gate string) string {
 		return "waits for the cards it depends on"
 	case GateMergeQueue:
 		return "waits for its turn to merge"
+	case GateProvider:
+		return "waits on the model provider"
 	default:
 		return "is in an unknown gate"
 	}

@@ -43,7 +43,7 @@ func TestGateMeaning(t *testing.T) {
 		{GateIntake, "the issue becomes a card"},
 		{GateSession, "an agent works in a sandbox"},
 		{GateChecks, "the pull request's CI"},
-		{GatePolicy, "risk class from the changed paths"},
+		{GatePolicy, "risk class from the changed paths and lines"},
 		{GateMigration, "schema migrations flagged for review"},
 		{GateReproduction, "the issue's reproduction command against the fix"},
 		{GateReview, "a model reviews the diff"},
@@ -55,6 +55,7 @@ func TestGateMeaning(t *testing.T) {
 		{GateScreening, "a model screens an outsider's issue"},
 		{GateDependencies, "waits for the cards it depends on"},
 		{GateMergeQueue, "waits for its turn to merge"},
+		{GateProvider, "waits on the model provider"},
 	}
 	for _, tt := range tests {
 		if got := GateMeaning(tt.gate); got != tt.want {

@@ -396,6 +396,49 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	}
 }
 
+// A session whose first model call the provider refused, with no call
+// allowed after, ends provider_refused with the provider's status and the
+// worker's message (ruling 267); a refusal after work, a refusal the
+// provider's status names no outage of, and a session the audit holds no
+// call of end no_push as before.
+func TestRunSessionNamesAProviderRefusal(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	const said = "DashscopeException: budget exhausted (status 429)"
+	for name, tc := range map[string]struct {
+		audit   string // ProviderRefusal's reason; "" for none
+		outcome SessionOutcome
+		status  int
+	}{
+		"refused at the first call": {"upstream 429", OutcomeProviderRefused, 429},
+		"payment required":          {"upstream 402", OutcomeProviderRefused, 402},
+		"provider down":             {"upstream 503", OutcomeProviderRefused, 503},
+		"litellm unreachable":       {"dial tcp 10.0.0.9:4000: connect: connection refused", OutcomeProviderRefused, 502},
+		"a bad request":             {"upstream 400", OutcomeNoPush, 0},
+		"after work or no call":     {"", OutcomeNoPush, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			if tc.audit != "" {
+				store.providerRefusals = map[string]string{"t1": tc.audit}
+			}
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(false, said))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != tc.outcome || res.Status != tc.status || tc.status != 0 && res.Reason != said {
+				t.Fatalf("result = %+v, want %s, status %d", res, tc.outcome, tc.status)
+			}
+		})
+	}
+	// the month cap is the factory's own refusal: a human raises it
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	store.providerRefusals = map[string]string{"t1": "upstream 429"}
+	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedMonthCap, Reason: "spent"}}
+	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(false, said)); err != nil || res.Outcome != OutcomeEscalate {
+		t.Fatalf("month cap and a provider refusal = %+v, %v, want escalate", res, err)
+	}
+}
+
 // A session the gateway refused at the project's month cap waits on a
 // human with the refusal, which names the file a human raises the cap in.
 func TestProjectCapRefusalEscalates(t *testing.T) {

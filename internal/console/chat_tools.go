@@ -197,6 +197,9 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 			if k.Held {
 				b.WriteString(", " + heldWords)
 			}
+			if k.Provider {
+				b.WriteString(", " + providerWords)
+			}
 		}
 		b.WriteString("\n")
 	}

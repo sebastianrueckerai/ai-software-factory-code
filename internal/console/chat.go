@@ -525,7 +525,7 @@ func (t *turn) snapshot() (string, statusLine, error) {
 	if d.Pulse != nil {
 		pulse = "Pulse: " + d.Pulse.Sentence + "\n"
 	}
-	return fmt.Sprintf("Status: %s; %d working; %d need you; %s\n%s%s", s.State, s.Working, s.NeedYou, spendWords(s.Spend, s.CapEUR), pulse, board), s, nil
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s\n%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR), pulse, board), s, nil
 }
 
 // spendLine is project p's spend this UTC month against its month cap,
