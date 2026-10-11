@@ -27,6 +27,12 @@ const (
 	KindAssignment = "password, secret or token assigned a literal"
 )
 
+// GitHubToken is every GitHub token's shape, glued to a word too: a
+// classic, OAuth, user, server or refresh token's prefix and at least 36
+// letters and digits, a fine-grained one's and at least 22 of
+// [A-Za-z0-9_].
+var GitHubToken = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}`)
+
 // shapes are the secret shapes; a named group v is the secret's value,
 // else the whole match is; skip, when set, refuses a match by its key k
 // and its value.
@@ -39,7 +45,7 @@ var shapes = []struct {
 	{KindConnection, regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:(?P<v>[^/\s@]+)@`), nil},
 	{KindJWT, regexp.MustCompile(`\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*`), nil},
 	{KindAPIKey, regexp.MustCompile(`\bsk-[\w-]{20,}`), nil},
-	{KindGitHub, regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{20,}`), nil},
+	{KindGitHub, GitHubToken, nil},
 	{KindGitLab, regexp.MustCompile(`\bglpat-[\w-]{20,}`), nil},
 	{KindAWS, regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`), nil},
 	{KindAssignment, regexp.MustCompile(`(?i)(?P<k>[\w-]*?(password|passwd|secret|token|api[_-]?key|access[_-]?key)[\w-]*)["']?\s*(:=|=|:)\s*["'](?P<v>[^"'\s]{8,})["']`),

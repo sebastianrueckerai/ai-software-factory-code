@@ -128,8 +128,9 @@ func (t *turn) card(in toolInput) (factoryd.Task, error) {
 
 // describe is one line saying what a proposal of tool with in would do,
 // in pinned to the plan revision an accept_plan names, an approve_merge's
-// with its warning; a card of another project refuses it, and so does a
-// github_export the console would refuse.
+// with its warning; a card of another project refuses it, and so do an
+// approve_merge without a pending merge request and a github_export the
+// console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if tool.name == "github_export" {
 		if _, err := t.exportToken(); err != nil {
@@ -193,7 +194,10 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 	}
 	desc := strings.Join(parts, ", ")
-	if tool.name == "approve_merge" && k.ID != "" {
+	if tool.name == "approve_merge" {
+		if _, err := t.mergeRequest(*in); err != nil {
+			return "", err
+		}
 		steps, err := t.c.readTimeline(t.r.Context(), k.ID)
 		if err != nil {
 			return "", err
@@ -208,7 +212,8 @@ const mergeShown = 5
 
 // mergeWarning is the warning a merge proposal ends with, after a card's
 // timeline steps: the newest review's findings, each on one line, and the
-// checks of the newest run neither green nor skipped; "" for none.
+// checks of the newest run neither green nor skipped, or the run's state
+// when it is not green and names no such check; "" for none.
 func mergeWarning(steps []map[string]any) string {
 	var w strings.Builder
 	if m := newest(steps, "model_review"); m != nil {
@@ -225,8 +230,8 @@ func mergeWarning(steps []map[string]any) string {
 			fmt.Fprintf(&w, " The review has %s: %s.", textutil.Plural(len(findings), "open finding", "open findings"), strings.Join(shown, "; "))
 		}
 	}
-	var failing []string
 	if m := newest(steps, "checks"); m != nil {
+		var failing []string
 		jobs, _ := m["jobs"].([]any)
 		for _, j := range jobs {
 			job, _ := j.(map[string]any)
@@ -235,9 +240,13 @@ func mergeWarning(steps []map[string]any) string {
 				failing = append(failing, name)
 			}
 		}
-	}
-	if len(failing) > 0 {
-		w.WriteString(" Failing checks: " + strings.Join(failing, ", ") + ".")
+		state, _ := m["state"].(string)
+		switch {
+		case len(failing) > 0:
+			w.WriteString(" Failing checks: " + strings.Join(failing, ", ") + ".")
+		case state != "" && state != "success":
+			w.WriteString(" Checks: " + state + ".")
+		}
 	}
 	if w.Len() == 0 {
 		return ""

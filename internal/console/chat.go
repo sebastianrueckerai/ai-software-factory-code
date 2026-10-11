@@ -16,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -226,15 +227,10 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	t.run(task.ID, notice)
 }
 
-// tokenShapes are GitHub's token shapes: a classic, OAuth, user, server
-// or refresh token's prefix and at least 36 letters and digits, a
-// fine-grained one's and at least 22 of [A-Za-z0-9_].
-var tokenShapes = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}`)
-
 // scrubTokens is text with every GitHub token replaced by tokenMask, and
 // whether it held one.
 func scrubTokens(text string) (string, bool) {
-	out := tokenShapes.ReplaceAllLiteralString(text, tokenMask)
+	out := redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask)
 	return out, out != text
 }
 

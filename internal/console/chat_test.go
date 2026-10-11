@@ -1490,18 +1490,26 @@ func TestChatScrubsAGitHubToken(t *testing.T) {
 
 // An approve_merge proposal shows the member the facts they decide on:
 // the newest review's findings, each on one line and five at most, and
-// the checks not green on the newest run, skipped ones aside. #11 has two
-// findings and vet failing, #5 seven findings and two checks failing, #13
-// neither, so no warning.
+// the checks not green on the newest run, skipped ones aside, or its
+// state when it names no such job. #11 has two findings and vet failing,
+// #5 seven findings and two checks failing, #13 neither, so no warning;
+// #21 has no pending merge request, which refuses the proposal as Do it
+// would.
 func TestApproveMergeProposalWarns(t *testing.T) {
 	r, g := newReadsRig(t)
+	r.approvals.rows = append(r.approvals.rows,
+		factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-r", Project: "sf/code", PRNumber: 9, Status: "pending",
+			Spec: json.RawMessage(`{"risk_class":"low"}`)},
+		factoryd.ApprovalRequest{ID: 7, Kind: factoryd.ApprovalMerge, TaskID: "t-e", Project: "sf/code", Status: "pending",
+			Spec: json.RawMessage(`{"risk_class":"low"}`)})
 	r.objects["sessions/t-m/timeline.jsonl"] = []byte(`{"step":"checks","commit":"abc","state":"success","jobs":[{"name":"test","status":"success"}]}
 {"step":"model_review","commit":"abc","verdict":"approve","findings":["old"]}
 {"step":"checks","commit":"abd","state":"failure","jobs":[{"name":"test","status":"failure"},{"name":"lint","status":"success"},{"name":"security","status":"cancelled"},{"name":"deploy","status":"skipped"}]}
 {"step":"model_review","commit":"abd","verdict":"concerns","findings":["a.go: one","b.go: two\n  and its second line","c.go: three","d.go: four","e.go: five","f.go: six","g.go: seven"]}
 `)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-r"}`, "approve_merge", `{"task_id":"t-m"}`, "approve_merge", `{"task_id":"t-e"}`)}}
+	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-r"}`, "approve_merge", `{"task_id":"t-m"}`, "approve_merge", `{"task_id":"t-e"}`,
+		"approve_merge", `{"task_id":"t-c1"}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"Approve the merges of #11, #5 and #13"}})
 	const (
 		r11 = `Approve a merge, #11 t-r "Speed up the board". Warning: The review has 2 open findings: cache.go:12: key the entries by tenant; ` +
@@ -1514,10 +1522,16 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"id": "TOKEN", "tool": "approve_merge", "arguments": json.RawMessage(`{"task_id":"` + task + `"}`), "description": desc})
 		return "proposal " + string(b)
 	}
-	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), `done {}`})
+	refused := `tool {"arguments":{"task_id":"t-c1"},"duration_ms":0,"name":"approve_merge","result":"Refused: Card #21 runs an agent session, ` +
+		`not a pending merge request: steer sends its session a message; its pull request comes when the session ends."}`
+	equal(t, "stream", events, []string{proposal("t-r", r11), proposal("t-m", r5), proposal("t-e", r13), refused, `done {}`})
 	stored, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "what the agent reads of the first", stored[0].ToolCalls[0].Result, "Proposed to sebastian: "+r11+" Nothing runs until they press Do it.")
 	long := strings.Repeat("y", 250)
 	equal(t, "a long finding", mergeWarning([]map[string]any{{"step": "model_review", "findings": []any{long}}}),
 		". Warning: The review has 1 open finding: "+long[:200]+"….")
+	for _, jobs := range []any{nil, []any{map[string]any{"name": "test", "status": "success"}}} {
+		equal(t, fmt.Sprintf("a red run with jobs %v", jobs), mergeWarning([]map[string]any{{"step": "checks", "state": "failure", "jobs": jobs}}),
+			". Warning: Checks: failure.")
+	}
 }

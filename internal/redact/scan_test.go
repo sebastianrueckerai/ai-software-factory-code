@@ -72,6 +72,20 @@ func TestScanDiffPathWithASpace(t *testing.T) {
 	}
 }
 
+// A GitHub token is a hit in each shape GitHub issues, a fine-grained one
+// and one glued to a word too; a classic prefix with 35 characters is
+// none.
+func TestScanDiffGitHubTokens(t *testing.T) {
+	diff := "diff --git a/t.env b/t.env\n--- a/t.env\n+++ b/t.env\n@@ -0,0 +1,3 @@\n" +
+		"+FG=github_pat_11ABCDEFG0123456789abc_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789aBcDeFgHiJkLmNoPqRsTuVw\n" +
+		"+my_ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789\n" +
+		"+ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ012345678\n"
+	want := []Hit{{File: "t.env", Line: 1, Kind: KindGitHub}, {File: "t.env", Line: 2, Kind: KindGitHub}}
+	if got := ScanDiff(diff); !slices.Equal(got, want) {
+		t.Fatalf("ScanDiff = %+v, want %+v", got, want)
+	}
+}
+
 func TestScanDiffCleanDiff(t *testing.T) {
 	clean := "diff --git a/internal/f/f.go b/internal/f/f.go\n" +
 		"--- a/internal/f/f.go\n" +
