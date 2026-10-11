@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1199,5 +1200,125 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	kube.scriptPods(0, logs)
 	if err := <-done; err != nil {
 		t.Fatalf("RunPlan: %v", err)
+	}
+}
+
+// deploySpec is a spec with a Deploy line; noDeployOwner the refusal of a
+// plan without a card owning deploy/ against it.
+const (
+	deploySpec    = "Uptime\n\nDeploy: one Deployment with one replica, a Service on 8080. ADMIN_TOKEN comes from a Secret."
+	noDeployOwner = "the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ and whose brief names " +
+		"the manifests' changes (the Secret, the environment, the volume, the service)"
+)
+
+// deployPlan is testPlan whose third card, redirects, owns deploy/.
+func deployPlan() Plan {
+	p := testPlan()
+	p.Cards[2].Directories = []string{"deploy/staging", "internal/x"}
+	return p
+}
+
+// Stage 16 item 3.6: a spec's Deploy line ("Deploy:" or a Deploy
+// heading, any case, leading blanks) needs a card owning deploy/: the
+// first card listing deploy or a path under it, cleaned.
+func TestDeployOwner(t *testing.T) {
+	dot := testPlan()
+	dot.Cards[3].Directories = []string{"./deploy"}
+	both := deployPlan()
+	both.Cards[3].Directories = []string{"deploy"}
+	near := testPlan()
+	near.Cards[1].Directories = []string{"deployment", "internal/deploy"}
+	for _, c := range []struct {
+		name, spec string
+		p          Plan
+		needed     bool
+		owner      string
+	}{
+		{"third card", deploySpec, deployPlan(), true, "redirects"},
+		{"no card", deploySpec, testPlan(), true, ""},
+		{"no deploy line", "Link shortener\n\nBuild a link shortener.", deployPlan(), false, ""},
+		{"heading", "Uptime\n\n## Deploy\n\nOne Deployment.", dot, true, "integration"},
+		{"lower case, indented", "Uptime\n\n  deploy: staging only.", both, true, "redirects"},
+		{"other paths", deploySpec, near, true, ""},
+		{"a sentence", "Uptime\n\nSee the deployment notes. We deploy: later.\nDeployment notes: none.", deployPlan(), false, ""},
+	} {
+		if needed, owner := deployOwner(c.spec, c.p); needed != c.needed || owner != c.owner {
+			t.Errorf("%s: deployOwner = %v %q, want %v %q", c.name, needed, owner, c.needed, c.owner)
+		}
+	}
+}
+
+// A plan without a deploy owner against a Deploy spec is refused when its
+// cards are filed, as a cycle is; with one the cards are filed and the
+// plan comment marks the owner's row.
+func TestAcceptRefusesPlanWithoutDeployOwner(t *testing.T) {
+	r, store, objects, fj := newPlanRunner(t, testPlan())
+	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	res := createChildren(t, r)
+	if !slices.Equal(res.Refused, []string{noDeployOwner}) || len(res.Issues) != 0 {
+		t.Fatalf("result %+v", res)
+	}
+	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 ||
+		fj.comments[0].body != "factoryd: accepting revision 1 was refused: "+noDeployOwner {
+		t.Fatalf("issues up to #%d, rows %d, comments %v", fj.next, len(store.tasks), fj.comments)
+	}
+	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "accepting revision 1 was refused: "+noDeployOwner {
+		t.Fatalf("approval %+v", a)
+	}
+	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + noDeployOwner + "]"}) {
+		t.Fatalf("steps %v", steps)
+	}
+
+	r, store, _, fj = newPlanRunner(t, deployPlan())
+	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
+	if res := createChildren(t, r); !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) || len(res.Refused) != 0 {
+		t.Fatalf("result %+v", res)
+	}
+	if len(fj.comments) != 1 {
+		t.Fatalf("comments %v", fj.comments)
+	}
+	for _, want := range []string{
+		"| # | key | role | title | size | depends on | issue | deploy |\n|---|---|---|---|---|---|---|---|\n",
+		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  | #2 |  |\n",
+		"| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 | deploy |\n",
+		"| 4 | integration | integration | Integration: acceptance tests | medium | foundation, links-api, redirects | #5 |  |\n",
+	} {
+		if !strings.Contains(fj.comments[0].body, want) {
+			t.Fatalf("comment lacks %q:\n%s", want, fj.comments[0].body)
+		}
+	}
+	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 1, deployPlan(), nil); !strings.Contains(body,
+		"| # | key | role | title | size | depends on | issue |\n|---|---|---|---|---|---|---|\n") ||
+		!strings.Contains(body, "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api |  |\n") {
+		t.Fatalf("a spec without a Deploy line has a deploy column:\n%s", body)
+	}
+}
+
+// The console's Accept plan refuses a plan without a deploy owner against
+// a Deploy spec before the signal, with the finding's text.
+func TestAcceptPlanAnswersNoDeployOwner(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.tasks["t-plan"] = Task{ID: "t-plan", Objective: deploySpec}
+	raw, sha, _ := planSHA(testPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	wf := &signalRecorder{}
+	err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian")
+	if !errors.Is(err, ErrNoDeployOwner) || err.Error() != noDeployOwner || len(wf.signals) != 0 {
+		t.Fatalf("accept without an owner: %v, signals %v", err, wf.signals)
+	}
+	raw, sha, _ = planSHA(deployPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 " + sha + " "}) {
+		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
+	}
+}
+
+func TestPlanGuideDeployOwnerSentence(t *testing.T) {
+	want := "a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }

@@ -124,7 +124,31 @@ var (
 	roles     = []string{RoleFoundation, RoleFeature, RoleIntegration}
 	// acceptedComment is PlanAcceptedComment of any revision
 	acceptedComment = regexp.MustCompile(`^Plan revision [0-9]+ accepted\.$`)
+	// deployLine is a spec's line asking for a deployment: "Deploy:" or a
+	// Deploy heading
+	deployLine = regexp.MustCompile(`(?im)^[ \t]*(deploy:|#+[ \t]+deploy\b)`)
 )
+
+// ErrNoDeployOwner refuses a plan whose spec has a Deploy line and no card
+// owning the deploy manifests; its text is the planner's finding.
+var ErrNoDeployOwner = errors.New("the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ " +
+	"and whose brief names the manifests' changes (the Secret, the environment, the volume, the service)")
+
+// deployOwner is whether spec has a Deploy line, and the key of p's first
+// card whose directories hold deploy/ or a path under it.
+func deployOwner(spec string, p Plan) (needed bool, owner string) {
+	if !deployLine.MatchString(spec) {
+		return false, ""
+	}
+	for _, c := range p.Cards {
+		for _, d := range c.Directories {
+			if d = path.Clean("/" + d); d == "/deploy" || strings.HasPrefix(d, "/deploy/") {
+				return true, c.Key
+			}
+		}
+	}
+	return true, ""
+}
 
 // ValidatePlan judges the planner's last message against the process's plan
 // shape and the pinned limits: one line per finding, none for a valid plan.
@@ -426,23 +450,36 @@ func cell(s string) string {
 	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", `\|`)
 }
 
-// planComment is revision's comment on the plan's issue before its
+// planComment is revision's comment on plan task t's issue before its
 // marker: the summary and one row per card in filing order, with its issue
-// once filed (issues by key), and each brief in a details block.
-func planComment(taskID string, revision int, p Plan, issues map[string]int64) string {
+// once filed (issues by key) and, when t's spec has a Deploy line, the
+// deploy owner's mark, and each brief in a details block.
+func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
+	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
 	fmt.Fprintf(&b, "factoryd: plan revision %d of task %s, written by the planner. An approver accepts it on the factory console; "+
-		"a comment here asks the planner for a new revision; closing the issue ends the plan.\n\n%s\n\n", revision, taskID, strings.TrimSpace(p.Summary))
-	b.WriteString("| # | key | role | title | size | depends on | issue |\n|---|---|---|---|---|---|---|\n")
+		"a comment here asks the planner for a new revision; closing the issue ends the plan.\n\n%s\n\n", revision, t.ID, strings.TrimSpace(p.Summary))
+	head, rule := "| # | key | role | title | size | depends on | issue |", "|---|---|---|---|---|---|---|"
+	if needed {
+		head, rule = head+" deploy |", rule+"---|"
+	}
+	b.WriteString(head + "\n" + rule + "\n")
 	order := planOrder(p, edges)
 	for i, c := range order {
 		issue := ""
 		if n := issues[c.Key]; n != 0 {
 			issue = fmt.Sprintf("#%d", n)
 		}
-		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s |\n", i+1, cell(c.Key), cell(c.Role), cell(c.Title), cell(c.Size),
+		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s |", i+1, cell(c.Key), cell(c.Role), cell(c.Title), cell(c.Size),
 			cell(strings.Join(dependsOn(order, edges, c.Key), ", ")), issue)
+		switch {
+		case needed && c.Key == owner:
+			b.WriteString(" deploy |")
+		case needed:
+			b.WriteString("  |")
+		}
+		b.WriteString("\n")
 	}
 	for _, c := range order {
 		fmt.Fprintf(&b, "\n<details><summary>%s: %s</summary>\n\n%s\n\n%s</details>\n", cell(c.Key), cell(c.Title), strings.TrimSpace(c.Brief), cardFacts(c))
@@ -506,7 +543,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	}
 	return g + fmt.Sprintf("title: at most %d characters. brief: markdown, what to build and how it is checked, at most %d characters; "+
 		"keep the briefs short, the whole block holds at most 12 KiB. directories: at most %d paths relative to the repository's root, "+
-		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent. "+
+		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent; "+
+		"a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests. "+
 		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
 		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards). Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
@@ -530,7 +568,8 @@ func (e ErrStalePlan) Error() string {
 
 // AcceptPlan is the console's Accept plan, by an approver: it signals the
 // plan task's workflow when revision (at sha) is the newest and awaits
-// acceptance; a newer revision refuses it with ErrStalePlan.
+// acceptance; a newer revision refuses it with ErrStalePlan, a plan
+// without the deploy owner its spec needs with ErrNoDeployOwner.
 func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
@@ -541,6 +580,17 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	}
 	if !ok || newest.Revision != revision || newest.SHA256 != sha {
 		return ErrStalePlan{Newest: newest.Revision}
+	}
+	t, _, err := store.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	var p Plan
+	if err := json.Unmarshal(newest.Plan, &p); err != nil {
+		return err
+	}
+	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
+		return ErrNoDeployOwner
 	}
 	return wf.Signal(ctx, taskID, SignalPlanAccepted, TaskSignal{Author: by, Revision: revision, SHA256: sha})
 }
@@ -944,7 +994,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 // posts it.
 func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, p Plan, issues map[string]int64) (int64, error) {
 	marker := planMarker(t.ID, revision)
-	body := r.untrusted(t, planComment(t.ID, revision, p, issues)) + "\n" + marker
+	body := r.untrusted(t, planComment(t, revision, p, issues)) + "\n" + marker
 	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
 		return 0, err
@@ -961,8 +1011,9 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 }
 
 // CreateChildren files the cards of the plan task's accepted revision,
-// once however often it runs: it judges the revision again (a finding
-// refuses the acceptance: the approval ends, the planner gets it); files
+// once however often it runs: it judges the revision again, the deploy
+// owner its spec needs included (a finding refuses the acceptance: the
+// approval ends, the planner gets it); files
 // each card in topological order as a backlog task row and a bot issue
 // found by its marker or filed; records the edges in Forgejo and
 // task_deps; puts the issues into the plan's comment.
@@ -987,6 +1038,9 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		return ChildrenResult{}, terminalError("task %s has no plan revision %d", taskID, revision)
 	}
 	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits)
+	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
+		findings = append(findings, ErrNoDeployOwner.Error())
+	}
 	if len(findings) > 0 {
 		note := fmt.Sprintf("accepting revision %d was refused: %s", revision, strings.Join(findings, "; "))
 		if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, note); err != nil {

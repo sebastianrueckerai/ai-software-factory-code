@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -783,4 +784,27 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 		strings.TrimSpace(rec.Body.String()) != "The card could not be retried; see the factoryd log." || len(r.fg.labelled) != 0 {
 		t.Errorf("a failed retry: %d %q, labelled %v", rec.Code, rec.Body, r.fg.labelled)
 	}
+}
+
+// Stage 16 item 3.6: factoryd's refusal of a plan without a deploy owner
+// is the member's sentence: the button answers it with 409, the chat's
+// Do it as its refusal.
+func TestAcceptPlanNoDeployOwner(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
+		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime\n\nDeploy: one Deployment.", Repository: "sf/code", IssueNumber: 21}})
+	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string) error { return factoryd.ErrNoDeployOwner }
+	refused := "the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ and whose brief names " +
+		"the manifests' changes (the Secret, the environment, the volume, the service)"
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "sha256": {"sha-2"}}), ck)
+	if rec.Code != http.StatusConflict || rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {
+		t.Fatalf("the button: %d %q, comments %v", rec.Code, rec.Body, r.fg.comments)
+	}
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":2,"sha256":"sha-2"}`)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "Do it", events, []string{
+		`tool {"arguments":{"task_id":"t-plan","revision":2,"sha256":"sha-2"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`,
+		`done {}`})
 }
