@@ -30,9 +30,18 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 ARG OPENCODE_VERSION
 ARG GO_VERSION=1.25.9
 ARG NODE_VERSION=24.21.0
-RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+# PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
+# apt takes its packages only signed by the key of this fingerprint, and the
+# install creates no cluster.
+ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
+      && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+           > /etc/apt/sources.list.d/pgdg.list \
+      && mkdir -p /etc/postgresql-common/createcluster.d \
+      && echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.d/no-main-cluster.conf \
+      && DEBIAN_FRONTEND=noninteractive apt-get update \
       && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client xz-utils \
-           gcc libc6-dev make python3 \
+           gcc libc6-dev make python3 postgresql-17 \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash worker
 # release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
