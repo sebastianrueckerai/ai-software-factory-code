@@ -453,31 +453,44 @@ type projectRows []factoryd.Project
 func (p projectRows) Projects(context.Context) ([]factoryd.Project, error) { return p, nil }
 
 // The console's writer lists (ruling 254): every project agents work on,
-// and the factory's own code project, which lists factoryd's namespace;
-// a project whose writers cannot be read is left out, but the own one's
-// failure fails the lists.
+// and the factory's own code project, which lists factoryd's namespace. A
+// project whose writers cannot be read keeps its last list for 5 minutes,
+// then is left out, and one never read is left out at once; the own
+// project's failure fails the lists.
 func TestConsoleWriters(t *testing.T) {
 	coder := func(name, repo string, ns ...string) factoryd.Project {
 		return factoryd.Project{Name: name, Repository: repo, Objects: policy.ObjectsSeed, Agents: policy.AgentsCoder, File: true, Namespaces: ns}
 	}
 	rows := projectRows{coder("code", "sf/code", "factory"), coder("demo", "demo/demo"), coder("broken", "x/broken"),
 		{Name: "infra", Repository: "sf/infra", Objects: policy.ObjectsSeed, Agents: policy.AgentsNone, File: true}}
-	failing := "x/broken"
+	failing := map[string]bool{"x/broken": true}
 	writersOf := func(_ context.Context, p factoryd.Project) ([]string, error) {
-		if p.Repository == failing {
+		if failing[p.Repository] {
 			return nil, errors.New("forgejo: 502")
 		}
 		return []string{"w-" + p.Name}, nil
 	}
-	own, lists, err := consoleWriters(rows, writersOf, "factory")(context.Background())
-	if err != nil || own != "sf/code" || !reflect.DeepEqual(lists, map[string][]string{"sf/code": {"w-code"}, "demo/demo": {"w-demo"}}) {
-		t.Fatalf("lists = %q, %v, %v; want the code project's and demo's, the broken one left out", own, lists, err)
+	at := time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	now := func() time.Time { return at }
+	lists := consoleWriters(rows, writersOf, "factory", now)
+	want := func(when string, wantLists map[string][]string) {
+		t.Helper()
+		own, got, err := lists(context.Background())
+		if err != nil || own != "sf/code" || !reflect.DeepEqual(got, wantLists) {
+			t.Fatalf("%s: lists = %q, %v, %v; want %v", when, own, got, err, wantLists)
+		}
 	}
-	failing = "sf/code"
-	if _, _, err := consoleWriters(rows, writersOf, "factory")(context.Background()); err == nil {
+	want("x/broken never read", map[string][]string{"sf/code": {"w-code"}, "demo/demo": {"w-demo"}})
+	failing = map[string]bool{"demo/demo": true}
+	at = at.Add(4 * time.Minute)
+	want("demo failing 4 minutes after its last list", map[string][]string{"sf/code": {"w-code"}, "demo/demo": {"w-demo"}, "x/broken": {"w-broken"}})
+	at = at.Add(2 * time.Minute)
+	want("demo failing 6 minutes after its last list", map[string][]string{"sf/code": {"w-code"}, "x/broken": {"w-broken"}})
+	failing = map[string]bool{"sf/code": true}
+	if _, _, err := lists(context.Background()); err == nil {
 		t.Fatal("the own project's writers failed, the lists did not")
 	}
-	if _, _, err := consoleWriters(rows, writersOf, "elsewhere")(context.Background()); err == nil {
+	if _, _, err := consoleWriters(rows, writersOf, "elsewhere", now)(context.Background()); err == nil {
 		t.Fatal("no project lists the namespace, the lists did not fail")
 	}
 }

@@ -263,6 +263,7 @@ func TestProjectConfigValidate(t *testing.T) {
 		}, "objects seed: environments, quota and secrets"},
 		"approver no login": {"demo-app", func(p *ProjectConfig) { p.Approvers = []string{"no spaces here"} }, `approvers "no spaces here": distinct Forgejo user names`},
 		"approver twice":    {"demo-app", func(p *ProjectConfig) { p.Approvers = []string{"bob", "bob"} }, `approvers "bob": distinct Forgejo user names`},
+		"approver dots":     {"demo-app", func(p *ProjectConfig) { p.Approvers = []string{"x."} }, `approvers "x.": distinct Forgejo user names`},
 		"seed unknown merge": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: "root"}}
 		}, `tokens.merge "root"`},

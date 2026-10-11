@@ -967,6 +967,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	case !slices.Contains(d.Projects, shown.Name):
 		d.Projects = append(d.Projects, shown.Name)
 	}
+	// a member sees only the projects they write or read (ruling 254); the
+	// factory's writers see every board, read-only where they do not write
+	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !d.Factory {
+		if reads, err := c.reads(ctx, current(r), shown); err != nil || !reads {
+			return d, errNoProject
+		}
+	}
 	f.Project, d.Writes, d.Approver = shown.Name, writable[shown.Name], v.approves(shown.Repository)
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
 	v.filter, d.boardFilter, d.Query = f, f, f.query()

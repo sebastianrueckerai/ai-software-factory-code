@@ -340,7 +340,7 @@ var (
 	dnsLabel        = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 	deployPath      = regexp.MustCompile(`^[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$`)
 	hostname        = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
-	forgejoLogin    = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,40}$`)
+	forgejoLogin    = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9_.-]{0,38}[A-Za-z0-9])?$`)
 	secretEntry     = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?/[A-Za-z0-9_.-]{1,64}$`)
 )
 

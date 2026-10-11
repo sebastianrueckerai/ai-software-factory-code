@@ -223,7 +223,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("GET /{$}", c.auth(c.board))
 	c.mux.Handle("GET /board", c.auth(c.board))
 	c.mux.Handle("GET /tasks/new", c.auth(c.factory(c.newTaskForm)))
-	c.mux.Handle("POST /tasks", c.auth(c.createTask))
+	c.mux.Handle("POST /tasks", c.auth(c.factory(c.createTask)))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
 	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
 	c.mux.Handle("POST /tasks/{id}/accent", c.auth(c.setAccent))

@@ -44,12 +44,15 @@ func memberLogin(t *testing.T, r *rig, user string) (*http.Cookie, *session) {
 	return r.loggedIn(t)
 }
 
+const badLogin = "a Forgejo user name is required: 1 to 40 letters, digits, dots, dashes and underscores, starting and ending with a letter or digit"
+
 var factoryLinks = []string{`href="/tasks/new"`, `href="/projects"`, `href="/resources"`, `href="/costs"`, `href="/policy"`, `href="/alerts"`}
 
-// A writer of any project logs in and sees the projects they write; the
-// factory-level pages stay with the writers of the factory's own code,
-// and the layout links them only for those. A login that writes nothing
-// is refused as before.
+// A writer of any project logs in and sees the projects they write: another
+// project's board is 404 unless Forgejo shows them its repository, then
+// read-only; the factory-level pages stay with the writers of the
+// factory's own code, and the layout links them only for those. A login
+// that writes nothing is refused as before.
 func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	members(r)
@@ -63,20 +66,30 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 			t.Errorf("bob's board links %s", link)
 		}
 	}
+	if other := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck); other.Code != http.StatusNotFound {
+		t.Fatalf("the factory's board for bob, who neither writes nor reads it = %d, want 404:\n%s", other.Code, other.Body)
+	}
+	plain := r.c.cfg.HTTP
+	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
 	other := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck)
 	if other.Code != http.StatusOK || !strings.Contains(other.Body.String(), `data-project=""`) {
-		t.Fatalf("the factory's board for bob = %d, want it read-only:\n%s", other.Code, other.Body)
+		t.Fatalf("the factory's board for bob, who reads it = %d, want it read-only:\n%s", other.Code, other.Body)
 	}
+	r.c.cfg.HTTP = plain
 	for _, path := range []string{"/cards/t-c/drawer", "/projects/ai-software-factory-code/chat", "/tasks/t-c/timeline",
 		"/costs", "/policy", "/alerts", "/resources", "/projects", "/projects/new", "/tasks/new", "/projects/demo/status"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("GET %s as bob = %d, want 403", path, rec.Code)
 		}
 	}
-	for _, path := range []string{"/alerts/1/verdict", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
-		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck); rec.Code != http.StatusForbidden {
+	for _, path := range []string{"/tasks", "/alerts/1/verdict", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
+		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "project": {"ai-software-factory-code"}, "title": {"x"},
+			"lane": {"ready"}}), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("POST %s as bob = %d, want 403", path, rec.Code)
 		}
+	}
+	if len(r.fg.issues) != 0 {
+		t.Errorf("bob filed %v", r.fg.issues)
 	}
 
 	ak, _ := memberLogin(t, r, "alice")
@@ -176,8 +189,10 @@ func TestInvite(t *testing.T) {
 		status                  int
 		msg                     string
 	}{
-		{"bob", "demo/demo", "no spaces here", http.StatusBadRequest, "a Forgejo user name of 1 to 40 letters, digits, dots, dashes and underscores is required"},
-		{"bob", "demo/demo", strings.Repeat("a", 41), http.StatusBadRequest, "a Forgejo user name of 1 to 40 letters, digits, dots, dashes and underscores is required"},
+		{"bob", "demo/demo", "no spaces here", http.StatusBadRequest, badLogin},
+		{"bob", "demo/demo", strings.Repeat("a", 41), http.StatusBadRequest, badLogin},
+		{"bob", "demo/demo", "..", http.StatusBadRequest, badLogin},
+		{"bob", "demo/demo", "-x", http.StatusBadRequest, badLogin},
 		{"alice", "sf/code", "dave", http.StatusConflict, "Project ai-software-factory-code is a seed project, whose collaborators Forgejo keeps: invite dave there."},
 	} {
 		_, err := r.c.doInvite(context.Background(), actor{s: &session{user: c.user}, repository: c.repository, via: factoryd.ViaChat}, c.login)

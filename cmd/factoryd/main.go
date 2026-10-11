@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -361,7 +362,7 @@ func main() {
 		ClientSecret:     consoleClientSecret,
 		SessionKey:       []byte(consoleSessionKey),
 		Tasks:            store,
-		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace()),
+		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now),
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,
@@ -448,12 +449,19 @@ func main() {
 // consoleWriters are the console's writer lists: the writers of every
 // project agents work on, by repository, and the factory's own code
 // project, the one listing factoryd's namespace ns. A project whose
-// writers cannot be read is logged and left out, its members refused until
-// it reads again; the own project's failure fails the lists, and the
-// console serves its last ones.
+// writers cannot be read keeps its last list for up to five minutes, then
+// is left out, its members refused until it reads again; the own
+// project's failure fails the lists, and the console serves its last ones
+// for as long.
 func consoleWriters(store interface {
 	Projects(ctx context.Context) ([]factoryd.Project, error)
-}, writersOf func(context.Context, factoryd.Project) ([]string, error), ns string) func(context.Context) (string, map[string][]string, error) {
+}, writersOf func(context.Context, factoryd.Project) ([]string, error), ns string, now func() time.Time) func(context.Context) (string, map[string][]string, error) {
+	type listed struct {
+		users []string
+		at    time.Time
+	}
+	var mu sync.Mutex
+	last := map[string]listed{}
 	return func(ctx context.Context) (string, map[string][]string, error) {
 		own, ok, err := factoryd.OwnProject(ctx, store, ns)
 		if err != nil || !ok {
@@ -469,14 +477,23 @@ func consoleWriters(store interface {
 				continue
 			}
 			list, err := writersOf(ctx, p)
+			mu.Lock()
+			l, known := last[p.Repository]
+			if err == nil {
+				l, known = listed{list, now()}, true
+				last[p.Repository] = l
+			}
+			mu.Unlock()
 			switch {
 			case err != nil && p.Repository == own.Repository:
 				return "", nil, err
-			case err != nil:
+			case err != nil && (!known || now().Sub(l.at) >= 5*time.Minute):
 				log.Printf("console: the writers of %s are left out: %v", p.Repository, err)
 				continue
+			case err != nil:
+				log.Printf("console: the writers of %s: %v; serving the list of %s", p.Repository, err, l.at.UTC().Format(time.RFC3339))
 			}
-			writers[p.Repository] = list
+			writers[p.Repository] = l.users
 		}
 		return own.Repository, writers, nil
 	}

@@ -781,7 +781,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 // Forgejo's to keep.
 func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, error) {
 	if !policy.ForgejoLogin(login) {
-		return "", refuse(http.StatusBadRequest, "a Forgejo user name of 1 to 40 letters, digits, dots, dashes and underscores is required")
+		return "", refuse(http.StatusBadRequest, "a Forgejo user name is required: 1 to 40 letters, digits, dots, dashes and underscores, starting and ending with a letter or digit")
 	}
 	p, ok, err := c.projectAt(ctx, a.repository)
 	switch {
