@@ -79,7 +79,11 @@ type Events interface {
 type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) error
-	ChatMessages(ctx context.Context, repository, login string, limit int) ([]factoryd.ChatMessage, error)
+	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
+	NewConversation(ctx context.Context, repository, login string) (int64, error)
+	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
+	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)

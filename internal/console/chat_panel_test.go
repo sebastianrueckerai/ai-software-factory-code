@@ -36,7 +36,7 @@ func TestChatPanel(t *testing.T) {
 <div id="screen" class="screen with-chat" data-pane="board">
 <div id="board" data-project="ai-software-factory-code"`,
 		`<section id="chat" class="chat" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span></div>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select></div>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 <p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 </div>

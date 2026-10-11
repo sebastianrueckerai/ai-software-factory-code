@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -125,14 +126,32 @@ func (t *turn) save(m factoryd.ChatMessage) bool {
 	return true
 }
 
+// chatGetAnswer is GET /chat's JSON body: the conversation's messages and
+// each proposal's state.
+type chatGetAnswer struct {
+	Messages  []factoryd.ChatMessage   `json:"messages"`
+	Proposals []factoryd.ProposalState `json:"proposals,omitempty"`
+}
+
 // chatGet answers GET /projects/{name}/chat: the member's conversation on
-// the project, its last chatHistory messages, oldest first, as JSON.
+// the project, its last chatHistory messages, oldest first, as JSON. An
+// optional ?conversation=N reads an older one. Each proposed tool call's
+// token gets a state: pending, used or expired.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
-	msgs, err := c.cfg.Chat.ChatMessages(r.Context(), t.p.Repository, t.a.s.user, chatHistory)
+	var conv int64
+	if s := r.URL.Query().Get("conversation"); s != "" {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil || n < 1 {
+			http.Error(w, "conversation must be a positive integer", http.StatusBadRequest)
+			return
+		}
+		conv = n
+	}
+	msgs, err := c.cfg.Chat.ChatMessages(r.Context(), t.p.Repository, t.a.s.user, conv, chatHistory)
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
@@ -141,8 +160,25 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if msgs == nil {
 		msgs = []factoryd.ChatMessage{}
 	}
+	var tokens []string
+	for _, m := range msgs {
+		for _, call := range m.ToolCalls {
+			if call.Proposal != "" {
+				tokens = append(tokens, call.Proposal)
+			}
+		}
+	}
+	answer := chatGetAnswer{Messages: msgs}
+	if len(tokens) > 0 {
+		states, err := c.cfg.Chat.ProposalStates(r.Context(), t.p.Repository, t.a.s.user, tokens, time.Now())
+		if err != nil {
+			log.Printf("console: the chat proposals of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		} else {
+			answer.Proposals = states
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(msgs); err != nil {
+	if err := json.NewEncoder(w).Encode(answer); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
 }
@@ -394,20 +430,47 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// chatClaimMarkers are the phrases whose presence in an assistant row with
+// no tool calls marks it as a false claim of action, which the replay
+// drops so the model does not learn to repeat it.
+var chatClaimMarkers = []string{
+	"i proposed", "i have proposed", "proposal", "do it",
+	"i filed", "i have filed", "i moved", "i approved",
+	"i answered", "i set the", "i started", "i accepted",
+	"i rejected", "i denied", "i closed", "i commented", "i steered",
+}
+
+// isClaim is true when content holds one of chatClaimMarkers, case-
+// insensitively.
+func isClaim(content string) bool {
+	lower := strings.ToLower(content)
+	for _, m := range chatClaimMarkers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // context is the turn's conversation for the model: the system prompt with
 // the project and its last chatEvents events, then the member's last
-// chatContext messages, each tool call followed by its result.
+// chatContext messages, each tool call followed by its result. An
+// assistant row with no tool calls whose content claims an action is
+// dropped from the replay.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	project, _, err := t.project(chatEvents)
 	if err != nil {
 		return nil, err
 	}
-	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, chatContext)
+	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, 0, chatContext)
 	if err != nil {
 		return nil, err
 	}
 	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() + "\n\n" + project}}
 	for _, m := range history {
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
+			continue
+		}
 		om := factoryd.OperatorMessage{Role: m.Role, Content: m.Content}
 		for _, call := range m.ToolCalls {
 			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: objectArgs(call.Arguments)})
@@ -502,4 +565,41 @@ func eventLine(e factoryd.Event) string {
 		detail = " " + string(b)
 	}
 	return fmt.Sprintf("%s%s %s by %s via %s%s", e.At.UTC().Format("2006-01-02 15:04"), card, e.Kind, e.Actor, e.Via, detail)
+}
+
+// chatNew answers POST /projects/{name}/chat/new: starts a new
+// conversation for the member and answers 204.
+func (c *Console) chatNew(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	if _, err := c.cfg.Chat.NewConversation(r.Context(), t.p.Repository, t.a.s.user); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot start a new conversation", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatConversations answers GET /projects/{name}/chat/conversations: the
+// member's conversations on the project, newest first.
+func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	list, err := c.cfg.Chat.Conversations(r.Context(), t.p.Repository, t.a.s.user)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the conversations", http.StatusInternalServerError)
+		return
+	}
+	if list == nil {
+		list = []factoryd.ChatConversation{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(list); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	}
 }

@@ -26,11 +26,13 @@ import (
 type fakeChat struct {
 	tasks *fakeTasks
 	mu    sync.Mutex
-	msgs  map[string][]factoryd.ChatMessage // by repository and login
+	msgs  map[string][]factoryd.ChatMessage // by "repository login conversation"
 	next  int64
 	spend []spendRow
 	// proposals are the proposals and undos, in the order stored
 	proposals []*fakeProposal
+	// conversations tracks the current conversation per "repository login"
+	conversations map[string]int64
 }
 
 // fakeProposal is a row of the proposals' table: used is its used_at, zero
@@ -61,6 +63,22 @@ func (f *fakeChat) EnsureChatTask(ctx context.Context, name, repository string, 
 	return t, nil
 }
 
+func (f *fakeChat) currentConv(repository, login string) int64 {
+	key := repository + " " + login
+	if f.conversations == nil {
+		f.conversations = map[string]int64{}
+	}
+	c, ok := f.conversations[key]
+	if !ok || c < 1 {
+		return 1
+	}
+	return c
+}
+
+func (f *fakeChat) msgKey(repository, login string, conv int64) string {
+	return fmt.Sprintf("%s %s %d", repository, login, conv)
+}
+
 func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -69,15 +87,84 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
-	f.msgs[repository+" "+login] = append(f.msgs[repository+" "+login], m)
+	conv := f.currentConv(repository, login)
+	m.Conversation = conv
+	f.msgs[f.msgKey(repository, login, conv)] = append(f.msgs[f.msgKey(repository, login, conv)], m)
 	return nil
 }
 
-func (f *fakeChat) ChatMessages(_ context.Context, repository, login string, limit int) ([]factoryd.ChatMessage, error) {
+func (f *fakeChat) CurrentConversation(_ context.Context, repository, login string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	all := f.msgs[repository+" "+login]
+	return f.currentConv(repository, login), nil
+}
+
+func (f *fakeChat) NewConversation(_ context.Context, repository, login string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := repository + " " + login
+	if f.conversations == nil {
+		f.conversations = map[string]int64{}
+	}
+	cur := f.currentConv(repository, login)
+	next := cur + 1
+	f.conversations[key] = next
+	return next, nil
+}
+
+func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cur := f.currentConv(repository, login)
+	var out []factoryd.ChatConversation
+	for c := cur; c >= 1; c-- {
+		msgs := f.msgs[f.msgKey(repository, login, c)]
+		if len(msgs) == 0 {
+			continue
+		}
+		out = append(out, factoryd.ChatConversation{
+			Number:   c,
+			FirstAt:  msgs[0].At,
+			LastAt:   msgs[len(msgs)-1].At,
+			Messages: int64(len(msgs)),
+		})
+	}
+	return out, nil
+}
+
+func (f *fakeChat) ChatMessages(_ context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if conversation == 0 {
+		conversation = f.currentConv(repository, login)
+	}
+	all := f.msgs[f.msgKey(repository, login, conversation)]
 	return slices.Clone(all[max(0, len(all)-limit):]), nil
+}
+
+func (f *fakeChat) ProposalStates(_ context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]factoryd.ProposalState, len(tokens))
+	for i, token := range tokens {
+		state := "expired"
+		for _, p := range f.proposals {
+			if p.Token != token || p.Repository != repository || p.Login != login {
+				continue
+			}
+			switch {
+			case !p.used.IsZero():
+				state = "used"
+			case p.ExpiresAt.Before(now):
+				state = "expired"
+			default:
+				state = "pending"
+			}
+			break
+		}
+		out[i] = factoryd.ProposalState{Token: token, State: state}
+	}
+	return out, nil
 }
 
 func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error) {
@@ -371,8 +458,8 @@ func TestChatTextReply(t *testing.T) {
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
-		`[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z"},` +
-			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z"}]`})
+		`{"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
+			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
 
 // A card whose next session waits for a roll reads so in the agent's
@@ -609,10 +696,11 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		`user "and now?"`,
 	})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
-	var got []factoryd.ChatMessage
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+	var answer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
+	got := answer.Messages
 	var roles []string
 	for _, m := range got {
 		roles = append(roles, m.Role+" "+m.Content+fmt.Sprint(len(m.ToolCalls)))
@@ -740,10 +828,15 @@ func TestChatProposalIsStored(t *testing.T) {
 	if rows != 1 {
 		t.Fatalf("%d proposal rows, want 1", rows)
 	}
-	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the stored call", stored[0].ToolCalls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
 		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
-	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var getAnswer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &getAnswer); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
 	}
 	ak, as := r.as(t, "anna")
@@ -762,9 +855,10 @@ func TestChatProposalIsStored(t *testing.T) {
 		`applied {"result":"` + filed + `","tool":"new_card"}`, `done {}`})
 	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics"}}
 	chatRows(t, r.events, before, "sebastian", card)
-	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
+	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
-		ToolCalls: []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
+		Conversation: stored[0].Conversation,
+		ToolCalls:    []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
 		t.Fatalf("a second Do it = %d %q, want 404", code, body)
 	}
@@ -953,7 +1047,7 @@ func TestChatSteerAndComment(t *testing.T) {
 	equal(t, "steered", steered, []string{"t-r sebastian: Rebase on main first."})
 	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered}
 	chatRows(t, r.events, before, "sebastian", commented, steer)
-	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1)
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the steer's stored result", stored[0].ToolCalls[0].Result, "The session of #11 has your message. It cannot be undone.")
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[1], nil)
 	equal(t, "undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo comment","result":"Deleted the comment on #5."}`,
@@ -993,7 +1087,7 @@ func TestChatProposalDescriptionAndMalformedCalls(t *testing.T) {
 	second := messages(t, calls[1])
 	turn := second[len(second)-3]["tool_calls"].([]any)
 	equal(t, "the turn's malformed call, replayed", turn[0].(map[string]any)["function"].(map[string]any)["arguments"], "{}")
-	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 2)
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 2)
 	equal(t, "the turn's malformed call, stored", stored[0].ToolCalls[0].Arguments, "{}")
 }
 
@@ -1055,8 +1149,9 @@ func TestChatBudgetSpentAndGatewayFailure(t *testing.T) {
 	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello again"}})
 	equal(t, "gateway down", events, []string{`error {"message":"The model could not be reached; try again."}`})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
-	var got []factoryd.ChatMessage
-	json.Unmarshal(rec.Body.Bytes(), &got)
+	var answer chatGetAnswer
+	json.Unmarshal(rec.Body.Bytes(), &answer)
+	got := answer.Messages
 	if len(got) != 2 || got[0].Role != "user" || got[1].Content != "hello again" {
 		t.Fatalf("conversation = %+v, want the two messages only (task %s)", got, id)
 	}
@@ -1071,4 +1166,165 @@ func TestChatToolsArePolicys(t *testing.T) {
 		}
 	}
 	equal(t, "tools", names, policy.ChatTools)
+}
+
+// A new conversation starts at max+1; chatPost stores its rows there and
+// GET answers only them; an older conversation is read-only via
+// ?conversation=N; conversations lists them newest first with counts; a
+// non-writer gets 403 on /chat/new.
+func TestChatNewConversation(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("first reply")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	cur, err := chat.CurrentConversation(t.Context(), "sf/code", "sebastian")
+	if err != nil || cur != 1 {
+		t.Fatalf("current after first message = %d, %v, want 1", cur, err)
+	}
+	req := httptest.NewRequest(http.MethodPost, chatPath+"/new", nil)
+	req.Header.Set("X-CSRF-Token", s.csrf)
+	rec := r.do(req, ck)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST /chat/new = %d, want 204", rec.Code)
+	}
+	cur, err = chat.CurrentConversation(t.Context(), "sf/code", "sebastian")
+	if err != nil || cur != 2 {
+		t.Fatalf("current after /chat/new = %d, %v, want 2", cur, err)
+	}
+	g.replies = [][]string{{say("second reply")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"world"}})
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Messages) != 2 || answer.Messages[0].Content != "world" || answer.Messages[1].Content != "second reply" {
+		t.Fatalf("GET current = %+v, want world + second reply", answer.Messages)
+	}
+	for _, m := range answer.Messages {
+		if m.Conversation != 2 {
+			t.Fatalf("message in wrong conversation: %+v", m)
+		}
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=1", nil), ck)
+	var old chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &old); err != nil {
+		t.Fatal(err)
+	}
+	if len(old.Messages) != 2 || old.Messages[0].Content != "hello" || old.Messages[1].Content != "first reply" {
+		t.Fatalf("GET ?conversation=1 = %+v, want hello + first reply", old.Messages)
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
+	var list []factoryd.ChatConversation
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Number != 2 || list[1].Number != 1 || list[0].Messages != 2 || list[1].Messages != 2 {
+		t.Fatalf("conversations = %+v, want [2(2), 1(2)]", list)
+	}
+	ak, _ := r.as(t, "carol")
+	if rec := r.do(httptest.NewRequest(http.MethodPost, chatPath+"/new", nil), ak); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-writer POST /chat/new = %d, want 403", rec.Code)
+	}
+}
+
+// The replay drops an assistant row with no tool calls whose content
+// claims an action, keeps one without such a claim, and keeps one with
+// tool calls regardless of content. The dropped row stays in GET.
+func TestChatReplayDropsClaims(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	for _, m := range []factoryd.ChatMessage{
+		{Role: "assistant", Content: "I proposed to file a card"},
+		{Role: "assistant", Content: "The board has 3 cards"},
+		{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card", Arguments: "{}", Result: "ok"}}},
+	} {
+		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.replies = [][]string{{say("fine")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what now?"}})
+	calls := g.calls()
+	if len(calls) != 1 {
+		t.Fatalf("%d model calls, want 1", len(calls))
+	}
+	msgs := messages(t, calls[0])
+	var assistant int
+	for _, m := range msgs {
+		if m["role"] == "assistant" {
+			assistant++
+		}
+	}
+	if assistant != 2 {
+		t.Fatalf("%d assistant messages in replay, want 2 (the claim was dropped)", assistant)
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range answer.Messages {
+		if m.Content == "I proposed to file a card" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("GET /chat lost the claimed row")
+	}
+}
+
+// GET /chat answers each proposal's state: pending while unused and
+// unexpired, used once taken, expired when the clock passes.
+func TestChatProposalStatesInGet(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"title":"Cache metrics","lane":"ready"}`
+	g.replies = [][]string{{call(1, "new_card", args)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Proposals) != 1 || answer.Proposals[0].Token != tokens[0] || answer.Proposals[0].State != "pending" {
+		t.Fatalf("proposals before Do it = %+v, want pending", answer.Proposals)
+	}
+	chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Proposals) != 1 || answer.Proposals[0].State != "used" {
+		t.Fatalf("proposals after Do it = %+v, want used", answer.Proposals)
+	}
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Token == tokens[0] {
+			p.ExpiresAt = time.Now().Add(-time.Minute)
+		}
+	}
+	chat.mu.Unlock()
+	g.replies = [][]string{{call(1, "new_card", args)}}
+	_, _, tokens2 := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file another"}})
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Token == tokens2[0] {
+			p.ExpiresAt = time.Now().Add(-time.Minute)
+		}
+	}
+	chat.mu.Unlock()
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]string{}
+	for _, p := range answer.Proposals {
+		states[p.Token] = p.State
+	}
+	if states[tokens2[0]] != "expired" {
+		t.Fatalf("expired proposal = %q, want expired", states[tokens2[0]])
+	}
 }

@@ -92,7 +92,7 @@ func TestPGStoreChatMessages(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	all, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 100)
+	all, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestPGStoreChatMessages(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("conversation = %+v, want %+v", got, want)
 	}
-	newest, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 2)
+	newest, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 0, 2)
 	if err != nil || len(newest) != 2 || newest[0].ID != all[1].ID || newest[1].ID != all[2].ID {
 		t.Fatalf("newest 2 = %+v, %v", newest, err)
 	}
@@ -274,5 +274,76 @@ func TestPGStorePurgeProposals(t *testing.T) {
 	}
 	if !slices.Equal(left, []string{"open"}) {
 		t.Fatalf("rows left = %q, want open", left)
+	}
+}
+
+// Conversations are scoped by member and project; NewConversation starts
+// at max+1; ChatMessages reads only the named conversation.
+func TestPGStoreChatConversations(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	for _, m := range []struct{ repo, login, content string }{
+		{"sf/code", "anna", "first"},
+		{"sf/code", "anna", "second"},
+		{"sf/code", "bob", "bob's"},
+	} {
+		if err := s.AddChatMessage(ctx, m.repo, m.login, ChatMessage{Role: "user", Content: m.content}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cur, err := s.CurrentConversation(ctx, "sf/code", "anna")
+	if err != nil || cur != 1 {
+		t.Fatalf("current = %d, %v, want 1", cur, err)
+	}
+	next, err := s.NewConversation(ctx, "sf/code", "anna")
+	if err != nil || next != 2 {
+		t.Fatalf("new = %d, %v, want 2", next, err)
+	}
+	if err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "user", Content: "third"}); err != nil {
+		t.Fatal(err)
+	}
+	c1, err := s.ChatMessages(ctx, "sf/code", "anna", 1, 100)
+	if err != nil || len(c1) != 2 {
+		t.Fatalf("conversation 1 = %d messages, %v, want 2", len(c1), err)
+	}
+	c2, err := s.ChatMessages(ctx, "sf/code", "anna", 2, 100)
+	if err != nil || len(c2) != 1 || c2[0].Content != "third" {
+		t.Fatalf("conversation 2 = %+v, %v, want third", c2, err)
+	}
+	bob, err := s.ChatMessages(ctx, "sf/code", "bob", 0, 100)
+	if err != nil || len(bob) != 1 || bob[0].Content != "bob's" {
+		t.Fatalf("bob = %+v, %v", bob, err)
+	}
+	list, err := s.Conversations(ctx, "sf/code", "anna")
+	if err != nil || len(list) != 2 || list[0].Number != 2 || list[1].Number != 1 || list[0].Messages != 1 || list[1].Messages != 2 {
+		t.Fatalf("conversations = %+v, %v, want [2(1), 1(2)]", list, err)
+	}
+}
+
+// ProposalStates answers pending, used or expired for each token; a
+// missing row counts as expired.
+func TestPGStoreProposalStates(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	for _, p := range []ChatProposal{
+		{Token: "pending", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "used", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "expired", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card", Args: json.RawMessage(`{}`), ExpiresAt: now.Add(-time.Minute)},
+	} {
+		if err := s.PutProposal(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.TakeProposal(ctx, "proposal", "used", "sf/code", "anna", now); err != nil {
+		t.Fatal(err)
+	}
+	states, err := s.ProposalStates(ctx, "sf/code", "anna", []string{"pending", "used", "expired", "missing"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"pending": "pending", "used": "used", "expired": "expired", "missing": "expired"}
+	for _, s := range states {
+		if want[s.Token] != s.State {
+			t.Errorf("%s = %s, want %s", s.Token, s.State, want[s.Token])
+		}
 	}
 }

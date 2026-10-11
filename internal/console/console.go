@@ -238,6 +238,8 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	c.mux.Handle("GET /projects/{name}/chat", c.auth(c.chatGet))
 	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
+	c.mux.Handle("POST /projects/{name}/chat/new", c.auth(c.chatNew))
+	c.mux.Handle("GET /projects/{name}/chat/conversations", c.auth(c.chatConversations))
 	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
 	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
 	c.mux.Handle("GET /projects/{name}/pulse", c.auth(c.pulseGet))

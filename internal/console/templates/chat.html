@@ -5,7 +5,7 @@
 {{end}}{{end}}
 
 {{define "chat"}}{{if .Chat}}<section id="chat" class="chat" aria-labelledby="chat-title"{{if .Writes}} data-project="{{.Project}}" data-login="{{.User}}"{{end}}>
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · {{.Project}}</span></div>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · {{.Project}}</span>{{if .Writes}} <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select>{{end}}</div>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 {{if .Writes}}<p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 {{else}}<p class="meta chat-start">You read this project: its writers chat with its agent.</p>
