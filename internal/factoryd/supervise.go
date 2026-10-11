@@ -31,7 +31,15 @@ const (
 	// call
 	TripAgentEscalation  TripKind = "agent_escalation"
 	TripAgentInfoRequest TripKind = "agent_info_request"
+	// TripLoop: loopNudges nudges delivered with no file change in between
+	// (NudgeSent), or the provider's refusal of repeated calls
+	// (sessionResult); a redirect, no supervisor call
+	TripLoop TripKind = "loop"
 )
+
+// loopNudges delivered nudges with no file change in between end the
+// session.
+const loopNudges = 3
 
 // Trip is a detector firing: the kind, what it saw, and the session's
 // findings so far. A wall-clock trip ends the session; every other trip
@@ -108,6 +116,8 @@ type Supervisor struct {
 	// since; the next detector trip ends the session (the stuck rule).
 	// messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
+	// nudges are the nudges delivered since the last file change
+	nudges []Nudge
 
 	// no_write's anchor: the last write, or its last continue
 	noWriteFrom time.Time
@@ -166,6 +176,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		s.sinceChange = 0
 		s.noWriteFrom = at
 		s.messaged = false
+		s.nudges = nil
 	}
 	// every detector sees every event, whichever trips
 	traced := s.traces.observe(ev)
@@ -238,8 +249,23 @@ func (s *Supervisor) TakeNudge() *Nudge {
 }
 
 // NudgeSent counts n against its repetition's nudges: only a nudge the
-// session took is spent.
-func (s *Supervisor) NudgeSent(n Nudge) { s.traces.nudged[n.key]++ }
+// session took is spent. The loopNudges-th since the last file change
+// trips loop; a report session writes no file, so its nudges never do.
+func (s *Supervisor) NudgeSent(n Nudge) *Trip {
+	s.traces.nudged[n.key]++
+	if s.cfg.ReadOnly {
+		return nil
+	}
+	if s.nudges = append(s.nudges, n); len(s.nudges) < loopNudges {
+		return nil
+	}
+	calls := make([]string, len(s.nudges))
+	for i, n := range s.nudges {
+		calls[i] = fmt.Sprintf("%s `%s` %d times", n.Tool, textutil.Truncate(n.Call, 200), n.Count)
+	}
+	return s.trip(&Trip{Kind: TripLoop, Detail: countWords[loopNudges] + " nudges without a file change in between: " + strings.Join(calls, "; "),
+		decided: &Decision{Action: ActionRedirect}})
+}
 
 // nudgeUndelivered trips on a nudge that did not reach the session: a
 // harness without messages gets the redirect with the nudge's text, decided
@@ -415,6 +441,7 @@ func newTraceDetectors(cfg SupervisorConfig) *traceDetectors {
 // trip; it comes before the trip once per repetition.
 type Nudge struct {
 	Tool  string
+	Call  string // callText
 	Count int
 	key   string
 }
@@ -456,16 +483,28 @@ func (d *traceDetectors) observe(ev harness.Event) *Trip {
 	d.streak = 0
 	if d.nudged[key] < d.cfg.Nudges {
 		delete(d.calls, key)
-		d.nudge = &Nudge{Tool: tool, Count: count, key: key}
+		d.nudge = &Nudge{Tool: tool, Call: callText(ev), Count: count, key: key}
 		return nil
 	}
 	nudges := textutil.Plural(d.nudged[key], "nudge", "nudges")
 	if inRow {
 		return &Trip{Kind: TripSameCall, key: key, Detail: fmt.Sprintf("%s: the same call %d times in a row after %s", tool, count, nudges)}
 	}
-	args, _ := json.Marshal(ev.Detail["args"])
 	return &Trip{Kind: TripSameCall, key: key,
-		Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s after %s", tool, count, textutil.Truncate(string(args), 300), nudges)}
+		Detail: fmt.Sprintf("tool %s called %d times with the same arguments %s after %s", tool, count, textutil.Truncate(callText(ev), 300), nudges)}
+}
+
+// callText is a call as a person reads it: a command's line, a file
+// change's path, a tool call's arguments.
+func callText(ev harness.Event) string {
+	switch ev.Kind {
+	case harness.EventCommand:
+		return detailString(ev, "command")
+	case harness.EventFileChange:
+		return detailString(ev, "path")
+	}
+	args, _ := json.Marshal(ev.Detail["args"])
+	return string(args)
 }
 
 // callKey names a call by its tool and input: a tool call's arguments, a

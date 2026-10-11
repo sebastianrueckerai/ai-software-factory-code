@@ -511,6 +511,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		if d.Guidance != "" {
 			res.Findings = append(res.Findings, "supervisor guidance: "+d.Guidance)
 		}
+		if out.trip.Kind == TripLoop {
+			res.Findings = append(res.Findings, loopFinding(out.trip.Detail))
+		}
 		switch {
 		case out.trip.Kind == TripAgentInfoRequest:
 			res.Outcome, res.Reason = OutcomeNeedsInfo, d.Reason
@@ -537,6 +540,10 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	res.Findings = append(slices.Clone(out.findings), "previous session ended without a pushed commit: "+res.Summary)
 	return res
 }
+
+// loopFinding is the next session's brief line on a loop: how the session
+// ended and what it repeated, a fact (ruling 263).
+func loopFinding(how string) string { return "the previous session ended in a loop after " + how }
 
 // Escalate hands the task to a human (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and a

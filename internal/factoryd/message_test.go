@@ -127,6 +127,53 @@ func TestRunSessionNudgesTheRunningSession(t *testing.T) {
 	}
 }
 
+// Three delivered nudges with no file change in between end the session
+// as a redirect on loop, no supervisor call: the stopped worker pushes its
+// work in progress, the timeline holds the loop, and the next session's
+// brief the line naming what the session repeated.
+func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.stopWait = 10 * time.Second
+	worker, order := watchStop(t, runner, kube)
+	var logs string
+	for _, p := range []string{"/w/a.go", "/w/b.go", "/w/c.go"} {
+		for range 3 {
+			logs += envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(),
+				Detail: map[string]any{"tool": "read", "status": "completed", "args": map[string]any{"filePath": p}}}) + "\n"
+		}
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs+stoppedWorker("t2"))
+	if err != nil || res.Outcome != OutcomeRedirect || res.Trip != string(TripLoop) || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want a redirect on loop with the work in progress c-wip", res, err)
+	}
+	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
+		t.Fatalf("order = %v, want the push after the stop", got)
+	}
+	want := []string{"POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2"}
+	if !slices.Equal(worker.texts, want) {
+		t.Fatalf("worker got %q, want three nudges and the push token", worker.texts)
+	}
+	detail := "three nudges without a file change in between: read `{\"filePath\":\"/w/a.go\"}` 3 times; " +
+		"read `{\"filePath\":\"/w/b.go\"}` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
+	line := "the previous session ended in a loop after " + detail
+	if !slices.Contains(res.Findings, line) || !strings.Contains(objectiveText(harness.TaskBrief{Findings: res.Findings}), "\n- "+line+"\n") {
+		t.Fatalf("findings = %q, want the loop line %q", res.Findings, line)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	var step map[string]any
+	for _, l := range strings.Split(strings.TrimSpace(string(tl)), "\n") {
+		var e map[string]any
+		if json.Unmarshal([]byte(l), &e) == nil && e["step"] == "supervisor" {
+			step = e
+		}
+	}
+	if step == nil || step["detector"] != "loop" || step["trip"] != detail || step["decision"] != "redirect" || step["called"] != false {
+		t.Fatalf("timeline supervisor step = %v", step)
+	}
+}
+
 // A harness without messages (the worker's 501) gets today's redirect: the
 // session stops, and the next one starts with the nudge as its guidance;
 // no supervisor call.

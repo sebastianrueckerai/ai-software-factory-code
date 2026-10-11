@@ -814,6 +814,64 @@ func TestNudgePrecedesSameCallOnScatteredCalls(t *testing.T) {
 	}
 }
 
+// The loop rule: the third nudge delivered with no file change since the
+// last one ends the session as a redirect, decided without the supervisor
+// model. nudge 1, a call, nudge 2, a file change, nudges 3, 4 and 5: the
+// trip comes at nudge 5, the third since the change.
+func TestLoopEndsAtTheThirdNudgeWithoutAFileChange(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	read := func(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
+	nudge := func(s *Supervisor, ev harness.Event) *Trip {
+		t.Helper()
+		for i := 0; i < 3; i++ {
+			if trip := s.Event(ev, t0); trip != nil {
+				t.Fatalf("call %d of %v tripped: %+v", i, ev.Detail, trip)
+			}
+		}
+		n := s.TakeNudge()
+		if n == nil {
+			t.Fatalf("no nudge after three of %v", ev.Detail)
+		}
+		return s.NudgeSent(*n)
+	}
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	steps := []func() *Trip{
+		func() *Trip { return nudge(s, read("/w/a.go")) },
+		func() *Trip { return s.Event(toolEvent("glob", map[string]any{"pattern": "*.go"}), t0) },
+		func() *Trip { return nudge(s, cmdEvent("go test ./...", 1, "FAIL")) },
+		func() *Trip { return s.Event(fileEvent("a_test.go", "h1"), t0) },
+		func() *Trip { return nudge(s, read("/w/b.go")) },
+		func() *Trip { return nudge(s, cmdEvent("go vet ./...", 1, "vet: x")) },
+	}
+	for i, step := range steps {
+		if trip := step(); trip != nil {
+			t.Fatalf("step %d tripped: %+v", i, trip)
+		}
+	}
+	trip := nudge(s, read("/w/c.go"))
+	want := "three nudges without a file change in between: read `{\"filePath\":\"/w/b.go\"}` 3 times; bash `go vet ./...` 3 times; read `{\"filePath\":\"/w/c.go\"}` 3 times"
+	if trip == nil || trip.Kind != TripLoop || trip.Detail != want {
+		t.Fatalf("nudge 5: trip = %+v, want loop with %q", trip, want)
+	}
+	if trip.decided == nil || trip.decided.Action != ActionRedirect {
+		t.Fatalf("decision = %+v, want a redirect decided without the model", trip.decided)
+	}
+	if again := s.Event(read("/w/d.go"), t0); again != trip {
+		t.Fatalf("after the trip: %+v, want the sticky loop trip", again)
+	}
+
+	// a report session writes no file: its nudges are no loop
+	ro, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 10 * time.Hour, RepetitionEvents: 100, MaxCalls: 3, ReadOnly: true}, t0, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/w/a.go", "/w/b.go", "/w/c.go"} {
+		if trip := nudge(ro, read(p)); trip != nil {
+			t.Fatalf("report session: nudge of %s tripped %+v", p, trip)
+		}
+	}
+}
+
 // Only a nudge the session took is spent: one taken but not sent, and one
 // dropped because the same event tripped, leave the next run its nudge.
 func TestNudgeNotSentIsNotSpent(t *testing.T) {

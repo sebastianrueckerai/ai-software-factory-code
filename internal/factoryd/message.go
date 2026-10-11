@@ -99,14 +99,15 @@ func (r *Runner) messagePort() int {
 // nudge sends n into the running session and records it on the timeline.
 // A harness that takes no message gets today's redirect with the same
 // text (a fresh session), and a nudge that cannot be delivered trips the
-// supervisor; both come back as the trip. A session that ended meanwhile
-// needs none.
+// supervisor; both come back as the trip, as does the loop a delivered
+// nudge closes. A session that ended meanwhile needs none.
 func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervisor, ns, pod, token string, n Nudge) *Trip {
 	detail := map[string]any{"session": s.id, "tool": n.Tool, "count": n.Count}
 	err := r.messageWorker(ctx, ns, pod, token, n.Text())
+	var loop *Trip
 	switch {
 	case err == nil:
-		sup.NudgeSent(n)
+		loop = sup.NudgeSent(n)
 		log.Printf("task %s: nudged session %s after %d identical %s calls", t.ID, s.id, n.Count, n.Tool)
 	case errors.Is(err, harness.ErrNotSupported):
 		detail["fallback"] = "redirect"
@@ -115,7 +116,7 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 	}
 	r.record(ctx, t.ID, "nudge", detail)
 	if err == nil || errors.Is(err, harness.ErrNotRunning) {
-		return nil
+		return loop
 	}
 	return sup.nudgeUndelivered(n, err)
 }
