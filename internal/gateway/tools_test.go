@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -125,15 +128,17 @@ func (f *fakeProviders) called(key string) int {
 }
 
 type fakeEscalator struct {
-	mu    sync.Mutex
-	calls []string
-	err   error
+	mu      sync.Mutex
+	calls   []string
+	choices [][]string
+	err     error
 }
 
 func (f *fakeEscalator) Escalate(_ context.Context, taskID string, e Escalation) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, strings.Join([]string{taskID, e.Kind, e.Question, e.Reason, e.Recommendation, e.Tried, e.Needs}, "|"))
+	f.choices = append(f.choices, e.Choices)
 	return f.err
 }
 
@@ -224,6 +229,40 @@ func TestMCPListsTheTools(t *testing.T) {
 	want := "escalate_to_human,fal_run,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
+	}
+}
+
+// escalate_to_human offers the agent choices: an optional list of strings
+// with its one line, beside the three required fields.
+func TestEscalateSchemaOffersChoices(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolEscalate })
+	if i < 0 {
+		t.Fatal("no escalate_to_human")
+	}
+	b, _ := json.Marshal(res.Tools[i].InputSchema)
+	var schema struct {
+		Required   []string
+		Properties map[string]struct {
+			Type        any
+			Description string
+			Items       struct{ Type any }
+		}
+	}
+	if err := json.Unmarshal(b, &schema); err != nil {
+		t.Fatal(err)
+	}
+	choices := schema.Properties["choices"]
+	if fmt.Sprint(choices.Type) != "array" || fmt.Sprint(choices.Items.Type) != "string" ||
+		choices.Description != "offer 2 to 5 short answers the human can pick with one click; always leave free text possible" {
+		t.Fatalf("choices = %+v in %s", choices, b)
+	}
+	if !slices.Equal(schema.Required, []string{"question", "reason", "recommendation"}) {
+		t.Fatalf("required = %q, want the three without choices", schema.Required)
 	}
 }
 
@@ -518,12 +557,14 @@ func TestToolRefusesBadArguments(t *testing.T) {
 func TestEscalateToHuman(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	text, isErr := e.call(t, policy.ToolEscalate, map[string]any{"question": "Which license?", "reason": "the issue names none",
-		"recommendation": "MIT, as the other repositories"})
+		"recommendation": "MIT, as the other repositories", "choices": []string{"MIT", "Apache-2.0"}})
 	if isErr || !strings.HasPrefix(text, "escalated; this session will end") {
 		t.Fatalf("result = %q", text)
 	}
-	if len(e.escalator.calls) != 1 || e.escalator.calls[0] != "42|escalation|Which license?|the issue names none|MIT, as the other repositories||" {
-		t.Fatalf("escalations = %v", e.escalator.calls)
+	// factoryd checks the choices where it stores them; the gateway hands them over
+	if len(e.escalator.calls) != 1 || e.escalator.calls[0] != "42|escalation|Which license?|the issue names none|MIT, as the other repositories||" ||
+		!slices.Equal(e.escalator.choices[0], []string{"MIT", "Apache-2.0"}) {
+		t.Fatalf("escalations = %v with choices %q", e.escalator.calls, e.escalator.choices)
 	}
 	if a := e.lastAudit(t); a.Decision != "escalated" || a.Tool != policy.ToolEscalate || len(e.toolLedger()) != 0 {
 		t.Fatalf("audit = %+v", a)

@@ -686,6 +686,23 @@ func TestBriefListsOnlyTheOpenTools(t *testing.T) {
 	}
 }
 
+// Where escalate_to_human is open, the guides ask for its choices when the
+// question has a few clear answers; elsewhere they name none.
+func TestGuidesAskForChoicesWithTheEscalation(t *testing.T) {
+	want := "If only a human can decide, call escalate_to_human with your recommendation. " +
+		"When the question has a few clear answers, pass them as its choices: the human picks one with a click or writes their own. "
+	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolEscalate}), "feature": featureGuide([]string{policy.ToolEscalate}, RoleFeature)} {
+		if !strings.Contains(g, want) {
+			t.Errorf("%s guide = %q, want it to contain %q", name, g, want)
+		}
+	}
+	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolRequestInfo}), "feature": featureGuide(nil, RoleFeature)} {
+		if strings.Contains(g, "choices") {
+			t.Errorf("%s guide without escalate_to_human = %q, want no choices", name, g)
+		}
+	}
+}
+
 // An outside account's issue that forges the standing line, a "How to
 // work" section and a closing marker stays inside its markers: the tag is
 // random per brief, and the author's text never carries it.

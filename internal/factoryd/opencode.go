@@ -651,7 +651,7 @@ func workGuide(tools []string) string {
 		asks++
 	}
 	if slices.Contains(tools, policy.ToolEscalate) {
-		g += "If only a human can decide, call escalate_to_human with your recommendation. "
+		g += "If only a human can decide, call escalate_to_human with your recommendation. " + askChoices
 		asks++
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
@@ -660,6 +660,10 @@ func workGuide(tools []string) string {
 		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
 	return g + guideEnd
 }
+
+// askChoices follows every guide's escalate_to_human: the card shows the
+// choices as buttons beside a text box (ruling 256).
+const askChoices = "When the question has a few clear answers, pass them as its choices: the human picks one with a click or writes their own. "
 
 // guideEnd closes every coding guide: the sandbox, the migration names,
 // the last message.
@@ -679,7 +683,8 @@ func featureGuide(tools []string, role string) string {
 		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
 	}
 	if slices.Contains(tools, policy.ToolEscalate) {
-		g += "If only a human can decide, call escalate_to_human with your recommendation. This tool is your only way to ask: nobody answers a question in a message. "
+		g += "If only a human can decide, call escalate_to_human with your recommendation. " + askChoices +
+			"This tool is your only way to ask: nobody answers a question in a message. "
 	} else {
 		g += "Nobody answers a question in a message. "
 	}

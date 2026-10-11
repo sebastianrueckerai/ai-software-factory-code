@@ -7,11 +7,13 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -25,15 +27,17 @@ type Escalator interface {
 }
 
 // Escalation is what an agent asks: a human (escalate_to_human: the
-// question, why, and what the agent would do) or the issue's author
-// (request_info: the question, what it tried, what it needs).
+// question, why, what the agent would do and the answers it offers) or the
+// issue's author (request_info: the question, what it tried, what it
+// needs).
 type Escalation struct {
-	Kind           string `json:"kind"`
-	Question       string `json:"question"`
-	Reason         string `json:"reason,omitempty"`
-	Recommendation string `json:"recommendation,omitempty"`
-	Tried          string `json:"tried,omitempty"`
-	Needs          string `json:"needs,omitempty"`
+	Kind           string   `json:"kind"`
+	Question       string   `json:"question"`
+	Reason         string   `json:"reason,omitempty"`
+	Recommendation string   `json:"recommendation,omitempty"`
+	Choices        []string `json:"choices,omitempty"`
+	Tried          string   `json:"tried,omitempty"`
+	Needs          string   `json:"needs,omitempty"`
 }
 
 // Escalation kinds.
@@ -132,6 +136,9 @@ type EscalateIn struct {
 	Question       string `json:"question" jsonschema:"what the human must answer or decide"`
 	Reason         string `json:"reason" jsonschema:"why the task cannot go on without it"`
 	Recommendation string `json:"recommendation" jsonschema:"what you would do and why, at most 2000 bytes"`
+	// factoryd checks the choices where it stores them: a list it cannot
+	// offer is dropped, never refused
+	Choices []string `json:"choices,omitempty" jsonschema:"offer 2 to 5 short answers the human can pick with one click; always leave free text possible"`
 }
 
 type RequestInfoIn struct {
@@ -139,6 +146,18 @@ type RequestInfoIn struct {
 	Tried    string `json:"tried" jsonschema:"what you tried to reproduce or find the fault"`
 	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
 }
+
+// escalateSchema is EscalateIn's input schema with choices a plain array:
+// the inferred type list ["null", "array"] is one some models' tool calls
+// refuse.
+var escalateSchema = func() *jsonschema.Schema {
+	s, err := jsonschema.For[EscalateIn](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+		reflect.TypeFor[[]string](): {Type: "array", Items: &jsonschema.Schema{Type: "string"}}}})
+	if err != nil {
+		panic(err)
+	}
+	return s
+}()
 
 // maxQuestion bounds an escalation's question and reason and an
 // information request's fields; maxRecommendation the recommendation.
@@ -170,7 +189,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 			return s.paid(ctx, c, policy.ToolFal, s.fal(c, in)), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolEscalate, Description: "Ask a human when the task cannot be completed without a decision, access or information only a human has. " +
-		"This session ends; the task resumes with the human's answer. Free."},
+		"This session ends; the task resumes with the human's answer. Free.", InputSchema: escalateSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
 		})
@@ -497,7 +516,7 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
 			"question, reason and recommendation are required, question and reason at most %d bytes, the recommendation at most %d", maxQuestion, maxRecommendation))
 	}
-	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec}, "escalated",
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: in.Choices}, "escalated",
 		"escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now.")
 }
 
