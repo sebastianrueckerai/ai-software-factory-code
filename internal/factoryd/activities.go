@@ -339,8 +339,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
-	if s.spec, s.cardRole, err = r.planOf(ctx, t); err != nil {
+	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, err
+	}
+	if t.Source != SourcePlan {
+		s.directories = askedDirectories(t.Objective)
 	}
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 		return SessionResult{}, err

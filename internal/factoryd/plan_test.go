@@ -983,7 +983,8 @@ func TestPlanLoopHealedWaitsOnTheRevision(t *testing.T) {
 }
 
 // A plan's card's session carries its spec and plan summary and its role
-// (the pod's SPEC and CARD_ROLE); the brief puts them in their section
+// and its plan row's directories (the pod's SPEC, CARD_ROLE and
+// DIRECTORIES); the brief puts the first two in their section
 // after factoryd's own lines, sanitised, and ends with the feature guide,
 // the integration card's with the acceptance/ line.
 func TestChildBriefCarriesSpec(t *testing.T) {
@@ -1002,8 +1003,8 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 	env := podEnv(kube.podAt(0))
 	spec := "Link shortener\n\nBuild a link shortener, cc @ops.\n\nThe plan's summary: The foundation first, then links and redirects, then the acceptance tests."
-	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration {
-		t.Fatalf("SPEC %q CARD_ROLE %q", env["SPEC"], env["CARD_ROLE"])
+	if env["SPEC"] != spec || env["CARD_ROLE"] != RoleIntegration || env["DIRECTORIES"] != `["acceptance/"]` {
+		t.Fatalf("SPEC %q CARD_ROLE %q DIRECTORIES %q", env["SPEC"], env["CARD_ROLE"], env["DIRECTORIES"])
 	}
 	text := briefText(harness.TaskBrief{Objective: card.Objective, Repository: "sf/r", Author: "sebastian", AuthorStanding: harness.StandingWriter,
 		Spec: "Build a link shortener, cc ＠ops.\n\nThe plan's summary: links first.", CardRole: RoleIntegration, Tools: []string{policy.ToolEscalate}}, "t")
@@ -1022,8 +1023,8 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it"})
-	if spec, role, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || err != nil {
-		t.Fatalf("planOf a webhook task = %q %q %v", spec, role, err)
+	if spec, role, dirs, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || err != nil {
+		t.Fatalf("planOf a webhook task = %q %q %q %v", spec, role, dirs, err)
 	}
 }
 

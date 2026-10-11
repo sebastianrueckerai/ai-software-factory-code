@@ -363,6 +363,26 @@ func askedBudget(body string) (size string, eur float64) {
 	return size, eur
 }
 
+// askedDirectories are the directories a hand-filed card's text names for
+// its brief's map: its last line "Directories: <dir>, <dir>", key in any
+// case; none without one.
+func askedDirectories(text string) []string {
+	var dirs []string
+	for l := range strings.Lines(text) {
+		key, v, _ := strings.Cut(l, ":")
+		if !strings.EqualFold(strings.TrimSpace(key), "directories") {
+			continue
+		}
+		dirs = nil
+		for d := range strings.SplitSeq(v, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	return dirs
+}
+
 // handleIssue hands an issue event to intakeIssue; a close goes to the
 // task the issue is linked to.
 func (in *Intake) handlePush(ctx context.Context, body []byte) error {

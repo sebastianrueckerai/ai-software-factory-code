@@ -82,6 +82,34 @@ func TestLoadEnvParsesFindings(t *testing.T) {
 	}
 }
 
+// The card's directories (DIRECTORIES) become the brief's map, read from
+// the clone: a hand-filed card's internal/console and internal/policy, the
+// second not in the repository.
+func TestCardMapReadsTheClone(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("DIRECTORIES", `["internal/console","internal/policy"]`)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "internal", "console"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "internal", "console", "chat.go"), []byte("// Package console serves the board.\npackage console\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := cardMap(repo, e.directories)
+	want := "Repository map (the card's directories at the commit this session starts from, each file with its first doc line):\n" +
+		"internal/console/chat.go: Package console serves the board.\ninternal/policy/: not in the repository"
+	if err != nil || got != want {
+		t.Fatalf("map = %q, %v; want %q", got, err, want)
+	}
+	if got, err := cardMap(repo, nil); got != "" || err != nil {
+		t.Fatalf("no directories: map = %q, %v; want none", got, err)
+	}
+}
+
 // A resumed session starts from the branch head an earlier session pushed
 // to the fork: the base clone from the task's repository lacks it, so the
 // worker fetches the branch from the fork before the checkout.

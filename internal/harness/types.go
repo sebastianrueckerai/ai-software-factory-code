@@ -39,6 +39,9 @@ type TaskBrief struct {
 	CardRole string `json:"card_role,omitempty"`
 	// Tools are the gateway's tools the task's classes may call, sorted.
 	Tools []string `json:"tools,omitempty"`
+	// Map is the card's repository map (factoryd.RepoMap), which the
+	// worker reads from its clone; "" when the card names no directories.
+	Map string `json:"map,omitempty"`
 }
 
 // Author standings (ruling 152).

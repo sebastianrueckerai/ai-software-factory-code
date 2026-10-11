@@ -1519,27 +1519,27 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 }
 
 // planOf is plan card t's section "The spec and the plan" (its plan's
-// issue text and the accepted plan's summary) and its role; "" for a task
-// no plan filed.
-func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, err error) {
+// issue text and the accepted plan's summary), its role and its plan
+// row's directories; "" and none for a task no plan filed.
+func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, err error) {
 	if t.Source != SourcePlan || t.Parent == "" {
-		return "", "", nil
+		return "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 	if err != nil || !ok {
-		return "", "", cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
+		return "", "", nil, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
 	}
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return "", "", terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
+		return "", "", nil, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
-		role = p.Cards[i].Role
+		role, dirs = p.Cards[i].Role, p.Cards[i].Directories
 	}
-	return plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary), role, nil
+	return plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary), role, dirs, nil
 }

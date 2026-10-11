@@ -633,6 +633,21 @@ func TestBriefPutsTheHumansAnswersFirst(t *testing.T) {
 	}
 }
 
+// A card's repository map is its own section after the findings; a
+// brief without one has none.
+func TestBriefCarriesTheRepositoryMap(t *testing.T) {
+	m := mapHeading + "\ninternal/console/chat.go: Package console serves the board."
+	got := briefText(harness.TaskBrief{Objective: "o", Findings: []string{"ran x"}, Map: m}, "T")
+	want := "The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>" +
+		"\nFindings from earlier attempts:\n- ran x\n\n" + m + "\n\n" + noTools + workGuide(nil)
+	if got != want {
+		t.Fatalf("brief =\n%s\nwant\n%s", got, want)
+	}
+	if got := briefText(harness.TaskBrief{Objective: "o"}, "T"); strings.Contains(got, "Repository map") {
+		t.Fatalf("brief without a map = %q", got)
+	}
+}
+
 // Ruling 152: the brief names the issue author's standing before the
 // author's text; ruling 150: the author's answers come under their own
 // heading as information. Every text of the author stands between

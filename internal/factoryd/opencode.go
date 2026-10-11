@@ -614,6 +614,9 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
 	}
+	if brief.Map != "" {
+		b.WriteString("\n\n" + brief.Map)
+	}
 	guide := brief.Report
 	switch {
 	case guide != "":

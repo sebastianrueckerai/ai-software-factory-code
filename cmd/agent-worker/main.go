@@ -130,6 +130,14 @@ func run(log func(string, ...any)) int {
 		Spec:           env.spec,
 		CardRole:       env.cardRole,
 	}
+	if brief.Map, err = cardMap(repoDir, env.directories); err != nil {
+		log("repository map: %v", err)
+		endBrief(err)
+		return 1
+	}
+	if brief.Map != "" {
+		log("repository map: %d directories, %d bytes", len(env.directories), len(brief.Map))
+	}
 	oc := &factoryd.Opencode{
 		WorkDir:    repoDir,
 		GatewayURL: env.gatewayURL,
@@ -357,6 +365,8 @@ type workerEnv struct {
 	report string
 	// spec and cardRole are a plan's card's (SPEC, CARD_ROLE)
 	spec, cardRole string
+	// directories are the card's (DIRECTORIES), for the brief's map
+	directories []string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -409,8 +419,9 @@ func loadEnv() (workerEnv, error) {
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
-	// FINDINGS, ANSWERS, POSTER_INFO and TOOLS arrive as JSON arrays; absent means none.
-	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools} {
+	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS and DIRECTORIES arrive as JSON arrays; absent means none.
+	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
+		"DIRECTORIES": &e.directories} {
 		if raw := str(name); raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)
@@ -558,6 +569,18 @@ func prepareRepo(repoDir string, e workerEnv) (base, mainHead string, err error)
 	}
 	base, err = e.git(repoDir, "rev-parse", "HEAD")
 	return base, mainHead, err
+}
+
+// cardMap is the brief's repository map of the card's directories in the
+// clone, read at the session's start commit before the agent runs and
+// before brief.json lands in the work tree.
+func cardMap(repoDir string, dirs []string) (string, error) {
+	root, err := os.OpenRoot(repoDir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	return factoryd.RepoMap(root.FS(), dirs), nil
 }
 
 const (

@@ -332,6 +332,8 @@ type sessionSpec struct {
 	standing string
 	// spec and cardRole are a plan's card's brief section and role
 	spec, cardRole string
+	// directories are the card's, which the worker maps from its clone
+	directories []string
 	// messageToken is the bearer of the worker's message endpoint, made
 	// per session; the pod gets its hash
 	messageToken string
@@ -1044,6 +1046,10 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if s.spec != "" {
 		env = append(env, map[string]any{"name": "SPEC", "value": s.spec}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
+	}
+	if len(s.directories) > 0 {
+		dirs, _ := json.Marshal(s.directories)
+		env = append(env, map[string]any{"name": "DIRECTORIES", "value": string(dirs)})
 	}
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
