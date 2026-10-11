@@ -323,11 +323,12 @@ func held(steps []map[string]any) bool {
 const providerWords = "waiting on the provider"
 
 // onProvider: the newest provider_refused step of steps, a refused
-// session's wait on the model provider, has no session_start after it.
+// session's wait on the model provider, has no session_start or held
+// step after it.
 func onProvider(steps []map[string]any) bool {
 	for i := len(steps) - 1; i >= 0; i-- {
 		switch steps[i]["step"] {
-		case "session_start":
+		case "session_start", "held":
 			return false
 		case factoryd.StepProviderRefused:
 			return true

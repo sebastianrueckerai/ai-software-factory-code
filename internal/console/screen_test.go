@@ -335,6 +335,16 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 <a href="#needs-you"`; !strings.Contains(body, want) || strings.Contains(body, "waiting on the provider") {
 		t.Errorf("after the session_start the board does not show the card working:\n%s", body)
 	}
+	// past its backoff the next session waits for a roll, not the provider
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused + `{"step":"held","roll":"t-roll"}` + "\n")
+	r.c.mu.Lock()
+	r.c.checks = nil
+	r.c.mu.Unlock()
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="pill fine st-waiting">waiting for a roll</span>`) || !strings.Contains(body, `<span class="fig">1 working</span>`) ||
+		strings.Contains(body, "waiting on the provider") {
+		t.Errorf("a held card after a refusal does not wait for the roll:\n%s", body)
+	}
 	// the sixth refusal asked a human: the card waits on them, not the provider
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-human", Lane: "ready", Repository: "sf/code", Objective: "t-wait", PRNumber: 5, CreatedAt: time.Now()}}}
 	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused)

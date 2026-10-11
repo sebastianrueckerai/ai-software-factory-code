@@ -1225,6 +1225,42 @@ func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
 	}
 }
 
+// A session that ran into the wall clock made calls: the provider
+// answered, so the next refusal waits 2 minutes again.
+func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	var steps []string
+	h.onVerify(&steps, nil, gosecRed)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			// the second session's three tries time out
+			if n := len(h.sessions); n >= 2 && n <= 4 {
+				return SessionResult{}, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
+			}
+			return refusedSession, nil
+		})
+	var backoffs []int
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			backoffs = append(backoffs, int(w.Backoff.Seconds()))
+			return nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
+	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		t.Fatalf("final = %q, escalations %q; want failed after the cap card", final, h.escalated)
+	}
+	if !slices.Equal(backoffs, []int{120, 120}) {
+		t.Fatalf("backoffs = %v, want 120 before and 120 after the wall-clock session", backoffs)
+	}
+	if n := strings.Count(h.logs.String(), "the model provider answers again"); n != 1 {
+		t.Fatalf("%d recovery lines, want 1", n)
+	}
+}
+
 // A terminal signal ends the wait on the provider at once.
 func TestWorkflowProviderWaitEndsOnTheIssuesClose(t *testing.T) {
 	h, began, _ := providerHarness(t, refusedSession)

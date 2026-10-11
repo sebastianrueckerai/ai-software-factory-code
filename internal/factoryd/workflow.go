@@ -973,6 +973,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			attempt--
 			continue
 		}
+		// a session that ended or ran into the wall clock made calls
+		if refusals > 0 && (err == nil || isWallClockTimeout(err)) {
+			workflow.GetLogger(t.ctx).Info("the model provider answers again", "task", t.taskID, "refusals", refusals)
+			refusals = 0
+		}
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
 		t.recordUsage(u)
@@ -1006,10 +1011,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
 			continue
-		}
-		if refusals > 0 {
-			workflow.GetLogger(t.ctx).Info("the model provider answers again", "task", t.taskID, "refusals", refusals)
-			refusals = 0
 		}
 		parent = res.SessionID
 		reason = res.Summary
