@@ -214,9 +214,9 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
 	}
 	switch c.Size {
-	case "small", "medium":
+	case "small", "medium", "large":
 	case "":
-		add(`size "": want small or medium`)
+		add(`size "": want small, medium or large`)
 	default:
 		add("size %s: split it; a card is one package, one page or one set of endpoints", c.Size)
 	}
@@ -486,7 +486,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"Your last message is the whole result: one fenced ```json block and nothing else, holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium"}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}]}. ` +
 		fmt.Sprintf("The plan has 2 to %d cards. ", shape.MaxCards) +
 		"key: lowercase letters, digits and dashes, 2 to 32, unique. role: foundation, feature or integration. "
 	if shape.Foundation {
@@ -508,7 +508,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"keep the briefs short, the whole block holds at most 12 KiB. directories: at most %d paths relative to the repository's root, "+
 		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent. "+
 		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: small or medium. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
+		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards). Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
 		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
 }
@@ -994,6 +994,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	}
 	edges := planEdges(p)
 	order := planOrder(p, edges)
+	_, project, _ := v.ProjectOf(t.Repository)
 	cards := map[string]Task{}
 	var open []webhookIssue
 	var issues []int64
@@ -1005,7 +1006,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 		title := r.untrusted(t, c.Title)
 		body := r.untrusted(t, cardBody(c, t.IssueNumber, i+1, len(order), approver, deps))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
-			BudgetEUR: v.Document.Budget.ClampBudget(0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
+			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: taskID, PlanKey: c.Key,
 			Author: approver, AuthorWriter: true})
 		if err != nil {

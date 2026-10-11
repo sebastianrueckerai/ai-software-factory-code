@@ -93,8 +93,9 @@ func TestValidatePlan(t *testing.T) {
 		"unknown card":      {change(func(p *Plan) { p.Cards[2].DependsOn = []string{"qr-codes"} }), []string{`plan: card redirects: depends on "qr-codes", which is no card of the plan`}},
 		"itself":            {change(func(p *Plan) { p.Cards[2].DependsOn = []string{"redirects"} }), []string{"plan: card redirects: depends on itself"}},
 		"cycle":             {change(func(p *Plan) { p.Cards[1].DependsOn = []string{"redirects"} }), []string{"plan: the dependencies form a cycle: links-api -> redirects -> links-api"}},
-		"size":              {change(func(p *Plan) { p.Cards[2].Size = "large" }), []string{"plan: card redirects: size large: split it; a card is one package, one page or one set of endpoints"}},
-		"no size":           {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small or medium`}},
+		"large":             {change(func(p *Plan) { p.Cards[2].Size = "large" }), nil},
+		"size":              {change(func(p *Plan) { p.Cards[2].Size = "huge" }), []string{"plan: card redirects: size huge: split it; a card is one package, one page or one set of endpoints"}},
+		"no size":           {change(func(p *Plan) { p.Cards[2].Size = "" }), []string{`plan: card redirects: size "": want small, medium or large`}},
 		"no title":          {change(func(p *Plan) { p.Cards[2].Title = "" }), []string{"plan: card redirects: title empty"}},
 		"long title":        {change(func(p *Plan) { p.Cards[2].Title = strings.Repeat("t", 121) }), []string{"plan: card redirects: title over 120 characters"}},
 		"no brief":          {change(func(p *Plan) { p.Cards[2].Brief = "" }), []string{"plan: card redirects: brief empty"}},
@@ -121,6 +122,16 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
 	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
+
+// Stage 16 item 3.7: the guide names the three sizes by their lines, in
+// the json shape and in the field rules.
+func TestPlanGuideSizes(t *testing.T) {
+	got := planGuide(testShape, testLimits)
+	if !strings.Contains(got, `"size": "small|medium|large"`) ||
+		!strings.Contains(got, "size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards).") {
+		t.Fatalf("planGuide = %q, want the three sizes", got)
 	}
 }
 
@@ -456,6 +467,35 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"children_created [2 3 4 5]"}) {
 		t.Fatalf("plan steps %v", steps)
+	}
+}
+
+// A card's budget follows its size (policy budget 5 by default, 15 at
+// most): small 2, medium 5, large 10, a large one at most the project's
+// card maximum.
+func TestChildrenBudgetBySize(t *testing.T) {
+	p := testPlan()
+	p.Cards[1].Size = "large"
+	for _, tc := range []struct {
+		budget *policy.ProjectBudget
+		large  float64
+	}{{nil, 10}, {&policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: 3}, 3}} {
+		r, store, _, _ := newPlanRunner(t, p)
+		pinned := fixtureVersion(t)
+		pinned.Document.Budget.TaskDefaultEUR, pinned.Document.Budget.TaskMaxEUR = 5, 15
+		project := pinned.Projects["linkshort"]
+		project.Budget = tc.budget
+		pinned.Projects["linkshort"] = project
+		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+		if res := createChildren(t, r); len(res.Refused) != 0 {
+			t.Fatalf("refused %q", res.Refused)
+		}
+		cards := cardsByKey(t, store)
+		for key, want := range map[string]float64{"foundation": min(5, tc.large), "links-api": tc.large, "redirects": 2} {
+			if got := cards[key].BudgetEUR; got != want {
+				t.Errorf("project budget %+v: card %s budget %g, want %g", tc.budget, key, got, want)
+			}
+		}
 	}
 }
 
@@ -866,7 +906,7 @@ func TestAcceptRefusesCycle(t *testing.T) {
 // card waits for a human with the findings, a writer's comment buys one
 // more session, a closed issue ends the task closed.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
-	invalid := []string{"plan: card web: size large: split it; a card is one package, one page or one set of endpoints"}
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
 	h := newPlanHarness(t, PlanResult{Findings: invalid})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
 	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
