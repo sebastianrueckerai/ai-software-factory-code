@@ -1616,22 +1616,30 @@ for it: the row reads `copying since <time>` (its `last_update` the
 start) and the project's registration waits without failing. The
 migrate's end clears the row's token, sets `imported <time>` and
 reconciles the project again, or sets `failed: <error>` with the token
-taken out, which the next reconcile, at least hourly, copies again.
-factoryd's stop leaves the row copying. A copying row with no copy running
-(after a restart) is read against Forgejo, which finishes a migrate its
-caller left: a non-empty repository is the copy's, imported; an empty one
-may still be copying, unless the copy started over 20 minutes ago (twice
-the migrate's timeout, since Forgejo syncs branches and tags after the
-clone while the repository reads empty): then it is the copy of an empty
-source and imported; with no repository (Forgejo drops a refused
-migrate's) the copy starts again. The seed gives a source
+taken out and the start kept. factoryd's stop leaves the row copying.
+Forgejo 15 finishes a migrate its caller left, and keeps the repository,
+empty, when it refuses one (a second migrate into it answers 409). So a
+row not imported, with no copy running in factoryd, over a repository is
+read against Forgejo: a non-empty repository is the copy's, imported. An
+empty one made under 20 minutes ago (twice the migrate's timeout, since
+Forgejo syncs branches and tags after the clone while the repository reads
+empty) may still be filling: a copying row waits, any other fails the
+reconcile. An older empty one, whatever the row's state, is asked of
+GitHub once (`GET /repos/{owner}/{repo}/commits?per_page=1` on
+`api.github.com`, with the row's token if any): 409, an empty source, is
+imported; a commit means the copy was cut or refused, so the site admin
+deletes the empty repository and the copy starts again (so a refused
+import is copied again by a reconcile, at least hourly, 20 minutes on);
+any other answer leaves the row and fails the reconcile. With no
+repository the copy starts. `register-project` waits for a copy it
+started and fails while the row still reads copying. The seed gives a source
 whose default branch is not `main` a `main` from it, seeds an empty one
 whole, and otherwise commits only the template's `.forgejo/` files and `AGENTS.md` that the copy lacks,
 with the template's `deploy/` when the copy has none ("Factory workflows",
-"Factory workflows and manifests"). An import row still pending or
-copying 7 days after its last write whose project no file names (a pull
-request closed unmerged, a file removed during the copy) is deleted with
-its token at the next poll. The panel
+"Factory workflows and manifests"). An import row still pending,
+copying or failed 7 days after its last write whose project no file names
+(a pull request closed unmerged, a file removed before the import) is
+deleted with its token at the next poll. The panel
 shows a fifth step, "Imported from GitHub", between the repository and
 `ready_at`.
 

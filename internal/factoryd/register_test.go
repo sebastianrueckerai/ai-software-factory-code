@@ -61,6 +61,7 @@ type forgejoState struct {
 	migrated      []map[string]any
 	migrateFail   string        // a migrate's 500 answer; "": it works
 	migrateGate   chan struct{} // a migrate answers once it closes, the fake's lock free meanwhile; nil: at once
+	created       time.Time     // the repository's creation, as Forgejo answers it
 	source        []string      // the migrated repository's paths; none: it is empty
 	sourceBranch  string        // and its default branch
 	defaultBranch string
@@ -129,7 +130,10 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			fmt.Fprintf(w, `{"empty":%t}`, len(s.branches) == 0)
+			fmt.Fprintf(w, `{"empty":%t,"created_at":%q}`, len(s.branches) == 0, s.created.UTC().Format(time.RFC3339))
+		case admin && r.Method == http.MethodDelete && p == repo:
+			s.repo, s.created = false, time.Time{}
+			w.WriteHeader(http.StatusNoContent)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/orgs/demo-app/repos":
 			if body["name"] != "demo-app" || body["private"] != true || body["default_branch"] != "main" || body["auto_init"] != nil {
 				t.Errorf("create repo %v", body)
@@ -138,6 +142,12 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/repos/migrate":
 			s.migrated = append(s.migrated, body)
+			if s.repo {
+				w.WriteHeader(http.StatusConflict)
+				return
+			}
+			// Forgejo 15 makes the repository first and keeps it, empty, when it refuses
+			s.repo, s.created = true, time.Now()
 			if gate := s.migrateGate; gate != nil {
 				s.mu.Unlock()
 				<-gate
@@ -148,7 +158,7 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				io.WriteString(w, s.migrateFail)
 				return
 			}
-			s.repo, s.defaultBranch = true, s.sourceBranch
+			s.defaultBranch = s.sourceBranch
 			for _, f := range s.source {
 				s.files[f], s.branches[s.sourceBranch] = true, "1mp0rt"
 			}
@@ -643,6 +653,7 @@ type registerRig struct {
 	store *memProjects
 	reg   *Registrar
 	logs  *bytes.Buffer
+	gh    *fakeGitHub
 }
 
 func newRegisterRig(t *testing.T) *registerRig {

@@ -10,8 +10,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
+	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -76,6 +78,9 @@ type Registrar struct {
 	// Mirrors are the projects' GitHub mirror rows, whose state each poll
 	// reads from Forgejo; nil reads none.
 	Mirrors MirrorStore
+	// GitHubAPI is GitHub's API, https://api.github.com, which tells an
+	// empty import source from a cut copy.
+	GitHubAPI string
 
 	mu sync.Mutex
 	// reconcileErrs is each factory project's last failed reconcile, by
@@ -113,9 +118,9 @@ const (
 	// Kustomization's name and namespace.
 	fluxNameLabel      = "kustomize.toolkit.fluxcd.io/name"
 	fluxNamespaceLabel = "kustomize.toolkit.fluxcd.io/namespace"
-	// staleImport is how long an import row of a filing whose pull request
-	// never merged keeps its token: a week, so a review over a weekend
-	// keeps its import.
+	// staleImport is how long an import row not imported, of a filing whose
+	// pull request never merged or a project whose file went, keeps its
+	// token: a week, so a review over a weekend keeps its import.
 	staleImport = 7 * 24 * time.Hour
 )
 
@@ -1138,8 +1143,9 @@ func (run *reconcileRun) register(ctx context.Context, rotate bool) {
 // file the configuration holds, gets its row and its reconcile, which
 // registers it when its row lacks a token or rotate is set (every token
 // minted again), and waits for a copy from GitHub the reconcile started,
-// whose end reconciles again: a failure is the last reconcile's. A second
-// run changes nothing.
+// whose end reconciles again: a failure is the last reconcile's, and a
+// copy still running elsewhere is one too, its tokens not minted yet. A
+// second run changes nothing.
 func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Project, error) {
 	p, err := r.stored(ctx, name)
 	if err != nil {
@@ -1160,6 +1166,12 @@ func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Pro
 	r.copies.Wait()
 	if last := r.ReconcileError(name); err == nil && last != "" {
 		err = errors.New(last)
+	}
+	if r.Mirrors != nil && err == nil {
+		m, _, merr := r.Mirrors.MirrorToken(ctx, name, MirrorImport)
+		if err = merr; err == nil && strings.HasPrefix(m.State, "copying") {
+			err = fmt.Errorf("registration: repository %s: %w", p.Repo(), copyingSince(m))
+		}
 	}
 	if stored, serr := r.stored(ctx, name); serr == nil {
 		p = stored
@@ -1262,13 +1274,15 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 // name's import row names while the row waits for it, else empty. The
 // migrate is a copy beside the reconciles (copy), which registration waits
 // for without failing. A row not imported over a repository with no copy
-// running here is one a restart cut or an earlier migrate's, which Forgejo
-// finishes when its caller leaves: a non-empty repository is the copy's,
-// imported; an empty one may still be copying, so the row waits, unless
-// the copy started over twice the migrate's timeout ago (Forgejo syncs
-// branches and tags after the clone while the repository reads empty):
-// the copy of an empty source, which the seed fills whole. With no
-// repository (Forgejo drops a refused migrate's), the copy starts again.
+// running here is one a restart cut, a refused migrate's (Forgejo 15 keeps
+// the repository, empty) or an earlier migrate's, which Forgejo finishes
+// when its caller leaves: a non-empty repository is the copy's, imported.
+// An empty one made under twice the migrate's timeout ago may still be
+// filling (Forgejo syncs branches and tags after the clone while the
+// repository reads empty): a copying row waits, any other fails. An older
+// empty one, whatever the row's state, is asked of GitHub: an empty source
+// is imported, which the seed fills whole; one with a commit was cut or
+// refused, so the admin deletes the repository and the copy starts again.
 func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, repo Repo) (Change, error) {
 	m, ok, err := Mirror{}, false, error(nil)
 	if r.Mirrors != nil {
@@ -1283,7 +1297,8 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 	if _, running := r.copying.Load(name); running {
 		return "", copyingSince(m)
 	}
-	exists, body, err := adminExists(ctx, r.Forgejo.adminCall(a), "/api/v1/repos/"+repo.String())
+	call := r.Forgejo.adminCall(a)
+	exists, body, err := adminExists(ctx, call, "/api/v1/repos/"+repo.String())
 	if err != nil {
 		return "", err
 	}
@@ -1291,18 +1306,57 @@ func (r *Registrar) ensureRepo(ctx context.Context, a AdminAuth, name string, re
 		return "", r.copy(ctx, a, name, repo, m)
 	}
 	var res struct {
-		Empty bool `json:"empty"`
+		Empty   bool      `json:"empty"`
+		Created time.Time `json:"created_at"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
 		return "", err
 	}
 	switch {
-	case !res.Empty, !m.LastUpdate.IsZero() && time.Since(m.LastUpdate) > 2*migrateTimeout:
+	case !res.Empty:
 		return r.imported(ctx, name, m)
-	case strings.HasPrefix(m.State, "copying"):
+	case time.Since(res.Created) <= 2*migrateTimeout && strings.HasPrefix(m.State, "copying"):
 		return "", copyingSince(m)
+	case time.Since(res.Created) <= 2*migrateTimeout:
+		return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
 	}
-	return "", fmt.Errorf("the repository exists, empty: a migrate of github.com/%s may still be copying; the next reconcile looks again", m.Remote)
+	if empty, err := r.sourceEmpty(ctx, m); err != nil || empty {
+		if err != nil {
+			return "", err
+		}
+		return r.imported(ctx, name, m)
+	}
+	if _, err := call(ctx, http.MethodDelete, "/api/v1/repos/"+repo.String(), nil, http.StatusNoContent); err != nil {
+		return "", fmt.Errorf("delete the empty repository a cut or refused copy of github.com/%s left: %w", m.Remote, err)
+	}
+	log.Printf("project %s: repository %s: deleted, empty since %s: github.com/%s has commits, the copy was cut or refused", name, repo, res.Created.UTC().Format(minuteUTC), m.Remote)
+	return "", r.copy(ctx, a, name, repo, m)
+}
+
+// sourceEmpty asks GitHub whether m's repository has a commit, with m's
+// token when it holds one: 409 is GitHub's "Git Repository is empty".
+func (r *Registrar) sourceEmpty(ctx context.Context, m Mirror) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.GitHubAPI+"/repos/"+m.Remote+"/commits?per_page=1", nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if m.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+m.Token)
+	}
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	var commits []json.RawMessage
+	switch {
+	case resp.StatusCode == http.StatusConflict:
+		return true, nil
+	case resp.StatusCode == http.StatusOK && json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&commits) == nil && len(commits) > 0:
+		return false, nil
+	}
+	return false, fmt.Errorf("GitHub answers %s to the commits of %s: an empty source or a cut copy, the next reconcile asks again", resp.Status, m.Remote)
 }
 
 // errCopying is registration's wait for a project's copy from GitHub.
@@ -1320,7 +1374,8 @@ func copyingSince(m Mirror) error {
 // the next start to read against Forgejo. The copy's end, under mu, so
 // after the reconcile that started it, writes imported and reconciles the
 // project again, or failed with the error, which is the project's
-// reconcile error until the next reconcile, at least hourly, copies again.
+// reconcile error until a reconcile, at least hourly, finds Forgejo's
+// leftover over 20 minutes old and copies again.
 func (r *Registrar) copy(ctx context.Context, a AdminAuth, name string, repo Repo, m Mirror) error {
 	m.LastUpdate = time.Now()
 	m.State = "copying since " + m.LastUpdate.UTC().Format(minuteUTC)
@@ -1359,7 +1414,8 @@ func (r *Registrar) copy(ctx context.Context, a AdminAuth, name string, repo Rep
 
 // copied records the end of m's copy, err its migrate's: the row forgets
 // the token and says imported. A refused migrate leaves the row its token
-// and says failed, the token taken out; one cut by ctx writes nothing.
+// and its start and says failed, the token taken out; one cut by ctx
+// writes nothing.
 func (r *Registrar) copied(ctx context.Context, name string, m Mirror, err error) (Change, error) {
 	if err == nil {
 		return r.imported(ctx, name, m)
@@ -1372,7 +1428,7 @@ func (r *Registrar) copied(ctx context.Context, name string, m Mirror, err error
 		return "", errors.New(msg)
 	}
 	first, _, _ := strings.Cut(msg, "\n")
-	return "", errors.Join(errors.New(msg), r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "failed: "+textutil.Truncate(first, 120), msg, time.Time{}))
+	return "", errors.Join(errors.New(msg), r.Mirrors.SetMirrorState(ctx, name, MirrorImport, "failed: "+textutil.Truncate(first, 120), msg, m.LastUpdate))
 }
 
 func (r *Registrar) imported(ctx context.Context, name string, m Mirror) (Change, error) {
