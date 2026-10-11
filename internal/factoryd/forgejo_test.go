@@ -116,23 +116,56 @@ func TestForgejoRevokeAlreadyGone(t *testing.T) {
 	}
 }
 
-// RemoveIssueDependency deletes the dependency as the bot, the issue it
-// is on named in the body, and takes Forgejo's 200 as its swagger says.
-func TestForgejoRemoveIssueDependency(t *testing.T) {
-	var got string
+// SetIssueDependency reads the issue's dependencies first and leaves an
+// issue already as asked alone; else it adds or deletes the dependency as
+// the bot, the dependency named in the body, and takes Forgejo's 200 for
+// the delete as its swagger says.
+func TestForgejoSetIssueDependency(t *testing.T) {
+	deps := []int64{21}
+	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pw, _ := r.BasicAuth()
+		user, _, _ := r.BasicAuth()
 		b, _ := io.ReadAll(r.Body)
-		got = fmt.Sprintf("%s %s %s:%s %s", r.Method, r.URL.Path, user, pw, b)
-		w.Write([]byte(`{}`))
+		got = append(got, strings.TrimSpace(fmt.Sprintf("%s %s %s %s", r.Method, r.URL.RequestURI(), user, b)))
+		switch {
+		case r.Method == http.MethodGet && r.URL.Query().Get("page") == "1":
+			list := []map[string]any{}
+			for _, d := range deps {
+				list = append(list, map[string]any{"number": d})
+			}
+			json.NewEncoder(w).Encode(list)
+		case r.Method == http.MethodGet:
+			w.Write([]byte(`[]`))
+		case r.Method == http.MethodDelete:
+			deps = nil
+			w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost:
+			deps = []int64{21}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		}
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-bot", BotPassword: "bot-pw"}
-	if err := f.RemoveIssueDependency(context.Background(), Repo{Owner: "sf", Name: "r"}, 22, 21); err != nil {
-		t.Fatalf("RemoveIssueDependency: %v", err)
-	}
-	if want := `DELETE /api/v1/repos/sf/r/issues/22/dependencies factory-bot:bot-pw {"index":21,"owner":"sf","repo":"r"}`; got != want {
-		t.Fatalf("request = %s, want %s", got, want)
+	const path = "/api/v1/repos/sf/r/issues/22/dependencies"
+	const page1, page2 = "GET " + path + "?page=1&limit=50 factory-bot", "GET " + path + "?page=2&limit=50 factory-bot"
+	const body = ` factory-bot {"index":21,"owner":"sf","repo":"r"}`
+	for _, tc := range []struct {
+		remove bool
+		want   []string
+	}{
+		{false, []string{page1, page2}},
+		{true, []string{page1, page2, "DELETE " + path + body}},
+		{true, []string{page1}},
+		{false, []string{page1, "POST " + path + body}},
+	} {
+		got = nil
+		if err := f.SetIssueDependency(context.Background(), Repo{Owner: "sf", Name: "r"}, 22, 21, tc.remove); err != nil {
+			t.Fatalf("SetIssueDependency(remove %t): %v", tc.remove, err)
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("SetIssueDependency(remove %t) asked\n%q\nwant\n%q", tc.remove, got, tc.want)
+		}
 	}
 }
 

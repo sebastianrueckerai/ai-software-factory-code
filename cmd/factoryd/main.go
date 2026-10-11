@@ -406,9 +406,8 @@ func main() {
 		}{store, forgejo},
 		// the projects token registration keeps the repositories with, which
 		// may add a collaborator where the approver's own token may not
-		AddCollaborator:       forgejo.AddProjectCollaborator,
-		AddIssueDependency:    forgejo.AddIssueDependency,
-		RemoveIssueDependency: forgejo.RemoveIssueDependency,
+		AddCollaborator:    forgejo.AddProjectCollaborator,
+		SetIssueDependency: forgejo.SetIssueDependency,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)

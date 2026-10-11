@@ -190,9 +190,9 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card with an
-// issue in the backlog, waiting on a human or failed.
+// issue in the backlog or waiting on a human.
 func (k card) Closes() bool {
-	return k.MayWriteSummary && k.IssueNumber > 0 && slices.Contains([]string{"backlog", "waiting-human", "failed"}, k.Status)
+	return k.MayWriteSummary && k.IssueNumber > 0 && slices.Contains([]string{"backlog", "waiting-human"}, k.Status)
 }
 
 // fine is a card's fine state as a chip in the pill's hues.

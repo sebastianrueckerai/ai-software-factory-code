@@ -165,10 +165,11 @@ type Config struct {
 	// as the token registration keeps project repositories with
 	// (factoryd's Forgejo.AddProjectCollaborator): an invited member.
 	AddCollaborator func(ctx context.Context, repo factoryd.Repo, user, permission string) error
-	// AddIssueDependency and RemoveIssueDependency make issue number of
-	// repo depend on issue dependency, or no longer, as the bot, which
-	// keeps Forgejo's dependencies as it does a plan's (factoryd's Forgejo).
-	AddIssueDependency, RemoveIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64) error
+	// SetIssueDependency makes issue number of repo depend on issue
+	// dependency, or with remove no longer, as the bot, which keeps
+	// Forgejo's dependencies as it does a plan's; an issue already as asked
+	// is left alone (factoryd's Forgejo.SetIssueDependency).
+	SetIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error
 }
 
 // Console is the console's http.Handler.

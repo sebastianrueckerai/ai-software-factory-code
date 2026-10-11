@@ -13,8 +13,9 @@ import (
 
 // newWritesRig is the chat rig with the cards the writes need beside #5,
 // #11 and #13: #14 t-cap waiting at its session cap (three sessions of
-// the policy's three), #7 t-done done, and #21 t-a and #22 t-b in the
-// backlog.
+// the policy's three), #7 t-done done, #31 t-f failed, and #21 t-a and
+// #22 t-b in the backlog of process spec, which has the dependencies
+// block.
 func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 	r, _, g := newChatRig(t)
 	r.tasks.mu.Lock()
@@ -25,16 +26,19 @@ func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 			Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed"},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 7,
 			Objective: "Add the schema."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 31,
+			Objective: "Add the cache."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
 			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
 			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}})
 	return r, g
 }
 
 // proposeAndDo has the agent call tool with args, which proposes, and the
-// member press Do it: it answers the proposal's stream and the Do it's.
-func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string) (proposed, done []string) {
+// member press Do it: it answers the proposal's stream, the Do it's and
+// the Do it's undo tokens.
+func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string) (proposed, done, undo []string) {
 	t.Helper()
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, tool, args)}}
@@ -42,8 +46,8 @@ func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string) (prop
 	if len(tokens) != 1 {
 		t.Fatalf("%s proposed %v", tool, proposed)
 	}
-	_, done, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
-	return proposed, done
+	_, done, undo = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	return proposed, done, undo
 }
 
 // ran is the stream of a Do it of tool with args that answered result
@@ -75,7 +79,7 @@ func TestChatClose(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
 	args := `{"task_id":"t-m","note":"Superseded by #7."}`
-	proposed, done := proposeAndDo(t, r, g, "close", args)
+	proposed, done, _ := proposeAndDo(t, r, g, "close", args)
 	equal(t, "proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache\", note Superseded by #7.","id":"TOKEN","tool":"close"}`,
 		`done {}`})
@@ -107,7 +111,7 @@ func TestChatEdit(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
 	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
-	proposed, done := proposeAndDo(t, r, g, "edit", args)
+	proposed, done, _ := proposeAndDo(t, r, g, "edit", args)
 	equal(t, "proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache\", title Fix the cache eviction","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
@@ -147,7 +151,7 @@ func TestChatGrantSession(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
-	proposed, done := proposeAndDo(t, r, g, "grant_session", args)
+	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
 	equal(t, "proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs\", text Trim to 1 MB first.","id":"TOKEN","tool":"grant_session"}`,
 		`done {}`})
@@ -162,18 +166,23 @@ func TestChatGrantSession(t *testing.T) {
 }
 
 // set_dependency proposes; Do it stores the edge and makes the issue
-// depend on the other's as the bot, with one dependency_set row via chat.
-// A card that started refuses, a cycle refuses naming the dependency
-// that closes it, and remove takes the edge off both again.
+// depend on the other's as the bot, with one dependency_set row via chat,
+// and offers its inverse as the undo. A card that started refuses, a
+// process without the dependencies block refuses, a cycle refuses naming
+// the dependency that closes it; remove takes the edge off both, and its
+// undo puts it back.
 func TestChatSetDependency(t *testing.T) {
 	r, g := newWritesRig(t)
+	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
-	proposed, done := proposeAndDo(t, r, g, "set_dependency", args)
+	proposed, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("set_dependency", args, "#22 depends on #21 now."))
+	set := "#22 depends on #21 now."
+	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
+		`applied {"result":"` + set + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
 	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {"t-a"}})
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 	row := func(removed bool) factoryd.Event {
@@ -189,6 +198,7 @@ func TestChatSetDependency(t *testing.T) {
 	}{
 		{toolInput{TaskID: "t-r", DependsOn: "t-a"}, http.StatusConflict,
 			"Card #11 runs an agent session, not a card that has not started: steer sends its session a message; its pull request comes when the session ends."},
+		{toolInput{TaskID: "t-m", DependsOn: "t-a"}, http.StatusConflict, "Process maintenance has no dependencies block: its cards do not wait on others."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already depends on #21, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-done"}, http.StatusConflict,
@@ -201,14 +211,23 @@ func TestChatSetDependency(t *testing.T) {
 	}
 
 	args = `{"task_id":"t-b","depends_on":"t-a","remove":true}`
-	proposed, done = proposeAndDo(t, r, g, "set_dependency", args)
+	proposed, done, undo := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "removal's proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", no longer depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
-	equal(t, "removal's Do it", done, ran("set_dependency", args, "#22 no longer depends on #21."))
+	gone := "#22 no longer depends on #21."
+	equal(t, "removal's Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + gone + `"}`,
+		`applied {"result":"` + gone + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
 	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {}})
 	equal(t, "the issue dependencies", r.issueDeps, []string{})
 	chatRows(t, r.events, before, "sebastian", row(false), row(true))
+
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+undo[0], nil)
+	equal(t, "the removal's undo", events, []string{`tool {"arguments":{},"duration_ms":0,"name":"undo set_dependency","result":"` + set + `"}`,
+		`applied {"result":"` + set + `","tool":"set_dependency"}`, `done {}`})
+	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {"t-a"}})
+	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
+	chatRows(t, r.events, before, "sebastian", row(false), row(true), row(false))
 }
 
 // new_card takes a size: the proposal names it, and Do it files the issue
@@ -217,7 +236,7 @@ func TestChatNewCardSize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
 	args := `{"title":"Cache metrics","body":"Count hits.","lane":"backlog","size":"large"}`
-	proposed, done := proposeAndDo(t, r, g, "new_card", args)
+	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
 		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., lane backlog, size large","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
@@ -227,9 +246,10 @@ func TestChatNewCardSize(t *testing.T) {
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large"}})
 }
 
-// The face offers a writer Close on a card in the backlog, waiting on a
-// human or failed, behind a confirm; the answer form of a card at its
-// session cap says what the answer does.
+// The face offers a writer Close on a card in the backlog or waiting on a
+// human, behind a confirm, and on no running or final card; the answer
+// form of a card at its session cap says what the answer does, and its
+// answer is a grant: one session_granted row via button.
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
@@ -242,7 +262,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	if face := faceOf(t, body, "t-a"); !strings.Contains(face, closeForm) {
 		t.Errorf("the backlog card's face =\n%s\nwant it to hold\n%s", face, closeForm)
 	}
-	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-r": false, "t-done": false} {
+	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-r": false, "t-done": false, "t-f": false} {
 		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
@@ -253,4 +273,9 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	if esc := escalationOf(t, body, "t-e"); !strings.Contains(esc, `<button type="submit">Answer</button>`) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
+	before := r.events.count()
+	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
+	equal(t, "the grant", rec.Code, http.StatusSeeOther)
+	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-cap", detail: postedDetail(1)})
 }

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -552,7 +553,9 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 // doAnswer posts the member's answer to card id's escalation as an
 // issue comment under their own name; intake's human_comment path resumes
 // the task. The event names the comment, so intake records no second
-// question_answered when its webhook delivers that very comment.
+// question_answered when its webhook delivers that very comment; at the
+// session cap the answer is a grant, and its event session_granted as
+// doGrantSession's.
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -568,12 +571,16 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
+	kind := factoryd.EventQuestionAnswered
+	if c.capFactsOf(ctx, t).capped {
+		kind = factoryd.EventSessionGranted
+	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return "", &forgejoRefusal{"post the answer", err}
 	}
 	log.Printf("console: %s answered the escalation of %s via %s", a.s.user, t.ID, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, commentDetail(posted))
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, commentDetail(posted))
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
 }
 
@@ -700,7 +707,8 @@ func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (
 // doSetDependency makes card id, which has not started, wait for card
 // dependsOn of its project until that one is done, or with remove no
 // longer: on the issues as the bot, then in the store, whose edge the
-// dependency wait reads. A cycle refuses.
+// dependency wait reads. A cycle refuses, and so does an edge in a
+// process without the dependencies block, where nothing waits.
 func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn string, remove bool) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -725,6 +733,16 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		return "", wrongState(d, c.capFactsOf(ctx, d), "a card that is not final")
 	case t.IssueNumber == 0 || d.IssueNumber == 0:
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
+	}
+	if !remove {
+		name, _, err := c.processOfCard(ctx, t)
+		if err != nil {
+			return "", err
+		}
+		name = cmp.Or(t.Process, name)
+		if v, ok := c.inForce(ctx); !ok || v.Tree.Processes[name].Dependencies == nil {
+			return "", refuse(http.StatusConflict, "Process "+name+" has no dependencies block: its cards do not wait on others.")
+		}
 	}
 	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
 	if err != nil {
@@ -752,11 +770,11 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "the task names no repository")
 	}
-	issues, store, verb := c.cfg.AddIssueDependency, c.cfg.Tasks.AddTaskDeps, "add"
+	store, verb := c.cfg.Tasks.AddTaskDeps, "add"
 	if remove {
-		issues, store, verb = c.cfg.RemoveIssueDependency, c.cfg.Tasks.RemoveTaskDeps, "remove"
+		store, verb = c.cfg.Tasks.RemoveTaskDeps, "remove"
 	}
-	if err := issues(ctx, repo, t.IssueNumber, d.IssueNumber); err != nil {
+	if err := c.cfg.SetIssueDependency(ctx, repo, t.IssueNumber, d.IssueNumber, remove); err != nil {
 		return "", &forgejoRefusal{fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err}
 	}
 	if err := store(ctx, t.ID, []string{d.ID}); err != nil {

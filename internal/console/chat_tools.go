@@ -566,7 +566,7 @@ var tools = []chatTool{
 		fits:     "two cards of which the first has not started",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
-			return note, nil, err
+			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
 		}},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

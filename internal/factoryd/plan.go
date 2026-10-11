@@ -1177,10 +1177,23 @@ func (f *Forgejo) AddIssueDependency(ctx context.Context, repo Repo, number, dep
 	return err
 }
 
-// RemoveIssueDependency makes issue number of repo no longer depend on
-// issue dependency (swagger issueRemoveIssueDependencies): any 2xx, as
-// its swagger says 200 where the add answers 201.
-func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number, dependency int64) error {
+// SetIssueDependency makes issue number of repo depend on issue
+// dependency, or with remove no longer, as the bot; an issue already as
+// asked is left alone, so a retry or a change made in Forgejo fails
+// nothing. The delete takes any 2xx (swagger issueRemoveIssueDependencies
+// says 200, where the add answers 201).
+func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dependency int64, remove bool) error {
+	have, err := f.IssueDependencies(ctx, repo.Owner, repo.Name, number)
+	if err != nil {
+		return err
+	}
+	has := slices.Contains(have, dependency)
+	switch {
+	case has && !remove, !has && remove:
+		return nil
+	case !remove:
+		return f.AddIssueDependency(ctx, repo, number, dependency)
+	}
 	payload, err := json.Marshal(map[string]any{"owner": repo.Owner, "repo": repo.Name, "index": dependency})
 	if err != nil {
 		return err

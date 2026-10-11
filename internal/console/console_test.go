@@ -720,16 +720,12 @@ func newRig(t *testing.T) *rig {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
 			return nil
 		},
-		AddIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64) error {
-			r.issueDeps = append(r.issueDeps, fmt.Sprintf("%s#%d on #%d", repo, number, dependency))
-			return nil
-		},
-		RemoveIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64) error {
+		SetIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error {
 			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
-			if !slices.Contains(r.issueDeps, edge) {
-				return fmt.Errorf("no dependency %s", edge)
-			}
 			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })
+			if !remove {
+				r.issueDeps = append(r.issueDeps, edge)
+			}
 			return nil
 		},
 	})

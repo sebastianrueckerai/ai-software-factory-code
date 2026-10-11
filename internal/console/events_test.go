@@ -38,10 +38,13 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if e.Kind == factoryd.EventQuestionAnswered && e.Detail != nil && e.Detail["comment"] != nil {
+	answer := func(kind string) bool {
+		return kind == factoryd.EventQuestionAnswered || kind == factoryd.EventSessionGranted
+	}
+	if answer(e.Kind) && e.Detail != nil && e.Detail["comment"] != nil {
 		comment := e.Detail["comment"]
 		for _, r := range f.rows {
-			if r.TaskID == e.TaskID && r.Kind == factoryd.EventQuestionAnswered && r.Detail != nil && r.Detail["comment"] == comment {
+			if r.TaskID == e.TaskID && answer(r.Kind) && r.Detail != nil && r.Detail["comment"] == comment {
 				return 0, nil
 			}
 		}
