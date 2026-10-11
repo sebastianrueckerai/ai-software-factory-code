@@ -520,8 +520,10 @@ var cacheMounts = []any{
 // 0644 Go writes under umask 022 denies O_RDWR to the same uid in the
 // next pod sharing the claim, which cmd/go reports as `package X is not
 // in std` (debug-cache-race.md: 19/33 concurrent cold-cache pod-runs
-// failed; umask 0000 0/30, same speed). Run as `sh -c cacheUmaskSh argv0`
-// with the real command in argv0 and its args in args.
+// failed; umask 0000 0/30, same speed). Run as `/bin/sh -c cacheUmaskSh
+// argv0` with the real command in argv0 and its args in args, both by
+// absolute path: PATH leads with /cache/go/bin, which pull request jobs
+// and agents write.
 const cacheUmaskSh = `umask 0000; exec "$0" "$@"`
 
 func cacheVolumes(claim string) []any {

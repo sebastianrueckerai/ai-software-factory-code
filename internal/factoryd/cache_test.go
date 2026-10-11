@@ -100,6 +100,44 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 	checkCache(t, r.reproPodSpec(task, cache, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "cache-agent-linkshort")
 }
 
+// A container's command names absolute paths: the cache volumes put
+// /cache/go/bin, which pull request jobs and agents write, first on the
+// pod's PATH, so a bare sh or forgejo-runner would run a planted binary as
+// the next pod's entrypoint.
+func TestPodCommandsNameAbsolutePaths(t *testing.T) {
+	commands := func(pod map[string]any) [][]any {
+		spec := pod["spec"].(map[string]any)
+		var out [][]any
+		for _, key := range []string{"initContainers", "containers"} {
+			list, _ := spec[key].([]any)
+			for _, c := range list {
+				out = append(out, c.(map[string]any)["command"].([]any))
+			}
+		}
+		return out
+	}
+	runner := []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"}
+	worker := []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"}
+	spawner := newTestCISpawner(t, newFakeKube(), &ciHub{})
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
+	for name, c := range map[string]struct {
+		pod  map[string]any
+		want [][]any
+	}{
+		"ci runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), [][]any{runner}},
+		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false),
+			[][]any{{"/bin/sh", "-c", buildReadyScript}, runner}},
+		// the clone and the fetch init containers are copies of the worker's
+		"worker": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), [][]any{worker, worker}},
+		"repro":  {r.reproPodSpec(task, "cache-agent-linkshort", Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), [][]any{worker, worker}},
+	} {
+		if got := commands(c.pod); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s commands = %q, want %q", name, got, c.want)
+		}
+	}
+}
+
 func TestCIPodMountsCICache(t *testing.T) {
 	store := &memProjects{m: map[string]Project{
 		"linkshort": {Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"},

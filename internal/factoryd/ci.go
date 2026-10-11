@@ -656,7 +656,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		initContainers = append(initContainers, map[string]any{
 			"name":    buildReadyContainer,
 			"image":   s.cfg.RunnerImage,
-			"command": []any{"sh", "-c", buildReadyScript},
+			"command": []any{"/bin/sh", "-c", buildReadyScript},
 			"env":     initEnv,
 			"volumeMounts": []any{
 				map[string]any{"name": "tmp", "mountPath": "/tmp"},
@@ -687,7 +687,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 			"containers": []any{map[string]any{
 				"name":    "runner",
 				"image":   s.cfg.RunnerImage,
-				"command": []any{"sh", "-c", cacheUmaskSh, "forgejo-runner"},
+				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"},
 				"args": []any{
 					"one-job",
 					"--url", s.cfg.GitBaseURL,

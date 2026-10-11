@@ -1122,7 +1122,7 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			"containers": []any{map[string]any{
 				"name":    "worker",
 				"image":   r.cfg.WorkerImage,
-				"command": []any{"sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"},
+				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"},
 				"env":     append(env, cacheEnv...),
 				"resources": map[string]any{
 					"requests": sandboxRequests,
