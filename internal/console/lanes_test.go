@@ -177,11 +177,14 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 		`<form method="post" action="/cards/t-c2/lane" hx-post="/cards/t-c2/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="ready">` +
 			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value=""><input type="hidden" name="accent" value=""><input type="hidden" name="lane" value="ready">`,
 		`<button type="submit" aria-label="Move #2 to lane ready">→ Ready</button>`,
-		`draggable="true" data-card="t-c2"`, `data-lane="backlog"`, `data-lane="plan"`,
+		`data-lane="backlog"`, `data-lane="plan"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
 		}
+	}
+	if face := faceOf(t, body, "t-c2"); !strings.Contains(face, `draggable="true"`) {
+		t.Errorf("the card with a move is not draggable:\n%s", face)
 	}
 
 	// a spec that is no plan's card may go to plan and ready
@@ -205,8 +208,8 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 			t.Errorf("alice, %s: buttons %v, want %v", id, got, want)
 		}
 	}
-	if strings.Contains(body, `data-card="t-c2"`) {
-		t.Error("a card with no button is draggable")
+	if face := faceOf(t, body, "t-c2"); strings.Contains(face, "draggable") {
+		t.Errorf("a card with no button is draggable:\n%s", face)
 	}
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()

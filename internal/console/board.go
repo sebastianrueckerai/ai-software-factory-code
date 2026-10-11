@@ -125,6 +125,8 @@ type card struct {
 	// FilterProject and FilterAccent are the board's filter the card's
 	// forms carry back so an action keeps the view.
 	FilterProject, FilterAccent string
+	// Place is where the board puts the card (boardCard).
+	Place string
 }
 
 // titleClause is the face's title from the objective, on one line: up to
@@ -444,221 +446,153 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	c.render(w, name, d)
 }
 
-// boardOf is the board of project ("" every project) and accent ("" every
-// accent) as the session's human sees it: the lanes of the shown projects'
-// processes in the fixed order backlog, plan, ready, then the state
-// columns.
-func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
+// boardView is what the cards of one render share: the viewer, whether
+// they approve, the board's filter (which every card's forms carry back),
+// the projects agents work on by repository, the tasks read so far by id,
+// the pending approval requests and the tasks they card (planned: by a
+// plan's request). boardOf fills it for the whole board, cardFragment for
+// one card; problems are what the board says it could not do.
+type boardView struct {
+	user, csrf      string
+	approver        bool
+	filter          boardFilter
+	byRepo          map[string]factoryd.Project
+	byID            map[string]factoryd.Task
+	pending         []factoryd.ApprovalRequest
+	carded, planned map[string]bool
+	unchecked       bool // a may-move check failed, logged once per render
+	problems        []string
+}
+
+// viewOf reads what every card of a render shares, and the projects agents
+// work on, by name.
+func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
-	f := boardFilter{Project: project, Accent: accent}
-	d := boardData{User: s.user, CSRF: s.csrf, boardFilter: f, Query: f.query()}
-	v, _ := c.inForce(r)
-	d.Approver = slices.Contains(v.Document.Approvers, s.user)
+	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
+		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
+	pol, _ := c.inForce(r)
+	v.approver = slices.Contains(pol.Document.Approvers, s.user)
 	all, err := c.coderProjects(r)
 	if err != nil {
-		return d, fmt.Errorf("projects: %w", err)
+		return v, nil, fmt.Errorf("projects: %w", err)
 	}
-	byRepo := map[string]factoryd.Project{}
 	for _, p := range all {
-		d.Projects = append(d.Projects, p.Name)
-		byRepo[p.Repository] = p
+		v.byRepo[p.Repository] = p
 	}
-	shown := all
-	if project != "" {
-		i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Name == project })
-		if i < 0 {
-			return d, errNoProject
-		}
-		shown = all[i : i+1]
-	}
-	inView := func(repository string) bool { return project == "" || repository == shown[0].Repository }
-	lanes := map[string]bool{}
-	for _, p := range shown {
-		for _, l := range p.Lanes {
-			lanes[l.Name] = true
-		}
-	}
-	byLane, byStatus := map[string]int{}, map[string]int{}
-	for _, name := range policy.LaneNames {
-		if lanes[name] {
-			byLane[name] = len(d.Columns)
-			d.Columns = append(d.Columns, column{Title: laneTitles[name], Lane: name})
-		}
-	}
-	for _, col := range stateColumns {
-		byStatus[col.Status] = len(d.Columns)
-		d.Columns = append(d.Columns, column{Title: col.Title})
-	}
-	byStatus["closing"] = byStatus["running"]
-
-	tasks, err := c.cfg.Tasks.BoardTasks(ctx, time.Now().Add(-finishedSince), boardLimit)
-	if err != nil {
-		return d, fmt.Errorf("tasks: %w", err)
-	}
-	if len(tasks) == boardLimit {
-		d.Problems = append(d.Problems, fmt.Sprintf("the board shows the first %d tasks", boardLimit))
-	}
-	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
-	if err != nil {
+	if v.pending, err = c.cfg.Approvals.ApprovalRequests(ctx, "pending"); err != nil {
 		log.Printf("console: approvals: %v", err)
-		d.Problems = append(d.Problems, "approval requests could not be read")
+		v.problems = append(v.problems, "approval requests could not be read")
 	}
-	carded, planned := map[string]bool{}, map[string]bool{}
-	for _, a := range pending {
-		carded[a.TaskID] = true
-		planned[a.TaskID] = planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
+	for _, a := range v.pending {
+		v.carded[a.TaskID] = true
+		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
 	}
-	escalations := map[string]factoryd.BoardTask{}
-	byID := map[string]factoryd.Task{}
-	for _, bt := range tasks {
-		byID[bt.ID] = bt.Task
+	return v, all, nil
+}
+
+// humanLane: t has no agent, so its card is in the human lane: a human
+// task, or a roll task until its card (ruling 178).
+func (v *boardView) humanLane(t factoryd.Task) bool {
+	return t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !v.carded[t.ID]
+}
+
+// escalated: t waits on an escalation of its own; a waiting plan's card is
+// its escalation, which Request changes answers.
+func (v *boardView) escalated(t factoryd.Task) bool {
+	return t.Status == "waiting-human" && !v.planned[t.ID]
+}
+
+// mayReady: the viewer, an approver, may move t's cards into ready, as
+// Start plan and Retry do.
+func (c *Console) mayReady(ctx context.Context, v *boardView, t factoryd.Task) bool {
+	if !v.approver {
+		return false
 	}
-	unchecked := false
-	// mayReady: the viewer, an approver, may move t's cards into ready,
-	// as Start plan and Retry do
-	mayReady := func(t factoryd.Task) bool {
-		if !d.Approver {
-			return false
-		}
-		_, proc := processOf(byRepo, t)
-		ready, _ := proc.Lane(policy.LaneReady)
-		ok, err := c.mayMoveCached(ctx, t.Repository, s.user, ready.MovedBy)
-		if err != nil {
-			log.Printf("console: may %s move %s's cards into ready: %v", s.user, t.Repository, err)
-		}
-		return ok
+	_, proc := processOf(v.byRepo, t)
+	ready, _ := proc.Lane(policy.LaneReady)
+	ok, err := c.mayMoveCached(ctx, t.Repository, v.user, ready.MovedBy)
+	if err != nil {
+		log.Printf("console: may %s move %s's cards into ready: %v", v.user, t.Repository, err)
 	}
-	for _, bt := range tasks {
-		t := bt.Task
-		if !inView(t.Repository) {
-			continue
-		}
-		// the accent filter narrows the board to one accent; a card with
-		// none is in no accent's board, and an accent never changes how a
-		// state renders.
-		if accent != "" && t.Accent != accent {
-			continue
-		}
-		k := c.card(t)
-		k.WaitingOn = bt.WaitingOn
-		// "blocked by n" counts the dependencies that are not done yet;
-		// WaitingOn already says so for a card in waiting-deps, where the
-		// face shows that chip and never both.
-		if bt.Dependencies != "" && bt.WaitingOn == "" {
-			k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
-		}
-		if t.Gate == factoryd.GateMergeQueue {
-			k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
-		}
-		// a roll task has no agent: the human lane until its card (ruling 178)
-		if t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !carded[t.ID] {
-			if !factoryd.Final(t.Status) {
-				d.HumanTasks = append(d.HumanTasks, k)
+	return ok
+}
+
+// boardCard is bt's card as the board shows it, in a column, the human
+// lane or the escalations, and as the card fragment swaps it in; its
+// activity line, checks and forms follow from finishCards. Place is
+// where the board puts it: the script swaps a card whose place changed
+// with the whole board.
+func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
+	t := bt.Task
+	k := c.card(t)
+	k.Place = fmt.Sprintf("%s %s %s %t %t %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert)
+	k.WaitingOn = bt.WaitingOn
+	// "blocked by n" counts the dependencies that are not done yet;
+	// WaitingOn already says so for a card in waiting-deps, where the
+	// face shows that chip and never both.
+	if bt.Dependencies != "" && bt.WaitingOn == "" {
+		k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
+	}
+	if t.Gate == factoryd.GateMergeQueue {
+		k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
+	}
+	if v.humanLane(t) {
+		return k
+	}
+	if t.Source == factoryd.SourcePlan && t.Parent != "" {
+		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
+	}
+	switch t.Status {
+	case "backlog":
+		name, proc := processOf(v.byRepo, t)
+		for _, lane := range policy.LaneNames {
+			why, err := moveRefusal(ctx, t, name, proc, lane, v.user, c.mayMoveCached)
+			if err != nil && !v.unchecked {
+				v.unchecked = true
+				log.Printf("console: may %s move %s into %s: %v", v.user, t.ID, lane, err)
+				v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
 			}
-			continue
-		}
-		if t.Source == factoryd.SourcePlan && t.Parent != "" {
-			k.PlanIssue = c.planIssue(ctx, byID, t.Parent)
-		}
-		i, ok := byStatus[t.Status]
-		switch t.Status {
-		case "backlog":
-			i, ok = byLane[policy.LaneBacklog]
-			name, proc := processOf(byRepo, t)
-			for _, lane := range policy.LaneNames {
-				why, err := moveRefusal(ctx, t, name, proc, lane, s.user, c.mayMoveCached)
-				if err != nil && !unchecked {
-					unchecked = true
-					log.Printf("console: may %s move %s into %s: %v", s.user, t.ID, lane, err)
-					d.Problems = append(d.Problems, "who may move a card could not be checked: the move buttons are hidden")
-				}
-				if err == nil && why == "" {
-					k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf})
-				}
-			}
-		case "queued", "waiting-deps":
-			if i, ok = byLane[t.Lane]; !ok {
-				i, ok = byLane[policy.LaneReady]
-			}
-		default:
-			if t.Lane == policy.LanePlan || t.Lane == policy.LaneReady {
-				k.Badge = t.Lane
+			if err == nil && why == "" {
+				k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: v.csrf})
 			}
 		}
-		if t.Lane == policy.LanePlan && t.Status == "done" {
-			if k.Plan, err = c.planCards(ctx, t, mayReady(t), s.csrf); err != nil {
-				log.Printf("console: the cards of plan %s: %v", t.ID, err)
-				d.Problems = append(d.Problems, "the cards of plan "+t.ID+" could not be read")
-			} else {
-				k.Children = planRollup(k.Plan.Cards)
-			}
-		}
-		// a retry that stopped before its replacement got an issue is finished by the next
-		replacement, retried := byID[factoryd.RetryID(t.ID)]
-		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
-			mayReady(t) {
-			k.Retry = &retry{CSRF: s.csrf}
-		}
-		// a waiting plan's card is its escalation: Request changes answers it
-		escalated := t.Status == "waiting-human" && !planned[t.ID]
-		if escalated {
-			k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
-		}
-		if ok {
-			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
-		}
-		if t.Status == "waiting-human" && planned[t.ID] {
-			escalations[t.ID] = bt
-		} else if escalated {
-			d.Escalations = append(d.Escalations, k)
+	case "queued", "waiting-deps":
+	default:
+		if t.Lane == policy.LanePlan || t.Lane == policy.LaneReady {
+			k.Badge = t.Lane
 		}
 	}
-	for _, a := range pending {
-		if inView(a.Project) {
-			k := c.approvalCard(ctx, a, byID, s.csrf, d.Approver)
-			k.FilterProject, k.FilterAccent = project, accent
-			// an escalation from before this revision's request (a cap a
-			// writer granted) no longer holds
-			if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-				k.Escalation = e.Escalation
-			}
-			d.Approvals = append(d.Approvals, k)
-		}
-	}
-	var ids []string
-	collect := func(ks []card) {
-		for _, k := range ks {
-			ids = append(ids, k.ID)
-		}
-	}
-	for _, col := range d.Columns {
-		collect(col.Cards)
-	}
-	collect(d.HumanTasks)
-	collect(d.Escalations)
-	// everyCard is each card of the board once, so a face's checks count,
-	// its staleness ring and the summary editor can be filled per card.
-	everyCard := func(fn func(*card)) {
-		for i := range d.Columns {
-			for j := range d.Columns[i].Cards {
-				fn(&d.Columns[i].Cards[j])
-			}
-		}
-		for i := range d.HumanTasks {
-			fn(&d.HumanTasks[i])
-		}
-		for i := range d.Escalations {
-			fn(&d.Escalations[i])
-		}
-	}
-	newest := map[string]factoryd.Event{}
-	if len(ids) > 0 && c.cfg.Events != nil {
-		got, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
-		if err != nil {
-			log.Printf("console: newest events: %v", err)
+	if t.Lane == policy.LanePlan && t.Status == "done" {
+		var err error
+		if k.Plan, err = c.planCards(ctx, t, c.mayReady(ctx, v, t), v.csrf); err != nil {
+			log.Printf("console: the cards of plan %s: %v", t.ID, err)
+			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
 		} else {
-			newest = got
+			k.Children = planRollup(k.Plan.Cards)
 		}
+	}
+	// a retry that stopped before its replacement got an issue is finished by the next
+	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
+	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
+		c.mayReady(ctx, v, t) {
+		k.Retry = &retry{CSRF: v.csrf}
+	}
+	if v.escalated(t) {
+		k.Reason, k.EscalationAlert = bt.Escalation, bt.EscalationAlert
+	}
+	return k
+}
+
+// finishCards fills what each card's face reads per render rather than
+// from its task: the newest event's activity line and the stale ring, the
+// checks count, and for a writer of the card's project the summary and
+// accent forms with the board's filter. each visits every card once.
+func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(*card))) {
+	var ids []string
+	each(func(k *card) { ids = append(ids, k.ID) })
+	newest, err := c.cfg.Events.NewestTaskEvents(ctx, ids)
+	if err != nil {
+		log.Printf("console: newest events: %v", err)
 	}
 	// A card with no event keeps its escalation's first line, the
 	// question it waits on an answer to; a card with neither claims
@@ -695,20 +629,135 @@ func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, e
 			k.StaleText = ""
 		}
 	}
-	everyCard(setActivity)
-	c.faceTimelines(ctx, everyCard)
+	each(setActivity)
+	c.faceTimelines(ctx, each)
 	setForms := func(k *card) {
-		ok, err := c.mayMoveCached(ctx, k.Repository, s.user, policy.MovedByWriters)
-		if err != nil && !unchecked {
-			unchecked = true
-			log.Printf("console: may %s write %s: %v", s.user, k.Repository, err)
+		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
+		if err != nil && !v.unchecked {
+			v.unchecked = true
+			log.Printf("console: may %s write %s: %v", v.user, k.Repository, err)
 		}
 		if k.MayWriteSummary = ok; ok {
-			k.CSRF = s.csrf
+			k.CSRF = v.csrf
 		}
-		k.FilterProject, k.FilterAccent = project, accent
+		k.FilterProject, k.FilterAccent = v.filter.Project, v.filter.Accent
 	}
-	everyCard(setForms)
+	each(setForms)
+}
+
+// boardOf is the board of project ("" every project) and accent ("" every
+// accent) as the session's human sees it: the lanes of the shown projects'
+// processes in the fixed order backlog, plan, ready, then the state
+// columns.
+func (c *Console) boardOf(r *http.Request, project, accent string) (boardData, error) {
+	ctx := r.Context()
+	f := boardFilter{Project: project, Accent: accent}
+	v, all, err := c.viewOf(r, f)
+	d := boardData{User: v.user, CSRF: v.csrf, boardFilter: f, Query: f.query(), Approver: v.approver}
+	if err != nil {
+		return d, err
+	}
+	for _, p := range all {
+		d.Projects = append(d.Projects, p.Name)
+	}
+	shown := all
+	if project != "" {
+		i := slices.IndexFunc(all, func(p factoryd.Project) bool { return p.Name == project })
+		if i < 0 {
+			return d, errNoProject
+		}
+		shown = all[i : i+1]
+	}
+	inView := func(repository string) bool { return project == "" || repository == shown[0].Repository }
+	lanes := map[string]bool{}
+	for _, p := range shown {
+		for _, l := range p.Lanes {
+			lanes[l.Name] = true
+		}
+	}
+	byLane, byStatus := map[string]int{}, map[string]int{}
+	for _, name := range policy.LaneNames {
+		if lanes[name] {
+			byLane[name] = len(d.Columns)
+			d.Columns = append(d.Columns, column{Title: laneTitles[name], Lane: name})
+		}
+	}
+	for _, col := range stateColumns {
+		byStatus[col.Status] = len(d.Columns)
+		d.Columns = append(d.Columns, column{Title: col.Title})
+	}
+	byStatus["closing"] = byStatus["running"]
+
+	tasks, err := c.cfg.Tasks.BoardTasks(ctx, time.Now().Add(-finishedSince), boardLimit)
+	if err != nil {
+		return d, fmt.Errorf("tasks: %w", err)
+	}
+	if len(tasks) == boardLimit {
+		d.Problems = append(d.Problems, fmt.Sprintf("the board shows the first %d tasks", boardLimit))
+	}
+	for _, bt := range tasks {
+		v.byID[bt.ID] = bt.Task
+	}
+	escalations := map[string]factoryd.BoardTask{}
+	for _, bt := range tasks {
+		t := bt.Task
+		// the accent filter narrows the board to one accent; a card with
+		// none is in no accent's board, and an accent never changes how a
+		// state renders.
+		if !inView(t.Repository) || accent != "" && t.Accent != accent {
+			continue
+		}
+		k := c.boardCard(ctx, v, bt)
+		if v.humanLane(t) {
+			if !factoryd.Final(t.Status) {
+				d.HumanTasks = append(d.HumanTasks, k)
+			}
+			continue
+		}
+		i, ok := byStatus[t.Status]
+		switch t.Status {
+		case "backlog":
+			i, ok = byLane[policy.LaneBacklog]
+		case "queued", "waiting-deps":
+			if i, ok = byLane[t.Lane]; !ok {
+				i, ok = byLane[policy.LaneReady]
+			}
+		}
+		if ok {
+			d.Columns[i].Cards = append(d.Columns[i].Cards, k)
+		}
+		if t.Status == "waiting-human" && v.planned[t.ID] {
+			escalations[t.ID] = bt
+		} else if v.escalated(t) {
+			d.Escalations = append(d.Escalations, k)
+		}
+	}
+	for _, a := range v.pending {
+		if inView(a.Project) {
+			k := c.approvalCard(ctx, a, v.byID, v.csrf, d.Approver)
+			k.FilterProject, k.FilterAccent = project, accent
+			// an escalation from before this revision's request (a cap a
+			// writer granted) no longer holds
+			if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
+				k.Escalation = e.Escalation
+			}
+			d.Approvals = append(d.Approvals, k)
+		}
+	}
+	c.finishCards(ctx, v, func(fn func(*card)) {
+		for i := range d.Columns {
+			for j := range d.Columns[i].Cards {
+				fn(&d.Columns[i].Cards[j])
+			}
+		}
+		for i := range d.HumanTasks {
+			fn(&d.HumanTasks[i])
+		}
+		for i := range d.Escalations {
+			fn(&d.Escalations[i])
+		}
+	})
+	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
 }
 
@@ -1098,12 +1147,12 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 	http.Error(w, "Forgejo refused to "+what+"; see the factoryd log", http.StatusBadGateway)
 }
 
-// cardFragment answers GET /cards/{id}: the one card's HTML as the board
-// renders it, for writers of its project, 404 otherwise. The stream uses
-// this to swap a single card on each event without re-rendering the board.
+// cardFragment answers GET /cards/{id} to a writer of the card's project,
+// 404 to anyone else: the one card as the board renders it, its forms
+// carrying the filter (?project, ?accent) of the board it is swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	t, ok, err := c.cfg.Tasks.Task(r.Context(), id)
+	ctx, id := r.Context(), r.PathValue("id")
+	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
 	switch {
 	case err != nil:
 		log.Printf("console: card %s: %v", id, err)
@@ -1113,42 +1162,30 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	may, err := c.mayMoveCached(r.Context(), t.Repository, current(r).user, policy.MovedByWriters)
+	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
 	switch {
 	case err != nil:
-		log.Printf("console: may %s write %s: %v", current(r).user, t.Repository, err)
+		log.Printf("console: may %s write %s: %v", current(r).user, bt.Repository, err)
 		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
 		return
 	case !may:
 		http.NotFound(w, r)
 		return
 	}
-	s := current(r)
-	k := c.card(t)
-	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		byID := map[string]factoryd.Task{}
-		if bt, ok, _ := c.cfg.Tasks.Task(r.Context(), t.Parent); ok {
-			byID[bt.ID] = bt
-		}
-		k.PlanIssue = c.planIssue(r.Context(), byID, t.Parent)
-	}
-	if t.Status == "backlog" {
-		name, proc := processOf(nil, t)
-		for _, lane := range policy.LaneNames {
-			why, err := moveRefusal(r.Context(), t, name, proc, lane, s.user, c.mayMoveCached)
-			if err == nil && why == "" {
-				k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: s.csrf})
-			}
-		}
-	}
-	newest, err := c.cfg.Events.NewestTaskEvents(r.Context(), []string{id})
+	q := r.URL.Query()
+	v, _, err := c.viewOf(r, boardFilter{Project: q.Get("project"), Accent: q.Get("accent")})
 	if err != nil {
-		log.Printf("console: card %s: newest events: %v", id, err)
-	} else if e, ok := newest[id]; ok {
-		k.Activity = fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, e.At.UTC().Format("15:04"))
+		log.Printf("console: card %s: %v", id, err)
+		http.Error(w, "cannot read the card", http.StatusInternalServerError)
+		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := c.tmpl.ExecuteTemplate(w, "card", k); err != nil {
-		log.Printf("console: card %s: render: %v", id, err)
+	v.byID[bt.ID] = bt.Task
+	if bt.Status == "failed" {
+		if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(bt.ID)); err == nil && ok {
+			v.byID[rt.ID] = rt
+		}
 	}
+	k := c.boardCard(ctx, v, bt)
+	c.finishCards(ctx, v, func(fn func(*card)) { fn(&k) })
+	c.render(w, "card", k)
 }

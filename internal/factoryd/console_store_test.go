@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -64,6 +65,16 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 	if want := []string{"cannot reach the database", "", ""}; !slices.Equal(reasons, want) {
 		t.Fatalf("reasons = %q, want %q", reasons, want)
+	}
+	// one card reads as the board reads it, a card off the board too
+	if one, ok, err := s.BoardTask(ctx, "high"); err != nil || !ok || !reflect.DeepEqual(one, tasks[0]) {
+		t.Fatalf("BoardTask(high) = %+v, %v, %v; want the board's %+v", one, ok, err, tasks[0])
+	}
+	if one, ok, err := s.BoardTask(ctx, "old"); err != nil || !ok || one.Status != "failed" {
+		t.Fatalf("BoardTask(old) = %+v, %v, %v; want the failed task", one, ok, err)
+	}
+	if _, ok, err := s.BoardTask(ctx, "t-gone"); err != nil || ok {
+		t.Fatalf("BoardTask(t-gone) = %v, %v; want no task", ok, err)
 	}
 	// bounded, open tasks first
 	tasks, err = s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 2)

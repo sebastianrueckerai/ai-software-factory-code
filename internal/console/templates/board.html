@@ -107,7 +107,7 @@
 <button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>
 </form>{{end}}
 
-{{define "card"}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}"{{if .Moves}} draggable="true" data-card="{{.ID}}"{{end}}>
+{{define "card"}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}" data-place="{{.Place}}"{{if .Moves}} draggable="true"{{end}}>
 <p class="line1"><span class="ref">{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}}</span> <strong class="title">{{.Title}}</strong>{{with .Accent}} <span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>
 <p class="line2"><span class="pill {{.StatusClass}}">{{.Status}}</span>{{if .Total}} <span class="elapsed">{{.Total}} in all</span>{{end}}{{with .Checks}} <span class="checks">{{.}} checks</span>{{end}}{{if gt .BudgetEUR 0.0}} <span class="spend{{if .NearBudget}} near{{end}}">{{eur2 .SpentEUR}} / {{eur2 .BudgetEUR}}{{if .NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if .GateText}} <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
 {{if or .Activity .StaleText}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}

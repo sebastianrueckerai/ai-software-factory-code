@@ -593,6 +593,63 @@ func TestCardFragmentAnswers200ForWriter(t *testing.T) {
 	}
 }
 
+// Every card face the board renders is what its fragment answers, byte
+// for byte, under the board's filter: the escalated card in its column and
+// in the escalations, backlog cards with one move form per lane, a plan's
+// cards with Start plan, Retry and their plan's issue, the badge, the
+// blocked, waiting and merge queue lines, a human task, an accent and an
+// activity line.
+func TestCardFragmentIsTheBoardsCard(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	withLinkshort(r)
+	since := time.Now().Add(-90 * time.Minute)
+	r.tasks.tasks = append(planTasks(),
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Lane: "ready", Process: "spec", Objective: "card 7",
+			Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
+			Objective: "add the feed", Accent: "teal", CreatedAt: since}, Escalation: "The agent asks: a replica or a shard?\nmore", EscalationAlert: 3},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Repository: "linkshort/linkshort", IssueNumber: 14,
+			PRNumber: 21, Objective: "queue it", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,
+			Objective: "blocked work", HumanSummary: "the blocked one", CreatedAt: since}, Dependencies: "#3, #5"},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "queued", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"}})
+	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved,
+		Actor: "sebastian", Via: factoryd.ViaButton, At: since}); err != nil {
+		t.Fatal(err)
+	}
+	ck, _ := r.loggedIn(t)
+	for _, query := range []string{"", "?project=linkshort", "?accent=teal"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
+		faces := 0
+		for rest := body; ; faces++ {
+			i := strings.Index(rest, `<article class="card face`)
+			if i < 0 {
+				break
+			}
+			rest = rest[i:]
+			face := rest[:strings.Index(rest, "</article>")+len("</article>")]
+			rest = rest[len(face):]
+			id, _, _ := strings.Cut(face[strings.Index(face, `data-card="`)+len(`data-card="`):], `"`)
+			rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+query, nil), ck)
+			if rec.Code != http.StatusOK || rec.Body.String() != face {
+				t.Errorf("board%s: the fragment of %s = %d\n%s\nwant the board's face\n%s", query, id, rec.Code, rec.Body, face)
+			}
+		}
+		if want := map[string]int{"": 14, "?project=linkshort": 8, "?accent=teal": 2}[query]; faces != want {
+			t.Errorf("board%s shows %d faces, want %d", query, faces, want)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for id, lanes := range map[string][]string{"t-c2": {"ready"}, "t-b": {"ready"}} {
+		face := faceOf(t, body, id)
+		for _, lane := range lanes {
+			if n := strings.Count(face, `data-move="`+lane+`"`); n != 1 {
+				t.Errorf("%s has %d forms into %s, want 1", id, n, lane)
+			}
+		}
+	}
+}
+
 func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 99})

@@ -222,6 +222,16 @@ func (s *fakeTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]fac
 	return s.tasks[:min(limit, len(s.tasks))], nil
 }
 
+func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	if i < 0 {
+		return factoryd.BoardTask{}, false, nil
+	}
+	return s.tasks[i], true, nil
+}
+
 // set replaces the tasks; the escalated ones carry reason.
 func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	s.mu.Lock()

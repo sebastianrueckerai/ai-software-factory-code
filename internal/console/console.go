@@ -57,6 +57,8 @@ type Tasks interface {
 	// first, then those finished after since, each with its latest
 	// escalation's reason.
 	BoardTasks(ctx context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error)
+	// BoardTask is task id as BoardTasks reads it, listed there or not.
+	BoardTask(ctx context.Context, id string) (factoryd.BoardTask, bool, error)
 	// PlanRevision is revision n of plan task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanCards are the cards plan task plan filed.

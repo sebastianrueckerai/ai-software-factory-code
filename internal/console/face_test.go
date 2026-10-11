@@ -206,11 +206,11 @@ func TestCardFaceAccent(t *testing.T) {
 		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "plain work", CreatedAt: time.Now()})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	teal := faceOf(t, body, "t-teal")
-	if !strings.HasPrefix(teal, `<article class="card face edge-teal">`) || !strings.Contains(teal, `<span class="chip accent-teal">teal</span>`) ||
+	if !strings.HasPrefix(teal, `<article class="card face edge-teal" data-card="t-teal" `) || !strings.Contains(teal, `<span class="chip accent-teal">teal</span>`) ||
 		!strings.Contains(teal, `<span class="pill st-running">running</span>`) {
 		t.Errorf("the teal card lacks its edge, its chip or its plain running pill:\n%s", teal)
 	}
-	if none := faceOf(t, body, "t-none"); !strings.HasPrefix(none, `<article class="card face">`) || strings.Contains(none, "chip accent-") {
+	if none := faceOf(t, body, "t-none"); !strings.HasPrefix(none, `<article class="card face" data-card="t-none" `) || strings.Contains(none, "chip accent-") {
 		t.Errorf("a card without an accent shows one:\n%s", none)
 	}
 }
@@ -237,7 +237,7 @@ func TestCardFaceStaleRing(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	quiet := `card_moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
 	for id, words := range map[string]string{"t-quiet": quiet, "t-new": `<p class="activity">no event yet, 45 min on the card</p>`} {
-		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale">`) || !strings.Contains(face, words) {
+		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
 			t.Errorf("%s lacks the ring or %s:\n%s", id, words, face)
 		}
 	}
