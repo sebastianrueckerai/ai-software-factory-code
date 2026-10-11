@@ -103,6 +103,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 	switch t.Status {
 	case "waiting-human":
 		switch {
+		case t.IssueNumber == 0:
+			return "close ends it (close)"
 		case t.Kind == "human":
 			return "a human does its work and closes its issue"
 		case f.capped:
@@ -123,7 +125,12 @@ func fitting(t factoryd.Task, f capFacts) string {
 		return "its gates run; nothing to do until they end"
 	case "backlog":
 		return "move_card starts it"
-	case "done", "failed", "closed":
+	case "failed":
+		if t.IssueNumber == 0 {
+			return "close ends it (close)"
+		}
+		return "the card is final: a new card continues the work"
+	case "done", "closed":
 		return "the card is final: a new card continues the work"
 	}
 	return "wait a moment"
@@ -554,7 +561,8 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 }
 
 // doRequestChanges posts a writer's change request on plan id's issue
-// as the member; intake hands it to the planner.
+// as the member; intake hands it to the planner. The plan's pending
+// request is denied as theirs at once: the planner answers a new revision.
 func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -569,6 +577,15 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
 		return "", &forgejoRefusal{"post the change request", err}
+	}
+	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	for _, q := range pending {
+		if q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan {
+			err = c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, "denied", a.s.user, "changes requested: "+text)
+		}
+	}
+	if err != nil {
+		log.Printf("console: deny the pending request of plan %s: %v", t.ID, err)
 	}
 	log.Printf("console: %s asked for changes to plan %s via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, nil)
@@ -659,7 +676,8 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 }
 
 // doClose closes card id's issue as the member, its note commented first
-// when given; intake ends the card as on any writer's close.
+// when given; intake ends the card as on any writer's close. A card with
+// no issue factoryd closes alone, a failed one too, its note on the row.
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 {
@@ -672,11 +690,17 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
-	if factoryd.Final(t.Status) {
+	if factoryd.Final(t.Status) && (t.IssueNumber != 0 || t.Status != "failed") {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
 	}
 	if t.IssueNumber == 0 {
-		return "", refuse(http.StatusConflict, "The card has no issue yet.")
+		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
+			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
+			return "", refuse(http.StatusConflict, "The card could not be closed; see the factoryd log.")
+		}
+		log.Printf("console: %s closed %s (%s, no issue) via %s", a.s.user, t.ID, t.Repository, a.via)
+		c.record(ctx, a, t.Repository, t.ID, 0, factoryd.EventCardClosed, map[string]any{"note": note})
+		return "Closed card " + t.ID + ".", nil
 	}
 	if note != "" {
 		if err := c.comment(ctx, a, t, note, nil); err != nil {

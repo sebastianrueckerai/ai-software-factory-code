@@ -417,12 +417,12 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	if res.Outcome == OutcomeNoPush {
-		reason, ok, err := r.store.ProviderRefusal(ctx, t.ID, startedAt)
+		refused, err := r.providerRefusal(ctx, t.ID, startedAt, res.Summary)
 		if err != nil {
 			return SessionResult{}, err
 		}
-		if status := providerStatus(reason); ok && status != 0 {
-			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, status, cmp.Or(res.Summary, reason)
+		if refused.Status != 0 {
+			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
 		}
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
@@ -437,6 +437,16 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	return res, nil
+}
+
+// providerRefusal is the provider's refusal of the session begun at since
+// (Status 0: none), with the worker's message said, else the audit's.
+func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.Time, said string) (ProviderWait, error) {
+	reason, ok, err := r.store.ProviderRefusal(ctx, taskID, since)
+	if err != nil || !ok || providerStatus(reason) == 0 {
+		return ProviderWait{}, err
+	}
+	return ProviderWait{Status: providerStatus(reason), Reason: cmp.Or(said, reason)}, nil
 }
 
 // startRef is where a session starts: the branch's head, else the given
@@ -549,9 +559,12 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine
 	}
-	id, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body)
-	if err != nil {
-		return 0, err
+	var id int64
+	if t.IssueNumber != 0 {
+		// a task without one (a report task) has its question on the card alone
+		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
+			return 0, err
+		}
 	}
 	question := escalationQuestion(reason)
 	if reason == healedReason {

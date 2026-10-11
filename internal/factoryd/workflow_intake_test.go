@@ -198,7 +198,7 @@ func TestWorkflowPosterAnswersBuyAtMostTwoAttempts(t *testing.T) {
 		h.signalAfter(time.Duration(i+1)*time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: body, Comment: int64(700 + i)})
 	}
 	h.signalAfter(10*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	if final := h.run(t); final != "failed" {
+	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
 	if len(h.infoAsked) != 3 || len(h.sessions) != 5 || len(h.escalated) != 1 {

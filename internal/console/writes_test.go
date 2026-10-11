@@ -279,3 +279,55 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-cap", detail: postedDetail(1)})
 }
+
+// A card without an issue closes through factoryd's CloseCard alone
+// (roadmap 170), by the chat and the face's POST: one card_closed row each,
+// no Forgejo call. The face offers Close on a failed one.
+func TestCloseACardWithoutAnIssue(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-n", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Repository: "sf/code", Objective: "Tidy the docs."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Source: factoryd.SourcePresort, Objective: "Write it up."}})
+	r.tasks.mu.Unlock()
+	before := r.events.count()
+	args := `{"task_id":"t-n"}`
+	_, done, _ := proposeAndDo(t, r, g, "close", args)
+	equal(t, "Do it", done, ran("close", args, "Closed card t-n."))
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-n", Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
+
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-nf"); !strings.Contains(face, `hx-confirm="Close t-nf? The card ends."`) || !strings.Contains(face, `aria-label="Close t-nf"`) {
+		t.Errorf("the failed card without an issue's face =\n%s\nwant Close", face)
+	}
+	before = r.events.count()
+	rec := r.do(post("/tasks/t-nf/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", rec.Code, http.StatusSeeOther)
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-nf", detail: map[string]any{"note": ""}})
+	equal(t, "CloseCard", r.closed, []string{"t-n by sebastian", "t-nf by sebastian"})
+	equal(t, "Forgejo", writesOf(r.fg), []string(nil))
+}
+
+// A card without an issue waiting on a human (a report task after six
+// provider refusals) offers no answer, which has no issue to go on: Close
+// ends it, and an answer's refusal says so, as for a failed one.
+func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Source: factoryd.SourcePresort,
+			Objective: "Write it up."}, Escalation: "the model provider refused the first call of 6 sessions in a row (status 429): busy"},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Source: factoryd.SourcePresort, Objective: "Write it up."}})
+	r.tasks.mu.Unlock()
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	if esc := escalationOf(t, body, "t-nw"); strings.Contains(esc, `action="/tasks/t-nw/answer"`) || !strings.Contains(esc, `action="/tasks/t-nw/close"`) {
+		t.Errorf("the waiting card without an issue =\n%s\nwant Close and no answer form", esc)
+	}
+	for id, state := range map[string]string{"t-nw": "waits on a human: an answer, an approval or a decision", "t-nf": "has failed"} {
+		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
+		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, "Card #0 " + state + ", not a question or a session cap to answer: close ends it (close)."})
+	}
+}

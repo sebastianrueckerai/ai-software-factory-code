@@ -889,9 +889,10 @@ func (r *Runner) reportMergeFailure(ctx context.Context, t Task, repo Repo, pr i
 	r.record(ctx, t.ID, "merge_failed", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "error": reason}))
 }
 
-// note tells the console's merge card why the approval has not merged.
+// note puts the console's merge card back with why the approval has not
+// merged: it waits for an approval again.
 func (r *Runner) note(ctx context.Context, t Task, note string) {
-	if err := r.store.NoteApproval(ctx, t.ID, ApprovalMerge, note); err != nil {
+	if err := r.store.ReopenApproval(ctx, t.ID, ApprovalMerge, note); err != nil {
 		log.Printf("task %s: note the approval request: %v", t.ID, err)
 	}
 }
@@ -1033,19 +1034,36 @@ func (r *Runner) comment(ctx context.Context, t Task, repo Repo, pr int64, body 
 
 // ApproveMerge is the console's approve, after it submitted the human's
 // APPROVED review on the pull request through the human's own token: it
-// signals the task's workflow, which merges as factory-merge. Only a
-// pending merge request of the task, for that pull request, is approved.
+// decides the request as approver's and signals the task's workflow,
+// which merges as factory-merge. Only a pending merge request of the
+// task, for that pull request, is approved.
 func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, approver string) error {
 	pending, err := store.ApprovalRequests(ctx, "pending")
 	if err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(pending, func(a ApprovalRequest) bool {
+	i := slices.IndexFunc(pending, func(a ApprovalRequest) bool {
 		return a.Kind == ApprovalMerge && a.TaskID == taskID && a.PRNumber == pr
-	}) {
+	})
+	if i < 0 {
 		return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
 	}
-	return wf.Signal(ctx, taskID, SignalApproved, TaskSignal{Author: approver, PR: pr})
+	return decideAndSignal(ctx, store, wf, pending[i], "approved", approver, "approved in the console", SignalApproved, TaskSignal{Author: approver, PR: pr})
+}
+
+// decideAndSignal records by's decision on request q, then signals its
+// workflow; a signal that fails undoes the decision.
+func decideAndSignal(ctx context.Context, store Store, wf Workflows, q ApprovalRequest, status, by, note, signal string, sig TaskSignal) error {
+	if err := store.DecideApproval(ctx, q.ID, q.Kind, status, by, note); err != nil {
+		return err
+	}
+	err := wf.Signal(ctx, q.TaskID, signal, sig)
+	if err != nil {
+		if rerr := store.UndecideApproval(ctx, q.ID); rerr != nil {
+			log.Printf("task %s: undo the decision on %s request %d after the failed signal: %v", q.TaskID, q.Kind, q.ID, rerr)
+		}
+	}
+	return err
 }
 
 // gateHeartbeatEvery is how often a gate activity heartbeats; variables

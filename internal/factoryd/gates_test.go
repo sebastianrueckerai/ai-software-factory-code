@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -806,15 +807,17 @@ func TestApprovalsFollowTheTask(t *testing.T) {
 type recordedSignals struct {
 	Workflows
 	sent []string
+	err  error // Signal's answer
 }
 
 func (w *recordedSignals) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
 	w.sent = append(w.sent, fmt.Sprintf("%s %s %s %d", taskID, name, sig.Author, sig.PR))
-	return nil
+	return w.err
 }
 
-// The console's approve signals only a pending merge request of that task
-// and pull request.
+// The console's approve decides only a pending merge request of that task
+// and pull request, before the signal (roadmap 174); a failed signal
+// leaves it pending, the workflow's resolve changes nothing.
 func TestApproveMerge(t *testing.T) {
 	store := newFakeStore()
 	wf := &recordedSignals{}
@@ -831,6 +834,21 @@ func TestApproveMerge(t *testing.T) {
 	}
 	if !slices.Equal(wf.sent, []string{"t1 approved sebastian 9"}) {
 		t.Fatalf("signals = %v", wf.sent)
+	}
+	store.ResolveApprovals(ctx, "t1", ApprovalMerge, "approved", "sebastian", "merged by factory-merge at c1")
+	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved in the console" {
+		t.Fatalf("approval = %+v", a)
+	}
+	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
+		t.Fatalf("a second approve: %v, signals %v", err, wf.sent)
+	}
+	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t2", PRNumber: 3})
+	wf.err = errors.New("temporal unavailable")
+	if err := ApproveMerge(ctx, store, wf, "t2", 3, "sebastian"); err == nil {
+		t.Fatal("a failed signal answered no error")
+	}
+	if a := store.approvals[1]; a.Status != "pending" || a.DecidedBy != "" {
+		t.Fatalf("approval after a failed signal = %+v, want pending", a)
 	}
 }
 
@@ -1123,12 +1141,13 @@ func TestReportMergeFailure(t *testing.T) {
 	// the Merge before it put the task in the merge gate
 	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	store.SetGate(context.Background(), "t1", GateMerge, since)
-	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	id, _ := store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	store.DecideApproval(context.Background(), id, ApprovalMerge, "approved", "sebastian", "approved in the console")
 	if _, err := execActivity(t, r, ActivityReportMergeFailure, "t1", int64(9), "c1", "sebastian", "forgejo: not found"); err != nil {
 		t.Fatal(err)
 	}
-	if note := store.approvals[0].DecisionNote; note != "waiting: the merge after sebastian's approval failed and is retried: forgejo: not found" {
-		t.Fatalf("approval note = %q", note)
+	if a := store.approvals[0]; a.Status != "pending" || a.DecidedBy != "" || a.DecisionNote != "waiting: the merge after sebastian's approval failed and is retried: forgejo: not found" {
+		t.Fatalf("approval = %+v", a)
 	}
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "failed: forgejo: not found") || !strings.Contains(fj.comments[0], "The approval stands") {
 		t.Fatalf("comments = %q", fj.comments)

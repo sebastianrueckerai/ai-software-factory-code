@@ -290,9 +290,15 @@ type Store interface {
 	// kind ("" = every kind): status approved or denied, by whom
 	// ("factoryd" for the factory's own decisions) and why.
 	ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error
-	// NoteApproval sets the note of the task's pending requests of kind:
-	// why an approval has not taken effect yet (a refused merge).
-	NoteApproval(ctx context.Context, taskID, kind, note string) error
+	// DecideApproval decides one pending request of kind; ErrNotFound when
+	// it is not pending.
+	DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error
+	// UndecideApproval puts request id back to pending, undecided.
+	UndecideApproval(ctx context.Context, id int64) error
+	// ReopenApproval puts the task's newest request of kind, pending or
+	// approved, back to pending with note: why the approval has not taken
+	// effect (a refused or failed merge); a denied one stays denied.
+	ReopenApproval(ctx context.Context, taskID, kind, note string) error
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
@@ -1075,9 +1081,15 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 	return err
 }
 
-func (s *PGStore) NoteApproval(ctx context.Context, taskID, kind, note string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET decision_note = $3
-		WHERE task_id = $1 AND kind = $2 AND status = 'pending'`, taskID, kind, note)
+func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
+		WHERE id = $1`, id)
+	return err
+}
+
+func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
+		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied'`, taskID, kind, note)
 	return err
 }
 

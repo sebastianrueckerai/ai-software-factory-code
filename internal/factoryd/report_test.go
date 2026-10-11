@@ -355,3 +355,43 @@ func TestWaitingPosterMovesToAHumanOrToReview(t *testing.T) {
 		}
 	}
 }
+
+// A report session the provider refused at its first call answers the
+// refusal, with no comment (roadmap 155); the factory's own budget 402 is
+// no provider's: the session ends without a report as before.
+func TestRunReportNamesAProviderRefusal(t *testing.T) {
+	const said = "DashscopeException: budget exhausted (status 429)"
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	for name, audit := range map[string]string{"provider 429": "upstream 429", "the factory's budget": ""} {
+		t.Run(name, func(t *testing.T) {
+			kube := newFakeKube()
+			runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+			store.CreateTask(context.Background(), parentTask())
+			if audit != "" {
+				store.providerRefusals = map[string]string{"t1": audit}
+			}
+			var res ReportResult
+			done := make(chan error)
+			go func() {
+				val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+				if err == nil {
+					err = val.Get(&res)
+				}
+				done <- err
+			}()
+			awaitPod(t, kube, done)
+			kube.scriptPods(0, resultLine(false, said))
+			err := <-done
+			if audit == "" {
+				if err == nil || !strings.Contains(err.Error(), "the report session ended without a report: "+said) {
+					t.Fatalf("RunReport = %+v, %v; want the report session's failure", res, err)
+				}
+				return
+			}
+			if err != nil || res != (ReportResult{Refused: ProviderWait{Status: 429, Reason: said}}) || len(hub.comments) != 0 {
+				t.Fatalf("RunReport = %+v, %v, comments %q; want the provider's refusal, no comment", res, err, hub.comments)
+			}
+		})
+	}
+}

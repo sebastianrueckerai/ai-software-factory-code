@@ -127,7 +127,7 @@ func TestWorkflowGateSupervisorFailureEscalatesTheMerge(t *testing.T) {
 	g.tripAfter(time.Hour+5*time.Minute, ActivityMerge, 4)
 	g.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := g.run(t); final != "failed" {
+	if final := g.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	if len(g.escalated) != 1 || !strings.Contains(g.escalated[0], "stopped Merge") || !strings.Contains(g.escalated[0], "the gate supervisor failed: store down") {

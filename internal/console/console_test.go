@@ -671,6 +671,7 @@ type rig struct {
 	metrics     *sdkmetric.ManualReader
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
+	closed      []string // "task by user" per CloseCard
 }
 
 var monthly = 8.99
@@ -753,6 +754,10 @@ func newRig(t *testing.T) *rig {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_rejected %s by %s: %s", taskID, by, why))
+			return nil
+		},
+		CloseCard: func(_ context.Context, taskID, by string) error {
+			r.closed = append(r.closed, taskID+" by "+by)
 			return nil
 		},
 		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {

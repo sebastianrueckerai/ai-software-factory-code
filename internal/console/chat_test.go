@@ -570,7 +570,7 @@ func TestSystemTool(t *testing.T) {
 			"  ci, a project with a repository\n",
 		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
 		"\n  invite, needs OK, an approver of the project\n",
-		"\n  close, needs OK, a card that is not final\n  edit, needs OK, a card not in a session\n  grant_session, needs OK, a card at its session cap\n"+
+		"\n  close, needs OK, a card that is not final, or a failed card without an issue\n  edit, needs OK, a card not in a session\n  grant_session, needs OK, a card at its session cap\n"+
 			"  set_dependency, needs OK, two cards of which the first has not started\n",
 		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, close, edit, grant_session, set_dependency\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+

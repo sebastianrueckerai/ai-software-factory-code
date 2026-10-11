@@ -1814,3 +1814,22 @@ func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {
 		t.Fatalf("verdicts %v, want %v; tasks %s, %s", got, want, store.tasks["t-31"].Status, store.tasks["t-32"].Status)
 	}
 }
+
+// The console's Close of a card without an issue (roadmap 170) ends it in
+// the store alone, with no Forgejo call: a backlog or failed card closed;
+// one waiting on a human through its workflow, signalled as by its
+// issue's close.
+func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
+	in, store, requests := newTestIntake(t)
+	ctx := context.Background()
+	for status, want := range map[string]string{"backlog": "closed", "failed": "closed", "waiting-human": "waiting-human"} {
+		store.CreateTask(ctx, Task{ID: "t-" + status, Kind: "agent", Status: status, Repository: "sf/ai-software-factory-code"})
+		err := in.CloseCard(ctx, "t-"+status, "sebastian")
+		if got, _, _ := store.Task(ctx, "t-"+status); err != nil || got.Status != want {
+			t.Fatalf("close %s: %v, status %q, want %q", status, err, got.Status, want)
+		}
+	}
+	if signals := workflowsOf(in).signals; !slices.Equal(signals, []string{"t-waiting-human issue_closed sebastian #0: "}) || len(*requests) != 0 {
+		t.Fatalf("signals %q, Forgejo requests %v; want the waiting card's issue_closed alone", signals, *requests)
+	}
+}

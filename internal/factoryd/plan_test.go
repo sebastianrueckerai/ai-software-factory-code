@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -651,11 +652,17 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
-// signalRecorder records signals with their payload.
-type signalRecorder struct{ signals []string }
+// signalRecorder records signals with their payload; err fails them.
+type signalRecorder struct {
+	signals []string
+	err     error
+}
 
 func (w *signalRecorder) Start(context.Context, string) error { return nil }
 func (w *signalRecorder) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
+	if w.err != nil {
+		return w.err
+	}
 	w.signals = append(w.signals, fmt.Sprintf("%s %s %s %d %s %s", taskID, name, sig.Author, sig.Revision, sig.SHA256, sig.Body))
 	return nil
 }
@@ -679,11 +686,32 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-1", "sebastian"); err == nil || len(wf.signals) != 0 {
 		t.Fatalf("a sha of another revision: %v, signals %v", err, wf.signals)
 	}
+	// a decision whose signal fails is undone: the request waits again
+	wf.err = errors.New("temporal unavailable")
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian"); err == nil || store.approvals[0].Status != "pending" || store.approvals[0].DecidedBy != "" {
+		t.Fatalf("accept with a failed signal: %v, approval %+v", err, store.approvals[0])
+	}
+	wf.err = nil
 	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 sha-2 "}) {
 		t.Fatalf("accept: %v, signals %v", err, wf.signals)
 	}
+	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "revision 2 accepted" {
+		t.Fatalf("approval after the accept = %+v", a)
+	}
+	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err == nil || len(wf.signals) != 1 {
+		t.Fatalf("reject of an accepted plan: %v, signals %v", err, wf.signals)
+	}
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	wf.err = errors.New("temporal unavailable")
+	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err == nil || store.approvals[1].Status != "pending" || store.approvals[1].DecidedBy != "" || store.approvals[1].DecisionNote != "" {
+		t.Fatalf("reject with a failed signal: %v, approval %+v", err, store.approvals[1])
+	}
+	wf.err = nil
 	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err != nil || wf.signals[1] != "t-plan plan_rejected alice 0  not this quarter" {
 		t.Fatalf("reject: %v, signals %v", err, wf.signals)
+	}
+	if a := store.approvals[1]; a.Status != "denied" || a.DecidedBy != "alice" || a.DecisionNote != "rejected: not this quarter" {
+		t.Fatalf("approval after the reject = %+v", a)
 	}
 
 	// the workflow: an acceptance of revision 1 once revision 2 waits is
@@ -1357,5 +1385,78 @@ func TestPlanGuideDeployOwnerSentence(t *testing.T) {
 	want := "a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests."
 	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
+
+// RunPlan answers a provider's refusal, not an invalid plan (roadmap 155).
+func TestRunPlanNamesAProviderRefusal(t *testing.T) {
+	const said = "DashscopeException: budget exhausted (status 429)"
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	store.providerRefusals = map[string]string{"t-plan": "upstream 503"}
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(false, said))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if res.Refused != (ProviderWait{Status: 503, Reason: said}) || len(res.Findings) != 0 || res.Revision != 0 || res.Escalate != "" {
+		t.Fatalf("result %+v, want the provider's refusal alone", res)
+	}
+}
+
+var planRefused = PlanResult{Refused: ProviderWait{Status: 429, Reason: refusedSession.Reason}}
+
+// A planner session the provider refused is no attempt (roadmap 155): the
+// plan waits on the provider and the planner runs again, same findings.
+func TestPlanLoopWaitsOnTheProvider(t *testing.T) {
+	h := newPlanHarness(t, planRefused, planRefused, PlanResult{Revision: 1, SHA256: "sha-1"})
+	backoffs := providerBackoffs(h.workflowHarness)
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 3 || slices.ContainsFunc(h.plans, func(f []string) bool { return f != nil }) || !slices.Equal(*backoffs, []int{120, 240}) ||
+		!slices.Equal(h.states, []string{"running", "running", "running"}) || len(h.usage) != 1 || h.usage[0].Attempts != 1 || h.usage[0].AgentTime != planSession {
+		t.Fatalf("plans %q, backoffs %v, states %v, usage %+v; want three sessions with no findings after waits of 120 and 240 s, one attempt", h.plans, *backoffs, h.states, h.usage)
+	}
+}
+
+// Six refused planner sessions in a row ask a human with source provider;
+// no attempt is counted.
+func TestPlanLoopSixProviderRefusalsAskAHuman(t *testing.T) {
+	h := newPlanHarness(t, planRefused)
+	backoffs := providerBackoffs(h.workflowHarness)
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
+	if final := h.run(t); final != "closed" || len(h.plans) != 6 || !slices.Equal(*backoffs, []int{120, 240, 480, 960, 1800}) ||
+		!slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "provider" || len(h.usage) != 0 {
+		t.Fatalf("final %q after %d sessions, backoffs %v, escalations %q, usage %+v; want %q, no attempt", final, len(h.plans), *backoffs, h.escalated, h.usage, want)
+	}
+}
+
+// A plan run from before versionSessionRefusals takes a refusal as a plan
+// without a last message: an attempt, its finding to the next session.
+func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
+	h := newPlanHarness(t, planRefused, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.OnGetVersion("provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals).Return(workflow.DefaultVersion)
+	backoffs := providerBackoffs(h.workflowHarness)
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	want := []string{"plan: the session ended without a last message: " + refusedSession.Reason}
+	if final := h.run(t); final != "done" || len(*backoffs) != 0 || len(h.usage) != 2 || h.usage[1].Attempts != 2 || len(h.plans) != 2 || !slices.Equal(h.plans[1], want) {
+		t.Fatalf("final %q, backoffs %v, usage %+v, plans %q; want the second with %q", final, *backoffs, h.usage, h.plans, want)
 	}
 }

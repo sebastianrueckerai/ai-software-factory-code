@@ -441,6 +441,9 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		!slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/linkshort/linkshort/issues/1/comments Bearer access-2"}) {
 		t.Errorf("request changes: %d, calls %v, comments %v", rec.Code, r.fg.calls, r.fg.comments)
 	}
+	if q := r.approvals.get(20); q.Status != "denied" || q.DecidedBy != "alice" || q.DecisionNote != "changes requested: Split the web pages into two cards." {
+		t.Errorf("the plan's request after the change request = %+v, want denied by alice", q)
+	}
 	r.fg.calls = nil
 	rec = r.do(post("/tasks/t-plan/plan/reject", url.Values{"csrf": {as.csrf}, "note": {"not this quarter"}}), ak)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" ||

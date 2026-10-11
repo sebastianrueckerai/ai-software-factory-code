@@ -448,7 +448,7 @@ func TestWorkflowIgnoresStrayApprovals(t *testing.T) {
 	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 8})
 	g.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := g.run(t); final != "failed" || len(g.merges) != 0 {
+	if final := g.run(t); final != "closed" || len(g.merges) != 0 {
 		t.Fatalf("final = %q after merges %v", final, g.merges)
 	}
 }
@@ -679,7 +679,7 @@ func TestWorkflowIssueCloseEndsTheApprovalWait(t *testing.T) {
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
 	g.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	if final := g.run(t); final != "failed" {
+	if final := g.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	var closed []recordedStep
@@ -706,7 +706,7 @@ func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
 	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	if final := g.run(t); final != "failed" {
+	if final := g.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	if len(g.approvals) != 1 || g.approvals[0].Review.Note != note || g.approvals[0].Review.Verdict != "" {

@@ -32,6 +32,9 @@ type ScreenResult struct {
 // ReportResult is a report session's end: the issue comment it posted.
 type ReportResult struct {
 	Comment int64
+	// Refused: the provider refused the session's first call (Status 0:
+	// it did not).
+	Refused ProviderWait
 }
 
 // screenedLine is all the issue of a suspect screening shows: its reasons
@@ -566,8 +569,9 @@ func screenOptions(agentTime time.Duration) workflow.ActivityOptions {
 }
 
 // report is a report task's run (ruling 185): one session in report mode
-// whose last message becomes the issue comment, then done.
-func (t *taskRun) report(stronger bool) (string, error) {
+// whose last message becomes the issue comment, then done; a session the
+// provider refused runs again after the wait, refusals the ones in a row.
+func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "set running: "+errMessage(err))
 	}
@@ -584,7 +588,19 @@ func (t *taskRun) report(stronger bool) (string, error) {
 		return t.finish(v.final, v.reason)
 	case err != nil:
 		return t.finish("failed", "report session: "+errMessage(err))
+	case res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals:
+		return t.finish("failed", "report session: the report session ended without a report: "+res.Refused.Reason)
+	case res.Refused.Status != 0:
+		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
+			if final, why, _ := t.awaitHuman(ask, escalationQuestion(ask), nil); final != "" {
+				return t.finish(final, why)
+			}
+		} else if final, why, ok := t.decided(); ok {
+			return t.finish(final, why)
+		}
+		return t.report(stronger, refusals)
 	}
+	t.providerAnswered(&refusals, nil)
 	if res.Comment == 0 {
 		return t.finish("done", "report kept on the task, no issue comment")
 	}

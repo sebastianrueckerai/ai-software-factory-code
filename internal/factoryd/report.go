@@ -68,10 +68,14 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	text := t.AgentSummary
 	if text == "" {
 		var why string
+		began := time.Now()
 		if text, why, _, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil, nil); err != nil {
 			return ReportResult{}, err
 		}
 		if text == "" {
+			if refused, err := r.providerRefusal(ctx, t.ID, began, why); err != nil || refused.Status != 0 {
+				return ReportResult{Refused: refused}, err
+			}
 			return ReportResult{}, terminalError("the report session ended without a report: %s", why)
 		}
 		text = textutil.Truncate(text, maxReport)

@@ -130,6 +130,9 @@ type Config struct {
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
 	RetryPlanCard func(ctx context.Context, taskID, by string) (int64, error)
+	// CloseCard ends card taskID, which has no issue, closed for by
+	// (factoryd's Intake.CloseCard).
+	CloseCard func(ctx context.Context, taskID, by string) error
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).

@@ -756,6 +756,22 @@ func (in *Intake) deleteFailedBranch(ctx context.Context, t Task) error {
 	return in.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, taskBranch(t))
 }
 
+// CloseCard is the console's Close of card id, which has no issue, for
+// by: a backlog or failed card ends closed in the store; any other through
+// its workflow, signalled as by its issue's close.
+func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
+	t, _, err := in.Store.Task(ctx, id)
+	switch {
+	case err != nil:
+		return err
+	case t.Status == "backlog":
+		return in.closeBacklogCard(ctx, t)
+	case t.Status == "failed":
+		return in.Store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+	}
+	return in.Workflows.Signal(ctx, id, SignalIssueClosed, TaskSignal{Author: by})
+}
+
 // closeBacklogCard: a backlog card whose issue closed ends closed, no
 // workflow ever started.
 func (in *Intake) closeBacklogCard(ctx context.Context, t Task) error {

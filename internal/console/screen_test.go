@@ -48,6 +48,7 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	}
 	esc := factoryd.BoardTask{Task: task("t-esc", "waiting-human", "ready"), Escalation: factoryd.AgentAsks + "which region?",
 		EscalatedAt: now.Add(-2 * time.Hour), EscalationAlert: 7}
+	esc.IssueNumber = 12 // an answer goes on the issue
 	me := factoryd.BoardTask{Task: task("t-me", "waiting-poster", "ready")}
 	me.Author, me.GateSince = "sebastian", ago(3*time.Hour)
 	other := factoryd.BoardTask{Task: task("t-other", "waiting-poster", "ready")}

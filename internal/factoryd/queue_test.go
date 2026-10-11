@@ -445,7 +445,7 @@ func TestQueueReleasedOnEveryExit(t *testing.T) {
 		}, "failed", []string{"pull request closed without merge"}},
 		{"close while waiting", func(int) int { return 2 }, func(q *queueHarness) {
 			q.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-		}, "failed", []string{ReasonIssueClosed + " without merge"}},
+		}, "closed", []string{ReasonIssueClosed + " without merge"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			q := newQueueHarness(t, policy.QueueProject, green)

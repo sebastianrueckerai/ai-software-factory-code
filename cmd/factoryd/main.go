@@ -369,7 +369,8 @@ func main() {
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},
-		MayMove: webhookIntake.MayMove,
+		MayMove:   webhookIntake.MayMove,
+		CloseCard: webhookIntake.CloseCard,
 		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
 			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
 		},

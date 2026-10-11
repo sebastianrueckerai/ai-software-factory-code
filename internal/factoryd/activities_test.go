@@ -1265,6 +1265,28 @@ func TestEscalateAsksAHumanOnTheIssue(t *testing.T) {
 	}
 }
 
+// A task without an issue (a report task) waits on a human with no comment
+// posted: its question and its alert recorded.
+func TestEscalateATaskWithoutAnIssue(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.IssueNumber, task.Source, task.Parent = 0, SourcePresort, "t-parent"
+	r, store, _ := newActivityRunner(t, task, fj)
+	reason := providerRefused + "6 sessions in a row (status 429): budget exhausted"
+	var id int64
+	val, err := execActivity(t, r, ActivityEscalate, "t1", reason)
+	if err != nil || val.Get(&id) != nil {
+		t.Fatalf("Escalate: %v", err)
+	}
+	got, _, _ := store.Task(context.Background(), "t1")
+	if id != 0 || len(fj.comments) != 0 || got.Status != "waiting-human" {
+		t.Fatalf("id %d, comments %q, status %q; want no comment, waiting-human", id, fj.comments, got.Status)
+	}
+	if a := store.alertRows(); len(a) != 1 || a[0].Source != "provider" || store.intakeEvents[0].Body != reason {
+		t.Fatalf("alerts %+v, intake events %+v", a, store.intakeEvents)
+	}
+}
+
 // A SigNoz alert's verdict comes with its task's end (Task 70): real on a
 // merge, noise when a human closed the issue without one, none otherwise;
 // another task's alert and a judged one stay as they are.

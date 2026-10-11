@@ -116,6 +116,9 @@ type PlanResult struct {
 	SHA256   string
 	Findings []string
 	Escalate string
+	// Refused: the provider refused the session's first call (Status 0:
+	// it did not).
+	Refused ProviderWait
 }
 
 // maxPlanEcho bounds the last message a planner answered without a plan,
@@ -702,7 +705,8 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 // CreateChildren refuses it back to the planner, and answers
 // ErrNoDeployOwner.
 func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, by string) error {
-	if _, err := pendingPlan(ctx, store, taskID); err != nil {
+	q, err := pendingPlan(ctx, store, taskID)
+	if err != nil {
 		return err
 	}
 	newest, ok, err := store.PlanRevision(ctx, taskID, 0)
@@ -723,20 +727,25 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if err := json.Unmarshal(newest.Plan, &p); err != nil {
 		return err
 	}
-	err = wf.Signal(ctx, taskID, SignalPlanAccepted, TaskSignal{Author: by, Revision: revision, SHA256: sha})
-	if needed, owner := deployOwner(t.Objective, p); err == nil && needed && owner == "" {
+	sig := TaskSignal{Author: by, Revision: revision, SHA256: sha}
+	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
+		// CreateChildren refuses it to the planner and denies the request
+		if err := wf.Signal(ctx, taskID, SignalPlanAccepted, sig); err != nil {
+			return err
+		}
 		return ErrNoDeployOwner
 	}
-	return err
+	return decideAndSignal(ctx, store, wf, q, "approved", by, fmt.Sprintf("revision %d accepted", revision), SignalPlanAccepted, sig)
 }
 
 // RejectPlan is the console's Reject, by a writer: the plan task ends
 // failed with why.
 func RejectPlan(ctx context.Context, store Store, wf Workflows, taskID, by, why string) error {
-	if _, err := pendingPlan(ctx, store, taskID); err != nil {
+	q, err := pendingPlan(ctx, store, taskID)
+	if err != nil {
 		return err
 	}
-	return wf.Signal(ctx, taskID, SignalPlanRejected, TaskSignal{Author: by, Body: why})
+	return decideAndSignal(ctx, store, wf, q, "denied", by, "rejected: "+why, SignalPlanRejected, TaskSignal{Author: by, Body: why})
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -886,6 +895,7 @@ func (t *taskRun) planLoop() (string, error) {
 	var findings []string
 	var ask string // a question for a human: the cap card, or a stop's
 	reason := "no session answered a plan"
+	refusals := 0 // refused sessions in a row (versionSessionRefusals)
 	// the comment the running or next session answers: writers' comments
 	// newer than it ask for changes
 	floor := t.escalation
@@ -929,6 +939,20 @@ func (t *taskRun) planLoop() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunPlan, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
+		if res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals {
+			res.Findings = []string{"plan: the session ended without a last message: " + res.Refused.Reason}
+		} else if err == nil && !decided && res.Refused.Status != 0 {
+			ask = t.providerRefused(&refusals, res.Refused)
+			if final, why, ok := t.decided(); ok {
+				final, why, _ = closedBeforeStart(final, why)
+				return t.finish(final, why)
+			}
+			if final, why, ok := t.planRejected(); ok {
+				return t.finish(final, why)
+			}
+			continue
+		}
+		t.providerAnswered(&refusals, err)
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts++
 		t.recordUsage(u)
@@ -1153,9 +1177,15 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
+	began := time.Now()
 	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
+	}
+	if text == "" {
+		if refused, err := r.providerRefusal(ctx, t.ID, began, why); err != nil || refused.Status != 0 {
+			return PlanResult{Refused: refused}, err
+		}
 	}
 	if escalated {
 		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": text})

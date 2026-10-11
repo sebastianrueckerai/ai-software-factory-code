@@ -381,6 +381,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
+	run.sessionRefusals = workflow.GetVersion(ctx, "provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals)
+	run.closedByHuman = workflow.GetVersion(ctx, "closed-by-human", workflow.DefaultVersion, versionClosedByHuman)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -644,6 +646,14 @@ const (
 	// wait takes the members' answers to its questions (SignalPlanAnswered)
 	// and sends the planner back once none is open.
 	versionPlanAnswers workflow.Version = 1
+	// versionSessionRefusals (change id "provider-wait-sessions", roadmap
+	// 155): a plan or report session the provider refused waits on the
+	// provider as a code session does. A run from before takes it as a
+	// plan without a last message, or a report task's failure.
+	versionSessionRefusals workflow.Version = 1
+	// versionClosedByHuman (change id "closed-by-human", roadmap 173): a
+	// task whose issue a human closed without a merge ends closed.
+	versionClosedByHuman workflow.Version = 1
 )
 
 // providerRefusals is how many sessions in a row the provider may refuse
@@ -695,6 +705,8 @@ type taskRun struct {
 	rollGap           workflow.Version
 	providerWait      workflow.Version
 	planAnswers       workflow.Version
+	sessionRefusals   workflow.Version
+	closedByHuman     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -830,13 +842,13 @@ func (t *taskRun) lifecycle() (string, error) {
 		case st.Skip:
 			return st.Status, nil
 		case t.v16 >= versionStages && t.isReport(st):
-			return t.report(st.Stronger)
+			return t.report(st.Stronger, 0)
 		case st.Merged:
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
 			return t.finish("failed", "completion resumed after an interrupted run")
 		case st.IssueClosed:
-			return t.finish("failed", ReasonIssueClosed+" without merge")
+			return t.finish(t.closedWithoutMerge(), ReasonIssueClosed+" without merge")
 		case st.PRClosed:
 			return t.finish("failed", "pull request closed without merge")
 		case t.v17 >= versionRoll && st.Roll:
@@ -964,28 +976,17 @@ func (t *taskRun) lifecycle() (string, error) {
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
-			refusals++
-			if refusals == 1 {
-				workflow.GetLogger(t.ctx).Info("the model provider refused a session's first call; the task waits on it", "task", t.taskID, "status", res.Status, "reason", res.Reason)
-			}
-			if refusals < providerRefusals {
-				t.waitOnProvider(ProviderWait{Status: res.Status, Reason: res.Reason, Backoff: providerBackoff(refusals)})
-			} else {
-				ask := fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", refusals, res.Status, res.Reason)
+			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
 				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
-				findings, refusals = append(findings, answer...), 0
+				findings = append(findings, answer...)
 			}
 			attempt--
 			continue
 		}
-		// a session that ended or ran into the wall clock made calls
-		if refusals > 0 && (err == nil || isWallClockTimeout(err)) {
-			workflow.GetLogger(t.ctx).Info("the model provider answers again", "task", t.taskID, "refusals", refusals)
-			refusals = 0
-		}
+		t.providerAnswered(&refusals, err)
 		u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		u.Attempts = attempt
 		t.recordUsage(u)
@@ -1083,6 +1084,33 @@ func (t *taskRun) lifecycle() (string, error) {
 		apply(v)
 	}
 	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+}
+
+// providerRefused takes a session the provider refused: the task waits
+// on the provider, or at the providerRefusals-th refusal in a row ask is
+// what to ask a human, and the count starts again.
+func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
+	*refusals++
+	if *refusals == 1 {
+		workflow.GetLogger(t.ctx).Info("the model provider refused a session's first call; the task waits on it", "task", t.taskID, "status", w.Status, "reason", w.Reason)
+	}
+	if *refusals < providerRefusals {
+		w.Backoff = providerBackoff(*refusals)
+		t.waitOnProvider(w)
+		return ""
+	}
+	ask = fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", *refusals, w.Status, w.Reason)
+	*refusals = 0
+	return ask
+}
+
+// providerAnswered ends the refusals in a row after a session that made
+// calls: one that ended, or ran into the wall clock.
+func (t *taskRun) providerAnswered(refusals *int, err error) {
+	if *refusals > 0 && (err == nil || isWallClockTimeout(err)) {
+		workflow.GetLogger(t.ctx).Info("the model provider answers again", "task", t.taskID, "refusals", *refusals)
+		*refusals = 0
+	}
 }
 
 // waitOnProvider records the wait, which puts the task in gate provider,
@@ -2010,8 +2038,11 @@ func (t *taskRun) counted(name string, sig TaskSignal) bool {
 // issueClosed tells a merge, which closes the issue through "Closes #N",
 // from a plain close.
 func (t *taskRun) issueClosed() (final, reason string, findings []string) {
-	if t.pr.Number == 0 {
+	if t.pr.Number == 0 && t.closedByHuman < versionClosedByHuman {
 		return "failed", ReasonIssueClosed + " while no pull request of this workflow was open", nil
+	}
+	if t.pr.Number == 0 {
+		return "closed", ReasonIssueClosed + " without merge", nil
 	}
 	var merged bool
 	if err := workflow.ExecuteActivity(t.short, ActivityPullRequestMerged, t.taskID, t.pr.Number).Get(t.ctx, &merged); err != nil {
@@ -2020,7 +2051,16 @@ func (t *taskRun) issueClosed() (final, reason string, findings []string) {
 	if merged {
 		return "done", "pull request merged", nil
 	}
-	return "failed", ReasonIssueClosed + " without merge", nil
+	return t.closedWithoutMerge(), ReasonIssueClosed + " without merge", nil
+}
+
+// closedWithoutMerge is the final state of a task whose issue a human
+// closed without a merge.
+func (t *taskRun) closedWithoutMerge() string {
+	if t.closedByHuman >= versionClosedByHuman {
+		return "closed"
+	}
+	return "failed"
 }
 
 // reviewV0 is the review wait of workflows started before

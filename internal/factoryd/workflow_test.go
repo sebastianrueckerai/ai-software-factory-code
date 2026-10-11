@@ -569,7 +569,7 @@ func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
 	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
 	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" {
+	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	change := "reviewer sebastian requested changes: rename it"
@@ -631,7 +631,7 @@ func TestWorkflowRetryStrongerOnTheLastAttemptIsRecordedStronger(t *testing.T) {
 	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Trip: "half_way", Findings: []string{"f3"}})
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" {
+	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	var to []string
@@ -982,7 +982,7 @@ func TestWorkflowRepetitionTripClimbsTheLadder(t *testing.T) {
 	}
 }
 
-func TestWorkflowIssueClosedWithoutMergeFails(t *testing.T) {
+func TestWorkflowIssueClosedWithoutMergeEndsClosed(t *testing.T) {
 	for _, merged := range []bool{false, true} {
 		h := newWorkflowHarness(t)
 		h.onSessions(pushed("s1", "c1"))
@@ -990,7 +990,7 @@ func TestWorkflowIssueClosedWithoutMergeFails(t *testing.T) {
 		h.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", int64(9)).Return(merged, nil)
 		h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-		want, reason := "failed", "issue closed without merge"
+		want, reason := "closed", "issue closed without merge"
 		if merged {
 			want, reason = "done", "pull request merged"
 		}
@@ -1053,13 +1053,18 @@ func TestWorkflowTerminalSignalDuringChecksDecides(t *testing.T) {
 	}
 }
 
+// A human's close of a running card's issue ends it closed (roadmap 173);
+// a run from before versionClosedByHuman ends it failed.
 func TestWorkflowIssueClosedDuringFirstAttemptOpensNoPR(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10*time.Minute).Return(pushed("s1", "c1"), nil)
-	h.signalAfter(5*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "issue closed while no pull request of this workflow was open" {
-		t.Fatalf("final = %q (%q)", final, h.finals[0][1])
+	for v, want := range map[workflow.Version]string{versionClosedByHuman: "closed: issue closed without merge",
+		workflow.DefaultVersion: "failed: issue closed while no pull request of this workflow was open"} {
+		h := newWorkflowHarness(t)
+		h.env.OnGetVersion("closed-by-human", workflow.DefaultVersion, versionClosedByHuman).Return(v)
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10*time.Minute).Return(pushed("s1", "c1"), nil)
+		h.signalAfter(5*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final+": "+h.finals[0][1] != want {
+			t.Fatalf("version %d: final = %q (%q), want %q", v, final, h.finals[0][1], want)
+		}
 	}
 }
 
@@ -1205,8 +1210,8 @@ func TestWorkflowSixProviderRefusalsAskAHuman(t *testing.T) {
 	h, _, waits := providerHarness(t, refusedSession)
 	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.sessions) != 6 {
-		t.Fatalf("final = %q after %d sessions, want failed after 6", final, len(h.sessions))
+	if final := h.run(t); final != "closed" || len(h.sessions) != 6 {
+		t.Fatalf("final = %q after %d sessions, want closed after 6", final, len(h.sessions))
 	}
 	var backoffs []int
 	for _, w := range *waits {
@@ -1251,8 +1256,8 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
-		t.Fatalf("final = %q, escalations %q; want failed after the cap card", final, h.escalated)
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
 		t.Fatalf("backoffs = %v, want 120 before and 120 after the wall-clock session", backoffs)
@@ -1267,8 +1272,8 @@ func TestWorkflowProviderWaitEndsOnTheIssuesClose(t *testing.T) {
 	h, began, _ := providerHarness(t, refusedSession)
 	h.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.sessions) != 1 || h.finishAt.Sub((*began)[0]) >= providerBackoff(1) {
-		t.Fatalf("final = %q after %d sessions at %v, want failed after one, within the first wait", final, len(h.sessions), h.finishAt.Sub((*began)[0]))
+	if final := h.run(t); final != "closed" || len(h.sessions) != 1 || h.finishAt.Sub((*began)[0]) >= providerBackoff(1) {
+		t.Fatalf("final = %q after %d sessions at %v, want closed after one, within the first wait", final, len(h.sessions), h.finishAt.Sub((*began)[0]))
 	}
 }
 
@@ -1284,6 +1289,80 @@ func TestWorkflowProviderRefusalBeforeTheChange(t *testing.T) {
 	}
 	if h.sessions[1].Attempt != 2 || !slices.Equal(h.sessions[1].Findings, refusedSession.Findings) {
 		t.Fatalf("second session = %+v, want attempt 2 with the refusal's findings", h.sessions[1])
+	}
+}
+
+// providerBackoffs records the backoff of each of h's provider waits.
+func providerBackoffs(h *workflowHarness) *[]int {
+	backoffs := &[]int{}
+	h.env.OnActivity(ActivityProviderWait, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, w ProviderWait) error {
+			*backoffs = append(*backoffs, int(w.Backoff.Seconds()))
+			return nil
+		})
+	return backoffs
+}
+
+// reportHarness runs a report task whose sessions answer results in order.
+func reportHarness(t *testing.T, results ...ReportResult) (h *workflowHarness, began *[]time.Time, backoffs *[]int) {
+	h, began = newWorkflowHarness(t), &[]time.Time{}
+	h.state.Report = true
+	h.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
+			*began = append(*began, h.env.Now())
+			return results[min(len(*began), len(results))-1], nil
+		})
+	return h, began, providerBackoffs(h)
+}
+
+var refusedReport = ReportResult{Refused: ProviderWait{Status: 429, Reason: refusedSession.Reason}}
+
+// A report session the provider refused fails no report task (roadmap
+// 155, 170): it waits 2 minutes, then 4, and runs the session again.
+func TestWorkflowReportWaitsOnTheProvider(t *testing.T) {
+	h, began, backoffs := reportHarness(t, refusedReport, refusedReport, ReportResult{Comment: 77})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "report posted as issue comment 77" {
+		t.Fatalf("finals %v, want done with comment 77", h.finals)
+	}
+	if b := *began; len(b) != 3 || b[1].Sub(b[0]) != 2*time.Minute || b[2].Sub(b[1]) != 4*time.Minute {
+		t.Fatalf("sessions began %v, want three, 2 and 4 minutes apart", b)
+	}
+	if !slices.Equal(*backoffs, []int{120, 240}) || !slices.Equal(h.states, []string{"running", "running", "running"}) {
+		t.Fatalf("backoffs %v, states %v", *backoffs, h.states)
+	}
+}
+
+// Six refused report sessions in a row ask a human with source provider;
+// the card's close (Intake.CloseCard signals issue_closed) ends it closed.
+func TestWorkflowReportSixProviderRefusalsAskAHuman(t *testing.T) {
+	h, began, backoffs := reportHarness(t, refusedReport)
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "issue closed without merge" || len(*began) != 6 || !slices.Equal(*backoffs, []int{120, 240, 480, 960, 1800}) {
+		t.Fatalf("finals %v after %d sessions, backoffs %v; want closed after 6", h.finals, len(*began), *backoffs)
+	}
+	want := "the model provider refused the first call of 6 sessions in a row (status 429): " + refusedSession.Reason
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "provider" {
+		t.Fatalf("escalations = %q, want %q from source provider", h.escalated, want)
+	}
+}
+
+// The card's close during a provider wait ends the report task at once.
+func TestWorkflowReportProviderWaitEndsOnTheClose(t *testing.T) {
+	h, began, _ := reportHarness(t, refusedReport)
+	h.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" || len(*began) != 1 || h.finishAt.Sub((*began)[0]) != time.Minute {
+		t.Fatalf("final = %q after %d sessions at %v, want closed after one, at the close", final, len(*began), h.finishAt.Sub((*began)[0]))
+	}
+}
+
+// A report run from before versionSessionRefusals fails on a refusal as
+// it failed on the session without a report.
+func TestWorkflowReportRefusalBeforeTheChange(t *testing.T) {
+	h, began, backoffs := reportHarness(t, refusedReport, ReportResult{Comment: 77})
+	h.env.OnGetVersion("provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals).Return(workflow.DefaultVersion)
+	want := "report session: the report session ended without a report: " + refusedSession.Reason
+	if final := h.run(t); final != "failed" || h.finals[0][1] != want || len(*began) != 1 || len(*backoffs) != 0 {
+		t.Fatalf("finals %v after %d sessions, %d waits; want failed %q after one, no wait", h.finals, len(*began), len(*backoffs), want)
 	}
 }
 
@@ -1367,7 +1446,7 @@ func TestWorkflowReconcileFinishesAnAlreadyDecidedTask(t *testing.T) {
 		reason string
 	}{
 		"merged":         {RunState{Status: "in-review", Merged: true, IssueClosed: true}, "done", "pull request merged"},
-		"issue closed":   {RunState{Status: "in-review", IssueClosed: true}, "failed", "issue closed without merge"},
+		"issue closed":   {RunState{Status: "in-review", IssueClosed: true}, "closed", "issue closed without merge"},
 		"pr closed":      {RunState{Status: "in-review", PRClosed: true}, "failed", "pull request closed without merge"},
 		"closing merged": {RunState{Status: "closing", Merged: true}, "done", "pull request merged"},
 		"closing":        {RunState{Status: "closing"}, "failed", "completion resumed after an interrupted run"},
@@ -1400,8 +1479,8 @@ func TestWorkflowTerminalSignalCancelsTheRunningActivity(t *testing.T) {
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10*time.Minute).Return(pushed("s1", "c1"), nil)
 	start := h.env.Now()
 	h.signalAfter(3*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	if final := h.run(t); final != "failed" || h.finishAt.IsZero() || h.finishAt.Sub(start) >= 10*time.Minute {
-		t.Fatalf("session: final = %q after %s, want failed before the 10 min session returned", final, h.finishAt.Sub(start))
+	if final := h.run(t); final != "closed" || h.finishAt.IsZero() || h.finishAt.Sub(start) >= 10*time.Minute {
+		t.Fatalf("session: final = %q after %s, want closed before the 10 min session returned", final, h.finishAt.Sub(start))
 	}
 
 	h = newWorkflowHarness(t)
@@ -1442,7 +1521,7 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Findings: []string{"c"}})
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" {
+	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q", final)
 	}
 	var models []string
@@ -1609,7 +1688,7 @@ func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
 
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
 		t.Fatalf("final = %q, finals = %v, escalations %q; want the last attempt, then the card, closed", final, h.finals, h.escalated)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 3 {
@@ -1639,13 +1718,13 @@ func TestWorkflowNewRunResumesAgentTimeFromTheRow(t *testing.T) {
 	}
 }
 
-func TestWorkflowEscalationIssueClosedFails(t *testing.T) {
+func TestWorkflowEscalationIssueClosedEndsClosed(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "impossible"})
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "failed" || len(h.sessions) != 1 {
-		t.Fatalf("final = %q after %d sessions, want failed after one", final, len(h.sessions))
+	if final := h.run(t); final != "closed" || len(h.sessions) != 1 {
+		t.Fatalf("final = %q after %d sessions, want closed after one", final, len(h.sessions))
 	}
 	if !strings.Contains(h.finals[0][1], "issue closed") {
 		t.Fatalf("reason = %q", h.finals[0][1])

@@ -626,7 +626,7 @@ var tools = []chatTool{
 	{name: "close", title: "Close a card", write: true,
 		params: map[string]any{"task_id": taskParam, "note": str("why, commented on the issue before it closes; optional")}, required: []string{"task_id"},
 		about: "Close a card's issue as the member, the note commented first when given; the factory ends the card.",
-		fits:  "a card that is not final",
+		fits:  "a card that is not final, or a failed card without an issue",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doClose(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err

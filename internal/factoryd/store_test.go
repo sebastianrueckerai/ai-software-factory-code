@@ -539,10 +539,32 @@ func (s *fakeStore) ResolveApprovals(ctx context.Context, taskID, kind, status, 
 	return nil
 }
 
-func (s *fakeStore) NoteApproval(ctx context.Context, taskID, kind, note string) error {
+func (s *fakeStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
+	for i, a := range s.approvals {
+		if a.ID == id && a.Kind == kind && a.Status == "pending" {
+			s.approvals[i].Status, s.approvals[i].DecidedBy, s.approvals[i].DecisionNote = status, by, note
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (s *fakeStore) UndecideApproval(ctx context.Context, id int64) error {
 	for i := range s.approvals {
-		if s.approvals[i].TaskID == taskID && s.approvals[i].Kind == kind && s.approvals[i].Status == "pending" {
-			s.approvals[i].DecisionNote = note
+		if a := &s.approvals[i]; a.ID == id {
+			a.Status, a.DecidedBy, a.DecisionNote = "pending", "", ""
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
+	for i := len(s.approvals) - 1; i >= 0; i-- {
+		if a := &s.approvals[i]; a.TaskID == taskID && a.Kind == kind {
+			if a.Status != "denied" {
+				a.Status, a.DecidedBy, a.DecisionNote = "pending", "", note
+			}
+			return nil
 		}
 	}
 	return nil
@@ -1221,15 +1243,38 @@ func TestPGStoreApprovals(t *testing.T) {
 	if len(denied) != 2 || denied[1].ID != res || denied[1].DecidedBy != "sebastian" || denied[1].DecisionNote != "too big" || denied[1].DecidedAt == nil {
 		t.Fatalf("denied = %+v", denied)
 	}
-	// a refused merge is noted on the pending merge request only
-	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "a3", Project: "sf/r", PRNumber: 4}); err != nil {
+	// the workflow's resolve leaves the console's decision; a reopen does not
+	a3, err := s.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "a3", Project: "sf/r", PRNumber: 4})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.NoteApproval(ctx, "a3", "merge", "waiting: Forgejo refused the merge"); err != nil {
+	if err := s.DecideApproval(ctx, a3, "merge", "approved", "sebastian", "approved in the console"); err != nil {
 		t.Fatal(err)
 	}
-	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 1 || p[0].DecisionNote != "waiting: Forgejo refused the merge" || p[0].Status != "pending" {
-		t.Fatalf("noted = %+v", p)
+	if err := s.ResolveApprovals(ctx, "a3", "merge", "approved", "factoryd", "merged"); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := s.ApprovalRequests(ctx, "approved"); len(a) != 2 || a[1].ID != a3 || a[1].DecidedBy != "sebastian" || a[1].DecisionNote != "approved in the console" {
+		t.Fatalf("approved after the workflow's resolve = %+v", a)
+	}
+	if err := s.ReopenApproval(ctx, "a3", "merge", "waiting: Forgejo refused the merge"); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 1 || p[0].ID != a3 || p[0].DecisionNote != "waiting: Forgejo refused the merge" || p[0].DecidedBy != "" || p[0].DecidedAt != nil {
+		t.Fatalf("reopened = %+v", p)
+	}
+	if err := s.ResolveApprovals(ctx, "a3", "", "denied", "factoryd", "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReopenApproval(ctx, "a3", "merge", "again"); err != nil {
+		t.Fatal(err)
+	}
+	// a decision whose signal failed is undone, denied or not
+	if err := s.UndecideApproval(ctx, a3); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 1 || p[0].ID != a3 || p[0].DecidedBy != "" || p[0].DecisionNote != "" || p[0].DecidedAt != nil {
+		t.Fatalf("undone = %+v", p)
 	}
 	if err := s.ResolveApprovals(ctx, "a3", "", "denied", "factoryd", "done"); err != nil {
 		t.Fatal(err)
