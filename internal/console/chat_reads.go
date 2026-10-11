@@ -76,7 +76,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
 		}
 	}
-	_, qs, err := t.c.planQuestions(ctx, k)
+	qs, err := t.c.planQuestions(ctx, k)
 	if err != nil {
 		return "", err
 	}

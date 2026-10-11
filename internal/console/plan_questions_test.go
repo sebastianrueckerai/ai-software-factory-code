@@ -120,9 +120,10 @@ func TestAcceptPlanOpenQuestions(t *testing.T) {
 }
 
 // The project agent reads plan t-p #20's open questions on its card,
-// numbered with their choices, and answers one by its number: the proposal
-// names the question, Do it answers it as the member, one row via chat.
-// With no question open, an answer to one is refused with the plan's
+// numbered with their choices, and answers one by its revision and number:
+// the proposal names the question, Do it answers it as the member, one row
+// via chat. An answer without its revision, or to another one, is refused;
+// with no question open, an answer to one is refused with the plan's
 // actions.
 func TestChatAnswersAPlanQuestion(t *testing.T) {
 	r, g := newReadsRig(t)
@@ -139,10 +140,10 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	args := `{"task_id":"t-p","question":1,"text":"60 seconds"}`
+	args := `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`
 	g.replies = [][]string{{call(1, "answer", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"probe every minute"}})
-	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener\", text 60 seconds, ` +
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener\", text 60 seconds, revision 1, ` +
 		`question 1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)","id":"TOKEN","tool":"answer"}`, `done {}`})
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer","result":"Answered question 1 of plan #20."}`,
@@ -150,8 +151,15 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/20/comments"], "Answer 1: 60 seconds")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20,
 		Kind: factoryd.EventPlanQuestionAnswered, Detail: map[string]any{"revision": 1, "index": 1, "answer": "60 seconds"}})
+	for in, want := range map[toolInput][]any{
+		{TaskID: "t-p", Question: 2, Text: "7 days"}:              {http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool."},
+		{TaskID: "t-p", Revision: 2, Question: 2, Text: "7 days"}: {http.StatusConflict, "the plan changed to revision 1; reload"},
+	} {
+		status, msg := refused(t, r, "answer", in)
+		equal(t, "an answer without its revision or of another", []any{status, msg}, want)
+	}
 	r.tasks.answer("t-p", 1, 2, "30 days", "sebastian")
-	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Question: 2, Text: "7 days"})
+	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"})
 	equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
 		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: accept_plan, request_changes or reject_plan decide the plan."})
 }

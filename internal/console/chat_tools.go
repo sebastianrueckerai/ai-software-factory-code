@@ -167,12 +167,14 @@ func (t *turn) describe(tool chatTool, in toolInput) (string, error) {
 		if len(bt.Choices) > 0 {
 			parts = append(parts, "choices "+numbered(bt.Choices))
 		}
-		_, qs, err := t.c.planQuestions(t.r.Context(), k)
-		if err != nil {
-			return "", err
-		}
-		if in.Question > 0 && in.Question <= len(qs) {
-			parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
+		if in.Question > 0 && in.Revision > 0 {
+			qs, err := t.c.cfg.Tasks.PlanQuestions(t.r.Context(), k.ID, in.Revision)
+			if err != nil {
+				return "", err
+			}
+			if in.Question <= len(qs) {
+				parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
+			}
 		}
 	}
 	return sanitize.Inbound(strings.Join(parts, ", ")), nil
@@ -188,35 +190,37 @@ func numbered(choices []string) string {
 	return strings.Join(parts, "; ")
 }
 
-// planQuestions are the newest revision of plan card t and its questions;
-// none for a card that is no plan.
-func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) (int, []factoryd.PlanQuestion, error) {
+// planQuestions are the questions of plan card t's newest revision; none
+// for a card that is no plan.
+func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factoryd.PlanQuestion, error) {
 	if t.Lane != policy.LanePlan {
-		return 0, nil, nil
+		return nil, nil
 	}
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.ID, 0)
 	if err != nil || !ok {
-		return 0, nil, err
+		return nil, err
 	}
-	qs, err := c.cfg.Tasks.PlanQuestions(ctx, t.ID, rev.Revision)
-	return rev.Revision, qs, err
+	return c.cfg.Tasks.PlanQuestions(ctx, t.ID, rev.Revision)
 }
 
 // answer answers the question card in waits on: a plan's open question by
-// its number, any other question with in's text.
+// its revision and number, which a newer revision refuses, any other
+// question with in's text.
 func (t *turn) answer(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
 	if err != nil {
 		return "", err
 	}
-	revision, qs, err := t.c.planQuestions(ctx, k)
+	qs, err := t.c.planQuestions(ctx, k)
 	if err != nil {
 		return "", err
 	}
-	switch {
-	case slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" }):
-		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, revision, in.Question, in.Text)
+	switch open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" }); {
+	case open && in.Revision == 0:
+		return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
+	case open:
+		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Text)
 	case in.Question > 0:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	}
@@ -453,10 +457,11 @@ var tools = []chatTool{
 			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
-		"question": map[string]any{"type": "integer", "description": "a plan's open question by its number on the card", "minimum": 1}},
+		"question": map[string]any{"type": "integer", "description": "a plan's open question by its number on the card", "minimum": 1},
+		"revision": map[string]any{"type": "integer", "description": "that plan's revision, from the plan tool", "minimum": 1}},
 		required: []string{"task_id", "text"},
 		about: "Answer the question a card waits on (it needs you), with one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it. " +
-			"A plan's open question is answered by its number (question).",
+			"A plan's open question is answered by its revision and number (revision, question).",
 		fits: "a card waiting on a human with a question or at its session cap, or a plan with open questions",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
