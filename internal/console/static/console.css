@@ -4,11 +4,11 @@
    console.js remembers in localStorage. The status hues are one per state
    (running the accent blue, a wait amber, waiting-poster the same amber
    in a hollow pill, review violet, done green, failed red, closed grey);
-   each pill is 4.5:1 on its text and 3:1 on the page behind it in both
-   themes. An accent chip and edge wears a fixed hue that is never a
-   state's hue at that state's chroma, so a label can never be mistaken
-   for a state. Colour is never the only signal: every pill and chip
-   carries its words. */
+   in both themes each pill's fill is 3:1 or more against a card and its
+   text 4.5:1 or more on the fill. An accent chip and edge wears a fixed
+   hue that is never a state's hue at that state's chroma, so a label can
+   never be mistaken for a state. Colour is never the only signal: every
+   pill and chip carries its words. */
 :root {
   --bg: oklch(0.17 0.012 250);
   --bg-raised: oklch(0.21 0.014 250);
@@ -18,16 +18,17 @@
   --text: oklch(0.93 0.005 250);
   --text-muted: oklch(0.68 0.01 250);
   --accent: oklch(0.72 0.14 250);
-  /* the states' pills: fill, text on it; each pill is 3:1 fill against
-     --bg-raised (0.21) and 4.5:1 text against its fill */
-  --st-running: oklch(0.38 0.1 250); --st-running-fg: oklch(0.93 0.02 250);
+  /* the states' pills: fill, text on it. By the OKLCH numbers each fill
+     is 3.2:1 (neutral) to 8.5:1 (done) against --bg-raised and each text
+     4.8:1 (closed) to 8.6:1 (done) on its fill; the hollow pill's amber
+     is 7.1:1 on --bg-raised */
+  --st-running: oklch(0.72 0.14 250); --st-running-fg: oklch(0.18 0.03 250);
   --st-waiting: oklch(0.72 0.14 85); --st-waiting-fg: oklch(0.22 0.04 85);
   --st-review: oklch(0.68 0.16 305); --st-review-fg: oklch(0.18 0.05 305);
   --st-done: oklch(0.75 0.17 155); --st-done-fg: oklch(0.2 0.05 155);
   --st-failed: oklch(0.55 0.2 25); --st-failed-fg: oklch(0.98 0.005 25);
   --st-closed: oklch(0.6 0.012 250); --st-closed-fg: oklch(0.18 0.01 250);
-  --st-queued: oklch(0.55 0.02 250); --st-queued-fg: oklch(0.95 0.005 250);
-  --st-neutral: oklch(0.5 0.015 250); --st-neutral-fg: oklch(0.95 0.005 250);
+  --st-neutral: oklch(0.52 0.015 250); --st-neutral-fg: oklch(0.97 0.005 250);
   --warn: oklch(0.78 0.15 85);
   --note-bg: oklch(0.26 0.06 155); --note-line: oklch(0.75 0.17 155);
   --problem-bg: oklch(0.26 0.06 25); --problem-line: oklch(0.63 0.19 25);
@@ -48,13 +49,15 @@
   --text: oklch(0.2 0.01 250);
   --text-muted: oklch(0.45 0.012 250);
   --accent: oklch(0.55 0.16 250);
+  /* each fill 4.9:1 (waiting) to 8.5:1 (neutral) against --bg-raised,
+     each text 4.6:1 (waiting) to 7.8:1 (neutral) on its fill; the hollow
+     pill's amber 4.9:1 on --bg-raised */
   --st-running: oklch(0.5 0.15 250); --st-running-fg: oklch(0.98 0.005 250);
   --st-waiting: oklch(0.55 0.13 85); --st-waiting-fg: oklch(0.98 0.005 85);
   --st-review: oklch(0.5 0.18 305); --st-review-fg: oklch(0.97 0.01 305);
   --st-done: oklch(0.5 0.14 155); --st-done-fg: oklch(0.98 0.005 155);
   --st-failed: oklch(0.52 0.19 25); --st-failed-fg: oklch(0.98 0.005 25);
   --st-closed: oklch(0.45 0.012 250); --st-closed-fg: oklch(0.97 0.002 250);
-  --st-queued: oklch(0.45 0.02 250); --st-queued-fg: oklch(0.97 0.005 250);
   --st-neutral: oklch(0.42 0.015 250); --st-neutral-fg: oklch(0.97 0.005 250);
   --warn: oklch(0.45 0.12 80);
   --note-bg: oklch(0.95 0.04 155); --note-line: oklch(0.5 0.14 155);
@@ -90,13 +93,12 @@ h4 { font-size: .9rem; margin: 0 0 .25rem; }
 .chip { display: inline-block; padding: 0 .4rem; border: 1px solid var(--line-strong); border-radius: 999px; font-size: .75rem; color: var(--text-muted); background: var(--bg-raised); overflow-wrap: anywhere; }
 .pill { display: inline-block; padding: 0 .45rem; border-radius: 999px; font-size: .75rem; line-height: 1.5; border: 1px solid transparent; }
 .st-running { background: var(--st-running); color: var(--st-running-fg); }
-.st-queued { background: var(--st-queued); color: var(--st-queued-fg); }
 .st-waiting { background: var(--st-waiting); color: var(--st-waiting-fg); }
 .st-review { background: var(--st-review); color: var(--st-review-fg); }
 .st-done { background: var(--st-done); color: var(--st-done-fg); }
 .st-failed { background: var(--st-failed); color: var(--st-failed-fg); }
 .st-closed { background: var(--st-closed); color: var(--st-closed-fg); }
-.st-backlog, .st-plan, .st-other { background: var(--st-neutral); color: var(--st-neutral-fg); }
+.st-queued, .st-backlog, .st-plan, .st-other { background: var(--st-neutral); color: var(--st-neutral-fg); }
 /* waiting on the author: the same amber as a wait, worn hollow */
 .pill.hollow { background: transparent; border-color: var(--st-waiting); color: var(--st-waiting); }
 .meta, .links { margin: .15rem 0; color: var(--text-muted); font-size: .85rem; }
@@ -164,8 +166,10 @@ button.htmx-request::after { display: inline-block; margin-left: .4rem; vertical
 input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inherit; color: var(--text); background: var(--bg-raised); border: 1px solid var(--line-strong); border-radius: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .step.running::before, button.htmx-request::after { animation-duration: 3s; } }
-/* the card face's accent edge and chip: the same fixed hue, never a
-   state's rendering; the name rides in the chip's words */
+/* the card face's accent edge and chip border: the same fixed hue, never
+   a state's rendering. The chip's words keep the muted text (6.2:1 dark,
+   7.4:1 light): on a dark card red, violet, green and blue sit under
+   4.5:1 */
 .edge-red { border-left: 3px solid var(--acc-red); }
 .edge-orange { border-left: 3px solid var(--acc-orange); }
 .edge-amber { border-left: 3px solid var(--acc-amber); }
@@ -174,14 +178,14 @@ input[type=password] { width: 100%; max-width: 24rem; padding: .4rem; font: inhe
 .edge-blue { border-left: 3px solid var(--acc-blue); }
 .edge-violet { border-left: 3px solid var(--acc-violet); }
 .edge-pink { border-left: 3px solid var(--acc-pink); }
-.accent-red { border-color: var(--acc-red); color: var(--acc-red); }
-.accent-orange { border-color: var(--acc-orange); color: var(--acc-orange); }
-.accent-amber { border-color: var(--acc-amber); color: var(--acc-amber); }
-.accent-green { border-color: var(--acc-green); color: var(--acc-green); }
-.accent-teal { border-color: var(--acc-teal); color: var(--acc-teal); }
-.accent-blue { border-color: var(--acc-blue); color: var(--acc-blue); }
-.accent-violet { border-color: var(--acc-violet); color: var(--acc-violet); }
-.accent-pink { border-color: var(--acc-pink); color: var(--acc-pink); }
+.accent-red { border-color: var(--acc-red); }
+.accent-orange { border-color: var(--acc-orange); }
+.accent-amber { border-color: var(--acc-amber); }
+.accent-green { border-color: var(--acc-green); }
+.accent-teal { border-color: var(--acc-teal); }
+.accent-blue { border-color: var(--acc-blue); }
+.accent-violet { border-color: var(--acc-violet); }
+.accent-pink { border-color: var(--acc-pink); }
 /* no event for half an hour: an amber ring, beside the activity line's
    own words ("nothing for") */
 .card.stale { box-shadow: 0 0 0 2px var(--st-waiting); }
