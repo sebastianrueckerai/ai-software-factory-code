@@ -63,6 +63,15 @@ func TestScanDiffFindsPlantedSecrets(t *testing.T) {
 	}
 }
 
+// git ends the +++ line of a path with a space with a tab: the hit's file
+// has none.
+func TestScanDiffPathWithASpace(t *testing.T) {
+	diff := "diff --git a/my cfg.env b/my cfg.env\n--- a/my cfg.env\t\n+++ b/my cfg.env\t\n@@ -1 +1,2 @@\n x\n+AWS_KEY=AKIAIOSFODNN7EXAMPLE\n"
+	if got, want := ScanDiff(diff), []Hit{{File: "my cfg.env", Line: 2, Kind: KindAWS}}; !slices.Equal(got, want) {
+		t.Fatalf("ScanDiff = %+v, want %+v", got, want)
+	}
+}
+
 func TestScanDiffCleanDiff(t *testing.T) {
 	clean := "diff --git a/internal/f/f.go b/internal/f/f.go\n" +
 		"--- a/internal/f/f.go\n" +

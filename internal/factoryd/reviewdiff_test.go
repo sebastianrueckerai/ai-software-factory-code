@@ -244,3 +244,36 @@ func TestConcurrencyBlockIsCapped(t *testing.T) {
 		t.Fatalf("%d sites, %d lines, last %q", len(sites), len(lines), lines[len(lines)-1])
 	}
 }
+
+// The file list names every file of the whole diff with its counts and
+// part, a rename as old -> new.
+func TestFileList(t *testing.T) {
+	files := splitDiff(splitTestDiff)
+	want := "a.go +7 -2 (part 1)\n" +
+		"old_test.go -> b_test.go +3 -0 (part 1)\n" +
+		"c.md +1 -1 (part 2)"
+	if got := fileList([][]fileDiff{files[:2], files[2:]}); got != want {
+		t.Fatalf("file list = %q, want %q", got, want)
+	}
+	var many []fileDiff
+	for i := range 205 {
+		many = append(many, fileDiff{Path: fmt.Sprintf("f%d", i+1), Added: 1})
+	}
+	lines := strings.Split(fileList([][]fileDiff{many}), "\n")
+	if len(lines) != 201 || lines[199] != "f200 +1 -0 (part 1)" || lines[200] != "... and 5 more" {
+		t.Fatalf("%d lines, last %q", len(lines), lines[len(lines)-1])
+	}
+}
+
+// git ends the --- and +++ lines of a path with a space with a tab; the
+// path has none.
+func TestSplitDiffPathWithASpace(t *testing.T) {
+	diff := "diff --git a/my file.go b/my file.go\n--- a/my file.go\t\n+++ b/my file.go\t\n@@ -1 +1,2 @@\n x\n+go f()\n"
+	files := splitDiff(diff)
+	if len(files) != 1 || files[0].Path != "my file.go" || files[0].OldPath != "" || files[0].Added != 1 {
+		t.Fatalf("files = %+v", files)
+	}
+	if sites := concurrencySites(files); len(sites) != 1 || sites[0].File != "my file.go" || sites[0].Line != 2 {
+		t.Fatalf("sites = %+v", sites)
+	}
+}

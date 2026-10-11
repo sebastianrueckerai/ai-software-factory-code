@@ -69,7 +69,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
 		t.Fatalf("code = %+v", code)
 	}
-	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "coding-frontier" || tree.Document.Bound("GateAudit") != 6*time.Minute {
+	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "coding-frontier" || tree.Document.Bound("GateAudit") != 20*time.Minute {
 		t.Fatalf("demo-app audit %v, audit model %q, bound %s", demo.Audit, tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit), tree.Document.Bound("GateAudit"))
 	}
 	var names []string

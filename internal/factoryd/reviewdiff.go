@@ -58,11 +58,11 @@ func parseFileDiff(text string) fileDiff {
 		case l == "--- /dev/null":
 			oldPath = ""
 		case strings.HasPrefix(l, "--- a/"):
-			oldPath = strings.TrimPrefix(l, "--- a/")
+			oldPath = strings.TrimSuffix(strings.TrimPrefix(l, "--- a/"), "\t")
 		case l == "+++ /dev/null":
 			newPath = ""
 		case strings.HasPrefix(l, "+++ b/"):
-			newPath = strings.TrimPrefix(l, "+++ b/")
+			newPath = strings.TrimSuffix(strings.TrimPrefix(l, "+++ b/"), "\t")
 		}
 	}
 	f.Path = cmp.Or(newPath, oldPath)
@@ -129,6 +129,29 @@ func partLabel(parts [][]fileDiff, i, all int) string {
 	return fmt.Sprintf("%s of %d, part %d of %d", files, all, i+1, len(parts))
 }
 
+// fileList renders every file of parts, one line each with its added and
+// removed lines and its part, at most maxListLines.
+func fileList(parts [][]fileDiff) string {
+	var lines []string
+	n := 0
+	for k, part := range parts {
+		for _, f := range part {
+			if n++; n > maxListLines {
+				continue
+			}
+			name := f.Path
+			if f.OldPath != "" {
+				name = f.OldPath + " -> " + f.Path
+			}
+			lines = append(lines, fmt.Sprintf("%s +%d -%d (part %d)", name, f.Added, f.Removed, k+1))
+		}
+	}
+	if n > maxListLines {
+		lines = append(lines, fmt.Sprintf("... and %d more", n-maxListLines))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func joinFiles(files []fileDiff) string {
 	var b strings.Builder
 	for _, f := range files {
@@ -158,8 +181,8 @@ var siteKinds = []struct {
 }
 
 const (
-	maxSites    = 200
-	maxSiteText = 200
+	maxListLines = 200
+	maxSiteText  = 200
 )
 
 // concurrencySites are the diff's added lines of each kind, at most one
@@ -179,16 +202,16 @@ func concurrencySites(files []fileDiff) []site {
 	return out
 }
 
-// concurrencyBlock renders sites one per line, at most maxSites.
+// concurrencyBlock renders sites one per line, at most maxListLines.
 func concurrencyBlock(sites []site) string {
 	if len(sites) == 0 {
 		return "none"
 	}
 	var lines []string
-	for _, s := range sites[:min(len(sites), maxSites)] {
+	for _, s := range sites[:min(len(sites), maxListLines)] {
 		lines = append(lines, fmt.Sprintf("%s:%d %s: %s", s.File, s.Line, s.Kind, s.Text))
 	}
-	if n := len(sites) - maxSites; n > 0 {
+	if n := len(sites) - maxListLines; n > 0 {
 		lines = append(lines, fmt.Sprintf("... and %d more", n))
 	}
 	return strings.Join(lines, "\n")

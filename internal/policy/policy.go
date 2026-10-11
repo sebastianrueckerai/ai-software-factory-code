@@ -245,6 +245,10 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 // MaxSupervisorTimeout is the longest supervisor_timeout a policy may set.
 const MaxSupervisorTimeout = 15 * time.Minute
 
+// ReviewParts is the most model calls one model review or audit makes,
+// one per part of the diff.
+const ReviewParts = 3
+
 // MaxAgentTime is the longest agent_time a policy, class, process or
 // project may set.
 const MaxAgentTime = 72 * time.Hour
@@ -398,10 +402,10 @@ const BoundDefault = "default"
 
 // DefaultBounds are the bounds a policy without them gets (rulings 140,
 // 154): a merge attempt is one API call under a 2-minute timeout, its
-// retries on workflow timers (ruling 163). RunSession, RunReport, Screen and SuperviseGate
-// follow the limits (Bound).
+// retries on workflow timers (ruling 163). RunSession, RunReport, Screen,
+// SuperviseGate, ModelReview and GateAudit follow the limits (Bound).
 var DefaultBounds = map[string]int{
-	"WaitChecks": 600, "GateReproduction": 900, "ModelReview": 180, "GateAudit": 360, "Merge": 90, BoundDefault: 120,
+	"WaitChecks": 600, "GateReproduction": 900, "Merge": 90, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -415,9 +419,10 @@ var BoundActivities = []string{
 
 // Bound is how long one run of activity may take before it alerts: the
 // policy's bound for it; else for a session the agent time plus a minute
-// (a session at the cap is stopped by the cap already) and for the gate
-// supervisor its call's timeout plus two; else DefaultBounds' for it, else
-// the policy's default, else DefaultBounds' default.
+// (a session at the cap is stopped by the cap already), for the gate
+// supervisor its call's timeout plus two and for the model review and the
+// audit their ReviewParts calls' timeouts plus two; else DefaultBounds'
+// for it, else the policy's default, else DefaultBounds' default.
 func (d Document) Bound(activity string) time.Duration {
 	s, ok := d.Bounds[activity]
 	switch {
@@ -429,6 +434,8 @@ func (d Document) Bound(activity string) time.Duration {
 		return d.Limits.AgentTime + 2*time.Minute
 	case activity == "SuperviseGate":
 		return d.Limits.SupervisorTimeout + 2*time.Minute
+	case activity == "ModelReview" || activity == "GateAudit":
+		return ReviewParts*d.Limits.SupervisorTimeout + 2*time.Minute
 	}
 	if !ok {
 		s, ok = DefaultBounds[activity]

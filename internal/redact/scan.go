@@ -97,7 +97,7 @@ func Added(diff string, f func(file string, line int, text string)) {
 		case strings.HasPrefix(l, "diff --git "):
 			file, inHunk = "", false
 		case !inHunk && strings.HasPrefix(l, "+++ "):
-			file = strings.TrimPrefix(strings.TrimPrefix(l, "+++ "), "b/")
+			file = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(l, "+++ "), "b/"), "\t")
 			if file == "/dev/null" {
 				file = ""
 			}

@@ -455,8 +455,8 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 			} {
 				user := userMessage(ll.chats[i])
 				if !strings.Contains(user, want.part) || !strings.Contains(user, want.file) || strings.Contains(user, want.other) ||
-					!strings.Contains(user, `"concurrency": "a.go:1 goroutine: go func() {"`) {
-					t.Fatalf("call %d lacks its part, its file or the concurrency summary, or carries the other file: %s", i+1, user[:min(len(user), 2000)])
+					!strings.Contains(user, `"concurrency": "a.go:1 goroutine: go func() {"`) || !strings.Contains(user, `"files": "a.go +2 -0 (part 1)\nb.go +1 -0 (part 2)"`) {
+					t.Fatalf("call %d lacks its part, its file, the concurrency summary or the file list, or carries the other file's diff: %s", i+1, user[:min(len(user), 2000)])
 				}
 			}
 			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Read in 2 parts, 2 files, 60 KiB.") || !strings.Contains(fj.comments[0], "Verdict: **"+tc.verdict+"**") {
@@ -466,7 +466,8 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 	}
 }
 
-// One part is one call without a part label; the comment says so.
+// One part is one call without a part label or file list; the comment
+// says so.
 func TestModelReviewOfOnePartHasNoLabel(t *testing.T) {
 	fj := &gateForgejo{diff: diffFile("a.go", 2<<10)}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -476,7 +477,7 @@ func TestModelReviewOfOnePartHasNoLabel(t *testing.T) {
 	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || rv.Summary != "ok" || rv.StrictImprovement != nil {
 		t.Fatalf("review = %+v", rv)
 	}
-	if user := userMessage(ll.chats[0]); len(ll.chats) != 1 || strings.Contains(user, `"part"`) || !strings.Contains(user, `"concurrency": "none"`) {
+	if user := userMessage(ll.chats[0]); len(ll.chats) != 1 || strings.Contains(user, `"part"`) || strings.Contains(user, `"files"`) || !strings.Contains(user, `"concurrency": "none"`) {
 		t.Fatalf("calls %d, user %s", len(ll.chats), user)
 	}
 	if !strings.Contains(fj.comments[0], "Read in 1 part, 1 file, 2 KiB.") {
@@ -1229,9 +1230,8 @@ func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 	}
 }
 
-// A skipped reproduction is no finding: the checks ran the tests (#287).
 // The review and the audit prompts name the concurrency summary and the
-// parts as context, and no longer a cut diff.
+// parts as context, the review its file list, and no longer a cut diff.
 func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
 	for name, prompt := range map[string]string{"review": reviewPrompt, "audit": auditPrompt} {
 		for _, s := range []string{"The concurrency summary lists every goroutine, channel, lock, select and atomic the diff adds, with file and line.",
@@ -1244,8 +1244,12 @@ func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
 	if strings.Contains(reviewPrompt, "may be cut") {
 		t.Error("the review prompt still says the diff may be cut")
 	}
+	if !strings.Contains(reviewPrompt, "; files lists every file of the whole diff with its added and removed lines and its part.") {
+		t.Error("the review prompt does not name the file list")
+	}
 }
 
+// A skipped reproduction is no finding: the checks ran the tests (#287).
 func TestReviewPromptSkippedReproductionIsNoFinding(t *testing.T) {
 	for _, s := range []string{"A reproduction with Ran false means the issue carried no reproduction command: that is no finding by itself", "the pull request's checks (build, vet, the race tests) already ran and passed before this review"} {
 		if !strings.Contains(reviewPrompt, s) {
