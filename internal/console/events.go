@@ -186,41 +186,59 @@ const streamBuffer = 16
 // "event", its id the row's, its data the feed's row. A reconnect's
 // Last-Event-ID replays the rows after it from the table, oldest first and
 // at most the newest eventLimitMax of them; a first connect replays
-// nothing.
+// nothing. Each heartbeat checks the session and the write right again,
+// and the stream ends once either is gone.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	p, ok := c.writtenProject(w, r)
 	if !ok {
 		return
 	}
+	ctx, user := r.Context(), current(r).user
 	ch := make(chan factoryd.Event, streamBuffer)
 	cancel := c.cfg.Bus.Subscribe(p.Repository, ch)
 	defer cancel()
 	rc := http.NewResponseController(w)
-	// the console server's WriteTimeout would end every stream after a minute
-	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-		log.Printf("console: the stream of %s keeps the write deadline: %v", p.Repository, err)
+	// each write may take two heartbeats, so a stalled client is cut off;
+	// the server's WriteTimeout would end every stream after a minute
+	write := func(s string) error {
+		if err := rc.SetWriteDeadline(time.Now().Add(2 * heartbeat)); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, s); err != nil {
+			return err
+		}
+		return rc.Flush()
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
 	send := func(e factoryd.Event) error {
 		b, err := json.Marshal(feedRow(e))
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "id: %d\nevent: event\ndata: %s\n\n", e.ID, b); err != nil {
-			return err
-		}
-		return rc.Flush()
+		return write(fmt.Sprintf("id: %d\nevent: event\ndata: %s\n\n", e.ID, b))
 	}
-	if err := rc.Flush(); err != nil {
+	// still writes the project: an error keeps the stream, a refusal ends it
+	allowed := func() bool {
+		if c.session(r) == nil {
+			return false
+		}
+		login, err := c.writer(ctx, user)
+		if err == nil && !login {
+			return false
+		}
+		may, err := c.mayMoveCached(ctx, p.Repository, user, policy.MovedByWriters)
+		return err != nil || may
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if err := write(""); err != nil {
 		log.Printf("console: the stream of %s: %v", p.Repository, err)
 		return
 	}
-	var last int64
+	var replayed int64
 	if after, err := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64); err == nil && after > 0 {
-		last = after
-		rows, err := c.cfg.Events.ProjectEvents(r.Context(), p.Repository, after, eventLimitMax)
+		replayed = after
+		rows, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, after, eventLimitMax)
 		if err != nil {
 			log.Printf("console: the stream of %s replays nothing: %v", p.Repository, err)
 		}
@@ -228,28 +246,27 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 			if err := send(rows[i]); err != nil {
 				return
 			}
-			last = max(last, rows[i].ID)
+			replayed = max(replayed, rows[i].ID)
 		}
 	}
 	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case e, ok := <-ch:
 			if !ok {
 				return
 			}
-			if e.ID <= last {
-				continue
+			// live events may come out of id order: skip only the replayed ones
+			if e.ID > replayed {
+				if err := send(e); err != nil {
+					return
+				}
 			}
-			if err := send(e); err != nil {
-				return
-			}
-			last = e.ID
 		case <-tick.C:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil || rc.Flush() != nil {
+			if !allowed() || write(": ping\n\n") != nil {
 				return
 			}
 		}

@@ -570,6 +570,56 @@ func TestStreamReplaysAfterLastEventID(t *testing.T) {
 	}
 }
 
+// Live events may arrive out of id order (two Records publish after their
+// inserts in either order): after a replay up to 10, live 12 and then 11
+// both arrive, and only a replayed id (10, again) is skipped.
+func TestStreamKeepsOutOfOrderLiveEvents(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	for range 10 {
+		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	}
+	_, br := streamOf(t, r, "9")
+	if got := nextMessage(t, br); len(got) == 0 || got[0] != "id: 10" {
+		t.Fatalf("replayed %q, want id 10", got)
+	}
+	for _, id := range []int64{12, 11, 10, 13} {
+		r.events.bus.Publish(factoryd.Event{ID: id, Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	}
+	for _, want := range []string{"id: 12", "id: 11", "id: 13"} {
+		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
+			t.Fatalf("live message %q, want %s", got, want)
+		}
+	}
+}
+
+// A stream ends by the next heartbeat once its session is gone: expired,
+// or dropped by a logout in another tab.
+func TestStreamEndsWithItsSession(t *testing.T) {
+	was := heartbeat
+	heartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { heartbeat = was })
+	r := newRig(t)
+	_, br := streamOf(t, r, "")
+	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+		t.Fatalf("a live session's stream sent %q, want the heartbeat", got)
+	}
+	r.c.mu.Lock()
+	clear(r.c.sessions)
+	r.c.mu.Unlock()
+	// a heartbeat already under way when the session went may still arrive
+	for range 2 {
+		got := nextMessage(t, br)
+		if slices.Equal(got, []string{"read: EOF"}) {
+			return
+		}
+		if !slices.Equal(got, []string{": ping"}) {
+			t.Fatalf("after the session ended the stream sent %q", got)
+		}
+	}
+	t.Fatal("the stream outlived its session by two heartbeats")
+}
+
 // A quiet stream sends the heartbeat comment within its interval.
 func TestStreamHeartbeat(t *testing.T) {
 	was := heartbeat
@@ -684,7 +734,8 @@ func TestBoardTemplatePollsSlowly(t *testing.T) {
 }
 
 // The board's activity line: one line of the card's newest event where one
-// exists, nothing at all where it has none.
+// exists (a task_status row in words), the escalation's question where it
+// has none but waits on an answer, and nothing at all where it has neither.
 func TestBoardActivityLine(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "code", Repository: "sf/code", MergeRule: "human",
@@ -732,7 +783,7 @@ func TestBoardActivityLine(t *testing.T) {
 		t.Errorf("the card with an event: %.400s", got)
 	}
 	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {
-		t.Errorf("the card without an event falls back to no escalation text: %.400s", got)
+		t.Errorf("the escalated card without an event lacks its question: %.400s", got)
 	}
 	hhmm := at.UTC().Format("15:04")
 	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm, "t-fin": "status done at " + hhmm} {
