@@ -77,6 +77,7 @@ func main() {
 		Audit:   store,
 	}
 	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
+	factoryd := &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}}
 	srv := gateway.NewServer(gateway.ServerOptions{
 		Auth:       auth,
 		Store:      store,
@@ -91,7 +92,8 @@ func main() {
 			HTTP: &http.Client{Timeout: 75 * time.Second}},
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: &http.Client{Timeout: 120 * time.Second}},
-		Escalator:     &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}},
+		Escalator:     factoryd,
+		PlanFiler:     factoryd,
 		Cloud:         cloud,
 		Telemetry:     tel,
 		FactorydToken: cfg.FactorydToken,

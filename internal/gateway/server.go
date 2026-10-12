@@ -64,6 +64,8 @@ type ServerOptions struct {
 	Replicate *Replicate
 	Fal       *Fal
 	Escalator Escalator
+	// PlanFiler is the file_plan tool's hand-over to factoryd.
+	PlanFiler PlanFiler
 	// Cloud is the commissioning connector (the agent Hetzner project).
 	Cloud *Cloud
 	// Telemetry receives the spans and metrics; nil = none.

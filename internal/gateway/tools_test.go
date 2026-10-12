@@ -142,10 +142,25 @@ func (f *fakeEscalator) Escalate(_ context.Context, taskID string, e Escalation)
 	return f.err
 }
 
+type fakePlanFiler struct {
+	mu    sync.Mutex
+	calls []string
+	res   PlanFiled
+	err   error
+}
+
+func (f *fakePlanFiler) FilePlan(_ context.Context, taskID, plan string) (PlanFiled, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"|"+plan)
+	return f.res, f.err
+}
+
 type toolEnv struct {
 	store     *memStore
 	providers *fakeProviders
 	escalator *fakeEscalator
+	filer     *fakePlanFiler
 	session   *mcp.ClientSession
 }
 
@@ -155,12 +170,13 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	store.setPolicy(pv)
 	providers := newFakeProviders(t)
 	esc := &fakeEscalator{}
+	filer := &fakePlanFiler{}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc,
+		Escalator: esc, PlanFiler: filer,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -170,7 +186,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -226,7 +242,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "escalate_to_human,fal_run,replicate_predict,request_info,web_scrape,web_search"
+	want := "escalate_to_human,fal_run,file_plan,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -687,6 +703,95 @@ func TestFactorydEscalateClient(t *testing.T) {
 	}
 	if auth != "Bearer shared" || body != `{"task_id":"t-1","kind":"escalation","question":"q?","reason":"why","recommendation":"do x"}` {
 		t.Fatalf("auth %q body %s", auth, body)
+	}
+}
+
+func TestFactorydFilePlanClient(t *testing.T) {
+	var auth, body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		auth, body = r.Header.Get("Authorization"), string(b)
+		if r.URL.Path != "/internal/plans" || r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"revision":2,"sha256":"abc123","findings":["f"]}`)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	res, err := f.FilePlan(context.Background(), "t-1", `{"summary":"s"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth != "Bearer shared" || body != `{"task_id":"t-1","plan":"{\"summary\":\"s\"}"}` {
+		t.Fatalf("auth %q body %s", auth, body)
+	}
+	if res.Revision != 2 || res.SHA256 != "abc123" || !slices.Equal(res.Findings, []string{"f"}) {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
+// file_plan is the planner's answer in the session it runs in: a plan the
+// check refuses comes back as every finding, the session goes on and the
+// corrected plan files in the same session; only a filed plan ends it.
+func TestFilePlanTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	plan := `{"summary":"s","cards":[{"key":"links-api","role":"code","title":"t","brief":"b","size":"large"}]}`
+	finding := "plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"
+	e.filer.res = PlanFiled{Findings: []string{finding}}
+	text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
+	if !isErr || text != "the plan was refused:\n- "+finding+"\ncorrect the plan and file it again in this session" {
+		t.Fatalf("refused plan = %q, want the finding in the session", text)
+	}
+	if a := e.lastAudit(t); a.Decision != "plan_refused" || a.Tool != policy.ToolFilePlan {
+		t.Fatalf("audit = %+v", a)
+	}
+	e.filer.res = PlanFiled{Revision: 3, SHA256: "abc123"}
+	text, isErr = e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
+	if isErr || text != "filed as revision 3; it is this session's answer. You may end the session." {
+		t.Fatalf("filed plan = %q (%v)", text, isErr)
+	}
+	if a := e.lastAudit(t); a.Decision != "plan_filed" || a.Reason != "revision 3" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if calls := e.filer.calls; len(calls) != 2 || !strings.HasPrefix(calls[0], "42|") {
+		t.Fatalf("filer calls = %v", calls)
+	}
+}
+
+// file_plan reaches factoryd only for a running task of a class that lists
+// it, with a plan within the bound; every refusal names the reason and
+// files nothing, and a hand-over that fails says so in the session.
+func TestFilePlanRefused(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	done := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "waiting-human", Classes: []string{"coder"}}, pv)
+	if text, isErr := done.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
+		!strings.Contains(text, "refused_task_status") {
+		t.Fatalf("not running = %q, want refused_task_status", text)
+	}
+	e := newToolEnv(t, running("odd"), pv)
+	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
+		!strings.Contains(text, "refused_capability") {
+		t.Fatalf("class without the tool = %q, want refused_capability", text)
+	}
+	e = newToolEnv(t, running("coder"), pv)
+	for name, plan := range map[string]string{"empty": "", "over the bound": strings.Repeat("x", 12<<10+1)} {
+		if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan}); !isErr ||
+			!strings.Contains(text, "refused_arguments") {
+			t.Fatalf("%s = %q, want refused_arguments", name, text)
+		}
+	}
+	e.filer.err = errors.New("no route")
+	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
+		!strings.Contains(text, "the plan did not reach factoryd: no route") {
+		t.Fatalf("filer error = %q", text)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_plan" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if calls := e.filer.calls; len(calls) != 1 {
+		t.Fatalf("filer calls = %v, want only the last one through", calls)
 	}
 }
 

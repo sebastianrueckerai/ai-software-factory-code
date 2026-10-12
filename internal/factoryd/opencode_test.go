@@ -904,7 +904,7 @@ func TestGuideEndSandboxSentence(t *testing.T) {
 // No guide asks for a build without -race any more (stage12-design 5.2,
 // ruling 221): the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
-	for _, g := range []string{workGuide(nil), featureGuide(nil, RoleFeature), planGuide(testShape, testLimits)} {
+	for _, g := range []string{workGuide(nil), featureGuide(nil, RoleFeature), planGuide(testShape, testLimits, 0)} {
 		if strings.Contains(g, "without -race") {
 			t.Fatalf("guide still forbids -race: %q", g)
 		}

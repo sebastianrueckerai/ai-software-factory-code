@@ -597,10 +597,11 @@ const (
 	ToolSSHCertificate = "ssh_certificate"
 	ToolRequestStatus  = "resource_request_status"
 	ToolRequestInfo    = "request_info"
+	ToolFilePlan       = "file_plan"
 )
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

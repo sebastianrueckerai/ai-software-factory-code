@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,6 +27,21 @@ type Escalator interface {
 	Escalate(ctx context.Context, taskID string, e Escalation) error
 }
 
+// PlanFiler files a planner session's plan (the file_plan tool):
+// factoryd checks the whole plan json and stores it as the session's
+// answer. Implemented by Factoryd; tests substitute a fake.
+type PlanFiler interface {
+	FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error)
+}
+
+// PlanFiled is a plan filing's result: a stored revision, or every
+// finding the check raised, back into the same session.
+type PlanFiled struct {
+	Revision int      `json:"revision"`
+	SHA256   string   `json:"sha256"`
+	Findings []string `json:"findings"`
+}
+
 // Escalation is what an agent asks: a human (escalate_to_human: the
 // question, why, what the agent would do and the answers it offers) or the
 // issue's author (request_info: the question, what it tried, what it
@@ -46,7 +62,10 @@ const (
 	KindInfoRequest = "info_request"
 )
 
-var _ Escalator = (*Factoryd)(nil)
+var (
+	_ Escalator = (*Factoryd)(nil)
+	_ PlanFiler = (*Factoryd)(nil)
+)
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
 type Factoryd struct {
@@ -63,6 +82,21 @@ func (f *Factoryd) Escalate(ctx context.Context, taskID string, e Escalation) er
 			Escalation
 		}{taskID, e})
 	return err
+}
+
+func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error) {
+	var res PlanFiled
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/plans",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			Plan   string `json:"plan"`
+		}{taskID, plan})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
 }
 
 // toolCaller is who an MCP request is for: the task, read per request, and
@@ -147,6 +181,10 @@ type RequestInfoIn struct {
 	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
 }
 
+type FilePlanIn struct {
+	Plan string `json:"plan" jsonschema:"the complete plan json: one object with summary and cards"`
+}
+
 // escalateSchema is EscalateIn's input schema with choices a plain array:
 // the inferred type list ["null", "array"] is one some models' tool calls
 // refuse.
@@ -204,6 +242,11 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"what you tried and what you need. This session ends; the task resumes with the author's answer, or the issue closes as not reproducible after 14 days. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
 			return s.requestInfo(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFilePlan, Description: "File the plan: hand the complete plan json over and it is checked at once. " +
+		"A refusal names every finding; correct the plan and file it again in this session. A filed plan is this session's answer; end the session. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
+			return s.filePlan(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -553,6 +596,42 @@ func (s *Server) requestInfo(ctx context.Context, c *toolCaller, in RequestInfoI
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindInfoRequest, Question: q, Tried: tried, Needs: needs}, "info_requested",
 		"asked the issue's author; this session will end. The task resumes with the author's answer. Stop working now.")
+}
+
+// maxPlanJSON bounds the plan the gateway passes on: factoryd's check
+// refuses a larger plan, so the session learns it here, without the
+// hand-over.
+const maxPlanJSON = 12 << 10
+
+// filePlan hands the planner's plan to factoryd, which checks the whole
+// json at once: a refusal carries every finding back into the session, a
+// filed plan is the session's answer. Free, for the classes that list it.
+func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mcp.CallToolResult {
+	tool := policy.ToolFilePlan
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	if plan := strings.TrimSpace(in.Plan); plan == "" || len(in.Plan) > maxPlanJSON {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("plan is required, at most %d bytes", maxPlanJSON))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.PlanFiler.FilePlan(ctx, c.task.ID, strings.TrimSpace(in.Plan))
+	if err != nil {
+		s.auditTool(c, tool, "error_plan", err.Error(), &c.task.SpentEUR, nil)
+		return toolError("the plan did not reach factoryd: " + err.Error())
+	}
+	if len(res.Findings) > 0 {
+		s.auditTool(c, tool, "plan_refused", textutil.Truncate(strings.Join(res.Findings, "; "), 500), &c.task.SpentEUR, nil)
+		return toolError("the plan was refused:\n- " + strings.Join(res.Findings, "\n- ") +
+			"\ncorrect the plan and file it again in this session")
+	}
+	s.auditTool(c, tool, "plan_filed", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: fmt.Sprintf("filed as revision %d; it is this session's answer. You may end the session.", res.Revision)}}}
 }
 
 // handOver gives factoryd what the agent asks, which stops the session.

@@ -56,6 +56,51 @@ func padded(size int) string {
 	return "```json\n" + strings.Repeat(" ", size-len(b)) + string(b) + "\n```"
 }
 
+// The size table derives from the risk bound (roadmap 159, 184): large is
+// large_lines, medium 60 percent of it, small 30 percent, rounded to whole
+// lines; a bound of 1000 reproduces the old figures 300/600/1000, and no
+// bound keeps them.
+func TestSizeLinesDerivesFromTheBound(t *testing.T) {
+	for _, tc := range []struct{ bound, small, medium, large int }{
+		{1000, 300, 600, 1000},
+		{400, 120, 240, 400},
+		{333, 100, 200, 333},
+		{0, 300, 600, 1000},
+	} {
+		got := sizeLines(tc.bound)
+		for size, want := range map[string]int{"small": tc.small, "medium": tc.medium, "large": tc.large} {
+			if got[size] != want {
+				t.Fatalf("sizeLines(%d)[%s] = %d, want %d (all: %v)", tc.bound, size, got[size], want, got)
+			}
+		}
+	}
+}
+
+// A size whose derived lines reach the bound does not fit under it: the
+// filing check refuses it, naming the card, the size's lines and the
+// bound. Under a 400 bound large is refused and small and medium file;
+// without a bound every known size files as before.
+func TestValidatePlanRefusesASizeAtTheBound(t *testing.T) {
+	p := testPlan()
+	p.Cards[1].Size = "large"
+	fenced := fencePlan(p)
+	for name, tc := range map[string]struct {
+		bound int
+		want  []string
+	}{
+		"large at a 1000 bound":   {1000, []string{"plan: card links-api: size large plans up to 1000 changed lines and the bound is 1000: split the card"}},
+		"large under a 400 bound": {400, []string{"plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"}},
+		"no bound":                {0, nil},
+	} {
+		if got := ValidatePlan(fenced, testShape, testLimits, tc.bound); !slices.Equal(got, tc.want) {
+			t.Fatalf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
+		}
+	}
+	if got := ValidatePlan(fencePlan(testPlan()), testShape, testLimits, 400); len(got) != 0 {
+		t.Fatalf("small and medium under a 400 bound = %q, want no finding", got)
+	}
+}
+
 func TestValidatePlan(t *testing.T) {
 	change := func(edit func(p *Plan)) string {
 		p := testPlan()
@@ -111,7 +156,7 @@ func TestValidatePlan(t *testing.T) {
 		"eleven acceptance": {change(func(p *Plan) { p.Cards[1].Acceptance = slices.Repeat([]string{"a"}, 11) }), []string{"plan: card links-api: 11 acceptance tests; want 1 to 10"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
+			if got := ValidatePlan(tc.text, testShape, testLimits, 0); !slices.Equal(got, tc.want) {
 				t.Fatalf("ValidatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
@@ -973,7 +1018,7 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	if len(h.plans) != 4 || !slices.Equal(h.plans[3], []string{"writer alice asked for changes to the plan: keep the web card small"}) {
 		t.Fatalf("plans %q", h.plans)
 	}
-	want := capReached + "\nlast: the plan was invalid\n- " + invalid[0]
+	want := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
 	if len(h.escalated) != 2 || h.escalated[0] != want || h.escalated[1] != want {
 		t.Fatalf("escalated %q, want twice %q", h.escalated, want)
 	}
@@ -1180,9 +1225,9 @@ func TestPGStorePlans(t *testing.T) {
 	}
 }
 
-// A planner session that ends without a plan passes its last message on:
-// the next session, and the cap card, read what it said beside the
-// finding.
+// A planner session that ends without filing a plan says so, with its
+// last message beside the finding; a filing an earlier session left is
+// stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -1191,6 +1236,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	pinned := fixtureVersion(t)
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	runner.noteFiled("t-plan", PlanResult{Revision: 9}) // a session already ended on this
 	said := "I need to know whether accounts use passwords or magic links before I can split this."
 	var res PlanResult
 	done := make(chan error)
@@ -1206,7 +1252,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	want := []string{"plan: no fenced json block in the last message", "the planner's last message: " + said}
+	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
@@ -1215,6 +1261,175 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
+	}
+}
+
+// file_plan checks the whole plan json at once, in the session that files
+// it: a refusal names every finding and stores nothing, the corrected plan
+// files as the next revision and is held for the running session, and a
+// task not running files nothing (roadmap 178).
+func TestFilePlanChecksAndStores(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	bounded := fixtureVersion(t)
+	bounded.Document.Risk.LargeLines = 400
+	runner.cfg.Policy = func() policy.Version { return bounded }
+	ctx := context.Background()
+
+	over := testPlan()
+	over.Cards[1].Size = "large" // links-api: large plans 400 lines, the bound itself
+	b, err := json.Marshal(over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"}
+	if !slices.Equal(res.Findings, want) || res.Revision != 0 {
+		t.Fatalf("refused = %+v, want findings %q", res, want)
+	}
+	if rev, ok, _ := store.PlanRevision(ctx, "t-plan", 0); ok {
+		t.Fatalf("a refused plan stored as revision %d", rev.Revision)
+	}
+
+	b, err = json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Revision != 1 || res.SHA256 == "" || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, want revision 1", res)
+	}
+	rev, ok, err := store.PlanRevision(ctx, "t-plan", 0)
+	if err != nil || !ok || rev.Revision != 1 || rev.SHA256 != res.SHA256 {
+		t.Fatalf("stored = %+v, %v, %v", rev, ok, err)
+	}
+	if held, ok := runner.takeFiled("t-plan"); !ok || held.Revision != 1 {
+		t.Fatalf("held for the session = %+v, %v", held, ok)
+	}
+
+	if err := store.TransitionTask(ctx, "t-plan", []string{"running"}, "in-review"); err != nil {
+		t.Fatal(err)
+	}
+	res, err = runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Findings, []string{"plan: the task is in-review, not running"}) || res.Revision != 0 {
+		t.Fatalf("not running = %+v", res)
+	}
+	if _, ok := runner.takeFiled("t-plan"); ok {
+		t.Fatal("a refused filing held for the session")
+	}
+}
+
+// PlanFileHandler answers the gateway's file_plan with the shape the
+// gateway reads: a refused plan 200 with its findings, a valid one its
+// revision, a body that is not the pair 400.
+func TestPlanFileHandler(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	bounded := fixtureVersion(t)
+	bounded.Document.Risk.LargeLines = 400
+	runner.cfg.Policy = func() policy.Version { return bounded }
+	h := PlanFileHandler(runner)
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/internal/plans", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	marshal := func(taskID string, p Plan) string {
+		b, err := json.Marshal(map[string]string{"task_id": taskID, "plan": string(mustJSON(p))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	over := testPlan()
+	over.Cards[1].Size = "large"
+	if rec := post(marshal("t-plan", over)); rec.Code != http.StatusOK ||
+		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"]}` {
+		t.Fatalf("refused plan: %d %s", rec.Code, rec.Body.String())
+	}
+	rec := post(marshal("t-plan", testPlan()))
+	if rec.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"revision":1,"sha256":"`) {
+		t.Fatalf("filed plan: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(marshal("no-such-task", testPlan())); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown task: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := post(`{"plan":"{}"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("no task_id: %d", rec.Code)
+	}
+	if rec := post(`not json`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("not json: %d", rec.Code)
+	}
+}
+
+// The plan a session files through the tool is the session's answer: the
+// tool's refusal reaches the planner inside the session, the corrected
+// filing is what RunPlan returns when the session ends, and both filings
+// cost one session, not two (roadmap 178).
+func TestRunPlanTakesAToolFiling(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	pinned.Document.Risk.LargeLines = 400
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	runner.cfg.Policy = func() policy.Version { return pinned }
+
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	ctx := context.Background()
+	over := testPlan()
+	over.Cards[1].Size = "large"
+	b, err := json.Marshal(over)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || len(f.Findings) != 1 ||
+		f.Findings[0] != "plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card" {
+		t.Fatalf("over-bound filing = %+v, %v", f, err)
+	}
+	b, err = json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || f.Revision != 1 {
+		t.Fatalf("corrected filing = %+v, %v", f, err)
+	}
+	kube.scriptPods(0, resultLine(true, "done"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if res.Revision != 1 || res.SHA256 == "" || len(res.Findings) != 0 {
+		t.Fatalf("result = %+v, want the filed revision 1", res)
+	}
+	if n := len(kube.podOrder); n != 1 {
+		t.Fatalf("%d pods, want one session", n)
 	}
 }
 

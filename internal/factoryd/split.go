@@ -45,9 +45,10 @@ const splitFailed = "The split failed its check twice"
 // card's directories cover (the repository's root covers none), and a
 // card whose size is under the lines of the files only it covers.
 func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (Plan, []string) {
-	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits)
+	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits, bound)
+	lines := sizeLines(bound)
 	for _, c := range p.Cards {
-		if n, ok := sizeLines[c.Size]; ok && n >= bound {
+		if n, ok := lines[c.Size]; ok && n >= bound {
 			out = append(out, fmt.Sprintf("split: card %s is %s, up to %d changed lines; each card stays under %d", c.Key, c.Size, n, bound))
 		}
 	}
@@ -76,7 +77,7 @@ func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (P
 		}
 	}
 	for i, c := range p.Cards {
-		if n, ok := sizeLines[c.Size]; ok && alone[i] >= n {
+		if n, ok := lines[c.Size]; ok && alone[i] >= n {
 			out = append(out, fmt.Sprintf("split: card %s alone carries %d changed lines (%s), not under its size %s's %d",
 				c.Key, alone[i], strings.Join(only[i], ", "), c.Size, n))
 		}
