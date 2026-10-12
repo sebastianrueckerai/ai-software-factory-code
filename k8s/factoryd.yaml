@@ -568,7 +568,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:4353660b8c2ec3b81bdc945af960dae656bf909427d668e0bc1b5f106710be6d
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:d405438834aaca81a4cee69947eb35e9e802ac164cb02d03fb66ad4d2ff1795c
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
