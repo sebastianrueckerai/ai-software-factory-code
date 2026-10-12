@@ -252,3 +252,37 @@ func TestLargeListed(t *testing.T) {
 		t.Fatalf("large listed above high, 11 lines: %+v, want large", c)
 	}
 }
+
+// MigrationGlobs are the globs of the rules whose class is a migration
+// class (roadmap 186): what factoryd hands the worker, whose push guard
+// refuses a migration file added under them with a name off the
+// timestamped pattern. GlobMatch is the match Classify makes, exported
+// for that guard.
+func TestMigrationGlobsAndGlobMatch(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Risk.MigrationGlobs(); !reflect.DeepEqual(got, []string{"internal/*/migrations/**", "internal/policy/schema.sql"}) {
+		t.Fatalf("MigrationGlobs = %v, want the migration rule's paths", got)
+	}
+	flagless := Risk{Classes: []RiskClass{{Name: "migration", Outcome: OutcomeRequiresApproval}}, Rules: d.Risk.Rules}
+	if got := flagless.MigrationGlobs(); got != nil {
+		t.Fatalf("MigrationGlobs with no migration-flagged class = %v, want none", got)
+	}
+	two := Risk{Classes: []RiskClass{{Name: "m", Outcome: OutcomeRequiresApproval, Migration: true}},
+		Rules: []RiskRule{{Class: "m", Paths: []string{"b/**", "a/**"}}, {Class: "m", Paths: []string{"a/**"}}}}
+	if got := two.MigrationGlobs(); !reflect.DeepEqual(got, []string{"a/**", "b/**"}) {
+		t.Fatalf("MigrationGlobs = %v, want them sorted and compacted", got)
+	}
+	for p, want := range map[string]bool{
+		"internal/factoryd/migrations/0016_x.sql": true,
+		"internal/policy/schema.sql":              true,
+		"internal/factoryd/store.go":              false,
+		"internal/a/b/migrations/x.sql":           false,
+	} {
+		if got := GlobMatch("internal/*/migrations/**", p) || GlobMatch("internal/policy/schema.sql", p); got != want {
+			t.Fatalf("GlobMatch of %s = %v, want %v", p, got, want)
+		}
+	}
+}

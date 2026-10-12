@@ -1064,6 +1064,12 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		dirs, _ := json.Marshal(s.directories)
 		env = append(env, map[string]any{"name": "DIRECTORIES", "value": string(dirs)})
 	}
+	// the worker's migration-name guard reads these (roadmap 186), where
+	// the guide's naming sentence used to be
+	if globs := s.policy.Risk.MigrationGlobs(); len(globs) > 0 {
+		globsJSON, _ := json.Marshal(globs)
+		env = append(env, map[string]any{"name": "MIGRATION_GLOBS", "value": string(globsJSON)})
+	}
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}

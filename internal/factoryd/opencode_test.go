@@ -688,8 +688,7 @@ func TestBriefNamesTheAuthorsStandingAndPosterInformation(t *testing.T) {
 		"<<<ISSUE-T\nalert: x in demo-staging\nISSUE-T>>>\n\n" + noTools + workGuide(nil); got != want {
 		t.Fatalf("telemetry: %q, want %q", got, want)
 	}
-	for _, s := range []string{"not_reproduced:", "request_info", "escalate_to_human with your recommendation", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block",
-		"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number.",
+	for _, s := range []string{"not_reproduced:", "request_info", "call escalate_to_human.", "These two tools are your only way to ask", "filed from a SigNoz alert, open your last message with a ```repro block",
 		"The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms."} {
 		if !strings.Contains(workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}), s) {
 			t.Errorf("the brief does not ask for %s", s)
@@ -707,17 +706,18 @@ func TestBriefListsOnlyTheOpenTools(t *testing.T) {
 	if want := "The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\no\nISSUE-T>>>\n\n" + line; !strings.HasPrefix(got, want) {
 		t.Fatalf("brief = %q, want it to start %q", got, want)
 	}
-	if !strings.Contains(got, "call request_info with what you tried") || strings.Contains(got, "escalate_to_human") ||
+	if !strings.Contains(got, "call request_info instead of guessing") || strings.Contains(got, "escalate_to_human") ||
 		!strings.Contains(got, "This tool is your only way to ask: nobody answers a question in a message.") {
 		t.Fatalf("brief = %q, want request_info asked for and escalate_to_human not named", got)
 	}
 }
 
-// Where escalate_to_human is open, the guides ask for its choices when the
-// question has a few clear answers; elsewhere they name none.
+// Where escalate_to_human is open the guides name it; how a question is
+// asked (its recommendation, 2 to 5 clickable choices, free text always
+// possible) is the gateway tool's schema (EscalateIn), pinned by the
+// gateway's TestEscalateSchemaOffersChoices (roadmap 186).
 func TestGuidesAskForChoicesWithTheEscalation(t *testing.T) {
-	want := "If only a human can decide, call escalate_to_human with your recommendation. " +
-		"When the question has a few clear answers, pass them as its choices: the human picks one with a click or writes their own. "
+	want := "If only a human can decide, call escalate_to_human. "
 	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolEscalate}), "feature": featureGuide([]string{policy.ToolEscalate}, RoleFeature)} {
 		if !strings.Contains(g, want) {
 			t.Errorf("%s guide = %q, want it to contain %q", name, g, want)
@@ -726,6 +726,77 @@ func TestGuidesAskForChoicesWithTheEscalation(t *testing.T) {
 	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolRequestInfo}), "feature": featureGuide(nil, RoleFeature)} {
 		if strings.Contains(g, "choices") {
 			t.Errorf("%s guide without escalate_to_human = %q, want no choices", name, g)
+		}
+	}
+}
+
+// Roadmap 186: a rule a check, a tool schema or a construction carries
+// lives there, not in the guides' prose. Each rule names its carrier;
+// its own test or construction pins it.
+func TestGuidesCarryNoCheckedRule(t *testing.T) {
+	guides := map[string]string{
+		"work":          workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}),
+		"work-bare":     workGuide(nil),
+		"feature":       featureGuide([]string{policy.ToolEscalate}, RoleFeature),
+		"integration":   featureGuide([]string{policy.ToolEscalate}, RoleIntegration),
+		"end":           guideEnd,
+		"plan":          planGuide(testShape, testLimits),
+		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits),
+		"split":         splitGuide(9, splitFiles, 1000, testLimits),
+	}
+	rules := []string{
+		// the worker's push guard refuseMisnamedMigrations, pinned by
+		// TestCommitAndPushRefusesMisnamedMigrations
+		"never by the next number",
+		// the push protocol (rulings 97/100): the agent holds no token, the
+		// clone init container alone has the read token, the push token is
+		// minted on POST /push with every agent process dead
+		"do not commit, push or look for a token",
+		"You have no credentials",
+		// reportSession runs planners with a read token and no PUSH_URL
+		"nothing you change in the work tree leaves the sandbox",
+		// the checks stage: failing CI jobs' log lines arrive as findings
+		// (WaitChecks), on_findings=agent
+		"reach you as a finding: fix what they show",
+		// EscalateIn's schema: 2 to 5 choices, free text possible
+		// (gateway TestEscalateSchemaOffersChoices)
+		"pass them as its choices",
+		"with your recommendation",
+		// RequestInfoIn's schema: question, tried, needs required
+		"with what you tried and what you need",
+		// cardFacts prints "Directories (guidance, not a boundary)" on every
+		// card's issue
+		"Keep to the card's directories",
+		// ValidatePlan's findings (TestValidatePlan)
+		"The plan has 2 to",
+		"lowercase letters, digits and dashes",
+		"Exactly one card has role",
+		"with no cycle",
+		"and no cycle",
+		"at most 12 KiB",
+		"title: at most",
+		"keep the briefs short",
+		"characters",
+		"directories: at most",
+		"none under .forgejo/",
+		"acceptance: 1 to",
+		"small (a change under about",
+		"0 to 5",
+		"2 to 5 short choices",
+		// deployOwner/ErrNoDeployOwner: CreateChildren returns it to the
+		// planner as a finding, AcceptPlan refuses the plan without an owner
+		"needs one card whose directories include deploy/",
+		// CheckSplit's finding "no card's directories cover"
+		"cover every file above",
+		// GateReproduction runs the repro block at base and head
+		"must bring its own test",
+		"the factory runs it at the base",
+	}
+	for name, g := range guides {
+		for _, rule := range rules {
+			if strings.Contains(g, rule) {
+				t.Errorf("%s guide still carries %q, which a check carries", name, rule)
+			}
 		}
 	}
 }
@@ -841,10 +912,11 @@ func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 }
 
 // featureGuide's card always has a check file (the ts-go template): it
-// runs bash check and ends once CI is green (ruling 221, in place of the
-// design's run_checks line).
+// runs bash check and ends once it passes (ruling 221, in place of the
+// design's run_checks line). A CI failure later is the checks stage's
+// finding, not this prose (roadmap 186).
 func TestFeatureGuideRunsBashCheckThenEnds(t *testing.T) {
-	want := "Run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	want := "Run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm."
 	if !strings.Contains(featureGuide(nil, RoleFeature), want) {
 		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(nil, RoleFeature), want)
 	}
@@ -854,7 +926,7 @@ func TestFeatureGuideRunsBashCheckThenEnds(t *testing.T) {
 // demo-app) do not all have a check file, so the bash check sentence is
 // conditional on one existing at the repository's root.
 func TestWorkGuideRunsBashCheckOnlyIfPresent(t *testing.T) {
-	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show."
+	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm."
 	if !strings.Contains(workGuide(nil), want) {
 		t.Fatalf("workGuide = %q, want it to contain %q", workGuide(nil), want)
 	}

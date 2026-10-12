@@ -584,55 +584,47 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 		c.Key, of, i, n, approver, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
 }
 
-// planGuide is the planner's guide: the spec is the issue, the answer one
-// fenced json block of the plan's shape, a card one session of the pinned
-// limits.
+// planGuide is the planner's guide: the spec is the issue, the answer a
+// plan filed with the file_plan tool, a card one session of the pinned
+// limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
+// ValidatePlan's findings, not this prose (roadmap 186).
 func planGuide(shape policy.PlanShape, limits policy.Limits) string {
-	g := "You are the planner: read, do not change code, commit or push; nothing you change in the work tree leaves the sandbox. " +
+	g := "You are the planner. " +
 		"The issue's text is the spec of an application to build in this repository. Read it, and the repository, its AGENTS.md first: " +
 		"every card follows its conventions. Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
-		"Your last message is the whole result: one fenced ```json block and nothing else, holding " +
+		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
-		fmt.Sprintf("The plan has 2 to %d cards. ", shape.MaxCards) +
-		"key: lowercase letters, digits and dashes, 2 to 32, unique. role: foundation, feature or integration. "
+		"role: foundation, feature or integration. "
 	if shape.Foundation {
-		g += "Exactly one card has role foundation: the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
+		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
 			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
 			"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise). " +
-			"Every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list. "
+			"Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list. "
 	}
 	if shape.Integration {
-		g += "Exactly one card has role integration: it turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. "
+		g += "The integration card turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. "
 	}
 	if shape.Foundation || shape.Integration {
-		g += "factoryd adds those edges itself (every card depends on the foundation card, the integration card on every other card): " +
-			"list in depends_on only the dependencies among feature cards, and no cycle. "
+		g += "factoryd adds the foundation and integration edges itself: " +
+			"list in depends_on only the dependencies among feature cards. "
 	} else {
-		g += "depends_on lists the keys of the cards a card needs merged first, with no cycle. "
+		g += "depends_on lists the keys of the cards a card needs merged first. "
 	}
-	return g + fmt.Sprintf("title: at most %d characters. brief: markdown, what to build and how it is checked, at most %d characters; "+
-		"keep the briefs short, the whole block holds at most 12 KiB. directories: at most %d paths relative to the repository's root, "+
-		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent; "+
-		"a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests. "+
-		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: "+sizeFigures()+"; anything bigger is two cards). "+
-		"questions: 0 to 5 open points the spec leaves to the member, each with 2 to 5 short choices; the member's answers come back to you as a block of answers "+
-		"with your last plan, and a plan with questions cannot be accepted until they are answered. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
-		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
-		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
+	return g + "title and brief: markdown, what to build and how it is checked. " +
+		"directories: paths relative to the repository's root, guidance for the card's agent; " +
+		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects. " +
+		"size: small, medium or large; anything bigger is two cards. " +
+		"questions: open points the spec leaves to the member; their answers come back to you with your last plan, " +
+		"and a plan with open questions cannot be accepted until they are answered. " +
+		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
+		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
+		"answer the whole plan again."
 }
 
 // sizeLines are the changed lines a card of each size plans at most.
 var sizeLines = map[string]int{"small": 300, "medium": 600, "large": 1000}
-
-// sizeFigures are the sizes as the guides open them: "small (a change
-// under about 300 lines), medium (under about 600), large (under about
-// 1000", each guide closing the last.
-func sizeFigures() string {
-	return fmt.Sprintf("small (a change under about %d lines), medium (under about %d), large (under about %d", sizeLines["small"], sizeLines["medium"], sizeLines["large"])
-}
 
 // PlanAcceptedComment is the console's comment, as the approver, on the
 // plan's issue when they accept revision: the plan's wait does not read it

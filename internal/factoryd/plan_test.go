@@ -127,20 +127,22 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 	}
 }
 
-// Stage 16 item 3.7: the guide names the three sizes by their lines, in
-// the json shape and in the field rules.
+// Stage 16 item 3.7: the guide names the three sizes in the json shape
+// and in the field rules. The line figures are ValidatePlan's size
+// findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
 	got := planGuide(testShape, testLimits)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
-		!strings.Contains(got, "size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards).") {
+		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
 	}
 }
 
 // stage12-design 5.2: acceptance items are named tests, not free text
-// ValidatePlan cannot check for.
+// ValidatePlan cannot check for. The count bound is ValidatePlan's
+// finding, not the prose (roadmap 186).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
-	want := fmt.Sprintf("acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects.", maxCardAcceptance)
+	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects."
 	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
@@ -168,15 +170,23 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
-// round2-design.md section 8: every card routes through its own
-// internal/server/routes_<key>.go, so two cards never edit one route list.
+// The route-file rule stays in the prose: round2-design section 8 planned
+// the template's AGENTS.md line, but no template's AGENTS.md carries it,
+// so this sentence is the rule's only carrier.
 func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
-	want := "Every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list."
+	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
 	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
-		t.Fatal("a shape with no foundation card still gets the one-route-file sentence")
+}
+
+// The plan arrives by the file_plan tool, never as the last message
+// (defect 178): RunPlan refuses a session that ends without filing one.
+// The split guide keeps its last-message sentence: RunSplit still reads it.
+func TestPlanGuideFilesThroughTheTool(t *testing.T) {
+	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
 
@@ -1403,13 +1413,6 @@ func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
 		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
-	}
-}
-
-func TestPlanGuideDeployOwnerSentence(t *testing.T) {
-	want := "a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
-		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
 

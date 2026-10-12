@@ -18,8 +18,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +30,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -373,6 +376,9 @@ type workerEnv struct {
 	spec, cardRole string
 	// directories are the card's (DIRECTORIES), for the brief's map
 	directories []string
+	// migrationGlobs are the policy's migration directory globs
+	// (MIGRATION_GLOBS) the push guard judges migration names against
+	migrationGlobs []string
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
@@ -428,9 +434,9 @@ func loadEnv() (workerEnv, error) {
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
-	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS and DIRECTORIES arrive as JSON arrays; absent means none.
+	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES and MIGRATION_GLOBS arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
-		"DIRECTORIES": &e.directories} {
+		"DIRECTORIES": &e.directories, "MIGRATION_GLOBS": &e.migrationGlobs} {
 		if raw := str(name); raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)
@@ -677,6 +683,9 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {
 		return "", err
 	}
+	if err := refuseMisnamedMigrations(e, send, guard, head); err != nil {
+		return "", err
+	}
 	if e.pushToken, err = pushToken(head); err != nil {
 		return "", err
 	}
@@ -753,6 +762,46 @@ func workflowTreeEntries(e workerEnv, own, commit string) (map[string]string, er
 		}
 	}
 	return entries, nil
+}
+
+// migrationName is the pattern a migration file carries: a UTC timestamp
+// and a slug, never the next number (roadmap 186's guide sentence, now a
+// guard).
+var migrationName = regexp.MustCompile(`^[0-9]{14}_[a-z0-9_]+\.sql$`)
+
+// refuseMisnamedMigrations stops a push that adds a .sql file under one
+// of the policy's migration directory globs — a glob with ** in it; an
+// exact path like internal/policy/schema.sql marks one file for review,
+// not a directory of timestamped migrations — whose name is off the
+// pattern. Only added files are judged: an edited migration keeps its
+// name. The listing runs with --no-renames and core.quotePath off, so a
+// rename into a bad name lists as an add and a non-ASCII path prints raw
+// (refuseWorkflowDirChange's comment names the same holes). Like it a
+// guard of the trusted worker, run in the repo it built itself; the
+// refusal reaches the next session as a finding.
+func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
+	var globs []string
+	for _, g := range e.migrationGlobs {
+		if strings.Contains(g, "**") {
+			globs = append(globs, g)
+		}
+	}
+	if len(globs) == 0 {
+		return nil
+	}
+	out, err := e.git(own, "-c", "core.quotePath=off", "diff", "--name-only", "--diff-filter=A", "--no-renames", base, head)
+	if err != nil {
+		return err
+	}
+	for _, p := range strings.Split(out, "\n") {
+		if !strings.HasSuffix(p, ".sql") || !slices.ContainsFunc(globs, func(g string) bool { return policy.GlobMatch(g, p) }) {
+			continue
+		}
+		if !migrationName.MatchString(path.Base(p)) {
+			return fmt.Errorf("refusing to push: migration %s is misnamed: <UTC yyyymmddhhmmss>_<slug>.sql, never the next number", p)
+		}
+	}
+	return nil
 }
 
 var botIdentity = []string{

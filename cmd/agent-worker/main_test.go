@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -941,6 +942,147 @@ func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
 				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
 			}
 		})
+	}
+}
+
+// The guide's migration-name rule became a guard here (roadmap 186): the
+// worker, trusted and running with the agent dead, refuses a push that
+// adds a .sql file under a migration directory glob (a glob with ** in
+// it) whose name is off the timestamped pattern. The refusal reaches the
+// next session as a finding, like every no-push. An exact path glob
+// (internal/policy/schema.sql) marks one file for review, not a
+// directory of timestamped migrations, so it judges no name; an edited
+// migration keeps its name.
+func TestCommitAndPushRefusesMisnamedMigrations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	os.MkdirAll(filepath.Join(seed, "internal", "policy", "migrations"), 0o755)
+	os.WriteFile(filepath.Join(seed, "internal", "policy", "migrations", "20260102030405_seed.sql"), []byte("create table x;\n"), 0o644)
+	os.WriteFile(filepath.Join(seed, "internal", "policy", "migrations", "0016_legacy.sql"), []byte("alter table x;\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	sha := run("-C", seed, "rev-parse", "HEAD")
+
+	globs := []string{"internal/policy/migrations/**", "internal/policy/schema.sql"}
+	commitAll := func(dir string) {
+		run("-C", dir, "add", "-A")
+		run("-C", dir, "commit", "-q", "-m", "agent")
+	}
+	add := func(dir string, content string, rel ...string) {
+		path := filepath.Join(append([]string{dir}, rel...)...)
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte(content), 0o644)
+	}
+	migrations := func(dir, name string) { add(dir, "select 1;\n", "internal", "policy", "migrations", name) }
+	for _, tc := range []struct {
+		name       string
+		globs      []string
+		agent      func(dir string)
+		wantRefuse string // the path the refusal must name; "" = the push goes through
+	}{
+		{name: "next-number-refused", globs: globs, wantRefuse: "internal/policy/migrations/0017_add_users.sql", agent: func(dir string) {
+			migrations(dir, "0017_add_users.sql")
+			commitAll(dir)
+		}},
+		{name: "dashes-and-short-stamp-refused", globs: globs, wantRefuse: "internal/policy/migrations/20261012_add-users.sql", agent: func(dir string) {
+			migrations(dir, "20261012_add-users.sql")
+			commitAll(dir)
+		}},
+		{name: "timestamped-name-passes", globs: globs, agent: func(dir string) {
+			migrations(dir, "20261012090000_add_users.sql")
+			commitAll(dir)
+		}},
+		{name: "edited-legacy-migration-passes", globs: globs, agent: func(dir string) {
+			add(dir, "alter table x, y;\n", "internal", "policy", "migrations", "0016_legacy.sql")
+			commitAll(dir)
+		}},
+		{name: "exact-glob-judges-no-name", globs: globs, agent: func(dir string) {
+			add(dir, "create table z;\n", "internal", "policy", "schema.sql")
+			commitAll(dir)
+		}},
+		{name: "non-sql-under-globs-passes", globs: globs, agent: func(dir string) {
+			add(dir, "the pattern\n", "internal", "policy", "migrations", "README.md")
+			commitAll(dir)
+		}},
+		{name: "outside-globs-passes", globs: globs, agent: func(dir string) {
+			add(dir, "select 1;\n", "db", "0017_add_users.sql")
+			commitAll(dir)
+		}},
+		{name: "rename-into-bad-name-refused", globs: globs, wantRefuse: "internal/policy/migrations/0017_nextnum.sql", agent: func(dir string) {
+			run("-C", dir, "mv", "internal/policy/migrations/0016_legacy.sql", "internal/policy/migrations/0017_nextnum.sql")
+			commitAll(dir)
+		}},
+		{name: "non-ascii-name-refused", globs: globs, wantRefuse: "internal/policy/migrations/0017_café.sql", agent: func(dir string) {
+			migrations(dir, "0017_café.sql")
+			commitAll(dir)
+		}},
+		{name: "no-globs-passes", agent: func(dir string) {
+			migrations(dir, "0017_add_users.sql")
+			commitAll(dir)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/mig-" + tc.name
+			e := workerEnv{taskID: "t1", objective: "o", repoSHA: sha, branch: branch, repoURL: remote, pushURL: remote, migrationGlobs: tc.globs}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := cloneBase(e, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, mainHead, err := prepareRepo(dir, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.agent(dir)
+
+			commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			remoteHead, _ := exec.Command("git", "-C", remote, "rev-parse", "--verify", "-q", "refs/heads/"+branch).Output()
+			if tc.wantRefuse != "" {
+				if err == nil {
+					t.Fatalf("commitAndPush succeeded, commit = %q, want refusal", commit)
+				}
+				if !strings.Contains(err.Error(), tc.wantRefuse) {
+					t.Fatalf("error = %q, want it to name %q", err, tc.wantRefuse)
+				}
+				if len(remoteHead) != 0 {
+					t.Fatalf("remote branch = %q, want nothing pushed", remoteHead)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if commit == "" || strings.TrimSpace(string(remoteHead)) != commit {
+				t.Fatalf("commit = %q, remote branch = %q, want the pushed HEAD", commit, remoteHead)
+			}
+		})
+	}
+}
+
+// MIGRATION_GLOBS reaches the worker as a JSON array like FINDINGS; a
+// malformed value must fail loudly, not silently guard nothing.
+func TestLoadEnvParsesMigrationGlobs(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("MIGRATION_GLOBS", `["internal/policy/migrations/**","internal/policy/schema.sql"]`)
+	e, err := loadEnv()
+	if err != nil || !slices.Equal(e.migrationGlobs, []string{"internal/policy/migrations/**", "internal/policy/schema.sql"}) {
+		t.Fatalf("migrationGlobs = %v, %v; want the two globs", e.migrationGlobs, err)
+	}
+	setRequiredEnv(t) // loadEnv unsets the tokens
+	t.Setenv("MIGRATION_GLOBS", "not json")
+	if _, err := loadEnv(); err == nil {
+		t.Fatal("want an error for malformed MIGRATION_GLOBS, got nil")
 	}
 }
 
