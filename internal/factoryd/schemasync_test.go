@@ -465,7 +465,10 @@ func TestSchemaCopierBuildIsContentHash(t *testing.T) {
 	}
 	id := policy.SchemaContentHash(want)
 	copies := generatedSchemas(t)
-	copies["factory/schema/chat.schema.json"] = ""
+	for name := range copies {
+		copies[name] = "{}\n"
+		break
+	}
 	s, c := schemaRig(t, id, copies)
 	if err := c.SyncOnce(context.Background(), 1, time.Second); err != nil {
 		t.Fatalf("SyncOnce: %v", err)
