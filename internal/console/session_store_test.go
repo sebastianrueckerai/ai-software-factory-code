@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -34,6 +35,9 @@ type fakeSessions struct {
 	touched int
 	tokens  int
 	purged  int
+	// fail is how many reads ConsoleSessionByHash answers with an error
+	// before it answers again.
+	fail int
 }
 
 func newFakeSessions() *fakeSessions {
@@ -54,6 +58,10 @@ func (f *fakeSessions) SaveConsoleSession(_ context.Context, sess factoryd.Conso
 func (f *fakeSessions) ConsoleSessionByHash(_ context.Context, hash string) (factoryd.ConsoleSession, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.fail > 0 {
+		f.fail--
+		return factoryd.ConsoleSession{}, false, errors.New("the database is down")
+	}
 	row, ok := f.rows[hash]
 	if !ok {
 		return factoryd.ConsoleSession{}, false, nil
@@ -254,6 +262,70 @@ func TestSealTokenNonceIsFreshPerValue(t *testing.T) {
 	}
 }
 
+// The id_hash is the seal's additional data: a token sealed for one row
+// does not open under another row's hash.
+func TestSealedTokenOpensOnlyUnderItsHash(t *testing.T) {
+	key := []byte("0123456789abcdef0123456789abcdef")
+	sealed, err := sealToken(key, "access-1", "hash-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := openToken(key, sealed, "hash-a"); err != nil || got != "access-1" {
+		t.Fatalf("under hash-a the token opens to %q, %v; want access-1", got, err)
+	}
+	if got, err := openToken(key, sealed, "hash-b"); err == nil {
+		t.Fatalf("the token sealed under hash-a opens under hash-b to %q", got)
+	}
+}
+
+// A store that fails once costs that one request a 503 and keeps the
+// login: the next request answers 200, and an open stream outlives a
+// heartbeat whose session read failed.
+func TestAStoreFailureKeepsTheLogin(t *testing.T) {
+	was := heartbeat
+	heartbeat = 20 * time.Millisecond
+	t.Cleanup(func() { heartbeat = was })
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	failOnce := func() {
+		r.sessions.mu.Lock()
+		r.sessions.fail = 1
+		r.sessions.mu.Unlock()
+	}
+	failOnce()
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /tasks/new on a failing store = %d, want 503", rec.Code)
+	}
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusOK {
+		t.Fatalf("GET /tasks/new after the failure = %d, want 200", rec.Code)
+	}
+	if _, ok := r.sessions.row(sessionIDHash(ck.Value)); !ok {
+		t.Fatal("the failed read deleted the row")
+	}
+	_, br := streamOf(t, r, "")
+	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+		t.Fatalf("a live session's stream sent %q, want the heartbeat", got)
+	}
+	failOnce()
+	// a heartbeat already under way may still arrive; the second read the
+	// session after the failure was set
+	for pings := 0; pings < 2; {
+		switch got := nextMessage(t, br); {
+		case slices.Equal(got, []string{": ping"}):
+			pings++
+		case len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
+		default:
+			t.Fatalf("after a failed session read the stream sent %q", got)
+		}
+	}
+	r.sessions.mu.Lock()
+	left := r.sessions.fail
+	r.sessions.mu.Unlock()
+	if left != 0 {
+		t.Fatal("no heartbeat read the session while the store failed")
+	}
+}
+
 func TestLastSeenMovesAtMostOnceAMinute(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -372,6 +444,46 @@ func TestRestartRefreshesTheStoredTokens(t *testing.T) {
 	}
 	if access, refresh := r.tokens(t, ck); access != "access-2" || refresh != "refresh-2" {
 		t.Fatalf("the row after the restart's refresh holds %q/%q, want access-2/refresh-2", access, refresh)
+	}
+}
+
+// Two requests of one login whose token runs out refresh it once: the one
+// that waits reads the row the other wrote and takes its tokens, so
+// Forgejo, which invalidates a refresh token on use, never sees refresh-1
+// twice, and the login holds.
+func TestConcurrentRefreshesOfOneLoginGrantOnce(t *testing.T) {
+	r := newRig(t)
+	r.fg.expiresIn = 30 // under the one-minute margin
+	ck, _ := r.loggedIn(t)
+	r.fg.expiresIn = 3600
+	sessions := []*session{r.readSession(t, ck), r.readSession(t, ck)}
+	grants := len(r.fg.grants)
+	errs := make([]error, len(sessions))
+	var wg sync.WaitGroup
+	for i, s := range sessions {
+		wg.Go(func() {
+			errs[i] = r.c.as(context.Background(), s, http.MethodGet, "/api/v1/user", nil, http.StatusOK, nil)
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("session %d: %v", i+1, err)
+		}
+	}
+	if n := len(r.fg.grants) - grants; n != 1 {
+		t.Fatalf("%d refresh grants reached Forgejo, want 1: %v", n, r.fg.grants[grants:])
+	}
+	for i, s := range sessions {
+		if s.access != "access-2" {
+			t.Errorf("session %d holds %q, want access-2", i+1, s.access)
+		}
+	}
+	if calls := r.fg.calls[len(r.fg.calls)-2:]; calls[0] != "GET /api/v1/user Bearer access-2" || calls[1] != calls[0] {
+		t.Errorf("the two calls went out as %q, want both with access-2", calls)
+	}
+	if access, refresh := r.tokens(t, ck); access != "access-2" || refresh != "refresh-2" {
+		t.Fatalf("the row holds %q/%q, want access-2/refresh-2", access, refresh)
 	}
 }
 

@@ -59,7 +59,8 @@ type fakeForgejo struct {
 	issues    []map[string]any
 	comments  map[string]string // path -> body
 	expiresIn int
-	refuse    bool // token endpoint answers 400
+	refuse    bool            // token endpoint answers 400
+	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
 	failAPI   bool
 
@@ -75,7 +76,7 @@ type fakeForgejo struct {
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
-	f := &fakeForgejo{t: t, user: "sebastian", comments: map[string]string{}, expiresIn: 3600}
+	f := &fakeForgejo{t: t, user: "sebastian", comments: map[string]string{}, expiresIn: 3600, spent: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -92,6 +93,13 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		if f.refuse {
 			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
 			return
+		}
+		if rt := r.PostForm.Get("refresh_token"); r.PostForm.Get("grant_type") == "refresh_token" {
+			if f.spent[rt] {
+				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+				return
+			}
+			f.spent[rt] = true
 		}
 		if r.PostForm.Get("grant_type") == "authorization_code" {
 			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))

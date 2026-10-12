@@ -105,12 +105,11 @@ type Sessions interface {
 	ConsoleSessionByHash(ctx context.Context, hash string) (factoryd.ConsoleSession, bool, error)
 	// DeleteConsoleSession removes the row of the hash (a logout).
 	DeleteConsoleSession(ctx context.Context, hash string) error
-	// TouchConsoleSession moves the row's last_seen to seenAt + 1m, the
-	// next time its owner may touch it again, when the row still says
-	// seenAt, the value the caller read; false when it did not move. A
-	// row whose last_seen already moved since that read is a row seen
-	// within the minute, so however many Console values share the table,
-	// one minute moves the column at most once.
+	// TouchConsoleSession moves the row's last_seen to the store's now
+	// when the row still says seenAt, the value the caller read; false
+	// when it did not move. A row whose last_seen already moved since that
+	// read is a row seen within the minute, so however many Console values
+	// share the table, one minute moves the column at most once.
 	TouchConsoleSession(ctx context.Context, hash string, seenAt time.Time) (bool, error)
 	// UpdateConsoleSessionTokens stores the refreshed tokens on the row.
 	UpdateConsoleSessionTokens(ctx context.Context, hash, access, refresh string, expiry time.Time) error

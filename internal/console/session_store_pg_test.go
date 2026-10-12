@@ -100,8 +100,8 @@ func getOn(t *testing.T, c *Console, ck *http.Cookie) int {
 // The lookup path touches the row at most once a minute, in the store's
 // own SQL: five requests inside a minute move last_seen once, and the next
 // move comes only when the row's owner holds a value a minute old. The
-// column moves a minute past the value it held, so a wall clock that lags
-// the database's still moves it on the sixth request (roadmap 164).
+// column moves to the database's now(), whatever the console's clock says
+// (roadmap 164).
 func TestLookupTouchesTheRowOnceAMinuteOverPostgres(t *testing.T) {
 	store := pgStore(t)
 	r := newRig(t)
