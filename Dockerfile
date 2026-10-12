@@ -12,6 +12,8 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 # One image, both control-plane binaries; each deployment sets its command.
 COPY --from=build /out/factory-gateway /usr/local/bin/factory-gateway
 COPY --from=build /out/factoryd /usr/local/bin/factoryd
+# git: factoryd's GitHub exports of mode pull_requests fetch and push with it
+RUN apk add --no-cache git
 USER 65534:65534
 EXPOSE 8081
 ENTRYPOINT ["factory-gateway"]

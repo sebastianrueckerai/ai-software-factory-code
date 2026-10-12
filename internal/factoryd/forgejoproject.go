@@ -595,6 +595,19 @@ func (f *Forgejo) SyncPushMirrors(ctx context.Context, repo Repo) error {
 	return err
 }
 
+// ProjectRepoSize is repo's size in KiB as Forgejo counts it.
+func (f *Forgejo) ProjectRepoSize(ctx context.Context, repo Repo) (int64, error) {
+	b, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String(), nil, http.StatusOK)
+	if err != nil {
+		return 0, err
+	}
+	var r struct {
+		Size int64 `json:"size"`
+	}
+	err = json.Unmarshal(b, &r)
+	return r.Size, err
+}
+
 // DeletePushMirror deletes repo's push mirror name; one already gone is
 // no error.
 func (f *Forgejo) DeletePushMirror(ctx context.Context, repo Repo, name string) error {

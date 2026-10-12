@@ -50,12 +50,21 @@ func TestCheckProjectReadsTheHead(t *testing.T) {
 	}
 }
 
-// factoryd's default-deny egress resolves the GitHub API registration asks
-// whether an import's source is empty, and admits it on 443 alone.
+// factoryd's default-deny egress resolves GitHub's API, which registration
+// asks whether an import's source is empty and the exports call, and
+// GitHub's git host, and admits each on 443 alone.
 func TestEgressAdmitsTheGitHubAPI(t *testing.T) {
-	u, err := url.Parse(newRegistrar(nil, nil, nil, nil, "").GitHubAPI)
+	gh := newRegistrar(nil, nil, nil, nil, "").GitHub
+	for _, base := range []string{gh.API, gh.Git} {
+		egressAdmits(t, base)
+	}
+}
+
+func egressAdmits(t *testing.T, base string) {
+	t.Helper()
+	u, err := url.Parse(base)
 	if err != nil || u.Scheme != "https" || u.Port() != "" {
-		t.Fatalf("GitHubAPI %v, %v: want https on its default port", u, err)
+		t.Fatalf("%v, %v: want https on its default port", u, err)
 	}
 	b, err := os.ReadFile("../../k8s/factoryd.yaml")
 	if err != nil {

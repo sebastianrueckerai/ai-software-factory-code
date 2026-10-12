@@ -78,9 +78,15 @@ type Registrar struct {
 	// Mirrors are the projects' GitHub mirror rows, whose state each poll
 	// reads from Forgejo; nil reads none.
 	Mirrors MirrorStore
-	// GitHubAPI is GitHub's API, https://api.github.com, which tells an
-	// empty import source from a cut copy.
-	GitHubAPI string
+	// GitHub is GitHub's API and git: registration asks its API whether an
+	// import's source is empty, and githubPass takes the cards of the
+	// exports of mode pull_requests there; nil takes none.
+	GitHub *GitHub
+	// githubAt is githubPass's last read of the GitHub pull requests'
+	// states.
+	githubAt time.Time
+	// gitMu runs one git operation for GitHub at a time.
+	gitMu sync.Mutex
 
 	mu sync.Mutex
 	// reconcileErrs is each factory project's last failed reconcile, by
@@ -228,6 +234,7 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 		}
 		r.mirrorStates(ctx)
+		r.githubPass(ctx)
 		r.poll(ctx)
 		select {
 		case <-ctx.Done():
@@ -1354,7 +1361,7 @@ func readRepo(ctx context.Context, call func(context.Context, string, string, []
 // sourceEmpty asks GitHub whether m's repository has a commit, with m's
 // token when it holds one: 409 is GitHub's "Git Repository is empty".
 func (r *Registrar) sourceEmpty(ctx context.Context, m Mirror) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.GitHubAPI+"/repos/"+m.Remote+"/commits?per_page=1", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.GitHub.API+"/repos/"+m.Remote+"/commits?per_page=1", nil)
 	if err != nil {
 		return false, err
 	}

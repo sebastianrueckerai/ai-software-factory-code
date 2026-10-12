@@ -88,6 +88,11 @@ type Task struct {
 	// Accent is the card's colour label (one of Accents), "" when none.
 	// It never changes a state rendering and never enters a brief.
 	Accent string
+	// GitHubPR is the card's pull request on GitHub, from an export of
+	// mode pull_requests, 0 for none; GitHubPRState is open, merged,
+	// closed or "failed: <why>", "" before the export took the card.
+	GitHubPR                   int64
+	GitHubPRURL, GitHubPRState string
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -516,7 +521,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	objective, repository, sha, kind, issue_number, source, pr_number,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
-	COALESCE(human_summary, ''), COALESCE(accent, '')`
+	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -525,7 +530,8 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent); err != nil {
+		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState); err != nil {
 		return Task{}, err
 	}
 	var err error

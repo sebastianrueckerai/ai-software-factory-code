@@ -596,10 +596,16 @@ spec:
           seccompProfile: {type: RuntimeDefault}
         resources:
           requests: {cpu: 50m, memory: 64Mi}
-          limits: {cpu: 500m, memory: 256Mi}
+          # 512Mi: the GitHub exports' git runs in the container, one
+          # operation at a time on a repository of at most 200 MiB
+          limits: {cpu: 500m, memory: 512Mi}
         volumeMounts:
         - {name: openbao-token, mountPath: /var/run/secrets/openbao, readOnly: true}
+        # the GitHub exports' throwaway git repositories
+        - {name: tmp, mountPath: /tmp}
       volumes:
+      - name: tmp
+        emptyDir: {sizeLimit: 1Gi}
       # a ServiceAccount token only OpenBao's Kubernetes auth accepts
       # (role factoryd, audience openbao)
       - name: openbao-token
@@ -722,12 +728,13 @@ spec:
         - matchName: temporal-frontend.platform.svc.cluster.local
         - matchName: fsn1.your-objectstorage.com
         - matchName: api.hetzner.cloud
-        - matchName: api.github.com
         - matchName: signoz-otel-collector.platform.svc.cluster.local
         - matchName: signoz.platform.svc.cluster.local
         - matchName: forgejo-ssh.forgejo.svc.cluster.local
         - matchName: factory-gateway.factory.svc.cluster.local
         - matchName: openbao.platform.svc.cluster.local
+        - matchName: github.com
+        - matchName: api.github.com
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -782,6 +789,13 @@ spec:
   - toFQDNs:
     - matchName: fsn1.your-objectstorage.com
     - matchName: api.hetzner.cloud
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+  # GitHub: registration's probe of an import's source, and the exports of
+  # mode pull_requests, git over HTTPS and the REST API with the export's
+  # token
+  - toFQDNs:
+    - matchName: github.com
     - matchName: api.github.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]

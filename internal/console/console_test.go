@@ -677,6 +677,9 @@ type rig struct {
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
 	closed      []string // "task by user" per CloseCard
+	synced      []string // "project by user" per GitHubSync
+	syncErr     error
+	syncGate    chan struct{} // GitHubSync waits on it, when set
 }
 
 var monthly = 8.99
@@ -717,6 +720,13 @@ func newRig(t *testing.T) *rig {
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors,
+		GitHubSync: func(_ context.Context, project, by string) (string, error) {
+			if r.syncGate != nil {
+				<-r.syncGate
+			}
+			r.synced = append(r.synced, project+" by "+by)
+			return "Pull request #3 brings GitHub's default branch of acme/app at abc1234 to main.", r.syncErr
+		},
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -22,25 +23,36 @@ const (
 	// pending, copying since the copy's start, then imported or failed;
 	// its last update the copy's start, then an import's end.
 	MirrorImport = "import"
+	// ModeMirror is an export Forgejo keeps as a push mirror of every
+	// branch and tag; ModePullRequests one that takes each card merged
+	// since to GitHub as a pull request (githubPass).
+	ModeMirror       = "mirror"
+	ModePullRequests = "pull_requests"
 )
 
 // Mirror is a project's project_mirrors row: Remote is the GitHub
 // repository, owner/name; State the registrar's reading of its last sync.
 // Token is set only by MirrorToken, the registrar's and the chat export's
-// read.
+// read. Mode is an export's; Since when the row was put with its remote
+// and mode; Synced the GitHub default branch's head the last GitHubSync
+// brought back, SyncResult what the last one answered.
 type Mirror struct {
-	Project, Direction, Remote, Username, Token, State, LastError string
-	LastUpdate                                                    time.Time
+	Project, Direction, Remote, Username, Token, State, LastError, Mode, Synced, SyncResult string
+	LastUpdate, Since                                                                       time.Time
 }
 
 // PutMirror stores m as its project's mirror of its direction, a new
-// remote and token with no sync yet.
+// token and mode (default ModeMirror) with no sync yet; a row of the same
+// remote and mode keeps its since and its last GitHubSync.
 func (s *PGStore) PutMirror(ctx context.Context, m Mirror) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (project, direction) DO UPDATE SET remote = $3, username = $4, token = $5, state = $6,
-			last_error = '', last_update = NULL, updated_at = now()`,
-		m.Project, m.Direction, m.Remote, m.Username, m.Token, m.State)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state, mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project, direction) DO UPDATE SET remote = $3, username = $4, token = $5, state = $6, mode = $7,
+			last_error = '', last_update = NULL, updated_at = now(),
+			since = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.since ELSE now() END,
+			synced = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.synced ELSE '' END,
+			sync_result = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.sync_result ELSE '' END`,
+		m.Project, m.Direction, m.Remote, m.Username, m.Token, m.State, cmp.Or(m.Mode, ModeMirror))
 	return err
 }
 
@@ -59,9 +71,9 @@ func (s *PGStore) MirrorToken(ctx context.Context, project, direction string) (M
 func (s *PGStore) mirror(ctx context.Context, project, direction, token string) (Mirror, bool, error) {
 	m := Mirror{Project: project, Direction: direction}
 	var last sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT remote, username, `+token+`, state, last_error, last_update
+	err := s.db.QueryRowContext(ctx, `SELECT remote, username, `+token+`, state, last_error, last_update, mode, synced, sync_result, since
 		FROM project_mirrors WHERE project = $1 AND direction = $2`, project, direction).
-		Scan(&m.Remote, &m.Username, &m.Token, &m.State, &m.LastError, &last)
+		Scan(&m.Remote, &m.Username, &m.Token, &m.State, &m.LastError, &last, &m.Mode, &m.Synced, &m.SyncResult, &m.Since)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Mirror{}, false, nil
 	}
@@ -81,6 +93,37 @@ func (s *PGStore) SetMirrorState(ctx context.Context, project, direction, state,
 func (s *PGStore) SetMirrorToken(ctx context.Context, project, direction, token string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET token = $3, updated_at = now() WHERE project = $1 AND direction = $2`,
 		project, direction, token)
+	return err
+}
+
+// SetMirrorSynced records sha as the GitHub head project's export last
+// brought back and result as what the last GitHubSync answered.
+func (s *PGStore) SetMirrorSynced(ctx context.Context, project, sha, result string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET synced = $2, sync_result = $3, updated_at = now()
+		WHERE project = $1 AND direction = 'export'`, project, sha, result)
+	return err
+}
+
+// GitHubCards are repository's done cards with a pull request that
+// finished since since and have no GitHub pull request yet or an open
+// one, oldest first.
+func (s *PGStore) GitHubCards(ctx context.Context, repository string, since time.Time) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND status = 'done' AND pr_number > 0
+		AND finished_at >= $2 AND github_pr_state IN ('', 'open') ORDER BY finished_at, id`, repository, since)
+}
+
+// SetGitHubPR records task id's GitHub pull request and its state.
+func (s *PGStore) SetGitHubPR(ctx context.Context, id string, number int64, url, state string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET github_pr = $2, github_pr_url = $3, github_pr_state = $4 WHERE id = $1`,
+		id, number, url, state)
+	return oneRow(res, err, "task "+id)
+}
+
+// ClearGitHubFailures empties the failed state of repository's cards
+// without a GitHub pull request: each export put gives them one more try.
+func (s *PGStore) ClearGitHubFailures(ctx context.Context, repository string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET github_pr_state = '' WHERE repository = $1 AND github_pr = 0 AND github_pr_state LIKE 'failed:%'`,
+		repository)
 	return err
 }
 
@@ -119,6 +162,9 @@ type MirrorStore interface {
 	SetMirrorState(ctx context.Context, project, direction, state, lastError string, lastUpdate time.Time) error
 	SetMirrorToken(ctx context.Context, project, direction, token string) error
 	DeleteStaleImports(ctx context.Context, files []string, before time.Time) ([]Mirror, error)
+	SetMirrorSynced(ctx context.Context, project, sha, result string) error
+	GitHubCards(ctx context.Context, repository string, since time.Time) ([]Task, error)
+	SetGitHubPR(ctx context.Context, id string, number int64, url, state string) error
 }
 
 // GitHubAddress is the push mirror address of GitHub repository remote,
@@ -140,6 +186,7 @@ func (r *Registrar) mirrorStates(ctx context.Context) {
 	}
 	for _, p := range ps {
 		m, ok, err := r.Mirrors.MirrorToken(ctx, p.Name, MirrorExport)
+		ok = ok && m.Mode != ModePullRequests
 		var pms []PushMirror
 		if ok && err == nil {
 			pms, err = r.Forgejo.PushMirrors(ctx, p.Repo())

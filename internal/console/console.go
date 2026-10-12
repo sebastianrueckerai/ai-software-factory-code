@@ -167,6 +167,9 @@ type Config struct {
 	Pulses Pulses
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
+	// GitHubSync brings a project's GitHub default branch back as a pull
+	// request to main (factoryd's Registrar.GitHubSync); nil offers none.
+	GitHubSync func(ctx context.Context, project, by string) (string, error)
 	// AddCollaborator makes user a collaborator of repo with permission
 	// as the token registration keeps project repositories with
 	// (factoryd's Forgejo.AddProjectCollaborator): an invited member.
@@ -281,6 +284,9 @@ func New(cfg Config) (*Console, error) {
 	if cfg.Mirrors != nil {
 		c.mux.Handle("POST /projects/{name}/export", c.auth(c.githubExport))
 		c.mux.Handle("POST /projects/{name}/export/remove", c.auth(c.removeGithubExport))
+	}
+	if cfg.GitHubSync != nil {
+		c.mux.Handle("POST /projects/{name}/export/sync", c.auth(c.githubSync))
 	}
 	return c, nil
 }

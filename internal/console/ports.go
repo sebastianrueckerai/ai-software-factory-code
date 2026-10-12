@@ -105,4 +105,5 @@ type Mirrors interface {
 	AddPushMirror(ctx context.Context, repo factoryd.Repo, address, username, token string) error
 	SyncPushMirrors(ctx context.Context, repo factoryd.Repo) error
 	DeletePushMirror(ctx context.Context, repo factoryd.Repo, name string) error
+	ClearGitHubFailures(ctx context.Context, repository string) error
 }

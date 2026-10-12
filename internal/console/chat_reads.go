@@ -99,6 +99,13 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		}
 		b.WriteString(", " + prState(steps))
 	}
+	if k.GitHubPRState != "" {
+		b.WriteString("\nGitHub: ")
+		if k.GitHubPR > 0 {
+			fmt.Fprintf(&b, "pull request #%d %s, ", k.GitHubPR, k.GitHubPRURL)
+		}
+		b.WriteString(k.GitHubPRState)
+	}
 	for _, q := range all {
 		if q.TaskID != k.ID || q.Project != t.p.Repository {
 			continue

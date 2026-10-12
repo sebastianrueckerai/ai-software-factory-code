@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -78,7 +79,8 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 	}
 	s := current(r)
 	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": rows,
-		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil})
+		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil,
+		"Sync": c.cfg.GitHubSync != nil})
 }
 
 // projectRun is what the status panel keeps in memory of a new project:
@@ -523,11 +525,14 @@ var (
 	githubToken = regexp.MustCompile(`^[A-Za-z0-9_-]{8,255}$`)
 )
 
-// doGithubExport makes Forgejo push project p's repository to GitHub
-// repository remote (owner/name) as username with token, on every commit
-// and every 8 h, in place of a push mirror p had to it or to its last
-// export's remote: an approver's action, as a token leaves the factory.
-func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Project, remote, username, token string) (string, error) {
+// doGithubExport exports project p's repository to GitHub repository
+// remote (owner/name) as username with token, in place of a push mirror p
+// had to it or to its last export's remote: in mode mirror (the default)
+// Forgejo pushes it on every commit and every 8 h, in mode pull_requests
+// factoryd takes each merged card there as a pull request. An approver's
+// action, as a token leaves the factory.
+func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Project, remote, username, token, mode string) (string, error) {
+	mode = cmp.Or(mode, factoryd.ModeMirror)
 	if err := c.exportable(ctx, a, p); err != nil {
 		return "", err
 	}
@@ -538,6 +543,8 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 		return "", refuse(http.StatusBadRequest, "username must be a GitHub login")
 	case !githubToken.MatchString(token):
 		return "", refuse(http.StatusBadRequest, "token must be a GitHub token: 8 to 255 letters, digits, _ or -")
+	case mode != factoryd.ModeMirror && mode != factoryd.ModePullRequests:
+		return "", refuse(http.StatusBadRequest, "mode must be mirror or pull_requests")
 	}
 	old, _, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
 	if err != nil {
@@ -548,16 +555,23 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	if err := c.dropPushMirrors(ctx, repo, address, factoryd.GitHubAddress(old.Remote)); err != nil {
 		return "", err
 	}
-	if err := c.cfg.Mirrors.AddPushMirror(ctx, repo, address, username, token); err != nil {
-		return "", &forgejoRefusal{"add the push mirror", errors.New(strings.ReplaceAll(err.Error(), token, tokenMask))}
+	if mode == factoryd.ModeMirror {
+		if err := c.cfg.Mirrors.AddPushMirror(ctx, repo, address, username, token); err != nil {
+			return "", &forgejoRefusal{"add the push mirror", errors.New(strings.ReplaceAll(err.Error(), token, tokenMask))}
+		}
 	}
 	if err := c.cfg.Mirrors.PutMirror(ctx, factoryd.Mirror{Project: p.Name, Direction: factoryd.MirrorExport, Remote: remote,
-		Username: username, Token: token, State: "created"}); err != nil {
+		Username: username, Token: token, State: "created", Mode: mode}); err != nil {
 		log.Printf("console: the export of %s: %v", p.Name, err)
 		return "", refuse(http.StatusInternalServerError, "cannot store the project's export")
 	}
+	if err := c.cfg.Mirrors.ClearGitHubFailures(ctx, p.Repository); err != nil {
+		log.Printf("console: the GitHub failures of %s: %v", p.Name, err)
+	}
 	note := "GitHub export of " + p.Name + " to " + remote + " is set: Forgejo pushes every branch and tag on each commit and every 8 h."
-	if err := c.cfg.Mirrors.SyncPushMirrors(ctx, repo); err != nil {
+	if mode == factoryd.ModePullRequests {
+		note = "GitHub export of " + p.Name + " to " + remote + " is set: each card that merges from now on is pushed there as its branch and opened as a pull request."
+	} else if err := c.cfg.Mirrors.SyncPushMirrors(ctx, repo); err != nil {
 		log.Printf("console: the first push of %s to GitHub: %v", repo, err)
 		note += " The first push waits for the next commit."
 	}
@@ -581,6 +595,40 @@ func (c *Console) exportable(ctx context.Context, a actor, p factoryd.Project) e
 // export form of project, where an approver sets the export's token.
 func (c *Console) exportForm(project string) string {
 	return "Set the export's token on the project page: " + strings.TrimSuffix(c.cfg.PublicURL, "/") + "/projects#export-" + project
+}
+
+// doGithubSync starts bringing project p's GitHub default branch back as
+// a pull request to main, which outlasts the request: its result, or why
+// it failed, is one github_synced event and the export row's last sync.
+// An approver's action, as it reads with the export's token.
+func (c *Console) doGithubSync(ctx context.Context, a actor, p factoryd.Project) (string, error) {
+	if err := c.approves(ctx, a, p.Repository, "sync it from GitHub"); err != nil {
+		return "", err
+	}
+	_, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
+	switch {
+	case err != nil:
+		log.Printf("console: the export of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the project's export")
+	case !ok:
+		return "", refuse(http.StatusNotFound, p.Name+" has no GitHub export")
+	}
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		result, err := c.cfg.GitHubSync(ctx, p.Name, a.s.user)
+		if err != nil {
+			log.Printf("console: the sync of %s from GitHub: %v", p.Name, err)
+			result = "failed: " + err.Error()
+		}
+		c.record(ctx, a, p.Repository, "", 0, factoryd.EventGithubSynced, map[string]any{"result": result})
+	}()
+	return "Sync from GitHub of " + p.Name + " started: its result arrives as an event and on the projects page's export row.", nil
+}
+
+// githubSync answers POST /projects/{name}/export/sync, the export row's
+// Sync latest.
+func (c *Console) githubSync(w http.ResponseWriter, r *http.Request) {
+	c.projectAction(w, r, func(p factoryd.Project) (string, error) { return c.doGithubSync(r.Context(), button(r), p) })
 }
 
 // doRemoveGithubExport deletes project p's push mirror to GitHub and its
@@ -628,7 +676,8 @@ func (c *Console) dropPushMirrors(ctx context.Context, repo factoryd.Repo, addre
 // export form.
 func (c *Console) githubExport(w http.ResponseWriter, r *http.Request) {
 	c.projectAction(w, r, func(p factoryd.Project) (string, error) {
-		return c.doGithubExport(r.Context(), button(r), p, r.PostFormValue("remote"), r.PostFormValue("username"), r.PostFormValue("token"))
+		return c.doGithubExport(r.Context(), button(r), p, r.PostFormValue("remote"), r.PostFormValue("username"), r.PostFormValue("token"),
+			r.PostFormValue("mode"))
 	})
 }
 

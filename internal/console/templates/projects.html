@@ -14,8 +14,9 @@
 {{if eq .Objects "factory"}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
 <li>Environments: {{range $i, $e := .Environments}}{{if $i}}; {{end}}{{$e.Namespace}}: {{$e.Path}}{{if $e.Hostname}} at {{$e.Hostname}}{{end}}{{else}}none{{end}}</li>
 <li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: the reconcile registers it with the Forgejo admin's login from OpenBao{{end}}</li>
-{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{.State}}{{if $p.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
-<input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{end}}{{else}}none{{end}}</li>{{end}}
+{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{if eq .Mode "pull_requests"}}pull requests, {{end}}{{.State}}{{with .SyncResult}}; last sync: {{.}}{{end}}{{if $p.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{if $.Sync}} <form method="post" action="/projects/{{.Project}}/export/sync" class="inline">
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Sync latest</button></form>{{end}}{{end}}{{else}}none{{end}}</li>{{end}}
 {{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
 </ul>
 {{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export" id="export-{{.Name}}">
@@ -23,6 +24,7 @@
 <label>GitHub repository <input name="remote" required placeholder="owner/name" autocomplete="off"></label>
 <label>GitHub login <input name="username" required autocomplete="off"></label>
 <label>Token <input name="token" type="password" required minlength="8" maxlength="255" autocomplete="off"></label>
+<label>Mode <select name="mode"><option value="mirror">mirror: every branch and tag</option><option value="pull_requests">pull requests: each merged card</option></select></label>
 <button type="submit">Export to GitHub</button>
 </form>{{end}}
 {{template "envelope" .Envelope}}

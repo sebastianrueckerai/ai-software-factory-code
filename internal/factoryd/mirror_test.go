@@ -20,47 +20,60 @@ import (
 )
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a mirror
-// row answers its token only to the registrar's read; a second put
-// resets its state and sync.
+// row answers its token only to the registrar's read, its mode mirror by
+// default and its time; a put of the same remote and mode keeps its since
+// and last sync, a put of another resets them; every put resets its state.
 func TestPGStoreMirrors(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	if err := s.DeleteMirror(ctx, "demo-app", MirrorExport); err != nil {
 		t.Fatal(err)
 	}
-	read := func(get func(context.Context, string, string) (Mirror, bool, error)) Mirror {
+	read := func(get func(context.Context, string, string) (Mirror, bool, error)) (Mirror, time.Time) {
 		t.Helper()
 		m, ok, err := get(ctx, "demo-app", MirrorExport)
-		if err != nil || !ok {
-			t.Fatalf("read = %v, %v", ok, err)
+		if err != nil || !ok || m.Since.IsZero() {
+			t.Fatalf("read = %+v, %v, %v; want a row with its since", m, ok, err)
 		}
-		m.LastUpdate = m.LastUpdate.UTC()
-		return m
+		since := m.Since
+		m.LastUpdate, m.Since = m.LastUpdate.UTC(), time.Time{}
+		return m, since
+	}
+	put := func(m Mirror) {
+		t.Helper()
+		if err := s.PutMirror(ctx, m); err != nil {
+			t.Fatal(err)
+		}
 	}
 	row := Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/app", Username: "u", Token: "ghp-s3cret", State: "created"}
-	if err := s.PutMirror(ctx, row); err != nil {
-		t.Fatal(err)
-	}
-	if got := read(s.MirrorToken); got != row {
+	put(row)
+	row.Mode = ModeMirror
+	got, since := read(s.MirrorToken)
+	if got != row {
 		t.Fatalf("MirrorToken = %+v, want %+v", got, row)
 	}
 	row.Token = ""
-	if got := read(s.Mirror); got != row {
+	if got, _ := read(s.Mirror); got != row {
 		t.Fatalf("Mirror = %+v, want %+v without the token", got, row)
 	}
 	synced := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
-	if err := s.SetMirrorState(ctx, "demo-app", MirrorExport, "failed: auth", "auth", synced); err != nil {
+	if err := errors.Join(s.SetMirrorState(ctx, "demo-app", MirrorExport, "failed: auth", "auth", synced),
+		s.SetMirrorSynced(ctx, "demo-app", "abc123", "nothing to sync.")); err != nil {
 		t.Fatal(err)
 	}
-	row.State, row.LastError, row.LastUpdate = "failed: auth", "auth", synced
-	if got := read(s.Mirror); got != row {
-		t.Fatalf("after SetMirrorState: %+v, want %+v", got, row)
+	row.State, row.LastError, row.LastUpdate, row.Synced, row.SyncResult = "failed: auth", "auth", synced, "abc123", "nothing to sync."
+	if got, _ := read(s.Mirror); got != row {
+		t.Fatalf("after SetMirrorState and SetMirrorSynced: %+v, want %+v", got, row)
 	}
-	again := Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/other", Username: "v", Token: "ghp-n3w", State: "created"}
-	if err := s.PutMirror(ctx, again); err != nil {
-		t.Fatal(err)
+	same := Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/app", Username: "u", Token: "ghp-w1der", State: "created", Mode: ModeMirror}
+	put(same)
+	same.Synced, same.SyncResult = "abc123", "nothing to sync."
+	if got, at := read(s.MirrorToken); got != same || !at.Equal(since) {
+		t.Fatalf("after a put of the same remote and mode: %+v since %v, want %+v since %v", got, at, same, since)
 	}
-	if got := read(s.MirrorToken); got != again {
-		t.Fatalf("after a second PutMirror: %+v, want %+v", got, again)
+	again := Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/other", Username: "v", Token: "ghp-n3w", State: "created", Mode: ModePullRequests}
+	put(again)
+	if got, at := read(s.MirrorToken); got != again || !at.After(since) {
+		t.Fatalf("after a put of another remote: %+v since %v, want %+v since after %v", got, at, again, since)
 	}
 	if err := s.DeleteMirror(ctx, "demo-app", MirrorExport); err != nil {
 		t.Fatal(err)
@@ -68,6 +81,37 @@ func TestPGStoreMirrors(t *testing.T) {
 	if _, ok, err := s.Mirror(ctx, "demo-app", MirrorExport); err != nil || ok {
 		t.Fatalf("Mirror after DeleteMirror = %v, %v; want none", ok, err)
 	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): clearing a
+// project's GitHub failures empties the failed state of its cards without
+// a GitHub pull request, and no other card's.
+func TestPGStoreClearGitHubFailures(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	for _, k := range []Task{{ID: "t-f", Repository: "demo-app/demo-app"}, {ID: "t-o", Repository: "demo-app/demo-app", GitHubPR: 4},
+		{ID: "t-x", Repository: "linkshort/linkshort"}} {
+		k.Kind, k.Status = "agent", "done"
+		state := "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"
+		if k.GitHubPR > 0 {
+			state = "open"
+		}
+		if err := errors.Join(s.CreateTask(ctx, k), s.SetGitHubPR(ctx, k.ID, k.GitHubPR, "", state)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ClearGitHubFailures(ctx, "demo-app/demo-app"); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, id := range []string{"t-f", "t-o", "t-x"} {
+		k, _, err := s.Task(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, _, _ := strings.Cut(k.GitHubPRState, " ")
+		got = append(got, id+" "+first)
+	}
+	equalStrings(t, "states", got, []string{"t-f ", "t-o open", "t-x failed:"})
 }
 
 // mirrorForgejo answers a repository's push mirrors and records every
@@ -132,6 +176,7 @@ func TestPushMirrorCalls(t *testing.T) {
 // memMirrors are mirror rows by project, recording each state set as
 // "project direction: state | last error | last update".
 type memMirrors struct {
+	MirrorStore
 	mu   sync.Mutex
 	rows map[string]Mirror
 	set  []string
@@ -230,9 +275,12 @@ func TestPGStoreImportMirror(t *testing.T) {
 	if err := s.SetMirrorToken(ctx, "linkshort", MirrorImport, ""); err != nil {
 		t.Fatal(err)
 	}
-	row.Token = ""
-	if got, ok, err := s.MirrorToken(ctx, "linkshort", MirrorImport); err != nil || !ok || got != row {
-		t.Fatalf("after SetMirrorToken: %+v, %v, %v; want %+v", got, ok, err, row)
+	row.Token, row.Mode = "", ModeMirror
+	got, ok, err := s.MirrorToken(ctx, "linkshort", MirrorImport)
+	since := got.Since
+	got.Since = time.Time{}
+	if err != nil || !ok || got != row || since.IsZero() {
+		t.Fatalf("after SetMirrorToken: %+v since %v, %v, %v; want %+v with its since", got, since, ok, err, row)
 	}
 	if err := s.PutMirror(ctx, Mirror{Project: "linkshort", Direction: MirrorImport, Remote: "acme/public", State: "pending"}); err != nil {
 		t.Fatalf("an import without a token: %v", err)
@@ -293,7 +341,7 @@ func importRig(t *testing.T) (*registerRig, *memMirrors) {
 		io.WriteString(w, gh.body)
 	}))
 	t.Cleanup(srv.Close)
-	rig.reg.GitHubAPI, rig.gh = srv.URL, gh
+	rig.reg.GitHub, rig.gh = &GitHub{API: srv.URL}, gh
 	return rig, mirrors
 }
 

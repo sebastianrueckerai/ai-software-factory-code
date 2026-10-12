@@ -32,6 +32,15 @@ type fakeMirrors struct {
 	calls []string
 	fail  error // AddPushMirror's answer
 	put   error // PutMirror's answer
+	// cleared are the repositories whose GitHub failures were cleared
+	cleared []string
+}
+
+func (f *fakeMirrors) ClearGitHubFailures(_ context.Context, repository string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared = append(f.cleared, repository)
+	return nil
 }
 
 func (f *fakeMirrors) Mirror(_ context.Context, project, direction string) (factoryd.Mirror, bool, error) {
@@ -148,7 +157,9 @@ func TestChatGithubExport(t *testing.T) {
 		}
 	}
 	equal(t, "the tool's parameters", params, map[string]any{"type": "object", "required": []any{"remote"},
-		"properties": map[string]any{"remote": map[string]any{"type": "string", "description": "the GitHub repository, owner/name"}}})
+		"properties": map[string]any{"remote": map[string]any{"type": "string", "description": "the GitHub repository, owner/name"},
+			"mode": map[string]any{"type": "string", "enum": []any{"mirror", "pull_requests"},
+				"description": "mirror (default): Forgejo pushes every branch and tag; pull_requests: each merged card becomes a GitHub pull request"}}})
 	equal(t, "Forgejo calls without a token", r.mirrors.took(), []string(nil))
 
 	r.mirrors.rows["demo-app export"] = factoryd.Mirror{Project: "demo-app", Direction: factoryd.MirrorExport, Remote: "acme/old",
@@ -164,7 +175,7 @@ func TestChatGithubExport(t *testing.T) {
 	equal(t, "Forgejo calls", r.mirrors.took(), []string{"PushMirrors demo-app/demo-app", "DeletePushMirror demo-app/demo-app remote_mirror_old",
 		"AddPushMirror demo-app/demo-app https://github.com/acme/app.git u " + ghToken, "SyncPushMirrors demo-app/demo-app"})
 	equal(t, "the row", r.mirrors.rows["demo-app export"], factoryd.Mirror{Project: "demo-app",
-		Direction: factoryd.MirrorExport, Remote: "acme/app", Username: "u", Token: ghToken, State: "created"})
+		Direction: factoryd.MirrorExport, Remote: "acme/app", Username: "u", Token: ghToken, State: "created", Mode: factoryd.ModeMirror})
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app"}})
 

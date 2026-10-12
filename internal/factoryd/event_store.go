@@ -45,6 +45,7 @@ const (
 	EventCardSteered          = "card_steered"
 	EventGithubExportSet      = "github_export_set"
 	EventGithubExportRemoved  = "github_export_removed"
+	EventGithubSynced         = "github_synced"
 	EventMemberInvited        = "member_invited"
 	EventCardClosed           = "card_closed"
 	EventCardEdited           = "card_edited"

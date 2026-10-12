@@ -44,6 +44,7 @@ type toolInput struct {
 	Size      string `json:"size,omitempty"`
 	DependsOn string `json:"depends_on,omitempty"`
 	Remove    bool   `json:"remove,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -106,10 +107,11 @@ const sessionFits = "a card with a session"
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session, github_export
-// where it keeps exports.
+// where it keeps exports, github_sync where it syncs them.
 func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
-		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil
+		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil ||
+			t.name == "github_sync" && c.cfg.GitHubSync == nil
 	})
 }
 
@@ -163,7 +165,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, cardTitle(d)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
-		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}} {
+		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -696,16 +698,26 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "github_export", title: "Export to GitHub", write: true,
-		params: map[string]any{"remote": str("the GitHub repository, owner/name")}, required: []string{"remote"},
-		about: "Make Forgejo push the project's repository to a GitHub repository on every commit and every 8 h, in place of the project's last export, " +
-			"with the GitHub login and token an approver set on the projects page's export form (an approver's action).",
+		params: map[string]any{"remote": str("the GitHub repository, owner/name"),
+			"mode": enum("mirror (default): Forgejo pushes every branch and tag; pull_requests: each merged card becomes a GitHub pull request", factoryd.ModeMirror, factoryd.ModePullRequests)},
+		required: []string{"remote"},
+		about: "Export the project's repository to a GitHub repository, in place of the project's last export, with the GitHub login and token an approver set on the projects page's export form (an approver's action): " +
+			"in mode mirror Forgejo pushes it on every commit and every 8 h, in mode pull_requests each card that merges is pushed as its branch and opened there as a pull request.",
 		fits: "a factory project, for an approver",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			m, err := t.exportToken()
 			if err != nil {
 				return "", nil, err
 			}
-			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, m.Username, m.Token)
+			note, err := t.c.doGithubExport(t.r.Context(), t.a, t.p, in.Remote, m.Username, m.Token, in.Mode)
+			return note, nil, err
+		}},
+	{name: "github_sync", title: "Sync from GitHub", write: true, params: map[string]any{},
+		about: "Start bringing the GitHub default branch of the project's export back when it moved since the last sync: factoryd pushes it to the bot's fork as github/sync-<short sha> and opens a pull request to main, which an approver merges (an approver's action). " +
+			"It answers at once; the result arrives as an event and on the projects page's export row.",
+		fits: "a project with a GitHub export, for an approver",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doGithubSync(t.r.Context(), t.a, t.p)
 			return note, nil, err
 		}},
 	{name: "close", title: "Close a card", write: true,

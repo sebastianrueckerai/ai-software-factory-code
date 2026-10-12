@@ -1381,7 +1381,7 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   the agent answer a waiting card or message a running session as the
   member), `start_plan`, `retry`, `accept_plan`, `request_changes`,
   `reject_plan`, `approve_merge`, `deny_merge`, `invite`, `github_export`,
-  `close`, `edit`, `grant_session` and `set_dependency`; `confirm: []` asks
+  `github_sync`, `close`, `edit`, `grant_session` and `set_dependency`; `confirm: []` asks
   for none. `accept_plan` without a revision takes the plan's newest, which
   its proposal names with its sha256; a newer revision before Do it makes
   it stale. `close` closes the card's issue as the member (the face's Close
@@ -1647,6 +1647,31 @@ copying or failed 7 days after its last write whose project no file names
 deleted with its token at the next poll. The panel
 shows a fifth step, "Imported from GitHub", between the repository and
 `ready_at`.
+
+A factory project's export to GitHub (the projects page's form or the
+chat's `github_export`, an approver's action) has a mode: `mirror`, the
+default, a Forgejo push mirror of every branch and tag, or `pull_requests`.
+In `pull_requests` the registrar's poll pushes each card done since the
+export was put, its head as merged (`refs/pull/<n>/head`), to GitHub as
+`factory/<task id>` and opens a pull request of it into the default branch
+with the export's token (git reads it from its environment, never an
+argument). The task keeps the pull request's number, URL and state, shown
+on the card's face and in the chat's `card` read; one GET per open pull
+request at most every 5 minutes refreshes it. A definite refusal (a push
+GitHub refuses, a GitHub 4xx, a repository over 200 MiB) stays on the card
+as `failed: ...`; a network error, a timeout or a GitHub 5xx is retried by
+the next poll. A put of the same remote and mode keeps `since` and gives
+each failed card one more try. git runs one operation at a time, each
+killed with its process group after 2 minutes, a pass after 4, with one
+pack thread and small pack windows (factoryd's limit is 512Mi; git ships in
+the image the gateway shares). Sync latest (the export row's button, the
+chat's `github_sync`) answers at once and brings GitHub's default branch
+back when it moved since the last sync and main lacks it: branch
+`github/sync-<short sha>` on the bot's fork and a pull request to main,
+`Sync from GitHub <short sha>`, as the bot, so its CI runs without the
+repository's secrets; a head that changes `.forgejo/`, `.gitea/` or
+`.github/`, or that shares no history with main, is refused. The result is
+a `github_synced` event and the export row's last sync.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
