@@ -915,11 +915,14 @@ func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
 		return diffStat{}, "", err
 	}
 	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
-	for _, args := range [][]string{{"read-tree", c.base}, {"add", "-A"}} {
-		if _, err := c.e.runGitCtx(ctx, tmp, env, args...); err != nil {
-			return diffStat{}, "", err
-		}
+	if _, err := c.e.runGitCtx(ctx, tmp, env, "read-tree", c.base); err != nil {
+		return diffStat{}, "", err
 	}
+	// A file the agent removes between read-tree and add makes git add -A
+	// exit 128 (fatal: unable to stat). Ignore it: the index reflects the
+	// work tree as it was at the moment of staging, a valid snapshot, and
+	// the diff against the base below stays correct.
+	_, _ = c.e.runGitCtx(ctx, tmp, env, "add", "-A")
 	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
 	short, err := c.e.runGitCtx(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
