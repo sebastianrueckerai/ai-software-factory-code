@@ -53,9 +53,6 @@ func alertTitle(al factoryd.Alert) string {
 // all with state all, each with id, severity, title, since and the verdict
 // if any, newest first, over the same rows the page lists.
 func (c *Console) alertsText(ctx context.Context, a actor, state string) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
 	switch state {
 	case "open", "all":
 	default:
@@ -99,9 +96,6 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 // project, its commission's promote and release on the row the page puts
 // them, promote only for an approver.
 func (c *Console) resourcesText(ctx context.Context, a actor) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
 	rows, err := c.cfg.Resources.Commissions(ctx, time.Now().Add(-closedSince))
 	if err != nil {
 		log.Printf("console: resources: %v", err)
@@ -147,9 +141,6 @@ func mirrorWords(m *factoryd.Mirror) string {
 // project with its name, objects, process, merge rule, state and GitHub
 // export state.
 func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
 	ps, err := c.cfg.Projects.Projects(ctx)
 	if err != nil {
 		log.Printf("console: projects: %v", err)
@@ -192,9 +183,6 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 // the budgets with each project's month cap, the risk classes with their
 // paths, and the approvers.
 func (c *Console) policyText(ctx context.Context, a actor) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
 	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
 	switch {
 	case err != nil:
@@ -246,9 +234,6 @@ func costsWindow(now time.Time) (from, to time.Time) {
 // ref of a model row after its purpose/ prefix; the other kinds stand as
 // their kind.
 func (c *Console) costsByText(ctx context.Context, a actor, by string) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
 	switch by {
 	case "day", "card", "tier":
 	default:
@@ -313,12 +298,6 @@ func tailWords(parts []string) string {
 // doAlertVerdict is POST /alerts/{id}/verdict's action: the factory
 // approver's verdict on an open escalation alert.
 func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v string) (string, error) {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return "", err
-	}
-	if err := c.approves(ctx, a, c.writersOwn(), "judge an alert"); err != nil {
-		return "", err
-	}
 	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
 		return "", refuse(http.StatusBadRequest, "the verdict is real or noise")
 	}
@@ -372,17 +351,9 @@ func (c *Console) doReleaseResource(ctx context.Context, a actor, id int64) (str
 	return fmt.Sprintf("Resource %d is released; the collector deletes it.", id), nil
 }
 
-// resourceChange runs a factory writer's change on commission id, with
-// its log line and its event row; only promote needs a factory approver.
+// resourceChange runs the change on commission id, with its log line and
+// its event row; the access table has judged who may.
 func (c *Console) resourceChange(ctx context.Context, a actor, what string, id int64, change func(ctx context.Context, id int64, by string) error) error {
-	if err := c.factoryAccess(ctx, a); err != nil {
-		return err
-	}
-	if what == "promote" {
-		if err := c.approves(ctx, a, c.writersOwn(), "authorize spend"); err != nil {
-			return err
-		}
-	}
 	if err := change(ctx, id, a.s.user); err != nil {
 		log.Printf("console: %s %s resource %d: %v", a.s.user, what, id, err)
 		switch {

@@ -358,9 +358,6 @@ func (c *Console) doUnmoveCard(ctx context.Context, a actor, id, lane string) (s
 	if err != nil {
 		return "", err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	if t.Status != "backlog" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card still in the backlog")
 	}
@@ -394,9 +391,6 @@ func (c *Console) doUnmoveCard(ctx context.Context, a actor, id, lane string) (s
 func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.approves(ctx, a, t.Repository, "start a plan"); err != nil {
 		return "", err
 	}
 	accepted, ok := c.awaitAcceptedPlan(ctx, t)
@@ -451,9 +445,6 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	if err := c.approves(ctx, a, t.Repository, "retry a card"); err != nil {
-		return "", err
-	}
 	_, proc, err := c.processOfCard(ctx, t)
 	if err != nil {
 		return "", err
@@ -505,9 +496,6 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 	if err != nil {
 		return "", err
 	}
-	if err := c.approves(ctx, a, t.Repository, "accept a plan"); err != nil {
-		return "", err
-	}
 	if revision < 1 || sha == "" {
 		return "", refuse(http.StatusBadRequest, "the form names no plan revision; reload the board")
 	}
@@ -550,9 +538,6 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	if err != nil {
 		return "", err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	var stale factoryd.ErrStalePlan
 	switch err := c.cfg.AnswerPlan(ctx, t.ID, revision, idx, answer, a.s.user); {
 	case errors.As(err, &stale):
@@ -588,9 +573,6 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	if err != nil {
 		return "", err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
 		return "", &forgejoRefusal{"post the change request", err}
 	}
@@ -616,9 +598,6 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	if err := c.cfg.RejectPlan(ctx, t.ID, a.s.user, note); err != nil {
@@ -648,9 +627,6 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	kind := factoryd.EventQuestionAnswered
 	if c.capFactsOf(ctx, t).capped {
 		kind = factoryd.EventSessionGranted
@@ -679,9 +655,6 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	if f := c.capFactsOf(ctx, t); !f.capped || t.IssueNumber == 0 {
 		return "", wrongState(t, f, "a card at its session cap")
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return "", &forgejoRefusal{"post the answer", err}
@@ -701,9 +674,6 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	if factoryd.Final(t.Status) && (t.IssueNumber != 0 || t.Status != "failed") {
@@ -737,9 +707,6 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 func (c *Console) doSplit(ctx context.Context, a actor, id string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.approves(ctx, a, t.Repository, "split a card"); err != nil {
 		return "", err
 	}
 	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
@@ -798,9 +765,6 @@ func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (
 	if err != nil {
 		return "", err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return "", err
-	}
 	if t.Status == "running" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card not in a session")
 	}
@@ -842,9 +806,6 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		err = refuse(http.StatusNotFound, "There is no card "+dependsOn+" in this project.")
 	}
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	switch {
@@ -944,9 +905,6 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 	if err != nil {
 		return 0, "", err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return 0, "", err
-	}
 	if t.IssueNumber == 0 {
 		return 0, "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
@@ -963,9 +921,6 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, posted int64) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	repo, err := factoryd.SplitRepo(t.Repository)
@@ -991,9 +946,6 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return "", err
 	}
 	if t.Status != "running" {
@@ -1025,9 +977,6 @@ func (c *Console) doSetSummary(ctx context.Context, a actor, id, summary string)
 	if err != nil {
 		return t, err
 	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
-		return t, err
-	}
 	summary = strings.TrimSpace(summary)
 	if utf8.RuneCountInString(summary) > maxSummaryLen {
 		return t, refuse(http.StatusBadRequest, "a summary of up to 255 characters")
@@ -1049,9 +998,6 @@ func (c *Console) doSetSummary(ctx context.Context, a actor, id, summary string)
 func (c *Console) doSetAccent(ctx context.Context, a actor, id, accent string) (factoryd.Task, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
-		return t, err
-	}
-	if err := c.writes(ctx, a, t.Repository, "task "+t.ID); err != nil {
 		return t, err
 	}
 	if accent != "" && !factoryd.IsAccent(accent) {
@@ -1122,9 +1068,6 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 	if err != nil {
 		return "", err
 	}
-	if err := c.approves(ctx, a, q.Project, "authorize spend"); err != nil {
-		return "", err
-	}
 	switch q.Kind {
 	case factoryd.ApprovalResource:
 		if err := c.decide(ctx, a, q, "approved", "approved for the task"); err != nil {
@@ -1173,9 +1116,6 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	}
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
-		return "", err
-	}
-	if err := c.writes(ctx, a, q.Project, fmt.Sprintf("approval request %d", q.ID)); err != nil {
 		return "", err
 	}
 	switch q.Kind {
@@ -1242,9 +1182,6 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
 	case !ok:
 		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
-	}
-	if err := c.approves(ctx, a, p.Repository, "invite a member"); err != nil {
-		return "", err
 	}
 	if p.Objects == policy.ObjectsSeed {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s is a seed project, whose collaborators Forgejo keeps: invite %s there.", p.Name, login))
