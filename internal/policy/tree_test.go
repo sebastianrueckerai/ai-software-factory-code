@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -480,29 +481,84 @@ func TestCheckSchemas(t *testing.T) {
 		}
 		return f
 	}
-	if err := CheckSchemas(committed()); err != nil {
-		t.Fatalf("generated schemas: %v", err)
+	if warns, err := CheckSchemas(committed()); err != nil || len(warns) != 0 {
+		t.Fatalf("generated schemas: (%q, %v)", warns, err)
 	}
+	stale := "warning: schema/policy.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)"
 	for name, tc := range map[string]struct {
-		change func(map[string][]byte)
-		want   string
+		change    func(map[string][]byte)
+		wantWarn  string
+		wantError string
 	}{
 		"differs": {func(f map[string][]byte) {
 			f["schema/policy.schema.json"] = append(f["schema/policy.schema.json"], ' ')
-		}, "schema/policy.schema.json differs from factoryd schema"},
-		"missing": {func(f map[string][]byte) { delete(f, "schema/process.schema.json") }, "schema/process.schema.json is missing"},
-		"extra":   {func(f map[string][]byte) { f["schema/old.schema.json"] = []byte("{}") }, "schema/old.schema.json is not a schema factoryd writes"},
+		}, stale, ""},
+		"missing": {func(f map[string][]byte) { delete(f, "schema/policy.schema.json") }, stale, ""},
+		"extra":   {func(f map[string][]byte) { f["schema/old.schema.json"] = []byte("{}") }, "", "schema/old.schema.json is not a schema factoryd writes"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := committed()
 			tc.change(f)
-			if err := CheckSchemas(f); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("CheckSchemas = %v, want %q", err, tc.want)
+			warns, err := CheckSchemas(f)
+			if tc.wantWarn != "" && !slices.Contains(warns, tc.wantWarn) {
+				t.Errorf("CheckSchemas warnings = %q, want %q", warns, tc.wantWarn)
+			}
+			if tc.wantWarn == "" && len(warns) != 0 {
+				t.Errorf("CheckSchemas warnings = %q, want none", warns)
+			}
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("CheckSchemas error = %v, want none", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("CheckSchemas = %v, want %q", err, tc.wantError)
 			}
 		})
 	}
 	// ParseTree ignores the schema directory
 	if _, err := ParseTree(committed()); err != nil {
 		t.Fatalf("ParseTree with schema/: %v", err)
+	}
+}
+
+func TestDiffSchemas(t *testing.T) {
+	schemas, err := Schemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	copies := map[string][]byte{}
+	for name, b := range schemas {
+		copies["schema/"+name] = b
+	}
+	if d, err := DiffSchemas(copies); err != nil || len(d) != 0 {
+		t.Fatalf("equal copies = (%+v, %v), want none", d, err)
+	}
+	copies["schema/policy.schema.json"] = []byte("{}\n")
+	delete(copies, "schema/process.schema.json")
+	d, err := DiffSchemas(copies)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d) != 2 {
+		t.Fatalf("differences = %+v, want two", d)
+	}
+	if d[0].Name != "policy.schema.json" || d[0].Path != "schema/policy.schema.json" || d[0].Missing || !bytes.Equal(d[0].Want, schemas["policy.schema.json"]) {
+		t.Errorf("first difference = %+v", d[0])
+	}
+	if d[1].Name != "process.schema.json" || !d[1].Missing {
+		t.Errorf("second difference = %+v", d[1])
+	}
+	if h := SchemaContentHash(schemas); len(h) != 12 || h != SchemaContentHash(schemas) {
+		t.Errorf("content hash = %q, want 12 hex and stable", h)
+	}
+	other := map[string][]byte{}
+	for name, b := range schemas {
+		other[name] = slices.Clone(b)
+	}
+	other["policy.schema.json"] = append(other["policy.schema.json"], ' ')
+	if SchemaContentHash(other) == SchemaContentHash(schemas) {
+		t.Error("the content hash did not change with the content")
 	}
 }

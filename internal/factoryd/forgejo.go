@@ -943,13 +943,15 @@ func (f *Forgejo) DeleteBranch(ctx context.Context, owner, repo, branch string) 
 // from does not exist (Forgejo answers 404), and a branch to that exists
 // is kept (Forgejo would answer 409).
 func (f *Forgejo) CopyBranch(ctx context.Context, repo Repo, from, to string) error {
+	// only a branch that is missing gets cut: one that stands, or a read
+	// that failed, ends the call as it is
 	if _, err := f.BranchHeadSHA(ctx, repo.Owner, repo.Name, to); !errors.Is(err, ErrNotFound) {
 		return err
 	}
 	_, err := f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/branches", repo.Owner, repo.Name),
 		mustJSON(map[string]string{"new_branch_name": to, "old_branch_name": from}), http.StatusCreated)
 	if errors.Is(err, ErrNotFound) {
-		return nil
+		return nil // Forgejo holds no branch from to cut from
 	}
 	return err
 }
@@ -979,6 +981,7 @@ func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string)
 type PullRequestRef struct {
 	Number   int64
 	URL      string
+	Title    string
 	Head     string
 	HeadRepo string // "owner/name" of the repository holding Head
 	HeadSHA  string
@@ -1000,6 +1003,7 @@ type PullRequestRef struct {
 type wirePR struct {
 	Number    int64  `json:"number"`
 	HTMLURL   string `json:"html_url"`
+	Title     string `json:"title"`
 	State     string `json:"state"`
 	Merged    bool   `json:"merged"`
 	Mergeable bool   `json:"mergeable"`
@@ -1022,7 +1026,7 @@ type wirePR struct {
 }
 
 func (w wirePR) ref() PullRequestRef {
-	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
+	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Title: w.Title, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
 		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase, Body: w.Body}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
@@ -1075,6 +1079,19 @@ func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo 
 		}
 	}
 	return nil, nil
+}
+
+// OpenPullRequests lists owner/repo's open pull requests, oldest first.
+func (f *Forgejo) OpenPullRequests(ctx context.Context, owner, repo string) ([]PullRequestRef, error) {
+	all, err := GetPages[wirePR](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=open&", owner, repo))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]PullRequestRef, 0, len(all))
+	for _, pr := range all {
+		out = append(out, pr.ref())
+	}
+	return out, nil
 }
 
 // LastClosedPullRequestFrom is the pull request from branch on headRepo

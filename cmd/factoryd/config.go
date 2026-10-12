@@ -48,6 +48,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "%s: rejected:\n%v\n", args[2], err)
 			return 1
 		}
+		for _, w := range schemaWarnings(args[2]) {
+			fmt.Fprintln(stdout, w)
+		}
 		fmt.Fprintf(stdout, "%s: ok, %s, %s, %s\n", args[2], count(len(tree.Projects), "project"), count(len(tree.Processes), "process"), count(len(tree.Templates), "template"))
 		fmt.Fprintln(stdout, "open cards per lane: checked by the running factoryd only")
 		return 0
@@ -122,7 +125,24 @@ func checkTree(dir string) (policy.Tree, error) {
 		return policy.Tree{}, err
 	}
 	tree, err := factoryd.CheckTree(files, ladder().Aliases())
-	return tree, errors.Join(err, policy.CheckSchemas(files))
+	// a stale or missing schema copy is a warning the caller prints: the
+	// tree is judged against the schemas built into this binary, and the
+	// infra repository's copies follow it by factoryd's own pull request
+	// (roadmap 166). A file under schema/ factoryd does not write stays a
+	// refusal.
+	_, schemaErr := policy.CheckSchemas(files)
+	return tree, errors.Join(err, schemaErr)
+}
+
+// schemaWarnings are the lines naming every schema/ copy of dir that is
+// stale or missing against this binary.
+func schemaWarnings(dir string) []string {
+	files, err := policy.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	warns, _ := policy.CheckSchemas(files)
+	return warns
 }
 
 // ladder is factoryd's model ladder, which the loader and the check hold a

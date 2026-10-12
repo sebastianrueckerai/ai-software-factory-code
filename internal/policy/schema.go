@@ -2,7 +2,9 @@ package policy
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -296,21 +298,26 @@ func Schemas() (map[string][]byte, error) {
 	return out, nil
 }
 
-// CheckSchemas compares a tree's schema/ files with the generated ones:
-// every one present and equal, no other.
-func CheckSchemas(files map[string][]byte) error {
+// CheckSchemas compares a tree's schema/ files with the generated ones.
+// A copy that is stale or missing is a warning, not an error (roadmap
+// 166): the infra repository's copies follow the code by factoryd opening
+// a pull request for them, so `config check` judges the tree against the
+// schemas built into its own binary and its verdict does not depend on
+// the copies. A file under schema/ factoryd does not write stays an error.
+func CheckSchemas(files map[string][]byte) ([]string, error) {
 	want, err := Schemas()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var warns []string
 	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, ok := files[DirSchema+"/"+name]
 		switch {
 		case !ok:
-			errs = append(errs, fmt.Errorf("%s/%s is missing: run factoryd schema --out %s", DirSchema, name, DirSchema))
+			warns = append(warns, fmt.Sprintf("warning: %s/%s differs from this factoryd's schema (factoryd opens a pull request for it)", DirSchema, name))
 		case !bytes.Equal(got, want[name]):
-			errs = append(errs, fmt.Errorf("%s/%s differs from factoryd schema: run factoryd schema --out %s", DirSchema, name, DirSchema))
+			warns = append(warns, fmt.Sprintf("warning: %s/%s differs from this factoryd's schema (factoryd opens a pull request for it)", DirSchema, name))
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
@@ -318,5 +325,47 @@ func CheckSchemas(files map[string][]byte) error {
 			errs = append(errs, fmt.Errorf("%s is not a schema factoryd writes", name))
 		}
 	}
-	return errors.Join(errs...)
+	return warns, errors.Join(errs...)
+}
+
+// SchemaDifference is one schema/ copy of the configuration repository
+// that is not what this binary generates.
+type SchemaDifference struct {
+	Name    string // the schema file's name, e.g. policy.schema.json
+	Path    string // the copy's path in the tree, e.g. schema/policy.schema.json
+	Missing bool   // the tree holds no such file
+	Want    []byte // what this binary generates
+}
+
+// DiffSchemas compares copies keyed as ReadDir keys them (paths relative
+// to the tree directory) with what this binary generates, oldest name
+// first.
+func DiffSchemas(copies map[string][]byte) ([]SchemaDifference, error) {
+	want, err := Schemas()
+	if err != nil {
+		return nil, err
+	}
+	var out []SchemaDifference
+	for _, name := range slices.Sorted(maps.Keys(want)) {
+		got, ok := copies[DirSchema+"/"+name]
+		if ok && bytes.Equal(got, want[name]) {
+			continue
+		}
+		out = append(out, SchemaDifference{Name: name, Path: DirSchema + "/" + name, Missing: !ok, Want: want[name]})
+	}
+	return out, nil
+}
+
+// SchemaContentHash is the hash of generated schema content, first 12 hex:
+// the identifier a build whose commit it does not know names its schema
+// pull request by.
+func SchemaContentHash(schemas map[string][]byte) string {
+	names := slices.Sorted(maps.Keys(schemas))
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%s\x00", name)
+		h.Write(schemas[name])
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
