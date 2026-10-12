@@ -486,6 +486,11 @@ spec:
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
+        # tool calls without a file change before the repetition trip: the
+        # code's default 24 trips normal reading on a large card, and the
+        # stuck rule then climbs it to the frontier tier (ruling 298)
+        - name: SUPERVISE_READING_WITHOUT_WRITING
+          value: "60"
         - name: PGUSER
           valueFrom: {secretKeyRef: {name: factory-db-creds, key: username}}
         - name: PGPASSWORD
