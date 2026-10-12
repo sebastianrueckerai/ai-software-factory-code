@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/cgi"
@@ -1192,8 +1193,16 @@ func TestParseShortstat(t *testing.T) {
 // #495 (roadmap 182): a file the agent deletes from the work tree while the
 // checkpoint stages it must not drop the checkpoint. git add -A fails with
 // exit status 128 on the vanished file; diff must tolerate that, use the
-// index as-is, and carry the deletion in the stat and the patch. Fails
-// until the feature card lands.
+// index as-is, and carry the deletion in the stat and the patch.
+//
+// The staging steps are injectable through checkpointer.stage, and this test
+// uses it: this git reads a tracked file's absence as its deletion and
+// succeeds, so removing the file alone would never make add -A fail. The hook
+// removes the file when diff runs git add -A, lets the real command stage the
+// work tree as it is, and then makes only that command return the failure the
+// agent's removal caused — exit status 128, fatal: unable to stat. Without
+// the fix that error propagates and the checkpoint is dropped; with it diff
+// carries the staged tree.
 func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	run := func(args ...string) string {
@@ -1220,13 +1229,27 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// the agent removes a committed file between the checkpoint's staging steps
-	if err := os.Remove(filepath.Join(dir, "a.txt")); err != nil {
-		t.Fatal(err)
+	addFailed, addStaged := 0, false
+	ck.stage = func(ctx context.Context, d string, env []string, args ...string) (string, error) {
+		if len(args) > 1 && args[0] == "add" && args[1] == "-A" {
+			// the agent removes the committed file while git add -A works
+			if err := os.Remove(filepath.Join(dir, "a.txt")); err != nil {
+				t.Fatalf("remove during staging: %v", err)
+			}
+			out, runErr := e.runGitCtx(ctx, d, env, args...)
+			addStaged = runErr == nil
+			// and the command reports the vanished file as Stage 17's did
+			addFailed++
+			return out, errors.New("git add -A: exit status 128: fatal: unable to stat 'a.txt'")
+		}
+		return e.runGitCtx(ctx, d, env, args...)
 	}
 	stat, patch, err := ck.diff(context.Background())
 	if err != nil {
 		t.Fatalf("diff with a vanished file: %v", err)
+	}
+	if addFailed != 1 || !addStaged {
+		t.Fatalf("git add -A ran %d times, staged = %v; want once, staged", addFailed, addStaged)
 	}
 	if stat.Files < 1 || stat.Deletions < 1 {
 		t.Fatalf("stat = %+v, want Files >= 1 and Deletions >= 1", stat)
