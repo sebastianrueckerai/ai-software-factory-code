@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -42,6 +44,10 @@ type toolInput struct {
 	To        int    `json:"to,omitempty"`
 	Query     string `json:"query,omitempty"`
 	Size      string `json:"size,omitempty"`
+	By        string `json:"by,omitempty"`
+	State     string `json:"state,omitempty"`
+	ID        int64  `json:"id,omitempty"`
+	Verdict   string `json:"verdict,omitempty"`
 	DependsOn string `json:"depends_on,omitempty"`
 	Remove    bool   `json:"remove,omitempty"`
 	Mode      string `json:"mode,omitempty"`
@@ -205,6 +211,28 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", err
 		}
 		desc += mergeWarning(steps)
+	}
+	if tool.name == "alert_verdict" {
+		al, ok, err := t.c.cfg.Alerts.AlertByID(t.r.Context(), in.ID)
+		switch {
+		case err != nil:
+			log.Printf("console: alert %d: %v", in.ID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the alert")
+		case !ok:
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", in.ID))
+		}
+		desc += fmt.Sprintf(", alert %d %q", al.ID, alertTitle(al))
+	}
+	if tool.name == "promote_resource" || tool.name == "release_resource" {
+		res, ok, err := t.c.cfg.Resources.Commission(t.r.Context(), in.ID)
+		switch {
+		case err != nil:
+			log.Printf("console: resource %d: %v", in.ID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the resource registry")
+		case !ok:
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no commissioned resource %d.", in.ID))
+		}
+		desc += ", " + res.Kind + " " + strconv.FormatInt(res.ID, 10) + " of " + res.Repo
 	}
 	return sanitize.Inbound(desc), nil
 }
@@ -501,9 +529,14 @@ var tools = []chatTool{
 			return eventLines(events), nil, err
 		}},
 	{name: "costs", title: "Read the costs",
-		about: "The project's spend this UTC month against its month cap, the cards' and the chat's apart.",
-		fits:  "any card",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+		params: map[string]any{"by": enum("the ledger's breakdown: by day, by card (task) or by tier (kind), this UTC month (default day)", "day", "card", "tier")},
+		about:  "The project's spend this UTC month against its month cap, the cards' and the chat's apart; with by day, card or tier the whole ledger that way over the current month, in EUR, with the totals line.",
+		fits:   "any card",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			if in.By != "" {
+				s, err := t.c.costsByText(t.r.Context(), in.By)
+				return s, nil, err
+			}
 			s, err := t.c.spendLine(t.r.Context(), t.p)
 			return "The project's " + s + ".", nil, err
 		}},
@@ -557,6 +590,67 @@ var tools = []chatTool{
 		about:  "Main's (or a ref's or commit's) CI result: the head commit, the combined state, and each job's state in the order Forgejo reports, with its target link.",
 		fits:   "a project with a repository",
 		run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
+	{name: "alerts", title: "Read the alerts",
+		params: map[string]any{"state": enum("open for the alerts without a verdict (default), all for every alert the page lists", "open", "all")},
+		about:  "The factory's alerts as the /alerts page shows them, newest first: each with id, severity, title, since and the verdict if any; state all lists the judged ones too.",
+		fits:   "the factory's writers",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
+			return s, nil, err
+		}},
+	{name: "resources", title: "Read the resources",
+		about: "The commissioned cloud resources as the /resources page shows them, by project: each with id, kind, state, cost per month and whether it may be promoted or released.",
+		fits:  "the factory's writers",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.c.resourcesText(t.r.Context(), t.a)
+			return s, nil, err
+		}},
+	{name: "projects", title: "Read the projects",
+		about: "The factory's projects as the /projects page shows them: each with name, objects, process, merge rule, state and GitHub export state.",
+		fits:  "the factory's writers",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.c.projectsText(t.r.Context(), t.a, t.p)
+			return s, nil, err
+		}},
+	{name: "policy", title: "Read the policy",
+		about: "The policy in force as the /policy page shows it: the limits, the budgets (task default and maximum, day, month and each project's month cap), the risk classes with their paths, and the approvers.",
+		fits:  "the factory's writers",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.c.policyText(t.r.Context(), t.a, t.p.Repository)
+			return s, nil, err
+		}},
+	{name: "pulse", title: "Read the pulse",
+		about: "The project's newest pulse sentence, as its board's pulse line and the pulse fragment show it.",
+		fits:  "a project with a pulse",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.c.pulseText(t.r.Context(), t.a, t.p)
+			return s, nil, err
+		}},
+	{name: "alert_verdict", title: "Judge an alert", write: true,
+		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id, from the alerts read", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
+		required: []string{"id", "verdict"},
+		about:    "Judge an open escalation alert real or noise, as the /alerts page's verdict buttons do (a factory approver's action).",
+		fits:     "an open escalation alert",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict)
+			return note, nil, err
+		}},
+	{name: "promote_resource", title: "Make a resource standing", write: true,
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
+		about: "Make a commissioned resource standing, as the /resources page's Promote button does: project-owned, no lease, within the project file's standing block (a factory approver's action).",
+		fits:  "an open leased commission",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doPromoteResource(t.r.Context(), t.a, in.ID)
+			return note, nil, err
+		}},
+	{name: "release_resource", title: "Release a resource", write: true,
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
+		about: "End a commissioned resource's lease now, as the /resources page's Release button does; the collector deletes it (a factory approver's action).",
+		fits:  "an open commission",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)
+			return note, nil, err
+		}},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
 			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),

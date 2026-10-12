@@ -2,14 +2,10 @@ package console
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // alertsLimit bounds the alerts one page shows.
@@ -34,29 +30,10 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	user := current(r).user
-	if !c.approver(r) {
-		log.Printf("console: %s is no approver: verdict on alert %d refused", user, id)
-		http.Error(w, "Only the factory's approvers may judge an alert.", http.StatusForbidden)
+	if _, err := c.doAlertVerdict(r.Context(), button(r), id, r.PostFormValue("verdict")); err != nil {
+		c.fail(w, r, err)
 		return
 	}
-	v := r.PostFormValue("verdict")
-	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
-		http.Error(w, "the verdict is real or noise", http.StatusBadRequest)
-		return
-	}
-	switch err := c.cfg.Alerts.SetAlertVerdict(r.Context(), id, v, user); {
-	case errors.Is(err, factoryd.ErrNotFound):
-		http.Error(w, fmt.Sprintf("alert %d is no open human alert (any more); reload the page", id), http.StatusConflict)
-		return
-	case err != nil:
-		log.Printf("console: verdict on alert %d: %v", id, err)
-		http.Error(w, "cannot record the verdict", http.StatusInternalServerError)
-		return
-	}
-	log.Printf("console: %s judged alert %d %s", user, id, v)
-	c.alertVerdictEvent(r, id, v)
-	c.cfg.Metrics.Intervened(r.Context(), factoryd.InterventionAlertVerdict, "none", "none")
 	// back to the alerts, or to the board under its filter: a path on
 	// this host, never another
 	back := "/alerts"
@@ -64,19 +41,6 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 		back = b
 	}
 	http.Redirect(w, r, back, http.StatusSeeOther)
-}
-
-// alertVerdictEvent records the human's verdict on alert id. Every event
-// carries a project, so the row's repository is that of the task the alert
-// names; an alert whose task names no repository leaves no row (PGStore
-// rejects an empty one), logged.
-func (c *Console) alertVerdictEvent(r *http.Request, id int64, v string) {
-	repo, taskID := c.alertRepository(r.Context(), id)
-	if repo == "" {
-		log.Printf("console: alert %d: no project to record the verdict %s under", id, v)
-		return
-	}
-	c.act(r, repo, taskID, 0, factoryd.EventAlertVerdict, map[string]any{"alert": id, "verdict": v})
 }
 
 // alertRepository is the repository of alert id's task and the task's id,

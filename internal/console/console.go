@@ -235,6 +235,44 @@ type session struct {
 	seen time.Time
 }
 
+// chatRouteTool is a GET route's chat tool or named exception (roadmap
+// 158): tool names the read or write that shows the member exactly what
+// the page shows; none is a named exception, with its reason. Every GET
+// route the console registers carries one, and TestEveryConsolePageIsAChatTool
+// reads this table and the mux itself, so a new route cannot escape it.
+type chatRouteTool struct {
+	tool    string // "" for none
+	none    string // the exception's reason
+	pattern string
+}
+
+// chatRoutes lists every GET route New registers, each with its tool or
+// its named exception.
+var chatRoutes = []chatRouteTool{
+	{"", "the sign-in page: no chat before a session", "GET /login"},
+	{"", "the OAuth provider's callback: no page", "GET /auth/callback"},
+	{"board", "the board itself", "GET /{$}"},
+	{"board", "the board itself", "GET /board"},
+	{"", "the new task's form: the chat files cards (new_card), not tasks", "GET /tasks/new"},
+	{"card", "a card's timeline fragment: the card read names where its reviews, checks and plan are", "GET /tasks/{id}/timeline"},
+	{"costs", "the costs page, by day, card or tier", "GET /costs"},
+	{"policy", "the policy page", "GET /policy"},
+	{"resources", "the resources page", "GET /resources"},
+	{"alerts", "the alerts page", "GET /alerts"},
+	{"projects", "the projects page", "GET /projects"},
+	{"", "the new project's form: the chat creates no project", "GET /projects/new"},
+	{"projects", "a project's status panel: a fragment of the projects page whose tool exists", "GET /projects/{name}/status"},
+	{"history", "a project's event feed fragment, with its tool", "GET /projects/{name}/events"},
+	{"", "the event stream: the live half of the events fragment", "GET /projects/{name}/events/stream"},
+	{"card", "a card's face: a fragment of the board page whose tool exists", "GET /cards/{id}"},
+	{"card", "a card's drawer: a fragment of the board page whose tool exists", "GET /cards/{id}/drawer"},
+	{"", "the chat's own page", "GET /projects/{name}/chat"},
+	{"", "a new chat conversation: the chat's own route", "POST /projects/{name}/chat/new"},
+	{"", "the chat's conversation list: the chat's own route", "GET /projects/{name}/chat/conversations"},
+	{"system", "the pulse's sentence: a fragment of the board page the system manual and the board read cover", "GET /projects/{name}/pulse"},
+	{"", "the static files", "GET /static/"},
+}
+
 // New builds the console handler.
 func New(cfg Config) (*Console, error) {
 	tmpl, err := template.New("").Funcs(funcs).ParseFS(templateFS, "templates/*.html")
@@ -539,6 +577,14 @@ func (c *Console) approver(r *http.Request) bool {
 	own := c.writers.own
 	c.mu.Unlock()
 	return c.isApprover(r.Context(), current(r).user, own)
+}
+
+// writersOwn is the factory's own code project's repository, from the
+// writer lists; "" when they were never read.
+func (c *Console) writersOwn() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.writers.own
 }
 
 // isApprover reports whether user approves repository's project: a name on

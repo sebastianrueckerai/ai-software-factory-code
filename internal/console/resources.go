@@ -10,11 +10,9 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -147,6 +145,10 @@ func (c *Console) resourceID(w http.ResponseWriter, r *http.Request) (int64, boo
 // with its task (the collector keeps it until released).
 // It must fit the standing block of the project's file in force.
 func (c *Console) promote(w http.ResponseWriter, r *http.Request) {
+	id, ok := c.resourceID(w, r)
+	if !ok {
+		return
+	}
 	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
 	if err != nil || !ok {
 		log.Printf("console: current policy: loaded %v, %v", ok, err)
@@ -155,57 +157,25 @@ func (c *Console) promote(w http.ResponseWriter, r *http.Request) {
 	}
 	c.resourceChange(w, r, "promote", func(ctx context.Context, id int64, by string) error {
 		return c.cfg.Resources.Promote(ctx, id, by, func(repo string) policy.Standing { return v.EnvelopeOf(repo).Standing })
-	})
+	}, id)
 }
 
 // release ends the commission's lease now; the gateway's collector deletes
 // it on its next pass (every 2 minutes).
 func (c *Console) release(w http.ResponseWriter, r *http.Request) {
-	c.resourceChange(w, r, "release", c.cfg.Resources.EndLease)
-}
-
-func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what string, change func(ctx context.Context, id int64, by string) error) {
 	id, ok := c.resourceID(w, r)
 	if !ok {
 		return
 	}
-	user := current(r).user
-	if err := change(r.Context(), id, user); err != nil {
-		log.Printf("console: %s %s resource %d: %v", user, what, id, err)
-		switch {
-		case errors.Is(err, cloudres.ErrLeaseEnded):
-			http.Error(w, "cannot "+what+": its lease has ended or it was released; the collector deletes it", http.StatusConflict)
-		case errors.Is(err, cloudres.ErrBeyondStanding):
-			_, why, _ := strings.Cut(err.Error(), cloudres.ErrBeyondStanding.Error()+": ")
-			http.Error(w, "cannot "+what+": "+why+"; raise the standing block in the project's file first", http.StatusConflict)
-		case errors.Is(err, cloudres.ErrNotOpen):
-			http.Error(w, "cannot "+what+": the resource is no longer open", http.StatusConflict)
-		default:
-			http.Error(w, "cannot "+what+"; see the factoryd log", http.StatusInternalServerError)
-		}
-		return
-	}
-	log.Printf("console: %s %sd the commission of resource %d", user, what, id)
-	kind := factoryd.EventResourcePromoted
-	if what == "release" {
-		kind = factoryd.EventResourceReleased
-	}
-	c.resourceEvent(r, id, kind)
-	http.Redirect(w, r, "/resources", http.StatusSeeOther)
+	c.resourceChange(w, r, "release", c.cfg.Resources.EndLease, id)
 }
 
-// resourceEvent records what the human did to a commission under its own
-// project: an unreadable row, or one with no repository, leaves no row
-// (PGStore rejects an empty one), logged.
-func (c *Console) resourceEvent(r *http.Request, id int64, kind string) {
-	res, ok, err := c.cfg.Resources.Commission(r.Context(), id)
-	switch {
-	case err != nil:
-		log.Printf("console: resource %d: %v", id, err)
-		return
-	case !ok, res.Repo == "":
-		log.Printf("console: resource %d: no project to record %s under", id, kind)
+// resourceChange answers a button whose change (promote or release) ran on
+// commission id, sharing resourceChangeDo's checks and refusals.
+func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what string, change func(ctx context.Context, id int64, by string) error, id int64) {
+	if err := c.resourceChangeDo(r.Context(), button(r), what, id, change); err != nil {
+		c.fail(w, r, err)
 		return
 	}
-	c.act(r, res.Repo, res.OwnerRef, 0, kind, map[string]any{"resource": id, "kind": res.Kind})
+	http.Redirect(w, r, "/resources", http.StatusSeeOther)
 }
