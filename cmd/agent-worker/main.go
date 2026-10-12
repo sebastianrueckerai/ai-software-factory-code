@@ -874,6 +874,9 @@ type diffStat struct{ Files, Insertions, Deletions int }
 type checkpointer struct {
 	e                 workerEnv
 	work, store, base string
+	// stage runs the checkpoint's git commands. It defaults to the worker's
+	// own runGitCtx; only a test replaces it, to make one staging step fail.
+	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
 }
 
 func newCheckpointer(agentRepo string, e workerEnv, base string) (*checkpointer, error) {
@@ -915,20 +918,24 @@ func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
 		return diffStat{}, "", err
 	}
 	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
-	if _, err := c.e.runGitCtx(ctx, tmp, env, "read-tree", c.base); err != nil {
+	run := c.stage
+	if run == nil {
+		run = c.e.runGitCtx
+	}
+	if _, err := run(ctx, tmp, env, "read-tree", c.base); err != nil {
 		return diffStat{}, "", err
 	}
 	// A file the agent removes between read-tree and add makes git add -A
 	// exit 128 (fatal: unable to stat). Ignore it: the index reflects the
 	// work tree as it was at the moment of staging, a valid snapshot, and
 	// the diff against the base below stays correct.
-	_, _ = c.e.runGitCtx(ctx, tmp, env, "add", "-A")
+	_, _ = run(ctx, tmp, env, "add", "-A")
 	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
-	short, err := c.e.runGitCtx(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
+	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
 		return diffStat{}, "", err
 	}
-	patch, err := c.e.runGitCtx(ctx, tmp, env, append(diff, c.base)...)
+	patch, err := run(ctx, tmp, env, append(diff, c.base)...)
 	if err != nil {
 		return diffStat{}, "", err
 	}
