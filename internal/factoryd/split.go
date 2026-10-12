@@ -96,20 +96,20 @@ func splitGuide(pr int64, files []PRFile, bound int, limits policy.Limits) strin
 		lines += f.Additions + f.Deletions
 		fmt.Fprintf(&list, "- %s +%d -%d\n", f.Filename, f.Additions, f.Deletions)
 	}
-	return fmt.Sprintf("You are the planner: read, do not change code, commit or push; nothing you change in the work tree leaves the sandbox. "+
+	return fmt.Sprintf("You are the planner. "+
 		"Pull request #%[1]d of this card changes %[2]d lines in %[3]d files, more than the %[4]d lines one pull request may change: "+
 		"split its work into 2 or 3 cards, each one pull request of under %[4]d changed lines. "+
 		"Its head is in your clone as branch pull/%[1]d, and git diff origin/main...pull/%[1]d is its diff. Its files, lines added and deleted:\n%[5]s\n"+
 		"Every card starts from main and carries over files and hunks of pull/%[1]d: its brief names them, by path and what each hunk does, and how the card is checked. "+
-		"directories lists the files and directories the card carries over; together the cards' directories cover every file above, and a file may go to more than one card. "+
+		"directories lists the files and directories the card carries over; a file may go to more than one card. "+
 		"Your last message is the whole result: one fenced ```json block and nothing else, holding "+
 		`{"summary": "a paragraph: how the work is split and in which order it lands", "cards": [{"key": "...", "role": "feature", "title": "...", "brief": "...", `+
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}]}. `+
-		"key: lowercase letters, digits and dashes, 2 to 32, unique. depends_on lists the keys of the cards a card needs merged first, with no cycle. "+
-		"title: at most %[6]d characters. brief: markdown, at most %[7]d characters. directories: at most %[8]d paths relative to the repository's root, "+
-		"none under .forgejo/, .gitea/ or .github/. acceptance: 1 to %[9]d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: %[10]s); every card's size stays under %[4]d lines.",
-		pr, lines, len(files), bound, textutil.Truncate(list.String(), maxSplitFiles), maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance, sizeFigures())
+		"depends_on lists the keys of the cards a card needs merged first. "+
+		"title and brief: markdown. directories: paths relative to the repository's root. "+
+		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
+		"size: small, medium or large; every card's size stays under %[4]d lines.",
+		pr, lines, len(files), bound, textutil.Truncate(list.String(), maxSplitFiles))
 }
 
 // RunSplit is one planner session on the large pull request of card

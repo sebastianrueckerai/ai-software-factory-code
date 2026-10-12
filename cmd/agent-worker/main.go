@@ -774,9 +774,11 @@ var migrationName = regexp.MustCompile(`^[0-9]{14}_[a-z0-9_]+\.sql$`)
 // exact path like internal/policy/schema.sql marks one file for review,
 // not a directory of timestamped migrations — whose name is off the
 // pattern. Only added files are judged: an edited migration keeps its
-// name. Like refuseWorkflowDirChange a guard of the trusted worker, run
-// in the repo it built itself; the refusal reaches the next session as a
-// finding.
+// name. The listing runs with --no-renames and core.quotePath off, so a
+// rename into a bad name lists as an add and a non-ASCII path prints raw
+// (refuseWorkflowDirChange's comment names the same holes). Like it a
+// guard of the trusted worker, run in the repo it built itself; the
+// refusal reaches the next session as a finding.
 func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
 	var globs []string
 	for _, g := range e.migrationGlobs {
@@ -787,7 +789,7 @@ func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
 	if len(globs) == 0 {
 		return nil
 	}
-	out, err := e.git(own, "diff", "--name-only", "--diff-filter=A", base, head)
+	out, err := e.git(own, "-c", "core.quotePath=off", "diff", "--name-only", "--diff-filter=A", "--no-renames", base, head)
 	if err != nil {
 		return err
 	}

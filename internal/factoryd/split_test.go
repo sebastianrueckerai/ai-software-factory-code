@@ -108,7 +108,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	guide := env["REPORT_GUIDE"]
 	for _, want := range []string{"Pull request #9 of this card changes 1100 lines in 3 files, more than the 1000 lines one pull request may change",
 		"each one pull request of under 1000 changed lines", "branch pull/9", "- web/app.ts +500 -0\n- web/app.css +80 -0\n- api/links.go +500 -20\n",
-		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000); every card's size stays under 1000 lines."} {
+		"size: small, medium or large; every card's size stays under 1000 lines."} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, guide)
 		}

@@ -128,8 +128,8 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 }
 
 // Stage 16 item 3.7: the guide names the three sizes in the json shape
-// and in the field rules. The line figures moved to the split guide and
-// ValidatePlan's size findings (roadmap 186).
+// and in the field rules. The line figures are ValidatePlan's size
+// findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
 	got := planGuide(testShape, testLimits)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
@@ -170,10 +170,25 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
-// round2-design.md section 8's route-file rule lives where the sentence
-// said it does, the template's AGENTS.md, which every card's brief
-// carries; the planner's prose no longer repeats it (roadmap 186) —
-// TestGuidesCarryNoCheckedRule pins its absence.
+// The route-file rule stays in the prose: round2-design section 8 planned
+// the template's AGENTS.md line, but no template's AGENTS.md carries it,
+// so this sentence is the rule's only carrier.
+func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
+	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
+
+// The plan arrives by the file_plan tool, never as the last message
+// (defect 178): RunPlan refuses a session that ends without filing one.
+// The split guide keeps its last-message sentence: RunSplit still reads it.
+func TestPlanGuideFilesThroughTheTool(t *testing.T) {
+	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
+	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+}
 
 // factoryd, not the model, orders the foundation first and the integration
 // last: every card depends on the foundation, the integration on every
@@ -1398,13 +1413,6 @@ func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
 		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
-	}
-}
-
-func TestPlanGuideDeployOwnerSentence(t *testing.T) {
-	want := "a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
-		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
 

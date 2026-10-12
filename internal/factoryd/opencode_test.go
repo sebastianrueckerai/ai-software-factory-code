@@ -735,12 +735,14 @@ func TestGuidesAskForChoicesWithTheEscalation(t *testing.T) {
 // its own test or construction pins it.
 func TestGuidesCarryNoCheckedRule(t *testing.T) {
 	guides := map[string]string{
-		"work":        workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}),
-		"work-bare":   workGuide(nil),
-		"feature":     featureGuide([]string{policy.ToolEscalate}, RoleFeature),
-		"integration": featureGuide([]string{policy.ToolEscalate}, RoleIntegration),
-		"end":         guideEnd,
-		"plan":        planGuide(testShape, testLimits),
+		"work":          workGuide([]string{policy.ToolEscalate, policy.ToolRequestInfo}),
+		"work-bare":     workGuide(nil),
+		"feature":       featureGuide([]string{policy.ToolEscalate}, RoleFeature),
+		"integration":   featureGuide([]string{policy.ToolEscalate}, RoleIntegration),
+		"end":           guideEnd,
+		"plan":          planGuide(testShape, testLimits),
+		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits),
+		"split":         splitGuide(9, splitFiles, 1000, testLimits),
 	}
 	rules := []string{
 		// the worker's push guard refuseMisnamedMigrations, pinned by
@@ -770,9 +772,22 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"lowercase letters, digits and dashes",
 		"Exactly one card has role",
 		"with no cycle",
+		"and no cycle",
 		"at most 12 KiB",
-		// the template's AGENTS.md, which every card's brief carries
-		"routes_<key>.go",
+		"title: at most",
+		"keep the briefs short",
+		"characters",
+		"directories: at most",
+		"none under .forgejo/",
+		"acceptance: 1 to",
+		"small (a change under about",
+		"0 to 5",
+		"2 to 5 short choices",
+		// deployOwner/ErrNoDeployOwner: CreateChildren returns it to the
+		// planner as a finding, AcceptPlan refuses the plan without an owner
+		"needs one card whose directories include deploy/",
+		// CheckSplit's finding "no card's directories cover"
+		"cover every file above",
 		// GateReproduction runs the repro block at base and head
 		"must bring its own test",
 		"the factory runs it at the base",

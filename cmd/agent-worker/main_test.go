@@ -1020,6 +1020,14 @@ func TestCommitAndPushRefusesMisnamedMigrations(t *testing.T) {
 			add(dir, "select 1;\n", "db", "0017_add_users.sql")
 			commitAll(dir)
 		}},
+		{name: "rename-into-bad-name-refused", globs: globs, wantRefuse: "internal/policy/migrations/0017_nextnum.sql", agent: func(dir string) {
+			run("-C", dir, "mv", "internal/policy/migrations/0016_legacy.sql", "internal/policy/migrations/0017_nextnum.sql")
+			commitAll(dir)
+		}},
+		{name: "non-ascii-name-refused", globs: globs, wantRefuse: "internal/policy/migrations/0017_café.sql", agent: func(dir string) {
+			migrations(dir, "0017_café.sql")
+			commitAll(dir)
+		}},
 		{name: "no-globs-passes", agent: func(dir string) {
 			migrations(dir, "0017_add_users.sql")
 			commitAll(dir)
