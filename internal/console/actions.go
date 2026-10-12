@@ -55,10 +55,11 @@ type capFacts struct {
 	capped, merge, plan       bool
 }
 
-// capFactsOf reads t's facts, only for a card waiting on a human; a failed
+// capFactsOf reads t's facts, only for a card waiting on a human or in
+// review; a failed
 // read leaves its fact unknown, which wrongState reads as a question.
 func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
-	if t.Status != "waiting-human" {
+	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
 	sessions := 0
@@ -77,10 +78,11 @@ func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 }
 
 // capFactsFrom are t's facts from the policy's sessions, its newest
-// escalation and the pending approval requests; a card not waiting on a
-// human has none.
+// escalation and the pending approval requests; a card neither waiting on
+// a human nor in review has none, and only one waiting on a human is
+// capped.
 func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []factoryd.ApprovalRequest) capFacts {
-	if t.Status != "waiting-human" {
+	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
 	f := capFacts{attempts: t.Usage.Attempts, sessions: sessions, extra: t.Usage.ExtraAttempts}
@@ -88,7 +90,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
 		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan
 	}
-	f.capped = !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
+	f.capped = t.Status == "waiting-human" && !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
 
@@ -122,6 +124,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "queued", "waiting-deps":
 		return "nothing to do until it starts"
 	case "in-review":
+		if f.merge {
+			return "approve_merge or deny_merge decide its merge request"
+		}
 		return "its gates run; nothing to do until they end"
 	case "backlog":
 		return "move_card starts it"
@@ -713,6 +718,39 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
+}
+
+// doSplit has a planner split card id's large pull request into 2 or 3
+// cards, which factoryd files and starts once its check passes: the
+// member's split is their acceptance (ruling 277).
+func (c *Console) doSplit(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if err := c.approves(ctx, a, t.Repository, "split a card"); err != nil {
+		return "", err
+	}
+	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		log.Printf("console: approvals: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the approval requests")
+	}
+	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
+		var spec factoryd.MergeSpec
+		return q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil && spec.RiskClass == policy.ClassLarge
+	})
+	if i < 0 || t.Status == "running" {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a large pull request at its approval gate")
+	}
+	if err := c.cfg.SplitCard(ctx, t.ID, a.s.user); err != nil {
+		log.Printf("console: %s splits %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusBadGateway, "The card's workflow could not be signalled; split again.")
+	}
+	log.Printf("console: %s split %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSplit, map[string]any{"pr": all[i].PRNumber})
+	return fmt.Sprintf("Split #%d: a planner splits pull request #%d into 2 or 3 cards, which start once factoryd's check passes; the card then closes.",
+		t.IssueNumber, all[i].PRNumber), nil
 }
 
 // editIssue patches card t's issue with fields as the member; out takes

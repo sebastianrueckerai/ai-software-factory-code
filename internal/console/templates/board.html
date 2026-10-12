@@ -88,6 +88,7 @@
 {{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>{{end}}
 <button type="submit" aria-label="{{if eq .Kind "merge"}}Approve as you: merge PR #{{.PRNumber}}{{else}}Approve resource request {{.ID}}{{end}} of {{.TaskID}}">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>{{end}}
+{{template "split" .}}
 <form method="post" action="/approvals/{{.ID}}/deny">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
@@ -99,6 +100,10 @@
 <button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>
 </form>{{end}}
 </article>{{end}}
+
+{{define "split"}}{{if and .Approver (eq .Kind "merge") (eq .Merge.RiskClass "large")}}<form method="post" action="/tasks/{{.TaskID}}/split" hx-post="/tasks/{{.TaskID}}/split" hx-target="#board" hx-swap="outerHTML" hx-confirm="Split PR #{{.PRNumber}}? A planner splits it into 2 or 3 cards, which start on their own; this card then closes." class="inline">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Split PR #{{.PRNumber}} of {{.TaskID}} into 2 or 3 cards">Split</button>
+</form>{{end}}{{end}}
 
 {{define "merge-facts"}}<dl class="facts">
 <dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>

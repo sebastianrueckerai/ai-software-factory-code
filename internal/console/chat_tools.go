@@ -756,6 +756,13 @@ var tools = []chatTool{
 			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
 			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
 		}},
+	{name: "split_card", title: "Split a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+		about: "Have a planner split a card's large pull request into 2 or 3 cards, which start once factoryd's check passes; the card then closes (an approver's action).",
+		fits:  "a pending merge request of risk class large",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doSplit(t.r.Context(), t.a, in.TaskID)
+			return note, nil, err
+		}},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)

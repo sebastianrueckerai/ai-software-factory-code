@@ -372,6 +372,9 @@ func main() {
 		},
 		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,
+		SplitCard: func(ctx context.Context, taskID, by string) error {
+			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
+		},
 		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
 			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
 		},

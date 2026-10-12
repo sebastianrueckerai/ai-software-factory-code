@@ -133,6 +133,9 @@ type Config struct {
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error
+	// SplitCard signals card taskID's workflow to split its large pull
+	// request for by (factoryd.SignalSplit).
+	SplitCard func(ctx context.Context, taskID, by string) error
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).
@@ -255,6 +258,7 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
 	c.mux.Handle("POST /tasks/{id}/close", c.auth(c.closeCard))
 	c.mux.Handle("POST /tasks/{id}/steer", c.auth(c.steerCard))
+	c.mux.Handle("POST /tasks/{id}/split", c.auth(c.splitCard))
 	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
 	c.mux.Handle("GET /costs", c.auth(c.factory(c.costs)))
 	c.mux.Handle("GET /policy", c.auth(c.factory(c.policy)))

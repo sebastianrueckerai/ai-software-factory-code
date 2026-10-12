@@ -18,7 +18,7 @@
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
 </table></section>
 {{end}}{{with .Merge}}<section><h4>Reviews and audit of <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
-{{template "merge-facts" .}}</section>
+{{template "merge-facts" .}}{{template "split" .}}</section>
 {{end}}{{if .Related}}<section><h4>Related cards</h4>
 <ul class="related">{{range .Related}}<li><span class="why">{{.Why}}</span> <span class="pill {{.Card.StatusClass}}">{{.Card.Status}}</span> <a href="#card={{.Card.ID}}" hx-get="/cards/{{.Card.ID}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}} {{end}}{{.Card.Title}}</a></li>
 {{end}}</ul></section>
