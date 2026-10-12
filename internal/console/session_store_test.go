@@ -27,6 +27,10 @@ type fakeSessions struct {
 	now func() time.Time
 	// rows are the table's rows by id hash.
 	rows map[string]factoryd.ConsoleSession
+	// staleOK lets a touch whose value the row does not hold move the column
+	// to the fake's clock anyway: what a test needs when it pins last_seen
+	// where no read of this table could leave it.
+	staleOK bool
 	// saved, deleted, touched and purged count the calls; tokens counts
 	// the token updates.
 	saved   int
@@ -73,16 +77,28 @@ func (f *fakeSessions) DeleteConsoleSession(_ context.Context, hash string) erro
 	return nil
 }
 
-func (f *fakeSessions) TouchConsoleSession(_ context.Context, hash string, notAfter time.Time) (bool, error) {
+func (f *fakeSessions) TouchConsoleSession(_ context.Context, hash string, seenAt time.Time) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.touched++
 	row, ok := f.rows[hash]
-	if !ok || !row.LastSeen.Before(notAfter) {
+	if !ok {
 		return false, nil
 	}
-	row.LastSeen = f.now()
+	// as the Postgres store does: the row moves when it still says the value
+	// its owner read, to that value plus a minute; a row whose last_seen
+	// already moved is one seen within the minute and holds. A test that
+	// pins the column where no read could leave it sets staleOK and the move
+	// goes to the fake's clock instead.
+	switch {
+	case row.LastSeen.Equal(seenAt):
+		row.LastSeen = seenAt.Add(time.Minute)
+	case f.staleOK:
+		row.LastSeen = f.now()
+	default:
+		return false, nil
+	}
 	f.rows[hash] = row
-	f.touched++
 	return true, nil
 }
 
@@ -266,12 +282,17 @@ func TestLastSeenMovesAtMostOnceAMinute(t *testing.T) {
 	if r.sessions.touched != 0 {
 		t.Fatalf("TouchConsoleSession ran %d times within a minute", r.sessions.touched)
 	}
-	// the row seen a minute ago moves on the next read, once.
+	// the row seen a minute ago moves on the next read, once. The touch
+	// sets last_seen a minute past the value it held, as the Postgres
+	// store does; the console's own clock says now.
+	stale := time.Now().Add(-time.Minute)
 	r.sessions.mu.Lock()
 	row = r.sessions.rows[hash]
-	row.LastSeen = time.Now().Add(-time.Minute)
+	row.LastSeen = stale
 	r.sessions.rows[hash] = row
-	stale := row.LastSeen
+	// the pinned value is one no read left behind, so the fake moves on the
+	// caller's word alone.
+	r.sessions.staleOK = true
 	r.sessions.mu.Unlock()
 	if get() == nil {
 		t.Fatal("a live session stopped answering")
@@ -284,8 +305,10 @@ func TestLastSeenMovesAtMostOnceAMinute(t *testing.T) {
 		t.Fatalf("TouchConsoleSession ran %d times, want once", r.sessions.touched)
 	}
 	moved := row.LastSeen
-	if get() == nil {
+	if s := get(); s == nil {
 		t.Fatal("a live session stopped answering")
+	} else if !s.seen.Equal(moved) {
+		t.Fatalf("the read of the moved row did not take its last_seen: %s, row %s", s.seen, moved)
 	}
 	if row, _ := r.sessions.row(hash); !row.LastSeen.Equal(moved) {
 		t.Fatalf("last_seen moved twice in a minute: %s, then %s", moved, row.LastSeen)

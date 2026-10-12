@@ -398,7 +398,10 @@ func (c *Console) sessionByCookie(value string) *session {
 	}
 	now := time.Now()
 	if now.Sub(s.seen) >= time.Minute {
-		if moved, err := c.cfg.Sessions.TouchConsoleSession(ctx, hash, s.seen.Add(time.Minute)); err != nil {
+		// the store moves last_seen only when the row still says the
+		// value this session read, so a minute of requests over one or
+		// many Console values moves the column at most once.
+		if moved, err := c.cfg.Sessions.TouchConsoleSession(ctx, hash, s.seen); err != nil {
 			log.Printf("console: the session's last seen: %v", err)
 		} else if moved {
 			s.seen = now

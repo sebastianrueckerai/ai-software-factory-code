@@ -361,6 +361,7 @@ func main() {
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
 		ClientSecret:     consoleClientSecret,
 		SessionKey:       []byte(consoleSessionKey),
+		Sessions:         store,
 		Tasks:            store,
 		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now),
 		Timelines:        objects,
