@@ -662,6 +662,7 @@ type rig struct {
 	resources *fakeResources
 	alerts    *fakeAlerts
 	projects  *fakeProjects
+	sessions  *fakeSessions
 	events    *fakeEvents
 	chat      *fakeChat
 	mirrors   *fakeMirrors
@@ -712,11 +713,13 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	r.chat = &fakeChat{tasks: r.tasks}
+	r.sessions = newFakeSessions()
 	c, err := New(Config{
 		Metrics:   metrics,
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
-		Tasks: r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
+		Sessions: r.sessions,
+		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors,
@@ -839,13 +842,54 @@ func (r *rig) login(t *testing.T) (*http.Cookie, *httptest.ResponseRecorder) {
 	return cookie(t, cb, sessionCookie), cb
 }
 
+// readSession is the login of ck as a second Console value over the same
+// store reads it: the restart case (roadmap 164). nil when no row answers.
+func (r *rig) readSession(t *testing.T, ck *http.Cookie) *session {
+	t.Helper()
+	other, err := New(r.c.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.writers, other.writersT = r.c.writers, time.Now().Add(time.Hour) // the writer check stays cached: no extra Forgejo read
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(ck)
+	s, err := other.session(req)
+	if err != nil {
+		t.Fatalf("the session read: %v", err)
+	}
+	return s
+}
+
+// tokens are the session's OAuth tokens as they stand in its row now.
+func (r *rig) tokens(t *testing.T, ck *http.Cookie) (access, refresh string) {
+	t.Helper()
+	hash := sessionIDHash(ck.Value)
+	row, ok := r.sessions.row(hash)
+	if !ok {
+		t.Fatal("no session row")
+	}
+	access, err := openToken(r.c.cfg.SessionKey, row.Access, hash)
+	if err != nil {
+		t.Fatalf("the stored access token: %v", err)
+	}
+	refresh, err = openToken(r.c.cfg.SessionKey, row.Refresh, hash)
+	if err != nil {
+		t.Fatalf("the stored refresh token: %v", err)
+	}
+	return access, refresh
+}
+
 func (r *rig) loggedIn(t *testing.T) (*http.Cookie, *session) {
 	t.Helper()
 	ck, cb := r.login(t)
 	if ck == nil || cb.Code != http.StatusSeeOther {
 		t.Fatalf("login: callback = %d, session cookie %v", cb.Code, ck)
 	}
-	return ck, r.c.sessions[ck.Value]
+	s := r.readSession(t, ck)
+	if s == nil {
+		t.Fatal("loggedIn: the fresh login's row does not read back")
+	}
+	return ck, s
 }
 
 func post(path string, form url.Values) *http.Request {
@@ -895,7 +939,10 @@ func TestLoginExchangesCodeInClusterWithVerifierAndSecret(t *testing.T) {
 	if !strings.Contains(r.fg.calls[0], "GET /api/v1/user Bearer access-1") {
 		t.Fatalf("calls %v: want the user read with the new token", r.fg.calls)
 	}
-	s := r.c.sessions[ck.Value]
+	s := r.readSession(t, ck)
+	if s == nil {
+		t.Fatal("the fresh login's row does not read back")
+	}
 	if s.user != "sebastian" || s.access != "access-1" || s.refresh != "refresh-1" || strings.Contains(ck.Value, "access") {
 		t.Fatalf("session %+v: tokens stay server-side", s)
 	}
@@ -973,8 +1020,8 @@ func TestNonWriterGets403AndNoSession(t *testing.T) {
 	r := newRig(t)
 	r.fg.user = "mallory"
 	ck, cb := r.login(t)
-	if cb.Code != http.StatusForbidden || ck == nil || ck.MaxAge >= 0 || len(r.c.sessions) != 0 {
-		t.Fatalf("non-writer: %d, cookie %+v, %d sessions: want 403, cookie deleted, none", cb.Code, ck, len(r.c.sessions))
+	if cb.Code != http.StatusForbidden || ck == nil || ck.MaxAge >= 0 || len(r.sessions.rows) != 0 {
+		t.Fatalf("non-writer: %d, cookie %+v, %d sessions: want 403, cookie deleted, none", cb.Code, ck, len(r.sessions.rows))
 	}
 	if !strings.Contains(cb.Body.String(), "mallory writes none of the factory's projects") {
 		t.Fatalf("403 body: %s", cb.Body)
@@ -989,7 +1036,7 @@ func TestWriterRemovedLosesTheSession(t *testing.T) {
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck); rec.Code != http.StatusForbidden {
 		t.Fatalf("GET / after removal = %d, want 403", rec.Code)
 	}
-	if len(r.c.sessions) != 0 {
+	if len(r.sessions.rows) != 0 {
 		t.Fatal("session kept after the writer was removed")
 	}
 }
@@ -1244,7 +1291,7 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	r.fg.expiresIn = 3600 // the refreshed token lasts: one refresh serves every page read
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusOK {
 		t.Fatalf("GET /tasks/new = %d", rec.Code)
@@ -1253,18 +1300,33 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	if g.Get("grant_type") != "refresh_token" || g.Get("refresh_token") != "refresh-1" || g.Get("client_secret") != "csecret" {
 		t.Fatalf("refresh grant %v", g)
 	}
-	if last := r.fg.calls[len(r.fg.calls)-1]; !strings.HasSuffix(last, "Bearer access-2") || s.refresh != "refresh-2" {
-		t.Fatalf("after refresh: call %q, refresh %q", last, s.refresh)
+	if last := r.fg.calls[len(r.fg.calls)-1]; !strings.HasSuffix(last, "Bearer access-2") {
+		t.Fatalf("after refresh: call %q", last)
+	}
+	if _, refresh := r.tokens(t, ck); refresh != "refresh-2" {
+		t.Fatalf("after refresh: the row's refresh token is %q, want refresh-2", refresh)
 	}
 	r.fg.refuse = true
-	s.mu.Lock()
-	s.expiry = time.Now() // the refreshed token runs out too
-	s.mu.Unlock()
+	r.setTokenExpiry(t, ck, time.Now()) // the refreshed token runs out too
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
 		t.Fatalf("refused refresh: %d to %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
 	}
-	if len(r.c.sessions) != 0 {
+	if len(r.sessions.rows) != 0 {
 		t.Fatal("session kept after the refresh was refused")
+	}
+}
+
+// setTokenExpiry writes the session row's token expiry, as a token about
+// to run out would have it.
+func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
+	t.Helper()
+	hash := sessionIDHash(ck.Value)
+	sealed, err := sealToken(r.c.cfg.SessionKey, "expired-access", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.cfg.Sessions.UpdateConsoleSessionTokens(context.Background(), hash, sealed, "", at); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1272,8 +1334,8 @@ func TestLogoutEndsTheSession(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/logout", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusSeeOther || len(r.c.sessions) != 0 {
-		t.Fatalf("logout = %d, %d sessions", rec.Code, len(r.c.sessions))
+	if rec.Code != http.StatusSeeOther || len(r.sessions.rows) != 0 {
+		t.Fatalf("logout = %d, %d sessions", rec.Code, len(r.sessions.rows))
 	}
 	if gone := cookie(t, rec, sessionCookie); gone == nil || gone.MaxAge >= 0 {
 		t.Fatalf("session cookie not deleted: %+v", gone)

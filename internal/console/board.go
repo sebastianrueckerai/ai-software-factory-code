@@ -1536,7 +1536,13 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 
 func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what string, err error) {
 	log.Printf("console: %s could not %s: %v", current(r).user, what, err)
-	if c.session(r) == nil {
+	s, sErr := c.session(r)
+	if sErr != nil {
+		log.Printf("console: the session read: %v", sErr)
+		http.Error(w, "cannot read the session", http.StatusServiceUnavailable)
+		return
+	}
+	if s == nil {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}

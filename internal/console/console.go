@@ -92,7 +92,11 @@ type Config struct {
 	ClientSecret     string
 	// SessionKey signs the login cookie (HMAC-SHA256), at least 32 bytes.
 	SessionKey []byte
-	Tasks      Tasks
+	// Sessions keeps the console's logins across a restart of factoryd:
+	// the rows of console_sessions (factoryd.PGStore). Without it nobody
+	// can be logged in.
+	Sessions Sessions
+	Tasks    Tasks
 	// Writers are each project's writers by repository, and own is the
 	// factory's own code project's repository (the one deploying into
 	// factoryd's namespace): a writer of any project may log in, a writer
@@ -191,7 +195,6 @@ type Console struct {
 	mux  *http.ServeMux
 
 	mu       sync.Mutex
-	sessions map[string]*session
 	writers  writerLists
 	writersT time.Time
 	flight   singleflight.Group
@@ -200,6 +203,11 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
+	// refreshMu serializes token refreshes across requests: two concurrent
+	// requests presenting the same refresh token would both try to use it,
+	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
+	// default true), and the second gets 400, which deletes the row.
+	refreshMu sync.Mutex
 }
 
 // writerLists are each project's writers by repository and the factory's
@@ -210,14 +218,21 @@ type writerLists struct {
 }
 
 type session struct {
-	user    string
-	csrf    string
-	expires time.Time
+	user string
+	csrf string
+
+	// hash is the SHA-256 hex of the cookie's id: what the row of
+	// console_sessions is keyed by (roadmap 164).
+	hash  string
+	expir time.Time
 
 	mu      sync.Mutex // guards the tokens across a refresh
 	access  string
 	refresh string
 	expiry  time.Time
+	// seen is when last_seen was moved last; it moves at most once a
+	// minute.
+	seen time.Time
 }
 
 // New builds the console handler.
@@ -229,11 +244,13 @@ func New(cfg Config) (*Console, error) {
 	if len(cfg.SessionKey) < 32 {
 		return nil, errors.New("console: the session key must be at least 32 bytes")
 	}
+	if cfg.Sessions == nil {
+		return nil, errors.New("console: no session store")
+	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
-	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(),
-		sessions: map[string]*session{}, runs: map[string]*projectRun{}}
+	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}}
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		return nil, err
@@ -309,10 +326,16 @@ type ctxKey struct{}
 
 // auth admits a request with a live session of a writer of any project and, for
 // anything but GET, the session's CSRF token in the form or the
-// X-CSRF-Token header (htmx sends it from hx-headers).
+// X-CSRF-Token header (htmx sends it from hx-headers). A store error is
+// answered as 503 so a database blip does not log the member out.
 func (c *Console) auth(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := c.session(r)
+		s, err := c.session(r)
+		if err != nil {
+			log.Printf("console: the session read: %v", err)
+			http.Error(w, "cannot read the session", http.StatusServiceUnavailable)
+			return
+		}
 		if s == nil {
 			if r.Method != http.MethodGet {
 				http.Error(w, "not logged in", http.StatusUnauthorized)
@@ -353,37 +376,102 @@ func (c *Console) auth(next http.HandlerFunc) http.Handler {
 
 func current(r *http.Request) *session { return r.Context().Value(ctxKey{}).(*session) }
 
-func (c *Console) session(r *http.Request) *session {
+// session reads the request's login from console_sessions by the SHA-256
+// hex of its cookie: an absent or expired row is no session, a store error
+// is returned so auth can answer 503 instead of logging the member out.
+// An expired row is deleted by the read; last_seen moves at most once a
+// minute per login request.
+func (c *Console) session(r *http.Request) (*session, error) {
 	ck, err := r.Cookie(sessionCookie)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	s := c.sessions[ck.Value]
-	if s == nil || time.Now().After(s.expires) {
-		delete(c.sessions, ck.Value)
-		return nil
-	}
-	return s
+	return c.sessionByCookie(r.Context(), ck.Value)
 }
 
+// sessionByCookie reads the login of the cookie's value; the stream,
+// whose request outlives the read, uses it after taking the value once.
+// A store error is returned so the caller can keep the stream or answer
+// 503 instead of treating it as no session.
+func (c *Console) sessionByCookie(ctx context.Context, value string) (*session, error) {
+	if value == "" {
+		return nil, nil
+	}
+	hash := sessionIDHash(value)
+	row, ok, err := c.cfg.Sessions.ConsoleSessionByHash(ctx, hash)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	s, err := c.openSession(row)
+	if err != nil {
+		// the row's tokens are not this key's: the login is over.
+		log.Printf("console: the session of %s: %v", row.Login, err)
+		if err := c.cfg.Sessions.DeleteConsoleSession(ctx, hash); err != nil {
+			log.Printf("console: the session delete: %v", err)
+		}
+		return nil, nil
+	}
+	now := time.Now()
+	if now.Sub(s.seen) >= time.Minute {
+		// the store moves last_seen only when the row still says the
+		// value this session read, so a minute of requests over one or
+		// many Console values moves the column at most once.
+		if moved, err := c.cfg.Sessions.TouchConsoleSession(ctx, hash, s.seen); err != nil {
+			log.Printf("console: the session's last seen: %v", err)
+		} else if moved {
+			s.seen = now
+		}
+	}
+	return s, nil
+}
+
+// openSession is the row's session, its tokens decrypted.
+func (c *Console) openSession(row factoryd.ConsoleSession) (*session, error) {
+	access, err := openToken(c.cfg.SessionKey, row.Access, row.IDHash)
+	if err != nil {
+		return nil, err
+	}
+	refresh, err := openToken(c.cfg.SessionKey, row.Refresh, row.IDHash)
+	if err != nil {
+		return nil, err
+	}
+	return &session{
+		hash: row.IDHash, user: row.Login, csrf: row.CSRF, expir: row.ExpiresAt,
+		access: access, refresh: refresh, expiry: row.TokenExpiry, seen: row.LastSeen,
+	}, nil
+}
+
+// drop ends the request's session (its row goes with it).
 func (c *Console) drop(r *http.Request) {
-	if ck, err := r.Cookie(sessionCookie); err == nil {
-		c.mu.Lock()
-		delete(c.sessions, ck.Value)
-		c.mu.Unlock()
+	if ck, err := r.Cookie(sessionCookie); err == nil && ck.Value != "" {
+		c.deleteSession(context.WithoutCancel(r.Context()), sessionIDHash(ck.Value))
 	}
 }
 
 // end ends session s, whatever its cookie.
 func (c *Console) end(s *session) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for k, v := range c.sessions {
-		if v == s {
-			delete(c.sessions, k)
-		}
+	if s == nil {
+		return
+	}
+	c.deleteSession(context.Background(), s.hash)
+}
+
+func (c *Console) deleteSession(ctx context.Context, hash string) {
+	if err := c.cfg.Sessions.DeleteConsoleSession(ctx, hash); err != nil {
+		log.Printf("console: the session delete: %v", err)
+	}
+}
+
+// purgeSessions deletes the rows expired before now, as today's in-memory
+// sweep did on every new login.
+func (c *Console) purgeSessions(ctx context.Context) {
+	if n, err := c.cfg.Sessions.PurgeConsoleSessions(ctx, time.Now()); err != nil {
+		log.Printf("console: the session purge: %v", err)
+	} else if n > 0 {
+		log.Printf("console: purged %d expired console sessions", n)
 	}
 }
 
@@ -485,19 +573,41 @@ func (c *Console) spend(what string, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (c *Console) newSession(w http.ResponseWriter, s *session) {
+// newSession stores s as a row of console_sessions under the SHA-256 hex
+// of a fresh cookie id and sets the cookie; the lifetime is sessionTTL.
+// The expired rows are purged on the way, as today's sweep was.
+func (c *Console) newSession(w http.ResponseWriter, r *http.Request, s *session) error {
+	ctx := context.WithoutCancel(r.Context())
+	c.purgeSessions(ctx)
 	id := randomToken()
+	now := time.Now()
+	s.hash = sessionIDHash(id)
 	s.csrf = randomToken()
-	s.expires = time.Now().Add(sessionTTL)
-	c.mu.Lock()
-	for k, old := range c.sessions {
-		if time.Now().After(old.expires) {
-			delete(c.sessions, k)
-		}
+	s.expir = now.Add(sessionTTL)
+	s.seen = now
+	row, err := c.sessionRow(s)
+	if err != nil {
+		return err
 	}
-	c.sessions[id] = s
-	c.mu.Unlock()
+	if err := c.cfg.Sessions.SaveConsoleSession(ctx, row); err != nil {
+		return err
+	}
 	setCookie(w, sessionCookie, id, int(sessionTTL.Seconds()))
+	return nil
+}
+
+// sessionRow is s's row, its tokens sealed. The token fields are read
+// under the session's mutex, which a refresh may hold.
+func (c *Console) sessionRow(s *session) (factoryd.ConsoleSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	access, refresh, err := c.sealTokens(s)
+	if err != nil {
+		return factoryd.ConsoleSession{}, err
+	}
+	return factoryd.ConsoleSession{IDHash: s.hash, Login: s.user, CSRF: s.csrf,
+		Access: access, Refresh: refresh, TokenExpiry: s.expiry,
+		CreatedAt: s.seen, LastSeen: s.seen, ExpiresAt: s.expir}, nil
 }
 
 func (c *Console) logout(w http.ResponseWriter, r *http.Request) {
