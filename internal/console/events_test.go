@@ -470,16 +470,16 @@ func idsOf(events []eventJSON) []int64 {
 // The stream, the request and the server end with the test.
 func streamOf(t *testing.T, r *rig, lastID string) (*http.Response, *bufio.Reader) {
 	t.Helper()
-	return streamAt(t, r, "", lastID)
+	return streamAt(t, r, "ai-software-factory-code", "", lastID)
 }
 
-// streamAt is streamOf under the board's query.
-func streamAt(t *testing.T, r *rig, query, lastID string) (*http.Response, *bufio.Reader) {
+// streamAt is streamOf of project name under the board's query.
+func streamAt(t *testing.T, r *rig, name, query, lastID string) (*http.Response, *bufio.Reader) {
 	t.Helper()
 	ck, _ := r.loggedIn(t)
 	srv := httptest.NewServer(r.c)
 	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/projects/ai-software-factory-code/events/stream"+query, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/projects/"+name+"/events/stream"+query, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,10 +583,10 @@ func skipPings(t *testing.T, br *bufio.Reader) []string {
 }
 
 // A member who only reads the project follows its stream read-only: no
-// replay and no rows but the pulse's, as the others carry steers and the
-// agent's text, and event board after them, which swaps their board; each
-// heartbeat checks that they still read it, and the stream ends once they
-// do not.
+// replay and no rows, as they carry steers and the agent's text, and the
+// pulse's under the board's own rule, but event board after them, the
+// pulse's included, which swaps their board; each heartbeat checks that
+// they still read it, and the stream ends once they do not.
 func TestStreamFollowsReadOnly(t *testing.T) {
 	wait, beat := countersWait, heartbeat
 	countersWait, heartbeat = 10*time.Millisecond, 50*time.Millisecond
@@ -616,12 +616,9 @@ func TestStreamFollowsReadOnly(t *testing.T) {
 		}
 	}
 	row(factoryd.EventPulse, map[string]any{"sentence": "All is well."})
-	for got := skipPings(t, br); ; got = skipPings(t, br) {
-		if len(got) == 3 && got[0] == "id: 4" && strings.Contains(got[2], `"kind":"pulse"`) {
-			break
-		}
-		if len(got) == 0 || got[0] != "event: counters" && got[0] != "event: board" {
-			t.Fatalf("bob's stream sent %q, want the pulse's row", got)
+	for got := skipPings(t, br); !slices.Equal(got, []string{"event: board", "data:"}); got = skipPings(t, br) {
+		if len(got) == 0 || got[0] != "event: counters" {
+			t.Fatalf("bob's stream sent %q after the pulse, want event board", got)
 		}
 	}
 	forgejo.reads.Store(false)
@@ -637,31 +634,92 @@ func TestStreamFollowsReadOnly(t *testing.T) {
 	t.Fatal("the stream outlived bob's read right")
 }
 
-// A writer who loses the project's write right but still sees its board
-// gets no row from the next heartbeat on.
+// failingRepo answers 500 to a read of repository demo/demo.
+type failingRepo struct{ base http.RoundTripper }
+
+func (f failingRepo) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL.Path == "/api/v1/repos/demo/demo" {
+		return &http.Response{StatusCode: http.StatusInternalServerError, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("{}")), Request: r}, nil
+	}
+	return f.base.RoundTrip(r)
+}
+
+// A writer who loses the project's write right gets no row from the next
+// heartbeat on: sebastian, who still sees the board as a writer of the
+// factory's code, and bob, whose read of the repository then fails, so
+// the stream stays, read-only, and reads no board.
 func TestStreamStopsRowsToAFormerWriter(t *testing.T) {
 	wait, beat := countersWait, heartbeat
 	countersWait, heartbeat = time.Hour, 30*time.Millisecond
 	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
-	r := newRig(t)
-	_, br := streamOf(t, r, "")
-	r.repoWriters["sf/code"] = nil
-	r.c.mu.Lock()
-	clear(r.c.moves)
-	r.c.mu.Unlock()
-	if got := skipPings(t, br); len(got) == 0 || got[0] != "event: counters" {
-		t.Fatalf("the first look sent %q", got)
-	}
-	r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
-	for pings := 0; pings < 2; {
-		switch got := nextMessage(t, br); {
-		case slices.Equal(got, []string{": ping"}):
-			pings++
-		case len(got) > 0 && got[0] == "event: board":
-		default:
-			t.Fatalf("the former writer's stream sent %q", got)
+	for _, tc := range []struct{ user, project, repo string }{{"sebastian", "ai-software-factory-code", "sf/code"}, {"bob", "demo", "demo/demo"}} {
+		r := newRig(t)
+		members(r)
+		r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "sebastian")
+		r.writers.users = append(r.writers.users, "sebastian")
+		r.c.cfg.HTTP = &http.Client{Transport: failingRepo{http.DefaultTransport}}
+		memberLogin(t, r, tc.user)
+		_, br := streamAt(t, r, tc.project, "", "")
+		r.repoWriters[tc.repo] = nil
+		r.c.mu.Lock()
+		clear(r.c.moves)
+		r.c.mu.Unlock()
+		// the second heartbeat after it checked the member again
+		for pings := 0; pings < 2; {
+			if got := nextMessage(t, br); slices.Equal(got, []string{": ping"}) {
+				pings++
+			}
+		}
+		r.events.Record(context.Background(), factoryd.Event{Repository: tc.repo, TaskID: "t-x", Kind: factoryd.EventCardSteered, Actor: "alice",
+			Via: factoryd.ViaButton, At: at, Detail: map[string]any{"text": "a writer's steer"}})
+		for pings := 0; pings < 2; {
+			switch got := nextMessage(t, br); {
+			case slices.Equal(got, []string{": ping"}):
+				pings++
+			case len(got) > 0 && got[0] == "event: board":
+			default:
+				t.Fatalf("%s, a former writer: the stream sent %q", tc.user, got)
+			}
 		}
 	}
+}
+
+// A writer's card events swap their cards, so the read after them sends
+// no event board even when a face changed: that waits for the heartbeat.
+func TestStreamSendsAWriterNoBoardAfterEvents(t *testing.T) {
+	wait, beat := countersWait, heartbeat
+	countersWait, heartbeat = 10*time.Millisecond, time.Hour
+	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
+	r := newRig(t)
+	running := factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11, Objective: "fix the cache",
+		CreatedAt: time.Now().Add(-5 * time.Minute)}
+	r.tasks.set("", running)
+	_, br := streamOf(t, r, "")
+	moved := func() {
+		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	}
+	moved()
+	for _, want := range []string{"id: 1", "event: counters"} {
+		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
+			t.Fatalf("got %q, want %s", got, want)
+		}
+	}
+	running.CreatedAt = running.CreatedAt.Add(-time.Hour)
+	r.tasks.set("", running)
+	moved()
+	time.Sleep(200 * time.Millisecond)
+	r.events.bus.Publish(factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventSessionSaid, Actor: factoryd.FactoryDecider,
+		Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"session": "s-1", "text": "the sentinel"}})
+	for range 5 {
+		got := nextMessage(t, br)
+		if len(got) == 2 && strings.Contains(got[1], "the sentinel") {
+			return
+		}
+		if len(got) == 0 || got[0] == "event: board" {
+			t.Fatalf("after a card event the writer's stream sent %q", got)
+		}
+	}
+	t.Fatal("no sentinel")
 }
 
 // Ruling 288: each heartbeat reads the board too, so what changes with
@@ -793,7 +851,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	_, br := streamOf(t, r, "")
-	_, teal := streamAt(t, r, "?accent=teal", "")
+	_, teal := streamAt(t, r, "ai-software-factory-code", "?accent=teal", "")
 	moved := func() {
 		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
@@ -980,8 +1038,9 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // timer for anything; counters set the status line and the columns'
 // counts; the agent's text and a steer reach the drawer's Chat once each,
 // and another session's text and the card's new status load the tab
-// again; event board swaps the board, and a swap the open drawer holds
-// back runs once it closes.
+// again, a steer being typed kept; event board swaps the board, and a
+// swap the open drawer holds back runs once it closes, or once the focus
+// lands elsewhere, not while it moves on to another field.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1017,7 +1076,7 @@ log.querySelector = function (sel) {
   return log.children.some(function (c) { return sel === "[data-key=\"" + c.dataset.key + "\"]"; }) ? {} : null;
 };
 var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
-  drawer: el({hidden: true}), "session-log": log};
+  drawer: el({hidden: true}), "session-log": log, "steer-input": el({value: "half a steer"})};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
 EventSource.CLOSED = 2;
@@ -1026,7 +1085,11 @@ var sandbox = {EventSource: EventSource, CSS: {escape: function (s) { return s; 
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
-  htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return Promise.resolve(); }, swap: function () {}, process: function () {}},
+  htmx: {ajax: function (verb, url) {
+    requests.push(verb + " " + url);
+    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
+    return Promise.resolve();
+  }, swap: function () {}, process: function () {}},
   window: {addEventListener: function () {}},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return byID[id] || null; },
@@ -1061,11 +1124,22 @@ event({id: 10, at: "2026-10-11T10:09:00Z", task_id: "", kind: "card_filed", acto
 es.on.board({data: ""});
 out.held = requests.slice();
 byID.drawer.hidden = true;
+listeners.focusout.forEach(function (fn) { fn({relatedTarget: el()}); });
+out.moved = requests.slice();
+listeners.focusin.forEach(function (fn) { fn({}); });
+out.focused = requests;
+requests = [];
+byID.drawer.hidden = false;
+es.on.board({data: ""});
+byID.drawer.hidden = true;
 listeners.drawerclosed.forEach(function (fn) { fn(); });
 out.released = requests;
 out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
 out.timers = timers;
-console.log(JSON.stringify(out));`
+setImmediate(function () {
+  out.steer = byID["steer-input"].value;
+  console.log(JSON.stringify(out));
+});`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
 	got, err := cmd.Output()
 	if err != nil {
@@ -1074,8 +1148,8 @@ console.log(JSON.stringify(out));`
 	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],"timers":0,` +
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
-		`"held":[],"released":["GET /board?project=code"],` +
-		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."]}`
+		`"held":[],"moved":[],"focused":["GET /board?project=code"],"released":["GET /board?project=code"],` +
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer"}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

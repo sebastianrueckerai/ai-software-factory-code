@@ -109,8 +109,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // whose answer carries the status line too. counters sets the status line
 // and the columns' counts the server read; the agent's text and the
 // steers reach the drawer's Chat. A swap a busy card or board would wipe
-// waits until the member leaves a field, closes a fold or the drawer; the
-// footer says when the stream is down.
+// waits until the focus lands outside a field, a fold or the drawer
+// closes; the footer says when the stream is down.
 (function () {
   var missed = {}, latest = {}, asked = 0;
   function board() { return document.getElementById("board"); }
@@ -122,7 +122,11 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else swapBoard();
     });
   }
-  document.addEventListener("focusout", retry);
+  // focus that moves on to another field holds the swap: it waits for focusin
+  document.addEventListener("focusin", retry);
+  document.addEventListener("focusout", function (e) {
+    if (!e.relatedTarget) retry();
+  });
   document.addEventListener("toggle", retry, true);
   document.addEventListener("drawerclosed", retry);
   function swapBoard() {
@@ -164,10 +168,14 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
-  // any card's for ""
+  // any card's for "", the steer being typed kept
   function chat(id) {
-    var log = document.getElementById("session-log");
-    if (log && (!id || log.dataset.task === id)) htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"});
+    var log = document.getElementById("session-log"), box = document.getElementById("steer-input"), typed = box && box.value;
+    if (!log || id && log.dataset.task !== id) return;
+    htmx.ajax("GET", "/cards/" + encodeURIComponent(log.dataset.task) + "/drawer?tab=chat", {target: "#drawer", swap: "innerHTML"}).then(function () {
+      var again = document.getElementById("steer-input");
+      if (typed && again) again.value = typed;
+    });
   }
   // said adds the agent's text or a steer to the drawer's Chat while it
   // shows that card's session, once; another session's text loads the

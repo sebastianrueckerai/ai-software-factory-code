@@ -252,13 +252,14 @@ func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error
 // live-only event (session_said) without an id; a reconnect's
 // Last-Event-ID replays the rows after it from the table, oldest first
 // and at most the newest eventLimitMax of them; a first connect replays
-// nothing. A member who only reads it gets the pulse's rows alone, as the
-// others carry steers and the agent's text. countersWait after a live
-// event other than the pulse's and the agent's text, and at every
-// heartbeat (ruling 288), the stream reads the board under the query's
-// filter: event "counters" carries its counters when they changed, and a
-// data-less event "board" says a card's face changed with time alone,
-// and, to a member who only reads, that events came. Each heartbeat checks
+// nothing. A member who only reads it gets no row: they carry steers and
+// the agent's text, and the pulse's is the board's to show. countersWait
+// after a live event other than the agent's text (and, to a writer, the
+// pulse's), and at every heartbeat (ruling 288), the stream reads the
+// board under the query's filter: event "counters" carries its counters
+// when they changed, and a data-less event "board" says, at a heartbeat,
+// that a card's face changed with time alone, and, to a member who only
+// reads, that events came. Each heartbeat checks
 // the session and the member's sight of the project again, and the stream
 // ends once either is gone.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
@@ -316,7 +317,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		}
 		was := faces
 		faces = d.faces()
-		if was != "" && was != faces || events && !writes {
+		if was != "" && was != faces && !events || events && !writes {
 			return write("event: board\ndata:\n\n")
 		}
 		return nil
@@ -330,12 +331,10 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		if err == nil && !login {
 			return false
 		}
+		// a failed check leaves the member read-only, as now holds only a yes
 		sees, now, err := c.follows(r, p)
-		if err != nil {
-			return true
-		}
 		writes = now
-		return sees
+		return err != nil || sees
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -371,12 +370,12 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 			pulse := e.Kind == factoryd.EventPulse || e.Kind == factoryd.EventPulseComputing
 			// live events may come out of id order: skip only the replayed ones
-			if (writes || pulse) && (e.ID == 0 || e.ID > replayed) {
+			if writes && (e.ID == 0 || e.ID > replayed) {
 				if err := send(e); err != nil {
 					return
 				}
 			}
-			if due == nil && !pulse && e.Kind != factoryd.EventSessionSaid {
+			if due == nil && (!pulse || !writes) && e.Kind != factoryd.EventSessionSaid {
 				due = time.After(countersWait)
 			}
 		case <-due:
