@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"slices"
 	"strconv"
@@ -25,8 +26,9 @@ const (
 
 // scope is where a rule's roles are judged: no project, the factory's
 // own, the project a route's path or a chat's turn names, the project of
-// the card a route or a tool's arguments names, or of an approval
-// request.
+// the card a route or a tool's arguments names, of an approval request,
+// or of any task an id names, a chat task's included (a chat task is a
+// card of its project).
 type scope uint8
 
 const (
@@ -36,6 +38,7 @@ const (
 	scChat
 	scCard
 	scApproval
+	scTask
 )
 
 // accessRule is one route's or tool's entry in accessTable: every role
@@ -74,7 +77,7 @@ var accessTable = map[string]accessRule{
 	"GET /{$}":                                rMember,
 	"GET /board":                              rMember,
 	"GET /tasks/new":                          rFactory,
-	"GET /tasks/{id}/timeline":                rCard,
+	"GET /tasks/{id}/timeline":                {need: writer, scope: scTask},
 	"GET /costs":                              rFactory,
 	"GET /policy":                             rFactory,
 	"GET /resources":                          rFactory,
@@ -219,6 +222,16 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 			return "", "", err
 		}
 		return q.Project, fmt.Sprintf("approval request %d", q.ID), nil
+	case scTask:
+		t, ok, err := c.cfg.Tasks.Task(ctx, r.PathValue("id"))
+		switch {
+		case err != nil:
+			log.Printf("console: task %s: %v", r.PathValue("id"), err)
+			return "", "", refuse(http.StatusInternalServerError, "cannot read the task")
+		case !ok:
+			return "", "", refuse(http.StatusNotFound, "There is no card "+r.PathValue("id")+" in this project.")
+		}
+		return t.Repository, "task " + t.ID, nil
 	}
 	return "", "", nil
 }

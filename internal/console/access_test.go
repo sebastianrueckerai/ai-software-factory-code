@@ -9,8 +9,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The access table guards every write (roadmap 185): each POST route and
@@ -60,11 +62,14 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 
 	// The pages: every POST route whose rule goes beyond the login, by the
 	// member its scope refuses — alice for demo's project routes, bob for
-	// the factory's and the code's cards and requests.
+	// the factory's and the code's cards and requests. The login-only
+	// routes are accounted for by name, so a route lost or re-ruled fails.
 	pages := 0
+	skipped := []string{}
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
 		if rule.need == member && rule.either == 0 {
+			skipped = append(skipped, p.pattern)
 			continue
 		}
 		cookie, csrf, name := bk, bs.csrf, "ai-software-factory-code"
@@ -82,8 +87,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		pages++
 	}
-	if pages < 20 {
-		t.Fatalf("only %d POST routes checked", pages)
+	if pages != 28 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 28 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -128,8 +133,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes < 20 {
-		t.Fatalf("only %d write tools checked", writes)
+	if writes != 27 || len(tools) != 46 {
+		t.Fatalf("%d of %d tools checked as writes: want 27 of 46", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -141,5 +146,33 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 
 	if after := changes(); !slices.Equal(before, after) {
 		t.Errorf("a refused write changed the factory: %v -> %v", before, after)
+	}
+}
+
+// A chat task's timeline is a card of its project (the fix round of
+// roadmap 185): the writer main served it to still reads it, the costs
+// page's row links it, and a member who writes the project gets the
+// table's writer refusal.
+func TestChatTimelineIsACard(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	members(r)
+	task, err := chat.EnsureChatTask(context.Background(), "demo", "demo/demo", 5, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bk, _ := memberLogin(t, r, "bob")
+	page := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+task.ID+"/timeline", nil), bk)
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "Timeline of "+task.ID) {
+		t.Fatalf("demo's chat task timeline as bob, demo's writer = %d, want the page:\n%s", page.Code, page.Body)
+	}
+	ak, _ := memberLogin(t, r, "alice")
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+task.ID+"/timeline", nil), ak); rec.Code != http.StatusForbidden ||
+		strings.TrimSpace(rec.Body.String()) != "you write no project of task "+task.ID {
+		t.Fatalf("demo's chat task timeline as alice = %d %q, want the writer refusal", rec.Code, rec.Body)
+	}
+	r.ledger.costs = policy.Costs{Tasks: []policy.TaskCost{{TaskID: task.ID, EUR: 1.25}}}
+	costs := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ak)
+	if costs.Code != http.StatusOK || !strings.Contains(costs.Body.String(), `href="/tasks/`+task.ID+`/timeline"`) {
+		t.Fatalf("the costs page as alice = %d, want demo's chat task linked:\n%s", costs.Code, costs.Body)
 	}
 }
