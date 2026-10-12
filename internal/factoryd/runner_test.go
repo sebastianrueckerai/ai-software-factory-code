@@ -2164,3 +2164,29 @@ func TestGatewayIngressAdmitsFactorydAndTheSandboxes(t *testing.T) {
 		t.Fatalf("factory-gateway-ingress spec = %s, want %s", got, want)
 	}
 }
+
+// The worker pod carries the policy's migration globs as MIGRATION_GLOBS
+// (roadmap 186): the worker's push guard refuses a migration added under
+// them with a name off the timestamped pattern, where the guide's
+// sentence used to say it. A policy with no migration rule sets none.
+func TestWorkerPodSpecCarriesMigrationGlobs(t *testing.T) {
+	spec := sessionSpec{id: "s-1", policy: policy.Document{Risk: policy.Risk{
+		Classes: []policy.RiskClass{{Name: "migration", Outcome: policy.OutcomeRequiresApproval, Migration: true}},
+		Rules:   []policy.RiskRule{{Class: "migration", Paths: []string{"internal/policy/migrations/**", "internal/policy/schema.sql"}}},
+	}}}
+	env := func(s sessionSpec) map[string]string {
+		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, s)
+		vars := map[string]string{}
+		for _, e := range pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
+			vars[e["name"].(string)] = e["value"].(string)
+		}
+		return vars
+	}
+	if got := env(spec)["MIGRATION_GLOBS"]; got != `["internal/policy/migrations/**","internal/policy/schema.sql"]` {
+		t.Fatalf("MIGRATION_GLOBS = %q, want the migration rule's globs", got)
+	}
+	spec.policy.Risk = policy.Risk{}
+	if got, ok := env(spec)["MIGRATION_GLOBS"]; ok {
+		t.Fatalf("MIGRATION_GLOBS = %q without a migration rule, want none", got)
+	}
+}

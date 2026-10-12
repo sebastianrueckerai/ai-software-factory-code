@@ -127,20 +127,22 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 	}
 }
 
-// Stage 16 item 3.7: the guide names the three sizes by their lines, in
-// the json shape and in the field rules.
+// Stage 16 item 3.7: the guide names the three sizes in the json shape
+// and in the field rules. The line figures moved to the split guide and
+// ValidatePlan's size findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
 	got := planGuide(testShape, testLimits)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
-		!strings.Contains(got, "size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards).") {
+		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
 	}
 }
 
 // stage12-design 5.2: acceptance items are named tests, not free text
-// ValidatePlan cannot check for.
+// ValidatePlan cannot check for. The count bound is ValidatePlan's
+// finding, not the prose (roadmap 186).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
-	want := fmt.Sprintf("acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects.", maxCardAcceptance)
+	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects."
 	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
@@ -168,17 +170,10 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
-// round2-design.md section 8: every card routes through its own
-// internal/server/routes_<key>.go, so two cards never edit one route list.
-func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
-	want := "Every card adds its routes in its own internal/server/routes_<key>.go, as the template's AGENTS.md says, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
-		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
-	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
-		t.Fatal("a shape with no foundation card still gets the one-route-file sentence")
-	}
-}
+// round2-design.md section 8's route-file rule lives where the sentence
+// said it does, the template's AGENTS.md, which every card's brief
+// carries; the planner's prose no longer repeats it (roadmap 186) —
+// TestGuidesCarryNoCheckedRule pins its absence.
 
 // factoryd, not the model, orders the foundation first and the integration
 // last: every card depends on the foundation, the integration on every

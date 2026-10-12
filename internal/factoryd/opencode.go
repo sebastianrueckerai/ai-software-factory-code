@@ -643,36 +643,30 @@ func toolsLine(tools []string) string {
 // the task's tools hold them.
 func workGuide(tools []string) string {
 	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
-		"holding the shell command that reproduced it: the factory runs it at the base, where it must fail, and on your change, where it must pass, so it must " +
-		"bring its own test (for example a here-document that writes the test file) rather than name a test your change adds. If you fix a fault you could not reproduce exactly, " +
+		"holding the shell command that reproduced it. If you fix a fault you could not reproduce exactly, " +
 		"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. "
 	if slices.Contains(tools, policy.ToolRequestInfo) {
-		g += "If you cannot reproduce it and find no fault, call request_info with what you tried and what you need instead of guessing. "
+		g += "If you cannot reproduce it and find no fault, call request_info instead of guessing. "
 	}
 	asks := 0
 	if slices.Contains(tools, policy.ToolRequestInfo) {
 		asks++
 	}
 	if slices.Contains(tools, policy.ToolEscalate) {
-		g += "If only a human can decide, call escalate_to_human with your recommendation. " + askChoices
+		g += "If only a human can decide, call escalate_to_human. "
 		asks++
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
 	g += "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
-		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
+		"no further tests, re-runs or reading of library sources to confirm. "
 	return g + guideEnd
 }
 
-// askChoices follows every guide's escalate_to_human: the card shows the
-// choices as buttons beside a text box (ruling 256).
-const askChoices = "When the question has a few clear answers, pass them as its choices: the human picks one with a click or writes their own. "
-
-// guideEnd closes every coding guide: the sandbox, the migration names,
-// the last message.
-const guideEnd = "You have no credentials and cannot push, by design: when you end, the factory commits your working tree, pushes it and opens the pull request; do not commit, push or look for a token. " +
+// guideEnd closes every coding guide: the push, the sandbox, the last
+// message.
+const guideEnd = "When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 	"The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-	"A new migration is named <UTC yyyymmddhhmmss>_<slug>.sql, never by the next number. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
 
 // featureGuide ends the brief of a plan's card of role instead of
@@ -681,18 +675,18 @@ const guideEnd = "You have no credentials and cannot push, by design: when you e
 func featureGuide(tools []string, role string) string {
 	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. " +
 		"Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs. " +
-		"Keep to the card's directories where you can; they are guidance, not a boundary. Follow the repository's AGENTS.md. "
+		"Follow the repository's AGENTS.md. "
 	if role == RoleIntegration {
 		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
 	}
 	if slices.Contains(tools, policy.ToolEscalate) {
-		g += "If only a human can decide, call escalate_to_human with your recommendation. " + askChoices +
+		g += "If only a human can decide, call escalate_to_human. " +
 			"This tool is your only way to ask: nobody answers a question in a message. "
 	} else {
 		g += "Nobody answers a question in a message. "
 	}
 	g += "Run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
-		"no further tests, re-runs or reading of library sources to confirm. When CI later reports a failure, its log lines reach you as a finding: fix what they show. "
+		"no further tests, re-runs or reading of library sources to confirm. "
 	return g + guideEnd
 }
 

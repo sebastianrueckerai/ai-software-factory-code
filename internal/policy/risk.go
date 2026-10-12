@@ -171,6 +171,31 @@ func (r Risk) classOf(p string) string {
 	return r.Default
 }
 
+// MigrationGlobs are the globs of the rules whose class is a migration
+// class, sorted and compacted: what factoryd hands the worker, whose push
+// guard refuses a migration file added under them with a name off the
+// timestamped pattern (roadmap 186).
+func (r Risk) MigrationGlobs() []string {
+	isMigration := func(name string) bool {
+		return slices.ContainsFunc(r.Classes, func(c RiskClass) bool { return c.Name == name && c.Migration })
+	}
+	var globs []string
+	for _, rule := range r.Rules {
+		if isMigration(rule.Class) {
+			globs = append(globs, rule.Paths...)
+		}
+	}
+	slices.Sort(globs)
+	return slices.Compact(globs)
+}
+
+// GlobMatch tells whether glob g matches path p as the risk rules do:
+// anchored at the repository's root, "/" separated, "**" matching any
+// number of whole segments.
+func GlobMatch(g, p string) bool {
+	return globMatch(strings.Split(g, "/"), strings.Split(p, "/"))
+}
+
 func globMatch(pat, name []string) bool {
 	for len(pat) > 0 {
 		if pat[0] == "**" {
