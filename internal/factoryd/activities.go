@@ -586,8 +586,12 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) +
-		"\n\nReply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	if strings.HasPrefix(reason, splitFailed) {
+		// the approval card answers it; the approval wait reads no reply
+		next = "Approve, deny or split it on the board."
+	}
+	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) + "\n\n" + next
 	if strings.HasPrefix(reason, screeningAsks) {
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine

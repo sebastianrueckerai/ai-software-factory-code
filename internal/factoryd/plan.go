@@ -617,11 +617,21 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent; "+
 		"a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests. "+
 		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000; anything bigger is two cards). "+
+		"size: "+sizeFigures()+"; anything bigger is two cards). "+
 		"questions: 0 to 5 open points the spec leaves to the member, each with 2 to 5 short choices; the member's answers come back to you as a block of answers "+
 		"with your last plan, and a plan with questions cannot be accepted until they are answered. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
 		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
+}
+
+// sizeLines are the changed lines a card of each size plans at most.
+var sizeLines = map[string]int{"small": 300, "medium": 600, "large": 1000}
+
+// sizeFigures are the sizes as the guides open them: "small (a change
+// under about 300 lines), medium (under about 600), large (under about
+// 1000", each guide closing the last.
+func sizeFigures() string {
+	return fmt.Sprintf("small (a change under about %d lines), medium (under about %d), large (under about %d", sizeLines["small"], sizeLines["medium"], sizeLines["large"])
 }
 
 // PlanAcceptedComment is the console's comment, as the approver, on the

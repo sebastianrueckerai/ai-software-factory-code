@@ -732,8 +732,10 @@ type verdict struct {
 	final, reason string
 	findings      []string
 	stronger      bool
-	// escalate is the gate supervisor's reason for a human
-	escalate string
+	// escalate is the gate supervisor's reason for a human, cancelled its
+	// cancel of the activity (final failed)
+	escalate  string
+	cancelled bool
 	// requested: the findings are a writer's change request
 	requested bool
 }
@@ -1340,11 +1342,13 @@ func (t *taskRun) gate(commit string) verdict {
 			whyHuman = []string{failed}
 		}
 	}
-	// an approval signalled before this request (for an earlier head) is
-	// not an approval of this one
+	// an approval or a split signalled before this request (for an earlier
+	// head) is not one of this one
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(nil) {
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
 		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review, WhyHuman: whyHuman}).Get(t.ctx, nil); err != nil {
@@ -1789,7 +1793,7 @@ func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdic
 	case ActionRetry:
 		run.retried = true
 	case ActionCancel:
-		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis}, true
+		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis, cancelled: true}, true
 	case ActionEscalate:
 		reason := fmt.Sprintf("The gate supervisor stopped %s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
 			strings.ReplaceAll(d.Diagnosis, "\n", " "))

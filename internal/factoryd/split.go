@@ -35,30 +35,50 @@ const (
 // too.
 const versionSplit workflow.Version = 1
 
-// sizeLines are the changed lines a card of each size plans at most, as
-// planGuide says.
-var sizeLines = map[string]int{"small": 300, "medium": 600, "large": 1000}
+// splitFailed opens the escalation of a split whose answers failed the
+// check twice.
+const splitFailed = "The split failed its check twice"
 
 // CheckSplit judges the planner's answer to a split of a pull request
 // changing files, each card under bound changed lines: the plan's own
-// findings for 2 or 3 cards, a card's size over the bound, and the files
-// no card's directories cover.
-func CheckSplit(text string, files []string, bound int, limits policy.Limits) (Plan, []string) {
+// findings for 2 or 3 cards, a card's size over the bound, the files no
+// card's directories cover (the repository's root covers none), and a
+// card whose size is under the lines of the files only it covers.
+func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (Plan, []string) {
 	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits)
 	for _, c := range p.Cards {
 		if n, ok := sizeLines[c.Size]; ok && n >= bound {
 			out = append(out, fmt.Sprintf("split: card %s is %s, up to %d changed lines; each card stays under %d", c.Key, c.Size, n, bound))
 		}
 	}
+	covers := func(c PlanCard, f string) bool {
+		return slices.ContainsFunc(c.Directories, func(d string) bool {
+			d = path.Clean(d)
+			return d != "." && (d == f || strings.HasPrefix(f, d+"/"))
+		})
+	}
 	var missing []string
+	alone := make([]int, len(p.Cards))
+	only := make([][]string, len(p.Cards))
 	for _, f := range files {
-		if !slices.ContainsFunc(p.Cards, func(c PlanCard) bool {
-			return slices.ContainsFunc(c.Directories, func(d string) bool {
-				d = path.Clean(d)
-				return d == "." || d == f || strings.HasPrefix(f, d+"/")
-			})
-		}) {
-			missing = append(missing, f)
+		var by []int
+		for i, c := range p.Cards {
+			if covers(c, f.Filename) {
+				by = append(by, i)
+			}
+		}
+		switch len(by) {
+		case 0:
+			missing = append(missing, f.Filename)
+		case 1:
+			alone[by[0]] += f.Additions + f.Deletions
+			only[by[0]] = append(only[by[0]], f.Filename)
+		}
+	}
+	for i, c := range p.Cards {
+		if n, ok := sizeLines[c.Size]; ok && alone[i] >= n {
+			out = append(out, fmt.Sprintf("split: card %s alone carries %d changed lines (%s), not under its size %s's %d",
+				c.Key, alone[i], strings.Join(only[i], ", "), c.Size, n))
 		}
 	}
 	if len(missing) > 0 && len(p.Cards) > 0 {
@@ -88,8 +108,8 @@ func splitGuide(pr int64, files []PRFile, bound int, limits policy.Limits) strin
 		"key: lowercase letters, digits and dashes, 2 to 32, unique. depends_on lists the keys of the cards a card needs merged first, with no cycle. "+
 		"title: at most %[6]d characters. brief: markdown, at most %[7]d characters. directories: at most %[8]d paths relative to the repository's root, "+
 		"none under .forgejo/, .gitea/ or .github/. acceptance: 1 to %[9]d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000); every card's size stays under %[4]d lines.",
-		pr, lines, len(files), bound, textutil.Truncate(list.String(), maxSplitFiles), maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
+		"size: %[10]s); every card's size stays under %[4]d lines.",
+		pr, lines, len(files), bound, textutil.Truncate(list.String(), maxSplitFiles), maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance, sizeFigures())
 }
 
 // RunSplit is one planner session on the large pull request of card
@@ -125,11 +145,7 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 	if escalated {
 		return PlanResult{Findings: []string{"split: the planner stopped: " + text}}, nil
 	}
-	names := make([]string, len(files))
-	for i, f := range files {
-		names[i] = f.Filename
-	}
-	p, found := CheckSplit(text, names, bound, v.Document.Limits)
+	p, found := CheckSplit(text, files, bound, v.Document.Limits)
 	if text == "" {
 		found = []string{"plan: the session ended without a last message: " + why}
 	}
@@ -236,10 +252,10 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunSplit, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
 		switch {
-		case decided && v.final != "":
+		case decided && v.final != "" && !v.cancelled:
 			return v, true
 		case decided:
-			findings = []string{"split: the gate supervisor stopped the session: " + v.escalate}
+			findings = []string{"split: " + cmp.Or(v.reason, v.escalate)}
 		case err != nil:
 			findings = []string{"split: the session failed: " + errMessage(err)}
 		case len(res.Findings) > 0:
@@ -254,7 +270,7 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 		if try < 2 {
 			continue
 		}
-		ask := "The split failed its check twice; approve, deny or split the pull request again. The findings:\n- " + strings.Join(findings, "\n- ")
+		ask := splitFailed + "; approve, deny or split the pull request again. The findings:\n- " + strings.Join(findings, "\n- ")
 		if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask, []string(nil)).Get(t.ctx, &t.escalation); err != nil {
 			return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 		}

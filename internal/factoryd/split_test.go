@@ -13,22 +13,27 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// splitPlan is a passing split of a pull request changing web/app.ts,
-// web/app.css and api/links.go: the api card first, the web card on it.
+// splitFiles are the large pull request's files, 1100 lines in all.
+var splitFiles = []PRFile{{Filename: "web/app.ts", Additions: 500}, {Filename: "web/app.css", Additions: 80},
+	{Filename: "api/links.go", Additions: 500, Deletions: 20}}
+
+// splitPlan is a passing split of splitFiles: the api card first, the web
+// card on it, each medium (under 600) and alone carrying 520 and 580 lines.
 func splitPlan() Plan {
 	return Plan{Summary: "The links API first, then the page on it.", Cards: []PlanCard{
 		{Key: "web", Role: RoleFeature, Title: "The links page", Brief: "Carry over web/ of pull/9.", Directories: []string{"web"},
 			DependsOn: []string{"api"}, Acceptance: []string{"TestLinksPage in web"}, Size: "medium"},
 		{Key: "api", Role: RoleFeature, Title: "The links API", Brief: "Carry over api/links.go of pull/9.", Directories: []string{"api/links.go"},
-			Acceptance: []string{"TestCreateLink in api"}, Size: "small"},
+			Acceptance: []string{"TestCreateLink in api"}, Size: "medium"},
 	}}
 }
 
 // The check over the planner's answer: 2 or 3 cards, each size under the
 // bound, dependencies only among the cards and acyclic, every file
-// covered by a card's directories.
+// covered by a card's directories, a directory that is the root covering
+// none, and the lines of the files only one card covers under that card's
+// size.
 func TestCheckSplit(t *testing.T) {
-	files := []string{"web/app.ts", "web/app.css", "api/links.go"}
 	change := func(edit func(p *Plan)) string {
 		p := splitPlan()
 		edit(&p)
@@ -50,8 +55,16 @@ func TestCheckSplit(t *testing.T) {
 			[]string{`plan: card web: depends on "auth", which is no card of the plan`}},
 		"missing file": {change(func(p *Plan) { p.Cards[0].Directories = []string{"web/app.ts"} }),
 			[]string{"split: no card's directories cover web/app.css"}},
+		"the root": {change(func(p *Plan) {
+			p.Cards[0].Directories = []string{"web/.."}
+			p.Cards[1].Directories = []string{"api/links.go", "./"}
+		}),
+			[]string{"split: no card's directories cover web/app.ts, web/app.css"}},
+		"alone over its size": {change(func(p *Plan) { p.Cards[1].Size = "small" }),
+			[]string{"split: card api alone carries 520 changed lines (api/links.go), not under its size small's 300"}},
+		"shared, not alone": {change(func(p *Plan) { p.Cards[0].Directories = []string{"web", "api"}; p.Cards[1].Size = "small" }), nil},
 	} {
-		if _, got := CheckSplit(tc.text, files, 1000, testLimits); !slices.Equal(got, tc.want) {
+		if _, got := CheckSplit(tc.text, splitFiles, 1000, testLimits); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
 		}
 	}
@@ -66,7 +79,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
-	hub.prFiles = `[{"filename":"web/app.ts","additions":700,"deletions":0},{"filename":"web/app.css","additions":80,"deletions":0},` +
+	hub.prFiles = `[{"filename":"web/app.ts","additions":500,"deletions":0},{"filename":"web/app.css","additions":80,"deletions":0},` +
 		`{"filename":"api/links.go","additions":500,"deletions":20}]`
 	v := runner.cfg.Policy()
 	v.Document.Risk.LargeLines = 1000
@@ -93,8 +106,9 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	}
 	env := podEnv(kube.podAt(0))
 	guide := env["REPORT_GUIDE"]
-	for _, want := range []string{"Pull request #9 of this card changes 1300 lines in 3 files, more than the 1000 lines one pull request may change",
-		"each one pull request of under 1000 changed lines", "branch pull/9", "- web/app.ts +700 -0\n- web/app.css +80 -0\n- api/links.go +500 -20\n"} {
+	for _, want := range []string{"Pull request #9 of this card changes 1100 lines in 3 files, more than the 1000 lines one pull request may change",
+		"each one pull request of under 1000 changed lines", "branch pull/9", "- web/app.ts +500 -0\n- web/app.css +80 -0\n- api/links.go +500 -20\n",
+		"size: small (a change under about 300 lines), medium (under about 600), large (under about 1000); every card's size stays under 1000 lines."} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, guide)
 		}
@@ -144,7 +158,7 @@ func TestFileSplitStartsTheCards(t *testing.T) {
 		card  Task
 		issue int64
 		eur   float64
-	}{{api, 2, 2}, {web, 3, 5}} {
+	}{{api, 2, 5}, {web, 3, 5}} {
 		k := c.card
 		if k.IssueNumber != c.issue || k.Status != "queued" || k.Lane != policy.LaneReady || k.SHA != "m1" || k.BudgetEUR != c.eur ||
 			k.Process != "spec" || k.Author != "sebastian" || !slices.Equal(k.RequiredCapabilities, []string{policy.ClassCoder}) {
@@ -186,7 +200,7 @@ func newSplitHarness(t *testing.T, results ...PlanResult) (*gateHarness, *[]stri
 			calls = append(calls, fmt.Sprintf("file %d %s %d", revision, approver, pin))
 			return ChildrenResult{Issues: []int64{12, 13}}, nil
 		})
-	g.onSessions(pushed("s1", "c1"))
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	return g, &calls
 }
@@ -222,5 +236,51 @@ func TestSplitFailsTwiceThenAsksAHuman(t *testing.T) {
 	ask := "The split failed its check twice; approve, deny or split the pull request again. The findings:\n- plan: 4 cards; this process allows 2 to 3"
 	if !slices.Equal(g.escalated, []string{ask}) {
 		t.Fatalf("escalated %q", g.escalated)
+	}
+}
+
+// A split that arrives with a change request is dropped with the stale
+// approvals: the change request sends the card back to its agent, and the
+// next approval request, for the new head, splits nothing on its own.
+func TestSplitSentWithAChangeRequestIsDropped(t *testing.T) {
+	g, calls := newSplitHarness(t)
+	g.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "smaller", PR: 9})
+	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.sessions) != 2 || len(*calls) != 0 {
+		t.Fatalf("final %q, finals %v, sessions %d, split calls %q", final, g.finals, len(g.sessions), *calls)
+	}
+	if !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
+		t.Fatalf("merges %v", g.merges)
+	}
+}
+
+// The gate supervisor's cancel of a split session is a failed try, not
+// the card's end: the next session gets its reason as the finding.
+func TestSplitCancelledByTheGateSupervisorIsATry(t *testing.T) {
+	g, calls := newSplitHarness(t, PlanResult{Revision: 1}, PlanResult{Revision: 1})
+	g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "stuck"})
+	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})
+	g.tripAfter(time.Hour+2*time.Minute, ActivityRunSplit, 1)
+	if final := g.run(t); final != "closed" || g.finals[0][1] != "split into #12, #13" {
+		t.Fatalf("final %q, finals %v", final, g.finals)
+	}
+	want := `run factory/coding-frontier 7 ["split: the gate supervisor cancelled RunSplit: stuck"]`
+	if n := len(*calls); n < 2 || (*calls)[n-2] != want || (*calls)[n-1] != "file 1 sebastian 7" {
+		t.Fatalf("calls %q", *calls)
+	}
+}
+
+// A split's escalation tells the member what answers it: the board's
+// approval card, not a reply on the issue.
+func TestSplitEscalationNamesTheBoard(t *testing.T) {
+	big := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9}
+	runner, hub, _ := newTestRunner(t, big, newFakeKube(), &fakeObjectStore{})
+	ask := splitFailed + "; approve, deny or split the pull request again. The findings:\n- plan: 4 cards; this process allows 2 to 3"
+	if _, err := execActivity(t, runner, ActivityEscalate, "t1", ask, []string(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if len(hub.comments) != 1 || !strings.HasSuffix(hub.comments[0], "```\n\nApprove, deny or split it on the board.") || strings.Contains(hub.comments[0], "Reply on this issue") {
+		t.Fatalf("comments %q", hub.comments)
 	}
 }

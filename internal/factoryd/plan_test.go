@@ -1024,6 +1024,26 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 		strings.Contains(got, "acceptance/") {
 		t.Fatalf("objectiveText:\n%s", got)
 	}
+	// a split's card: its spec names the large pull request, whose head the
+	// clone container fetches as branch pull/9
+	child := Task{ID: "t3", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 8, Source: SourcePlan, Parent: "t-big", PlanKey: "web", Author: "sebastian", AuthorWriter: true,
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Objective: "The links page"}
+	kube = newFakeKube()
+	splitRunner, _, splitStore := newTestRunner(t, child, kube, &fakeObjectStore{})
+	splitStore.CreateTask(ctx, Task{ID: "t-big", Kind: "agent", Status: "closed", Repository: "sf/r", IssueNumber: 7, PRNumber: 9, Objective: "Links\n\nThe page and the API."})
+	raw, sha, _ = planSHA(splitPlan())
+	splitStore.AddPlanRevision(ctx, "t-big", raw, sha)
+	if _, err := runSession(t, nil, splitRunner, SessionInput{TaskID: "t3", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(true, "built")); err != nil {
+		t.Fatal(err)
+	}
+	env = podEnv(kube.podAt(0))
+	clone := containerEnv(kube.podAt(0).spec["spec"].(map[string]any)["initContainers"].([]any)[0].(map[string]any))
+	spec = "Links\n\nThe page and the API.\n\nThe plan's summary: The links API first, then the page on it.\n\n" +
+		"The plan splits pull request #9, whose head is in your clone as branch pull/9: carry over the files and hunks your brief names."
+	if env["SPEC"] != spec || clone["PULL"] != "9" || env["PULL"] != "" || env["DIRECTORIES"] != `["web"]` {
+		t.Fatalf("SPEC %q, clone PULL %q, worker PULL %q, DIRECTORIES %q", env["SPEC"], clone["PULL"], env["PULL"], env["DIRECTORIES"])
+	}
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it"})
