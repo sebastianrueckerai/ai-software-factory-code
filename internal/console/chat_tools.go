@@ -644,7 +644,7 @@ var tools = []chatTool{
 		}},
 	{name: "release_resource", title: "Release a resource", write: true,
 		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
-		about: "End a commissioned resource's lease now, as the /resources page's Release button does; the collector deletes it (a factory approver's action).",
+		about: "End a commissioned resource's lease now, as the /resources page's Release button does; the collector deletes it (a factory writer's action).",
 		fits:  "an open commission",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)

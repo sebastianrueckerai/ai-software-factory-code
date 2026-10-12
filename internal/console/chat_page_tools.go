@@ -350,12 +350,11 @@ func (c *Console) alertVerdictRecord(ctx context.Context, a actor, id int64, v s
 // commission standing (project-owned, no lease, no end with its task),
 // which must fit the standing block of the project's file in force.
 func (c *Console) doPromoteResource(ctx context.Context, a actor, id int64) (string, error) {
-	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
-	if err != nil || !ok {
-		log.Printf("console: current policy: loaded %v, %v", ok, err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the policy")
-	}
 	if err := c.resourceChange(ctx, a, "promote", id, func(ctx context.Context, id int64, by string) error {
+		v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
+		if err != nil || !ok {
+			return fmt.Errorf("current policy: loaded %v, %v", ok, err)
+		}
 		return c.cfg.Resources.Promote(ctx, id, by, func(repo string) policy.Standing { return v.EnvelopeOf(repo).Standing })
 	}); err != nil {
 		return "", err

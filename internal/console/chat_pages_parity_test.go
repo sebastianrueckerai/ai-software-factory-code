@@ -224,19 +224,32 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 	equal(t, "the resource calls", r.resources.calls, []string{"promote 11 by sebastian under {0 [] 0} and {12 [cx23] 2}", "release 12 by sebastian"})
 }
 
-// Bob writes demo only: from demo's chat each page write is refused in
-// the words the factory's pages answer him with, at the proposal and,
-// with no OK asked, at the run, and nothing is judged, promoted or
-// released.
+// noPolicy is the rig's ledger with the policy unreadable.
+type noPolicy struct{ *fakeLedger }
+
+func (noPolicy) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	return policy.Version{}, false, errors.New("pq: connection refused")
+}
+
+// Bob writes demo only: each factory button and, from demo's chat, each
+// page write is refused in the words the factory's pages answer him
+// with, the buttons before any policy read, the chat at the proposal and,
+// with no OK asked, at the run; nothing is judged, promoted or released.
 func TestPageWritesRefuseNonWriters(t *testing.T) {
 	r, _, g := newChatRig(t)
 	pageFixture(r)
 	members(r)
 	g.project = "demo"
 	ck, s := memberLogin(t, r, "bob")
-	page := r.do(post("/resources/11/release", url.Values{"csrf": {s.csrf}}), ck)
 	words := "Only the writers of the factory's own code see the factory's pages."
-	equal(t, "the page", []any{page.Code, strings.TrimSpace(page.Body.String())}, []any{http.StatusForbidden, words})
+	for _, policies := range []Policies{r.ledger, noPolicy{r.ledger}} {
+		r.c.cfg.Policies = policies
+		for _, path := range []string{"/alerts/7/verdict", "/resources/11/promote", "/resources/11/release"} {
+			page := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck)
+			equal(t, path, []any{page.Code, strings.TrimSpace(page.Body.String())}, []any{http.StatusForbidden, words})
+		}
+	}
+	r.c.cfg.Policies = r.ledger
 	for _, confirm := range [][]string{nil, {}} {
 		if confirm != nil {
 			r.ledger.chat = &policy.ChatConfig{Confirm: confirm}
