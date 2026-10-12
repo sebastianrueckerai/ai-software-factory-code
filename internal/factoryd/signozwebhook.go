@@ -85,7 +85,9 @@ type AlertIntake struct {
 	Budget   func() policy.Budget
 	// Kube reads a roll target's Deployment, to tell a restartWindowAlert
 	// inside its restart window from a real one (item 127). Namespace is
-	// the factory's own namespace, the one those Deployments run in.
+	// the factory's own namespace, the one those Deployments run in. An
+	// intake serving that namespace must name Kube: take answers a plain
+	// error on this rule rather than dereference a nil reader.
 	Kube      DeploymentReader
 	Namespace string
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
@@ -145,6 +147,16 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	if !ok || a.Fingerprint == "" {
 		log.Printf("signoz webhook: alert %s in namespace %s: no project owns it, dropped", strconv.Quote(name), strconv.Quote(ns)) // #nosec G706 -- quoted
 		return nil
+	}
+	// The roll targets' Deployments are only read to judge the
+	// restart-window rule, and an intake that serves this rule's namespace
+	// must name that reader: without one there is nothing to judge on, so
+	// the delivery fails plainly instead of dereferencing the nil reader.
+	// The panic raised there answered the empty 500 SigNoz could not read
+	// and retried until this very rule fired on factoryd's own 5xx share.
+	if in.Kube == nil && name == restartWindowAlert && ns == in.Namespace {
+		return fmt.Errorf("alert %s in namespace %s: no Deployment reader wired, cannot tell a roll's restart window from a real firing",
+			strconv.Quote(name), strconv.Quote(ns))
 	}
 	row, seen, err := in.Store.AlertByFingerprint(ctx, AlertSigNoz, a.Fingerprint)
 	if err != nil {
