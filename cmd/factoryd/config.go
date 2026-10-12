@@ -21,8 +21,8 @@ import (
 //	factoryd schema --out <dir>    writes one JSON Schema per file kind
 //	factoryd config check <dir>    judges a tree as the loader does
 //	                               (CheckTree, the ladder from MODEL and
-//	                               STRONGER_MODEL) and compares its schema/
-//	                               with the generated
+//	                               STRONGER_MODEL) and warns about a
+//	                               schema/ copy unlike the generated
 //	factoryd config explain [--tree <dir>] <process> <card kind>
 //	                               prints the path of a card kind through a
 //	                               process of a valid tree (default factory)
@@ -43,13 +43,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "schemas written to %s\n", *out)
 		return 0
 	case len(args) == 3 && args[0] == "config" && args[1] == "check":
-		tree, err := checkTree(args[2])
+		tree, diffs, err := checkTree(args[2])
 		if err != nil {
 			fmt.Fprintf(stderr, "%s: rejected:\n%v\n", args[2], err)
 			return 1
 		}
-		for _, w := range schemaWarnings(args[2]) {
-			fmt.Fprintln(stdout, w)
+		for _, d := range diffs {
+			fmt.Fprintf(stdout, "warning: %s differs from this factoryd's schema (factoryd opens a pull request for it)\n", filepath.Join(args[2], d.Path))
 		}
 		fmt.Fprintf(stdout, "%s: ok, %s, %s, %s\n", args[2], count(len(tree.Projects), "project"), count(len(tree.Processes), "process"), count(len(tree.Templates), "template"))
 		fmt.Fprintln(stdout, "open cards per lane: checked by the running factoryd only")
@@ -119,30 +119,16 @@ func writeSchemas(dir string) error {
 	return nil
 }
 
-func checkTree(dir string) (policy.Tree, error) {
+// checkTree judges dir as the loader does and names its stale or missing
+// schema copies.
+func checkTree(dir string) (policy.Tree, []policy.SchemaDifference, error) {
 	files, err := policy.ReadDir(dir)
 	if err != nil {
-		return policy.Tree{}, err
+		return policy.Tree{}, nil, err
 	}
 	tree, err := factoryd.CheckTree(files, ladder().Aliases())
-	// a stale or missing schema copy is a warning the caller prints: the
-	// tree is judged against the schemas built into this binary, and the
-	// infra repository's copies follow it by factoryd's own pull request
-	// (roadmap 166). A file under schema/ factoryd does not write stays a
-	// refusal.
-	_, schemaErr := policy.CheckSchemas(files)
-	return tree, errors.Join(err, schemaErr)
-}
-
-// schemaWarnings are the lines naming every schema/ copy of dir that is
-// stale or missing against this binary.
-func schemaWarnings(dir string) []string {
-	files, err := policy.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	warns, _ := policy.CheckSchemas(files)
-	return warns
+	diffs, diffErr := policy.DiffSchemas(files)
+	return tree, diffs, errors.Join(err, policy.CheckSchemas(files), diffErr)
 }
 
 // ladder is factoryd's model ladder, which the loader and the check hold a

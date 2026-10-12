@@ -93,9 +93,8 @@ func TestShippedTreePasses(t *testing.T) {
 	if _, err := ParseTree(files); err != nil {
 		t.Fatal(err)
 	}
-	warns, err := CheckSchemas(files)
-	if err != nil || len(warns) > 0 {
-		t.Fatalf("CheckSchemas = (%q, %v)", warns, err)
+	if err := CheckSchemas(files); err != nil {
+		t.Fatal(err)
 	}
 }
 

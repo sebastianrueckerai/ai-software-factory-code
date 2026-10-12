@@ -298,48 +298,33 @@ func Schemas() (map[string][]byte, error) {
 	return out, nil
 }
 
-// CheckSchemas compares a tree's schema/ files with the generated ones.
-// A copy that is stale or missing is a warning, not an error (roadmap
-// 166): the infra repository's copies follow the code by factoryd opening
-// a pull request for them, so `config check` judges the tree against the
-// schemas built into its own binary and its verdict does not depend on
-// the copies. A file under schema/ factoryd does not write stays an error.
-func CheckSchemas(files map[string][]byte) ([]string, error) {
+// CheckSchemas refuses a file under schema/ that factoryd does not write.
+// A stale or missing copy is no refusal: DiffSchemas names it, and
+// factoryd opens the pull request that brings it to this build.
+func CheckSchemas(files map[string][]byte) error {
 	want, err := Schemas()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	var warns []string
 	var errs []error
-	for _, name := range slices.Sorted(maps.Keys(want)) {
-		got, ok := files[DirSchema+"/"+name]
-		switch {
-		case !ok:
-			warns = append(warns, fmt.Sprintf("warning: %s/%s differs from this factoryd's schema (factoryd opens a pull request for it)", DirSchema, name))
-		case !bytes.Equal(got, want[name]):
-			warns = append(warns, fmt.Sprintf("warning: %s/%s differs from this factoryd's schema (factoryd opens a pull request for it)", DirSchema, name))
-		}
-	}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		if rest, ok := strings.CutPrefix(name, DirSchema+"/"); ok && want[rest] == nil {
 			errs = append(errs, fmt.Errorf("%s is not a schema factoryd writes", name))
 		}
 	}
-	return warns, errors.Join(errs...)
+	return errors.Join(errs...)
 }
 
-// SchemaDifference is one schema/ copy of the configuration repository
-// that is not what this binary generates.
+// SchemaDifference is a schema/ copy that is not what this binary
+// generates.
 type SchemaDifference struct {
-	Name    string // the schema file's name, e.g. policy.schema.json
-	Path    string // the copy's path in the tree, e.g. schema/policy.schema.json
-	Missing bool   // the tree holds no such file
-	Want    []byte // what this binary generates
+	Path    string // relative to the tree, e.g. schema/policy.schema.json
+	Missing bool
+	Want    []byte
 }
 
-// DiffSchemas compares copies keyed as ReadDir keys them (paths relative
-// to the tree directory) with what this binary generates, oldest name
-// first.
+// DiffSchemas are the generated schemas whose copy, keyed as ReadDir keys
+// it, is stale or missing, by name.
 func DiffSchemas(copies map[string][]byte) ([]SchemaDifference, error) {
 	want, err := Schemas()
 	if err != nil {
@@ -347,25 +332,21 @@ func DiffSchemas(copies map[string][]byte) ([]SchemaDifference, error) {
 	}
 	var out []SchemaDifference
 	for _, name := range slices.Sorted(maps.Keys(want)) {
-		got, ok := copies[DirSchema+"/"+name]
-		if ok && bytes.Equal(got, want[name]) {
-			continue
+		path := DirSchema + "/" + name
+		if got, ok := copies[path]; !ok || !bytes.Equal(got, want[name]) {
+			out = append(out, SchemaDifference{Path: path, Missing: !ok, Want: want[name]})
 		}
-		out = append(out, SchemaDifference{Name: name, Path: DirSchema + "/" + name, Missing: !ok, Want: want[name]})
 	}
 	return out, nil
 }
 
-// SchemaContentHash is the hash of generated schema content, first 12 hex:
-// the identifier a build whose commit it does not know names its schema
-// pull request by.
+// SchemaContentHash is the first 12 hex of the sha256 over the schemas'
+// names and contents: the build id the schema pull request carries, since
+// the binary is not stamped with its commit.
 func SchemaContentHash(schemas map[string][]byte) string {
-	names := slices.Sorted(maps.Keys(schemas))
 	h := sha256.New()
-	for _, name := range names {
-		fmt.Fprintf(h, "%s\x00", name)
-		h.Write(schemas[name])
-		h.Write([]byte{0})
+	for _, name := range slices.Sorted(maps.Keys(schemas)) {
+		fmt.Fprintf(h, "%s\x00%s\x00", name, schemas[name])
 	}
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }

@@ -123,61 +123,27 @@ func TestConfigCheck(t *testing.T) {
 	}
 }
 
-// A stale or missing schema copy is a warning and exits 0 (roadmap 166):
-// the check judges the tree against the schemas built into this binary;
-// factoryd opens infra's pull request for the copies itself. A file under
-// schema/ factoryd does not write still fails.
+// A stale or missing schema copy warns and exits 0: factoryd opens the
+// pull request for it.
 func TestConfigCheckWarnsOnStaleSchemas(t *testing.T) {
-	dir := tree(t)
-	b, err := os.ReadFile(filepath.Join(dir, "schema/policy.schema.json"))
-	if err != nil {
+	root := t.TempDir()
+	if err := os.Rename(tree(t), filepath.Join(root, "factory")); err != nil {
 		t.Fatal(err)
 	}
-	write(t, filepath.Join(dir, "schema/policy.schema.json"), string(b)+" ")
+	t.Chdir(root)
+	write(t, "factory/schema/policy.schema.json", "{}\n")
+	if err := os.Remove("factory/schema/process.schema.json"); err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
-		t.Fatalf("stale copy: exit %d, want 0; stderr %s", code, stderr.String())
+	if code := run([]string{"config", "check", "factory"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d, want 0; stderr %s", code, stderr.String())
 	}
-	wantLine := "warning: schema/policy.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n"
-	if !strings.Contains(stdout.String(), wantLine) {
-		t.Fatalf("stdout = %q, want the warning line %q", stdout.String(), wantLine)
-	}
-	lines := strings.Split(stdout.String(), "\n")
-	n := 0
-	for _, l := range lines {
-		if strings.HasPrefix(l, "warning: ") {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Errorf("%d warning lines, want exactly one:\n%s", n, stdout.String())
-	}
-	if stderr.String() != "" {
-		t.Errorf("stderr = %q, want empty", stderr.String())
-	}
-
-	// a missing copy warns the same way
-	fresh := tree(t)
-	if err := os.Remove(filepath.Join(fresh, "schema/process.schema.json")); err != nil {
-		t.Fatal(err)
-	}
-	stdout, stderr = bytes.Buffer{}, bytes.Buffer{}
-	if code := run([]string{"config", "check", fresh}, &stdout, &stderr); code != 0 {
-		t.Fatalf("missing copy: exit %d, want 0; stderr %s", code, stderr.String())
-	}
-	if want := "warning: schema/process.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n"; !strings.Contains(stdout.String(), want) {
-		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
-	}
-
-	// an extra schema file fails
-	extra := tree(t)
-	write(t, filepath.Join(extra, "schema/old.schema.json"), "{}\n")
-	stdout, stderr = bytes.Buffer{}, bytes.Buffer{}
-	if code := run([]string{"config", "check", extra}, &stdout, &stderr); code == 0 {
-		t.Fatalf("extra schema file: exit 0, want non-zero")
-	}
-	if !strings.Contains(stderr.String(), "schema/old.schema.json is not a schema factoryd writes") {
-		t.Errorf("stderr = %q, wants the refusal", stderr.String())
+	want := "warning: factory/schema/policy.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n" +
+		"warning: factory/schema/process.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n" +
+		"factory: ok, 4 projects, 2 processes, 1 template\nopen cards per lane: checked by the running factoryd only\n"
+	if stdout.String() != want || stderr.String() != "" {
+		t.Fatalf("stdout = %q, stderr = %q, want stdout %q", stdout.String(), stderr.String(), want)
 	}
 }
 

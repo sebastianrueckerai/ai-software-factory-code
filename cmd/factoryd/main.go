@@ -37,34 +37,6 @@ import (
 
 var version = "dev"
 
-// buildID names this binary's build for the schema copy pull request: the
-// short sha of the commit it was built from when -ldflags set version to
-// one, else the hash of the generated schema content, first 12 hex.
-func buildID() string {
-	if isHexSHA(version) {
-		return version
-	}
-	schemas, err := policy.Schemas()
-	if err != nil {
-		log.Fatalf("schemas: %v", err)
-	}
-	return policy.SchemaContentHash(schemas)
-}
-
-// isHexSHA tells a commit's sha (or its short form) from a build stamp
-// ("dev", a tag).
-func isHexSHA(s string) bool {
-	if len(s) < 7 || len(s) > 64 {
-		return false
-	}
-	for _, r := range s {
-		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
-
 // configDir is the configuration tree's directory in the config repository.
 const configDir = "factory"
 
@@ -131,24 +103,6 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
-	// infra's schema copies follow the code (roadmap 166): once per process,
-	// now that the loader has the configuration tree in hand, factoryd
-	// compares them with what this binary generates and opens one pull
-	// request for the difference; an approver merges it, nothing else does.
-	// The context is the signal context below, made here so the pass ends
-	// with the process.
-	schemaCtx, schemaStop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer schemaStop()
-	schemaCopier := &factoryd.SchemaCopier{
-		Forgejo: forgejo, Token: forgejo.ProjectsToken, Repo: configRepo, Config: configSource,
-		Head:  func() string { return policyLoader.Current().Commit },
-		Build: buildID,
-	}
-	go func() {
-		if err := schemaCopier.SyncOnce(schemaCtx, 3, time.Minute); err != nil && !errors.Is(err, context.Canceled) {
-			log.Printf("schema copies: %v", err)
-		}
-	}()
 
 	openActivities, err := factoryd.NewOpenActivities(metrics.Meter)
 	if err != nil {
@@ -310,6 +264,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	schemas, err := policy.Schemas()
+	if err != nil {
+		log.Fatalf("schemas: %v", err)
+	}
+	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas)}
+	go func() {
+		if err := schemaCopier.SyncOnce(ctx, 3, time.Minute); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("schema copies: %v", err)
+		}
+	}()
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Tree { return policyLoader.Current().Tree }, webhookSecret)
 	webhookIntake.MainPushed = registrar.MainPushed
