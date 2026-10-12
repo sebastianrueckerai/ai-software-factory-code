@@ -494,9 +494,24 @@ type ActionRun struct {
 	Created   time.Time `json:"created"`
 	Started   time.Time `json:"started"`
 	Stopped   time.Time `json:"stopped"`
+	// EventPayload is the webhook payload that created the run, as JSON
+	EventPayload string `json:"event_payload"`
 }
 
 func (r ActionRun) Finished() bool { return doneStatus(r.Status) }
+
+// PushedRef is a push run's full ref from its payload, "" when it names
+// none: unlike PrettyRef, which reads "main" for a tag named main too, it
+// tells a branch from a tag.
+func (r ActionRun) PushedRef() string {
+	var p struct {
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal([]byte(r.EventPayload), &p); err != nil {
+		return ""
+	}
+	return p.Ref
+}
 
 // ActionRuns reads owner/repo's actions/runs, newest first, filtered by
 // query (page, limit, event, head_sha, ...). Forgejo 15 honours limit only

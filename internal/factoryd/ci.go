@@ -372,7 +372,9 @@ func (s *CISpawner) admitSmoke(ctx context.Context, r CIRepo, job CIJob, repos [
 		return
 	}
 	ns := s.namespaceFor(job.ID)
-	if !slices.ContainsFunc(runs, func(x ActionRun) bool { return x.Index == run && x.Event == "push" && x.PrettyRef == "main" }) {
+	if !slices.ContainsFunc(runs, func(x ActionRun) bool {
+		return x.Index == run && x.Event == "push" && x.PushedRef() == "refs/heads/main"
+	}) {
 		log.Printf("ci spawner: job %d (%s) is in run %d, no push to main: no staging, its runner torn down", job.ID, smokeLabel(r.Project), run)
 		s.smokeDone[job.ID] = job.Handle
 		s.teardown(ctx, ns, repos)

@@ -1396,10 +1396,13 @@ func smokeJob(id int64, status, handle string, task int64) CIJob {
 
 // demoRuns are the newest runs of demo/demo: run 7 a push to main, run 8 a
 // pull request, run 9 a push to another branch, run 10 a pull request's
-// pull_request_target workflow, which runs on main.
-var demoRuns = []ActionRun{{ID: 70, Index: 7, Event: "push", PrettyRef: "main"},
-	{ID: 80, Index: 8, Event: "pull_request", PrettyRef: "#3"}, {ID: 90, Index: 9, Event: "push", PrettyRef: "feature"},
-	{ID: 100, Index: 10, Event: "pull_request", PrettyRef: "main"}}
+// pull_request_target workflow, which runs on main, run 11 the push of a
+// tag named main, whose prettyref reads "main" too.
+var demoRuns = []ActionRun{{ID: 70, Index: 7, Event: "push", PrettyRef: "main", EventPayload: `{"ref":"refs/heads/main","before":"a1"}`},
+	{ID: 80, Index: 8, Event: "pull_request", PrettyRef: "#3", EventPayload: `{"action":"opened","number":3}`},
+	{ID: 90, Index: 9, Event: "push", PrettyRef: "feature", EventPayload: `{"ref":"refs/heads/feature"}`},
+	{ID: 100, Index: 10, Event: "pull_request", PrettyRef: "main", EventPayload: `{"action":"opened","number":4}`},
+	{ID: 110, Index: 11, Event: "push", PrettyRef: "main", EventPayload: `{"ref":"refs/tags/main"}`}}
 
 // A staging project's <project>-smoke job gets a runner bound to the job's
 // attempt, labelled the smoke runner and with its handle, without staging
@@ -1413,12 +1416,13 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 	logs := captureLog(t)
 	kube := newFakeKube()
 	hub := &smokeHub{jobs: []CIJob{smokeJob(11, "waiting", "h-11", 0), smokeJob(12, "waiting", "h-12", 0), smokeJob(13, "waiting", "h-13", 0),
-		smokeJob(14, "waiting", "", 0), smokeJob(15, "waiting", "h-15", 0), smokeJob(16, "waiting", "h-16", 0), smokeJob(17, "waiting", "h-17", 0)},
-		tasks: []ActionTask{{ID: 504, RunNumber: 10}, {ID: 503, RunNumber: 9}, {ID: 502, RunNumber: 8}, {ID: 501, RunNumber: 7}}, runs: demoRuns}
+		smokeJob(14, "waiting", "", 0), smokeJob(15, "waiting", "h-15", 0), smokeJob(16, "waiting", "h-16", 0), smokeJob(17, "waiting", "h-17", 0),
+		smokeJob(18, "waiting", "h-18", 0)},
+		tasks: []ActionTask{{ID: 505, RunNumber: 11}, {ID: 504, RunNumber: 10}, {ID: 503, RunNumber: 9}, {ID: 502, RunNumber: 8}, {ID: 501, RunNumber: 7}}, runs: demoRuns}
 	spawner, repo := hub.spawner(t, kube)
 
 	spawner.poll(context.Background())
-	for _, id := range []string{"11", "12", "13", "15", "16", "17"} {
+	for _, id := range []string{"11", "12", "13", "15", "16", "17", "18"} {
 		ns := "factory-agents-ci-" + id
 		if l := kube.createdNs[ns]; l[CIRoleLabel] != "smoke" || l[CIProjectLabel] != "demo" || l[CIHandleLabel] != "h-"+id {
 			t.Fatalf("%s labels = %v, want the smoke role of project demo and handle h-%s", ns, l, id)
@@ -1466,7 +1470,8 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 
 	hub.set(func(h *smokeHub) {
 		h.jobs = []CIJob{smokeJob(11, "running", "h-11", 501), smokeJob(12, "running", "h-12", 502), smokeJob(14, "waiting", "", 0),
-			smokeJob(15, "waiting", "h-15b", 0), smokeJob(16, "running", "h-16", 503), smokeJob(17, "running", "h-17", 504)}
+			smokeJob(15, "waiting", "h-15b", 0), smokeJob(16, "running", "h-16", 503), smokeJob(17, "running", "h-17", 504),
+			smokeJob(18, "running", "h-18", 505)}
 	})
 	spawner.poll(context.Background())
 	spawner.poll(context.Background())
@@ -1478,12 +1483,14 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 		t.Fatalf("applied egress = %v, want %v once", kube.applies, want)
 	}
 	// the second poll walks the jobs in order (12 refused, 15 a new
-	// attempt, 16 and 17 refused), then sweeps 13; the third spawns 15 again
-	if want := []string{"factory-agents-ci-12", "factory-agents-ci-15", "factory-agents-ci-16", "factory-agents-ci-17", "factory-agents-ci-13"}; !reflect.DeepEqual(kube.deletedNs, want) {
+	// attempt, 16, 17 and 18 refused), then sweeps 13; the third spawns 15
+	// again
+	if want := []string{"factory-agents-ci-12", "factory-agents-ci-15", "factory-agents-ci-16", "factory-agents-ci-17", "factory-agents-ci-18",
+		"factory-agents-ci-13"}; !reflect.DeepEqual(kube.deletedNs, want) {
 		t.Fatalf("deleted namespaces = %v, want %v", kube.deletedNs, want)
 	}
 	hub.set(func(h *smokeHub) {
-		if want := []string{"102", "104", "105", "106", "103"}; !reflect.DeepEqual(h.deleted, want) {
+		if want := []string{"102", "104", "105", "106", "107", "103"}; !reflect.DeepEqual(h.deleted, want) {
 			t.Fatalf("deregistered runners = %v, want %v", h.deleted, want)
 		}
 	})
@@ -1494,6 +1501,7 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 		"ci spawner: job 12 (demo-smoke) is in run 8, no push to main: no staging, its runner torn down",
 		"ci spawner: job 16 (demo-smoke) is in run 9, no push to main: no staging, its runner torn down",
 		"ci spawner: job 17 (demo-smoke) is in run 10, no push to main: no staging, its runner torn down",
+		"ci spawner: job 18 (demo-smoke) is in run 11, no push to main: no staging, its runner torn down",
 		"ci spawner: job 14 (demo-smoke) names no handle to bind a runner to: not served",
 		"ci spawner: factory-agents-ci-13: its smoke job is neither waiting nor running: torn down",
 		"ci spawner: factory-agents-ci-15: bound to attempt h-15, its job now waits as h-15b: torn down",
