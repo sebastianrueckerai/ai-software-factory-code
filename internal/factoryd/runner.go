@@ -109,6 +109,9 @@ type Runner struct {
 	// here, and when AwaitRollHold let its next session start
 	running  map[string]int
 	admitted map[string]time.Time
+	// filed is what a running session's file_plan tool stored, by task:
+	// its answer, taken by the loop that ran the session
+	filed map[string]PlanResult
 	// now and sleep are the roll gap's and the roll hold's clock; nil is
 	// the wall clock
 	now   func() time.Time
@@ -153,6 +156,27 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// noteFiled holds the plan a running session filed through the file_plan
+// tool; takeFiled takes it, once: it is that session's answer, and a
+// filing no session takes (one an earlier session left) does not outlive
+// it.
+func (r *Runner) noteFiled(taskID string, res PlanResult) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if r.filed == nil {
+		r.filed = map[string]PlanResult{}
+	}
+	r.filed[taskID] = res
+}
+
+func (r *Runner) takeFiled(taskID string) (PlanResult, bool) {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	res, ok := r.filed[taskID]
+	delete(r.filed, taskID)
+	return res, ok
 }
 
 // trackPod names the task's running sandbox pod for the gate supervisor

@@ -448,6 +448,11 @@ type traceDetectors struct {
 	contents map[string][]string  // by path: content hashes in the order they appeared
 	churn    int                  // file changes since the diff last grew
 	maxDiff  int                  // largest diff (insertions + deletions) seen
+	// pending are the paths that returned to a content they had before,
+	// each with the commands that were failing when it happened: the
+	// flip-flop trips when one of those fails again after the return
+	// (roadmap 184); a trial edit undone while the checks pass never does.
+	pending map[string][]string
 
 	streakKey string         // the last call: tool and input hash
 	streak    int            // identical calls in a row ending with it
@@ -457,7 +462,7 @@ type traceDetectors struct {
 
 func newTraceDetectors(cfg SupervisorConfig) *traceDetectors {
 	return &traceDetectors{cfg: cfg, runs: map[string]outputRun{}, failed: map[string]bool{},
-		calls: map[string]int{}, contents: map[string][]string{}, nudged: map[string]int{}}
+		calls: map[string]int{}, contents: map[string][]string{}, pending: map[string][]string{}, nudged: map[string]int{}}
 }
 
 // Nudge asks the running session to change approach after Count identical
@@ -613,11 +618,17 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 			d.churn = 0 // newly passing
 		}
 		delete(d.failed, cmd)
+		d.disarm(cmd)
 		if !masksExitStatus(cmd) {
 			delete(d.runs, cmd)
 			return nil
 		}
 	} else if hasExit {
+		if d.failed[cmd] {
+			if trip := d.refail(cmd); trip != nil {
+				return trip
+			}
+		}
 		d.failed[cmd] = true
 	}
 	out := detailString(ev, "output")
@@ -655,6 +666,40 @@ func (d *traceDetectors) toolCall(ev harness.Event) *Trip {
 	return nil
 }
 
+// refail is the flip-flop's second half: a command fails again after a
+// path returned to a content it had before, and it was failing when the
+// path returned. The paths whose return it completes leave the pending
+// set with the trip.
+func (d *traceDetectors) refail(cmd string) *Trip {
+	var paths []string
+	for p, cmds := range d.pending {
+		if slices.Contains(cmds, cmd) {
+			paths = append(paths, p)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	slices.Sort(paths)
+	clear(d.pending)
+	return &Trip{Kind: TripFlipFlop, key: paths[0],
+		Detail: fmt.Sprintf("after %s returned to a content it had before, `%s` failed again, unchanged", strings.Join(paths, ", "), cmd)}
+}
+
+// disarm drops cmd from the pending returns: a check that failed before a
+// file's return and now passes proves the undo held.
+func (d *traceDetectors) disarm(cmd string) {
+	for p, cmds := range d.pending {
+		if i := slices.Index(cmds, cmd); i >= 0 {
+			if cmds = slices.Delete(cmds, i, i+1); len(cmds) == 0 {
+				delete(d.pending, p)
+			} else {
+				d.pending[p] = cmds
+			}
+		}
+	}
+}
+
 func (d *traceDetectors) fileChange(ev harness.Event) *Trip {
 	path, h := detailString(ev, "path"), detailString(ev, "sha256")
 	d.churn++
@@ -665,8 +710,12 @@ func (d *traceDetectors) fileChange(ev harness.Event) *Trip {
 		switch {
 		case len(seen) > 0 && seen[len(seen)-1] == h:
 		case slices.Contains(seen, h):
-			trip = &Trip{Kind: TripFlipFlop, key: path,
-				Detail: fmt.Sprintf("%s returned to a content it had before, after other content in between", path)}
+			var cmds []string
+			for c := range d.failed {
+				cmds = append(cmds, c)
+			}
+			slices.Sort(cmds)
+			d.pending[path] = cmds
 			d.contents[path] = append(seen, h)
 		default:
 			d.contents[path] = append(seen, h)
@@ -691,6 +740,7 @@ func (d *traceDetectors) reset(trip *Trip) {
 		if seen := d.contents[trip.key]; len(seen) > 0 {
 			d.contents[trip.key] = seen[len(seen)-1:]
 		}
+		clear(d.pending)
 	case TripChurn:
 		d.churn = 0
 	}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"path"
 	"regexp"
@@ -174,13 +175,14 @@ func deployOwner(spec string, p Plan) (needed bool, owner string) {
 
 // ValidatePlan judges the planner's last message against the process's plan
 // shape and the pinned limits: one line per finding, none for a valid plan.
-func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits) []string {
-	_, findings := readPlan(text, shape, limits)
+func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits, bound int) []string {
+	_, findings := readPlan(text, shape, limits, bound)
 	return findings
 }
 
-// readPlan is ValidatePlan with the plan it decoded.
-func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, []string) {
+// readPlan is ValidatePlan with the plan it decoded. Bound is the risk
+// bound the sizes derive from (0: none).
+func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound int) (Plan, []string) {
 	blocks := planBlock.FindAllStringSubmatch(text, -1)
 	if len(blocks) == 0 {
 		return Plan{}, []string{"plan: no fenced json block in the last message"}
@@ -248,7 +250,7 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 		add("the dependencies form a cycle: %s", strings.Join(cycle, " -> "))
 	}
 	for _, c := range p.Cards {
-		out = append(out, cardFindings(c, limits)...)
+		out = append(out, cardFindings(c, limits, bound)...)
 	}
 	return p, append(out, questionFindings(p.Questions)...)
 }
@@ -290,11 +292,15 @@ func questionFindings(qs []PlanQuestion) []string {
 	return out
 }
 
-// cardFindings are one card's findings on its own fields.
-func cardFindings(c PlanCard, limits policy.Limits) []string {
+// cardFindings are one card's findings on its own fields: a size whose
+// derived lines reach the risk bound does not fit under it.
+func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 	var out []string
 	add := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
+	}
+	if n, ok := sizeLines(bound)[c.Size]; ok && bound > 0 && n >= bound {
+		add("size %s plans up to %d changed lines and the bound is %d: split the card", c.Size, n, bound)
 	}
 	switch {
 	case slices.Contains(policy.CardSizes, c.Size):
@@ -587,7 +593,7 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 // planGuide is the planner's guide: the spec is the issue, the answer one
 // fenced json block of the plan's shape, a card one session of the pinned
 // limits.
-func planGuide(shape policy.PlanShape, limits policy.Limits) string {
+func planGuide(shape policy.PlanShape, limits policy.Limits, bound int) string {
 	g := "You are the planner: read, do not change code, commit or push; nothing you change in the work tree leaves the sandbox. " +
 		"The issue's text is the spec of an application to build in this repository. Read it, and the repository, its AGENTS.md first: " +
 		"every card follows its conventions. Split the work into the cards of a plan. " +
@@ -617,21 +623,30 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"none under .forgejo/, .gitea/ or .github/ (the template owns them): guidance for the card's agent; "+
 		"a spec with a Deploy line needs one card whose directories include deploy/: it owns the manifests. "+
 		"acceptance: 1 to %d items, each a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: "+sizeFigures()+"; anything bigger is two cards). "+
+		"size: "+sizeFigures(bound)+"; anything bigger is two cards). "+
 		"questions: 0 to 5 open points the spec leaves to the member, each with 2 to 5 short choices; the member's answers come back to you as a block of answers "+
 		"with your last plan, and a plan with questions cannot be accepted until they are answered. Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. "+
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: "+
 		"answer the whole plan again.", maxCardTitle, maxCardBrief, maxCardDirs, maxCardAcceptance)
 }
 
-// sizeLines are the changed lines a card of each size plans at most.
-var sizeLines = map[string]int{"small": 300, "medium": 600, "large": 1000}
+// sizeLines are the changed lines a card of each size plans at most,
+// derived from the risk bound (roadmap 159, 184): large is the bound
+// itself, medium 60 percent of it, small 30 percent, rounded to whole
+// lines. Without a bound (0) the figures are 300/600/1000.
+func sizeLines(bound int) map[string]int {
+	if bound <= 0 {
+		bound = 1000
+	}
+	return map[string]int{"small": int(math.Round(0.3 * float64(bound))), "medium": int(math.Round(0.6 * float64(bound))), "large": bound}
+}
 
 // sizeFigures are the sizes as the guides open them: "small (a change
 // under about 300 lines), medium (under about 600), large (under about
 // 1000", each guide closing the last.
-func sizeFigures() string {
-	return fmt.Sprintf("small (a change under about %d lines), medium (under about %d), large (under about %d", sizeLines["small"], sizeLines["medium"], sizeLines["large"])
+func sizeFigures(bound int) string {
+	lines := sizeLines(bound)
+	return fmt.Sprintf("small (a change under about %d lines), medium (under about %d), large (under about %d", lines["small"], lines["medium"], lines["large"])
 }
 
 // PlanAcceptedComment is the console's comment, as the approver, on the
@@ -986,7 +1001,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			reason, findings = "the plan was invalid", append(res.Findings, t.planComments(floor)...)
+			reason, findings = "the planner filed no plan", append(res.Findings, t.planComments(floor)...)
 			continue
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
@@ -1154,9 +1169,11 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 }
 
 // RunPlan is one planner session under the pinned version, with findings,
-// the last plan and the members' answers to its questions: a valid plan
-// becomes the task's next revision, an invalid one comes back as its
-// findings.
+// the last plan and the members' answers to its questions. The session
+// answers by the file_plan tool, which checks the whole plan json while it
+// runs: RunPlan takes the filing the tool stored (FilePlan) and returns
+// it; a session that ends without filing one says so, with its last
+// message beside the finding.
 func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1187,8 +1204,9 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
+	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
+	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits, v.Document.Risk.LargeLines), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -1201,15 +1219,42 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": text})
 		return PlanResult{Escalate: text}, nil
 	}
-	p, found := readPlan(text, shape, v.Document.Limits)
-	switch {
-	case text == "":
+	if res, ok := r.takeFiled(taskID); ok {
+		return res, nil
+	}
+	found := []string{"plan: the session ended without filing a plan through the " + policy.ToolFilePlan + " tool"}
+	if text == "" {
 		found = append(found, "plan: the session ended without a last message: "+why)
-	case len(p.Cards) == 0 && len(found) > 0:
+	} else {
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
+	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
+	return PlanResult{Findings: found}, nil
+}
+
+// FilePlan is the file_plan tool's hand-over: the complete plan json of
+// the planner session that runs, checked at once under the version in
+// force. A refusal carries every finding back into the session; a valid
+// plan is stored as the task's next revision and held as the session's
+// answer, which RunPlan returns when the session ends.
+func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if t.Status != "running" {
+		return PlanResult{Findings: []string{"plan: the task is " + t.Status + ", not running"}}, nil
+	}
+	if t.Lane != policy.LanePlan {
+		return PlanResult{Findings: []string{"plan: the task is not in the plan lane"}}, nil
+	}
+	v := r.cfg.Policy()
+	shape, _, err := planShape(v, t)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits, v.Document.Risk.LargeLines)
 	if len(found) > 0 {
-		r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
 		return PlanResult{Findings: found}, nil
 	}
 	raw, sha, err := planSHA(p)
@@ -1220,12 +1265,46 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
-	step := map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha}
-	if len(answers) > 0 {
-		step["answers"] = answers
-	}
-	r.record(ctx, taskID, "plan_revision", step)
+	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha})
 	return PlanResult{Revision: n, SHA256: sha}, nil
+}
+
+// PlanFileHandler answers the gateway's file_plan tool: the running
+// planner session's complete plan json, checked and stored as the
+// session's answer. A plan the check refuses answers 200 with its
+// findings — the refusal belongs in the session, not in a status.
+func PlanFileHandler(runner *Runner) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			TaskID string `json:"task_id"`
+			Plan   string `json:"plan"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
+			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		in.Plan = strings.TrimSpace(in.Plan)
+		if in.TaskID == "" || in.Plan == "" {
+			http.Error(w, "task_id and plan are required", http.StatusBadRequest)
+			return
+		}
+		res, err := runner.FilePlan(r.Context(), in.TaskID, in.Plan)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if isTerminal(err) {
+				status = http.StatusNotFound
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(struct {
+			Revision int      `json:"revision"`
+			SHA256   string   `json:"sha256"`
+			Findings []string `json:"findings"`
+		}{res.Revision, res.SHA256, res.Findings}) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
+	}
 }
 
 // RequestPlan puts revision (0: the newest, none: a zero PlanRef) before
@@ -1359,7 +1438,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	if !ok {
 		return ChildrenResult{}, terminalError("task %s has no plan revision %d", taskID, revision)
 	}
-	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits)
+	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits, v.Document.Risk.LargeLines)
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}

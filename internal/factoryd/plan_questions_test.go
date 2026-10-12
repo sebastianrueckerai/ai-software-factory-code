@@ -30,7 +30,7 @@ func questionPlan() Plan {
 // guide gives the field's format and one sentence on it, nothing about
 // when to ask (ruling 263).
 func TestPlanQuestionsFormat(t *testing.T) {
-	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits)
+	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, 0)
 	rawWith, with, _ := planSHA(p)
 	rawWithout, without, _ := planSHA(testPlan())
 	if len(findings) != 0 || len(p.Questions) != 2 || len(p.Questions[0].Choices) != 3 || len(p.Questions[1].Choices) != 2 || with == without ||
@@ -59,11 +59,11 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"long text":         {change(func(p *Plan) { p.Questions[0].Text = strings.Repeat("q", 301) }), []string{"plan: question 1: text over 300 characters"}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
-		if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
+		if got := ValidatePlan(tc.text, testShape, testLimits, 0); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
 		}
 	}
-	g := planGuide(testShape, testLimits)
+	g := planGuide(testShape, testLimits, 0)
 	if !strings.Contains(g, `"size": "small|medium|large"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
 		!strings.Contains(g, "questions: 0 to 5 open points the spec leaves to the member, each with 2 to 5 short choices; the member's answers come back to you "+
 			"as a block of answers with your last plan, and a plan with questions cannot be accepted until they are answered.") || strings.Count(g, "question") != 3 {
@@ -260,6 +260,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	runner, _, store := newTestRunner(t, plan, kube, objects)
 	pinned := fixtureVersion(t)
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	runner.cfg.Policy = func() policy.Version { return pinned }
 	raw, sha, _ := planSHA(questionPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
 	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
@@ -275,7 +276,17 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
-	kube.scriptPods(0, resultLine(true, fencePlan(testPlan())))
+	answered := questionPlan()
+	answered.Questions = nil // the answers are in; the plan is answered whole, changed
+	answered.Summary = "Probe every 60 seconds, keep 30 days, then the plan as filed."
+	b, err := json.Marshal(answered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || f.Revision != 2 {
+		t.Fatalf("the session's filing: %+v, %v", f, err)
+	}
+	kube.scriptPods(0, resultLine(true, "done"))
 	if err := <-done; err != nil || res.Revision != 2 {
 		t.Fatalf("RunPlan: %+v, %v", res, err)
 	}
@@ -284,8 +295,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	if env["ANSWERS"] != want || !strings.Contains(env["FINDINGS"], "your last plan, revision 1") {
 		t.Fatalf("ANSWERS %s, want %s; FINDINGS %s", env["ANSWERS"], want, env["FINDINGS"])
 	}
-	if step := timelineStep(t, objects, "t-plan", "plan_revision"); fmt.Sprint(step["answers"]) !=
-		"[How often does the checker probe a site?: 60 seconds How long are the results kept?: 30 days]" {
+	if step := timelineStep(t, objects, "t-plan", "plan_revision"); step["revision"] != float64(2) {
 		t.Fatalf("plan_revision %v", step)
 	}
 }

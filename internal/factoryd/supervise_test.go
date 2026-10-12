@@ -390,7 +390,14 @@ func TestSameCallUsesTheAdapterHashForCappedArguments(t *testing.T) {
 	}
 }
 
-func TestFlipFlopTripsWhenAFileReturnsToAnEarlierContent(t *testing.T) {
+// The flip-flop detector's two halves (roadmap 184): a file's return to a
+// content it had before is only pending evidence; the trip comes when a
+// command that was failing when the file returned fails again after the
+// return. A return while nothing fails — a trial edit undone — never
+// trips, and a check that failed before the return and passes after it
+// disarms the pending flip.
+func TestFlipFlopTripsWhenAFailingCommandFailsAgainAfterAReturn(t *testing.T) {
+	const check = "go test ./..."
 	d := newTraces()
 	for _, h := range []string{"A", "A", "B"} { // rewriting the same content is no flip
 		if trip := d.observe(fileEvent("x.go", h)); trip != nil {
@@ -400,9 +407,43 @@ func TestFlipFlopTripsWhenAFileReturnsToAnEarlierContent(t *testing.T) {
 	if trip := d.observe(fileEvent("y.go", "A")); trip != nil {
 		t.Fatalf("another file with the same content tripped: %+v", trip)
 	}
-	trip := d.observe(fileEvent("x.go", "A"))
-	if trip == nil || trip.Kind != TripFlipFlop || !strings.Contains(trip.Detail, "x.go") {
-		t.Fatalf("A→B→A: trip = %+v, want flip_flop naming x.go", trip)
+	if trip := d.observe(fileEvent("x.go", "A")); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	// nothing failed when x.go returned, so no refail can complete it
+	if trip := d.observe(cmdEvent(check, 1, "FAIL: TestLinks")); trip != nil {
+		t.Fatalf("a first failure tripped: %+v", trip)
+	}
+	if trip := d.observe(cmdEvent(check, 1, "FAIL: TestLinks")); trip != nil {
+		t.Fatalf("a refail after a return that caught nothing failing tripped: %+v", trip)
+	}
+	// fail, return, fail again: the trip names the path and the command
+	d = newTraces()
+	if trip := d.observe(cmdEvent(check, 1, "FAIL: TestLinks")); trip != nil {
+		t.Fatalf("first failure tripped: %+v", trip)
+	}
+	d.observe(fileEvent("x.go", "A"))
+	d.observe(fileEvent("x.go", "B"))
+	if trip := d.observe(fileEvent("x.go", "A")); trip != nil {
+		t.Fatalf("the return tripped: %+v", trip)
+	}
+	trip := d.observe(cmdEvent(check, 1, "FAIL: TestLinks"))
+	if trip == nil || trip.Kind != TripFlipFlop || !strings.Contains(trip.Detail, "x.go") || !strings.Contains(trip.Detail, check) {
+		t.Fatalf("refail after the return = %+v, want flip_flop naming x.go and the command", trip)
+	}
+	// a check that failed before the return and passes after it disarms it
+	d = newTraces()
+	d.observe(cmdEvent(check, 1, "FAIL: TestLinks"))
+	d.observe(fileEvent("x.go", "A"))
+	d.observe(fileEvent("x.go", "B"))
+	d.observe(fileEvent("x.go", "A"))
+	if trip := d.observe(cmdEvent(check, 0, "ok")); trip != nil {
+		t.Fatalf("the pass tripped: %+v", trip)
+	}
+	for range 3 {
+		if trip := d.observe(cmdEvent(check, 1, "FAIL: TestLinks")); trip != nil {
+			t.Fatalf("a failure after a passing check tripped: %+v", trip)
+		}
 	}
 	// a change without a hash (deleted, unreadable) is no evidence
 	d = newTraces()
@@ -1144,6 +1185,7 @@ func TestNoProgressAfterMessageAsks(t *testing.T) {
 // Ruling 224: flip_flop and churn after a delivered message are circles,
 // not progress, although they write: they end the session too.
 func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
+	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
@@ -1151,7 +1193,11 @@ func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	s.Messaged(minute(1))
 	s.Event(fileEvent("a.go", "h1"), minute(2))
 	s.Event(fileEvent("a.go", "h2"), minute(3))
-	trip := s.Event(fileEvent("a.go", "h1"), minute(4))
+	s.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(3))
+	if trip := s.Event(fileEvent("a.go", "h1"), minute(4)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	trip := s.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(5))
 	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
 		t.Fatalf("trip = %+v, want flip_flop decided retry_stronger", trip)
 	}
@@ -1159,7 +1205,9 @@ func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s2.Event(fileEvent("a.go", "h1"), minute(2))
 	s2.Event(fileEvent("a.go", "h2"), minute(3))
-	if trip := s2.Event(fileEvent("a.go", "h1"), minute(4)); trip == nil || trip.decided != nil {
+	s2.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(3))
+	s2.Event(fileEvent("a.go", "h1"), minute(4))
+	if trip := s2.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(5)); trip == nil || trip.decided != nil {
 		t.Fatalf("trip = %+v, want flip_flop for the supervisor", trip)
 	}
 }
@@ -1185,9 +1233,11 @@ func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
 
 // Ruling 224: a circle of writes is not progress. A message must not clear
 // the alternation memory, so an agent that flips a file back and forth
-// across messages trips flip_flop and the stuck rule ends the session
-// (round 2's drill 4: 38 minutes of message loops on one alternating file).
+// across messages and refails its check trips flip_flop and the stuck rule
+// ends the session (round 2's drill 4: 38 minutes of message loops on one
+// alternating file).
 func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
+	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 3,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
@@ -1198,11 +1248,15 @@ func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 	}
 	s.Messaged(minute(2))
 	s.Event(fileEvent("stats_test.go", "versionB"), minute(3))
-	trip := s.Event(fileEvent("stats_test.go", "versionA"), minute(4))
+	s.Event(cmdEvent(check, 1, "FAIL: TestStats"), minute(3))
+	if trip := s.Event(fileEvent("stats_test.go", "versionA"), minute(4)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	trip := s.Event(cmdEvent(check, 1, "FAIL: TestStats"), minute(5))
 	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
 		t.Fatalf("flip back across the message = %+v, want flip_flop decided retry_stronger", trip)
 	}
-	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: flip_flop: stats_test.go returned to a content it had before, after other content in between" {
+	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: flip_flop: after stats_test.go returned to a content it had before, `"+check+"` failed again, unchanged" {
 		t.Fatalf("finding = %q", last)
 	}
 }
