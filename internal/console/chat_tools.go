@@ -534,7 +534,7 @@ var tools = []chatTool{
 		fits:   "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if in.By != "" {
-				s, err := t.c.costsByText(t.r.Context(), in.By)
+				s, err := t.c.costsByText(t.r.Context(), t.a, in.By)
 				return s, nil, err
 			}
 			s, err := t.c.spendLine(t.r.Context(), t.p)

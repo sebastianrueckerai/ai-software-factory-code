@@ -304,7 +304,10 @@ func costsWindow(now time.Time) (from, to time.Time) {
 // ledger's kind) over that window, in EUR, with the totals line; "" keeps
 // the day rows. The /costs page's day table and its cards are the same
 // rows, so the tool shows what the page shows.
-func (c *Console) costsByText(ctx context.Context, by string) (string, error) {
+func (c *Console) costsByText(ctx context.Context, a actor, by string) (string, error) {
+	if err := c.factoryAccess(ctx, a); err != nil {
+		return "", err
+	}
 	switch by {
 	case "", "day", "card", "tier":
 	default:
