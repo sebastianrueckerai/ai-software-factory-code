@@ -1188,6 +1188,54 @@ func TestParseShortstat(t *testing.T) {
 	}
 }
 
+// TestCheckpointToleratesFileRemovedDuringStaging is the contract for plan
+// #495 (roadmap 182): a file the agent deletes from the work tree while the
+// checkpoint stages it must not drop the checkpoint. git add -A fails with
+// exit status 128 on the vanished file; diff must tolerate that, use the
+// index as-is, and carry the deletion in the stat and the patch. Fails
+// until the feature card lands.
+func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n2\n3\n"), 0o644)
+	run("-C", seed, "add", "a.txt")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	run("clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, _, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// the agent removes a committed file between the checkpoint's staging steps
+	if err := os.Remove(filepath.Join(dir, "a.txt")); err != nil {
+		t.Fatal(err)
+	}
+	stat, patch, err := ck.diff(context.Background())
+	if err != nil {
+		t.Fatalf("diff with a vanished file: %v", err)
+	}
+	if stat.Files < 1 || stat.Deletions < 1 {
+		t.Fatalf("stat = %+v, want Files >= 1 and Deletions >= 1", stat)
+	}
+	if !strings.Contains(patch, "-1\n-2\n-3") || !strings.Contains(patch, "deleted file mode") {
+		t.Fatalf("patch does not carry the deletion: %q", patch)
+	}
+}
+
 func TestCheckpointLoopEmitsOnlyChanges(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
