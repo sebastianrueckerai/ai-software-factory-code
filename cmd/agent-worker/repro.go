@@ -151,13 +151,14 @@ func repro(ws string) harness.Repro {
 	return reproduce(e, filepath.Join(ws, "repo"))
 }
 
-// reproduce runs the command under sh in dir, its output (stdout and
-// stderr) tail kept. Exit -1: it could not run or ran out of time.
+// reproduce runs the command under the image's /bin/sh in dir, its output
+// (stdout and stderr) tail kept. Exit -1: it could not run or ran out of
+// time.
 func reproduce(e reproEnv, dir string) harness.Repro {
 	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
 	defer cancel()
 	out := &tailBuffer{max: maxReproOutput}
-	cmd := exec.CommandContext(ctx, "sh", "-c", e.command) // #nosec G204 -- the task's reproduction command, run on purpose in the agent-less sandbox
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", e.command) // #nosec G204 -- the task's reproduction command, run on purpose in the agent-less sandbox
 	cmd.Dir, cmd.Stdout, cmd.Stderr = dir, out, out
 	// its own process group, killed whole at the timeout
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

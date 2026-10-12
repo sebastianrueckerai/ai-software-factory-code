@@ -394,8 +394,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err != nil {
 		return ReproResult{}, err
 	}
-	cache, err := r.setupNamespace(ctx, t, base)
-	if err != nil {
+	if _, err := r.setupNamespace(ctx, t, base); err != nil {
 		return ReproResult{}, err
 	}
 	// the base first (ruling 167: the fault must show before the fix),
@@ -403,11 +402,11 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if t.SHA == "" {
 		return ReproResult{}, terminalError("task %s has no base commit to reproduce at", t.ID)
 	}
-	at, err := r.runRepro(ctx, t, cache, repo, pr, commit, t.SHA)
+	at, err := r.runRepro(ctx, t, repo, pr, commit, t.SHA)
 	if err != nil {
 		return ReproResult{}, err
 	}
-	rep, err := r.runRepro(ctx, t, cache, repo, pr, commit, "")
+	rep, err := r.runRepro(ctx, t, repo, pr, commit, "")
 	if err != nil {
 		return ReproResult{}, err
 	}
@@ -442,9 +441,9 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 // runRepro runs the task's reproduction command in one sandbox pod of the
 // task's namespace at the pull request head commit, or at a commit of its
 // history (the base) when given.
-func (r *Runner) runRepro(ctx context.Context, t Task, cache string, repo Repo, pr int64, commit, at string) (harness.Repro, error) {
+func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, pr int64, commit, at string) (harness.Repro, error) {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
-	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, cache, repo, pr, commit, at)); err != nil {
+	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, pr, commit, at)); err != nil {
 		return harness.Repro{}, fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
@@ -554,15 +553,26 @@ func fenced(s string) string {
 // token, the same labels (so the sandbox egress policy selects it), image
 // and confinement. Its fetch init container alone holds the read token and
 // leaves the head in the workspace; the container that runs the
-// agent-written command holds no token at all.
-func (r *Runner) reproPodSpec(t Task, cache string, repo Repo, pr int64, commit, at string) map[string]any {
-	pod := r.sandboxPodSpec(t, cache, []map[string]any{
+// agent-written command holds no token at all. Neither run mounts the
+// project's shared cache, where an agent may have planted a binary or a
+// build result (ruling 291): Go and npm build cold in the pod's own
+// emptyDir, with PATH naming no cache directory.
+func (r *Runner) reproPodSpec(t Task, repo Repo, pr int64, commit, at string) map[string]any {
+	pod := r.sandboxPodSpec(t, "", []map[string]any{
 		{"name": "MODE", "value": "repro"},
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
 		{"name": "REPRO_TIMEOUT", "value": strconv.Itoa(int(r.cfg.ReproTimeout.Seconds()))},
+		{"name": "GOPATH", "value": "/build/go"},
+		{"name": "GOMODCACHE", "value": "/build/go/pkg/mod"},
+		{"name": "GOCACHE", "value": "/build/go-build"},
+		{"name": "npm_config_cache", "value": "/build/npm"},
+		{"name": "PATH", "value": "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 	}, false)
 	spec := pod["spec"].(map[string]any)
+	spec["volumes"] = append(spec["volumes"].([]any), map[string]any{"name": "build", "emptyDir": map[string]any{"sizeLimit": "8Gi"}})
+	worker := spec["containers"].([]any)[0].(map[string]any)
+	worker["volumeMounts"] = append(worker["volumeMounts"].([]any), map[string]any{"name": "build", "mountPath": "/build"})
 	fetch := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	fetch["name"] = "fetch"
 	fetch["env"] = []map[string]any{

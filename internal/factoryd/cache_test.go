@@ -97,7 +97,46 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 	}
 	checkClaim(t, kube, "factory-agents-t1", "cache-agent-linkshort")
 	checkCache(t, r.workerPodSpec(task, sessionSpec{id: "s-1", cache: cache}), "cache-agent-linkshort")
-	checkCache(t, r.reproPodSpec(task, cache, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "cache-agent-linkshort")
+}
+
+// Both reproduction runs (base and head) read nothing an agent left in the
+// project's shared cache (ruling 291): Go's and npm's caches sit in the
+// pod's own emptyDir, PATH names no cache directory, and the fetch init
+// container gets the same mounts and no cache either.
+func TestReproPodHasNoSharedCache(t *testing.T) {
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	pod := r.reproPodSpec(Task{ID: "t1", Repository: "linkshort/linkshort"}, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", "b0")
+	spec := pod["spec"].(map[string]any)
+	var vols []string
+	for _, v := range spec["volumes"].([]any) {
+		vols = append(vols, string(mustJSON(v)))
+	}
+	if want := []string{`{"emptyDir":{"sizeLimit":"4Gi"},"name":"workspace"}`, `{"emptyDir":{"sizeLimit":"1Gi"},"name":"home"}`,
+		`{"emptyDir":{"sizeLimit":"1Gi"},"name":"tmp"}`, `{"emptyDir":{"sizeLimit":"8Gi"},"name":"build"}`}; !reflect.DeepEqual(vols, want) {
+		t.Errorf("volumes = %v, want %v", vols, want)
+	}
+	wantMounts := `[{"mountPath":"/workspace","name":"workspace"},{"mountPath":"/home/worker","name":"home"},{"mountPath":"/tmp","name":"tmp"},{"mountPath":"/build","name":"build"}]`
+	for _, key := range []string{"initContainers", "containers"} {
+		c := spec[key].([]any)[0].(map[string]any)
+		if got := string(mustJSON(c["volumeMounts"])); got != wantMounts {
+			t.Errorf("%s mounts = %s, want %s", key, got, wantMounts)
+		}
+	}
+	env := map[string]string{}
+	for _, e := range spec["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
+		if v, ok := e["value"].(string); ok {
+			env[e["name"].(string)] = v
+		}
+	}
+	for k, v := range map[string]string{"MODE": "repro", "GOPATH": "/build/go", "GOMODCACHE": "/build/go/pkg/mod", "GOCACHE": "/build/go-build",
+		"npm_config_cache": "/build/npm", "PATH": "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"} {
+		if env[k] != v {
+			t.Errorf("env %s = %q, want %q", k, env[k], v)
+		}
+	}
+	if b := string(mustJSON(pod)); strings.Contains(b, "/cache") || strings.Contains(b, "persistentVolumeClaim") {
+		t.Errorf("the repro pod names the shared cache: %s", b)
+	}
 }
 
 // A container's command names absolute paths: the cache volumes put
@@ -130,7 +169,7 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 			[][]any{{"/bin/sh", "-c", buildReadyScript}, runner}},
 		// the clone and the fetch init containers are copies of the worker's
 		"worker": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), [][]any{worker, worker}},
-		"repro":  {r.reproPodSpec(task, "cache-agent-linkshort", Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), [][]any{worker, worker}},
+		"repro":  {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), [][]any{worker, worker}},
 	} {
 		if got := commands(c.pod); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s commands = %q, want %q", name, got, c.want)

@@ -118,6 +118,21 @@ func TestReproduceTimesOut(t *testing.T) {
 	}
 }
 
+// The command runs under the image's /bin/sh: the PATH may lead with a
+// directory an agent wrote, where a planted sh would fake the result.
+func TestReproduceRunsTheImagesShell(t *testing.T) {
+	planted := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "planted-ran")
+	if err := os.WriteFile(filepath.Join(planted, "sh"), []byte("#!/bin/sh\ntouch "+marker+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", planted+":"+os.Getenv("PATH"))
+	got := reproduce(reproEnv{command: "exit 3", timeout: 10 * time.Second}, t.TempDir())
+	if _, err := os.Stat(marker); err == nil || got.Exit != 3 {
+		t.Fatalf("repro = %+v, planted sh ran: %v", got, err == nil)
+	}
+}
+
 func TestTailBufferKeepsTheEnd(t *testing.T) {
 	b := &tailBuffer{max: 4}
 	b.Write([]byte("abc"))

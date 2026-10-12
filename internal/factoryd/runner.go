@@ -1068,7 +1068,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 }
 
 // sandboxPodSpec is a gVisor worker pod in the task namespace; only an
-// agent session gets the gateway token. Every sandbox pod carries the
+// agent session gets the gateway token, and cache names the project's
+// shared cache claim ("" none). Every sandbox pod carries the
 // worker label the egress policy selects: without it no policy would
 // confine its egress.
 func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gatewayToken bool) map[string]any {
@@ -1098,7 +1099,10 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			}},
 		}})
 	}
-	mounts, volumes = append(mounts, cacheMounts...), append(volumes, cacheVolumes(cache)...)
+	if cache != "" {
+		mounts, volumes = append(mounts, cacheMounts...), append(volumes, cacheVolumes(cache)...)
+		env = append(env, cacheEnv...)
+	}
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
@@ -1123,7 +1127,7 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 				"name":    "worker",
 				"image":   r.cfg.WorkerImage,
 				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"},
-				"env":     append(env, cacheEnv...),
+				"env":     env,
 				"resources": map[string]any{
 					"requests": sandboxRequests,
 					"limits":   sandboxLimits,
