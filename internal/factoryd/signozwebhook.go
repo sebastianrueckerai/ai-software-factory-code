@@ -224,20 +224,9 @@ func (in *AlertIntake) fileUnlessRestartWindow(ctx context.Context, a SigNozAler
 // judgeRestartWindow records a's row as noise and reports true when name is
 // the restart-window rule firing in the factory's own namespace inside a
 // roll target's restart window (item 127); otherwise it reports false and
-// leaves filing it to the caller. Without Kube or Namespace wired there is no
-// Deployment to read: judging then panics on the nil pointer, and the 500 the
-// panic answers is what SigNoz retried until this very rule fired on
-// factoryd's own 5xx share — so an intake that cannot judge files instead.
+// leaves filing it to the caller.
 func (in *AlertIntake) judgeRestartWindow(ctx context.Context, a SigNozAlert, name, ns string) (bool, error) {
 	if name != restartWindowAlert || ns != in.Namespace {
-		return false, nil
-	}
-	if in.Kube == nil || in.Namespace == "" {
-		// an intake that cannot read the roll targets' Deployments cannot
-		// judge: file like any other rule rather than lose the alert to the
-		// panic on the nil reader
-		log.Printf("signoz webhook: alert %s in %s: no Deployment reader wired, filing without the restart-window check",
-			strconv.Quote(name), strconv.Quote(ns)) // #nosec G706 -- quoted, ns is a checked DNS label
 		return false, nil
 	}
 	dep, applied, live, inWindow, err := in.inRestartWindow(ctx, a.StartsAt)
