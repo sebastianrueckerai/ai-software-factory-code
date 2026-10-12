@@ -225,17 +225,25 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 // version (ruling 156) and every interval besides, so a hand edit in
 // Forgejo or the cluster is set back within that interval. It polls the
 // version, and reads the GitHub mirrors' states, every poll until ctx
-// ends.
+// ends. The template pass runs templateDelay after its start, then every
+// templateEvery, and at once at a new version.
 func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, poll, every time.Duration) {
-	seen, last := int64(0), time.Time{}
+	seen, last, templates := int64(0), time.Time{}, time.Now().Add(templateDelay)
 	for {
 		if v := version(); v != seen || time.Since(last) >= every {
+			if seen != 0 && v != seen {
+				templates = time.Now()
+			}
 			seen, last = v, time.Now()
 			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 		}
 		r.mirrorStates(ctx)
 		r.githubPass(ctx)
 		r.poll(ctx)
+		if !time.Now().Before(templates) {
+			templates = time.Now().Add(templateEvery)
+			r.TemplateUpdates(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -554,11 +562,7 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 		}
 		return "waiting: main's protection exists, which refuses the seed; push main's first commit", err
 	}
-	data := policy.TemplateData{Name: p.Name, Repository: p.Repository, Image: run.r.RegistryHost + "/" + p.Repository, Namespaces: map[string]string{}}
-	for _, e := range p.Environments {
-		data.Namespaces[e.Path] = e.Namespace
-	}
-	files, err := policy.RenderTemplate(p.TemplateFiles, data)
+	files, err := policy.RenderTemplate(p.TemplateFiles, run.r.templateData(p))
 	if err != nil {
 		return "", err
 	}
@@ -601,6 +605,15 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 		return "", err
 	}
 	return Change(fmt.Sprintf("created %s: %s from template %s", sha, strings.Join(slices.Sorted(maps.Keys(files)), ", "), p.Template)), nil
+}
+
+// templateData is what p's template renders with.
+func (r *Registrar) templateData(p Project) policy.TemplateData {
+	data := policy.TemplateData{Name: p.Name, Repository: p.Repository, Image: r.RegistryHost + "/" + p.Repository, Namespaces: map[string]string{}}
+	for _, e := range p.Environments {
+		data.Namespaces[e.Path] = e.Namespace
+	}
+	return data
 }
 
 // webhook keeps the hook to factoryd; the row keeps the sha256 of the

@@ -66,6 +66,17 @@ type Forgejo struct {
 	// whitelist does not); forgejo-config, factory-config's read:repository
 	// on the infra repository (ruling 183).
 	Seeded map[string]string
+	// token, when set, is the one call authenticates with instead of the
+	// bot's login (As).
+	token string
+}
+
+// As is f acting as user with token wherever it acts as the bot: its
+// branch, file, fork and pull request calls, and Fork, are user's.
+func (f *Forgejo) As(user, token string) *Forgejo {
+	g := *f
+	g.BotUser, g.BotPassword, g.token = user, "", token
+	return &g
 }
 
 // ProjectAccess is what reaches a project's repository for what.
@@ -206,6 +217,9 @@ func (f *Forgejo) RevokeToken(ctx context.Context, id int64) error {
 }
 
 func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
+	if f.token != "" {
+		return f.tokenCall(f.token)(ctx, method, path, payload, wantStatus)
+	}
 	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
 		r.SetBasicAuth(f.BotUser, f.BotPassword)
 	})
@@ -961,6 +975,7 @@ type PullRequestRef struct {
 	Mergeable bool
 	// MergeBase is the base commit Forgejo last merged the head against.
 	MergeBase string
+	Body      string
 }
 
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
@@ -972,6 +987,7 @@ type wirePR struct {
 	Mergeable bool   `json:"mergeable"`
 	MergeSHA  string `json:"merge_commit_sha"`
 	MergeBase string `json:"merge_base"`
+	Body      string `json:"body"`
 	Base      struct {
 		Ref string `json:"ref"`
 	} `json:"base"`
@@ -989,7 +1005,7 @@ type wirePR struct {
 
 func (w wirePR) ref() PullRequestRef {
 	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
-		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase}
+		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase, Body: w.Body}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login
 	}
@@ -1251,6 +1267,12 @@ func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, numb
 		return err
 	}
 	_, err = f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), payload, http.StatusCreated)
+	return err
+}
+
+// EditPullRequestBody sets pull request number's description.
+func (f *Forgejo) EditPullRequestBody(ctx context.Context, owner, repo string, number int64, body string) error {
+	_, err := f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), mustJSON(map[string]string{"body": body}), http.StatusCreated)
 	return err
 }
 
@@ -1558,11 +1580,13 @@ func (f *Forgejo) FileContent(ctx context.Context, owner, repo, ref, path string
 	return content, res.SHA, err
 }
 
-// FileChange replaces one file's content; Blob is the sha it replaces.
+// FileChange replaces one file's content; Blob is the sha it replaces,
+// "" for a file it creates. Delete deletes the file instead.
 type FileChange struct {
 	Path    string
 	Content []byte
 	Blob    string
+	Delete  bool
 }
 
 // CommitFiles writes changes as one commit on branch, or on newBranch
@@ -1571,7 +1595,14 @@ type FileChange struct {
 func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranch, message string, changes []FileChange) (string, error) {
 	files := make([]map[string]string, 0, len(changes))
 	for _, c := range changes {
-		files = append(files, map[string]string{"operation": "update", "path": c.Path, "sha": c.Blob,
+		op := "update"
+		switch {
+		case c.Delete:
+			op = "delete"
+		case c.Blob == "":
+			op = "create"
+		}
+		files = append(files, map[string]string{"operation": op, "path": c.Path, "sha": c.Blob,
 			"content": base64.StdEncoding.EncodeToString(c.Content)})
 	}
 	req := map[string]any{"branch": branch, "message": message, "files": files}
