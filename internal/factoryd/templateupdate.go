@@ -100,16 +100,13 @@ func (r *Registrar) templateUpdate(ctx context.Context, p Project) (Change, erro
 
 // openTemplateUpdate cuts the branch from main on the fork, made and
 // synced first, with want, and opens the pull request. A branch a closed
-// pull request left is deleted instead, and the pull request waits for
-// the next pass: Forgejo closes a deleted branch's pull requests in the
-// background, which could take a new one with them.
+// pull request left goes to leftBranch instead.
 func openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[string][]byte, body string) (Change, error) {
 	repo := p.Repo()
 	fork := f.Fork(repo)
 	_, err := f.BranchHeadSHA(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
 	if err == nil {
-		return Change("waiting: deleted the branch " + fork.String() + ":" + TemplateUpdateBranch + " a closed pull request left; the next pass opens a new one"),
-			f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
+		return leftBranch(ctx, f, repo, want)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return "", err
@@ -129,15 +126,41 @@ func openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[str
 	}
 	ref, err := f.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+TemplateUpdateBranch, "main", TemplateUpdateTitle, body)
 	if err != nil {
-		return "", err
+		// a branch without its pull request would read as the last one closed
+		return "", errors.Join(err, f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch))
 	}
 	return Change(fmt.Sprintf("created pull request #%d: %s", ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))), nil
 }
 
-// keepTemplateUpdate brings the open pull request's branch to want, main
-// merged in first (Forgejo merges nothing into a branch up to date), and
-// its description to body. A main that conflicts with the branch closes
-// the pull request, which the next pass opens anew from main.
+// leftBranch keeps the branch a closed pull request left when a person
+// closed it unmerged and it still holds want (ruling 296): the close stands
+// until the render changes. Otherwise it deletes the branch, and the next
+// pass opens the new pull request: Forgejo closes a deleted branch's pull
+// requests in the background, which could take a new one with them.
+func leftBranch(ctx context.Context, f *Forgejo, repo Repo, want map[string][]byte) (Change, error) {
+	fork := f.Fork(repo)
+	last, err := f.LastClosedPullRequestFrom(ctx, repo.Owner, repo.Name, f.BotUser, fork, TemplateUpdateBranch)
+	if err != nil {
+		return "", err
+	}
+	if last != nil && !last.Merged {
+		changes, err := fileChanges(ctx, f, fork, TemplateUpdateBranch, want, nil)
+		if err != nil {
+			return "", err
+		}
+		if len(changes) == 0 {
+			return Change(fmt.Sprintf("waiting: #%d closed unmerged; the template's next change reopens it", last.Number)), nil
+		}
+	}
+	return Change("waiting: deleted the branch " + fork.String() + ":" + TemplateUpdateBranch + " a closed pull request left; the next pass opens a new one"),
+		f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
+}
+
+// keepTemplateUpdate brings the open pull request's branch to want, and
+// its description to body. Main is merged in first when the branch needs
+// changes or Forgejo finds it not mergeable (Forgejo merges nothing into a
+// branch up to date); a main that conflicts with the branch closes the
+// pull request, which the next pass opens anew from main.
 func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Project, pr PullRequestRef, want map[string][]byte, body string) (Change, error) {
 	repo, fork := p.Repo(), f.Fork(p.Repo())
 	changes, err := branchChanges(ctx, f, repo, pr.Number, want)
@@ -145,7 +168,7 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 		return "", err
 	}
 	c := Unchanged
-	if len(changes) > 0 {
+	if len(changes) > 0 || !pr.Mergeable {
 		err := f.UpdatePullRequest(ctx, repo.Owner, repo.Name, pr.Number)
 		if errors.Is(err, ErrUpdateConflict) {
 			return r.closeTemplateUpdate(ctx, f, repo, pr.Number, "main conflicts with its branch; the next pass opens it anew from main")
@@ -159,9 +182,12 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 		if err != nil {
 			return "", err
 		}
-		var paths []string
+		paths := []string{}
 		for _, ch := range changes {
 			paths = append(paths, ch.Path)
+		}
+		if len(paths) == 0 {
+			paths = append(paths, "main merged in")
 		}
 		c = Change(fmt.Sprintf("updated pull request #%d: %s", pr.Number, strings.Join(paths, ", ")))
 	}
@@ -177,7 +203,7 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 }
 
 // branchChanges bring the pull request's branch to want, and every other
-// .forgejo/ or deploy/ file it changes back to main's.
+// file it changes back to main's, so its diff carries nothing else.
 func branchChanges(ctx context.Context, f *Forgejo, repo Repo, number int64, want map[string][]byte) ([]FileChange, error) {
 	files, err := f.PullRequestFiles(ctx, repo.Owner, repo.Name, number)
 	if err != nil {
@@ -186,7 +212,7 @@ func branchChanges(ctx context.Context, f *Forgejo, repo Repo, number int64, wan
 	target, gone := maps.Clone(want), []string{}
 	for _, file := range files {
 		path := file.Filename
-		if _, ok := target[path]; ok || !strings.HasPrefix(path, ".forgejo/") && !strings.HasPrefix(path, "deploy/") {
+		if _, ok := target[path]; ok {
 			continue
 		}
 		content, _, err := f.FileContent(ctx, repo.Owner, repo.Name, "main", path)
@@ -222,18 +248,23 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 	return out, nil
 }
 
-// closeTemplateUpdate closes pull request number, saying why in a comment
-// by the bot (factory-projects' token has no issue scope), and deletes its
-// branch.
+// closeTemplateUpdate deletes pull request number's branch, so none
+// outlives a close of factoryd's own (leftBranch), closes it, which
+// Forgejo also does for a deleted branch, and only then says why in a
+// comment by the bot (factory-projects' token has no issue scope): no
+// comment is posted twice.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
-	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, "factoryd: closing this pull request: "+why+"."); err != nil {
+	fork := f.Fork(repo)
+	if err := f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch); err != nil {
 		return "", err
 	}
 	if err := f.ClosePullRequest(ctx, repo.Owner, repo.Name, number); err != nil {
 		return "", err
 	}
-	fork := f.Fork(repo)
-	return Change(fmt.Sprintf("closed pull request #%d: %s", number, why)), f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
+	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, number, "factoryd: closing this pull request: "+why+"."); err != nil {
+		return "", err
+	}
+	return Change(fmt.Sprintf("closed pull request #%d: %s", number, why)), nil
 }
 
 // templateUpdateBody lists each file the pull request writes and why.

@@ -28,6 +28,7 @@ type templateForgejo struct {
 	branches map[string]map[string]string // the fork's, by name; nil: no fork
 	base     map[string]string            // main's files the branch last took
 	prs      []*templatePR
+	closes   int
 	comments []string
 	written  []string
 	writes   []string
@@ -36,6 +37,21 @@ type templateForgejo struct {
 type templatePR struct {
 	number            int64
 	head, state, body string
+	merged            bool
+	closed            int // its place in the order of closes
+}
+
+// closePR closes pull request n as a person on Forgejo does, merged or not.
+func (s *templateForgejo) closePR(n int64, merged bool) {
+	s.closes++
+	s.prs[n-1].state, s.prs[n-1].merged, s.prs[n-1].closed = "closed", merged, s.closes
+}
+
+// conflicts reports whether main and branch b changed a path differently
+// since the branch last took main.
+func (s *templateForgejo) conflicts(b map[string]string) bool {
+	theirs := changed(s.base, b)
+	return slices.ContainsFunc(changed(s.base, s.main), func(f string) bool { return slices.Contains(theirs, f) && s.main[f] != b[f] })
 }
 
 func blobOf(content string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(content)))[:12] }
@@ -93,12 +109,14 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			file(s.main, strings.TrimPrefix(p, up+"/contents/"))
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fk+"/contents/") && branch != nil:
 			file(branch, strings.TrimPrefix(p, fk+"/contents/"))
-		case r.Method == http.MethodGet && p == up+"/pulls" && q.Get("state") == "open":
+		case r.Method == http.MethodGet && p == up+"/pulls" &&
+			(q.Get("state") == "open" || q.Get("state") == "closed" && q.Get("sort") == "recentclose" && q.Get("poster") == "factory-projects"):
 			out := []map[string]any{}
-			for _, pr := range s.prs {
-				if pr.state == "open" && q.Get("page") == "1" {
-					out = append(out, map[string]any{"number": pr.number, "state": pr.state, "body": pr.body,
-						"head": map[string]any{"ref": pr.head, "repo": map[string]string{"full_name": "factory-projects/demo-app"}}})
+			for _, pr := range slices.SortedFunc(slices.Values(s.prs), func(a, b *templatePR) int { return b.closed - a.closed }) {
+				if pr.state == q.Get("state") && q.Get("page") == "1" {
+					out = append(out, map[string]any{"number": pr.number, "state": pr.state, "body": pr.body, "merged": pr.merged,
+						"mergeable": !s.conflicts(s.branches[pr.head]),
+						"head":      map[string]any{"ref": pr.head, "repo": map[string]string{"full_name": "factory-projects/demo-app"}}})
 				}
 			}
 			json.NewEncoder(w).Encode(out)
@@ -120,14 +138,11 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/update") && q.Get("style") == "merge":
 			b := s.branches[pr().head]
-			ours, theirs := changed(s.base, s.main), changed(s.base, b)
-			for _, f := range ours {
-				if slices.Contains(theirs, f) && s.main[f] != b[f] {
-					w.WriteHeader(http.StatusConflict)
-					return
-				}
+			if s.conflicts(b) {
+				w.WriteHeader(http.StatusConflict)
+				return
 			}
-			for _, f := range ours {
+			for _, f := range changed(s.base, s.main) {
 				if c, ok := s.main[f]; ok {
 					b[f] = c
 				} else {
@@ -139,8 +154,8 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			if v, ok := body["body"].(string); ok {
 				pr().body = v
 			}
-			if v, ok := body["state"].(string); ok {
-				pr().state = v
+			if body["state"] == "closed" && pr().state == "open" {
+				s.closePR(pr().number, false)
 			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{})
@@ -174,8 +189,8 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			if r.Method == http.MethodDelete {
 				delete(s.branches, name)
 				for _, pr := range s.prs {
-					if pr.head == name {
-						pr.state = "closed"
+					if pr.head == name && pr.state == "open" {
+						s.closePR(pr.number, false)
 					}
 				}
 				w.WriteHeader(http.StatusNoContent)
@@ -202,6 +217,9 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 				if b[path] = content; op["operation"] == "delete" {
 					delete(b, path)
 				}
+				if m, ok := s.main[path]; !strings.HasPrefix(path, ".forgejo/") && !strings.HasPrefix(path, "deploy/") && (m != b[path] || ok != (op["operation"] != "delete")) {
+					t.Errorf("the pass wrote %s other than main has it", path)
+				}
 				s.written = append(s.written, path)
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -216,8 +234,8 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 }
 
 // templateRig is demo-app, ready, on template ts-go, with main holding
-// main's files, and a Registrar on the scripted Forgejo. Every test ends
-// with no path written outside .forgejo/ and deploy/.
+// main's files, and a Registrar on the scripted Forgejo. A path outside
+// .forgejo/ and deploy/ is only ever written back to main's.
 func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Registrar, *memProjects) {
 	fj := &templateForgejo{main: main}
 	srv := fj.server(t)
@@ -235,13 +253,6 @@ func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Regis
 	store := &memProjects{m: map[string]Project{"demo-app": p}}
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
 	reg := &Registrar{Forgejo: f, Store: store, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects"}
-	t.Cleanup(func() {
-		for _, w := range fj.written {
-			if !strings.HasPrefix(w, ".forgejo/") && !strings.HasPrefix(w, "deploy/") {
-				t.Errorf("the pass wrote %s", w)
-			}
-		}
-	})
 	return fj, reg, store
 }
 
@@ -338,8 +349,9 @@ func TestTemplateUpdateLeavesEqualMain(t *testing.T) {
 
 // A second pass with the pull request open after the template changed and
 // main moved merges main in and brings the branch to the new render: ci.yml
-// back to main's, smoke.sh the new one; no second pull request. A third
-// pass writes nothing.
+// back to main's, smoke.sh the new one, and what someone else put on the
+// branch back to main's; no second pull request. A third pass writes
+// nothing.
 func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 	fj, reg, store := templateRig(t, stage15Main())
 	ctx := context.Background()
@@ -349,6 +361,7 @@ func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 	p.TemplateFiles[".forgejo/workflows/ci.yml"], p.TemplateFiles["deploy/smoke.sh"] = "image: [[.Image]]\n", "curl -f [[.Name]]\n"
 	store.m["demo-app"] = p
 	fj.main["cmd/server/main.go"] = "package main // ours, later\n"
+	fj.branches[TemplateUpdateBranch]["README.md"], fj.branches[TemplateUpdateBranch]["AGENTS.md"] = "planted\n", "# planted\n"
 	logs := captureLog(t)
 	reg.TemplateUpdates(ctx)
 	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{"deploy/smoke.sh": "curl -f demo-app\n"}; !reflect.DeepEqual(got, want) {
@@ -357,7 +370,7 @@ func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 	if len(fj.prs) != 1 || fj.prs[0].state != "open" || fj.prs[0].body != templateBody("- `deploy/smoke.sh`: missing\n") {
 		t.Errorf("pull requests %+v", fj.prs)
 	}
-	if !strings.Contains(logs.String(), "project demo-app: template update: updated pull request #1: .forgejo/workflows/ci.yml, deploy/smoke.sh\n") {
+	if !strings.Contains(logs.String(), "project demo-app: template update: updated pull request #1: .forgejo/workflows/ci.yml, AGENTS.md, deploy/smoke.sh, README.md\n") {
 		t.Errorf("log:\n%s", logs)
 	}
 	writes := len(fj.writes)
@@ -367,16 +380,21 @@ func TestTemplateUpdateKeepsItsPullRequest(t *testing.T) {
 	}
 }
 
-// Files on main that now equal the render close the open pull request
-// with the bot's comment, and its branch goes.
+// Files on main that now equal the render close the open pull request:
+// its branch goes, then the close, then the bot's comment, so a failed
+// close repeats no comment.
 func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	fj, reg, _ := templateRig(t, stage15Main())
 	ctx := context.Background()
 	reg.TemplateUpdates(ctx)
 	fj.main[".forgejo/workflows/ci.yml"] = renderedCI
 	fj.main["deploy/smoke.sh"] = renderedSmoke
-	logs := captureLog(t)
+	writes, logs := len(fj.writes), captureLog(t)
 	reg.TemplateUpdates(ctx)
+	if want := []string{"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
+		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok", "POST /api/v1/repos/demo-app/demo-app/issues/1/comments by basic factory-agent"}; !slices.Equal(fj.writes[writes:], want) {
+		t.Errorf("writes %q\nwant %q", fj.writes[writes:], want)
+	}
 	if fj.prs[0].state != "closed" || fj.branches[TemplateUpdateBranch] != nil {
 		t.Errorf("pull request %+v, branch %v", fj.prs[0], fj.branches[TemplateUpdateBranch])
 	}
@@ -388,32 +406,30 @@ func TestTemplateUpdateClosesWhenMainEquals(t *testing.T) {
 	}
 }
 
-// A main that conflicts with the branch closes the pull request; the next
-// pass opens a new one from main. A branch a merged pull request left is
+// A main that changes a file the branch changes, the template unchanged,
+// conflicts with it: the pass closes the pull request, and the next pass
+// opens a new one from main. A branch a merged pull request left is
 // deleted, and the pass after opens the new pull request.
 func TestTemplateUpdateStartsAnew(t *testing.T) {
 	fj, reg, store := templateRig(t, stage15Main())
 	ctx := context.Background()
 	reg.TemplateUpdates(ctx)
 	fj.main[".forgejo/workflows/ci.yml"] = "image: by hand\n"
-	p := store.m["demo-app"]
-	p.TemplateFiles = maps.Clone(p.TemplateFiles)
-	p.TemplateFiles["deploy/smoke.sh"] = "curl -f [[.Name]]\n"
-	store.m["demo-app"] = p
 	reg.TemplateUpdates(ctx)
-	if fj.prs[0].state != "closed" || len(fj.prs) != 1 || len(fj.comments) != 1 ||
-		!strings.Contains(fj.comments[0], "main conflicts with its branch; the next pass opens it anew from main") {
+	if want := []string{"#1 by basic factory-agent: factoryd: closing this pull request: main conflicts with its branch; the next pass opens it anew from main."}; fj.prs[0].state != "closed" || len(fj.prs) != 1 || fj.branches[TemplateUpdateBranch] != nil || !slices.Equal(fj.comments, want) {
 		t.Fatalf("pull requests %+v, comments %q", fj.prs, fj.comments)
 	}
 	reg.TemplateUpdates(ctx)
-	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{".forgejo/workflows/ci.yml": renderedCI, "deploy/smoke.sh": "curl -f demo-app\n"}; len(fj.prs) != 2 || !reflect.DeepEqual(got, want) {
+	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{".forgejo/workflows/ci.yml": renderedCI, "deploy/smoke.sh": renderedSmoke}; len(fj.prs) != 2 || !reflect.DeepEqual(got, want) {
 		t.Fatalf("pull requests %+v, proposed %q", fj.prs, got)
 	}
 	// an approver merges #2; Forgejo keeps its branch
 	for path, c := range fj.proposed(TemplateUpdateBranch) {
 		fj.main[path] = c
 	}
-	fj.prs[1].state = "closed"
+	fj.closePR(2, true)
+	p := store.m["demo-app"]
+	p.TemplateFiles = maps.Clone(p.TemplateFiles)
 	p.TemplateFiles[".forgejo/workflows/ci.yml"] = "image: [[.Image]]\n"
 	store.m["demo-app"] = p
 	logs := captureLog(t)
@@ -424,6 +440,35 @@ func TestTemplateUpdateStartsAnew(t *testing.T) {
 	}
 	reg.TemplateUpdates(ctx)
 	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{".forgejo/workflows/ci.yml": "image: git.aisoftwarefactory.world/demo-app/demo-app\n"}; len(fj.prs) != 3 || !reflect.DeepEqual(got, want) {
+		t.Errorf("pull requests %+v, proposed %q", fj.prs, got)
+	}
+}
+
+// Ruling 296: an approver's close stands while the branch holds the
+// render; no pass deletes or reopens it. A change of the render deletes the
+// branch, and the next pass opens a new pull request.
+func TestTemplateUpdateRespectsAClose(t *testing.T) {
+	fj, reg, store := templateRig(t, stage15Main())
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	fj.closePR(1, false)
+	writes, logs := len(fj.writes), captureLog(t)
+	reg.TemplateUpdates(ctx)
+	reg.TemplateUpdates(ctx)
+	if len(fj.writes) != writes || len(fj.prs) != 1 || fj.branches[TemplateUpdateBranch] == nil ||
+		strings.Count(logs.String(), "project demo-app: template update: waiting: #1 closed unmerged; the template's next change reopens it\n") != 2 {
+		t.Fatalf("writes %v, pull requests %+v\n%s", fj.writes[writes:], fj.prs, logs)
+	}
+	p := store.m["demo-app"]
+	p.TemplateFiles = maps.Clone(p.TemplateFiles)
+	p.TemplateFiles["deploy/smoke.sh"] = "curl -f [[.Name]]\n"
+	store.m["demo-app"] = p
+	reg.TemplateUpdates(ctx)
+	if fj.branches[TemplateUpdateBranch] != nil || len(fj.prs) != 1 {
+		t.Fatalf("branch %v, pull requests %+v", fj.branches[TemplateUpdateBranch], fj.prs)
+	}
+	reg.TemplateUpdates(ctx)
+	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{".forgejo/workflows/ci.yml": renderedCI, "deploy/smoke.sh": "curl -f demo-app\n"}; len(fj.prs) != 2 || fj.prs[1].state != "open" || !reflect.DeepEqual(got, want) {
 		t.Errorf("pull requests %+v, proposed %q", fj.prs, got)
 	}
 }

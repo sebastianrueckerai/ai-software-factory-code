@@ -1059,6 +1059,28 @@ func (f *Forgejo) FindOpenPullRequestForBranch(ctx context.Context, owner, repo 
 	return nil, nil
 }
 
+// LastClosedPullRequestFrom is the pull request from branch on headRepo
+// into owner/repo that closed last among poster's 50 closed last, or nil.
+// (Forgejo 15's base and head lookup answers the oldest.)
+func (f *Forgejo) LastClosedPullRequestFrom(ctx context.Context, owner, repo, poster string, headRepo Repo, branch string) (*PullRequestRef, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls?state=closed&sort=recentclose&poster=%s&page=1&limit=50", owner, repo, url.QueryEscape(poster))
+	body, err := f.call(ctx, http.MethodGet, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var prs []wirePR
+	if err := json.Unmarshal(body, &prs); err != nil {
+		return nil, fmt.Errorf("forgejo closed pull requests of %s/%s: %w", owner, repo, err)
+	}
+	for _, pr := range prs {
+		if pr.Head.Ref == branch && pr.Head.Repo.FullName == headRepo.String() {
+			ref := pr.ref()
+			return &ref, nil
+		}
+	}
+	return nil, nil
+}
+
 // FindPullRequestByHead is owner/repo's pull request from branch on headRepo
 // into base, whatever its state, or nil. Reconcile uses it while no number
 // is recorded: a crash between opening the pull request and recording it
