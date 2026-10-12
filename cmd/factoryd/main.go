@@ -331,6 +331,7 @@ func main() {
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it)
 	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
+		Kube: kube, Namespace: kube.Namespace(),
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
