@@ -111,8 +111,9 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 	return nil
 }
 
-// open opens the pull request from branch on fork, which it cuts from main
-// with the files of diffs unless a closed pull request left it.
+// open opens the pull request from branch on fork, which it cuts afresh
+// from main with the files of diffs: a branch a closed pull request left
+// may hold other content, or none once main took it.
 func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs []policy.SchemaDifference) (*PullRequestRef, error) {
 	repo, title := c.Config.Repo, "Schema copies for "+c.Build
 	want, why := map[string][]byte{}, map[string]string{}
@@ -123,11 +124,10 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 			why[path] = "missing"
 		}
 	}
-	_, err := c.Forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch)
-	if errors.Is(err, ErrNotFound) {
-		err = c.cut(ctx, fork, branch, title, want)
+	if err := c.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
+		return nil, err
 	}
-	if err != nil {
+	if err := c.cut(ctx, fork, branch, title, want); err != nil {
 		return nil, err
 	}
 	var body strings.Builder

@@ -120,12 +120,17 @@ func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
 		case p == schemaFork+"/sync_fork" && r.Method == http.MethodPost:
 			s.branches["main"] = maps.Clone(s.main)
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaFork+"/branches/"):
-			if s.branches[strings.TrimPrefix(p, schemaFork+"/branches/")] == nil {
+		case strings.HasPrefix(p, schemaFork+"/branches/"):
+			name := strings.TrimPrefix(p, schemaFork+"/branches/")
+			switch {
+			case s.branches[name] == nil:
 				http.NotFound(w, r)
-				return
+			case r.Method == http.MethodDelete:
+				delete(s.branches, name)
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				fmt.Fprint(w, `{"commit":{"id":"b"}}`)
 			}
-			fmt.Fprint(w, `{"commit":{"id":"b"}}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaFork+"/contents/") && s.branches[q.Get("ref")] != nil:
 			c, ok := s.branches[q.Get("ref")][strings.TrimPrefix(p, schemaFork+"/contents/")]
 			if !ok {
@@ -197,8 +202,8 @@ func (s *schemaForgejo) state() ([]schemaPR, []string, []string) {
 
 // a stale and a missing copy: one pull request by the bot from its fork's
 // factory/schema-0123456789ab, writing exactly those two files whole; the
-// next boot opens none, and after a person closes it the boot after opens
-// it again from the branch it left
+// next boot opens none, and after a person closes it the boot after cuts
+// the branch afresh and opens it again
 func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 	fj, c := schemaRig(t, func(main map[string]string) {
 		main["factory/schema/policy.schema.json"] = "{}\n"
@@ -238,15 +243,19 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 
 	fj.mu.Lock()
 	fj.prs[0].state = "closed"
+	fj.branches["factory/schema-0123456789ab"] = maps.Clone(fj.main) // as if main had taken it
 	fj.mu.Unlock()
 	if err := c.SyncOnce(ctx, 1, 0); err != nil {
 		t.Fatal(err)
 	}
 	want = append(want, want[0])
 	want[0].state, want[1].number = "closed", 2
-	writes = append(writes, "POST "+schemaUp+"/pulls by bot")
+	writes = append(writes, "DELETE "+schemaFork+"/branches/factory/schema-0123456789ab by bot", "POST "+schemaFork+"/contents by bot", "POST "+schemaUp+"/pulls by bot")
 	if prs, _, got := fj.state(); !reflect.DeepEqual(prs, want) || !reflect.DeepEqual(got, writes) {
 		t.Fatalf("after a close: pull requests %+v, writes %q;\nwant %+v, %q", prs, got, want, writes)
+	}
+	if got := changed(fj.main, fj.branch("factory/schema-0123456789ab")); !reflect.DeepEqual(got, []string{"factory/schema/policy.schema.json", "factory/schema/process.schema.json"}) {
+		t.Fatalf("the cut afresh branch changes %v", got)
 	}
 }
 
