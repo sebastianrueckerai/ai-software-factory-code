@@ -241,7 +241,7 @@ type session struct {
 // getRoutes, which the parity test reads.
 type getRoute struct {
 	pattern string
-	handler http.Handler
+	handler http.HandlerFunc
 	tool    string
 	none    string
 }
@@ -252,28 +252,76 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
-		{"GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)), "", "the static files"},
+		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
+			http.StripPrefix("/static/", http.FileServerFS(static)).ServeHTTP(w, r)
+		}, "", "the static files"},
 		{"GET /login", http.HandlerFunc(c.login), "", "the sign-in page: no chat before a session"},
 		{"GET /auth/callback", http.HandlerFunc(c.callback), "", "the OAuth provider's callback: no page"},
-		{"GET /{$}", c.auth(c.board), "board", ""},
-		{"GET /board", c.auth(c.board), "board", ""},
-		{"GET /tasks/new", c.auth(c.factory(c.newTaskForm)), "", "the new task's form: the chat files cards (new_card), not tasks"},
-		{"GET /tasks/{id}/timeline", c.auth(c.timeline), "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
-		{"GET /costs", c.auth(c.factory(c.costs)), "costs", ""},
-		{"GET /policy", c.auth(c.factory(c.policy)), "policy", ""},
-		{"GET /resources", c.auth(c.factory(c.resources)), "resources", ""},
-		{"GET /alerts", c.auth(c.factory(c.alerts)), "alerts", ""},
-		{"GET /projects", c.auth(c.factory(c.projects)), "projects", ""},
-		{"GET /projects/new", c.auth(c.factory(c.newProjectForm)), "", "the new project's form: the chat creates no project"},
-		{"GET /projects/{name}/status", c.auth(c.factory(c.projectStatus)), "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
-		{"GET /projects/{name}/events", c.auth(c.projectEvents), "", "a project's event feed fragment: the history tool reads the chat project's events"},
-		{"GET /projects/{name}/events/stream", c.auth(c.projectEventsStream), "", "the event stream: the live half of the events fragment"},
-		{"GET /cards/{id}", c.auth(c.cardFragment), "", "a card's face: a fragment of the board page, whose tool is card"},
-		{"GET /cards/{id}/drawer", c.auth(c.cardDrawer), "", "a card's drawer: a fragment of the board page, whose tool is card"},
-		{"GET /projects/{name}/chat", c.auth(c.chatGet), "", "the chat's own page"},
-		{"GET /projects/{name}/chat/conversations", c.auth(c.chatConversations), "", "the chat's conversation list: the chat's own route"},
-		{"GET /projects/{name}/pulse", c.auth(c.pulseGet), "", "the pulse sentence: every turn's starting context carries it"},
+		{"GET /{$}", c.board, "board", ""},
+		{"GET /board", c.board, "board", ""},
+		{"GET /tasks/new", c.newTaskForm, "", "the new task's form: the chat files cards (new_card), not tasks"},
+		{"GET /tasks/{id}/timeline", c.timeline, "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
+		{"GET /costs", c.costs, "costs", ""},
+		{"GET /policy", c.policy, "policy", ""},
+		{"GET /resources", c.resources, "resources", ""},
+		{"GET /alerts", c.alerts, "alerts", ""},
+		{"GET /projects", c.projects, "projects", ""},
+		{"GET /projects/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
+		{"GET /projects/{name}/status", c.projectStatus, "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
+		{"GET /projects/{name}/events", c.projectEvents, "", "a project's event feed fragment: the history tool reads the chat project's events"},
+		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
+		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
+		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
+		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
+		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
+		{"GET /projects/{name}/pulse", c.pulseGet, "", "the pulse sentence: every turn's starting context carries it"},
 	}, nil
+}
+
+// postRoute is one POST route beside its GETs: the handler New registers
+// under the access table's rule, and when, for the routes the
+// configuration offers (the export forms).
+type postRoute struct {
+	pattern string
+	handler http.Handler
+	when    func() bool
+}
+
+// postRoutes is every POST route the console answers; the access table
+// holds each one's rule and New refuses a route missing from it.
+func (c *Console) postRoutes() []postRoute {
+	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
+	return []postRoute{
+		{"POST /logout", http.HandlerFunc(c.logout), nil},
+		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
+		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
+		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
+		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
+		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
+		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
+		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
+		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
+		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
+		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
+		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
+		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
+		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
+		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
+		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
+		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
+		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
+		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
+		{"POST /projects", http.HandlerFunc(c.createProject), nil},
+		{"POST /projects/{name}/merge", http.HandlerFunc(c.mergeProject), nil},
+		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
+		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
+		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
+		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
+		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},
+		{"POST /projects/{name}/export", http.HandlerFunc(c.githubExport), mirrors},
+		{"POST /projects/{name}/export/remove", http.HandlerFunc(c.removeGithubExport), mirrors},
+		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},
+	}
 }
 
 // New builds the console handler.
@@ -297,40 +345,15 @@ func New(cfg Config) (*Console, error) {
 		return nil, err
 	}
 	for _, g := range gets {
-		c.mux.Handle(g.pattern, g.handler)
+		c.mux.Handle(g.pattern, c.route(g.pattern, g.handler))
 	}
-	c.mux.Handle("POST /logout", c.auth(c.logout))
-	c.mux.Handle("POST /tasks", c.auth(c.factory(c.createTask)))
-	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
-	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
-	c.mux.Handle("POST /tasks/{id}/accent", c.auth(c.setAccent))
-	c.mux.Handle("POST /cards/{id}/lane", c.auth(c.moveCard))
-	c.mux.Handle("POST /tasks/{id}/start-plan", c.auth(c.startPlan))
-	c.mux.Handle("POST /tasks/{id}/plan/accept", c.auth(c.acceptPlan))
-	c.mux.Handle("POST /tasks/{id}/plan/answer", c.auth(c.planAnswer))
-	c.mux.Handle("POST /tasks/{id}/plan/changes", c.auth(c.planChanges))
-	c.mux.Handle("POST /tasks/{id}/plan/reject", c.auth(c.rejectPlan))
-	c.mux.Handle("POST /tasks/{id}/retry", c.auth(c.retryCard))
-	c.mux.Handle("POST /tasks/{id}/close", c.auth(c.closeCard))
-	c.mux.Handle("POST /tasks/{id}/steer", c.auth(c.steerCard))
-	c.mux.Handle("POST /tasks/{id}/split", c.auth(c.splitCard))
-	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
-	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
-	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.resourceButton(c.doPromoteResource)))
-	c.mux.Handle("POST /resources/{id}/release", c.auth(c.resourceButton(c.doReleaseResource)))
-	c.mux.Handle("POST /projects", c.auth(c.factory(c.spend("add a project", c.createProject))))
-	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.factory(c.spend("merge a project's file", c.mergeProject))))
-	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
-	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
-	c.mux.Handle("POST /projects/{name}/chat/new", c.auth(c.chatNew))
-	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
-	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
-	if cfg.Mirrors != nil {
-		c.mux.Handle("POST /projects/{name}/export", c.auth(c.githubExport))
-		c.mux.Handle("POST /projects/{name}/export/remove", c.auth(c.removeGithubExport))
+	for _, p := range c.postRoutes() {
+		if p.when == nil || p.when() {
+			c.mux.Handle(p.pattern, c.route(p.pattern, p.handler))
+		}
 	}
-	if cfg.GitHubSync != nil {
-		c.mux.Handle("POST /projects/{name}/export/sync", c.auth(c.githubSync))
+	if err := c.checkAccess(); err != nil {
+		return nil, err
 	}
 	return c, nil
 }
@@ -532,18 +555,6 @@ func (c *Console) writer(ctx context.Context, user string) (admitted, factory bo
 	return admitted, slices.Contains(lists.by[lists.own], user), nil
 }
 
-// factory refuses a factory-level page to anyone but the writers of the
-// factory's own code project.
-func (c *Console) factory(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := c.factoryAccess(r.Context(), button(r)); err != nil {
-			c.fail(w, r, err)
-			return
-		}
-		next(w, r)
-	}
-}
-
 // factoryAccess refuses a factory-level page, read or action to anyone but
 // the writers of the factory's own code project (ruling 254).
 func (c *Console) factoryAccess(ctx context.Context, a actor) error {
@@ -595,19 +606,6 @@ func (c *Console) inForce(ctx context.Context) (policy.Version, bool) {
 		return policy.Version{}, false
 	}
 	return v, true
-}
-
-// spend refuses a factory-level spend action to anyone but the factory's
-// approvers.
-func (c *Console) spend(what string, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !c.approver(r) {
-			log.Printf("console: %s is no approver: %s refused", current(r).user, what)
-			http.Error(w, "Only the factory's approvers may authorize spend.", http.StatusForbidden)
-			return
-		}
-		next(w, r)
-	}
 }
 
 // newSession stores s as a row of console_sessions under the SHA-256 hex

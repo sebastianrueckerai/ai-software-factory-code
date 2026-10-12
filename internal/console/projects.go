@@ -585,12 +585,9 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	return note, nil
 }
 
-// exportable refuses a GitHub export of project p unless a approves it
-// and p is no seed project.
+// exportable refuses a GitHub export of a seed project; the access
+// table has judged the approver.
 func (c *Console) exportable(ctx context.Context, a actor, p factoryd.Project) error {
-	if err := c.approves(ctx, a, p.Repository, "export it to GitHub"); err != nil {
-		return err
-	}
 	if p.Objects != policy.ObjectsFactory {
 		return refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)")
 	}
@@ -608,9 +605,6 @@ func (c *Console) exportForm(project string) string {
 // it failed, is one github_synced event and the export row's last sync.
 // An approver's action, as it reads with the export's token.
 func (c *Console) doGithubSync(ctx context.Context, a actor, p factoryd.Project) (string, error) {
-	if err := c.approves(ctx, a, p.Repository, "sync it from GitHub"); err != nil {
-		return "", err
-	}
 	_, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
 	switch {
 	case err != nil:
@@ -640,9 +634,6 @@ func (c *Console) githubSync(w http.ResponseWriter, r *http.Request) {
 // doRemoveGithubExport deletes project p's push mirror to GitHub and its
 // row: an approver's action.
 func (c *Console) doRemoveGithubExport(ctx context.Context, a actor, p factoryd.Project) (string, error) {
-	if err := c.approves(ctx, a, p.Repository, "remove its GitHub export"); err != nil {
-		return "", err
-	}
 	m, ok, err := c.cfg.Mirrors.Mirror(ctx, p.Name, factoryd.MirrorExport)
 	switch {
 	case err != nil:
@@ -695,7 +686,7 @@ func (c *Console) removeGithubExport(w http.ResponseWriter, r *http.Request) {
 // projectAction runs do on the project the path names, which the member
 // writes, and sends them back to the projects page.
 func (c *Console) projectAction(w http.ResponseWriter, r *http.Request, do func(factoryd.Project) (string, error)) {
-	p, ok := c.writtenProject(w, r)
+	p, ok := c.pathProject(w, r)
 	if !ok {
 		return
 	}

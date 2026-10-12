@@ -299,8 +299,8 @@ func TestMovePostAddsLabelAsHuman(t *testing.T) {
 		want      string
 		wantState int
 	}{
-		{ak, as.csrf, "t-b", "ready", "Lane ready takes cards from writers of sf/code.", http.StatusForbidden},
-		{ak, as.csrf, "t-c2", "ready", "Lane ready takes cards from the approvers.", http.StatusForbidden},
+		{ak, as.csrf, "t-b", "ready", "you write no project of task t-b", http.StatusForbidden},
+		{ak, as.csrf, "t-c2", "ready", "you write no project of task t-c2", http.StatusForbidden},
 		{ck, s.csrf, "t-c2", "plan", "Lane plan takes no card of a plan: plans do not nest.", http.StatusForbidden},
 		{ck, s.csrf, "t-run", "ready", "Card #11 runs an agent session, not the backlog: steer sends its session a message; its pull request comes when the session ends.",
 			http.StatusForbidden},

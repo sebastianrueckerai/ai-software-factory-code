@@ -37,8 +37,8 @@ func routeParity(c *Console, routes []getRoute) error {
 	return errors.Join(errs...)
 }
 
-// handBuilt is a GET or methodless route registered outside getRoutes.
-var handBuilt = regexp.MustCompile(`mux\.Handle(Func)?\("(GET )?/`)
+// handBuilt is a route registered outside getRoutes and postRoutes.
+var handBuilt = regexp.MustCompile(`mux\.Handle(Func)?\("(GET |POST )?/`)
 
 // Every GET route comes from getRoutes and names a tool or an exception
 // (ruling 263). Each tool answers alice, who writes the factory's code,
@@ -52,6 +52,9 @@ func TestEveryConsolePageIsAChatTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := routeParity(r.c, routes); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.checkAccess(); err != nil {
 		t.Fatal(err)
 	}
 	files, err := filepath.Glob("*.go")
@@ -83,7 +86,10 @@ func TestEveryConsolePageIsAChatTool(t *testing.T) {
 			}
 			rec := r.do(httptest.NewRequest(http.MethodGet, strings.ReplaceAll(strings.TrimPrefix(rt.pattern, "GET "), "{$}", ""), nil), ck)
 			tool, _ := r.c.chatTool(rt.tool)
-			_, _, err := tool.run(trn, args[rt.tool])
+			err := trn.admitTool(tool.name, args[rt.tool])
+			if err == nil {
+				_, _, err = tool.run(trn, args[rt.tool])
+			}
 			var no *refusal
 			switch page := strings.TrimSpace(rec.Body.String()); {
 			case rec.Code == http.StatusOK && err != nil:
@@ -104,14 +110,15 @@ func TestParityCatchesMissingRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = routeParity(r.c, append(routes, getRoute{pattern: "GET /escapee", handler: r.c.auth(r.c.board)},
-		getRoute{pattern: "GET /ghost", handler: r.c.auth(r.c.board), tool: "ghost"}))
+	err = routeParity(r.c, append(routes, getRoute{pattern: "GET /escapee", handler: r.c.board},
+		getRoute{pattern: "GET /ghost", handler: r.c.board, tool: "ghost"}))
 	want := "GET /escapee names neither a tool nor an exception\nGET /ghost names tool ghost, which the agent is not offered"
 	if err == nil || err.Error() != want {
 		t.Fatalf("parity over the table and two bad routes = %v, want %q", err, want)
 	}
-	if !handBuilt.MatchString(`c.mux.Handle("GET /escapee", c.auth(c.board))`) {
-		t.Fatal("a GET route registered by hand escapes the check")
+	if !handBuilt.MatchString(`c.mux.Handle("GET /escapee", c.auth(c.board))`) ||
+		!handBuilt.MatchString(`c.mux.Handle("POST /escapee", c.auth(c.board))`) {
+		t.Fatal("a route registered by hand escapes the check")
 	}
 }
 

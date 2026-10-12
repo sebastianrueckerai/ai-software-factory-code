@@ -82,13 +82,13 @@ type turn struct {
 
 // chatTurn is the request's turn on the project's chat; false once a
 // refusal is written: 404 without the chat's store and model or for no
-// such project, 403 for a member who does not write it.
+// such project. The route's access-table rule has judged the writer.
 func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool) {
 	if c.cfg.Chat == nil || c.cfg.Operator == nil {
 		http.NotFound(w, r)
 		return nil, false
 	}
-	p, ok := c.writtenProject(w, r)
+	p, ok := c.pathProject(w, r)
 	if !ok {
 		return nil, false
 	}
@@ -319,6 +319,10 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	case json.Unmarshal([]byte(cmp.Or(call.Arguments, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	case slices.Contains(t.cfg.Confirm, tool.name):
+		if err := t.admitTool(tool.name, in); err != nil {
+			result = "Refused: " + t.sentence(err)
+			break
+		}
 		asked := in
 		desc, err := t.describe(tool, &in)
 		if err != nil {
@@ -352,6 +356,11 @@ const tokenMask = "[token]"
 // undo, when it has one.
 func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 	start := time.Now()
+	if err := t.admitTool(tool.name, in); err != nil {
+		result := "Refused: " + t.sentence(err)
+		t.block(tool.name, args, time.Since(start), result)
+		return result
+	}
 	out, inv, err := tool.run(t, in)
 	result := out
 	if err != nil {
@@ -459,7 +468,11 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 	in := toolInput{undo: true}
 	out, err := "", error(refuse(http.StatusNotFound, "There is no tool "+u.Tool+"."))
 	if i := slices.IndexFunc(tools, func(tool chatTool) bool { return tool.name == u.Tool }); i >= 0 && json.Unmarshal(u.Args, &in) == nil {
-		out, _, err = tools[i].run(t, in)
+		if e := t.admitTool(tools[i].name, in); e != nil {
+			out, err = "", e
+		} else {
+			out, _, err = tools[i].run(t, in)
+		}
 	}
 	result := out
 	if err != nil {

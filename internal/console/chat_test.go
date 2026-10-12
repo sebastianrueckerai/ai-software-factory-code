@@ -1019,7 +1019,7 @@ func TestChatRefusesANonWriter(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.as(t, "carol")
 	if code, body, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}}); code != http.StatusForbidden ||
-		body[0] != "you write no project ai-software-factory-code" {
+		body[0] != "you write no project of ai-software-factory-code" {
 		t.Fatalf("POST by a non-writer = %d %q", code, body)
 	}
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); rec.Code != http.StatusForbidden {
@@ -1256,7 +1256,7 @@ func TestChatNewConversation(t *testing.T) {
 	}
 	ak, as := r.as(t, "carol")
 	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/new", nil); code != http.StatusForbidden ||
-		body[0] != "you write no project ai-software-factory-code" {
+		body[0] != "you write no project of ai-software-factory-code" {
 		t.Fatalf("POST /chat/new by a non-writer = %d %q, want 403", code, body)
 	}
 }

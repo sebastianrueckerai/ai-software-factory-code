@@ -101,12 +101,11 @@ func (c *Console) projectRepository(r *http.Request, name string) string {
 	return name + "/" + name
 }
 
-// writtenProject is the project the path names when the session's human
-// writes it; false once the refusal is written (404 for no such project,
-// 403 for one they do not write).
-func (c *Console) writtenProject(w http.ResponseWriter, r *http.Request) (factoryd.Project, bool) {
-	name := r.PathValue("name")
-	p, ok, err := c.projectOf(r.Context(), name)
+// pathProject is the project the path names; false once the refusal is
+// written. The route's access-table rule judges who may act on it; this
+// only resolves the path.
+func (c *Console) pathProject(w http.ResponseWriter, r *http.Request) (factoryd.Project, bool) {
+	p, ok, err := c.projectOf(r.Context(), r.PathValue("name"))
 	switch {
 	case err != nil:
 		log.Printf("console: projects: %v", err)
@@ -114,16 +113,6 @@ func (c *Console) writtenProject(w http.ResponseWriter, r *http.Request) (factor
 		return p, false
 	case !ok:
 		http.NotFound(w, r)
-		return p, false
-	}
-	may, err := c.mayMoveCached(r.Context(), p.Repository, current(r).user, policy.MovedByWriters)
-	switch {
-	case err != nil:
-		log.Printf("console: may %s write %s: %v", current(r).user, p.Repository, err)
-		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return p, false
-	case !may:
-		http.Error(w, "you write no project "+name, http.StatusForbidden)
 		return p, false
 	}
 	return p, true
@@ -144,7 +133,7 @@ func feedRow(e factoryd.Event) eventJSON {
 // named must be one they write). limit and after page the feed; a bad
 // one, or no such project, is answered.
 func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
-	p, ok := c.writtenProject(w, r)
+	p, ok := c.pathProject(w, r)
 	if !ok {
 		return
 	}

@@ -1424,10 +1424,6 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := c.writes(r.Context(), button(r), t.Repository, "task "+t.ID); err != nil {
-		c.fail(w, r, err)
-		return
-	}
 	steps, err := c.readTimeline(r.Context(), t.ID)
 	if err != nil {
 		log.Printf("console: timeline of %s: %v", t.ID, err)
@@ -1550,10 +1546,10 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?accent, ?view), for a writer of its
-// project; anyone else gets refused and an unknown card 404. false: the
+// under the URL's filter (?project, ?accent, ?view); an unknown card is
+// 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
-func (c *Console) writableCard(w http.ResponseWriter, r *http.Request, refused int) (factoryd.BoardTask, card, *boardView, bool) {
+func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
 	ctx, id := r.Context(), r.PathValue("id")
 	bt, ok, err := c.cfg.Tasks.BoardTask(ctx, id)
 	switch {
@@ -1563,19 +1559,6 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request, refused i
 		return bt, card{}, nil, false
 	case !ok:
 		http.NotFound(w, r)
-		return bt, card{}, nil, false
-	}
-	may, err := c.mayMoveCached(ctx, bt.Repository, current(r).user, policy.MovedByWriters)
-	switch {
-	case err != nil:
-		log.Printf("console: may %s write %s: %v", current(r).user, bt.Repository, err)
-		http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-		return bt, card{}, nil, false
-	case !may && refused == http.StatusNotFound:
-		http.NotFound(w, r)
-		return bt, card{}, nil, false
-	case !may:
-		http.Error(w, "only the project's writers open its cards", refused)
 		return bt, card{}, nil, false
 	}
 	v, _, err := c.viewOf(r, urlFilter(r))
@@ -1600,7 +1583,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request, refused i
 // carrying the filter (?project, ?accent, ?view) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
-	if _, k, _, ok := c.writableCard(w, r, http.StatusNotFound); ok {
+	if _, k, _, ok := c.writableCard(w, r); ok {
 		c.render(w, "card", k)
 	}
 }
@@ -1679,7 +1662,7 @@ func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
 // drawer renders the card drawer on tab, "" for the card's default, with
 // note, what the member's action did.
 func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note string) {
-	bt, k, v, ok := c.writableCard(w, r, http.StatusForbidden)
+	bt, k, v, ok := c.writableCard(w, r)
 	if !ok {
 		return
 	}

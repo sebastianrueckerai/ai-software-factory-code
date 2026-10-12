@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -122,6 +123,7 @@ func TestApproversArePerProject(t *testing.T) {
 		factoryd.ApprovalRequest{ID: 6, Kind: "resource", TaskID: "t-d", Project: "demo/demo", Status: "pending"},
 		factoryd.ApprovalRequest{ID: 7, Kind: "resource", TaskID: "t-a", Project: "demo-app/demo-app", Status: "pending"})
 	as := func(user string) actor { return actor{s: &session{user: user}, via: factoryd.ViaButton} }
+	repo := map[int64]string{3: "sf/code", 6: "demo/demo", 7: "demo-app/demo-app"}
 	for _, c := range []struct {
 		user string
 		id   int64
@@ -132,7 +134,8 @@ func TestApproversArePerProject(t *testing.T) {
 		{"bob", 7, "Only the approvers of project demo-app may authorize spend."},
 		{"bob", 6, ""}, {"alice", 3, ""}, {"alice", 7, ""},
 	} {
-		_, err := r.c.doApprove(context.Background(), as(c.user), c.id)
+		err := r.c.admit(context.Background(), accessTable["POST /approvals/{id}/approve"], as(c.user), repo[c.id],
+			fmt.Sprintf("approval request %d", c.id))
 		var no *refusal
 		switch {
 		case c.want == "" && err != nil:

@@ -212,12 +212,6 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		desc += mergeWarning(steps)
 	}
-	switch tool.name {
-	case "alert_verdict", "promote_resource", "release_resource":
-		if err := t.c.factoryAccess(t.r.Context(), t.a); err != nil {
-			return "", err
-		}
-	}
 	if tool.name == "alert_verdict" {
 		al, ok, err := t.c.cfg.Alerts.AlertByID(t.r.Context(), in.ID)
 		switch {
