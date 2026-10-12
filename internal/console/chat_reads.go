@@ -77,12 +77,11 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	for _, d := range dependents {
 		fmt.Fprintf(&b, "\nneeded by #%d (%s)", d.Issue, factoryd.StatusMeaning(d.Status))
 	}
-	if split, err := t.splitLine(k); err != nil || split != "" {
-		if err != nil {
-			return "", err
-		}
-		b.WriteString("\n" + split)
+	split, err := t.splitLines(k)
+	if err != nil {
+		return "", err
 	}
+	b.WriteString(split)
 	for _, f := range []struct{ name, v string }{{"the question it waits on", bt.Escalation}, {"the choices it offers", numbered(bt.Choices)}} {
 		if f.v != "" {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
@@ -157,30 +156,35 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	return b.String(), nil
 }
 
-// splitLine is "split into #a, #b" on a card whose pull request a split
-// filed cards for, "split from #n" on each of those, else "".
-func (t *turn) splitLine(k factoryd.Task) (string, error) {
+// splitLines are the card read's "split from #n" on a card a split filed
+// and "split into #a, #b" on a card whose pull request a split filed cards
+// for, each on its own line.
+func (t *turn) splitLines(k factoryd.Task) (string, error) {
 	ctx := t.r.Context()
+	var b strings.Builder
 	if planChild(k) {
 		parent, ok, err := t.c.cfg.Tasks.Task(ctx, k.Parent)
-		if err != nil || !ok || parent.Lane == policy.LanePlan {
+		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("split from #%d", parent.IssueNumber), nil
+		if ok && parent.Lane != policy.LanePlan {
+			fmt.Fprintf(&b, "\nsplit from #%d", parent.IssueNumber)
+		}
 	}
-	if k.Lane == policy.LanePlan || k.PRNumber == 0 {
-		return "", nil
+	if k.Lane != policy.LanePlan && k.PRNumber != 0 {
+		cards, err := t.c.cfg.Tasks.PlanCards(ctx, k.ID)
+		if err != nil {
+			return "", err
+		}
+		issues := make([]int64, len(cards))
+		for i, c := range cards {
+			issues[i] = c.IssueNumber
+		}
+		if slices.Sort(issues); len(issues) > 0 {
+			b.WriteString("\n" + factoryd.SplitInto(issues))
+		}
 	}
-	cards, err := t.c.cfg.Tasks.PlanCards(ctx, k.ID)
-	if err != nil || len(cards) == 0 {
-		return "", err
-	}
-	issues := make([]int64, len(cards))
-	for i, c := range cards {
-		issues[i] = c.IssueNumber
-	}
-	slices.Sort(issues)
-	return factoryd.SplitInto(issues), nil
+	return b.String(), nil
 }
 
 // planChild: t is a card a plan filed.

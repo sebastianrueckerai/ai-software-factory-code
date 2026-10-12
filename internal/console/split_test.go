@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestSplitCard(t *testing.T) {
 	}
 
 	for id, want := range map[string]string{
-		"t-hi": "Card #31 passes the gates after its session, not a large pull request at its approval gate: approve_merge or deny_merge decide its merge request.",
+		"t-hi": "Card #31 waits at its approval gate, where a human approves the merge, not a large pull request at its approval gate: approve_merge or deny_merge decide its merge request.",
 		"t-m":  "Card #5 waits in the backlog until a member moves it into a lane, not a large pull request at its approval gate: move_card starts it.",
 	} {
 		status, msg := refused(t, r, "split_card", toolInput{TaskID: id})
@@ -61,7 +62,7 @@ func TestSplitCard(t *testing.T) {
 	}
 	rec := r.do(post("/tasks/t-hi/split", url.Values{"csrf": {s.csrf}}), ck)
 	equal(t, "the button on t-hi", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,
-		"Card #31 passes the gates after its session, not a large pull request at its approval gate: approve_merge or deny_merge decide its merge request.\n"})
+		"Card #31 waits at its approval gate, where a human approves the merge, not a large pull request at its approval gate: approve_merge or deny_merge decide its merge request.\n"})
 
 	const note = "Split #30: a planner splits pull request #32 into 2 or 3 cards, which start once factoryd's check passes; the card then closes."
 	before := r.events.count()
@@ -85,14 +86,41 @@ func TestSplitCard(t *testing.T) {
 		`applied {"result":"` + note + `","tool":"split_card"}`, `done {}`})
 	equal(t, "signalled", signalled, []string{"t-big by sebastian", "t-big by sebastian"})
 
+	// the split runs: a second split, and an approval of the pending merge
+	// request, are refused until it ends; no review reaches Forgejo
 	r.tasks.mu.Lock()
-	for id, n := range map[string]int64{"t-c2": 42, "t-c1": 41} {
-		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "queued", Lane: policy.LaneReady,
-			Process: "maintenance", Repository: "sf/code", IssueNumber: n, Source: factoryd.SourcePlan, Parent: "t-big", Objective: "A part."}})
-	}
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-big" })].Status = "running"
 	r.tasks.mu.Unlock()
-	got := reads(t, r, g, "card", `{"task_id":"t-big"}`, "card", `{"task_id":"t-c2"}`)
-	if !strings.Contains(got[0], "\nsplit into #41, #42\n") || !strings.Contains(got[1], "\nsplit from #30\n") {
-		t.Fatalf("the card reads:\n%s\n\n%s", got[0], got[1])
+	const running = "Card #30 runs the split of pull request #32: its cards follow, or its findings come to the card; approve, deny or split it once the split ends."
+	for _, tool := range []string{"split_card", "approve_merge"} {
+		status, msg := refused(t, r, tool, toolInput{TaskID: "t-big"})
+		equal(t, tool+" while the split runs", []any{status, msg}, []any{http.StatusConflict, running})
+	}
+	calls := len(r.fg.calls)
+	rec = r.do(post("/approvals/6/approve", url.Values{"csrf": {s.csrf}}), ck)
+	equal(t, "Approve while the split runs", []any{rec.Code, rec.Body.String(), len(r.fg.calls)}, []any{http.StatusConflict, running + "\n", calls})
+	equal(t, "signalled", signalled, []string{"t-big by sebastian", "t-big by sebastian"})
+
+	// "split into" and "split from" stand side by side: a split's card split
+	// again has both, a plan's card that was split its "split into" only
+	r.tasks.mu.Lock()
+	for _, k := range []factoryd.Task{
+		{ID: "t-c1", IssueNumber: 41, Parent: "t-big"}, {ID: "t-c2", IssueNumber: 42, Parent: "t-big", PRNumber: 50}, {ID: "t-g", IssueNumber: 43, Parent: "t-c2"},
+		{ID: "t-pc", IssueNumber: 21, Parent: "t-plan", PRNumber: 22}, {ID: "t-pg", IssueNumber: 23, Parent: "t-pc"},
+	} {
+		k.Kind, k.Status, k.Lane, k.Process, k.Repository, k.Source, k.Objective = "agent", "queued", policy.LaneReady, "maintenance", "sf/code", factoryd.SourcePlan, "A part."
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: k})
+	}
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: policy.LanePlan,
+		Process: "maintenance", Repository: "sf/code", IssueNumber: 20, Objective: "A plan."}})
+	r.tasks.mu.Unlock()
+	got := reads(t, r, g, "card", `{"task_id":"t-big"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`, "card", `{"task_id":"t-pc"}`)
+	for i, want := range []string{"\nsplit into #41, #42\n", "\nsplit from #30\nsplit into #43\n", "\nsplit from #30\n", "\nsplit into #23\n"} {
+		if !strings.Contains(got[i], want) {
+			t.Errorf("card read %d lacks %q:\n%s", i, want, got[i])
+		}
+	}
+	if strings.Contains(got[2], "split into") || strings.Contains(got[3], "split from") {
+		t.Errorf("the card reads:\n%s\n\n%s", got[2], got[3])
 	}
 }

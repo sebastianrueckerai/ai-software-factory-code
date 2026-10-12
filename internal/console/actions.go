@@ -97,7 +97,18 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 // wrongState refuses t, which needs another state, with 409: its state and
 // the action that fits it, so a wrong call corrects itself (ruling 263).
 func wrongState(t factoryd.Task, f capFacts, needs string) error {
-	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, not %s: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), needs, fitting(t, f)))
+	state := factoryd.StatusMeaning(t.Status)
+	if t.Status == "in-review" && f.merge {
+		state = "waits at its approval gate, where " + factoryd.GateMeaning(factoryd.GateApproval)
+	}
+	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, not %s: %s.", t.IssueNumber, state, needs, fitting(t, f)))
+}
+
+// splitRunning refuses an action on card t's merge request of pull
+// request pr while its split runs: the request stays pending meanwhile.
+func splitRunning(t factoryd.Task, pr int64) error {
+	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs the split of pull request #%d: its cards follow, or its findings come to the card; "+
+		"approve, deny or split it once the split ends.", t.IssueNumber, pr))
 }
 
 // fitting is the action that fits t's state.
@@ -740,8 +751,11 @@ func (c *Console) doSplit(ctx context.Context, a actor, id string) (string, erro
 		var spec factoryd.MergeSpec
 		return q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil && spec.RiskClass == policy.ClassLarge
 	})
-	if i < 0 || t.Status == "running" {
+	switch {
+	case i < 0:
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a large pull request at its approval gate")
+	case t.Status == "running":
+		return "", splitRunning(t, all[i].PRNumber)
 	}
 	if err := c.cfg.SplitCard(ctx, t.ID, a.s.user); err != nil {
 		log.Printf("console: %s splits %s: %v", a.s.user, t.ID, err)
@@ -1119,6 +1133,15 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalMerge:
+		// a running card with a pending merge request runs its split
+		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
+		if err != nil {
+			log.Printf("console: task %s: %v", q.TaskID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the task")
+		}
+		if t.Status == "running" {
+			return "", splitRunning(t, q.PRNumber)
+		}
 		var spec factoryd.MergeSpec
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
