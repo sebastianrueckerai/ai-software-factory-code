@@ -466,6 +466,10 @@ spec:
       labels: {app: factoryd}
     spec:
       serviceAccountName: factoryd
+      # the pause container is PID 1 and reaps the git helpers a killed git
+      # call of the GitHub exports leaves; factoryd as PID 1 would keep them
+      # as zombies
+      shareProcessNamespace: true
       # room for the temporal worker's 120 s stop: running sessions stop
       # their workers gracefully (work in progress pushed), then clean up
       terminationGracePeriodSeconds: 150

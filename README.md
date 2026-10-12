@@ -1657,21 +1657,24 @@ export was put, its head as merged (`refs/pull/<n>/head`), to GitHub as
 with the export's token (git reads it from its environment, never an
 argument). The task keeps the pull request's number, URL and state, shown
 on the card's face and in the chat's `card` read; one GET per open pull
-request at most every 5 minutes refreshes it. A definite refusal (a push
-GitHub refuses, a GitHub 4xx, a repository over 200 MiB) stays on the card
-as `failed: ...`; a network error, a timeout or a GitHub 5xx is retried by
+request at most every 5 minutes refreshes it. A definite refusal (a GitHub
+4xx, from the first read of the repository on, a push GitHub refuses, a
+project repository over 200 MiB) stays on the card as `failed: ...`; a network error, a timeout or a GitHub 5xx is retried by
 the next poll. A put of the same remote and mode keeps `since` and gives
 each failed card one more try. git runs one operation at a time, each
 killed with its process group after 2 minutes, a pass after 4, with one
-pack thread and small pack windows (factoryd's limit is 512Mi; git ships in
-the image the gateway shares). Sync latest (the export row's button, the
+pack thread and small pack windows (factoryd's limit is 512Mi; its pod
+shares its process namespace, so the pause container reaps a killed git's
+helpers; git ships in the image the gateway shares). Sync latest (the export row's button, the
 chat's `github_sync`) answers at once and brings GitHub's default branch
 back when it moved since the last sync and main lacks it: branch
 `github/sync-<short sha>` on the bot's fork and a pull request to main,
 `Sync from GitHub <short sha>`, as the bot, so its CI runs without the
 repository's secrets; a head that changes `.forgejo/`, `.gitea/` or
-`.github/`, or that shares no history with main, is refused. The result is
-a `github_synced` event and the export row's last sync.
+`.github/`, that shares no history with main, or whose GitHub repository is
+over 200 MiB, is refused. The result is a `github_synced` event and the
+export row's last sync. At most every 5 minutes the poll deletes the fork's
+`github/sync-*` branches whose pull request is no longer open.
 
 `GET /projects/{name}/alerts?namespace=<ns>` on factoryd's port 8080
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's

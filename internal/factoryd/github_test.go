@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -20,12 +21,15 @@ import (
 
 // pullsGitHub answers GitHub's REST API for acme/app and records every call
 // as "METHOD path auth body". A pull request titled Deny is refused as a
-// token without the permission is, unless allow.
+// token without the permission is, unless allow. The repository reads
+// with repoStatus, when set, or with its default branch and repoKiB.
 type pullsGitHub struct {
-	mu    sync.Mutex
-	calls []string
-	state string // GET pulls/12's answer; pulls/13 is open
-	allow bool
+	mu         sync.Mutex
+	calls      []string
+	state      string // GET pulls/12's answer; pulls/13 is open
+	allow      bool
+	repoStatus int
+	repoKiB    int64
 }
 
 func (g *pullsGitHub) server(t *testing.T) *httptest.Server {
@@ -36,8 +40,11 @@ func (g *pullsGitHub) server(t *testing.T) *httptest.Server {
 		g.calls = append(g.calls, strings.TrimSpace(r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body)))
 		deny := strings.Contains(string(body), `"title":"Deny"`)
 		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/acme/") && strings.Count(r.URL.Path, "/") == 3 && g.repoStatus != 0:
+			w.WriteHeader(g.repoStatus)
+			io.WriteString(w, `{"message":"Bad credentials","status":"401"}`)
 		case strings.HasPrefix(r.URL.Path, "/repos/acme/") && strings.Count(r.URL.Path, "/") == 3:
-			io.WriteString(w, `{"default_branch":"main"}`)
+			fmt.Fprintf(w, `{"default_branch":"main","size":%d}`, g.repoKiB)
 		case r.Method == http.MethodPost && deny && !g.allow:
 			w.WriteHeader(http.StatusForbidden)
 			io.WriteString(w, `{"message":"Resource not accessible by personal access token","status":"403"}`)
@@ -66,23 +73,44 @@ func (g *pullsGitHub) took() []string {
 }
 
 // fakeForgejo answers the Forgejo API a GitHub export reads: the project
-// repository's size in KiB, the bot's fork, and a new pull request #3; it
-// records every call but the size's as "METHOD path auth body".
+// repository's size in KiB (counting the reads), the bot's fork and its
+// branches, the open pull requests, a branch, and a new pull request #3;
+// it records every other call as "METHOD path auth body".
 type fakeForgejo struct {
-	mu    sync.Mutex
-	size  int64
-	calls []string
+	mu             sync.Mutex
+	size           int64
+	sizes          int
+	branches, open string // the lists' first pages
+	calls          []string
 }
 
 func (f *fakeForgejo) server(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		switch body, _ := io.ReadAll(r.Body); {
-		case r.URL.Path == "/api/v1/repos/demo-app/demo-app":
+		page := func(first string) {
+			if r.URL.Query().Get("page") == "1" {
+				io.WriteString(w, cmp.Or(first, "[]"))
+				return
+			}
+			io.WriteString(w, "[]")
+		}
+		body, _ := io.ReadAll(r.Body)
+		switch path := r.URL.EscapedPath(); {
+		case path == "/api/v1/repos/demo-app/demo-app":
+			f.sizes++
 			fmt.Fprintf(w, `{"size":%d}`, f.size)
-		case r.URL.Path == "/api/v1/repos/factory-agent/demo-app":
+		case path == "/api/v1/repos/factory-agent/demo-app":
 			io.WriteString(w, `{"fork":true,"private":true,"has_actions":false,"parent":{"full_name":"demo-app/demo-app"}}`)
+		case path == "/api/v1/repos/factory-agent/demo-app/branches":
+			page(f.branches)
+		case path == "/api/v1/repos/demo-app/demo-app/pulls" && r.Method == http.MethodGet:
+			page(f.open)
+		case strings.HasPrefix(path, "/api/v1/repos/factory-agent/demo-app/branches/") && r.Method == http.MethodGet:
+			io.WriteString(w, "{}")
+		case r.Method == http.MethodDelete:
+			f.calls = append(f.calls, r.Method+" "+path)
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			f.calls = append(f.calls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization")+" "+string(body))
 			w.WriteHeader(http.StatusCreated)
@@ -337,13 +365,25 @@ func TestGitHubPullRequests(t *testing.T) {
 	}
 }
 
-// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a project
-// repository over the cap fetches nothing and fails the card with a plain
-// line; a push GitHub rejects fails it; a push that cannot reach GitHub
-// leaves it for the next pass.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a GitHub
+// repository the token cannot read fails the card with a plain line and
+// fetches nothing; so does a project repository over the cap; a push
+// GitHub rejects fails it; a push that cannot reach GitHub leaves it for
+// the next pass.
 func TestGitHubCardFailures(t *testing.T) {
 	p, ctx := newPullsRig(t), context.Background()
 	p.export("acme/app")
+	p.gh.repoStatus = http.StatusUnauthorized
+	p.done("t-401", "Unread", 7)
+	p.r.githubPass(ctx)
+	if got, want := p.card("t-401").GitHubPRState, "failed: GitHub refused the export's repository acme/app: GitHub answered 401 Bad credentials"; got != want ||
+		p.fj.sizes != 0 {
+		t.Errorf("a 401: %q after %d size reads, want %q after none", got, p.fj.sizes, want)
+	}
+	if _, err := git(ctx, p.github, "", "rev-parse", "--verify", "-q", "refs/heads/factory/t-401"); err == nil {
+		t.Error("a 401 pushed the card's branch")
+	}
+	p.gh.repoStatus = 0
 	p.fj.size = 300 << 10
 	p.done("t-big", "Big", 7)
 	p.r.githubPass(ctx)
@@ -365,7 +405,8 @@ func TestGitHubCardFailures(t *testing.T) {
 	if got := p.card("t-gone").GitHubPRState; got != "" {
 		t.Errorf("an unreachable GitHub: %q, want the card left for the next pass", got)
 	}
-	equalStrings(t, "GitHub API calls", p.gh.took(), nil)
+	read := "GET /repos/acme/app Bearer ghp-tok"
+	equalStrings(t, "GitHub API calls", p.gh.took(), []string{read, read, read, read})
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): Sync latest
@@ -377,8 +418,8 @@ func TestGitHubCardFailures(t *testing.T) {
 func TestGitHubSync(t *testing.T) {
 	store, ctx := chatStore(t), context.Background()
 	g := newGitRig(t)
-	fj := &fakeForgejo{size: 23}
-	r := g.registrar(store, (&pullsGitHub{}).server(t), fj.server(t))
+	fj, gh := &fakeForgejo{size: 23}, &pullsGitHub{}
+	r := g.registrar(store, gh.server(t), fj.server(t))
 	if _, err := r.GitHubSync(ctx, "demo-app", "sebastian"); err != ErrNoExport {
 		t.Fatalf("without an export: %v, want ErrNoExport", err)
 	}
@@ -409,7 +450,22 @@ func TestGitHubSync(t *testing.T) {
 	moved := g.commit("on GitHub", "NOTES", "from GitHub")
 	g.git(g.work, "push", "-q", g.github, "main")
 	short := moved[:7]
-	syncs("Pull request #3 brings GitHub's default branch of acme/app at "+short+" to main: https://git.example/demo-app/demo-app/pulls/3", false)
+	gh.repoKiB = 300 << 10
+	syncs("acme/app is 300 MiB on GitHub, over the 200 MiB the factory fetches to sync from GitHub", true)
+	gh.repoKiB = 23
+	var twice sync.WaitGroup
+	answers := make([]string, 2)
+	for i := range answers {
+		twice.Go(func() {
+			got, err := r.GitHubSync(ctx, "demo-app", "sebastian")
+			answers[i] = got + fmt.Sprint(err)
+		})
+	}
+	twice.Wait()
+	slices.Sort(answers)
+	equalStrings(t, "a double click", answers, []string{
+		"GitHub's default branch of acme/app is still at " + short + ", which the last sync brought back: nothing to sync.<nil>",
+		"Pull request #3 brings GitHub's default branch of acme/app at " + short + " to main: https://git.example/demo-app/demo-app/pulls/3<nil>"})
 	equalStrings(t, "Forgejo calls", fj.calls, []string{"POST /api/v1/repos/demo-app/demo-app/pulls Basic " + base64.StdEncoding.EncodeToString([]byte("factory-agent:bot-pw")) + " " +
 		`{"base":"main","body":"GitHub's default branch of acme/app at ` + moved + `, brought back for sebastian.","head":"factory-agent:github/sync-` + short + `","title":"Sync from GitHub ` + short + `"}`})
 	if got := g.git(g.fork, "rev-parse", "refs/heads/github/sync-"+short); got != moved {
@@ -433,6 +489,28 @@ func TestGitHubSync(t *testing.T) {
 	if len(fj.calls) != 1 {
 		t.Fatalf("the refused syncs called Forgejo: %q", fj.calls[1:])
 	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): at most
+// every 5 minutes, and never while a git operation runs, the pass deletes
+// the bot's fork's github/sync-* branches with no open pull request, and
+// no other branch.
+func TestGitHubSyncBranches(t *testing.T) {
+	p, ctx := newPullsRig(t), context.Background()
+	if err := p.store.PutMirror(ctx, Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/app", Username: "u", Token: "ghp-tok"}); err != nil {
+		t.Fatal(err)
+	}
+	p.fj.branches = `[{"name":"main"},{"name":"factory/t-x"},{"name":"github/sync-aaaaaaa"},{"name":"github/sync-bbbbbbb"}]`
+	p.fj.open = `[{"number":5,"head":{"ref":"github/sync-bbbbbbb","repo":{"full_name":"factory-agent/demo-app"}}},` +
+		`{"number":6,"head":{"ref":"github/sync-aaaaaaa","repo":{"full_name":"someone/demo-app"}}}]`
+	p.r.gitMu.Lock()
+	p.r.githubPass(ctx)
+	p.r.gitMu.Unlock()
+	equalStrings(t, "while a git operation runs", p.fj.calls, nil)
+	p.r.githubAt = time.Time{}
+	p.r.githubPass(ctx)
+	p.r.githubPass(ctx)
+	equalStrings(t, "two passes", p.fj.calls, []string{"DELETE /api/v1/repos/factory-agent/demo-app/branches/github%2Fsync-aaaaaaa"})
 }
 
 func equalStrings(t *testing.T, what string, got, want []string) {

@@ -114,3 +114,35 @@ func egressAdmits(t *testing.T, base string) {
 		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
 	}
 }
+
+// factoryd's pod shares its process namespace, so the pause container is
+// PID 1 and reaps the git helpers a killed git call leaves.
+func TestFactorydPodReapsGitHelpers(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Spec     struct {
+				Template struct {
+					Spec struct {
+						Share bool `yaml:"shareProcessNamespace"`
+					} `yaml:"spec"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			t.Fatal("no Deployment factoryd")
+		}
+		if doc.Kind == "Deployment" && doc.Metadata.Name == "factoryd" {
+			if !doc.Spec.Template.Spec.Share {
+				t.Fatal("factoryd's pod does not share its process namespace: killed git helpers stay zombies of PID 1")
+			}
+			return
+		}
+	}
+}

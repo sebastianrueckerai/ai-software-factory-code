@@ -70,21 +70,28 @@ func (g *GitHub) call(ctx context.Context, token, method, path string, payload, 
 	return json.Unmarshal(b, out)
 }
 
-// openPull opens a pull request of branch head into remote's default
-// branch.
-func (g *GitHub) openPull(ctx context.Context, token, remote, head, title, body string) (int64, string, error) {
-	var repo struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := g.call(ctx, token, http.MethodGet, "/repos/"+remote, nil, &repo); err != nil {
-		return 0, "", err
-	}
+// githubRepo is a GitHub repository as the exports read it: its default
+// branch and its size in KiB.
+type githubRepo struct {
+	DefaultBranch string `json:"default_branch"`
+	KiB           int64  `json:"size"`
+}
+
+// repo reads remote with token.
+func (g *GitHub) repo(ctx context.Context, token, remote string) (githubRepo, error) {
+	var repo githubRepo
+	err := g.call(ctx, token, http.MethodGet, "/repos/"+remote, nil, &repo)
+	return repo, err
+}
+
+// openPull opens a pull request of branch head into base of remote.
+func (g *GitHub) openPull(ctx context.Context, token, remote, head, base, title, body string) (int64, string, error) {
 	var pr struct {
 		Number int64  `json:"number"`
 		URL    string `json:"html_url"`
 	}
 	err := g.call(ctx, token, http.MethodPost, "/repos/"+remote+"/pulls",
-		map[string]string{"title": title, "head": head, "base": repo.DefaultBranch, "body": body}, &pr)
+		map[string]string{"title": title, "head": head, "base": base, "body": body}, &pr)
 	return pr.Number, pr.URL, err
 }
 
@@ -171,7 +178,7 @@ const (
 // githubPass takes each card of an export of mode pull_requests that
 // merged since the export was put to GitHub, oldest first; at most every
 // githubStates it reads the state of each open GitHub pull request, one
-// call each. The export's state counts the open ones. A card's refusal is
+// call each, and drops each export's finished sync branches. The export's state counts the open ones. A card's refusal is
 // its state, which no pass retries; an error is logged and the next pass
 // tries again.
 func (r *Registrar) githubPass(ctx context.Context) {
@@ -191,16 +198,47 @@ func (r *Registrar) githubPass(ctx context.Context) {
 	}
 	for _, p := range ps {
 		m, ok, err := r.Mirrors.MirrorToken(ctx, p.Name, MirrorExport)
-		if err == nil && (!ok || m.Mode != ModePullRequests) {
+		if err == nil && !ok {
 			continue
 		}
-		if err == nil {
+		if err == nil && refresh {
+			err = r.dropSyncBranches(ctx, p)
+		}
+		if err == nil && m.Mode == ModePullRequests {
 			err = r.githubPulls(ctx, p, m, refresh)
 		}
 		if err != nil {
 			log.Printf("project %s: github pull requests: %v", p.Name, err)
 		}
 	}
+}
+
+// dropSyncBranches deletes the github/sync-* branches of p's fork whose
+// pull request is no longer open, unless a git operation runs: a sync's
+// push and pull request come under the same lock.
+func (r *Registrar) dropSyncBranches(ctx context.Context, p Project) error {
+	if !r.gitMu.TryLock() {
+		return nil
+	}
+	defer r.gitMu.Unlock()
+	repo := p.Repo()
+	fork := r.Forgejo.Fork(repo)
+	branches, err := GetPages[struct{ Name string }](ctx, r.Forgejo.call, "/api/v1/repos/"+fork.String()+"/branches?")
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	var open []wirePR
+	if err == nil {
+		open, err = GetPages[wirePR](ctx, r.Forgejo.call, "/api/v1/repos/"+repo.String()+"/pulls?state=open&")
+	}
+	for _, b := range branches {
+		if err == nil && strings.HasPrefix(b.Name, "github/sync-") && !slices.ContainsFunc(open, func(pr wirePR) bool {
+			return pr.Head.Ref == b.Name && pr.Head.Repo.FullName == fork.String()
+		}) {
+			err = r.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, b.Name)
+		}
+	}
+	return err
 }
 
 func (r *Registrar) githubPulls(ctx context.Context, p Project, m Mirror, refresh bool) error {
@@ -242,7 +280,8 @@ func (r *Registrar) githubPulls(ctx context.Context, p Project, m Mirror, refres
 // exportCard pushes card t's head as merged, Forgejo's refs/pull/<n>/head,
 // to m's GitHub repository as the card's branch and opens a pull request
 // of it there, unless another git operation runs. A definite refusal (a
-// repository over githubCapKiB, a push GitHub refuses, a GitHub 4xx)
+// GitHub 4xx, from the first read of the repository on, a project
+// repository over githubCapKiB, a push GitHub refuses)
 // answers the card's failed state; any other failure is an error the next
 // pass retries.
 func (r *Registrar) exportCard(ctx context.Context, p Project, m Mirror, t Task) (int64, string, string, error) {
@@ -250,6 +289,13 @@ func (r *Registrar) exportCard(ctx context.Context, p Project, m Mirror, t Task)
 		return 0, "", "", errors.New("another git operation runs")
 	}
 	defer r.gitMu.Unlock()
+	gh, err := r.GitHub.repo(ctx, m.Token, m.Remote)
+	if refused := (*GitHubError)(nil); errors.As(err, &refused) && refused.Status < 500 {
+		return 0, "", fmt.Sprintf("failed: GitHub refused the export's repository %s: %v", m.Remote, err), nil
+	}
+	if err != nil {
+		return 0, "", "", err
+	}
 	if over, err := r.overCap(ctx, p, "to take a card to GitHub"); over != "" || err != nil {
 		return 0, "", over, err
 	}
@@ -271,7 +317,7 @@ func (r *Registrar) exportCard(ctx context.Context, p Project, m Mirror, t Task)
 	}
 	body := fmt.Sprintf("%s\n\nMerged in the AI software factory as %s/%s/pulls/%d (task %s).",
 		t.Objective, r.Forgejo.PublicURL, p.Repository, t.PRNumber, t.ID)
-	n, url, err := r.GitHub.openPull(ctx, m.Token, m.Remote, branch, FirstLine(t.Objective), body)
+	n, url, err := r.GitHub.openPull(ctx, m.Token, m.Remote, branch, gh.DefaultBranch, FirstLine(t.Objective), body)
 	var refused *GitHubError
 	switch {
 	case errors.As(err, &refused) && refused.Status == http.StatusForbidden && strings.HasPrefix(refused.Message, "Resource not accessible"):
@@ -306,21 +352,23 @@ var ErrNoExport = errors.New("the project has no GitHub export")
 // main shares no history with. It answers what it did, which the export
 // row keeps as its last sync, or why it failed, which the row keeps too.
 func (r *Registrar) GitHubSync(ctx context.Context, name, by string) (string, error) {
-	m, ok, err := r.Mirrors.MirrorToken(ctx, name, MirrorExport)
+	r.gitMu.Lock()
+	defer r.gitMu.Unlock()
+	run, cancel := context.WithTimeout(ctx, githubSyncTime)
+	defer cancel()
+	m, ok, err := r.Mirrors.MirrorToken(run, name, MirrorExport)
 	if err != nil || !ok {
 		return "", cmp.Or(err, ErrNoExport)
 	}
-	ctx, cancel := context.WithTimeout(ctx, githubSyncTime)
-	defer cancel()
-	r.gitMu.Lock()
-	defer r.gitMu.Unlock()
-	sha, note, err := r.githubSync(ctx, name, m, by)
+	sha, note, err := r.githubSync(run, name, m, by)
 	result := note
 	if err != nil {
 		err = errors.New(strings.ReplaceAll(err.Error(), m.Token, "[token]"))
 		sha, result = m.Synced, "failed: "+err.Error()
 	}
-	return note, errors.Join(err, r.Mirrors.SetMirrorSynced(context.WithoutCancel(ctx), name, sha, result))
+	write, done := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer done()
+	return note, errors.Join(err, r.Mirrors.SetMirrorSynced(write, name, sha, result))
 }
 
 func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by string) (sha, note string, err error) {
@@ -330,6 +378,13 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	}
 	if over, err := r.overCap(ctx, p, "to sync from GitHub"); over != "" || err != nil {
 		return "", "", cmp.Or(err, errors.New(strings.TrimPrefix(over, "failed: ")))
+	}
+	gh, err := r.GitHub.repo(ctx, m.Token, m.Remote)
+	switch {
+	case err != nil:
+		return "", "", err
+	case gh.KiB > githubCapKiB:
+		return "", "", fmt.Errorf("%s is %d MiB on GitHub, over the %d MiB the factory fetches to sync from GitHub", m.Remote, gh.KiB>>10, githubCapKiB>>10)
 	}
 	dir, err := bareRepo(ctx)
 	defer os.RemoveAll(dir) // #nosec G104 -- a temporary directory
@@ -351,9 +406,12 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 		return sha, of + " is still at " + short + ", which the last sync brought back: nothing to sync.", nil
 	}
 	base, err := git(ctx, dir, "", "merge-base", "refs/heads/"+prBase, "refs/heads/github")
+	var exit *exec.ExitError
 	switch {
-	case err != nil:
+	case errors.As(err, &exit) && exit.ExitCode() == 1:
 		return "", "", fmt.Errorf("%s at %s shares no history with main: nothing synced", of, short)
+	case err != nil:
+		return "", "", err
 	case base == sha:
 		return sha, "main holds " + of + " at " + short + ": nothing to sync.", nil
 	}
