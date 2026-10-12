@@ -27,10 +27,6 @@ type fakeSessions struct {
 	now func() time.Time
 	// rows are the table's rows by id hash.
 	rows map[string]factoryd.ConsoleSession
-	// staleOK lets a touch whose value the row does not hold move the column
-	// to the fake's clock anyway: what a test needs when it pins last_seen
-	// where no read of this table could leave it.
-	staleOK bool
 	// saved, deleted, touched and purged count the calls; tokens counts
 	// the token updates.
 	saved   int
@@ -86,18 +82,12 @@ func (f *fakeSessions) TouchConsoleSession(_ context.Context, hash string, seenA
 		return false, nil
 	}
 	// as the Postgres store does: the row moves when it still says the value
-	// its owner read, to that value plus a minute; a row whose last_seen
-	// already moved is one seen within the minute and holds. A test that
-	// pins the column where no read could leave it sets staleOK and the move
-	// goes to the fake's clock instead.
-	switch {
-	case row.LastSeen.Equal(seenAt):
-		row.LastSeen = seenAt.Add(time.Minute)
-	case f.staleOK:
-		row.LastSeen = f.now()
-	default:
+	// its owner read, to the fake's now(); a row whose last_seen already
+	// moved is one seen within the minute and holds.
+	if !row.LastSeen.Equal(seenAt) {
 		return false, nil
 	}
+	row.LastSeen = f.now()
 	f.rows[hash] = row
 	return true, nil
 }
@@ -187,7 +177,11 @@ func TestExpiredSessionRowIsRefusedAndDeleted(t *testing.T) {
 	r.sessions.mu.Unlock()
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(ck)
-	if s := r.c.session(req); s != nil {
+	s, err := r.c.session(req)
+	if err != nil {
+		t.Fatalf("the session read: %v", err)
+	}
+	if s != nil {
 		t.Fatal("an expired row answered a session")
 	}
 	if _, ok := r.sessions.row(hash); ok {
@@ -223,26 +217,27 @@ func TestSessionRowHoldsTheHashNotTheIDAndNoClearToken(t *testing.T) {
 	if row.Refresh == "refresh-1" || strings.Contains(row.Refresh, "refresh-1") {
 		t.Errorf("the refresh token is stored in clear: %q", row.Refresh)
 	}
-	if access, err := openToken(r.c.cfg.SessionKey, row.Access); err != nil || access != "access-1" {
+	if access, err := openToken(r.c.cfg.SessionKey, row.Access, row.IDHash); err != nil || access != "access-1" {
 		t.Errorf("the stored access token opens to %q, %v; want access-1", access, err)
 	}
-	if refresh, err := openToken(r.c.cfg.SessionKey, row.Refresh); err != nil || refresh != "refresh-1" {
+	if refresh, err := openToken(r.c.cfg.SessionKey, row.Refresh, row.IDHash); err != nil || refresh != "refresh-1" {
 		t.Errorf("the stored refresh token opens to %q, %v; want refresh-1", refresh, err)
 	}
 	other := append([]byte(nil), r.c.cfg.SessionKey...)
 	other[len(other)-1] ^= 1
-	if _, err := openToken(other, row.Access); err == nil {
+	if _, err := openToken(other, row.Access, row.IDHash); err == nil {
 		t.Error("another session key decrypts the stored token")
 	}
 }
 
 func TestSealTokenNonceIsFreshPerValue(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	a, err := sealToken(key, "same-token")
+	hash := "test-hash"
+	a, err := sealToken(key, "same-token", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := sealToken(key, "same-token")
+	b, err := sealToken(key, "same-token", hash)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,11 +245,11 @@ func TestSealTokenNonceIsFreshPerValue(t *testing.T) {
 		t.Fatal("two seals of one token are equal: the nonce is not random")
 	}
 	for _, sealed := range []string{a, b} {
-		if got, err := openToken(key, sealed); err != nil || got != "same-token" {
+		if got, err := openToken(key, sealed, hash); err != nil || got != "same-token" {
 			t.Fatalf("open(%q) = %q, %v", sealed, got, err)
 		}
 	}
-	if got, err := sealToken(key, ""); err != nil || got != "" {
+	if got, err := sealToken(key, "", hash); err != nil || got != "" {
 		t.Fatalf(`the empty token seals to %q, %v`, got, err)
 	}
 }
@@ -268,7 +263,11 @@ func TestLastSeenMovesAtMostOnceAMinute(t *testing.T) {
 	get := func() *session {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		req.AddCookie(ck)
-		return r.c.session(req)
+		s, err := r.c.session(req)
+		if err != nil {
+			t.Fatalf("the session read: %v", err)
+		}
+		return s
 	}
 	// five reads within a minute leave the column where it was.
 	for range 5 {
@@ -283,23 +282,23 @@ func TestLastSeenMovesAtMostOnceAMinute(t *testing.T) {
 		t.Fatalf("TouchConsoleSession ran %d times within a minute", r.sessions.touched)
 	}
 	// the row seen a minute ago moves on the next read, once. The touch
-	// sets last_seen a minute past the value it held, as the Postgres
-	// store does; the console's own clock says now.
+	// sets last_seen to the fake's now(), as the Postgres store does.
 	stale := time.Now().Add(-time.Minute)
 	r.sessions.mu.Lock()
 	row = r.sessions.rows[hash]
 	row.LastSeen = stale
 	r.sessions.rows[hash] = row
-	// the pinned value is one no read left behind, so the fake moves on the
-	// caller's word alone.
-	r.sessions.staleOK = true
+	r.sessions.mu.Unlock()
+	var before time.Time
+	r.sessions.mu.Lock()
+	before = r.sessions.now()
 	r.sessions.mu.Unlock()
 	if get() == nil {
 		t.Fatal("a live session stopped answering")
 	}
 	row, _ = r.sessions.row(hash)
-	if !row.LastSeen.After(stale) {
-		t.Fatalf("last_seen after a minute = %s, want past %s", row.LastSeen, stale)
+	if row.LastSeen.Before(before) || !row.LastSeen.After(stale) {
+		t.Fatalf("last_seen after a minute = %s, want the fake's now() around %s", row.LastSeen, before)
 	}
 	if r.sessions.touched != 1 {
 		t.Fatalf("TouchConsoleSession ran %d times, want once", r.sessions.touched)

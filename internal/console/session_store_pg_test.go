@@ -9,12 +9,15 @@ package console
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -30,6 +33,18 @@ func pgStore(t *testing.T) *factoryd.PGStore {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// pgDB opens its own *sql.DB on the test database for queries the store
+// does not expose (now(), setting last_seen directly).
+func pgDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("pgx", schematest.DSN(t, "console_sessions_pg"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
 }
 
 // loginOf runs one member's OAuth login on c: /login, then the callback as
@@ -103,13 +118,14 @@ func TestLookupTouchesTheRowOnceAMinuteOverPostgres(t *testing.T) {
 	}
 	// the minute gate is the console's own clock: a session whose row says a
 	// future instant holds it shut. The row's clock, though, is Postgres',
-	// and this process may sit a moment behind it — a touch writes a value a
-	// moment ahead of here — so the test asks the database where its now()
-	// is before it predicts anything, and reads the page once on a fresh
+	// and this process may sit a moment behind it — a touch writes the
+	// database's now() — so the test asks the database where its now() is
+	// before it predicts anything, and reads the page once on a fresh
 	// Console first: that read carries the row's future value into a session
 	// nobody touches again, and leaves this Console at the login's own write.
+	db := pgDB(t)
 	var dbNow time.Time
-	if err := store.QueryRowScan(ctx, `SELECT now()`, &dbNow); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&dbNow); err != nil {
 		t.Fatalf("the database's clock: %v", err)
 	}
 	get := func() {
@@ -136,16 +152,22 @@ func TestLookupTouchesTheRowOnceAMinuteOverPostgres(t *testing.T) {
 		return row.LastSeen.UTC().Truncate(time.Microsecond)
 	}
 	// ninety seconds at the keyboard, then one request: the read moves
-	// last_seen a minute past the value it held — not to any process's clock
-	// — and the row reads exactly that.
-	if err := store.SetConsoleSessionSeen(ctx, hash, dbNow.Add(-90*time.Second)); err != nil {
-		t.Fatalf("SetConsoleSessionSeen: %v", err)
+	// last_seen to the database's now() — not to any process's clock — and
+	// the row reads exactly that.
+	if _, err := db.ExecContext(ctx, `UPDATE console_sessions SET last_seen = $2 WHERE id_hash = $1`,
+		hash, dbNow.Add(-90*time.Second).UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatalf("set last_seen: %v", err)
 	}
-	held := dbNow.Add(-90 * time.Second).UTC().Truncate(time.Microsecond).Add(time.Minute)
+	var before time.Time
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&before); err != nil {
+		t.Fatalf("the database's clock: %v", err)
+	}
 	get()
-	if seen := seenBy(); !seen.Equal(held) {
-		t.Fatalf("the request after ninety seconds wrote %s, want the value it read plus a minute (%s)", seen, held)
+	seen := seenBy()
+	if seen.Before(before) || seen.After(before.Add(time.Second)) {
+		t.Fatalf("the request after ninety seconds wrote %s, want the database's now() around %s", seen, before)
 	}
+	held := seen
 	// twelve requests inside the minute that followed — six from the console
 	// that logged the member in, six from a fresh one over the same table,
 	// the member's next requests after a roll — leave the column where it
@@ -163,17 +185,23 @@ func TestLookupTouchesTheRowOnceAMinuteOverPostgres(t *testing.T) {
 	// finds — moves it once more, and the request right after that move
 	// leaves it standing.
 	var dbNow2 time.Time
-	if err := store.QueryRowScan(ctx, `SELECT now()`, &dbNow2); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&dbNow2); err != nil {
 		t.Fatalf("the database's clock: %v", err)
 	}
-	if err := store.SetConsoleSessionSeen(ctx, hash, dbNow2.Add(-90*time.Second)); err != nil {
-		t.Fatalf("SetConsoleSessionSeen: %v", err)
+	if _, err := db.ExecContext(ctx, `UPDATE console_sessions SET last_seen = $2 WHERE id_hash = $1`,
+		hash, dbNow2.Add(-90*time.Second).UTC().Truncate(time.Microsecond)); err != nil {
+		t.Fatalf("set last_seen: %v", err)
 	}
-	want2 := dbNow2.Add(-90 * time.Second).UTC().Truncate(time.Microsecond).Add(time.Minute)
+	var before2 time.Time
+	if err := db.QueryRowContext(ctx, `SELECT now()`).Scan(&before2); err != nil {
+		t.Fatalf("the database's clock: %v", err)
+	}
 	get()
-	if moved := seenBy(); !moved.Equal(want2) {
-		t.Fatalf("the second minute of quiet wrote %s, want %s", moved, want2)
+	moved := seenBy()
+	if moved.Before(before2) || moved.After(before2.Add(time.Second)) {
+		t.Fatalf("the second minute of quiet wrote %s, want the database's now() around %s", moved, before2)
 	}
+	want2 := moved
 	get()
 	if again := seenBy(); !again.Equal(want2) {
 		t.Fatalf("the request right after the move touched again: %s then %s", want2, again)
@@ -217,7 +245,7 @@ func TestLoginSurvivesARestartOverPostgres(t *testing.T) {
 	if row.Login != "sebastian" || row.CSRF != s.csrf {
 		t.Fatalf("the row reads back %+v", row)
 	}
-	if access, err := openToken(r.c.cfg.SessionKey, row.Access); err != nil || access != "access-1" {
+	if access, err := openToken(r.c.cfg.SessionKey, row.Access, row.IDHash); err != nil || access != "access-1" {
 		t.Fatalf("the stored access token opens to %q, %v; want access-1", access, err)
 	}
 	// the restarted console ends the login: the row goes.

@@ -46,9 +46,9 @@ func consoleTokenKey() []byte {
 }
 
 // sealConsoleToken seals tok as the console does: AES-256-GCM under the
-// key of the session key, a fresh random nonce in front, base64url without
-// padding.
-func sealConsoleToken(t *testing.T, tok string) string {
+// key of the session key, a fresh random nonce in front, the row's id_hash
+// as additional data, base64url without padding.
+func sealConsoleToken(t *testing.T, tok, idHash string) string {
 	t.Helper()
 	if tok == "" {
 		return ""
@@ -65,11 +65,11 @@ func sealConsoleToken(t *testing.T, tok string) string {
 	if _, err := rand.Read(nonce); err != nil {
 		t.Fatal(err)
 	}
-	return base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(tok), nil))
+	return base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(tok), []byte(idHash)))
 }
 
 // openConsoleToken is sealConsoleToken's inverse.
-func openConsoleToken(t *testing.T, sealed string) string {
+func openConsoleToken(t *testing.T, sealed, idHash string) string {
 	t.Helper()
 	if sealed == "" {
 		return ""
@@ -89,7 +89,7 @@ func openConsoleToken(t *testing.T, sealed string) string {
 	if len(b) < gcm.NonceSize() {
 		t.Fatal("the stored token is shorter than a nonce")
 	}
-	pt, err := gcm.Open(nil, b[:gcm.NonceSize()], b[gcm.NonceSize():], nil)
+	pt, err := gcm.Open(nil, b[:gcm.NonceSize()], b[gcm.NonceSize():], []byte(idHash))
 	if err != nil {
 		t.Fatalf("the stored token does not decrypt under the session key: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestPGStoreConsoleSessions(t *testing.T) {
 	// The row was written an hour ago, so the minute gate below can pass.
 	at := now.Add(-time.Hour)
 	if err := s.SaveConsoleSession(ctx, ConsoleSession{IDHash: hash, Login: "sebastian", CSRF: "tok",
-		Access: sealConsoleToken(t, clearAccess), Refresh: sealConsoleToken(t, clearRefresh),
+		Access: sealConsoleToken(t, clearAccess, hash), Refresh: sealConsoleToken(t, clearRefresh, hash),
 		TokenExpiry: at.Add(2 * time.Hour), CreatedAt: at, LastSeen: at, ExpiresAt: at.Add(13 * time.Hour)}); err != nil {
 		t.Fatalf("SaveConsoleSession: %v", err)
 	}
@@ -134,10 +134,10 @@ func TestPGStoreConsoleSessions(t *testing.T) {
 		row.Refresh == clearRefresh || strings.Contains(row.Refresh, clearRefresh) {
 		t.Fatalf("the row holds a clear token: %q / %q", row.Access, row.Refresh)
 	}
-	if got := openConsoleToken(t, row.Access); got != clearAccess {
+	if got := openConsoleToken(t, row.Access, hash); got != clearAccess {
 		t.Fatalf("the stored access token opens to %q, want %q", got, clearAccess)
 	}
-	if got := openConsoleToken(t, row.Refresh); got != clearRefresh {
+	if got := openConsoleToken(t, row.Refresh, hash); got != clearRefresh {
 		t.Fatalf("the stored refresh token opens to %q, want %q", got, clearRefresh)
 	}
 	// the raw cookie id is nowhere in the row, and the key is its hash.
@@ -152,9 +152,13 @@ func TestPGStoreConsoleSessions(t *testing.T) {
 		t.Fatal("the row holds the raw cookie id")
 	}
 	// last_seen moves at most once a minute. The touch takes the value the
-	// caller read and moves the column a minute past it, the next time its
-	// owner may touch again; a second touch on the same read finds the row
-	// saying something else and holds — whatever either clock says.
+	// caller read and moves the column to the database's now(), the next
+	// time its owner may touch again; a second touch on the same read finds
+	// the row saying something else and holds — whatever either clock says.
+	var before time.Time
+	if err := other.db.QueryRowContext(ctx, `SELECT now()`).Scan(&before); err != nil {
+		t.Fatalf("the database's clock: %v", err)
+	}
 	moved, err := other.TouchConsoleSession(ctx, hash, row.LastSeen)
 	if err != nil {
 		t.Fatalf("TouchConsoleSession: %v", err)
@@ -163,8 +167,8 @@ func TestPGStoreConsoleSessions(t *testing.T) {
 		t.Fatal("last_seen did not move on the value the caller read")
 	}
 	seen, _, _ := other.ConsoleSessionByHash(ctx, hash)
-	if !within(seen.LastSeen, row.LastSeen.Add(time.Minute)) {
-		t.Fatalf("last_seen after the touch = %s, want %s", seen.LastSeen, row.LastSeen.Add(time.Minute))
+	if seen.LastSeen.Before(before) || seen.LastSeen.After(before.Add(time.Second)) {
+		t.Fatalf("last_seen after the touch = %s, want the database's now() around %s", seen.LastSeen, before)
 	}
 	if moved, err := other.TouchConsoleSession(ctx, hash, row.LastSeen); err != nil || moved {
 		t.Fatalf("a second touch on the same read = %v, %v: want it held", moved, err)
@@ -177,17 +181,17 @@ func TestPGStoreConsoleSessions(t *testing.T) {
 		t.Fatalf("the touch a minute later = %v, %v: want the move", moved, err)
 	}
 	newAccess, newRefresh := "ghp_access_refreshed_2", "gho_refresh_rotated_2"
-	if err := other.UpdateConsoleSessionTokens(ctx, hash, sealConsoleToken(t, newAccess), sealConsoleToken(t, newRefresh), at.Add(2*time.Hour)); err != nil {
+	if err := other.UpdateConsoleSessionTokens(ctx, hash, sealConsoleToken(t, newAccess, hash), sealConsoleToken(t, newRefresh, hash), at.Add(2*time.Hour)); err != nil {
 		t.Fatalf("UpdateConsoleSessionTokens: %v", err)
 	}
 	row, _, _ = other.ConsoleSessionByHash(ctx, hash)
 	if row.Access == newAccess || strings.Contains(row.Access, newAccess) {
 		t.Fatalf("the refreshed access token reached the row in clear: %q", row.Access)
 	}
-	if got := openConsoleToken(t, row.Access); got != newAccess {
+	if got := openConsoleToken(t, row.Access, hash); got != newAccess {
 		t.Fatalf("the refreshed access token opens to %q, want %q", got, newAccess)
 	}
-	if got := openConsoleToken(t, row.Refresh); got != newRefresh {
+	if got := openConsoleToken(t, row.Refresh, hash); got != newRefresh {
 		t.Fatalf("the refreshed refresh token opens to %q, want %q", got, newRefresh)
 	}
 	if !within(row.TokenExpiry, at.Add(2*time.Hour)) {

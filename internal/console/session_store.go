@@ -32,9 +32,11 @@ func sessionIDHash(id string) string {
 }
 
 // sealToken encrypts tok with AES-256-GCM under the key of the session
-// key sessionKey, with a fresh nonce, base64url without padding; "" is
-// stored as "".
-func sealToken(sessionKey []byte, tok string) (string, error) {
+// key sessionKey, with a fresh nonce and the row's id_hash as additional
+// data, base64url without padding; "" is stored as "". The additional data
+// binds the sealed token to the row: a copy under another cookie hash does
+// not open.
+func sealToken(sessionKey []byte, tok, idHash string) (string, error) {
 	if tok == "" {
 		return "", nil
 	}
@@ -46,11 +48,12 @@ func sealToken(sessionKey []byte, tok string) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	return base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(tok), nil)), nil
+	return base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(tok), []byte(idHash))), nil
 }
 
-// openToken is sealToken's inverse; "" opens to "".
-func openToken(sessionKey []byte, sealed string) (string, error) {
+// openToken is sealToken's inverse; "" opens to "". The id_hash must match
+// the one used when sealing, or the token does not open.
+func openToken(sessionKey []byte, sealed, idHash string) (string, error) {
 	if sealed == "" {
 		return "", nil
 	}
@@ -66,7 +69,7 @@ func openToken(sessionKey []byte, sealed string) (string, error) {
 		return "", errSealedToken
 	}
 	nonce, ct := b[:gcm.NonceSize()], b[gcm.NonceSize():]
-	pt, err := gcm.Open(nil, nonce, ct, nil)
+	pt, err := gcm.Open(nil, nonce, ct, []byte(idHash))
 	if err != nil {
 		return "", errSealedToken
 	}
@@ -93,9 +96,9 @@ func tokenGCM(sessionKey []byte) (cipher.AEAD, error) {
 // sealTokens returns s's access and refresh tokens sealed for the row;
 // the empty token seals to "". The caller holds s's mutex.
 func (c *Console) sealTokens(s *session) (access, refresh string, err error) {
-	if access, err = sealToken(c.cfg.SessionKey, s.access); err != nil {
+	if access, err = sealToken(c.cfg.SessionKey, s.access, s.hash); err != nil {
 		return "", "", err
 	}
-	refresh, err = sealToken(c.cfg.SessionKey, s.refresh)
+	refresh, err = sealToken(c.cfg.SessionKey, s.refresh, s.hash)
 	return access, refresh, err
 }

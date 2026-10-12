@@ -481,7 +481,13 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	if ae := (*apiError)(nil); errors.As(err, &ae) {
 		refusal = ae.reason()
 	} else if err != nil {
-		if r.Header.Get("HX-Request") == "" || c.session(r) == nil {
+		s, sErr := c.session(r)
+		if sErr != nil {
+			log.Printf("console: the session read: %v", sErr)
+			http.Error(w, "cannot read the session", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Header.Get("HX-Request") == "" || s == nil {
 			c.forgejoFailed(w, r, "merge the pull request", err)
 			return
 		}

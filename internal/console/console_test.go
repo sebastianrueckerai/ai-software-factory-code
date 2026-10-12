@@ -853,21 +853,26 @@ func (r *rig) readSession(t *testing.T, ck *http.Cookie) *session {
 	other.writers, other.writersT = r.c.writers, time.Now().Add(time.Hour) // the writer check stays cached: no extra Forgejo read
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.AddCookie(ck)
-	return other.session(req)
+	s, err := other.session(req)
+	if err != nil {
+		t.Fatalf("the session read: %v", err)
+	}
+	return s
 }
 
 // tokens are the session's OAuth tokens as they stand in its row now.
 func (r *rig) tokens(t *testing.T, ck *http.Cookie) (access, refresh string) {
 	t.Helper()
-	row, ok := r.sessions.row(sessionIDHash(ck.Value))
+	hash := sessionIDHash(ck.Value)
+	row, ok := r.sessions.row(hash)
 	if !ok {
 		t.Fatal("no session row")
 	}
-	access, err := openToken(r.c.cfg.SessionKey, row.Access)
+	access, err := openToken(r.c.cfg.SessionKey, row.Access, hash)
 	if err != nil {
 		t.Fatalf("the stored access token: %v", err)
 	}
-	refresh, err = openToken(r.c.cfg.SessionKey, row.Refresh)
+	refresh, err = openToken(r.c.cfg.SessionKey, row.Refresh, hash)
 	if err != nil {
 		t.Fatalf("the stored refresh token: %v", err)
 	}
@@ -1316,7 +1321,7 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
 	t.Helper()
 	hash := sessionIDHash(ck.Value)
-	sealed, err := sealToken(r.c.cfg.SessionKey, "expired-access")
+	sealed, err := sealToken(r.c.cfg.SessionKey, "expired-access", hash)
 	if err != nil {
 		t.Fatal(err)
 	}

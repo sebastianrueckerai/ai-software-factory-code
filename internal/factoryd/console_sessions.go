@@ -65,18 +65,17 @@ func (s *PGStore) DeleteConsoleSession(ctx context.Context, hash string) error {
 	return err
 }
 
-// TouchConsoleSession moves the row's last_seen to seenAt + 1m, the next
-// time its owner may touch it again, when the row still says seenAt, the
-// value the caller read; false when it did not move (the row is gone, or
-// its last_seen already moved since that read). The gate is an equality
-// on the read's own value, not a clock comparison: Postgres rounds a
-// stored timestamptz to microseconds while Go reads back nanoseconds, so
-// an "older than" test against either clock would hinge on rounding. A
-// caller holding the value it read touches once per change of the column,
-// however many processes share the table (roadmap 164).
+// TouchConsoleSession moves the row's last_seen to now when the row still
+// says seenAt, the value the caller read; false when it did not move (the
+// row is gone, or its last_seen already moved since that read). The gate
+// is an equality on the read's own value, not a clock comparison: Postgres
+// rounds a stored timestamptz to microseconds while Go reads back
+// nanoseconds, so an "older than" test against either clock would hinge on
+// rounding. A caller holding the value it read touches once per change of
+// the column, however many processes share the table (roadmap 164).
 func (s *PGStore) TouchConsoleSession(ctx context.Context, hash string, seenAt time.Time) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE console_sessions SET last_seen = $2 WHERE id_hash = $1 AND last_seen = $3`,
-		hash, seenAt.Add(time.Minute), seenAt.UTC().Truncate(time.Microsecond))
+	res, err := s.db.ExecContext(ctx, `UPDATE console_sessions SET last_seen = now() WHERE id_hash = $1 AND last_seen = $2`,
+		hash, seenAt.UTC().Truncate(time.Microsecond))
 	if err != nil {
 		return false, err
 	}
@@ -88,23 +87,6 @@ func (s *PGStore) TouchConsoleSession(ctx context.Context, hash string, seenAt t
 func (s *PGStore) UpdateConsoleSessionTokens(ctx context.Context, hash, access, refresh string, expiry time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE console_sessions SET access = $2, refresh = $3, token_expiry = $4 WHERE id_hash = $1`,
 		hash, access, refresh, expiry)
-	return err
-}
-
-// QueryRowScan runs one query of one column with its arguments and scans its
-// row, which is how a test reads what the database wrote: the value a touch
-// put in last_seen, or the database's own now().
-func (s *PGStore) QueryRowScan(ctx context.Context, query string, dest any, args ...any) error {
-	return s.db.QueryRowContext(ctx, query, args...).Scan(dest)
-}
-
-// SetConsoleSessionSeen puts the row's last_seen at at, which is how a test
-// brings on the minute of quiet the console's gate waits for, or pins the
-// value a touch must find, without waiting for either. It touches no other
-// column; a real deployment never calls it.
-func (s *PGStore) SetConsoleSessionSeen(ctx context.Context, hash string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE console_sessions SET last_seen = $2 WHERE id_hash = $1`,
-		hash, at.UTC().Truncate(time.Microsecond))
 	return err
 }
 

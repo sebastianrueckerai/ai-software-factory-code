@@ -62,7 +62,13 @@ func (c *Console) pendingLogin(r *http.Request) (state, verifier string, ok bool
 // the verifier travel in a signed host-only cookie, so an anonymous visit
 // keeps nothing on the server; the state also goes in the query.
 func (c *Console) login(w http.ResponseWriter, r *http.Request) {
-	if c.session(r) != nil {
+	s, err := c.session(r)
+	if err != nil {
+		log.Printf("console: the session read: %v", err)
+		http.Error(w, "cannot read the session", http.StatusServiceUnavailable)
+		return
+	}
+	if s != nil {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -192,14 +198,38 @@ func (c *Console) token(ctx context.Context, form url.Values) (tokenRequest, err
 // expires within a minute (Forgejo issues 1 h tokens with rotating refresh
 // tokens). A refresh writes the new tokens to the session's row.
 func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if time.Until(s.expiry) > time.Minute {
-		return s.access, nil
+		access := s.access
+		s.mu.Unlock()
+		return access, nil
 	}
-	tok, err := c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.refresh}})
+	refresh := s.refresh
+	s.mu.Unlock()
+	tok, err := c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}})
 	if err != nil {
 		return "", err
+	}
+	row, ok, err := c.cfg.Sessions.ConsoleSessionByHash(ctx, s.hash)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errLoggedOut
+	}
+	existing, err := openToken(c.cfg.SessionKey, row.Access, row.IDHash)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing != s.access {
+		s.access = existing
+		s.refresh, _ = openToken(c.cfg.SessionKey, row.Refresh, row.IDHash)
+		s.expiry = row.TokenExpiry
+		return s.access, nil
 	}
 	s.access, s.refresh, s.expiry = tok.access, tok.refresh, tok.expiry
 	sealedAccess, sealedRefresh, err := c.sealTokens(s)
