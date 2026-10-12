@@ -573,7 +573,7 @@ func TestSystemTool(t *testing.T) {
 		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n"+
 			"  session, a card with a session\n  session_steps, a card with a session\n  session_step, a card with a session\n  session_search, a card with a session\n"+
 			"  ci, a project with a repository\n"+
-			"  alerts, the factory's writers\n  resources, the factory's writers\n  projects, the factory's writers\n  policy, the factory's writers\n  pulse, a project with a pulse\n",
+			"  alerts, the factory's writers\n  resources, the factory's writers\n  projects, the factory's writers\n  policy, the factory's writers\n",
 		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
 		"\n  invite, needs OK, an approver of the project\n",
 		"\n  alert_verdict, needs OK, an open escalation alert\n  promote_resource, needs OK, an open leased commission\n  release_resource, needs OK, an open commission\n",
@@ -581,7 +581,9 @@ func TestSystemTool(t *testing.T) {
 			"  set_dependency, needs OK, two cards of which the first has not started\n  split_card, needs OK, a pending merge request of risk class large\n",
 		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
-			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n"+
+			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
+			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
+			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
 			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n")
 	at := -1
 	for _, gate := range []string{"intake: the issue becomes a card", "session: an agent works in a sandbox",
@@ -603,7 +605,7 @@ func TestSystemTool(t *testing.T) {
 	r.c.cfg.Policies = cappedPolicies{r.ledger}
 	got = read(r, g)
 	contains(got, "\n  approve_merge, a pending merge request\n", "\nTools needing OK: none\n",
-		"\n  task budget: €2.00 default, €5.00 maximum\n  project month cap: €12.00\n")
+		"\n  approvers: sebastian\n  project month cap: €12.00\n  task budget: €2.00 default, €5.00 maximum\n")
 	if strings.Contains(got, "needs OK") {
 		t.Errorf("a tool needs OK with an empty confirm list:\n%s", got)
 	}

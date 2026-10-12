@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"math"
 	"net/http"
 	"slices"
 	"strconv"
@@ -27,20 +26,6 @@ import (
 
 // chatTimeLayout is the minute-precision UTC stamp every page read uses.
 const chatTimeLayout = "2006-01-02 15:04"
-
-// factoryAccess refuses a factory-level read to anyone but the writers of
-// the factory's own code project, in the words the /alerts, /resources,
-// /costs, /policy and /projects pages answer with.
-func (c *Console) factoryAccess(ctx context.Context, a actor) error {
-	switch _, ok, err := c.writer(ctx, a.s.user); {
-	case err != nil:
-		log.Printf("console: writers: %v", err)
-		return refuse(http.StatusServiceUnavailable, "cannot check repository writers")
-	case !ok:
-		return refuse(http.StatusForbidden, "Only the writers of the factory's own code see the factory's pages.")
-	}
-	return nil
-}
 
 // alertSeverity is an alert's class of problem: what it is, then what
 // raised it; the /alerts page's Kind and Source columns in one word.
@@ -72,7 +57,7 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 		return "", err
 	}
 	switch state {
-	case "open", "all", "":
+	case "open", "all":
 	default:
 		return "", refuse(http.StatusBadRequest, "state must be open or all")
 	}
@@ -99,81 +84,48 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 		}
 		b.WriteString("\n")
 	}
-	if n == 0 {
-		return "No open alerts.", nil
-	}
-	head := "Open alerts:"
+	head, none := "Open alerts:", "No open alerts."
 	if state == "all" {
-		head = "Alerts:"
+		head, none = "Alerts:", "No alerts."
+	}
+	if n == 0 {
+		return none, nil
 	}
 	return head + "\n" + strings.TrimSuffix(b.String(), "\n"), nil
 }
 
-// promotable is whether the resources page gives res its promote button:
-// leased, not released, its lease still running.
-func promotable(res cloudres.Resource, now time.Time) bool {
-	return res.Lifetime != cloudres.LifetimeStanding && res.ReleasedBy == "" && now.Before(res.LeaseExpires)
-}
-
 // resourcesText is the /resources page as the agent reads it: each
-// commissioned cloud resource with id, kind, project, state, cost per
-// month and whether it may be promoted or released, grouped by project
-// like the page's tables.
+// commissioned cloud resource with id, kind, state and cost per month by
+// project, its commission's promote and release on the row the page puts
+// them, promote only for an approver.
 func (c *Console) resourcesText(ctx context.Context, a actor) (string, error) {
 	if err := c.factoryAccess(ctx, a); err != nil {
 		return "", err
-	}
-	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
-	if err != nil || !ok {
-		log.Printf("console: current policy: loaded %v, %v", ok, err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the policy")
 	}
 	rows, err := c.cfg.Resources.Commissions(ctx, time.Now().Add(-closedSince))
 	if err != nil {
 		log.Printf("console: resources: %v", err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the resource registry")
 	}
-	repos := []string{}
-	seen := map[string]bool{}
-	add := func(repo string) {
-		if !seen[repo] {
-			seen[repo] = true
-			repos = append(repos, repo)
-		}
-	}
-	for _, p := range v.Projects {
-		add(p.Repository)
-	}
-	for _, res := range rows {
-		add(res.Repo)
-	}
-	slices.Sort(repos)
-	now := time.Now()
-	var b strings.Builder
-	n := 0
-	for _, repo := range repos {
-		grouped := slices.DeleteFunc(slices.Clone(rows), func(res cloudres.Resource) bool { return res.Repo != repo })
-		if len(grouped) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "%s (%d):\n", repo, len(grouped))
-		for _, res := range grouped {
-			n++
-			open := slices.Contains(cloudres.OpenStates, res.State)
-			fmt.Fprintf(&b, "  %d %s %s %.4f EUR/month", res.ID, res.Kind, res.State, res.MonthlyEUR)
-			switch {
-			case promotable(res, now) && open:
-				b.WriteString(", promotable, releasable")
-			case open:
-				b.WriteString(", releasable")
-			default:
-				b.WriteString(", closed")
-			}
-			b.WriteString("\n")
-		}
-	}
-	if n == 0 {
+	if len(rows) == 0 {
 		return "No commissioned resources.", nil
+	}
+	actions, approver, now := actionRows(rows), c.isApprover(ctx, a.s.user, c.writersOwn()), time.Now()
+	rows = slices.Clone(rows)
+	slices.SortStableFunc(rows, func(x, y cloudres.Resource) int { return cmp.Compare(x.Repo, y.Repo) })
+	var b strings.Builder
+	for i, res := range rows {
+		if i == 0 || rows[i-1].Repo != res.Repo {
+			b.WriteString(res.Repo + ":\n")
+		}
+		fmt.Fprintf(&b, "  %d %s %s %.4f EUR/month", res.ID, res.Kind, res.State, res.MonthlyEUR)
+		if actions[res.HoldID] == res.ID {
+			if approver && promotable(res, now) {
+				b.WriteString(", promotable")
+			}
+			b.WriteString(", releasable")
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimSuffix(b.String(), "\n"), nil
 }
@@ -191,11 +143,10 @@ func mirrorWords(m *factoryd.Mirror) string {
 	return m.Remote + " (" + mode + ", " + m.State + ")"
 }
 
-// projectsText is the /projects page as the agent reads it: each project
-// the member may see, the coder projects for a chat (the board's rule),
-// every project on the factory's own code project, with its name, objects,
-// process, merge rule, state and GitHub export state.
-func (c *Console) projectsText(ctx context.Context, a actor, p factoryd.Project) (string, error) {
+// projectsText is the /projects page as the agent reads it: every
+// project with its name, objects, process, merge rule, state and GitHub
+// export state.
+func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 	if err := c.factoryAccess(ctx, a); err != nil {
 		return "", err
 	}
@@ -204,15 +155,14 @@ func (c *Console) projectsText(ctx context.Context, a actor, p factoryd.Project)
 		log.Printf("console: projects: %v", err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
 	}
-	if p.Repository != c.writersOwn() {
-		ps = slices.DeleteFunc(ps, func(x factoryd.Project) bool { return !x.Coder() })
-	}
 	var b strings.Builder
 	for _, x := range ps {
 		state := "not registered"
 		switch {
 		case !x.File:
 			state = "no file: kept for its tokens"
+		case x.Objects == policy.ObjectsSeed:
+			state = "made by the infra repository and the seed"
 		case !x.ReadyAt.IsZero():
 			state = "ready since " + x.ReadyAt.UTC().Format(chatTimeLayout) + " UTC"
 		case x.Minted():
@@ -229,7 +179,7 @@ func (c *Console) projectsText(ctx context.Context, a actor, p factoryd.Project)
 				export = mirrorWords(&m)
 			}
 		}
-		fmt.Fprintf(&b, "%s %s objects %s process %s merge %s: %s, GitHub export: %s\n",
+		fmt.Fprintf(&b, "%s (%s): objects %s; process %s; merge rule %s; %s; GitHub export %s\n",
 			x.Name, x.Repository, x.Objects, cmp.Or(x.Process, "none"), x.MergeRule, state, export)
 	}
 	if len(ps) == 0 {
@@ -238,36 +188,28 @@ func (c *Console) projectsText(ctx context.Context, a actor, p factoryd.Project)
 	return "Projects (" + strconv.Itoa(len(ps)) + "):\n" + strings.TrimSuffix(b.String(), "\n"), nil
 }
 
-// policyText is the /policy page as the agent reads it: the limits, the
-// budgets with each project's month cap, the risk classes with their
-// paths, and the approvers. The budget lines reuse the system tool's
-// wording, so no second copy of it exists.
-func (c *Console) policyText(ctx context.Context, a actor, repository string) (string, error) {
+// policyText is the /policy page as the agent reads it: the limits and
+// the budgets with each project's month cap, the risk classes with their
+// paths, and the approvers.
+func (c *Console) policyText(ctx context.Context, a actor) (string, error) {
 	if err := c.factoryAccess(ctx, a); err != nil {
 		return "", err
 	}
 	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
-	if err != nil || !ok {
-		log.Printf("console: current policy: loaded %v, %v", ok, err)
+	switch {
+	case err != nil:
+		log.Printf("console: current policy: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the policy")
+	case !ok:
 		return "", refuse(http.StatusServiceUnavailable, "no policy version loaded")
 	}
 	d := v.Tree.Document
 	var b strings.Builder
-	fmt.Fprintf(&b, "Policy version %d (commit %s).\n", v.ID, v.Commit)
-	fmt.Fprintf(&b, "Limits:\n  sessions per card: %d\n  agent time: %s\n", d.Limits.Sessions, d.Limits.AgentTime)
-	b.WriteString("Budgets:\n")
-	budget := d.Budget
-	fmt.Fprintf(&b, "  task budget: €%.2f default, €%.2f maximum\n", budget.TaskDefaultEUR, budget.TaskMaxEUR)
-	fmt.Fprintf(&b, "  day cap: €%.2f\n", budget.DayEUR)
-	if math.IsInf(budget.MonthEUR, 1) {
-		b.WriteString("  month cap: none\n")
-	} else {
-		fmt.Fprintf(&b, "  month cap: €%.2f\n", budget.MonthEUR)
-	}
+	fmt.Fprintf(&b, "Policy version %d (commit %s).\nLimits and budgets:\n%s", v.ID, v.Commit, limitLines(d))
+	fmt.Fprintf(&b, "  day cap: €%.2f\n  month cap: €%.2f\n", d.Budget.DayEUR, d.Budget.MonthEUR)
 	names := slices.Sorted(maps.Keys(v.Projects))
 	for _, name := range names {
-		p := v.Projects[name]
-		if p.Budget != nil {
+		if p := v.Projects[name]; p.Budget != nil {
 			fmt.Fprintf(&b, "  project %s month cap: €%.2f\n", name, p.Budget.MonthEUR)
 		}
 	}
@@ -285,8 +227,7 @@ func (c *Console) policyText(ctx context.Context, a actor, repository string) (s
 	}
 	fmt.Fprintf(&b, "Approvers:\n  factory: %s\n", strings.Join(d.Approvers, ", "))
 	for _, name := range names {
-		p := v.Projects[name]
-		if len(p.Approvers) > 0 {
+		if p := v.Projects[name]; len(p.Approvers) > 0 {
 			fmt.Fprintf(&b, "  %s: %s\n", name, strings.Join(p.Approvers, ", "))
 		}
 	}
@@ -300,20 +241,19 @@ func costsWindow(now time.Time) (from, to time.Time) {
 	return time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC), to
 }
 
-// costsByText breaks the ledger down by day, card (task) or tier (the
-// ledger's kind) over that window, in EUR, with the totals line; "" keeps
-// the day rows. The /costs page's day table and its cards are the same
-// rows, so the tool shows what the page shows.
+// costsByText breaks the ledger down by day, card (task) or tier over
+// that window, in EUR, with the totals line. A tier is a model alias, the
+// ref of a model row after its purpose/ prefix; the other kinds stand as
+// their kind.
 func (c *Console) costsByText(ctx context.Context, a actor, by string) (string, error) {
 	if err := c.factoryAccess(ctx, a); err != nil {
 		return "", err
 	}
 	switch by {
-	case "", "day", "card", "tier":
+	case "day", "card", "tier":
 	default:
 		return "", refuse(http.StatusBadRequest, "by must be day, card or tier")
 	}
-	by = cmp.Or(by, "day")
 	from, to := costsWindow(time.Now())
 	ledger, err := c.cfg.Costs.Costs(ctx, from, to)
 	if err != nil {
@@ -339,15 +279,19 @@ func (c *Console) costsByText(ctx context.Context, a actor, by string) (string, 
 			grand += t.EUR
 		}
 	case "tier":
-		kinds := map[string]float64{}
-		for _, d := range ledger.Days {
-			for k, eur := range d.ByKind {
-				kinds[k] += eur
+		tiers := map[string]float64{}
+		for _, t := range ledger.Tasks {
+			for _, l := range t.Lines {
+				tier := l.Kind
+				if l.Kind == policy.KindModel {
+					tier = l.Ref[strings.LastIndexByte(l.Ref, '/')+1:]
+				}
+				tiers[tier] += l.EUR
 			}
 		}
-		for _, k := range slices.Sorted(maps.Keys(kinds)) {
-			lines = append(lines, fmt.Sprintf("  %s %.4f", k, kinds[k]))
-			grand += kinds[k]
+		for _, k := range slices.Sorted(maps.Keys(tiers)) {
+			lines = append(lines, fmt.Sprintf("  %s %.4f", k, tiers[k]))
+			grand += tiers[k]
 		}
 	}
 	if len(lines) == 0 {
@@ -366,35 +310,12 @@ func tailWords(parts []string) string {
 	return " (" + strings.Join(parts, ", ") + ")"
 }
 
-// pulseText is GET /projects/{name}/pulse's fragment as the agent reads
-// it: the project's newest pulse, refused where the route refuses a
-// member who does not read the project.
-func (c *Console) pulseText(ctx context.Context, a actor, p factoryd.Project) (string, error) {
-	reads, err := c.reads(ctx, a.s, p)
-	switch {
-	case err != nil:
-		log.Printf("console: may %s read %s: %v", a.s.user, p.Name, err)
-		return "", refuse(http.StatusServiceUnavailable, "cannot check who may read the project")
-	case !reads:
-		return "", refuse(http.StatusForbidden, "you read no project of "+p.Repository)
-	}
-	if c.cfg.Pulses == nil {
-		return "", refuse(http.StatusNotFound, "Project "+p.Name+" has no pulse")
-	}
-	row, ok, err := c.cfg.Pulses.NewestPulse(ctx, p.Repository)
-	if err != nil {
-		log.Printf("console: the pulse of %s: %v", p.Repository, err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the pulse")
-	}
-	if !ok {
-		return "", refuse(http.StatusNotFound, "Project "+p.Name+" has no pulse yet")
-	}
-	return row.Sentence, nil
-}
-
 // doAlertVerdict is POST /alerts/{id}/verdict's action: the factory
 // approver's verdict on an open escalation alert.
 func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v string) (string, error) {
+	if err := c.factoryAccess(ctx, a); err != nil {
+		return "", err
+	}
 	if err := c.approves(ctx, a, c.writersOwn(), "judge an alert"); err != nil {
 		return "", err
 	}
@@ -426,14 +347,15 @@ func (c *Console) alertVerdictRecord(ctx context.Context, a actor, id int64, v s
 }
 
 // doPromoteResource is the resources page's Promote button: make the
-// commission standing, which must fit the project file's standing block.
+// commission standing (project-owned, no lease, no end with its task),
+// which must fit the standing block of the project's file in force.
 func (c *Console) doPromoteResource(ctx context.Context, a actor, id int64) (string, error) {
 	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
 	if err != nil || !ok {
 		log.Printf("console: current policy: loaded %v, %v", ok, err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the policy")
 	}
-	if err := c.resourceChangeDo(ctx, a, "promote", id, func(ctx context.Context, id int64, by string) error {
+	if err := c.resourceChange(ctx, a, "promote", id, func(ctx context.Context, id int64, by string) error {
 		return c.cfg.Resources.Promote(ctx, id, by, func(repo string) policy.Standing { return v.EnvelopeOf(repo).Standing })
 	}); err != nil {
 		return "", err
@@ -445,16 +367,18 @@ func (c *Console) doPromoteResource(ctx context.Context, a actor, id int64) (str
 // commission's lease now; the gateway's collector deletes it on its next
 // pass.
 func (c *Console) doReleaseResource(ctx context.Context, a actor, id int64) (string, error) {
-	if err := c.resourceChangeDo(ctx, a, "release", id, c.cfg.Resources.EndLease); err != nil {
+	if err := c.resourceChange(ctx, a, "release", id, c.cfg.Resources.EndLease); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Resource %d is released; the collector deletes it.", id), nil
 }
 
-// resourceChangeDo is resourceChange without the http.ResponseWriter: the
-// change, its log line and its event row. Like the page's buttons, only
-// promote needs a factory approver; a writer releases.
-func (c *Console) resourceChangeDo(ctx context.Context, a actor, what string, id int64, change func(ctx context.Context, id int64, by string) error) error {
+// resourceChange runs a factory writer's change on commission id, with
+// its log line and its event row; only promote needs a factory approver.
+func (c *Console) resourceChange(ctx context.Context, a actor, what string, id int64, change func(ctx context.Context, id int64, by string) error) error {
+	if err := c.factoryAccess(ctx, a); err != nil {
+		return err
+	}
 	if what == "promote" {
 		if err := c.approves(ctx, a, c.writersOwn(), "authorize spend"); err != nil {
 			return err

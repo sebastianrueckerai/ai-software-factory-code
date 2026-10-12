@@ -79,7 +79,7 @@ type ChatConfig struct {
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
 	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
-	"alerts", "resources", "projects", "policy", "pulse",
+	"alerts", "resources", "projects", "policy",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "move_card", "answer", "comment", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent", "invite", "github_export",

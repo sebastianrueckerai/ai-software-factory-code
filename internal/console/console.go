@@ -235,41 +235,45 @@ type session struct {
 	seen time.Time
 }
 
-// chatRouteTool is a GET route's chat tool or named exception (roadmap
-// 158): tool names the read or write that shows the member exactly what
-// the page shows; none is a named exception, with its reason. Every GET
-// route the console registers carries one, and TestEveryConsolePageIsAChatTool
-// reads this table and the mux itself, so a new route cannot escape it.
-type chatRouteTool struct {
-	tool    string // "" for none
-	none    string // the exception's reason
+// getRoute is a GET route of the console with its handler, and the chat
+// tool that reads what its page shows or the named exception's reason
+// (roadmap 158, ruling 263). New registers every GET route from
+// getRoutes, which the parity test reads.
+type getRoute struct {
 	pattern string
+	handler http.Handler
+	tool    string
+	none    string
 }
 
-// chatRoutes lists every GET route New registers, each with its tool or
-// its named exception.
-var chatRoutes = []chatRouteTool{
-	{"", "the sign-in page: no chat before a session", "GET /login"},
-	{"", "the OAuth provider's callback: no page", "GET /auth/callback"},
-	{"board", "", "GET /{$}"}, // redirects to /board; the parity test covers /board
-	{"board", "", "GET /board"},
-	{"", "the new task's form: the chat files cards (new_card), not tasks", "GET /tasks/new"},
-	{"", "a card's timeline fragment: the card read names where its reviews, checks and plan are", "GET /tasks/{id}/timeline"},
-	{"costs", "", "GET /costs"},
-	{"policy", "", "GET /policy"},
-	{"resources", "", "GET /resources"},
-	{"alerts", "", "GET /alerts"},
-	{"projects", "", "GET /projects"},
-	{"", "the new project's form: the chat creates no project", "GET /projects/new"},
-	{"", "a project's status panel: a fragment of the projects page whose tool exists (projects)", "GET /projects/{name}/status"},
-	{"", "a project's event feed fragment: the history tool reads the chat project's events", "GET /projects/{name}/events"},
-	{"", "the event stream: the live half of the events fragment", "GET /projects/{name}/events/stream"},
-	{"", "a card's face: a fragment of the board page whose tool exists (card)", "GET /cards/{id}"},
-	{"", "a card's drawer: a fragment of the board page whose tool exists (card)", "GET /cards/{id}/drawer"},
-	{"", "the chat's own page", "GET /projects/{name}/chat"},
-	{"", "the chat's conversation list: the chat's own route", "GET /projects/{name}/chat/conversations"},
-	{"pulse", "", "GET /projects/{name}/pulse"},
-	{"", "the static files", "GET /static/"},
+func (c *Console) getRoutes() ([]getRoute, error) {
+	static, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return nil, err
+	}
+	return []getRoute{
+		{"GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)), "", "the static files"},
+		{"GET /login", http.HandlerFunc(c.login), "", "the sign-in page: no chat before a session"},
+		{"GET /auth/callback", http.HandlerFunc(c.callback), "", "the OAuth provider's callback: no page"},
+		{"GET /{$}", c.auth(c.board), "board", ""},
+		{"GET /board", c.auth(c.board), "board", ""},
+		{"GET /tasks/new", c.auth(c.factory(c.newTaskForm)), "", "the new task's form: the chat files cards (new_card), not tasks"},
+		{"GET /tasks/{id}/timeline", c.auth(c.timeline), "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
+		{"GET /costs", c.auth(c.factory(c.costs)), "costs", ""},
+		{"GET /policy", c.auth(c.factory(c.policy)), "policy", ""},
+		{"GET /resources", c.auth(c.factory(c.resources)), "resources", ""},
+		{"GET /alerts", c.auth(c.factory(c.alerts)), "alerts", ""},
+		{"GET /projects", c.auth(c.factory(c.projects)), "projects", ""},
+		{"GET /projects/new", c.auth(c.factory(c.newProjectForm)), "", "the new project's form: the chat creates no project"},
+		{"GET /projects/{name}/status", c.auth(c.factory(c.projectStatus)), "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
+		{"GET /projects/{name}/events", c.auth(c.projectEvents), "", "a project's event feed fragment: the history tool reads the chat project's events"},
+		{"GET /projects/{name}/events/stream", c.auth(c.projectEventsStream), "", "the event stream: the live half of the events fragment"},
+		{"GET /cards/{id}", c.auth(c.cardFragment), "", "a card's face: a fragment of the board page, whose tool is card"},
+		{"GET /cards/{id}/drawer", c.auth(c.cardDrawer), "", "a card's drawer: a fragment of the board page, whose tool is card"},
+		{"GET /projects/{name}/chat", c.auth(c.chatGet), "", "the chat's own page"},
+		{"GET /projects/{name}/chat/conversations", c.auth(c.chatConversations), "", "the chat's conversation list: the chat's own route"},
+		{"GET /projects/{name}/pulse", c.auth(c.pulseGet), "", "the pulse sentence: every turn's starting context carries it"},
+	}, nil
 }
 
 // New builds the console handler.
@@ -288,17 +292,14 @@ func New(cfg Config) (*Console, error) {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}}
-	static, err := fs.Sub(staticFS, "static")
+	gets, err := c.getRoutes()
 	if err != nil {
 		return nil, err
 	}
-	c.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
-	c.mux.HandleFunc("GET /login", c.login)
-	c.mux.HandleFunc("GET /auth/callback", c.callback)
+	for _, g := range gets {
+		c.mux.Handle(g.pattern, g.handler)
+	}
 	c.mux.Handle("POST /logout", c.auth(c.logout))
-	c.mux.Handle("GET /{$}", c.auth(c.board))
-	c.mux.Handle("GET /board", c.auth(c.board))
-	c.mux.Handle("GET /tasks/new", c.auth(c.factory(c.newTaskForm)))
 	c.mux.Handle("POST /tasks", c.auth(c.factory(c.createTask)))
 	c.mux.Handle("POST /tasks/{id}/answer", c.auth(c.answer))
 	c.mux.Handle("POST /tasks/{id}/summary", c.auth(c.setSummary))
@@ -313,32 +314,17 @@ func New(cfg Config) (*Console, error) {
 	c.mux.Handle("POST /tasks/{id}/close", c.auth(c.closeCard))
 	c.mux.Handle("POST /tasks/{id}/steer", c.auth(c.steerCard))
 	c.mux.Handle("POST /tasks/{id}/split", c.auth(c.splitCard))
-	c.mux.Handle("GET /tasks/{id}/timeline", c.auth(c.timeline))
-	c.mux.Handle("GET /costs", c.auth(c.factory(c.costs)))
-	c.mux.Handle("GET /policy", c.auth(c.factory(c.policy)))
 	c.mux.Handle("POST /approvals/{id}/approve", c.auth(c.approve))
 	c.mux.Handle("POST /approvals/{id}/deny", c.auth(c.deny))
-	c.mux.Handle("GET /resources", c.auth(c.factory(c.resources)))
-	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.factory(c.spend("promote", c.promote))))
-	c.mux.Handle("POST /resources/{id}/release", c.auth(c.factory(c.release)))
-	c.mux.Handle("GET /alerts", c.auth(c.factory(c.alerts)))
-	c.mux.Handle("GET /projects", c.auth(c.factory(c.projects)))
-	c.mux.Handle("GET /projects/new", c.auth(c.factory(c.newProjectForm)))
+	c.mux.Handle("POST /resources/{id}/promote", c.auth(c.resourceButton(c.doPromoteResource)))
+	c.mux.Handle("POST /resources/{id}/release", c.auth(c.resourceButton(c.doReleaseResource)))
 	c.mux.Handle("POST /projects", c.auth(c.factory(c.spend("add a project", c.createProject))))
-	c.mux.Handle("GET /projects/{name}/status", c.auth(c.factory(c.projectStatus)))
-	c.mux.Handle("GET /projects/{name}/events", c.auth(c.projectEvents))
-	c.mux.Handle("GET /projects/{name}/events/stream", c.auth(c.projectEventsStream))
-	c.mux.Handle("GET /cards/{id}", c.auth(c.cardFragment))
-	c.mux.Handle("GET /cards/{id}/drawer", c.auth(c.cardDrawer))
 	c.mux.Handle("POST /projects/{name}/merge", c.auth(c.factory(c.spend("merge a project's file", c.mergeProject))))
-	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.factory(c.verdict)))
-	c.mux.Handle("GET /projects/{name}/chat", c.auth(c.chatGet))
+	c.mux.Handle("POST /alerts/{id}/verdict", c.auth(c.verdict))
 	c.mux.Handle("POST /projects/{name}/chat", c.auth(c.chatPost))
 	c.mux.Handle("POST /projects/{name}/chat/new", c.auth(c.chatNew))
-	c.mux.Handle("GET /projects/{name}/chat/conversations", c.auth(c.chatConversations))
 	c.mux.Handle("POST /projects/{name}/chat/proposals/{id}", c.auth(c.chatProposal))
 	c.mux.Handle("POST /projects/{name}/chat/undo/{token}", c.auth(c.chatUndo))
-	c.mux.Handle("GET /projects/{name}/pulse", c.auth(c.pulseGet))
 	if cfg.Mirrors != nil {
 		c.mux.Handle("POST /projects/{name}/export", c.auth(c.githubExport))
 		c.mux.Handle("POST /projects/{name}/export/remove", c.auth(c.removeGithubExport))
@@ -546,20 +532,29 @@ func (c *Console) writer(ctx context.Context, user string) (admitted, factory bo
 	return admitted, slices.Contains(lists.by[lists.own], user), nil
 }
 
-// factory refuses a factory-level page or action to anyone but the
-// writers of the factory's own code project (ruling 254).
+// factory refuses a factory-level page to anyone but the writers of the
+// factory's own code project.
 func (c *Console) factory(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch _, ok, err := c.writer(r.Context(), current(r).user); {
-		case err != nil:
-			log.Printf("console: writers: %v", err)
-			http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
-		case !ok:
-			http.Error(w, "Only the writers of the factory's own code see the factory's pages.", http.StatusForbidden)
-		default:
-			next(w, r)
+		if err := c.factoryAccess(r.Context(), button(r)); err != nil {
+			c.fail(w, r, err)
+			return
 		}
+		next(w, r)
 	}
+}
+
+// factoryAccess refuses a factory-level page, read or action to anyone but
+// the writers of the factory's own code project (ruling 254).
+func (c *Console) factoryAccess(ctx context.Context, a actor) error {
+	switch _, ok, err := c.writer(ctx, a.s.user); {
+	case err != nil:
+		log.Printf("console: writers: %v", err)
+		return refuse(http.StatusServiceUnavailable, "cannot check repository writers")
+	case !ok:
+		return refuse(http.StatusForbidden, "Only the writers of the factory's own code see the factory's pages.")
+	}
+	return nil
 }
 
 // factoryWriter reports whether the request's human writes the factory's
@@ -572,10 +567,7 @@ func (c *Console) factoryWriter(r *http.Request) bool {
 // approver reports whether the session's human approves the factory's
 // own code project: the factory-level pages' spend and verdicts.
 func (c *Console) approver(r *http.Request) bool {
-	c.mu.Lock()
-	own := c.writers.own
-	c.mu.Unlock()
-	return c.isApprover(r.Context(), current(r).user, own)
+	return c.isApprover(r.Context(), current(r).user, c.writersOwn())
 }
 
 // writersOwn is the factory's own code project's repository, from the

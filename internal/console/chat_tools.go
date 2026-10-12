@@ -171,7 +171,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, cardTitle(d)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
-		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode}} {
+		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode}, {"verdict", in.Verdict}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -211,6 +211,12 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", err
 		}
 		desc += mergeWarning(steps)
+	}
+	switch tool.name {
+	case "alert_verdict", "promote_resource", "release_resource":
+		if err := t.c.factoryAccess(t.r.Context(), t.a); err != nil {
+			return "", err
+		}
 	}
 	if tool.name == "alert_verdict" {
 		al, ok, err := t.c.cfg.Alerts.AlertByID(t.r.Context(), in.ID)
@@ -529,7 +535,7 @@ var tools = []chatTool{
 			return eventLines(events), nil, err
 		}},
 	{name: "costs", title: "Read the costs",
-		params: map[string]any{"by": enum("the ledger's breakdown: by day, by card (task) or by tier (kind), this UTC month (default day)", "day", "card", "tier")},
+		params: map[string]any{"by": enum("the whole ledger this UTC month by day, by card (task) or by tier (model alias), for the factory's writers; none: the project's spend line", "day", "card", "tier")},
 		about:  "The project's spend this UTC month against its month cap, the cards' and the chat's apart; with by day, card or tier the whole ledger that way over the current month, in EUR, with the totals line.",
 		fits:   "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -609,21 +615,14 @@ var tools = []chatTool{
 		about: "The factory's projects as the /projects page shows them: each with name, objects, process, merge rule, state and GitHub export state.",
 		fits:  "the factory's writers",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.projectsText(t.r.Context(), t.a, t.p)
+			s, err := t.c.projectsText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
 	{name: "policy", title: "Read the policy",
 		about: "The policy in force as the /policy page shows it: the limits, the budgets (task default and maximum, day, month and each project's month cap), the risk classes with their paths, and the approvers.",
 		fits:  "the factory's writers",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.policyText(t.r.Context(), t.a, t.p.Repository)
-			return s, nil, err
-		}},
-	{name: "pulse", title: "Read the pulse",
-		about: "The project's newest pulse sentence, as its board's pulse line and the pulse fragment show it.",
-		fits:  "a project with a pulse",
-		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, err := t.c.pulseText(t.r.Context(), t.a, t.p)
+			s, err := t.c.policyText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
 	{name: "alert_verdict", title: "Judge an alert", write: true,
@@ -963,13 +962,26 @@ func (t *turn) systemText() (string, error) {
 		fmt.Fprintf(&b, "  merge rule: %s\n", t.p.MergeRule)
 	}
 	fmt.Fprintf(&b, "  approvers: %s\n", strings.Join(v.ApproversOf(t.p.Repository), ", "))
-	budget := v.Tree.Document.Budget
-	fmt.Fprintf(&b, "  task budget: €%.2f default, €%.2f maximum\n", budget.TaskDefaultEUR, budget.TaskMaxEUR)
 	if _, eur := v.ProjectCap(t.p.Repository); !math.IsInf(eur, 1) {
 		fmt.Fprintf(&b, "  project month cap: €%.2f\n", eur)
 	}
-	fmt.Fprintf(&b, "  sessions per card: %d\n", v.Tree.Document.Limits.Sessions)
-	fmt.Fprintf(&b, "  agent time: %s\n", v.Tree.Document.Limits.AgentTime)
+	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d KiB\n", chatRounds, chatMessageMax>>10)
 	return b.String(), nil
+}
+
+// limitLines are the policy's task budget and limits, one indented line
+// each, as the system and policy reads show them.
+func limitLines(d policy.Document) string {
+	l := d.Limits
+	checkIn := "none"
+	if l.CheckIn > 0 {
+		checkIn = l.CheckIn.String()
+	}
+	after, nudges := l.Nudge()
+	return fmt.Sprintf("  task budget: €%.2f default, €%.2f maximum\n  sessions per card: %d\n  agent time: %s\n  check-in: %s\n"+
+		"  supervisor calls per session: %d\n  supervisor timeout: %s\n  returns before the stronger model: %d\n  steps per session: %d\n"+
+		"  identical calls before a nudge: %d, nudges: %d\n  identical calls that trip the supervisor: %d\n",
+		d.Budget.TaskDefaultEUR, d.Budget.TaskMaxEUR, l.Sessions, l.AgentTime, checkIn,
+		l.SupervisorCalls, l.SupervisorTimeout, l.StrongerAfter, l.StepCap(), after, nudges, l.SameCallAfter())
 }

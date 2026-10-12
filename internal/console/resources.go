@@ -93,23 +93,15 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 	for _, p := range v.Projects {
 		view(p.Repository)
 	}
-	actions := map[int64]int{} // commission (hold) -> index of its row with the buttons
+	actions, now := actionRows(rows), time.Now()
 	monthly := map[int64]float64{}
 	for _, res := range rows {
-		if slices.Contains(cloudres.OpenStates, res.State) {
+		open := slices.Contains(cloudres.OpenStates, res.State)
+		if open {
 			monthly[res.HoldID] += res.MonthlyEUR
 		}
 		pv := view(res.Repo)
-		row := resourceRow{Resource: res, Open: slices.Contains(cloudres.OpenStates, res.State),
-			Promotable: res.Lifetime != cloudres.LifetimeStanding && res.ReleasedBy == "" && time.Now().Before(res.LeaseExpires)}
-		pv.Rows = append(pv.Rows, row)
-		i := len(pv.Rows) - 1
-		if !row.Open || res.HoldID == 0 {
-			continue
-		}
-		if j, ok := actions[res.HoldID]; !ok || (res.Kind == cloudres.KindServer && pv.Rows[j].Kind != cloudres.KindServer) {
-			actions[res.HoldID] = i
-		}
+		pv.Rows = append(pv.Rows, resourceRow{Resource: res, Open: open, Actions: actions[res.HoldID] == res.ID, Promotable: promotable(res, now)})
 	}
 	var projects []*projectView
 	for repo, pv := range byProject {
@@ -119,8 +111,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for i := range pv.Rows {
-			if j, ok := actions[pv.Rows[i].HoldID]; ok && j == i && pv.Rows[i].Open {
-				pv.Rows[i].Actions = true
+			if pv.Rows[i].Actions {
 				pv.Rows[i].PromoteNote = fmt.Sprintf("standing, about %.4f EUR a month against the standing block's %.2f EUR (%.4f standing now)",
 					monthly[pv.Rows[i].HoldID], pv.Envelope.Standing.MonthlyEUR, pv.Envelope.StandingUse.MonthlyEUR)
 			}
@@ -132,50 +123,41 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Approver": c.approver(r)})
 }
 
-func (c *Console) resourceID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		http.NotFound(w, r)
-		return 0, false
+// resourceButton is a resources page button: do on the path's commission,
+// then back to the page.
+func (c *Console) resourceButton(do func(context.Context, actor, int64) (string, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if _, err := do(r.Context(), button(r), id); err != nil {
+			c.fail(w, r, err)
+			return
+		}
+		http.Redirect(w, r, "/resources", http.StatusSeeOther)
 	}
-	return id, true
 }
 
-// promote makes the commission standing: project-owned, no lease, no end
-// with its task (the collector keeps it until released).
-// It must fit the standing block of the project's file in force.
-func (c *Console) promote(w http.ResponseWriter, r *http.Request) {
-	id, ok := c.resourceID(w, r)
-	if !ok {
-		return
+// actionRows maps each open commission (hold) to the resource whose row
+// carries its promote and release: its server, else its first open row.
+func actionRows(rows []cloudres.Resource) map[int64]int64 {
+	actions := map[int64]int64{}
+	server := map[int64]bool{}
+	for _, res := range rows {
+		if !slices.Contains(cloudres.OpenStates, res.State) || res.HoldID == 0 || server[res.HoldID] {
+			continue
+		}
+		if _, ok := actions[res.HoldID]; !ok || res.Kind == cloudres.KindServer {
+			actions[res.HoldID], server[res.HoldID] = res.ID, res.Kind == cloudres.KindServer
+		}
 	}
-	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
-	if err != nil || !ok {
-		log.Printf("console: current policy: loaded %v, %v", ok, err)
-		http.Error(w, "cannot read the policy", http.StatusInternalServerError)
-		return
-	}
-	c.resourceChange(w, r, "promote", func(ctx context.Context, id int64, by string) error {
-		return c.cfg.Resources.Promote(ctx, id, by, func(repo string) policy.Standing { return v.EnvelopeOf(repo).Standing })
-	}, id)
+	return actions
 }
 
-// release ends the commission's lease now; the gateway's collector deletes
-// it on its next pass (every 2 minutes).
-func (c *Console) release(w http.ResponseWriter, r *http.Request) {
-	id, ok := c.resourceID(w, r)
-	if !ok {
-		return
-	}
-	c.resourceChange(w, r, "release", c.cfg.Resources.EndLease, id)
-}
-
-// resourceChange answers a button whose change (promote or release) ran on
-// commission id, sharing resourceChangeDo's checks and refusals.
-func (c *Console) resourceChange(w http.ResponseWriter, r *http.Request, what string, change func(ctx context.Context, id int64, by string) error, id int64) {
-	if err := c.resourceChangeDo(r.Context(), button(r), what, id, change); err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	http.Redirect(w, r, "/resources", http.StatusSeeOther)
+// promotable is whether res may be made standing: leased, not released,
+// its lease still running.
+func promotable(res cloudres.Resource, now time.Time) bool {
+	return res.Lifetime != cloudres.LifetimeStanding && res.ReleasedBy == "" && now.Before(res.LeaseExpires)
 }
