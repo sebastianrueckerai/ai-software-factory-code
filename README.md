@@ -2,7 +2,8 @@
 
 The factory's own code. Design lives in the `ai-software-factory` repo,
 the cluster in `ai-software-factory-infra`. This is the first repository
-the agents work on.
+the agents work on. The factory was rebuilt from the Stage 17 backups on
+2026-10-12; the rebuild recipe lives in the infra repository README.
 
 ## Binaries
 
