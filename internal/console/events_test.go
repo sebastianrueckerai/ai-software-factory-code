@@ -909,9 +909,9 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
 		t.Fatalf("a live session's stream sent %q, want the heartbeat", got)
 	}
-	r.c.mu.Lock()
-	clear(r.c.sessions)
-	r.c.mu.Unlock()
+	r.sessions.mu.Lock()
+	clear(r.sessions.rows)
+	r.sessions.mu.Unlock()
 	// a heartbeat already under way when the session went may still arrive
 	for pings := 0; pings < 2; {
 		switch got := nextMessage(t, br); {

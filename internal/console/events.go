@@ -323,8 +323,9 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}
 	// still sees the project: an error keeps the stream, a refusal ends it
+	ck, _ := r.Cookie(sessionCookie)
 	allowed := func() bool {
-		if c.session(r) == nil {
+		if c.sessionByCookie(ck.Value) == nil {
 			return false
 		}
 		login, _, err := c.writer(ctx, user)

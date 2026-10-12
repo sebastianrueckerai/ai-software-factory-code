@@ -384,8 +384,8 @@ func newStatusRig(t *testing.T) *statusRig {
 		}
 		return s.reconcileErr
 	}
-	s.ck, _ = r.loggedIn(t)
-	s.csrf = r.c.sessions[s.ck.Value].csrf
+	ck, s2 := r.loggedIn(t)
+	s.ck, s.csrf = ck, s2.csrf
 	return s
 }
 

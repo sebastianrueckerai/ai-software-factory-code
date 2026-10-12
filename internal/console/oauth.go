@@ -98,16 +98,18 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := &session{}
-	if err := c.token(r.Context(), s, url.Values{
+	tok, err := c.token(r.Context(), url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {q.Get("code")},
 		"redirect_uri":  {c.redirectURI()},
 		"code_verifier": {verifier},
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("console: code exchange: %v", err)
 		http.Error(w, "login failed at the code exchange", http.StatusBadGateway)
 		return
 	}
+	s.access, s.refresh, s.expiry = tok.access, tok.refresh, tok.expiry
 	var user struct {
 		Login string `json:"login"`
 	}
@@ -117,48 +119,59 @@ func (c *Console) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.user = user.Login
-	ok, _, err := c.writer(r.Context(), s.user)
+	writes, _, err := c.writer(r.Context(), s.user)
 	if err != nil {
 		log.Printf("console: writers: %v", err)
 		http.Error(w, "cannot check repository writers", http.StatusServiceUnavailable)
 		return
 	}
-	if !ok {
+	if !writes {
 		log.Printf("console: %s writes no project: login refused", s.user)
 		c.forbidden(w, s.user)
 		return
 	}
-	c.newSession(w, s)
+	if err := c.newSession(w, r, s); err != nil {
+		log.Printf("console: the login of %s could not be stored: %v", s.user, err)
+		http.Error(w, "login failed storing the session", http.StatusServiceUnavailable)
+		return
+	}
 	log.Printf("console: %s logged in", s.user)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// token runs a token request (code exchange or refresh) and stores the
-// result on s.
-func (c *Console) token(ctx context.Context, s *session, form url.Values) error {
+// tokenRequest is a token request's answer.
+type tokenRequest struct {
+	access  string
+	refresh string
+	expiry  time.Time
+}
+
+// token runs a token request (code exchange or refresh) and answers its
+// tokens; it touches no session.
+func (c *Console) token(ctx context.Context, form url.Values) (tokenRequest, error) {
 	form.Set("client_id", c.cfg.ClientID)
 	form.Set("client_secret", c.cfg.ClientSecret)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimSuffix(c.cfg.ForgejoURL, "/")+"/login/oauth/access_token",
 		strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return tokenRequest{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	res, err := c.cfg.HTTP.Do(req)
 	if err != nil {
-		return err
+		return tokenRequest{}, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 	if err != nil {
-		return err
+		return tokenRequest{}, err
 	}
 	if res.StatusCode != http.StatusOK {
 		if res.StatusCode >= 400 && res.StatusCode < 500 {
-			return fmt.Errorf("%w: status %d", errLoggedOut, res.StatusCode)
+			return tokenRequest{}, fmt.Errorf("%w: status %d", errLoggedOut, res.StatusCode)
 		}
-		return fmt.Errorf("token endpoint: status %d", res.StatusCode)
+		return tokenRequest{}, fmt.Errorf("token endpoint: status %d", res.StatusCode)
 	}
 	var t struct {
 		AccessToken  string `json:"access_token"`
@@ -166,27 +179,35 @@ func (c *Console) token(ctx context.Context, s *session, form url.Values) error 
 		ExpiresIn    int64  `json:"expires_in"`
 	}
 	if err := json.Unmarshal(body, &t); err != nil {
-		return fmt.Errorf("token endpoint: %w", err)
+		return tokenRequest{}, fmt.Errorf("token endpoint: %w", err)
 	}
 	if t.AccessToken == "" {
-		return errors.New("token endpoint: no access token")
+		return tokenRequest{}, errors.New("token endpoint: no access token")
 	}
-	s.access, s.refresh = t.AccessToken, t.RefreshToken
-	s.expiry = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
-	return nil
+	return tokenRequest{access: t.AccessToken, refresh: t.RefreshToken,
+		expiry: time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)}, nil
 }
 
 // accessToken returns the session's access token, refreshed when it
 // expires within a minute (Forgejo issues 1 h tokens with rotating refresh
-// tokens).
+// tokens). A refresh writes the new tokens to the session's row.
 func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if time.Until(s.expiry) > time.Minute {
 		return s.access, nil
 	}
-	if err := c.token(ctx, s, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.refresh}}); err != nil {
+	tok, err := c.token(ctx, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {s.refresh}})
+	if err != nil {
 		return "", err
+	}
+	s.access, s.refresh, s.expiry = tok.access, tok.refresh, tok.expiry
+	sealedAccess, sealedRefresh, err := c.sealTokens(s)
+	if err != nil {
+		return "", err
+	}
+	if err := c.cfg.Sessions.UpdateConsoleSessionTokens(ctx, s.hash, sealedAccess, sealedRefresh, s.expiry); err != nil {
+		log.Printf("console: the refreshed tokens of %s could not be stored: %v", s.user, err)
 	}
 	return s.access, nil
 }

@@ -45,6 +45,9 @@ func (t *turn) keep(kind, tool string, args json.RawMessage, description string)
 	if _, err := t.c.cfg.Chat.PurgeProposals(ctx, now); err != nil {
 		log.Printf("console: the chat's proposals: %v", err)
 	}
+	// the same occasion purges the expired logins (roadmap 164).
+	c := t.c
+	go c.purgeSessions(context.WithoutCancel(ctx))
 	token := randomToken()
 	if err := t.c.cfg.Chat.PutProposal(ctx, factoryd.ChatProposal{Token: token, Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
 		Tool: tool, Args: args, Description: description, ExpiresAt: now.Add(chatTTL)}); err != nil {

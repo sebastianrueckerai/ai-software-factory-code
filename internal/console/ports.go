@@ -92,6 +92,30 @@ type Chat interface {
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
 }
 
+// Sessions is the console's logins (factoryd.PGStore's console_sessions):
+// a row per session cookie, keyed by the SHA-256 hex of the cookie's id,
+// so a login survives a restart of factoryd (roadmap 164). The access and
+// refresh tokens travel to and from it encrypted by the console itself;
+// the store never sees them in clear.
+type Sessions interface {
+	// SaveConsoleSession stores the row, replacing one of the same hash.
+	SaveConsoleSession(ctx context.Context, sess factoryd.ConsoleSession) error
+	// ConsoleSessionByHash reads the row of the hash; false when there is
+	// none or it expired, an expired row deleted.
+	ConsoleSessionByHash(ctx context.Context, hash string) (factoryd.ConsoleSession, bool, error)
+	// DeleteConsoleSession removes the row of the hash (a logout).
+	DeleteConsoleSession(ctx context.Context, hash string) error
+	// TouchConsoleSession moves the row's last_seen to now when it says
+	// older than notAfter; false when it did not move. The console passes
+	// the time of its read plus a minute, so a minute of requests moves
+	// the column at most once.
+	TouchConsoleSession(ctx context.Context, hash string, notAfter time.Time) (bool, error)
+	// UpdateConsoleSessionTokens stores the refreshed tokens on the row.
+	UpdateConsoleSessionTokens(ctx context.Context, hash, access, refresh string, expiry time.Time) error
+	// PurgeConsoleSessions deletes the rows expired before at.
+	PurgeConsoleSessions(ctx context.Context, at time.Time) (int64, error)
+}
+
 // Mirrors are the projects' GitHub exports: their rows (factoryd.PGStore),
 // which Mirror reads without the token and MirrorToken, the chat export's
 // read, with it, and Forgejo's push mirrors through the projects token
