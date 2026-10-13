@@ -512,7 +512,9 @@ func SweepCIMachines(ctx context.Context, provider CISweepProvider) error {
 	for _, s := range servers {
 		if err := provider.DeleteServer(ctx, s.ID); err != nil {
 			errs = append(errs, fmt.Errorf("sweep ci machines: delete server %d: %w", s.ID, err))
+			continue
 		}
+		log.Printf("ci sweep: deleted server %d", s.ID)
 	}
 	return errors.Join(errs...)
 }

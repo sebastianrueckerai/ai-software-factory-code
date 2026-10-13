@@ -427,7 +427,7 @@ func TestChatTextReply(t *testing.T) {
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
 		"The member decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
-		"These tools need sebastian's OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource. " +
+		"These tools need sebastian's OK: new_card, move_card, answer, tell_card, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource. " +
 			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
 	} {
@@ -594,7 +594,7 @@ func TestSystemTool(t *testing.T) {
 		"\n  alert_verdict, needs OK, an open escalation alert\n  promote_resource, needs OK, an open leased commission\n  release_resource, needs OK, an open commission\n",
 		"\n  close, needs OK, a card that is not final, or a failed card without an issue\n  edit, needs OK, a card not in a session\n  grant_session, needs OK, a card at its session cap\n"+
 			"  set_dependency, needs OK, two cards of which the first has not started\n  split_card, needs OK, a pending merge request of risk class large\n",
-		"\nTools needing OK: new_card, move_card, answer, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource\n",
+		"\nTools needing OK: new_card, move_card, answer, tell_card, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
