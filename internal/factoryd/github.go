@@ -450,7 +450,7 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	if r.Tasks == nil || pr == 0 {
 		return
 	}
-	have, ok, err := r.Store.TaskByIssue(ctx, fork.String(), pr)
+	have, ok, err := r.Tasks.TaskByIssue(ctx, fork.String(), pr)
 	switch {
 	case err != nil:
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
@@ -458,18 +458,18 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	case ok && have.IssueNumber != 0:
 		return // this SHA's card exists: nothing to file
 	}
-	var issue int64
+	id := fmt.Sprintf("%d", pr)
 	if ok {
-		issue = have.ID // the earlier row, whose issue was never written
-	} else {
-		issue = pr // no row: the issue takes the pull request's number
+		id = have.ID // the earlier row, whose issue was never written
 	}
-	wf := cmp.Or(r.Workflows, TemporalDefaultWorkflows)
+	if r.Workflows == nil {
+		return
+	}
 	title := "Sync from GitHub " + short
 	body := fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
 		p.Repository, sha, by, pr)
-	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, wf, r.Timeline, p, title, body, nil,
-		Task{ID: issue, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
+	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil,
+		Task{ID: id, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 	} else {
 		log.Printf("project %s: sync pull request %d filed as issue #%d", p.Name, pr, ref.Number)
