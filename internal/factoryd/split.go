@@ -88,6 +88,23 @@ func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (P
 	return p, out
 }
 
+// splitOverBound names the files whose changed lines alone exceed the
+// bound: no split can put such a file under a card, so the split is
+// refused before any planner session. Without a bound (0) there is no
+// check and the answer is nil.
+func splitOverBound(files []PRFile, bound int) []string {
+	if bound <= 0 {
+		return nil
+	}
+	var out []string
+	for _, f := range files {
+		if n := f.Additions + f.Deletions; n > bound {
+			out = append(out, fmt.Sprintf("split: %s alone changes %d lines, over the bound %d: no card can stay under it", f.Filename, n, bound))
+		}
+	}
+	return out
+}
+
 // splitGuide is the planner's guide to the split of pull request pr,
 // which changes files, into cards under bound changed lines each.
 func splitGuide(pr int64, files []PRFile, bound int, limits policy.Limits) string {
@@ -130,6 +147,11 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 	if err != nil {
 		return PlanResult{}, err
 	}
+	bound := v.Document.Risk.LargeLines
+	if found := splitOverBound(files, bound); found != nil {
+		r.record(ctx, taskID, "split_refused", map[string]any{"findings": found})
+		return PlanResult{Findings: found}, nil
+	}
 	if err := r.store.TransitionTask(ctx, taskID, []string{"in-review", "waiting-human", "running"}, "running"); err != nil {
 		return PlanResult{}, terminalError("task %s cannot run its split: %v", taskID, err)
 	}
@@ -138,7 +160,6 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 			r.record(context.WithoutCancel(ctx), taskID, "split_state", map[string]any{"error": err.Error()})
 		}
 	}()
-	bound := v.Document.Risk.LargeLines
 	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
 	if err != nil {
 		return PlanResult{}, err
