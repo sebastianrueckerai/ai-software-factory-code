@@ -844,7 +844,9 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 // the process the task's project follows in that version, and the class
 // of the row's lane. A report task runs its own class, the write-up's or
 // the screening's, with no lane; a roll has no lane and runs ready's
-// class, whose program is the lifecycle.
+// class, whose program is the lifecycle. A card for a pull request
+// factoryd opened outside a card's workflow (roadmap 187) has no lane
+// either and runs ready's process and class.
 func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (TaskConfig, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -863,11 +865,15 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 	if !ok {
 		return TaskConfig{}, terminalError("task %s: repository %s follows no process in configuration version %d", t.ID, t.Repository, v.ID)
 	}
+	laneRow := cmp.Or(t.Lane, policy.LaneReady)
+	if (t.Source == SourceRoll || factoryPRSources(t.Source)) && t.Lane == "" {
+		laneRow = policy.LaneReady
+	}
 	tc := TaskConfig{Process: name, Lane: t.Lane, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
 	if plan, ok := p.Lane(policy.LanePlan); ok {
 		tc.PlanShape = plan.Plan
 	}
-	switch lane, ok := p.Lane(cmp.Or(t.Lane, policy.LaneReady)); {
+	switch lane, ok := p.Lane(laneRow); {
 	case t.Report() && len(t.RequiredCapabilities) == 0:
 		return TaskConfig{}, terminalError("task %s: a report task with no class", t.ID)
 	case t.Report():
@@ -896,7 +902,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
-		Roll: t.Source == SourceRoll, Source: t.Source}
+		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
@@ -907,18 +913,31 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if st.WriteUp, err = r.writeUp(ctx, t.ID); err != nil {
 		return RunState{}, err
 	}
-	if err := r.stageMemory(ctx, t.ID, &st); err != nil {
-		return RunState{}, err
+	if !st.FactoryPR { // its object store is the card's session's, which never ran
+		if err := r.stageMemory(ctx, t.ID, &st); err != nil {
+			return RunState{}, err
+		}
 	}
 	var pr *PullRequestRef
-	if t.PRNumber != 0 {
+	switch {
+	case t.PRNumber != 0:
 		got, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
 		if err != nil {
 			return RunState{}, err
 		}
 		pr = &got
-	} else if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), taskBranch(t)); err != nil {
-		return RunState{}, err
+	case st.FactoryPR:
+		// a pull request factoryd opened outside a card's workflow: its
+		// head is main's, no branch of the bot's carries it
+		head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+		if err != nil {
+			return RunState{}, fmt.Errorf("base head: %w", err)
+		}
+		pr = &PullRequestRef{Number: t.PRNumber, HeadSHA: head}
+	default:
+		if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), taskBranch(t)); err != nil {
+			return RunState{}, err
+		}
 	}
 	switch {
 	case pr == nil:
