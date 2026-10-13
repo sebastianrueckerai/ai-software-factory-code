@@ -306,6 +306,10 @@ type RunState struct {
 	Round   int
 	// Roll: a roll task (ruling 178), whose commit RollCommit writes.
 	Roll bool
+	// FactoryPR: the task's card of a pull request factoryd opened outside
+	// any card's workflow (roadmap 187): its run verifies that pull request,
+	// it opens none of its own.
+	FactoryPR bool
 	// Climbed: a session's findings went to the agent with the stronger
 	// rung (retry_stronger).
 	Climbed bool
@@ -388,6 +392,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
 	run.sessionRefusals = workflow.GetVersion(ctx, "provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals)
 	run.closedByHuman = workflow.GetVersion(ctx, "closed-by-human", workflow.DefaultVersion, versionClosedByHuman)
+	run.factoryPRCard = workflow.GetVersion(ctx, "factory-pr-card", workflow.DefaultVersion, versionFactoryPRCard)
 	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
 	final, err := run.program()
 	drainSignals(ctx)
@@ -660,6 +665,11 @@ const (
 	// versionClosedByHuman (change id "closed-by-human", roadmap 173): a
 	// task whose issue a human closed without a merge ends closed.
 	versionClosedByHuman workflow.Version = 1
+	// versionFactoryPRCard (change id "factory-pr-card", roadmap 187): a
+	// card for a pull request factoryd opened outside any card's workflow
+	// verifies that pull request: verify takes the head it reconciled
+	// straight to the checks and opens no new one.
+	versionFactoryPRCard workflow.Version = 1
 	// versionAlertPreCheck (change id "alert-precheck", roadmap 181, Stage
 	// 18 item 3.12): an alert card checks before its first model call that
 	// its alert still fires; one that stopped firing was a transient burst
@@ -718,6 +728,7 @@ type taskRun struct {
 	planAnswers       workflow.Version
 	sessionRefusals   workflow.Version
 	closedByHuman     workflow.Version
+	factoryPRCard     workflow.Version
 	alertPreCheck     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
@@ -733,6 +744,7 @@ type taskRun struct {
 	history   []string       // every finding sent to the agent, tagged with its stage and round
 	reviews   []Review       // the model reviews so far, oldest first
 	rolling   bool           // a roll task's run (versionRoll): a fold wakes the approval wait
+	orphanPR  bool           // the card of a pull request factoryd opened outside a card's workflow (versionFactoryPRCard): verify opens none
 	// versionChecksRerun
 	redHead   string // the last head whose checks failed
 	rerunHead string // the head the last RerunChecks made
@@ -835,6 +847,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
 		}
 		t.standing = st.Standing
+		if t.factoryPRCard >= versionFactoryPRCard {
+			t.orphanPR = st.FactoryPR && st.PR.Number != 0
+		}
 		if st.PR.Number != 0 {
 			t.judged = append(t.judged, st.Head)
 		}
@@ -1259,9 +1274,18 @@ func (t *taskRun) recordUsage(u TaskUsage) {
 }
 
 // verify takes a pushed commit through its pull request, the checks and
-// the review wait.
+// the review wait. A card for a pull request factoryd opened outside any
+// card's workflow (roadmap 187) has that pull request already: with
+// versionFactoryPRCard and RunState's FactoryPR set, verify skips
+// OpenPullRequest and takes the head straight to the stages.
 func (t *taskRun) verify(commit string) verdict {
 	t.judged = append(t.judged, commit)
+	if t.factoryPRCard >= versionFactoryPRCard && t.orphanPR {
+		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
+			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
+		}
+		return t.stages(commit)
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
 	}
