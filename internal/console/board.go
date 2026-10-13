@@ -160,6 +160,10 @@ type card struct {
 	Checks string
 	// NearBudget is spend at 80 percent of the budget or more.
 	NearBudget bool
+	// CallsText is the task's call rows summed beside the spend line
+	// (roadmap 206): its tokens to date and the modeled pay-as-you-go
+	// cost of them, "" on a task without calls.
+	CallsText string
 	// Stale is a card without an event for the stale window: an amber
 	// ring, and these words on its activity line.
 	Stale     bool
@@ -966,6 +970,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		}
 	}
 	each(setActivity)
+	c.callTotals(ctx, each)
 	c.faceTimelines(ctx, each)
 	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
@@ -980,6 +985,20 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		k.Filter = v.filter
 	}
 	each(setForms)
+}
+
+// callTotals fills each card's calls line beside its spend: the task's
+// call rows summed — its tokens and modeled cost to date (roadmap 206) —
+// one query for the whole render; a read that fails leaves the line off.
+func (c *Console) callTotals(ctx context.Context, each func(func(*card))) {
+	var ids []string
+	each(func(k *card) { ids = append(ids, k.ID) })
+	totals, err := c.cfg.Costs.CallTotals(ctx, ids)
+	if err != nil {
+		log.Printf("console: call totals: %v", err)
+		return
+	}
+	each(func(k *card) { k.CallsText = callsLine(totals[k.ID]) })
 }
 
 // boardOf is the board of one project, f.Project or else the first the

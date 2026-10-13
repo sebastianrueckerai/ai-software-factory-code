@@ -55,6 +55,17 @@ type AuditRow struct {
 	// Deployment is the LiteLLM deployment that answered a model call, as
 	// LiteLLM names it (provider/model); "" when LiteLLM named none.
 	Deployment string
+	// The call's own truth (roadmap 198 item 1): the tokens the provider
+	// reported, 0 on a call that never reported them; the modeled
+	// pay-as-you-go cost LiteLLM computed from them, nil when none was
+	// reported (under the GLM Coding Plan no money is billed: tokens are
+	// the stored fact, every EUR figure a modeled equivalent); how long
+	// the call ran from its admit to its booking; and the upstream HTTP
+	// status, "" when the call never went upstream.
+	PromptTokens, CachedTokens, OutputTokens int
+	CallCostEUR                              *float64
+	DurationMS                               int
+	Status                                   string
 }
 
 func (row AuditRow) kind() string { return cmp.Or(row.Kind, AuditKindAgent) }
@@ -116,9 +127,11 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind, deployment)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment)
+		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind, deployment,
+		 prompt_tokens, cached_tokens, output_tokens, call_cost_eur, duration_ms, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment,
+		row.PromptTokens, row.CachedTokens, row.OutputTokens, row.CallCostEUR, row.DurationMS, row.Status)
 	return err
 }
 

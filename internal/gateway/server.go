@@ -293,7 +293,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
-		slot: slot, saUID: id.SAUID, models: models, pv: pv}
+		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now()}
 
 	if body, err = chatReq.withOutputLimit(hold.MaxOut); err != nil {
 		s.finish(call, zeroCost, "")
@@ -621,10 +621,18 @@ type modelCall struct {
 	models     []string
 	pv         *policy.Version
 	key        *liveKey
-	overHold   string        // the booking's flag, on every audit row after it
-	deployment string        // the LiteLLM deployment that answered
+	overHold   string // the booking's flag, on every audit row after it
+	deployment string // the LiteLLM deployment that answered
 	up         *upstreamCall // nil until the call goes upstream
 	usage      policy.Usage  // the provider's, booked with the cost
+	// the call row's own truth (roadmap 198 item 1): when it was admitted
+	// and what it ended with — the upstream status once it answered, the
+	// modeled cost finish booked (nil until then, and when none was
+	// reported) and how long it ran.
+	started  time.Time
+	status   string
+	callCost *float64
+	duration time.Duration
 }
 
 var zero = 0.0
@@ -639,6 +647,7 @@ var zeroCost = &zero
 // the caller disconnected.
 func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	cost = policy.KnownCost(cost)
+	c.callCost, c.duration = cost, s.now().Sub(c.started)
 	reason := ""
 	if cost == nil {
 		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
@@ -690,6 +699,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			return
 		}
 		up.status = strconv.Itoa(res.StatusCode)
+		c.status = up.status
 		c.deployment = res.Header.Get(HeaderDeployment)
 		up.deployment = c.deployment
 
@@ -935,11 +945,16 @@ func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, kind, decisio
 	writeError(w, status, typ, reason)
 }
 
-// auditCall audits an admitted call with its output limit and hold.
+// auditCall audits an admitted call with its output limit and hold, and
+// the call row's own truth: the usage the provider reported, the modeled
+// cost it was booked at (nil when none was reported), how long it ran and
+// the status the upstream answered.
 func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
 		TaskID: c.task.ID, Kind: c.kind, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
 		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold, Deployment: c.deployment,
+		PromptTokens: c.usage.PromptTokens, CachedTokens: c.usage.CachedTokens, OutputTokens: c.usage.OutputTokens,
+		CallCostEUR: c.callCost, DurationMS: int(c.duration.Milliseconds()), Status: c.status,
 	}); err != nil {
 		log.Printf("insert audit row (task %s, decision %s): %v", c.task.ID, decision, err)
 	}

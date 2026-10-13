@@ -48,6 +48,10 @@ type Policies interface {
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
+	// CallTotals sums the tasks' audit call rows: their tokens and the
+	// modeled cost and plan credits derived from them at read time
+	// (roadmap 206), one query, no stored aggregate.
+	CallTotals(ctx context.Context, tasks []string) (map[string]policy.CallTotals, error)
 }
 
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
