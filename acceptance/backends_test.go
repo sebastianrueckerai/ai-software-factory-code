@@ -90,9 +90,13 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"state":"open"}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			io.WriteString(w, `{"commit":{"id":"c-branch"}}`)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/pulls":
 			io.WriteString(w, `[]`)
-		case r.Method == http.MethodGet && r.URL.Path == repo+"/tokens":
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, repo+"/pulls/"):
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/users/factory-agent/tokens"):
 			list, _ := json.Marshal(f.tokens)
 			w.Write(list) // #nosec G104 -- a test stub's answer
 		case r.Method == http.MethodDelete && fmtScan(r.URL.Path, "/api/v1/users/factory-agent/tokens/%d", &n):

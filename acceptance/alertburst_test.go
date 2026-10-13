@@ -332,7 +332,11 @@ type acceptanceKube struct{ factoryd.Kube }
 
 func (*acceptanceKube) DeleteNamespace(context.Context, string) error { return factoryd.ErrNotFound }
 
-func (*acceptanceKube) DeleteReleasedCache(context.Context, string) error { return factoryd.ErrNotFound }
+func (*acceptanceKube) PersistentVolumes(context.Context) ([]factoryd.PersistentVolume, error) {
+	return nil, nil
+}
+
+func (*acceptanceKube) DeletePersistentVolume(context.Context, string) error { return nil }
 
 // intakeRig is the alert intake on its own backends, which the card's
 // workflow then shares: one store, one Forgejo, one object store.
@@ -358,8 +362,21 @@ func newIntakeRig(t *testing.T) *intakeRig {
 		w.WriteHeader(http.StatusNotImplemented)
 	}))
 	t.Cleanup(quiet.Close)
+	litellm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/key/list") {
+			io.WriteString(w, `{"keys":[],"total_pages":1}`)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/key/block" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		t.Errorf("unexpected litellm call %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotImplemented)
+	}))
+	t.Cleanup(litellm.Close)
 	r := &intakeRig{store: newAcceptanceStore(), fj: fj, objects: &stubObjects{data: map[string][]byte{}},
-		flows: &acceptanceWorkflows{}, gateway: quiet, litellm: quiet}
+		flows: &acceptanceWorkflows{}, gateway: quiet, litellm: litellm}
 	r.ns = acceptanceNamespaces{"demo-staging": "demo-app", "demo-prod": "demo-app"}
 	r.projects = &memProjectBook{m: map[string]factoryd.Project{"demo-app": demoProjectWithoutAgents()}}
 	r.in = &factoryd.AlertIntake{User: "signoz", Password: "hook-pw", Namespaces: r.ns, Projects: r.projects,
