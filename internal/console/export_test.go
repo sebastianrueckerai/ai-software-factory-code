@@ -34,6 +34,8 @@ type fakeMirrors struct {
 	put   error // PutMirror's answer
 	// cleared are the repositories whose GitHub failures were cleared
 	cleared []string
+	// deletes are the DeleteMirror calls as "project direction"
+	deletes []string
 }
 
 func (f *fakeMirrors) ClearGitHubFailures(_ context.Context, repository string) error {
@@ -71,6 +73,7 @@ func (f *fakeMirrors) PutMirror(_ context.Context, m factoryd.Mirror) error {
 func (f *fakeMirrors) DeleteMirror(_ context.Context, project, direction string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.deletes = append(f.deletes, project+" "+direction)
 	delete(f.rows, project+" "+direction)
 	return nil
 }
@@ -440,5 +443,23 @@ func TestStatusShowsGitHubImport(t *testing.T) {
 		if !slices.Equal(names, wantNames) || states[3] != c.want || !strings.Contains(body, `<span class="detail">`+c.detail+`</span>`) {
 			t.Errorf("%s: steps %q, states %q, want %s with %q:\n%s", c.state, names, states, c.want, c.detail, body)
 		}
+	}
+}
+
+// A filing whose infra pull request closes unmerged loses its import row
+// at once: the panel's read deletes it instead of leaving it to the purge.
+func TestPanelDeletesImportOnClosedUnmerged(t *testing.T) {
+	s := newStatusRig(t)
+	s.mirrors.rows["linkshort import"] = factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", State: "pending"}
+	s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
+	body := s.status(t)
+	if _, states, _ := steps(body); states[0] != stepFailed {
+		t.Errorf("pull request step = %q, want failed", states[0])
+	}
+	if !slices.Equal(s.mirrors.deletes, []string{"linkshort import"}) {
+		t.Errorf("DeleteMirror calls %q, want [linkshort import]", s.mirrors.deletes)
+	}
+	if _, ok := s.mirrors.rows["linkshort import"]; ok {
+		t.Error("the closed unmerged pull request kept the import row")
 	}
 }

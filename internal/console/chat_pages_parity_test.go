@@ -271,3 +271,87 @@ func TestPageWritesRefuseNonWriters(t *testing.T) {
 	equal(t, "the verdicts", r.alerts.verdicts, []string(nil))
 	equal(t, "the resource calls", r.resources.calls, []string(nil))
 }
+
+// The costs read with a custom window: from and to as YYYY-MM-DD dates
+// bound the ledger read it answers; an empty one keeps the current
+// month's default; a malformed or reversed one is refused with 400.
+func TestCostsToolWithCustomDateWindow(t *testing.T) {
+	r, _, g := newChatRig(t)
+	pageFixture(r)
+	// fixture: t-r 1.5 (coding-frontier 1.2, review/review-frontier 0.3)
+	// and t-m 0.8 (coding-cheap 0.5, tool search 0.3) on 2026-10-11,
+	// t-m's coding-cheap 0.5 and search 0.1 on 2026-10-10: that day's
+	// card sum by hand is 1.5 + 0.8 = 2.3 EUR.
+	equal(t, "the day's cards", reads(t, r, g, "costs", `{"by":"card","from_date":"2026-10-11","to_date":"2026-10-11"}`),
+		[]string{"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR"})
+	equal(t, "the store's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
+		[]string{"2026-10-11", "2026-10-11"})
+}
+
+// The costs read without from and to asks the current UTC month as
+// before: the first day of this month to today.
+func TestCostsToolDefaultsKept(t *testing.T) {
+	r, _, g := newChatRig(t)
+	pageFixture(r)
+	equal(t, "the month's days", reads(t, r, g, "costs", `{"by":"day"}`),
+		[]string{"By day 2026-10-01 to 2026-10-11, EUR:\n  2026-10-11 1.7000 (model 1.5000, tool 0.2000)\n  2026-10-10 0.6000 (model 0.5000, tool 0.1000)\ntotal: 2.3000 EUR"})
+	equal(t, "the store's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
+		[]string{time.Now().UTC().Format("2006-01") + "-01", time.Now().UTC().Format(time.DateOnly)})
+}
+
+// A malformed or reversed costs date window is refused with 400 in one
+// sentence; the store is not asked.
+func TestCostsToolInvalidDateRefused(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	pageFixture(r)
+	for _, in := range []toolInput{
+		{By: "day", FromDate: "2026-10-11", ToDate: "last tuesday"},
+		{By: "card", FromDate: "20261011"},
+		{By: "tier", FromDate: "2026-02-30"},
+		{By: "day", FromDate: "2026-10-11", ToDate: "2026-10-10"},
+	} {
+		if status, msg := refused(t, r, "costs", in); status != http.StatusBadRequest ||
+			msg != "from and to must be dates YYYY-MM-DD, from not after to" {
+			t.Errorf("costs %+v = %d %q", in, status, msg)
+		}
+	}
+	if !r.ledger.from.IsZero() {
+		t.Errorf("the store was asked for %+v to %+v", r.ledger.from, r.ledger.to)
+	}
+}
+
+// The /costs page reads its window from query params from and to, both
+// included; a malformed one answers 400; without them the last 14 days
+// with today stand.
+func TestCostsPageDateParams(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	pageFixture(r)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs?from=2026-10-10&to=2026-10-11", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/costs?from&to = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "the store's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
+		[]string{"2026-10-10", "2026-10-11"})
+	body := rec.Body.String()
+	for _, want := range []string{"Per day, 2026-10-01 to 2026-10-11", "<th scope=\"row\">2026-10-10</th>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/costs lacks %q", want)
+		}
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/costs?from=10-10-2026", nil), ck)
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "from: want YYYY-MM-DD" {
+		t.Errorf("/costs?from=10-10-2026 = %d %q", rec.Code, rec.Body)
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/costs?from=2026-10-11&to=2026-10-10", nil), ck)
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != "from is after to" {
+		t.Errorf("/costs reversed = %d %q", rec.Code, rec.Body)
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/costs = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.ledger.to.Sub(r.ledger.from); got != 13*24*time.Hour {
+		t.Errorf("default range %v to %v: want 14 days, today included", r.ledger.from, r.ledger.to)
+	}
+}

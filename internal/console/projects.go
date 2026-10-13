@@ -308,6 +308,11 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 			merged.State, merged.Detail = stepRunning, "Merged; the factory loads it within 30 seconds."
 		case pr.State != "open":
 			pulled.State, pulled.Detail, pulled.Link = stepFailed, fmt.Sprintf("#%d was closed without merging.", pr.Number), pr.HTMLURL
+			if c.cfg.Mirrors != nil {
+				if err := c.cfg.Mirrors.DeleteMirror(ctx, name, factoryd.MirrorImport); err != nil {
+					log.Printf("console: delete import row of project-%s: %v", name, err)
+				}
+			}
 		default:
 			pulled.State, pulled.Detail, pulled.Link = stepDone, fmt.Sprintf("#%d, filed by %s", pr.Number, pr.User.Login), pr.HTMLURL
 			merged.Detail = fmt.Sprintf("Waiting for an approver to merge #%d.", pr.Number)

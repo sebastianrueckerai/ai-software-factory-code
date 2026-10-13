@@ -472,6 +472,61 @@ func TestCIOwnerDone(t *testing.T) {
 	}
 }
 
+// sweepFake is the CI project as the sweep sees it: a listing filtered by
+// the selector it received, and a log of every call.
+type sweepFake struct {
+	servers   []hcloud.Server
+	listErr   error
+	deleteErr map[int64]error
+	selectors []string
+	deleted   []int64
+}
+
+func (f *sweepFake) Servers(ctx context.Context, sel string) ([]hcloud.Server, error) {
+	f.selectors = append(f.selectors, sel)
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var out []hcloud.Server
+	for _, s := range f.servers {
+		if matchSelector(s.Labels, sel) {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+func (f *sweepFake) DeleteServer(ctx context.Context, id int64) error {
+	f.deleted = append(f.deleted, id)
+	if err := f.deleteErr[id]; err != nil {
+		return err
+	}
+	return nil
+}
+
+func ciServer(id int64) hcloud.Server {
+	return hcloud.Server{ID: id, Labels: map[string]string{"factory": "ci"}}
+}
+
+// The shutdown's sweep lists with factory=ci and deletes every machine it
+// finds; the contract of SweepCIMachines.
+func TestSweepCIMachinesEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	f := &sweepFake{servers: []hcloud.Server{
+		ciServer(11), ciServer(12),
+		{ID: 13, Labels: map[string]string{"factory": "agent"}}, // the selector excludes it
+	}}
+	if err := SweepCIMachines(ctx, f); err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(f.selectors) != 1 || f.selectors[0] != "factory=ci" {
+		t.Fatalf("Servers selectors = %q, want [factory=ci]", f.selectors)
+	}
+	if !reflect.DeepEqual(f.deleted, []int64{11, 12}) {
+		t.Fatalf("deleted = %v, want [11 12]", f.deleted)
+	}
+}
+
 // The price catalogue is read once an hour; a failed refresh keeps the last.
 func TestProvisionCachesPricing(t *testing.T) {
 	b, hz, _ := newTestBuildVMs(t, 1)
