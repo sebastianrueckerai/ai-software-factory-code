@@ -1561,3 +1561,98 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 			". Warning: Checks: failure.")
 	}
 }
+
+// TestChatToolResultCarriesReadAt proves every stored tool call has a
+// non-zero ReadAt within the last second: a turn calling a read tool
+// stores a ChatToolCall whose ReadAt is fresh.
+func TestChatToolResultCarriesReadAt(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	start := time.Now()
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("read it.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	end := time.Now()
+	stored, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range stored {
+		for _, c := range m.ToolCalls {
+			found = true
+			if c.ReadAt.IsZero() {
+				t.Errorf("the stored call %s has a zero ReadAt", c.ID)
+			}
+			if c.ReadAt.Before(start.Add(-time.Second)) || c.ReadAt.After(end.Add(time.Second)) {
+				t.Errorf("the stored call %s ReadAt = %v, want within [%v, %v]", c.ID, c.ReadAt, start.Add(-time.Second), end.Add(time.Second))
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no tool calls were stored")
+	}
+}
+
+// TestChatTurnContextHasFreshCards proves the system message contains
+// fresh card state and old results show their age: two turns with a card
+// spend change between them; the second turn's system message holds the
+// new spend, and the first turn's replayed result carries its age prefix.
+func TestChatTurnContextHasFreshCards(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("first answer")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	time.Sleep(61 * time.Second)
+	r.tasks.mu.Lock()
+	var found bool
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-m" {
+			r.tasks.tasks[i].SpentEUR = 2.5
+			found = true
+			t.Logf("Updated t-m SpentEUR to 2.5, index %d", i)
+		}
+	}
+	r.tasks.mu.Unlock()
+	if !found {
+		t.Fatal("t-m not found in tasks")
+	}
+	r.tasks.mu.Lock()
+	t.Logf("Before second chatPost: %d tasks", len(r.tasks.tasks))
+	for i, task := range r.tasks.tasks {
+		t.Logf("  Task %d: ID=%s, SpentEUR=%v, BudgetEUR=%v", i, task.ID, task.SpentEUR, task.BudgetEUR)
+	}
+	r.tasks.mu.Unlock()
+	g.replies = [][]string{{say("second answer")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	calls := g.calls()
+	if len(calls) < 2 {
+		t.Fatalf("%d model calls, want at least 2", len(calls))
+	}
+	secondMsgs := messages(t, calls[1])
+	t.Logf("Second call has %d messages", len(secondMsgs))
+	for i, m := range secondMsgs {
+		if content, ok := m["content"].(string); ok && strings.Contains(content, "t-m") {
+			t.Logf("Message %d contains t-m: %.200s", i, content)
+		}
+	}
+	secondSystem, _ := secondMsgs[0]["content"].(string)
+	if !strings.Contains(secondSystem, "€2.50 of €3.00") {
+		t.Errorf("the second turn's system message lacks the new spend:\n%s", secondSystem)
+	}
+	if !strings.Contains(secondSystem, "Cards now:") {
+		t.Errorf("the second turn's system message lacks 'Cards now:':\n%s", secondSystem)
+	}
+	var agedFound bool
+	for _, m := range messages(t, calls[1]) {
+		if content, ok := m["content"].(string); ok && strings.HasPrefix(content, "[read at ") {
+			agedFound = true
+			if !strings.Contains(content, "min ago]") {
+				t.Errorf("the aged result lacks 'min ago]': %s", content)
+			}
+			break
+		}
+	}
+	if !agedFound {
+		t.Error("no aged result found in the second turn's conversation")
+	}
+}
