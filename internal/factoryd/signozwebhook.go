@@ -338,7 +338,9 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser}
 	var ref IssueRef
-	if p.Agents == policy.AgentsNone {
+	// A capacity alert goes to a human card even on a project with agents:
+	// a coding agent can only raise a limit, the decision needs evidence.
+	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
 		t.Kind = "human"
 		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, repo, title, body, []string{"bug", "human"}, t)
 	} else {
