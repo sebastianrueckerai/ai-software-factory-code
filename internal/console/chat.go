@@ -78,6 +78,9 @@ type turn struct {
 	// send writes one event of the stream; after a failed write, which a
 	// member who left causes, it writes no more
 	send func(event string, data any)
+	// freshRead is this turn's read of the board, stamped on every tool
+	// result it stores.
+	freshRead time.Time
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -94,7 +97,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	}
 	v, _ := c.inForce(r.Context())
 	return &turn{c: c, r: r, a: actor{s: current(r), repository: p.Repository, via: factoryd.ViaChat}, p: p,
-		cfg: v.Document.ChatOf(v.Projects[p.Name])}, true
+		cfg: v.Document.ChatOf(v.Projects[p.Name]), freshRead: time.Now()}, true
 }
 
 // open answers the turn as an event stream.
@@ -291,7 +294,7 @@ func (t *turn) run(id, notice string) {
 			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
-				Result: result, Proposal: token})
+				Result: result, ReadAt: t.freshRead, Proposal: token})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if !t.save(row) {
@@ -444,8 +447,9 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	if ok && json.Unmarshal(p.Args, &in) == nil {
 		result = t.runTool(tool, string(p.Args), in)
 	}
+	t.freshRead = time.Now()
 	if t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
-		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result}}}) {
+		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result, ReadAt: t.freshRead}}}) {
 		t.send("done", struct{}{})
 	}
 }
@@ -502,12 +506,19 @@ var chatClaimMarkers = []string{
 var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|") + `)\b`).MatchString
 
 // context is the turn's conversation for the model: the system prompt with
-// the project and its last chatEvents events, then the member's last
-// chatContext messages, each tool call followed by its result. An
-// assistant row with no tool calls whose content claims an action is
-// dropped from the replay.
+// the project and its last chatEvents events, then the project's open
+// cards read fresh at this turn's start, then the member's last
+// chatContext messages, each tool call followed by its result; a replayed
+// result older than a minute shows when it was read and its age before
+// its text. An assistant row with no tool calls whose content claims an
+// action is dropped from the replay. The turn stamps every tool result it
+// stores with the time of this fresh read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	project, _, err := t.project(chatEvents)
+	if err != nil {
+		return nil, err
+	}
+	cards, err := t.freshCards()
 	if err != nil {
 		return nil, err
 	}
@@ -515,7 +526,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() + "\n\n" + project}}
+	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() + "\n\n" + project + "\n\n" + cards}}
 	for _, m := range history {
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
 			continue
@@ -526,10 +537,39 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		}
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
-			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: call.Result})
+			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: agedResult(call, t.freshRead)})
 		}
 	}
 	return msgs, nil
+}
+
+// agedResult is a replayed tool result, prefixed with the time it was
+// read and its age beside this turn's fresh read when that read is older
+// than a minute: an old read shows its age beside the current state.
+func agedResult(call factoryd.ChatToolCall, now time.Time) string {
+	if call.ReadAt.IsZero() || !call.ReadAt.Before(now.Add(-time.Minute)) {
+		return call.Result
+	}
+	age := int(now.Sub(call.ReadAt).Round(time.Minute) / time.Minute)
+	return fmt.Sprintf("[read at %s, %d min ago] %s", call.ReadAt.UTC().Format("2006-10-02 15:04 UTC"), age, call.Result)
+}
+
+// freshCards reads every open card of the chat's project through the
+// board's own read and answers them as the agent reads them: issue, task
+// id, title, status, gate and spend, one line each, under "Cards now".
+func (t *turn) freshCards() (string, error) {
+	bts, err := t.c.cfg.Tasks.BoardTasks(t.r.Context(), time.Now().Add(-finishedSince), boardLimit)
+	if err != nil {
+		return "", fmt.Errorf("cards: %w", err)
+	}
+	var lines []string
+	for _, bt := range bts {
+		if bt.Repository != t.p.Repository || factoryd.Final(bt.Status) {
+			continue
+		}
+		lines = append(lines, cardLine(bt.Task))
+	}
+	return "Cards now:\n" + strings.Join(lines, "\n"), nil
 }
 
 // prompt is the agent's standing instructions.

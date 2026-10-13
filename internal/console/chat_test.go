@@ -79,6 +79,10 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	defer f.mu.Unlock()
 	f.next++
 	m.ID, m.At, m.Conversation = f.next, at.Add(time.Duration(f.next)*time.Second), f.current(repository, login)
+	if len(m.ToolCalls) > 0 {
+		calls := slices.Clone(m.ToolCalls)
+		m.ToolCalls = factoryd.StampReadAt(calls, time.Now())
+	}
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
@@ -759,7 +763,12 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	equal(t, "GET", roles, []string{"user summarize #50", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
 		"assistant Undo of set_summary: The summary of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
-	equal(t, "the stored call", got[2].ToolCalls, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
+	stored := got[2].ToolCalls
+	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
+		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
+	}
+	stored[0].ReadAt = time.Time{}
+	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
 		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The member may undo it."}})
 }
 
@@ -884,7 +893,12 @@ func TestChatProposalIsStored(t *testing.T) {
 		t.Fatalf("%d proposal rows, want 1", rows)
 	}
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the stored call", stored[0].ToolCalls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
+	calls := stored[0].ToolCalls
+	if calls[0].ReadAt.Before(start) || calls[0].ReadAt.After(end) {
+		t.Fatalf("the stored call's ReadAt = %v, want within the turn between %v and %v", calls[0].ReadAt, start, end)
+	}
+	calls[0].ReadAt = time.Time{}
+	equal(t, "the stored call", calls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
 		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
@@ -906,7 +920,12 @@ func TestChatProposalIsStored(t *testing.T) {
 	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics"}}
 	chatRows(t, r.events, before, "sebastian", card)
 	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
+	doRow := stored[0]
+	if read := doRow.ToolCalls[0].ReadAt; read.Before(start) || read.After(time.Now()) {
+		t.Fatalf("the Do it's ReadAt = %v, want a fresh read", read)
+	}
+	doRow.ToolCalls[0].ReadAt = time.Time{}
+	equal(t, "the Do it's row", doRow, factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
 		Conversation: 1,
 		ToolCalls:    []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
