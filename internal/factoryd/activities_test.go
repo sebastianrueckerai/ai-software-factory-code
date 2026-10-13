@@ -525,6 +525,66 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	if len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
 	}
+	// and with main green on its own head, the finding stays as it is
+	fjGreen := &prForgejo{statusesBySHA: map[string][]string{
+		"c1": {statusBody("failure", test)},
+		"m1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+	}, mainHead: "m1"}
+	r2, _, _ := newActivityRunner(t, prTask, fjGreen)
+	r2.forgejo.PublicURL = "https://git.example.org"
+	res = ChecksResult{}
+	val, _ = execActivity(t, r2, ActivityWaitChecks, "t1", "c1")
+	if val.Get(&res) != nil || len(res.Findings) != 1 || res.Findings[0] != want {
+		t.Fatalf("findings with main green = %q, want %q", res.Findings, want)
+	}
+}
+
+// When a head check fails, the gate reads main's state for the same check:
+// a context also failing on main is named as such in the finding, so the
+// agent's session and the supervisor's guidance point at the pre-existing
+// defect instead of the card (Stage 19, finding 195).
+func TestWaitChecksNamesMainFailure(t *testing.T) {
+	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	mainFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 3m"}
+	fj := &prForgejo{
+		statusesBySHA: map[string][]string{
+			"c1": {statusBody("failure", headFail)},
+			"m1": {statusBody("failure", mainFail)},
+		},
+		mainHead: "m1",
+	}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatal(err)
+	}
+	if len(res.Findings) != 1 || !strings.Contains(res.Findings[0], "also failing on main") {
+		t.Fatalf("findings = %q, want the finding naming 'also failing on main'", res.Findings)
+	}
+}
+
+// A head failure main does not share keeps today's finding, with no suffix.
+func TestWaitChecksKeepsFindingWhenMainGreen(t *testing.T) {
+	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	fj := &prForgejo{
+		statusesBySHA: map[string][]string{
+			"c1": {statusBody("failure", headFail)},
+			"m1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+		},
+		mainHead: "m1",
+	}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	r.forgejo.PublicURL = "https://git.example.org"
+	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatal(err)
+	}
+	if len(res.Findings) != 1 || res.Findings[0] != want {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
 }
 
 // checksResult appends a failed status's log tail to its finding: the last

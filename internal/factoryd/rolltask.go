@@ -736,39 +736,80 @@ func (r *Runner) rollEdits(ctx context.Context, fork Repo, ref string, reqs []Ro
 	return changes, nil
 }
 
-// ownCommit reports whether head is exactly the commit RollCommit writes
-// for pending on parent: parent its only parent, the roll's files the only
-// ones it changes, each holding what the requests make of it.
+// ownCommitDepth caps the ancestry walk: a tip further than this from the
+// recorded commit is not factoryd's own.
+const ownCommitDepth = 16
+
+// ownCommit reports whether head carries the commit RollCommit wrote for
+// pending: the recorded parent reachable from head by following first
+// parents within ownCommitDepth. A queue-staged merge moves the tip off
+// factoryd's commit, so tip equality is stronger than the hazard this
+// guard tests; a tip that does not descend from the recorded commit still
+// refuses. On the tip itself, where the walk ends, the roll's files must
+// hold exactly what the requests make of them; a merge tip is not compared
+// for diff or content beyond that.
 func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, pending []RollRequest) (bool, error) {
 	if len(pending) == 0 || parent == "" {
 		return false, nil
 	}
-	parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, head)
-	if err != nil || len(parents) != 1 || parents[0] != parent {
-		return false, err
-	}
-	changes, err := r.rollEdits(ctx, fork, parent, pending)
-	if err != nil || len(changes) == 0 {
-		return false, err
-	}
-	diff, err := r.forgejo.Compare(ctx, fork.Owner, fork.Name, parent, head)
-	if err != nil {
-		return false, err
-	}
-	want := map[string][]byte{}
-	for _, c := range changes {
-		want[c.Path] = c.Content
-	}
-	for _, path := range diff.Files {
-		if _, ok := want[path]; !ok {
-			return false, nil
-		}
-	}
-	for path, content := range want {
-		got, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, path)
-		if err != nil || !bytes.Equal(got, content) {
+	cur := head
+	for depth := 0; depth <= ownCommitDepth; depth++ {
+		parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, cur)
+		if err != nil {
 			return false, err
 		}
+		if slices.Contains(parents, parent) {
+			if cur == head && len(parents) == 1 {
+				// the tip is the commit factoryd would have written:
+				// the roll's files the only ones it changes, each
+				// holding what the requests make of it
+				changes, err := r.rollEdits(ctx, fork, parent, pending)
+				if err != nil || len(changes) == 0 {
+					return false, err
+				}
+				diff, err := r.forgejo.Compare(ctx, fork.Owner, fork.Name, parent, head)
+				if err != nil {
+					return false, err
+				}
+				want := map[string][]byte{}
+				for _, c := range changes {
+					want[c.Path] = c.Content
+				}
+				for _, path := range diff.Files {
+					if _, ok := want[path]; !ok {
+						return false, nil
+					}
+				}
+				for path, content := range want {
+					got, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, path)
+					if err != nil || !bytes.Equal(got, content) {
+						return false, err
+					}
+				}
+				return true, nil
+			}
+			// a merge tip carrying the recorded commit (the queue's
+			// staging merge): ancestry and the roll's pinned digests
+			// at the tip are enough to adopt it
+			for _, req := range pending {
+				for name, digest := range req.Changes {
+					target, _ := rollTarget(name)
+					content, _, err := r.forgejo.FileContent(ctx, fork.Owner, fork.Name, head, target.File)
+					if err != nil {
+						return false, err
+					}
+					ref, _, err := pinnedRef(content, target.Image)
+					if err != nil || !strings.HasSuffix(ref, "@"+digest) {
+						return false, err
+					}
+				}
+			}
+			return true, nil
+		}
+		if len(parents) == 0 {
+			return false, nil
+		}
+		cur = parents[0]
 	}
-	return true, nil
+	return false, nil
 }

@@ -1367,30 +1367,95 @@ func TestReproCommand(t *testing.T) {
 }
 
 // ValidateReproCommand is the static check on a reproduction command at
-// filing: one that chains cd or creates a git worktree is refused with a
-// reason naming the sandbox rule (a reproduction runs in place in the
-// checked-out worktree); a plain command passes.
+// filing: one that chains cd or creates a git worktree returns the refusal
+// reason; a plain command returns empty.
 func TestValidateReproCommand(t *testing.T) {
-	for cmd, wantRefusal := range map[string]bool{
-		"":                             false,
-		"make repro":                   false,
-		"go test ./...":                false,
-		"cd /tmp/x && make repro":      true,
-		"make repro && cd other":       true,
-		"git worktree add /tmp/w HEAD": true,
-		"make a; cd b; make c":         true,
-		"echo cd to a directory":       false,
-		"git status":                   false,
+	for _, tc := range []struct {
+		cmd    string
+		refuse bool
+	}{
+		{"", false},
+		{"make repro", false},
+		{"go test ./...", false},
+		{"git status && make test", false},
+		{"echo cd to a directory", false},
+		{"cd /tmp/x && make repro", true},
+		{"make repro && cd other", true},
+		{"make a; cd b; make c", true},
+		{"cd /tmp/x || make repro", true},
+		{"make repro\ncd dir\nmake b", true},
+		{"git worktree add /tmp/w HEAD", true},
+		{"make repro && GIT=1 git worktree list", true},
+		{"CDIR=/tmp/x cd-helper", false},
 	} {
-		reason := ValidateReproCommand(cmd)
-		if (reason != "") != wantRefusal {
-			t.Errorf("ValidateReproCommand(%q) = %q, refusal wanted %v", cmd, reason, wantRefusal)
-		}
-		if wantRefusal && !strings.Contains(reason, "in place in the checked-out worktree") {
-			t.Errorf("ValidateReproCommand(%q) = %q, want it to name the sandbox rule", cmd, reason)
+		reason := ValidateReproCommand(tc.cmd)
+		if (reason != "") != tc.refuse {
+			t.Errorf("ValidateReproCommand(%q) = %q, refusal wanted %v", tc.cmd, reason, tc.refuse)
 		}
 	}
 }
+
+// The filing refusal of a refused reproduction command names the sandbox
+// rule and the backlog.
+func TestReproRefusalText(t *testing.T) {
+	got := reproRefusal(ValidateReproCommand("cd /tmp/x && make repro"))
+	want := "factoryd: the reproduction command a cd-chain leaves the checked-out worktree and finds no repository where it lands; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	if got != want {
+		t.Errorf("reproRefusal = %q, want %q", got, want)
+	}
+}
+
+// A writer's agent issue whose repro block chains cd is refused at filing:
+// the card lands in the backlog with no reproduction command and one
+// comment naming the sandbox rule; its coder workflow never starts (the
+// backlog presort write-up does) and the labels that asked for the entry
+// stay, so a later label event judges the fixed command again.
+func TestIntakeRefusesCdChainRepro(t *testing.T) {
+	in, store, requests := laneIntake(t, "maintenance", maintenanceLanes)
+	body := "Fix it.\n\n```repro\ncd /tmp/x && make repro\n```\n"
+	post(t, in, "issues", issueOpenedBody(21, "sebastian", []string{"agent"}, "A card", body))
+	got := card(store, 21)
+	if got.Status != "backlog" || got.Lane != "backlog" || got.ReproCommand != "" {
+		t.Fatalf("card = %+v, want a backlog card with no reproduction command", got)
+	}
+	presort, _, _ := store.ReportOf(context.Background(), got.ID, SourcePresort)
+	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
+		t.Fatalf("started %q, want the presort alone", started)
+	}
+	if labels := issueLabels(t, in.Forgejo, 21); !slices.Contains(labels, "agent") {
+		t.Fatalf("labels = %v, want the agent label kept", labels)
+	}
+	want := "factoryd: the reproduction command a cd-chain leaves the checked-out worktree and finds no repository where it lands; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	cs := comments(*requests)
+	if len(cs) != 1 || cs[0] != want {
+		t.Fatalf("comments = %q, want only %q", cs, want)
+	}
+}
+
+// A writer's agent issue whose repro block creates a git worktree is
+// refused at filing the same way.
+func TestIntakeRefusesGitWorktreeRepro(t *testing.T) {
+	in, store, requests := laneIntake(t, "maintenance", maintenanceLanes)
+	body := "Fix it.\n\n```repro\ngit worktree add /tmp/w HEAD\n```\n"
+	post(t, in, "issues", issueOpenedBody(22, "sebastian", []string{"agent"}, "A card", body))
+	got := card(store, 22)
+	if got.Status != "backlog" || got.Lane != "backlog" || got.ReproCommand != "" {
+		t.Fatalf("card = %+v, want a backlog card with no reproduction command", got)
+	}
+	presort, _, _ := store.ReportOf(context.Background(), got.ID, SourcePresort)
+	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
+		t.Fatalf("started %q, want the presort alone", started)
+	}
+	if labels := issueLabels(t, in.Forgejo, 22); !slices.Contains(labels, "agent") {
+		t.Fatalf("labels = %v, want the agent label kept", labels)
+	}
+	want := "factoryd: the reproduction command a git worktree under the sandbox has no repository to link; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	cs := comments(*requests)
+	if len(cs) != 1 || cs[0] != want {
+		t.Fatalf("comments = %q, want only %q", cs, want)
+	}
+}
+
 
 // An issue's body asks for its card's budget by a line "Size: <size>" or
 // "Budget: <n> [EUR]" (policy budget 5 by default, 15 at most): a size
