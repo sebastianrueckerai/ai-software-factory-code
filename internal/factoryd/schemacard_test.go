@@ -295,6 +295,12 @@ func TestSchemaCopierIdempotent(t *testing.T) {
 	if len(cards) != 1 {
 		t.Fatalf("%d cards of a build, want one: %v", len(cards), cards)
 	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("%d task rows in the store, want the one card: %v", len(store.tasks), store.tasks)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("CreateTask called %d times, want once: the second pass must file no card", store.createCalls)
+	}
 	if cards[0].PRNumber != 1 {
 		t.Fatalf("card = %+v, want it on pull request #1", cards[0])
 	}
