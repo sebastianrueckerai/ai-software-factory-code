@@ -168,7 +168,8 @@ func TestReconcileAdoptsFactoryPRCard(t *testing.T) {
 
 func reconcileInto(t *testing.T, r *Runner) RunState {
 	t.Helper()
-	return activityInto[RunState](t, execActivity(t, r, ActivityReconcile, "t1"))
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	return activityInto[RunState](t, val, err)
 }
 
 // The card's verify path on the real activities end to end: Reconcile
@@ -190,31 +191,37 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	if !st.FactoryPR || st.PR.Number != 9 || st.Head != "h9" {
 		t.Fatalf("RunState = %+v, want pull request #9 adopted at h9", st)
 	}
-	cfg := activityInto[TaskConfig](t, execActivity(t, r, ActivityTaskConfig, "t1", int64(7)))
+	cfgVal, cfgErr := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+	cfg := activityInto[TaskConfig](t, cfgVal, cfgErr)
 	if cfg.Class != policy.ClassCoder || cfg.Process != "maintenance" || cfg.Lane != "" {
 		t.Fatalf("TaskConfig = %+v, want maintenance's coder with no lane", cfg)
 	}
 	if _, err := execActivity(t, r, ActivitySetState, "t1", "in-review"); err != nil {
 		t.Fatal(err)
 	}
-	checks := activityInto[ChecksResult](t, execActivity(t, r, ActivityWaitChecks, "t1", "h9"))
+	checksVal, checksErr := execActivity(t, r, ActivityWaitChecks, "t1", "h9")
+	checks := activityInto[ChecksResult](t, checksVal, checksErr)
 	if checks.State != ChecksSuccess {
 		t.Fatalf("checks = %+v, want green on the adopted head", checks)
 	}
-	gate := activityInto[PolicyGate](t, execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "h9", int64(7)))
+	gateVal, gateErr := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "h9", int64(7))
+	gate := activityInto[PolicyGate](t, gateVal, gateErr)
 	if gate.Outcome != policy.OutcomeRequiresApproval || gate.MergeRule != policy.MergeHuman {
 		t.Fatalf("PolicyGate = %+v, want requires-approval on the human merge rule", gate)
 	}
-	repro := activityInto[ReproResult](t, execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "h9"))
+	reproVal, reproErr := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "h9")
+	repro := activityInto[ReproResult](t, reproVal, reproErr)
 	if repro.Ran {
 		t.Fatalf("ReproResult = %+v, want the gate skipped: the card carries no reproduction command", repro)
 	}
-	rv := activityInto[Review](t, execActivity(t, r, ActivityModelReview, "t1", st.PR, "h9", GateResults{Pin: 7, Policy: gate, Reproduction: repro}, nil))
+	rvVal, rvErr := execActivity(t, r, ActivityModelReview, "t1", st.PR, "h9", GateResults{Pin: 7, Policy: gate, Reproduction: repro}, nil)
+	rv := activityInto[Review](t, rvVal, rvErr)
 	if rv.Verdict != "approve" {
 		t.Fatalf("Review = %+v, want the model review's approval", rv)
 	}
 	fj.setMerged()
-	res := activityInto[MergeResult](t, execActivity(t, r, ActivityMerge, "t1", int64(9), "h9", "sebastian"))
+	resVal, resErr := execActivity(t, r, ActivityMerge, "t1", int64(9), "h9", "sebastian")
+	res := activityInto[MergeResult](t, resVal, resErr)
 	if !res.Merged {
 		t.Fatalf("MergeResult = %+v, want the approved merge of the card's pull request", res)
 	}
