@@ -112,6 +112,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityAwaitRollHold:               r.AwaitRollHold,
 		ActivityClearRollHold:               r.ClearRollHold,
 		ActivityProviderWait:                r.ProviderWait,
+		ActivityAlertPreCheck:               r.AlertPreCheck,
 		ActivityRunSplit:                    r.RunSplit,
 		ActivityFileSplit:                   r.FileSplit,
 	} {
@@ -892,7 +893,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		return RunState{}, err
 	}
 	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
-		Roll: t.Source == SourceRoll}
+		Roll: t.Source == SourceRoll, Source: t.Source}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
 		return st, nil
@@ -1098,6 +1099,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			res.State = ChecksTimeout
 		}
 		if res.State != "" {
+			if res.State == ChecksFailure {
+				r.annotateMainFailures(ctx, repo, &res)
+			}
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
 			if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil || !ok {
 				log.Printf("task %s: ci jobs of %s: no project for %s (%v)", t.ID, sha, t.Repository, err)
@@ -1200,6 +1204,55 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 	return ChecksResult{}
 }
 
+// mainFailureSuffix names a head finding whose same check fails on main too:
+// the defect is pre-existing there, not this card's (Stage 19, finding 195).
+const mainFailureSuffix = " (also failing on main)"
+
+// annotateMainFailures reads main's state when a head run failed and marks
+// each finding whose check context also fails on main, so the agent's
+// session and the supervisor's guidance point at the real defect instead of
+// the card. Any error (no main branch, an unreadable status) logs and
+// leaves the findings as they are: a pre-existing red must never sink the
+// gate's verdict.
+func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *ChecksResult) {
+	mainSHA, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		log.Printf("checks gate: main head of %s/%s: %v", repo.Owner, repo.Name, err)
+		return
+	}
+	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.HasSuffix(f, mainFailureSuffix) }) {
+		// the status of sha itself answers when no sha is given; an empty
+		// head would repeat it and mark the head's own failure as main's
+		return
+	}
+	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, mainSHA)
+	if err != nil {
+		log.Printf("checks gate: combined status of %s/%s at %s: %v", repo.Owner, repo.Name, mainSHA, err)
+		return
+	}
+	failing := failingContexts(cs)
+	if len(failing) == 0 {
+		return
+	}
+	for i, finding := range res.Findings {
+		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok && failing[ctxName] {
+			res.Findings[i] += mainFailureSuffix
+		}
+	}
+}
+
+// failingContexts is the set of contexts a combined status reports as
+// failure or error.
+func failingContexts(cs CombinedStatus) map[string]bool {
+	set := map[string]bool{}
+	for _, s := range cs.Statuses {
+		if s.State == "failure" || s.State == "error" {
+			set[s.Context] = true
+		}
+	}
+	return set
+}
+
 // jobLogMaxLines and jobLogMaxBytes bound the log tail a finding carries
 // (design 4.4): enough to show the failure, never enough to flood a
 // message.
@@ -1262,6 +1315,74 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	}
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, number)
 	return pr.Merged, err
+}
+
+// AlertPreCheckSource lists the alerts firing now (the SigNoz client).
+type AlertPreCheckSource = AlertSource
+
+// alertStoreReader is what an alert card's pre-check reads of the alert
+// store: the newest alerts row of a fingerprint. PGStore has it; a test
+// store without it takes the check as passing.
+type alertStoreReader interface {
+	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+}
+
+// AlertPreCheck is an alert card's pre-check before its first model call
+// (roadmap 181, Stage 18 item 3.12): it reads the task's alert fingerprint
+// from the store, queries SigNoz's firing alerts, and reports whether the
+// alert still fires. An alert that no longer fires was a transient burst:
+// the card closes itself without spending on a model call. No fingerprint,
+// or no source wired, says it still fires: the check never stops a card on
+// its own absence. The alert's own start time decides when it stopped: a
+// firing alert whose recorded start is later than the card's row is a fresh
+// firing, not this card's.
+func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error) {
+	t, ok, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	if !ok || t.AlertFingerprint == "" {
+		return true, nil
+	}
+	fr, ok := r.store.(alertStoreReader)
+	if !ok {
+		return true, nil
+	}
+	row, seen, err := fr.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
+	if err != nil {
+		return false, err
+	}
+	if !seen || row.TaskID != taskID {
+		return true, nil
+	}
+	if r.alerts == nil {
+		return true, nil
+	}
+	firing, err := r.alerts.FiringAlerts(ctx)
+	if err != nil {
+		return false, fmt.Errorf("signoz firing alerts: %w", err)
+	}
+	startedAt, _ := row.Detail["starts_at"].(string)
+	for _, a := range firing {
+		if !firingMatches(a, t.AlertFingerprint) || a.Status.State != "active" {
+			continue
+		}
+		if startedAt != "" && stamp(a.StartsAt) > startedAt {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// firingMatches reports whether SigNoz's firing alert a is the one of
+// fingerprint: its top-level Fingerprint field when it carries one (the
+// Alertmanager message), else its labels' fingerprint.
+func firingMatches(a FiringAlert, fingerprint string) bool {
+	if a.Fingerprint != "" {
+		return a.Fingerprint == fingerprint
+	}
+	return a.Labels["fingerprint"] == fingerprint
 }
 
 // Finish is the terminal step. A failed task's open pull request is closed

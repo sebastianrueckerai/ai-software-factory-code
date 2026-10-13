@@ -139,6 +139,13 @@ func main() {
 	// its signal and the runner its failure reader once it is
 	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(policyLoader.Current, store.PolicyVersion)}
 	var workflows factoryd.TemporalWorkflows
+	// SigNoz's firing alerts: the project endpoint and the alert card's
+	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
+	// read here so the boot's secret scrubber knows it.
+	signozPassword := mustSecret("SIGNOZ_PASSWORD")
+	signoz := &factoryd.SigNoz{
+		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
+		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
@@ -171,6 +178,7 @@ func main() {
 			return workflows.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
+		Alerts:    signoz,
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL,
 		Token:      gatewayToken,
@@ -238,7 +246,6 @@ func main() {
 	intakeToken := mustSecret("INTAKE_TOKEN")
 	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
 	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
-	signozPassword := mustSecret("SIGNOZ_PASSWORD")
 	consoleClientSecret := mustSecret("CONSOLE_CLIENT_SECRET")
 	consoleSessionKey := mustSecret("CONSOLE_SESSION_KEY")
 	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
@@ -296,7 +303,6 @@ func main() {
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current}
 	go monthAlarm.Loop(ctx, time.Minute)
-	go ciSpawner.Run(ctx)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics}
 	go ciRuns.Run(ctx)
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
@@ -354,9 +360,7 @@ func main() {
 	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, recordHandler(store, objects)))
 	// a project's own workflow asks whether anything fires in a namespace
 	// of its, with its FACTORY_READ_TOKEN
-	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, &factoryd.SigNoz{
-		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
-		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}, kube))
+	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, signoz, kube))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{
@@ -451,22 +455,64 @@ func main() {
 			log.Fatalf("console: %v", err)
 		}
 	}()
+	ciRunCtx, ciRunCancel := context.WithCancelCause(ctx)
+	spawnerDone := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		log.Printf("factoryd: shutting down, stopping the temporal worker")
-		// a running session stops its worker gracefully (work in progress
-		// pushed) and is retried by Temporal on the next factoryd from
-		// its heartbeat
-		taskWorker.Stop()
-		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		consoleServer.Shutdown(shutdown) // #nosec G104 -- as below
-		server.Shutdown(shutdown)        // #nosec G104 -- process exits right after; shutdown error is inconsequential
+		defer close(spawnerDone)
+		ciSpawner.Run(ciRunCtx)
+	}()
+	go func() {
+		runShutdown(ciRunCtx, ciRunCancel, spawnerDone, taskWorker, hetznerCI, consoleServer, server)
 	}()
 	log.Printf("factoryd %s listening on %s", version, *addr)
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+// workerStopper is the temporal worker's shutdown slice: what runShutdown
+// needs of it; worker.Worker satisfies it.
+type workerStopper interface {
+	Stop()
+}
+
+// ciSweeper is the CI sweep's provider slice; factoryd.CISweepProvider,
+// which hcloud.Client satisfies.
+type ciSweeper = factoryd.CISweepProvider
+
+// errShutdown is the CI spawner context's cancel cause: the process shuts
+// down.
+var errShutdown = errors.New("factoryd is shutting down")
+
+// runShutdown waits for the process context to end (SIGTERM) and shuts
+// the process down in this order (roadmap 189, Stage 18 item 3.15): first
+// the CI spawner's own cancellable context is cancelled, and the shutdown
+// waits on spawnerDone until the spawner's loop has returned, so no new
+// build machine can be created and none is deleted while a job still
+// owns it; then the temporal worker stops gracefully (a running session
+// pushes its work in progress and Temporal retries it on the next
+// factoryd from its heartbeat); then the CI sweep deletes every machine
+// labelled factory=ci left in the CI project, with a fresh 30-second
+// context, before the servers close and the process exits, so the backups
+// and the zero check find no CI machine.
+func runShutdown(ciRunCtx context.Context, ciRunCancel context.CancelCauseFunc, spawnerDone <-chan struct{},
+	taskWorker workerStopper, ciProvider ciSweeper, consoleServer *http.Server, server *http.Server) {
+	<-ciRunCtx.Done()
+	log.Printf("factoryd: shutting down, stopping the ci spawner")
+	ciRunCancel(errShutdown)
+	<-spawnerDone
+	taskWorker.Stop()
+	sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer sweepCancel()
+	if err := factoryd.SweepCIMachines(sweepCtx, ciProvider); err != nil {
+		log.Printf("factoryd: the ci sweep: %v", err)
+	} else {
+		log.Printf("factoryd: the ci sweep found no machine left")
+	}
+	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	consoleServer.Shutdown(shutdown) // #nosec G104 -- as below
+	server.Shutdown(shutdown)        // #nosec G104 -- process exits right after; shutdown error is inconsequential
 }
 
 // consoleWriters are the console's writer lists: the writers of every

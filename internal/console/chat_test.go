@@ -491,8 +491,8 @@ func TestChatBoardShowsACardWaitingOnTheProvider(t *testing.T) {
 	}
 }
 
-// A read call, then a reply: the tool block streams the result's first
-// line and acts on nothing. The second call carries the call and its
+// A read call, then a reply: the tool block streams the result truncated
+// to fit and acts on nothing. The second call carries the call and its
 // result, which the inbound sanitiser cleaned of the objective's hidden
 // comment.
 func TestChatReadThenReply(t *testing.T) {
@@ -502,7 +502,7 @@ func TestChatReadThenReply(t *testing.T) {
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("#5 waits in the backlog.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00"}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\nlane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmerge request 4 pending for pull request #9, risk high; a human decides b…"}`,
 		`text {"text":"#5 waits in the backlog."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -544,9 +544,24 @@ func TestSystemTool(t *testing.T) {
 		before := r.events.count()
 		g.replies = [][]string{{call(1, "system", `{}`)}, {say("read it.")}}
 		code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how does the factory work?"}})
-		equal(t, "stream", []any{code, events}, []any{200, []string{
-			`tool {"arguments":{},"duration_ms":0,"name":"system","result":"` + first + `"}`,
-			`text {"text":"read it."}`, `done {}`}})
+		if code != 200 || len(events) != 3 {
+			t.Fatalf("stream = %v", []any{code, events})
+		}
+		toolLine := events[0]
+		if !strings.HasPrefix(toolLine, `tool {"arguments":{},"duration_ms":0,"name":"system","result":"`) {
+			t.Fatalf("tool line prefix mismatch: %s", toolLine)
+		}
+		resultJSON := strings.TrimPrefix(toolLine, `tool {"arguments":{},"duration_ms":0,"name":"system","result":"`)
+		resultJSON = strings.TrimSuffix(resultJSON, `"}`)
+		var result string
+		if err := json.Unmarshal([]byte(`"`+resultJSON+`"`), &result); err != nil {
+			t.Fatalf("unmarshal result: %v", err)
+		}
+		if !strings.HasPrefix(result, first) {
+			t.Errorf("the system result does not start with the manual's first paragraph:\n%s", result)
+		}
+		equal(t, "stream tail", events[1:], []string{
+			`text {"text":"read it."}`, `done {}`})
 		chatRows(t, r.events, before, "sebastian")
 		calls := g.calls()
 		equal(t, "model calls", len(calls), 2)
@@ -696,9 +711,14 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		{say("Done.")},
 	}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize #5"}})
-	equal(t, "stream", events, []string{
-		`text {"text":"Let me look."}`,
-		`tool {"arguments":{},"duration_ms":0,"name":"board","result":"Backlog (1):"}`,
+	if len(events) != 7 {
+		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
+	}
+	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"Backlog (1):`) {
+		t.Errorf("board tool line prefix mismatch: %s", events[1])
+	}
+	equal(t, "stream after board", events[2:], []string{
 		`text {"text":"Setting it."}`,
 		`tool {"arguments":{"task_id":"t-m","summary":"Cache fix"},"duration_ms":0,"name":"set_summary","result":"The summary of #5 is set."}`,
 		`applied {"result":"The summary of #5 is set.","tool":"set_summary","undo":"TOKEN"}`,
@@ -1050,12 +1070,16 @@ func TestChatReads(t *testing.T) {
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_moved by sebastian via button {\"lane\":\"ready\"}`
 	costs := "The project's spend this month €2.25 of €50.00: the cards €1.50, the chat €0.75."
-	equal(t, "stream", events, []string{
-		`tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"` + status + `"}`,
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
-		`tool {"arguments":{},"duration_ms":0,"name":"costs","result":"` + costs + `"}`,
-		`tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go"}`,
-		`text {"text":"Read."}`, `done {}`})
+	if len(events) != 6 {
+		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
+	}
+	equal(t, "stream history", events[0], `tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"`+status+`"}`)
+	equal(t, "stream card_history", events[1], `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"`+moved+`"}`)
+	equal(t, "stream costs", events[2], `tool {"arguments":{},"duration_ms":0,"name":"costs","result":"`+costs+`"}`)
+	if !strings.HasPrefix(events[3], `tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go`) {
+		t.Errorf("diff tool line prefix mismatch: %s", events[3])
+	}
+	equal(t, "stream tail", events[4:], []string{`text {"text":"Read."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	msgs := messages(t, g.calls()[1])
 	equal(t, "the diff the agent reads", msgs[len(msgs)-1]["content"], "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
@@ -1366,7 +1390,10 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"name": name, "arguments": json.RawMessage(args), "duration_ms": 0, "result": result})
 		return "tool " + string(b)
 	}
-	equal(t, "stream", events, []string{
+	if len(events) != 11 {
+		t.Fatalf("stream length = %d, want 11; events: %v", len(events), events)
+	}
+	equal(t, "stream refusals", events[:7], []string{
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
 			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer); close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
@@ -1379,8 +1406,18 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 			"Refused: Card #5 "+backlog+", not a plan awaiting acceptance: move_card starts it."),
 		refused("steer", `{"task_id":"t-mr","text":"go"}`,
 			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
-		refused("card", `{"task_id":"t-cap"}`, `#14 t-cap "Trim the logs" waiting-human (`+human+`)`),
-		refused("card", `{"task_id":"t-mr"}`, `#15 t-mr "Add the index" waiting-human (`+human+`)`),
+	})
+	for i, wantPrefix := range []string{
+		`#14 t-cap \"Trim the logs\" waiting-human (` + human + `)`,
+		`#15 t-mr \"Add the index\" waiting-human (` + human + `)`,
+	} {
+		line := events[7+i]
+		wantFragment := `"result":"` + wantPrefix
+		if !strings.HasPrefix(line, `tool {"arguments":{"task_id":"`) || !strings.Contains(line, wantFragment) {
+			t.Errorf("stream card %d prefix mismatch:\n%s\nwant result containing: %s", i, line, wantFragment)
+		}
+	}
+	equal(t, "stream tail", events[9:], []string{
 		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index\"","id":"TOKEN","tool":"approve_merge"}`,
 		`done {}`})
 	chatRows(t, r.events, before, "sebastian")
