@@ -302,6 +302,158 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	}
 }
 
+// On Postgres: the batch stores every answer in one statement; a second
+// answer (ErrAnswered) or an unknown idx (ErrNotFound) in a batch stores
+// none of it.
+func TestPGStoreAnswerPlanQuestions(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_answers"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i, id := range []string{"t-plan", "t-plan-bad"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "waiting-human", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Lane: "plan", IssueNumber: int64(20 + i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary": "one"}`), "s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	if err := s.AnswerPlanQuestions(ctx, "t-plan", 1, []PlanAnswer{{Idx: 2, Text: "30 days"}, {Idx: 1, Text: "60 seconds"}}, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.PlanQuestions(ctx, "t-plan", 1)
+	if open, _ := s.OpenPlanQuestions(ctx, "t-plan", 1); open != 0 || got[0].Answer != "60 seconds" || got[0].AnsweredBy != "alice" ||
+		got[1].Answer != "30 days" || got[1].AnsweredAt.Before(before.Add(-time.Minute)) {
+		t.Fatalf("questions %+v, %d open", got, open)
+	}
+	for name, tc := range map[string]struct {
+		id       string
+		revision int
+		answers  []PlanAnswer
+		want     error
+	}{
+		"answered already": {"t-plan", 1, []PlanAnswer{{Idx: 1, Text: "5 minutes"}}, ErrAnswered},
+		"unknown idx":      {"t-plan", 1, []PlanAnswer{{Idx: 2, Text: "7 days"}, {Idx: 4, Text: "no"}}, ErrNotFound},
+		"no such revision": {"t-plan", 2, []PlanAnswer{{Idx: 1, Text: "5 minutes"}}, ErrNotFound},
+	} {
+		if err := s.AnswerPlanQuestions(ctx, tc.id, tc.revision, tc.answers, "bob"); !errors.Is(err, tc.want) {
+			t.Fatalf("%s: %v, want %v", name, err, tc.want)
+		}
+	}
+	got, _ = s.PlanQuestions(ctx, "t-plan", 1)
+	if got[0].Answer != "60 seconds" || got[0].AnsweredBy != "alice" || got[1].Answer != "30 days" || got[1].AnsweredBy != "alice" {
+		t.Fatalf("questions after the refusals %+v", got)
+	}
+	// a partial batch — one question answered, one still open — stores
+	// neither, and a bad entry leaves no row of its own behind
+	if _, err := s.AddPlanRevision(ctx, "t-plan-bad", json.RawMessage(`{"summary": "one"}`), "sb1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutPlanQuestions(ctx, "t-plan-bad", 1, questionPlan().Questions); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, "t-plan-bad", 1, 1, "60 seconds", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerPlanQuestions(ctx, "t-plan-bad", 1, []PlanAnswer{{Idx: 1, Text: "5 minutes"}, {Idx: 2, Text: "7 days"}, {Idx: 9, Text: "no"}}, "carol"); !errors.Is(err, ErrAnswered) {
+		t.Fatalf("a partial batch with a bad idx: %v, want ErrAnswered", err)
+	}
+	if got, _ := s.PlanQuestions(ctx, "t-plan-bad", 1); got[1].Answer != "" || got[0].Answer != "60 seconds" || got[0].AnsweredBy != "alice" {
+		t.Fatalf("questions after the partial batch %+v", got)
+	}
+	if err := s.AnswerPlanQuestions(ctx, "t-plan-bad", 1, []PlanAnswer{{Idx: 2, Text: "7 days"}}, "carol"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.PlanQuestions(ctx, "t-plan-bad", 1); got[1].Answer != "7 days" || got[1].AnsweredBy != "carol" {
+		t.Fatalf("the open question after the batch %+v", got[1])
+	}
+}
+
+// AnswerPlanQuestions is the batch answer: one call stores every answer of
+// the newest revision, signals the plan's workflow once per answer and,
+// when no question stays open, resolves the plan's approval as superseded.
+func TestAnswerPlanQuestionsBatch(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: "plan", IssueNumber: 20, Repository: "linkshort/linkshort"}
+	raw, sha, _ := planSHA(questionPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	wf := &signalLog{}
+	if err := AnswerPlanQuestions(ctx, store, wf, "t-plan", 1, []PlanAnswer{{Idx: 1, Text: "60 seconds"}, {Idx: 2, Text: "30 days"}}, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)
+	if qs[0].Answer != "60 seconds" || qs[0].AnsweredBy != "alice" || qs[1].Answer != "30 days" || qs[1].AnsweredBy != "alice" ||
+		!slices.Equal(wf.got, []string{"t-plan plan_answered alice revision 1 index 1", "t-plan plan_answered alice revision 1 index 2"}) {
+		t.Fatalf("questions %+v, signals %q", qs, wf.got)
+	}
+	if a := store.approvals[0]; a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != "superseded: the planner revises revision 1 with the answers" {
+		t.Fatalf("the approval after the batch %+v", a)
+	}
+	if open, err := store.OpenPlanQuestions(ctx, "t-plan", 1); err != nil || open != 0 {
+		t.Fatalf("%d open questions (%v), want 0", open, err)
+	}
+}
+
+// A batch whose entries hold one already-answered question refuses the
+// whole call with ErrAnswered and stores none.
+func TestAnswerPlanQuestionsPartialError(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: "plan", IssueNumber: 20, Repository: "linkshort/linkshort"}
+	raw, sha, _ := planSHA(questionPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "60 seconds", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	wf := &signalLog{}
+	err := AnswerPlanQuestions(ctx, store, wf, "t-plan", 1, []PlanAnswer{{Idx: 1, Text: "5 minutes"}, {Idx: 2, Text: "30 days"}}, "bob")
+	if !errors.Is(err, ErrAnswered) || len(wf.got) != 0 {
+		t.Fatalf("%v, signals %q, want ErrAnswered and none", err, wf.got)
+	}
+	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)
+	if qs[0].Answer != "60 seconds" || qs[0].AnsweredBy != "alice" || qs[1].Answer != "" || store.approvals[0].Status != "pending" {
+		t.Fatalf("questions %+v, approval %+v", qs, store.approvals[0])
+	}
+	if open, err := store.OpenPlanQuestions(ctx, "t-plan", 1); err != nil || open != 1 {
+		t.Fatalf("%d open questions (%v), want 1", open, err)
+	}
+}
+
+// A batch with an idx no question of the revision has refuses the whole
+// call with ErrNotFound and stores none.
+func TestAnswerPlanQuestionsNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: "plan", IssueNumber: 20, Repository: "linkshort/linkshort"}
+	raw, sha, _ := planSHA(questionPlan())
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	wf := &signalLog{}
+	err := AnswerPlanQuestions(ctx, store, wf, "t-plan", 1, []PlanAnswer{{Idx: 2, Text: "30 days"}, {Idx: 3, Text: "weekly"}}, "bob")
+	if !errors.Is(err, ErrNotFound) || len(wf.got) != 0 {
+		t.Fatalf("%v, signals %q, want ErrNotFound and none", err, wf.got)
+	}
+	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)
+	if qs[0].Answer != "" || qs[1].Answer != "" || store.approvals[0].Status != "pending" {
+		t.Fatalf("questions %+v, approval %+v", qs, store.approvals[0])
+	}
+	if open, err := store.OpenPlanQuestions(ctx, "t-plan", 1); err != nil || open != 2 {
+		t.Fatalf("%d open questions (%v), want 2", open, err)
+	}
+}
+
 // The members' answers send the planner back once none is open: an answer
 // that leaves a question open waits on, the last one starts exactly one
 // planner session (RunPlan reads the answers), whose new revision is
