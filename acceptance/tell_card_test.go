@@ -7,12 +7,15 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
+
+var durationField = regexp.MustCompile(`"duration_ms":\d+`)
 
 // The acceptance tests of "tell the card" (roadmap 183, Stage 18 item
 // 3.6): one chat write the server routes by the card's state, exercised
@@ -65,7 +68,8 @@ func postChat(t *testing.T, r *console.AcceptanceRig, path string, ck *http.Cook
 	return resp.StatusCode, string(body)
 }
 
-// eventsOf answers the stream's events as "event data" lines, in order.
+// eventsOf answers the stream's events as "event data" lines, in order,
+// with every duration normalized to 0 so the test does not race the clock.
 func eventsOf(t *testing.T, body string) []string {
 	t.Helper()
 	var out []string
@@ -75,7 +79,8 @@ func eventsOf(t *testing.T, body string) []string {
 			t.Errorf("a stream block of no event: %q", msg)
 			continue
 		}
-		out = append(out, strings.TrimPrefix(line[0], "event: ")+" "+strings.TrimPrefix(line[1], "data: "))
+		data := durationField.ReplaceAllString(strings.TrimPrefix(line[1], "data: "), `"duration_ms":0`)
+		out = append(out, strings.TrimPrefix(line[0], "event: ")+" "+data)
 	}
 	return out
 }
