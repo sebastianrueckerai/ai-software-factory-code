@@ -403,6 +403,16 @@ func (c *Collector) closeAbsent(ctx context.Context, row Resource, now time.Time
 	if err != nil || !gone {
 		return err
 	}
+	// The provider no longer has it: whatever still waits (a firewall of
+	// this deleted server, say) waits on the provider alone, so the row
+	// stops holding its cap from here even while its release was still
+	// being retried. It goes with the transition to deleted; vanished
+	// clears the mark itself.
+	if row.State == StateDeleting {
+		if _, err := c.Registry.MarkProviderGone(ctx, row.ID); err != nil {
+			return err
+		}
+	}
 	to := StateVanished
 	if row.State == StateDeleting {
 		to = StateDeleted
@@ -526,6 +536,14 @@ func (c *Collector) release(ctx context.Context, row Resource, by string) error 
 		err := c.delete(ctx, row, id, by)
 		row.State = StateDeleting
 		if err == nil || !retryable(err) || attempt >= attempts {
+			if err != nil && retryable(err) {
+				// The release gave up on a delete its provider still
+				// refuses (resource_in_use): the next pass owns it, and
+				// until then the row keeps holding its cap.
+				if _, merr := c.Registry.MarkHeld(ctx, row.ID); merr != nil {
+					log.Printf("cloud collector (%s): mark %s %d held: %v", c.Project, row.Kind, row.ID, merr)
+				}
+			}
 			return err
 		}
 		select {

@@ -104,9 +104,12 @@ func TestPGStoreChatMessages(t *testing.T) {
 		}
 		got = append(got, ChatMessage{Role: m.Role, Content: m.Content, ToolCalls: m.ToolCalls})
 	}
-	want := []ChatMessage{{Role: "user", Content: "what is open?"}, {Role: "assistant", ToolCalls: calls}, {Role: "assistant", Content: "One card, #4."}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("conversation = %+v, want %+v", got, want)
+	if len(got) != 3 || got[0].Role != "user" || got[0].Content != "what is open?" ||
+		got[1].Role != "assistant" || len(got[1].ToolCalls) != 1 ||
+		got[1].ToolCalls[0].ID != calls[0].ID || got[1].ToolCalls[0].Name != calls[0].Name ||
+		got[1].ToolCalls[0].Result != calls[0].Result || got[1].ToolCalls[0].ReadAt.IsZero() ||
+		got[2].Role != "assistant" || got[2].Content != "One card, #4." {
+		t.Fatalf("conversation = %+v", got)
 	}
 	newest, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 0, 2)
 	if err != nil || len(newest) != 2 || newest[0].ID != all[1].ID || newest[1].ID != all[2].ID {
