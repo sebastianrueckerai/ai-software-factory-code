@@ -64,7 +64,7 @@ func TestAllTheTimesRulesRequireAFullWindow(t *testing.T) {
 				filepath.Base(f), r.Condition.RequireMinPoints, r.Condition.RequiredNumPoints, want, window, step)
 		}
 	}
-	if seen != 2 {
-		t.Fatalf("%d all-the-times rules, want the two roll rules", seen)
+	if seen != 3 {
+		t.Fatalf("%d all-the-times rules, want the two roll rules and ci-queue-p95", seen)
 	}
 }
