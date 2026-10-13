@@ -1,6 +1,6 @@
 ARG OPENCODE_VERSION=v1.18.32
 
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
+FROM golang:1.25.9-alpine@sha256:5caaf1cca9dc351e13deafbc3879fd4754801acba8653fa9540cea125d01a71f AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -51,11 +51,10 @@ RUN echo "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b  /tmp
       && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
       && rm /tmp/opencode.tar.gz /tmp/opencode
 # Go toolchain (ruling 99), the same pin as Dockerfile.runner, so the agent
-# can run the tests the PR checks will run.
-ADD https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz /tmp/go.tar.gz
-RUN echo "00859d7bd6defe8bf84d9db9e57b9a4467b2887c18cd93ae7460e713db774bc1  /tmp/go.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/go.tar.gz -C /usr/local \
-      && rm /tmp/go.tar.gz
+# can run the tests the PR checks will run: taken from the pinned golang base
+# image stage instead of go.dev/dl, which redirects to dl.google.com and that
+# host is unreachable here.
+COPY --from=build /usr/local/go /usr/local/go
 # Node 24 (the active LTS line), npm with it: the project checks run npm
 # scripts. The sha256 is the tarball's line in nodejs.org's signed
 # SHASUMS256.txt for this version. One layer: no image keeps the archive.
@@ -85,4 +84,5 @@ ENV HOME=/home/worker \
     GOPROXY=https://proxy.golang.org \
     GOSUMDB=sum.golang.org
 WORKDIR /workspace
+RUN /usr/local/go/bin/go version
 ENTRYPOINT ["/usr/local/bin/opencode"]
