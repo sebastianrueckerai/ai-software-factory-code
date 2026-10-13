@@ -72,15 +72,21 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; font: 15px/1.45 system-ui, sans-serif; color: var(--text); background: var(--bg); }
-/* the page's scrollbar: thin and theme-coloured in both themes, so the
-   default bright track never reads badly against the console; always
-   present, so content that changes height moves nothing */
-html { color-scheme: dark; scrollbar-color: var(--line-strong) var(--bg); scrollbar-gutter: stable; }
+/* every scrollbar, the page's and each inner column's (the chat log, the
+   drawer, a code block, the composer's textarea): thin and theme-coloured
+   in both themes, so the default bright track never reads badly against
+   the console. Chrome and Firefox take the standard scrollbar-color and
+   width; engines that ignore them take the webkit block below, whose thumb
+   floats clear of the edges and brightens on hover. The page's gutter
+   stays always present, so content that changes height moves nothing */
+html { color-scheme: dark; scrollbar-gutter: stable; }
 [data-theme=light] { color-scheme: light; }
-html::-webkit-scrollbar { width: .65rem; height: .65rem; }
-html::-webkit-scrollbar-track { background: var(--bg); }
-html::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 2px solid var(--bg); }
-html::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+* { scrollbar-color: var(--line-strong) var(--bg); scrollbar-width: thin; }
+::-webkit-scrollbar { width: .55rem; height: .55rem; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar-corner { background: transparent; }
 header { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; padding: .6rem 1rem; border-bottom: 1px solid var(--line-strong); }
 header .home { font-weight: 600; color: var(--text); text-decoration: none; }
 header nav { display: flex; gap: 1rem; flex: 1; }
