@@ -60,6 +60,7 @@ const badWindowRefusal = "Refused: from and to must be dates YYYY-MM-DD, from no
 type acceptLedger struct {
 	mu   sync.Mutex
 	wins [][2]string
+	chat *policy.ChatConfig
 }
 
 // Costs answers the fixture's rows for the window it is asked, as the
@@ -107,13 +108,17 @@ func (l *acceptLedger) windows() [][2]string {
 }
 
 func (l *acceptLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	l.mu.Lock()
+	ch := l.chat
+	l.mu.Unlock()
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
-			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}}}}
+			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
+			Chat:            ch}}}
 	return v, true, nil
 }
 
@@ -248,6 +253,22 @@ func (s *acceptTasks) Dependents(_ context.Context, _ string) ([]factoryd.Depend
 	return nil, nil
 }
 
+func (s *acceptTasks) moveCard(taskID, lane string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, t := range s.tasks {
+		if t.ID == taskID {
+			s.tasks[i].Lane = lane
+			if lane == policy.LaneReady {
+				s.tasks[i].Status = "queued"
+			} else {
+				s.tasks[i].Status = lane
+			}
+			break
+		}
+	}
+}
+
 func (s *acceptTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
 func (s *acceptTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
 func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }
@@ -272,10 +293,11 @@ func (o acceptObjects) Get(_ context.Context, k string) ([]byte, error) { return
 
 // acceptEvents is the event spine in memory.
 type acceptEvents struct {
-	mu   sync.Mutex
-	rows []factoryd.Event
-	next int64
-	bus  *factoryd.EventBus
+	mu    sync.Mutex
+	rows  []factoryd.Event
+	next  int64
+	bus   *factoryd.EventBus
+	tasks *acceptTasks
 }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -291,6 +313,11 @@ func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error
 	}
 	f.rows = append(f.rows, e)
 	f.bus.Publish(e)
+	if e.Kind == factoryd.EventCardMoved && f.tasks != nil {
+		if lane, ok := e.Detail["lane"].(string); ok {
+			f.tasks.moveCard(e.TaskID, lane)
+		}
+	}
 	return e.ID, nil
 }
 
@@ -546,6 +573,9 @@ func (f *acceptChat) Conversations(_ context.Context, repository, login string) 
 func (f *acceptChat) ChatMessages(_ context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if conversation == 0 {
+		conversation = f.current(repository, login)
+	}
 	var out []factoryd.ChatMessage
 	for _, m := range f.msgs[repository+" "+login] {
 		if m.Conversation == conversation {
@@ -652,6 +682,23 @@ func (f *acceptForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"login": f.user})
 		return
 	}
+	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.HasSuffix(r.URL.Path, "/labels") {
+		if page := r.URL.Query().Get("page"); page != "" && page != "1" {
+			json.NewEncoder(w).Encode([]map[string]any{})
+			return
+		}
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "name": "backlog"},
+			{"id": 2, "name": "plan"},
+			{"id": 3, "name": "agent"},
+		})
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/") && strings.HasSuffix(r.URL.Path, "/labels") {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]any{})
+		return
+	}
 	http.Error(w, "no such call: "+r.URL.Path, http.StatusNotFound)
 }
 
@@ -710,6 +757,7 @@ type rig struct {
 	c       *console.Console
 	srv     *httptest.Server
 	ledger  *acceptLedger
+	chat    *acceptChat
 	gateway *gateway
 	ck      *http.Cookie
 	csrf    string
@@ -729,7 +777,8 @@ func newRig(t *testing.T) *rig {
 		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
 			Process: "maintenance", Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."}},
 	}}
-	evs := &acceptEvents{bus: factoryd.NewEventBus()}
+	evs := &acceptEvents{bus: factoryd.NewEventBus(), tasks: tasks}
+	ch := newAcceptChat(tasks)
 	gw := &gateway{t: t}
 	gwsrv := httptest.NewServer(gw)
 	t.Cleanup(gwsrv.Close)
@@ -746,7 +795,7 @@ func newRig(t *testing.T) *rig {
 		Projects: &acceptProjects{rows: []factoryd.Project{{Name: "ai-software-factory-code", Repository: "sf/code",
 			MergeRule: "human", Objects: policy.ObjectsSeed, Agents: "coder", File: true, Process: "maintenance",
 			Lanes: []policy.Lane{{Name: "backlog", WriteUp: "analyzer"}, {Name: "ready", Class: "coder", MovedBy: "writers"}}}}},
-		Events: evs, Bus: evs.bus, Chat: newAcceptChat(tasks),
+		Events: evs, Bus: evs.bus, Chat: ch,
 		Mirrors:  &acceptMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
 		MayMove:  func(_ context.Context, _, user, _ string) (bool, error) { return user == "sebastian", nil },
@@ -754,7 +803,7 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &rig{c: c, srv: httptest.NewServer(c), ledger: led, gateway: gw}
+	r := &rig{c: c, srv: httptest.NewServer(c), ledger: led, chat: ch, gateway: gw}
 	t.Cleanup(r.srv.Close)
 	r.login(t, fg)
 	return r
