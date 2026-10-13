@@ -41,29 +41,32 @@ import (
 // prForgejo plays the pull request, status and issue endpoints the
 // workflow activities use.
 type prForgejo struct {
-	mu         sync.Mutex
-	forgejo    map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
-	github     map[string]string // commit → its top-level .github tree id; unlisted commits have none
-	closed     []int64           // PATCH /pulls/{n} closes
-	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
-	branchGone bool              // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
-	refuse     bool              // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
-	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
-	pulls      map[int64]string  // GET /pulls/{n} bodies
-	issueOff   bool              // GET /issues/{n} reports closed
-	closer     string            // the close on GET /issues/{n}/timeline; "" = sebastian
-	open       []map[string]any  // open pull requests
-	byHead     map[string]string // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
-	statuses   []string          // combined-status bodies, served in order, the last repeating
-	polls      int
-	tasks      string             // actions/tasks page 1 body (testdata file); later pages empty
-	tasksAuth  string             // the token actions/tasks expects; "" = registrar-tok
-	created    []map[string]any   // POST /pulls bodies
-	comments   []string           // issue comment bodies
-	labels     map[int64][]string // issue → labels
-	head       string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
-	contents   []map[string]any   // POST /contents bodies
-	calls      []string
+	mu            sync.Mutex
+	forgejo       map[string]string   // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
+	closed        []int64             // PATCH /pulls/{n} closes
+	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
+	branchGone    bool                // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
+	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
+	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
+	pulls         map[int64]string    // GET /pulls/{n} bodies
+	issueOff      bool                // GET /issues/{n} reports closed
+	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
+	open          []map[string]any    // open pull requests
+	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
+	statuses      []string            // combined-status bodies, served in order, the last repeating
+	statusesBySHA map[string][]string // sha -> combined-status bodies, served in order, the last repeating; wins over statuses
+	polls         int
+	pollsBySHA    map[string]int     // per-sha poll cursor of statusesBySHA
+	tasks         string             // actions/tasks page 1 body (testdata file); later pages empty
+	tasksAuth     string             // the token actions/tasks expects; "" = registrar-tok
+	created       []map[string]any   // POST /pulls bodies
+	comments      []string           // issue comment bodies
+	labels        map[int64][]string // issue → labels
+	head          string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
+	mainHead      string             // GET /branches/main's commit; unlisted branches answer head
+	contents      []map[string]any   // POST /contents bodies
+	calls         []string
 }
 
 func (f *prForgejo) srv(t *testing.T) *httptest.Server {
@@ -141,7 +144,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": f.head}})
+			head := f.head
+			if p == "/branches/main" && f.mainHead != "" {
+				head = f.mainHead
+			}
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": head}})
 		case r.Method == "POST" && p == "/contents":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -190,6 +197,16 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			// fake (checksResult's own tests cover the tail itself).
 			http.NotFound(w, r)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/"):
+			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
+			if listed, ok := f.statusesBySHA[sha]; ok {
+				if f.pollsBySHA == nil {
+					f.pollsBySHA = map[string]int{}
+				}
+				body := listed[min(f.pollsBySHA[sha], len(listed)-1)]
+				f.pollsBySHA[sha]++
+				io.WriteString(w, body)
+				return
+			}
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
 			io.WriteString(w, body)
