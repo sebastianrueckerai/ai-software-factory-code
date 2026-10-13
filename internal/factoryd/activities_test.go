@@ -992,25 +992,25 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		fj   *prForgejo
 		want RunState
 	}{
-		"fresh": {prTask, &prForgejo{}, RunState{Status: "running"}},
+		"fresh": {prTask, &prForgejo{}, RunState{Status: "running", Source: "api"}},
 		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",
 			"head": map[string]any{"ref": "factory/t1", "sha": "c8", "repo": map[string]any{"full_name": "stranger/repo"}}}}},
-			RunState{Status: "running"}},
+			RunState{Status: "running", Source: "api"}},
 		"no recorded PR, merged before its number was recorded": {prTask, &prForgejo{byHead: map[string]string{"factory-agent/repo:factory/t1": `{"number":12,"state":"closed","merged":true}`}},
-			RunState{Status: "running", Merged: true}},
+			RunState{Status: "running", Source: "api", Merged: true}},
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
-			RunState{Status: "running", Merged: true, IssueClosed: true}},
+			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
-			RunState{Status: "running", PRClosed: true}},
-		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Skip: true}},
-		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Skip: true}},
-		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Roll: true}},
+			RunState{Status: "running", Source: "api", PRClosed: true}},
+		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Source: "api", Skip: true}},
+		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Source: "api", Skip: true}},
+		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
 		if len(tc.want.Findings) > 0 {
@@ -1678,5 +1678,60 @@ type T struct{ S int ` + "`json:\"spec\"`" + ` }
 		for _, use := range processNameUses(t, name, src) {
 			t.Errorf("a process named in the engine: %s", use)
 		}
+	}
+}
+
+// An alert card's pre-check (roadmap 181, Stage 18 item 3.12): its alert is
+// gone from SigNoz's firing list, so the card closes itself before its
+// first model call; a transient burst files no work.
+func TestAlertPreCheckClosesWhenNotFiring(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
+		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
+	// SigNoz answers another rule firing, and this one resolved: no match
+	alerts := &fakeAlerts{list: []FiringAlert{
+		firing("active", map[string]string{"alertname": "gateway restarts"}, "restarts"),
+		firing("suppressed", map[string]string{"alertname": "ci queue p95"}, "p95 back under 5m"),
+	}}
+	alerts.list[1].Fingerprint = "fp-burst"
+	r.alerts = alerts
+	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+	var got bool
+	if err != nil || val.Get(&got) != nil {
+		t.Fatalf("AlertPreCheck: %v", err)
+	}
+	if got {
+		t.Fatal("pre-check = true, want false: the fingerprint no longer fires")
+	}
+	if alerts.calls.Load() == 0 {
+		t.Fatal("the pre-check never asked SigNoz")
+	}
+}
+
+// The same card with its alert still held firing by SigNoz passes: the
+// check only stops a card whose alert actually stopped firing.
+func TestAlertPreCheckPassesWhenFiring(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
+		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
+	a := firing("active", map[string]string{"alertname": "ci queue p95"}, "p95 above 5m")
+	a.Fingerprint = "fp-burst"
+	a.StartsAt = time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	r.alerts = &fakeAlerts{list: []FiringAlert{a}}
+	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+	var got bool
+	if err != nil || val.Get(&got) != nil {
+		t.Fatalf("AlertPreCheck: %v", err)
+	}
+	if !got {
+		t.Fatal("pre-check = false, want true: the fingerprint still fires")
 	}
 }
