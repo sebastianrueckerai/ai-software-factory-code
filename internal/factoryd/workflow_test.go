@@ -184,6 +184,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityAwaitRollHold:     func(ctx context.Context, taskID string) error { return nil },
 		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
 		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
+		ActivityAlertPreCheck:     func(ctx context.Context, taskID string) (bool, error) { return true, nil },
 		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
@@ -1843,5 +1844,44 @@ func TestWorkflowHealedRunKeepsEarlierAnswers(t *testing.T) {
 	// the re-ask offers the question's choices again
 	if !slices.Equal(h.escalated, []string{healedReason}) || len(h.choices) != 1 || !slices.Equal(h.choices[0], []string{"hello", "bye"}) {
 		t.Fatalf("escalations = %q with choices %q, want the healed re-ask with hello and bye", h.escalated, h.choices)
+	}
+}
+
+// An alert card checks before its first model call that its alert still
+// fires (roadmap 181, Stage 18 item 3.12): a burst whose alert is gone
+// closes the card itself, failed with no session ever run. A run from
+// before the version gate never asks.
+func TestAlertCardClosesItselfBeforeFirstModelCall(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourceAlert
+	prechecked := false
+	h.env.OnActivity(ActivityAlertPreCheck, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (bool, error) { prechecked = true; return false, nil })
+	h.onSessions(SessionResult{Outcome: OutcomePushed, SessionID: "s1", Summary: "pushed"})
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if !prechecked {
+		t.Fatal("the alert card ran no pre-check")
+	}
+	if len(h.sessions) != 0 {
+		t.Fatalf("sessions = %d, want none: the card closed itself before its first model call", len(h.sessions))
+	}
+	if h.finals[0][1] != "alert no longer fires" {
+		t.Fatalf("reason = %q, want %q", h.finals[0][1], "alert no longer fires")
+	}
+
+	// a firing alert lets the card run its session as any other would
+	h2 := newWorkflowHarness(t)
+	h2.state.Source = SourceAlert
+	h2.env.OnActivity(ActivityAlertPreCheck, mock.Anything, "t1").Return(true, nil)
+	h2.onSessions(pushed("s1", "c1"))
+	h2.onChecks(ChecksResult{State: ChecksSuccess})
+	h2.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h2.run(t); final != "done" {
+		t.Fatalf("firing: final = %q, finals = %v", final, h2.finals)
+	}
+	if len(h2.sessions) != 1 {
+		t.Fatalf("firing: sessions = %d, want the card's session", len(h2.sessions))
 	}
 }
