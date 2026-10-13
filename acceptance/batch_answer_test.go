@@ -84,6 +84,17 @@ func (s *accBatchTasks) Task(_ context.Context, id string) (factoryd.Task, bool,
 	return factoryd.Task{}, false, nil
 }
 
+func (s *accBatchTasks) TaskByPR(_ context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, bt := range s.tasks {
+		if bt.Task.Repository == repository && bt.Task.PRNumber == pr && pr != 0 {
+			return bt.Task, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 func (s *accBatchTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -305,6 +316,9 @@ func (s *accBatchStore) SettleSpendFinal(ctx context.Context, id string, reporte
 }
 func (s *accBatchStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	panic("unused")
+}
+func (s *accBatchStore) TaskByPR(ctx context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
+	return s.tasks.TaskByPR(ctx, repository, pr)
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
