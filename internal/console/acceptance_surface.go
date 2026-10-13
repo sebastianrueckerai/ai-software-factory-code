@@ -27,6 +27,8 @@ import (
 // end-to-end through the HTTP surface. It is the console test rig's shape
 // kept to what one tell of a card reads and writes.
 
+const accProjectName = "ai-software-factory-" + "code"
+
 // AcceptanceRig is the harness: the console's handler plus the stores it
 // stands on, each recording what the actions did.
 type AcceptanceRig struct {
@@ -98,7 +100,7 @@ func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
 		t.Fatal(err)
 	}
 	a.c = c
-	return a, "/projects/ai-software-factory-code/chat"
+	return a, "/projects/" + accProjectName + "/chat"
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers
@@ -121,7 +123,7 @@ func (a *AcceptanceRig) Login(t *testing.T) (*http.Cookie, string) {
 		t.Fatal("/login set no login cookie")
 	}
 	cb := a.request(http.MethodGet, "/auth/callback?code=the-code&state="+url.QueryEscape(loc.Query().Get("state")), nil,
-		&http.Cookie{Name: loginCookie, Value: state})
+		&http.Cookie{Name: loginCookie, Value: state, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}) // #nosec G124 -- test harness cookie stub
 	ck := cookieValue(cb, sessionCookie)
 	if cb.Code != http.StatusSeeOther || ck == "" {
 		t.Fatalf("the callback = %d, session cookie set: %v", cb.Code, ck != "")
@@ -130,7 +132,7 @@ func (a *AcceptanceRig) Login(t *testing.T) (*http.Cookie, string) {
 	if err != nil || s == nil {
 		t.Fatalf("the fresh login's row does not read back: found %v, %v", s != nil, err)
 	}
-	return &http.Cookie{Name: sessionCookie, Value: ck}, s.csrf
+	return &http.Cookie{Name: sessionCookie, Value: ck, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}, s.csrf // #nosec G124 -- test harness cookie stub
 }
 
 // Handler is the console's HTTP handler, for tests that need a real server
@@ -333,25 +335,25 @@ func (a *AcceptanceRig) serveForgejo(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		a.tokenN++
-		json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("access-%d", a.tokenN),
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("access-%d", a.tokenN), // #nosec G104 -- test harness stub response
 			"refresh_token": fmt.Sprintf("refresh-%d", a.tokenN), "token_type": "bearer", "expires_in": 3600})
 		return
 	}
 	a.fgCalls = append(a.fgCalls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
-		json.NewEncoder(w).Encode(map[string]any{"login": "sebastian"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "sebastian"}) // #nosec G104 -- test harness stub response
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body) // #nosec G104 -- test harness stub request
 		a.reviews = append(a.reviews, body)
-		w.Write([]byte(`{"id":12}`))
+		_, _ = w.Write([]byte(`{"id":12}`)) // #nosec G104 -- test harness stub response
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 		var body map[string]string
-		json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewDecoder(r.Body).Decode(&body) // #nosec G104 -- test harness stub request
 		a.commentN++
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"id": a.commentN})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": a.commentN}) // #nosec G104 -- test harness stub response
 	default:
 		http.NotFound(w, r)
 	}
@@ -677,7 +679,7 @@ func (a *AcceptanceRig) PurgeProposals(_ context.Context, before time.Time) (int
 
 func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error) {
 	v, _, _ := a.CurrentPolicy(ctx)
-	return []factoryd.Project{{Name: "ai-software-factory-code", Repository: "sf/code", MergeRule: "human", Objects: "seed",
+	return []factoryd.Project{{Name: accProjectName, Repository: "sf/code", MergeRule: "human", Objects: "seed",
 		Agents: "coder", File: true, Process: "maintenance", Lanes: v.Tree.Processes["maintenance"].Lanes,
 		Namespaces: []string{"factory"},
 		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}}, nil
@@ -704,7 +706,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 					Approvers:       []string{"sebastian"},
 					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
-				Projects:  map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}},
+				Projects:  map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}},
 				Processes: processes}},
 		true, nil
 }

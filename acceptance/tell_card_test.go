@@ -127,14 +127,6 @@ func appliedResult(t *testing.T, r *console.AcceptanceRig) string {
 	return ""
 }
 
-// equal answers what got differs from want in the test's words.
-func equal[T any](t *testing.T, what string, got, want T) {
-	t.Helper()
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("%s =\n%#v\nwant\n%#v", what, got, want)
-	}
-}
-
 // checkEvents answers the event spine's rows to exactly wants: kind,
 // task, issue and detail, each by chat as the member on the code project.
 func checkEvents(t *testing.T, r *console.AcceptanceRig, wants ...factoryd.Event) {
