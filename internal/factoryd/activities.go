@@ -1099,6 +1099,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			res.State = ChecksTimeout
 		}
 		if res.State != "" {
+			if res.State == ChecksFailure {
+				r.annotateMainFailures(ctx, repo, &res)
+			}
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
 			if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil || !ok {
 				log.Printf("task %s: ci jobs of %s: no project for %s (%v)", t.ID, sha, t.Repository, err)
@@ -1199,6 +1202,55 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 		return res
 	}
 	return ChecksResult{}
+}
+
+// mainFailureSuffix names a head finding whose same check fails on main too:
+// the defect is pre-existing there, not this card's (Stage 19, finding 195).
+const mainFailureSuffix = " (also failing on main)"
+
+// annotateMainFailures reads main's state when a head run failed and marks
+// each finding whose check context also fails on main, so the agent's
+// session and the supervisor's guidance point at the real defect instead of
+// the card. Any error (no main branch, an unreadable status) logs and
+// leaves the findings as they are: a pre-existing red must never sink the
+// gate's verdict.
+func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *ChecksResult) {
+	mainSHA, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		log.Printf("checks gate: main head of %s/%s: %v", repo.Owner, repo.Name, err)
+		return
+	}
+	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.HasSuffix(f, mainFailureSuffix) }) {
+		// the status of sha itself answers when no sha is given; an empty
+		// head would repeat it and mark the head's own failure as main's
+		return
+	}
+	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, mainSHA)
+	if err != nil {
+		log.Printf("checks gate: combined status of %s/%s at %s: %v", repo.Owner, repo.Name, mainSHA, err)
+		return
+	}
+	failing := failingContexts(cs)
+	if len(failing) == 0 {
+		return
+	}
+	for i, finding := range res.Findings {
+		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok && failing[ctxName] {
+			res.Findings[i] += mainFailureSuffix
+		}
+	}
+}
+
+// failingContexts is the set of contexts a combined status reports as
+// failure or error.
+func failingContexts(cs CombinedStatus) map[string]bool {
+	set := map[string]bool{}
+	for _, s := range cs.Statuses {
+		if s.State == "failure" || s.State == "error" {
+			set[s.Context] = true
+		}
+	}
+	return set
 }
 
 // jobLogMaxLines and jobLogMaxBytes bound the log tail a finding carries
