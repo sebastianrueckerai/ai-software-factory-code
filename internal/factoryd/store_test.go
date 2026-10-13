@@ -240,9 +240,9 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 	return Task{}, false, nil
 }
 
-func (s *fakeStore) TaskByPR(ctx context.Context, repository string, number int64) (Task, bool, error) {
+func (s *fakeStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.PRNumber == number && number != 0 {
+		if t.Repository == repository && t.PRNumber == pr && pr != 0 {
 			return t, true, nil
 		}
 	}

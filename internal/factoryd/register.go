@@ -78,6 +78,15 @@ type Registrar struct {
 	// Mirrors are the projects' GitHub mirror rows, whose state each poll
 	// reads from Forgejo; nil reads none.
 	Mirrors MirrorStore
+	// Tasks files a card for a pull request factoryd opened outside any
+	// card's workflow (roadmap 187): a Sync from GitHub gets one through
+	// FileFactoryPRTask; nil files none. Workflows starts its workflow
+	// (nil: Temporal's) and Timeline records its events.
+	Tasks interface {
+		CreateTask(ctx context.Context, t Task) error
+		SetTaskPR(ctx context.Context, id string, number int64) error
+		TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
+	}
 	// Cards is the store's task side, which the template pass files its
 	// cards through (roadmap 187); nil files none.
 	Cards FactoryPRCardStore

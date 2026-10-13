@@ -237,10 +237,10 @@ type Store interface {
 	// webhook redelivery idempotency; false means no task is linked to that
 	// issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-	// TaskByPR looks up the card whose row links pull request number on
-	// repository: the template pass reads it to tell whether a pull request
-	// factoryd opened already has its card (roadmap 187).
-	TaskByPR(ctx context.Context, repository string, number int64) (Task, bool, error)
+	// TaskByPR looks up a task by the pull request factoryd opened outside
+	// any card's workflow (roadmap 187); false means no task is linked to
+	// that pull request yet.
+	TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
@@ -579,8 +579,8 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 // TaskByPR is the card whose row links pull request number on repository:
 // the template pass reads it to tell whether a pull request already has
 // its card (roadmap 187).
-func (s *PGStore) TaskByPR(ctx context.Context, repository string, number int64) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND pr_number = $2`, repository, number)
+func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
+	return s.oneTask(ctx, `repository = $1 AND pr_number = $2`, repository, pr)
 }
 
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {

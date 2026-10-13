@@ -3,7 +3,9 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -517,5 +520,55 @@ func equalStrings(t *testing.T, what string, got, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
 		t.Fatalf("%s:\n%s\nwant\n%s", what, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func syncTaskID(repository string, pr int64) string {
+	sum := sha256.Sum256([]byte("sync " + repository + " " + strconv.FormatInt(pr, 10)))
+	return "t-" + hex.EncodeToString(sum[:6])
+}
+
+// githubSync files a card of SourceGitHubSync with the pull request linked
+// when the sync opens one (roadmap 187).
+func TestGitHubSyncFilesCard(t *testing.T) {
+	ctx := context.Background()
+	f, _ := fileStub(t)
+	store, wf := newFakeStore(), &fakeWorkflows{}
+	p := seedProject("sf/r")
+	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}}}
+	r.fileSyncCard(ctx, p, Repo{Owner: "factory-agent", Name: "r"}, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	wantID := syncTaskID("sf/r", 9)
+	row, ok := store.tasks[wantID]
+	if !ok {
+		t.Fatalf("no task filed for pull request #9; tasks = %+v", store.tasks)
+	}
+	if row.Source != SourceGitHubSync || row.PRNumber != 9 || row.Author != "sebastian" {
+		t.Fatalf("task = %+v, want SourceGitHubSync, PRNumber 9 and author sebastian", row)
+	}
+	if row.IssueNumber == 0 {
+		t.Fatal("the card's issue was never written")
+	}
+	if !slices.Equal(wf.started, []string{wantID}) {
+		t.Fatalf("started %v, want the workflow started once", wf.started)
+	}
+}
+
+// githubSync is idempotent by SHA in the branch name: syncing the same
+// pull request twice files one card only (roadmap 187).
+func TestGitHubSyncIdempotent(t *testing.T) {
+	ctx := context.Background()
+	f, _ := fileStub(t)
+	store, wf := newFakeStore(), &fakeWorkflows{}
+	p := seedProject("sf/r")
+	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}}}
+	fork := Repo{Owner: "factory-agent", Name: "r"}
+	r.fileSyncCard(ctx, p, fork, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	first := len(store.tasks)
+	r.fileSyncCard(ctx, p, fork, 9, "abc1234", "abc1234567890abcdef", "sebastian")
+	if len(store.tasks) != first {
+		t.Fatalf("tasks after second call = %d, want %d: the same SHA must not file another card", len(store.tasks), first)
+	}
+	if len(wf.started) != 1 {
+		t.Fatalf("workflow started %d times, want 1", len(wf.started))
 	}
 }
