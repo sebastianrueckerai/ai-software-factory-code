@@ -78,6 +78,9 @@ type Registrar struct {
 	// Mirrors are the projects' GitHub mirror rows, whose state each poll
 	// reads from Forgejo; nil reads none.
 	Mirrors MirrorStore
+	// Cards is the store's task side, which the template pass files its
+	// cards through (roadmap 187); nil files none.
+	Cards FactoryPRCardStore
 	// Workflows starts the cards the template pass files (roadmap 187);
 	// Timeline records their events. Like the Roller's, they are set once
 	// factoryd's runner exists.

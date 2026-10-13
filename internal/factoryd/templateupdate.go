@@ -96,18 +96,17 @@ func (r *Registrar) templateUpdate(ctx context.Context, p Project) (Change, erro
 	case len(want) == 0:
 		return r.closeTemplateUpdate(ctx, f, repo, pr.Number, "main's files equal the template's")
 	case pr == nil:
-		return r.openTemplateUpdate(ctx, f, p, want, templateUpdateBody(p.Template, why))
+		return r.openTemplateUpdate(ctx, p, want, templateUpdateBody(p.Template, why))
 	}
 	return r.keepTemplateUpdate(ctx, f, p, *pr, want, templateUpdateBody(p.Template, why))
 }
 
-// openTemplateUpdate cuts the branch from main on the fork, made and
-// synced first, with want, opens the pull request and files its card
-// (roadmap 187): FileFactoryPRTask links pull request ref to the row, so
-// the next pass finds the card on the pull request and never refiles. A
-// branch a closed pull request left goes to leftBranch instead.
-func (r *Registrar) openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[string][]byte, body string) (Change, error) {
-	repo := p.Repo()
+// openTemplateUpdate runs the template pass's opening branch of project p:
+// it cuts the branch from main on the fork, made and synced first, with
+// want, opens the pull request and files its card (roadmap 187). A branch
+// a closed pull request left goes to leftBranch instead.
+func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[string][]byte, body string) (Change, error) {
+	f, repo := r.Forgejo.As(r.ProjectsUser, r.Forgejo.ProjectsToken), p.Repo()
 	fork := f.Fork(repo)
 	_, err := f.BranchHeadSHA(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
 	if err == nil {
@@ -142,13 +141,27 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 
 // fileTemplateCard files the card of the template update pull request
 // number on project p (roadmap 187): source template-update, so its run
-// verifies the open pull request instead of opening one.
+// verifies the open pull request instead of opening one. Without a card
+// store it files none.
 func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int64, files string) (Task, IssueRef, error) {
+	if r.Cards == nil {
+		return Task{}, IssueRef{}, nil
+	}
 	title := TemplateUpdateTitle + " for " + p.Template
 	body := "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + p.Template +
 		": it brings the template's later changes to this project. Its files: " + files + ". The card's merge merges the pull request.\n"
-	return FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, []string{"improvement"},
-		Task{ID: NewTaskID(), Source: SourceTemplateUpdate})
+	return FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, p, title, body, []string{"improvement"},
+		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
+}
+
+// cardByPR is the card the template update pull request number on repo
+// has, if any; a Registrar without a card store has none, and the pass
+// behaves as before roadmap 187.
+func (r *Registrar) cardByPR(ctx context.Context, repo Repo, number int64) (Task, bool, error) {
+	if r.Cards == nil {
+		return Task{}, false, nil
+	}
+	return r.Cards.TaskByPR(ctx, repo.String(), number)
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
@@ -220,7 +233,7 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 	}
 	// a pull request that came before roadmap 187 has no card yet: file it
 	// now, so the pass never refiles one it tracks.
-	if _, ok, err := r.Store.TaskByPR(ctx, repo.String(), pr.Number); err != nil {
+	if _, ok, err := r.cardByPR(ctx, repo, pr.Number); err != nil {
 		return "", err
 	} else if !ok {
 		if _, _, err := r.fileTemplateCard(ctx, p, pr.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", ")); err != nil {
@@ -284,7 +297,7 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 // exists (roadmap 187): the close ends the card as an approver's would.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
 	fork := f.Fork(repo)
-	if task, ok, err := r.Store.TaskByPR(ctx, repo.String(), number); err != nil {
+	if task, ok, err := r.cardByPR(ctx, repo, number); err != nil {
 		return "", err
 	} else if ok {
 		if err := r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, task.IssueNumber); err != nil {
