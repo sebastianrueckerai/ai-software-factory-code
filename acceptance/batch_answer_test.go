@@ -926,7 +926,8 @@ func TestOneMessageAnswersAllPlanQuestionsInOneTurn(t *testing.T) {
 		t.Fatalf("%d questions of revision %d stay open, want 0", open, planRev)
 	}
 
-	// 3. all three comments are posted on the plan's issue as the member's.
+	// 3. all three comments are posted on the plan's issue as the member's,
+	// in the production format of factoryd.PlanAnswerComment: "Answer N: <text>".
 	comments := r.fg.postedComments()
 	for idx, want := range planWantAnswers {
 		comment := fmt.Sprintf("Answer %d: %s", idx, want)
@@ -936,10 +937,12 @@ func TestOneMessageAnswersAllPlanQuestionsInOneTurn(t *testing.T) {
 	}
 
 	// 4. the plan's approval resolved as superseded: the planner revises
-	// revision 3 with the answers.
+	// revision 3 with the answers. Production resolves it with status
+	// 'denied' and a decision note starting 'superseded'
+	// (factoryd.AnswerPlanQuestions), so both are asserted.
 	row := r.approvalRow(planApprID)
 	if row.Status != "denied" {
-		t.Fatalf("the plan approval = %q, want denied", row.Status)
+		t.Fatalf("the plan approval = %q, want denied (resolved as superseded)", row.Status)
 	}
 	if !strings.HasPrefix(row.DecisionNote, "superseded") {
 		t.Fatalf("the plan approval's note = %q, want it to start with 'superseded'", row.DecisionNote)
