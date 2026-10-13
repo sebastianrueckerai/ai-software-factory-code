@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -37,16 +38,31 @@ func tellRig(t *testing.T, objective string) (*console.AcceptanceRig, string, *h
 	return r, path, ck, csrf
 }
 
-// postChat runs one POST on path as the member and answers its status
-// and stream body.
+// postChat runs one POST on path as the member through a real test server
+// and answers its status and stream body. The chat's SSE stream uses
+// http.ResponseController.SetWriteDeadline, which httptest.ResponseRecorder
+// does not implement; a direct call drops every write, so we go through
+// httptest.NewServer like internal/console/chat_test.go's chatPost does.
 func postChat(t *testing.T, r *console.AcceptanceRig, path string, ck *http.Cookie, form url.Values) (int, string) {
 	t.Helper()
-	rec := r.Post(path, ck, form)
-	body, err := io.ReadAll(rec.Body)
+	srv := httptest.NewServer(r.Handler())
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return rec.Code, string(body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(ck)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, string(body)
 }
 
 // eventsOf answers the stream's events as "event data" lines, in order.

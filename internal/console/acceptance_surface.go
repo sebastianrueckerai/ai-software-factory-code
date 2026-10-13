@@ -133,6 +133,11 @@ func (a *AcceptanceRig) Login(t *testing.T) (*http.Cookie, string) {
 	return &http.Cookie{Name: sessionCookie, Value: ck}, s.csrf
 }
 
+// Handler is the console's HTTP handler, for tests that need a real server
+// (streaming SSE through httptest.ResponseRecorder drops writes because it
+// does not implement SetWriteDeadline).
+func (a *AcceptanceRig) Handler() http.Handler { return a.c }
+
 // Post runs one POST on path as the member of ck and answers the
 // recorder: the status and the streamed body.
 func (a *AcceptanceRig) Post(path string, ck *http.Cookie, form url.Values) *httptest.ResponseRecorder {
@@ -322,7 +327,8 @@ func (a *AcceptanceRig) serveForgejo(w http.ResponseWriter, r *http.Request) {
 		}
 		if r.PostForm.Get("grant_type") == "authorization_code" {
 			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
-			if base64.RawURLEncoding.EncodeToString(sum[:]) != a.challenge {				http.Error(w, `{"error":"unauthorized_client","error_description":"failed PKCE code challenge"}`, http.StatusBadRequest)
+			if base64.RawURLEncoding.EncodeToString(sum[:]) != a.challenge {
+				http.Error(w, `{"error":"unauthorized_client","error_description":"failed PKCE code challenge"}`, http.StatusBadRequest)
 				return
 			}
 		}
@@ -455,9 +461,13 @@ func (a *AcceptanceRig) PlanQuestions(context.Context, string, int) ([]factoryd.
 
 func (a *AcceptanceRig) PlanCards(context.Context, string) ([]factoryd.Task, error) { return nil, nil }
 
-func (a *AcceptanceRig) Dependencies(context.Context, string) ([]factoryd.Dependency, error) { return nil, nil }
+func (a *AcceptanceRig) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
+	return nil, nil
+}
 
-func (a *AcceptanceRig) Dependents(context.Context, string) ([]factoryd.Dependency, error) { return nil, nil }
+func (a *AcceptanceRig) Dependents(context.Context, string) ([]factoryd.Dependency, error) {
+	return nil, nil
+}
 
 func (a *AcceptanceRig) SetHumanSummary(context.Context, string, string) error { return nil }
 
@@ -594,9 +604,13 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
-func (a *AcceptanceRig) CurrentConversation(context.Context, string, string) (int64, error) { return 1, nil }
+func (a *AcceptanceRig) CurrentConversation(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
 
-func (a *AcceptanceRig) NewConversation(context.Context, string, string) (int64, error) { return 1, nil }
+func (a *AcceptanceRig) NewConversation(context.Context, string, string) (int64, error) {
+	return 1, nil
+}
 
 func (a *AcceptanceRig) Conversations(context.Context, string, string) ([]factoryd.ChatConversation, error) {
 	return nil, nil
@@ -683,15 +697,15 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),
-		Tree: policy.Tree{
-			Document: policy.Document{Version: 1,
-				Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
-				Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
-				Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
-				Approvers:       []string{"sebastian"},
-				EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
-			Projects:  map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}},
-			Processes: processes}},
+			Tree: policy.Tree{
+				Document: policy.Document{Version: 1,
+					Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
+					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
+					Approvers:       []string{"sebastian"},
+					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
+				Projects:  map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}},
+				Processes: processes}},
 		true, nil
 }
 
@@ -699,7 +713,9 @@ func (a *AcceptanceRig) Costs(context.Context, time.Time, time.Time) (policy.Cos
 	return policy.Costs{}, nil
 }
 
-func (a *AcceptanceRig) ModelCalls(context.Context, string) ([]policy.ModelCall, error) { return nil, nil }
+func (a *AcceptanceRig) ModelCalls(context.Context, string) ([]policy.ModelCall, error) {
+	return nil, nil
+}
 
 // Timelines: no timeline, so a card's face reads no checks.
 
