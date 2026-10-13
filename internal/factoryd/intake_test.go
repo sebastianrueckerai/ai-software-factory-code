@@ -1456,7 +1456,6 @@ func TestIntakeRefusesGitWorktreeRepro(t *testing.T) {
 	}
 }
 
-
 // An issue's body asks for its card's budget by a line "Size: <size>" or
 // "Budget: <n> [EUR]" (policy budget 5 by default, 15 at most): a size
 // gives its budget, an asked one wins over it, at most the project's card

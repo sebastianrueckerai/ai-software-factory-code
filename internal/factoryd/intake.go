@@ -412,7 +412,6 @@ func splitReproSegments(cmd string) []string {
 	return segments
 }
 
-
 // line "Size: <size>" naming a card size and its last line "Budget: <n>" or
 // "Budget: <n> EUR" with n above 0, keys in any case; "" and 0 for none.
 // The last wins: the console appends the form's size line to the member's
