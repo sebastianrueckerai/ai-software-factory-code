@@ -401,6 +401,9 @@ func main() {
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
 		},
+		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
+			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)
+		},
 		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
 			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
 		},

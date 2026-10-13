@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -41,17 +42,25 @@ const (
 // chatTTL under a fresh token, which it answers, and forgets the expired
 // ones but a used proposal; "" when the store fails.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
+	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
+		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL)})
+}
+
+// store is keep's row put under a fresh token, which it answers; "" when
+// the store fails.
+func (t *turn) store(p factoryd.ChatProposal) string {
 	ctx, now := context.WithoutCancel(t.r.Context()), time.Now()
 	if _, err := t.c.cfg.Chat.PurgeProposals(ctx, now); err != nil {
 		log.Printf("console: the chat's proposals: %v", err)
 	}
-	token := randomToken()
-	if err := t.c.cfg.Chat.PutProposal(ctx, factoryd.ChatProposal{Token: token, Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
-		Tool: tool, Args: args, Description: description, ExpiresAt: now.Add(chatTTL)}); err != nil {
+	if p.ExpiresAt.IsZero() {
+		p.ExpiresAt = now.Add(chatTTL)
+	}
+	if err := t.c.cfg.Chat.PutProposal(ctx, p); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return ""
 	}
-	return token
+	return p.Token
 }
 
 // take uses the member's token of kind on the project once: 404 for one
@@ -101,11 +110,16 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 }
 
 // open answers the turn as an event stream.
-func (t *turn) open(w http.ResponseWriter) {
-	write := sseWriter(w, chatWindow)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
+func (t *turn) open(w http.ResponseWriter) { t.stream(sseWriter(w, chatWindow), w) }
+
+// stream is open's event writer over write; w, nil in a test that reads
+// the events without an HTTP response, carries the headers and status.
+func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
+	if w != nil {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+	}
 	var failed error
 	t.send = func(event string, data any) {
 		b, err := json.Marshal(data)
@@ -333,7 +347,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 			break
 		}
 		raw := json.RawMessage(cmp.Or(args, "{}"))
-		if in != asked {
+		if !reflect.DeepEqual(in, asked) {
 			raw, _ = json.Marshal(in)
 		}
 		id := t.keep("proposal", tool.name, raw, desc)
@@ -440,8 +454,14 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.open(w)
+	t.apply(p)
+}
+
+// apply is the member's Do it on proposal p: the tool runs with its
+// stored arguments, streamed, and the result lands in the conversation.
+func (t *turn) apply(p factoryd.ChatProposal) {
 	var in toolInput
-	tool, ok := c.chatTool(p.Tool)
+	tool, ok := t.c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
 	if ok && json.Unmarshal(p.Args, &in) == nil {
 		result = t.runTool(tool, string(p.Args), in)
