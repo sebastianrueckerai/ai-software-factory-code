@@ -43,6 +43,7 @@ func TestChatPanel(t *testing.T) {
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 <p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 </div>
+<p class="meta chat-own">This is your own conversation with the project agent; other members have theirs.</p>
 <form id="chat-form" class="chat-form" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
 <label for="chat-input" class="visually-hidden">Your message to the project agent</label>

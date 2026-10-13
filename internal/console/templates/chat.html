@@ -10,7 +10,8 @@
 {{if .Writes}}<p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 {{else}}<p class="meta chat-start">You read this project: its writers chat with its agent.</p>
 {{end}}</div>
-{{if .Writes}}<form id="chat-form" class="chat-form" method="post" action="/projects/{{.Project}}/chat">
+{{if .Writes}}<p class="meta chat-own">This is your own conversation with the project agent; other members have theirs.</p>
+<form id="chat-form" class="chat-form" method="post" action="/projects/{{.Project}}/chat">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
