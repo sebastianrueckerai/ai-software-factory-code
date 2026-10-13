@@ -914,21 +914,24 @@ func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision i
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
-	var asked, answered bool
+	var missing, answered, open int
 	if err := tx.QueryRowContext(ctx, `WITH want (idx) AS (SELECT DISTINCT (e->>'idx')::int FROM jsonb_array_elements($3::jsonb) AS a(e)),
  		have AS (SELECT w.idx, q.answer IS NOT NULL AS done FROM want w
  			JOIN plan_questions q ON q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx),
  		miss AS (SELECT count(*) AS n FROM want w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.idx = w.idx)),
- 		got AS (SELECT count(*) AS n FROM have h WHERE h.done)
- 		SELECT (SELECT n FROM miss) > 0, (SELECT n FROM got) > 0`,
-		id, revision, string(b)).Scan(&asked, &answered); err != nil {
+ 		got AS (SELECT count(*) AS n FROM have h WHERE h.done),
+ 		opn AS (SELECT count(*) AS n FROM have h WHERE NOT h.done)
+ 		SELECT (SELECT n FROM miss), (SELECT n FROM got), (SELECT n FROM opn)`,
+		id, revision, string(b)).Scan(&missing, &answered, &open); err != nil {
 		return err
 	}
 	switch {
-	case asked && !answered:
+	case missing > 0 && open == 0:
 		return ErrNotFound
-	case answered:
+	case answered > 0:
 		return ErrAnswered
+	case missing > 0:
+		return ErrNotFound
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = w.text, answered_by = $3, answered_at = now()
  		FROM (SELECT (e->>'idx')::int AS idx, e->>'text' AS text FROM jsonb_array_elements($4::jsonb) AS a(e)) AS w
