@@ -335,10 +335,15 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	}
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
+		// the card's pre-check finds its alert by fingerprint before its
+		// first model call (roadmap 181, Stage 18 item 3.12)
+		AlertFingerprint: a.Fingerprint,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser}
 	var ref IssueRef
-	if p.Agents == policy.AgentsNone {
+	// A capacity alert goes to a human card even on a project with agents:
+	// a coding agent can only raise a limit, the decision needs evidence.
+	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
 		t.Kind = "human"
 		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, repo, title, body, []string{"bug", "human"}, t)
 	} else {

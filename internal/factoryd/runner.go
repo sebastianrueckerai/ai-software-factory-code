@@ -76,6 +76,9 @@ type RunnerConfig struct {
 	// Workflows starts the workflows of the report tasks the screening
 	// stage opens.
 	Workflows Workflows
+	// Alerts reads SigNoz's firing alerts for an alert card's pre-check
+	// (AlertPreCheck, roadmap 181 item 3.12); nil = the check passes.
+	Alerts AlertPreCheckSource
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the
@@ -109,6 +112,8 @@ type Runner struct {
 	// here, and when AwaitRollHold let its next session start
 	running  map[string]int
 	admitted map[string]time.Time
+	// alerts reads SigNoz's firing alerts (cfg.Alerts); nil = none wired
+	alerts AlertPreCheckSource
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
@@ -280,6 +285,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.ChecksPoll = HeartbeatEvery
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
+		alerts:  cfg.Alerts,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
 			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, booted: time.Now()}, nil
 }
@@ -1326,12 +1332,18 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read leases: %w", err)
 	}
-	names, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
+	infos, err := r.kube.ListNamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
 		return fmt.Errorf("list agent namespaces: %w", err)
 	}
 	var errs []error
-	for _, ns := range names {
+	for _, info := range infos {
+		if info.Terminating {
+			// its contents are being garbage-collected away: a policy
+			// write there fails and the namespace needs none any more
+			continue
+		}
+		ns := info.Name
 		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 		if id == ns || strings.HasPrefix(id, "ci-") {
 			continue

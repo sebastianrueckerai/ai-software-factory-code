@@ -35,6 +35,9 @@ type FiringAlert struct {
 	Labels      map[string]string `json:"labels"`
 	Annotations map[string]string `json:"annotations"`
 	StartsAt    time.Time         `json:"startsAt"`
+	// Fingerprint is Alertmanager's label-set hash, top level of its
+	// message; empty when the answer carries none.
+	Fingerprint string `json:"fingerprint"`
 	Status      struct {
 		State string `json:"state"`
 	} `json:"status"`
