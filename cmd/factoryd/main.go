@@ -139,6 +139,13 @@ func main() {
 	// its signal and the runner its failure reader once it is
 	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(policyLoader.Current, store.PolicyVersion)}
 	var workflows factoryd.TemporalWorkflows
+	// SigNoz's firing alerts: the project endpoint and the alert card's
+	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
+	// read here so the boot's secret scrubber knows it.
+	signozPassword := mustSecret("SIGNOZ_PASSWORD")
+	signoz := &factoryd.SigNoz{
+		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
+		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
@@ -171,6 +178,7 @@ func main() {
 			return workflows.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
+		Alerts:    signoz,
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL,
 		Token:      gatewayToken,
@@ -238,7 +246,6 @@ func main() {
 	intakeToken := mustSecret("INTAKE_TOKEN")
 	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
 	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
-	signozPassword := mustSecret("SIGNOZ_PASSWORD")
 	consoleClientSecret := mustSecret("CONSOLE_CLIENT_SECRET")
 	consoleSessionKey := mustSecret("CONSOLE_SESSION_KEY")
 	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
@@ -353,9 +360,7 @@ func main() {
 	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, recordHandler(store, objects)))
 	// a project's own workflow asks whether anything fires in a namespace
 	// of its, with its FACTORY_READ_TOKEN
-	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, &factoryd.SigNoz{
-		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
-		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}, kube))
+	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, signoz, kube))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{
