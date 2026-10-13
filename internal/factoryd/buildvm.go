@@ -480,6 +480,43 @@ func (b *BuildVMs) Release(ctx context.Context, jobID int64) error {
 	return b.collector.Release(ctx, rows)
 }
 
+// CISweepLabelSelector selects every CI build machine in the Hetzner CI
+// project: the registry's provider labels carry factory=ci on each one
+// (cloudres.providerLabels).
+const CISweepLabelSelector = "factory=ci"
+
+// CISweepProvider is the narrower Hetzner API slice the CI sweep needs;
+// both hcloud.Client and BuildVMProvider satisfy it.
+type CISweepProvider interface {
+	Servers(ctx context.Context, labelSelector string) ([]hcloud.Server, error)
+	DeleteServer(ctx context.Context, id int64) error
+}
+
+// SweepCIMachines deletes every server labelled factory=ci in the CI
+// project behind provider (the token decides the project): the shutdown's
+// last word on CI build machines. It is called during shutdown after the
+// CI spawner stops, so nothing it deletes belongs to a live job, and
+// before the backups and the zero check, so no machine created late for
+// the last infra push's CI survives the cluster (roadmap 189, Stage 18
+// item 3.15). A failed list ends the sweep at once; a failed delete does
+// not stop the rest, and the failures come back joined (errors.Join).
+// It returns nil when every listed server is gone. The sweep only touches
+// servers: firewalls and primary IPs of a deleted server go with it or
+// fall to the next round's collector.
+func SweepCIMachines(ctx context.Context, provider CISweepProvider) error {
+	servers, err := provider.Servers(ctx, CISweepLabelSelector)
+	if err != nil {
+		return fmt.Errorf("sweep ci machines: list servers: %w", err)
+	}
+	var errs []error
+	for _, s := range servers {
+		if err := provider.DeleteServer(ctx, s.ID); err != nil {
+			errs = append(errs, fmt.Errorf("sweep ci machines: delete server %d: %w", s.ID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // CIOwnerDone is the CI collector's owner check: a build VM's job is
 // finished once its CI namespace is gone (the spawner releases the VM
 // before it deletes the namespace; this catches a factoryd that died
