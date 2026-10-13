@@ -178,6 +178,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
 	}
+	if tool.name == "tell_card" {
+		branch, k, _, err := t.tellRoute(*in)
+		if err != nil {
+			return "", err
+		}
+		return sanitize.Inbound(toldLine(strings.Join(parts, ", "), branch, k)), nil
+	}
 	if in.Revision > 0 {
 		rev := fmt.Sprintf("revision %d", in.Revision)
 		if in.SHA256 != "" {
@@ -685,6 +692,14 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
+		}},
+	{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+		required: []string{"task_id", "text"},
+		about:    "Tell a card one text, and the server routes it by the card's state: to its running session as a message (steer), as changes requested at its approval gate (deny_merge with request_changes), or as the answer to the question it waits on (answer). Prefer this over choosing steer, deny_merge or answer yourself.",
+		fits:     tellFits,
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.runTellCard(in)
+			return note, nil, err
 		}},
 	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
