@@ -551,7 +551,7 @@ func agedResult(call factoryd.ChatToolCall, now time.Time) string {
 		return call.Result
 	}
 	age := int(now.Sub(call.ReadAt).Round(time.Minute) / time.Minute)
-	return fmt.Sprintf("[read at %s, %d min ago] %s", call.ReadAt.UTC().Format("2006-10-02 15:04 UTC"), age, call.Result)
+	return fmt.Sprintf("[read at %s, %d min ago] %s", call.ReadAt.UTC().Format("2006-01-02 15:04 UTC"), age, call.Result)
 }
 
 // freshCards reads every open card of the chat's project through the

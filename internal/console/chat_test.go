@@ -1643,8 +1643,10 @@ func TestChatTurnContextHasFreshCards(t *testing.T) {
 		t.Errorf("the second turn's system message lacks 'Cards now:':\n%s", secondSystem)
 	}
 	var agedFound bool
-	for _, m := range messages(t, calls[1]) {
-		if content, ok := m["content"].(string); ok && strings.HasPrefix(content, "[read at ") {
+	for i, m := range messages(t, calls[1]) {
+		content, _ := m["content"].(string)
+		t.Logf("Message %d role=%v content=%.200s", i, m["role"], content)
+		if strings.HasPrefix(content, "[read at ") {
 			agedFound = true
 			if !strings.Contains(content, "min ago]") {
 				t.Errorf("the aged result lacks 'min ago]': %s", content)
