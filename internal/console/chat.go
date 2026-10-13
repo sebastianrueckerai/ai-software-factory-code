@@ -586,7 +586,11 @@ func (t *turn) freshCards() (string, error) {
 		if bt.Repository != t.p.Repository || factoryd.Final(bt.Status) {
 			continue
 		}
-		lines = append(lines, cardLine(bt.Task))
+		line := cardLine(bt.Task)
+		if bt.Task.Lane != "" && bt.Task.Lane != bt.Task.Status {
+			line += ", lane " + bt.Task.Lane
+		}
+		lines = append(lines, line)
 	}
 	return "Cards now:\n" + strings.Join(lines, "\n"), nil
 }
