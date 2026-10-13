@@ -229,18 +229,51 @@ func costsWindow(now time.Time) (from, to time.Time) {
 	return time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC), to
 }
 
+// parseCostsDay is one costs date param, YYYY-MM-DD, in UTC; empty answers
+// ok false, which means the window's default.
+func parseCostsDay(v string) (time.Time, bool, bool) {
+	if v == "" {
+		return time.Time{}, false, true
+	}
+	d, err := time.Parse(policy.DateLayout, v)
+	if err != nil {
+		return time.Time{}, false, false
+	}
+	return d.UTC(), true, true
+}
+
+// costsDaysRefuse is a malformed or reversed costs date window's refusal.
+func costsDaysRefuse() (string, error) {
+	return "", refuse(http.StatusBadRequest, "from and to must be dates YYYY-MM-DD, from not after to")
+}
+
 // costsByText breaks the ledger down by day, card (task) or tier over
 // that window, in EUR, with the totals line. A tier is a model alias, the
 // ref of a model row after its purpose/ prefix; the other kinds stand as
-// their kind.
-func (c *Console) costsByText(ctx context.Context, a actor, by string) (string, error) {
+// their kind. from and to are YYYY-MM-DD dates, both included; when either
+// is empty the window is costsWindow's current month.
+func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string) (string, error) {
 	switch by {
 	case "day", "card", "tier":
 	default:
 		return "", refuse(http.StatusBadRequest, "by must be day, card or tier")
 	}
-	from, to := costsWindow(time.Now())
-	ledger, err := c.cfg.Costs.Costs(ctx, from, to)
+	f, fok, ok := parseCostsDay(from)
+	t, tok, ok2 := parseCostsDay(to)
+	if !ok || !ok2 {
+		return costsDaysRefuse()
+	}
+	if fok && tok && f.After(t) {
+		return costsDaysRefuse()
+	}
+	winFrom, winTo := costsWindow(time.Now())
+	if fok {
+		winFrom = f
+	}
+	if tok {
+		winTo = t
+	}
+	ledger, err := c.cfg.Costs.Costs(ctx, winFrom, winTo)
 	if err != nil {
 		log.Printf("console: costs: %v", err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the ledger")
