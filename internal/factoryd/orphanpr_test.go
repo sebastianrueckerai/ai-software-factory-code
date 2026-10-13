@@ -176,7 +176,7 @@ func reconcileInto(t *testing.T, r *Runner) RunState {
 func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	fj := newOrphanForgejo()
 	card := Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "Copy the schemas of abc123", Repository: "demo-app/demo-app",
-		SHA: "base", IssueNumber: 4, Source: SourceSchemaCopy, PRNumber: 9}
+		SHA: "base", IssueNumber: 4, Source: SourceSchemaCopy, PRNumber: 9, RequiredCapabilities: []string{policy.ClassCoder}}
 	r, store, _ := newActivityRunner(t, card, &fj.prForgejo)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"the copy matches upstream","findings":[]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
