@@ -167,7 +167,7 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 	rig.projects.m["demo-app"] = demoProjectWithAgents()
 	rig.in.Projects = rig.projects
 	sessions := 0
-	rig.flows.onStart = func(taskID string) { sessions += runCardWorkflow(t, rig, taskID, signoz.URL) }
+	rig.flows.onStart = func(taskID string) { sessions++; runCardWorkflow(t, rig, taskID, signoz.URL) }
 
 	rig.post(t, map[string]string{"alertname": "CI queue p95 above 5 minutes", "namespace": "demo-staging",
 		"severity": "warning", "service": "factoryd"}, "fp-burst")

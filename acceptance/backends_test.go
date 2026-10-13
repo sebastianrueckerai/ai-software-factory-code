@@ -677,8 +677,9 @@ func (s *acceptanceStore) taskByID(id string) (factoryd.Task, bool) {
 }
 
 func (s *acceptanceStore) statusOf(id string) string {
-	t, _ := s.taskByID(id)
-	return t.Status
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tasks[id].Status
 }
 
 func (s *acceptanceStore) alertRowByFingerprint(fp string) factoryd.Alert {
