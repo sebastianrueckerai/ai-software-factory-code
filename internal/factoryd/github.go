@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,25 +445,20 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 // whose merge merges that pull request, so the chat, the board and the
 // merge rule cover it as they cover every card. A failure is logged, not
 // returned: the pull request stands open either way, and the next sync of
-// a newer SHA opens another card. Idempotent by SHA in the branch name: a
-// sync whose pull request #pr already has a card files none, and one whose
-// card lost its issue reuses it.
+// a newer SHA opens another card. Idempotent by repository and pull request,
+// so a sync whose pull request already has a card files none.
 func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, short, sha, by string) {
 	if r.Tasks == nil || pr == 0 {
 		return
 	}
-	have, ok, err := r.Tasks.TaskByIssue(ctx, fork.String(), pr)
-	switch {
-	case err != nil:
+	if _, ok, err := r.Tasks.TaskByPR(ctx, p.Repo().String(), pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 		return
-	case ok && have.IssueNumber != 0:
-		return // this SHA's card exists: nothing to file
+	} else if ok {
+		return // this pull request's card exists: nothing to file
 	}
-	id := fmt.Sprintf("%d", pr)
-	if ok {
-		id = have.ID // the earlier row, whose issue was never written
-	}
+	sum := sha256.Sum256([]byte("sync " + p.Repository + " " + strconv.FormatInt(pr, 10)))
+	id := "t-" + hex.EncodeToString(sum[:6])
 	if r.Workflows == nil {
 		return
 	}

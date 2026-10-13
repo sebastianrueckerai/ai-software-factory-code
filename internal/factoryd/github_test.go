@@ -3,7 +3,9 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -520,6 +523,11 @@ func equalStrings(t *testing.T, what string, got, want []string) {
 	}
 }
 
+func syncTaskID(repository string, pr int64) string {
+	sum := sha256.Sum256([]byte("sync " + repository + " " + strconv.FormatInt(pr, 10)))
+	return "t-" + hex.EncodeToString(sum[:6])
+}
+
 // githubSync files a card of SourceGitHubSync with the pull request linked
 // when the sync opens one (roadmap 187).
 func TestGitHubSyncFilesCard(t *testing.T) {
@@ -529,7 +537,8 @@ func TestGitHubSyncFilesCard(t *testing.T) {
 	p := seedProject("sf/r")
 	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}}}
 	r.fileSyncCard(ctx, p, Repo{Owner: "factory-agent", Name: "r"}, 9, "abc1234", "abc1234567890abcdef", "sebastian")
-	row, ok := store.tasks["9"]
+	wantID := syncTaskID("sf/r", 9)
+	row, ok := store.tasks[wantID]
 	if !ok {
 		t.Fatalf("no task filed for pull request #9; tasks = %+v", store.tasks)
 	}
@@ -539,7 +548,7 @@ func TestGitHubSyncFilesCard(t *testing.T) {
 	if row.IssueNumber == 0 {
 		t.Fatal("the card's issue was never written")
 	}
-	if !slices.Equal(wf.started, []string{"9"}) {
+	if !slices.Equal(wf.started, []string{wantID}) {
 		t.Fatalf("started %v, want the workflow started once", wf.started)
 	}
 }
