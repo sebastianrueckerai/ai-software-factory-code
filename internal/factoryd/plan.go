@@ -713,6 +713,39 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
 }
 
+// AnswerPlanQuestions is the console's batch answer by a member to every
+// question of plan revision revision it names at once, which must be the
+// newest (ErrStalePlan): all answers are stored in one statement (any bad
+// entry — ErrAnswered for an answered question, ErrNotFound for an unknown
+// one — stores none), then the plan task's workflow signalled once per
+// answer, which sends the planner back once none is open. When no question
+// of the revision stays open the plan's approval resolves as superseded:
+// Accept cannot file the revision the planner revises with the answers.
+func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID string, revision int, answers []PlanAnswer, by string) error {
+	if _, err := pendingPlan(ctx, store, taskID); err != nil {
+		return err
+	}
+	newest, ok, err := store.PlanRevision(ctx, taskID, 0)
+	if err != nil {
+		return err
+	}
+	if !ok || newest.Revision != revision {
+		return ErrStalePlan{Newest: newest.Revision}
+	}
+	if err := store.AnswerPlanQuestions(ctx, taskID, revision, answers, by); err != nil {
+		return err
+	}
+	for _, a := range answers {
+		if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: a.Idx}); err != nil {
+			return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
+		}
+	}
+	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
+		return err
+	}
+	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+}
+
 // AcceptPlan is the console's Accept plan, by an approver: it signals the
 // plan task's workflow when revision (at sha) is the newest and awaits
 // acceptance; a newer revision refuses it with ErrStalePlan, an open
@@ -800,6 +833,14 @@ func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevis
 	return p, err == nil, err
 }
 
+// PlanAnswer is one member's answer to question Idx (from 1) of a plan
+// revision, as the batch store method and AnswerPlanQuestions take them.
+// The tags name the keys the store's one statement reads back.
+type PlanAnswer struct {
+	Idx  int    `json:"idx"`
+	Text string `json:"text"`
+}
+
 // ErrAnswered refuses a second answer to a plan's question.
 var ErrAnswered = errors.New("the question is answered already")
 
@@ -854,6 +895,50 @@ func (s *PGStore) AnswerPlanQuestion(ctx context.Context, id string, revision, i
 		return ErrAnswered
 	}
 	return ErrNotFound
+}
+
+// AnswerPlanQuestions stores every answer in one statement: any bad entry
+// — an idx with an answer (ErrAnswered) or without a question
+// (ErrNotFound) — refuses the whole batch, so none is stored. Duplicate
+// entries count once.
+func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error {
+	if len(answers) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(answers)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
+	var missing, answered, open int
+	if err := tx.QueryRowContext(ctx, `WITH want (idx) AS (SELECT DISTINCT (e->>'idx')::int FROM jsonb_array_elements($3::jsonb) AS a(e)),
+ 		have AS (SELECT w.idx, q.answer IS NOT NULL AS done FROM want w
+ 			JOIN plan_questions q ON q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx),
+ 		miss AS (SELECT count(*) AS n FROM want w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.idx = w.idx)),
+ 		got AS (SELECT count(*) AS n FROM have h WHERE h.done),
+ 		opn AS (SELECT count(*) AS n FROM have h WHERE NOT h.done)
+ 		SELECT (SELECT n FROM miss), (SELECT n FROM got), (SELECT n FROM opn)`,
+		id, revision, string(b)).Scan(&missing, &answered, &open); err != nil {
+		return err
+	}
+	switch {
+	case missing > 0 && open == 0:
+		return ErrNotFound
+	case answered > 0:
+		return ErrAnswered
+	case missing > 0:
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = w.text, answered_by = $3, answered_at = now()
+ 		FROM (SELECT (e->>'idx')::int AS idx, e->>'text' AS text FROM jsonb_array_elements($4::jsonb) AS a(e)) AS w
+ 		WHERE q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx`, id, revision, by, string(b)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
