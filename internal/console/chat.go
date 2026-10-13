@@ -386,21 +386,20 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 }
 
 // block sends a tool block: the call, its arguments (as a string when
-// they are no JSON), how long it took, the first line of its result.
+// they are no JSON), how long it took, the result truncated to fit.
 func (t *turn) block(name, args string, took time.Duration, result string) {
 	arguments := json.RawMessage(cmp.Or(args, "{}"))
 	if !json.Valid(arguments) {
 		arguments, _ = json.Marshal(args)
 	}
-	first, _, _ := strings.Cut(result, "\n")
 	// a refusal is read whole, within reason: a Forgejo message is not bounded
 	limit := 300
-	if strings.HasPrefix(first, "Refused: ") {
+	if strings.HasPrefix(result, "Refused: ") {
 		limit = 2000
 	}
-	first = textutil.Truncate(first, limit)
+	result = textutil.Truncate(result, limit)
 	t.send("tool", map[string]any{"name": name, "arguments": arguments,
-		"duration_ms": took.Milliseconds(), "result": first})
+		"duration_ms": took.Milliseconds(), "result": result})
 }
 
 // sentence is err as the member and the agent read it.

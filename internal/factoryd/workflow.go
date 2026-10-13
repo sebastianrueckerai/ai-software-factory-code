@@ -99,6 +99,7 @@ const (
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
 	ActivityProviderWait                = "ProviderWait"
+	ActivityAlertPreCheck               = "AlertPreCheck"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -315,6 +316,10 @@ type RunState struct {
 	// DepStarted: a human started the card despite a dependency that ended
 	// failed or closed (stepDepsStarted), with the reason (versionDepWait).
 	DepStarted string
+	// Source is the task row's arrival (alert-precheck, roadmap 181 item
+	// 3.12): an alert card checks its alert still fires before its first
+	// model call.
+	Source string
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -388,6 +393,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sessionRefusals = workflow.GetVersion(ctx, "provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals)
 	run.closedByHuman = workflow.GetVersion(ctx, "closed-by-human", workflow.DefaultVersion, versionClosedByHuman)
 	run.factoryPRCard = workflow.GetVersion(ctx, "factory-pr-card", workflow.DefaultVersion, versionFactoryPRCard)
+	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -664,6 +670,11 @@ const (
 	// verifies that pull request: verify takes the head it reconciled
 	// straight to the checks and opens no new one.
 	versionFactoryPRCard workflow.Version = 1
+	// versionAlertPreCheck (change id "alert-precheck", roadmap 181, Stage
+	// 18 item 3.12): an alert card checks before its first model call that
+	// its alert still fires; one that stopped firing was a transient burst
+	// and the card closes itself as failed with no session.
+	versionAlertPreCheck workflow.Version = 1
 )
 
 // providerRefusals is how many sessions in a row the provider may refuse
@@ -718,6 +729,7 @@ type taskRun struct {
 	sessionRefusals   workflow.Version
 	closedByHuman     workflow.Version
 	factoryPRCard     workflow.Version
+	alertPreCheck     workflow.Version
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -851,6 +863,21 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			// the card starts: the first session's path below
 			findings, st.Status = answer, "queued"
+		}
+		// alert-precheck (roadmap 181, Stage 18 item 3.12): an alert card
+		// whose alert no longer fires closes itself before its first model
+		// call; a transient burst files no work. A dependency wait that ran
+		// here is over: only a card that would start or resume work checks.
+		if t.alertPreCheck >= versionAlertPreCheck && st.Source == SourceAlert && !st.Skip && !st.Merged &&
+			!st.IssueClosed && !st.PRClosed && !st.Roll && st.Status != "closing" &&
+			st.Status != "waiting-human" && st.Status != "waiting-poster" && st.PR.Number == 0 {
+			var firing bool
+			if err := workflow.ExecuteActivity(t.short, ActivityAlertPreCheck, t.taskID).Get(t.ctx, &firing); err != nil {
+				return t.finish("failed", "alert pre-check: "+errMessage(err))
+			}
+			if !firing {
+				return t.finish("failed", "alert no longer fires")
+			}
 		}
 		if t.v18 >= versionSessionCap && t.climbed(st.Climbed) {
 			model = t.cfg.Models.Stronger

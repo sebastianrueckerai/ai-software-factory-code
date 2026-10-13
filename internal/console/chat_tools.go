@@ -45,6 +45,8 @@ type toolInput struct {
 	Query     string `json:"query,omitempty"`
 	Size      string `json:"size,omitempty"`
 	By        string `json:"by,omitempty"`
+	FromDate  string `json:"from_date,omitempty"`
+	ToDate    string `json:"to_date,omitempty"`
 	State     string `json:"state,omitempty"`
 	ID        int64  `json:"id,omitempty"`
 	Verdict   string `json:"verdict,omitempty"`
@@ -175,6 +177,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if tool.name == "tell_card" {
+		branch, k, _, err := t.tellRoute(*in)
+		if err != nil {
+			return "", err
+		}
+		return sanitize.Inbound(toldLine(strings.Join(parts, ", "), branch, k)), nil
 	}
 	if in.Revision > 0 {
 		rev := fmt.Sprintf("revision %d", in.Revision)
@@ -529,12 +538,14 @@ var tools = []chatTool{
 			return eventLines(events), nil, err
 		}},
 	{name: "costs", title: "Read the costs",
-		params: map[string]any{"by": enum("the whole ledger this UTC month by day, by card (task) or by tier (model alias), for the factory's writers; none: the project's spend line", "day", "card", "tier")},
-		about:  "The project's spend this UTC month against its month cap, the cards' and the chat's apart; with by day, card or tier the whole ledger that way over the current month, in EUR, with the totals line.",
-		fits:   "any card",
+		params: map[string]any{"by": enum("the whole ledger by day, by card (task) or by tier (model alias), for the factory's writers; none: the project's spend line", "day", "card", "tier"),
+			"from_date": str("the window's first UTC day, YYYY-MM-DD (default the current month's first day)"),
+			"to_date":   str("the window's last UTC day, YYYY-MM-DD (default today)")},
+		about: "The project's spend this UTC month against its month cap, the cards' and the chat's apart; with by day, card or tier the whole ledger that way over the window from_date to to_date (both included, YYYY-MM-DD; the current month when unset), in EUR, with the totals line.",
+		fits:  "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if in.By != "" {
-				s, err := t.c.costsByText(t.r.Context(), t.a, in.By)
+				s, err := t.c.costsByText(t.r.Context(), t.a, in.By, in.FromDate, in.ToDate)
 				return s, nil, err
 			}
 			s, err := t.c.spendLine(t.r.Context(), t.p)
@@ -681,6 +692,14 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
+		}},
+	{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+		required: []string{"task_id", "text"},
+		about:    "Tell a card one text, and the server routes it by the card's state: to its running session as a message (steer), as changes requested at its approval gate (deny_merge with request_changes), or as the answer to the question it waits on (answer). Prefer this over choosing steer, deny_merge or answer yourself.",
+		fits:     tellFits,
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.runTellCard(in)
+			return note, nil, err
 		}},
 	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},

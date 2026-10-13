@@ -340,7 +340,33 @@ func ReproCommand(body string) string {
 	return ""
 }
 
-// askedBudget is what the issue body asks for its card's budget: its last
+// ValidateReproCommand is the static check on a reproduction command at
+// filing: it returns the refusal reason, or "" when the command may run.
+// A reproduction runs in place in the checked-out worktree: a command
+// that chains cd across a mount point, or creates a git worktree under
+// /tmp, exits 128 ("not a git repository") in the agent sandbox, so a
+// session would only discover what this check names here.
+func ValidateReproCommand(cmd string) string {
+	if cmd == "" {
+		return ""
+	}
+	for _, seg := range strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' || r == '\n' || r == '&' || r == '|' }) {
+		fields := strings.Fields(seg)
+		if len(fields) == 0 {
+			continue
+		}
+		switch fields[0] {
+		case "cd":
+			return "the reproduction runs in place in the checked-out worktree: a command that chains cd has no repository where it lands (the sandbox rule); drop the cd"
+		case "git":
+			if slices.Contains(fields, "worktree") {
+				return "the reproduction runs in place in the checked-out worktree: a git worktree command has no repository to link under the sandbox; drop the worktree"
+			}
+		}
+	}
+	return ""
+}
+
 // line "Size: <size>" naming a card size and its last line "Budget: <n>" or
 // "Budget: <n> EUR" with n above 0, keys in any case; "" and 0 for none.
 // The last wins: the console appends the form's size line to the member's
