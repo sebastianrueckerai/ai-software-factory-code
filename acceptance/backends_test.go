@@ -256,6 +256,17 @@ func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issu
 	return factoryd.Task{}, false, nil
 }
 
+func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.PRNumber == pr && pr != 0 {
+			return t, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
