@@ -6,7 +6,7 @@
   "schemaVersion": "v2alpha1",
   "version": "v5",
   "disabled": false,
-  "labels": {"severity": "warning", "service": "factoryd"},
+  "labels": {"severity": "warning", "service": "factoryd", "capacity": "true"},
   "annotations": {"summary": "p95 of the CI jobs' queue time, in seconds"},
   "condition": {
     "compositeQuery": {
@@ -19,8 +19,10 @@
       ]
     },
     "selectedQueryName": "A",
+    "requireMinPoints": true,
+    "requiredNumPoints": 15,
     "thresholds": {"kind": "basic", "spec": [
-      {"name": "warning", "target": 300, "targetUnit": "", "recoveryTarget": null, "matchType": "1", "op": "1", "channels": []}
+      {"name": "warning", "target": 300, "targetUnit": "", "recoveryTarget": null, "matchType": "2", "op": "1", "channels": []}
     ]}
   },
   "evaluation": {"kind": "rolling", "spec": {"evalWindow": "15m", "frequency": "1m"}},
