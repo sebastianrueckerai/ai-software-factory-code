@@ -53,9 +53,19 @@ type toolInput struct {
 	DependsOn string `json:"depends_on,omitempty"`
 	Remove    bool   `json:"remove,omitempty"`
 	Mode      string `json:"mode,omitempty"`
+	// Answers are every open question of a plan revision, answered at
+	// once by the answer tool.
+	Answers []PlanAnswerInput `json:"answers,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
+}
+
+// PlanAnswerInput is one answer of the answer tool's answers list: the
+// question's number on the plan card and its text.
+type PlanAnswerInput struct {
+	Question int    `json:"question"`
+	Text     string `json:"text"`
 }
 
 // setNote is a set tool's result on issue: field is set, or on an undo
@@ -209,6 +219,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 				parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
 			}
 		}
+		if len(in.Answers) > 0 {
+			lines := make([]string, 0, len(in.Answers))
+			for _, ans := range in.Answers {
+				lines = append(lines, fmt.Sprintf("question %d: %s", ans.Question, textutil.Truncate(strings.Join(strings.Fields(ans.Text), " "), 120)))
+			}
+			parts = append(parts, strings.Join(lines, ", "))
+		}
 	}
 	desc := strings.Join(parts, ", ")
 	if tool.name == "approve_merge" {
@@ -355,9 +372,10 @@ func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factory
 	return c.cfg.Tasks.PlanQuestions(ctx, t.ID, rev.Revision)
 }
 
-// answer answers the question card in waits on: a plan's open question by
-// its revision and number, which a newer revision refuses, any other
-// question with in's text.
+// answer answers the question card in waits on: a plan's open questions by
+// their revision and numbers, all of them in one call when in names a list
+// of answers, which a newer revision refuses; any other question with in's
+// text.
 func (t *turn) answer(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
@@ -368,10 +386,17 @@ func (t *turn) answer(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" }); {
-	case open && in.Revision == 0:
-		return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
-	case open:
+	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" })
+	switch {
+	case len(in.Answers) > 0 && !open:
+		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
+	case len(in.Answers) > 0 || open:
+		if in.Revision == 0 {
+			return "", refuse(http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool.")
+		}
+		if len(in.Answers) > 0 {
+			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
+		}
 		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Text)
 	case in.Question > 0:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
@@ -676,10 +701,15 @@ var tools = []chatTool{
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
 		"question": map[string]any{"type": "integer", "description": "a plan's open question by its number on the card", "minimum": 1},
-		"revision": map[string]any{"type": "integer", "description": "that plan's revision, from the plan tool", "minimum": 1}},
-		required: []string{"task_id", "text"},
-		about: "Answer the question a card waits on (it needs you), with one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it. " +
-			"A plan's open question is answered by its revision and number (revision, question).",
+		"revision": map[string]any{"type": "integer", "description": "that plan's revision, from the plan tool", "minimum": 1},
+		"answers": map[string]any{"type": "array", "description": "every open question of a plan revision, answered at once",
+			"items": map[string]any{"type": "object", "properties": map[string]any{
+				"question": map[string]any{"type": "integer", "description": "the question's number on the plan card", "minimum": 1},
+				"text":     map[string]any{"type": "string", "description": "its answer, one line"}},
+				"required": []string{"question", "text"}}}},
+		required: []string{"task_id", "revision"},
+		about: "Answer all open questions of a plan in one call: pass answers as a list of {question, text}. A single question may still be answered with question and text for non-plan cards. " +
+			"For a card that waits on your answer (it needs you), answer with text, one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it.",
 		fits: "a card waiting on a human with a question or at its session cap, or a plan with open questions",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)

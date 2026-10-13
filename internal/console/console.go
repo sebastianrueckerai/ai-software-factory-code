@@ -129,7 +129,10 @@ type Config struct {
 	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan).
 	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
 	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
-	RejectPlan func(ctx context.Context, taskID, by, why string) error
+	// AnswerPlanQuestions signals a plan task's workflow with every answer
+	// of one turn at once (factoryd.AnswerPlanQuestions).
+	AnswerPlanQuestions func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error
+	RejectPlan          func(ctx context.Context, taskID, by, why string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
