@@ -256,9 +256,9 @@ func newCardDeps(t *testing.T, rig *intakeRig, signozURL string) *cardDeps {
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc",
 		PullSecret: "forgejo-registry", FactoryNamespace: "factory",
-		GatewayURL: "http://factory-gateway.factory.svc.cluster.local:8081",
-		GitBaseURL: "http://forgejo-http.forgejo.svc.cluster.local:3000",
-		Models:     factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
+		GatewayURL:   "http://factory-gateway.factory.svc.cluster.local:8081",
+		GitBaseURL:   "http://forgejo-http.forgejo.svc.cluster.local:3000",
+		Models:       factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		Supervisor: factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy:     acceptancePolicyVersion,
@@ -341,15 +341,15 @@ func (*acceptanceKube) DeletePersistentVolume(context.Context, string) error { r
 // intakeRig is the alert intake on its own backends, which the card's
 // workflow then shares: one store, one Forgejo, one object store.
 type intakeRig struct {
-	in      *factoryd.AlertIntake
-	store   *acceptanceStore
-	fj      *stubForgejo
-	ns      acceptanceNamespaces
+	in       *factoryd.AlertIntake
+	store    *acceptanceStore
+	fj       *stubForgejo
+	ns       acceptanceNamespaces
 	projects *memProjectBook
-	objects *stubObjects
-	flows   *acceptanceWorkflows
-	gateway *httptest.Server
-	litellm *httptest.Server
+	objects  *stubObjects
+	flows    *acceptanceWorkflows
+	gateway  *httptest.Server
+	litellm  *httptest.Server
 }
 
 func newIntakeRig(t *testing.T) *intakeRig {

@@ -535,7 +535,9 @@ func (s *acceptanceStore) ReportOf(_ context.Context, parent, source string) (fa
 	return factoryd.Task{}, false, nil
 }
 
-func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, error) { return nil, nil }
+func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
 
 func (s *acceptanceStore) AddTaskDeps(_ context.Context, id string, dependsOn []string) error {
 	s.mu.Lock()
@@ -556,7 +558,9 @@ func (s *acceptanceStore) OpenDependencies(_ context.Context, id string) ([]fact
 	return out, nil
 }
 
-func (s *acceptanceStore) WaitingDependents(context.Context, string) ([]string, error) { return nil, nil }
+func (s *acceptanceStore) WaitingDependents(context.Context, string) ([]string, error) {
+	return nil, nil
+}
 
 func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Task) (bool, error) {
 	return false, nil
@@ -582,6 +586,10 @@ func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, 
 	return nil
 }
 
+func (s *acceptanceStore) AnswerPlanQuestions(context.Context, string, int, []factoryd.PlanAnswer, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) OpenPlanQuestions(context.Context, string, int) (int, error) { return 0, nil }
 
 func (s *acceptanceStore) CreatePlanCard(_ context.Context, t factoryd.Task) (factoryd.Task, error) {
@@ -601,7 +609,9 @@ func (s *acceptanceStore) UncommittedRolls(context.Context, string) ([]factoryd.
 	return nil, nil
 }
 
-func (s *acceptanceStore) MarkRollsCommitted(context.Context, string, []string, string) error { return nil }
+func (s *acceptanceStore) MarkRollsCommitted(context.Context, string, []string, string) error {
+	return nil
+}
 
 func (s *acceptanceStore) RollHead(context.Context, string) (string, error) { return "", nil }
 
