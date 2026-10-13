@@ -73,13 +73,22 @@ type fakeForgejo struct {
 	patched    []string // "path {body}" per PATCH of an issue
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
+	// posted are the comment bodies per path, in the order they came
+	posted map[string][]string
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
-	f := &fakeForgejo{t: t, user: "sebastian", comments: map[string]string{}, expiresIn: 3600, spent: map[string]bool{}}
+	f := &fakeForgejo{t: t, user: "sebastian", comments: map[string]string{}, posted: map[string][]string{}, expiresIn: 3600, spent: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+// commentBodies are the bodies posted as comments on path, in order.
+func (f *fakeForgejo) commentBodies(path string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.posted[path])
 }
 
 func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +221,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
 		f.comments[r.URL.Path] = body["body"]
+		f.posted[r.URL.Path] = append(f.posted[r.URL.Path], body["body"])
 		f.commentN++
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"id": f.commentN})
@@ -775,6 +785,22 @@ func newRig(t *testing.T) *rig {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_answered %s %d %d by %s", taskID, revision, idx, by))
+			return nil
+		},
+		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
+			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
+				return factoryd.ErrStalePlan{Newest: newest.Revision}
+			}
+			for _, a := range answers {
+				if err := r.tasks.answer(taskID, revision, a.Idx, a.Text, by); err != nil {
+					return err
+				}
+			}
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			for _, a := range answers {
+				fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_answered %s %d %d by %s", taskID, revision, a.Idx, by))
+			}
 			return nil
 		},
 		RejectPlan: func(_ context.Context, taskID, by, why string) error {

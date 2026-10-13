@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -166,15 +167,196 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	if plan := reads(t, r, g, "plan", `{"task_id":"t-p"}`)[0]; !strings.Contains(plan, "\n"+q1+" answered: 60 seconds (sebastian)\n"+q2+"\napi") {
 		t.Fatalf("the plan read after the answer =\n%s", plan)
 	}
-	for in, want := range map[toolInput][]any{
-		{TaskID: "t-p", Question: 2, Text: "7 days"}:              {http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool."},
-		{TaskID: "t-p", Revision: 2, Question: 2, Text: "7 days"}: {http.StatusConflict, "the plan changed to revision 1; reload"},
+	for _, tc := range []struct {
+		in   toolInput
+		want []any
+	}{
+		{toolInput{TaskID: "t-p", Question: 2, Text: "7 days"}, []any{http.StatusBadRequest, "A plan's question is answered with its revision (revision), from the plan tool."}},
+		{toolInput{TaskID: "t-p", Revision: 2, Question: 2, Text: "7 days"}, []any{http.StatusConflict, "the plan changed to revision 1; reload"}},
 	} {
-		status, msg := refused(t, r, "answer", in)
-		equal(t, "an answer without its revision or of another", []any{status, msg}, want)
+		status, msg := refused(t, r, "answer", tc.in)
+		equal(t, "an answer without its revision or of another", []any{status, msg}, tc.want)
 	}
 	r.tasks.answer("t-p", 1, 2, "30 days", "sebastian")
 	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"})
 	equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
 		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: accept_plan, request_changes or reject_plan decide the plan."})
+}
+
+// batchAnswerRig is the reads rig with plan t-p #20 waiting on a human at
+// revision 1, whose two questions are open and which holds its pending
+// plan request.
+func batchAnswerRig(t *testing.T) (*rig, *chatGateway) {
+	t.Helper()
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-p" })].Status = "waiting-human"
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": askedQuestions()}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: "t-p", Project: "sf/code",
+		Status: "pending", Spec: []byte(`{"revision":1,"sha256":"5e1f"}`)})
+	return r, g
+}
+
+// answerAs runs the answer tool on in as the rig's member of the chat's
+// project, outside a turn, and answers what the action noted.
+func (r *rig) answerAs(t *testing.T, s *session, in toolInput) (string, error) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/projects/ai-software-factory-code/chat", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	p, ok, err := r.c.projectOf(req.Context(), "ai-software-factory-code")
+	if err != nil || !ok {
+		t.Fatalf("the chat's project: %v, %v", ok, err)
+	}
+	trn := &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p}
+	tool, _ := r.c.chatTool("answer")
+	note, _, err := tool.run(trn, in)
+	return note, err
+}
+
+// chatTurnOf is the member's turn on the chat project, as the route builds
+// it; its stream events land in events.
+func (r *rig) chatTurnOf(t *testing.T, s *session, events *[]string) *turn {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/projects/ai-software-factory-code/chat", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	p, ok, err := r.c.projectOf(req.Context(), "ai-software-factory-code")
+	if err != nil || !ok {
+		t.Fatalf("the chat's project: %v, %v", ok, err)
+	}
+	v, _ := r.c.inForce(req.Context())
+	trn := &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p,
+		cfg: v.Document.ChatOf(v.Projects[p.Name]), freshRead: time.Now()}
+	trn.stream(func(line string) error {
+		event, data := "", ""
+		for _, f := range strings.Split(strings.TrimRight(line, "\n"), "\n") {
+			switch {
+			case strings.HasPrefix(f, "event: "):
+				event = strings.TrimPrefix(f, "event: ")
+			case strings.HasPrefix(f, "data: "):
+				data = strings.TrimPrefix(f, "data: ")
+			}
+		}
+		*events = append(*events, event+" "+durationField.ReplaceAllString(data, `"duration_ms":0`))
+		return nil
+	}, nil)
+	return trn
+}
+
+// The answer tool takes every open question of a plan revision in one
+// call: answers as a list of {question, text}. One call stores all
+// answers, posts one comment each on the issue as the member, records one
+// event each and returns the combined note; the proposal names each
+// question.
+func TestChatAnswersAllPlanQuestionsAtOnce(t *testing.T) {
+	r, g := batchAnswerRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"30 days"}]}`
+	g.replies = [][]string{{call(1, "answer", args)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"probe every minute, keep them for a month"}})
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener\", revision 1, ` +
+		`question 1: 60 seconds, question 2: 30 days","id":"TOKEN","tool":"answer"}`, `done {}`})
+	before := r.events.count()
+	note, err := r.answerAs(t, s, toolInput{TaskID: "t-p", Revision: 1, Answers: []PlanAnswerInput{{Question: 1, Text: "60 seconds"}, {Question: 2, Text: "30 days"}}})
+	if err != nil {
+		t.Fatalf("one call = %q, %v", note, err)
+	}
+	equal(t, "the combined note", note, "Answered question 1: 60 seconds, question 2: 30 days of plan #20.")
+	const comments = "/api/v1/repos/sf/code/issues/20/comments"
+	equal(t, "the comments", r.fg.commentBodies(comments), []string{"Answer 1: 60 seconds", "Answer 2: 30 days"})
+	for _, want := range []string{"SIGNAL plan_answered t-p 1 1 by sebastian", "SIGNAL plan_answered t-p 1 2 by sebastian"} {
+		if !slices.Contains(r.fg.calls, want) {
+			t.Errorf("the calls = %v, want it to hold %s", r.fg.calls, want)
+		}
+	}
+	posts := 0
+	for _, call := range r.fg.calls {
+		if call == "POST "+comments+" Bearer access-1" {
+			posts++
+		}
+	}
+	equal(t, "the comment posts", posts, 2)
+	qs, err := r.tasks.PlanQuestions(context.Background(), "t-p", 1)
+	if err != nil || qs[0].Answer != "60 seconds" || qs[0].AnsweredBy != "sebastian" || qs[1].Answer != "30 days" || qs[1].AnsweredBy != "sebastian" {
+		t.Errorf("the questions after one call = %+v, %v; want both answered", qs, err)
+	}
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+			Detail: map[string]any{"revision": 1, "index": 1, "answer": "60 seconds"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20, Kind: factoryd.EventPlanQuestionAnswered,
+			Detail: map[string]any{"revision": 1, "index": 2, "answer": "30 days"}})
+	if plan := reads(t, r, g, "plan", `{"task_id":"t-p"}`)[0]; !strings.Contains(plan,
+		"\n"+q1Line()+" answered: 60 seconds (sebastian)\n"+q2Line()+" answered: 30 days (sebastian)\n") {
+		t.Errorf("the plan read after one call =\n%s", plan)
+	}
+}
+
+// q1Line and q2Line are the rig's two questions as the plan read numbers
+// them with their choices.
+func q1Line() string {
+	return "1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)"
+}
+
+func q2Line() string {
+	return "2. How long are the results kept? (choices: 7 days / 30 days)"
+}
+
+// The answer tool's params hold answers: an array whose items each carry
+// a question and a text; task_id and revision stay required.
+func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
+	r := newRig(t)
+	tool, ok := r.c.chatTool("answer")
+	if !ok {
+		t.Fatal("the agent is offered no answer tool")
+	}
+	list, ok := tool.params["answers"].(map[string]any)
+	if !ok || list["type"] != "array" {
+		t.Fatalf("params answers = %#v, want an array", tool.params["answers"])
+	}
+	items, ok := list["items"].(map[string]any)
+	if !ok || items["type"] != "object" {
+		t.Fatalf("answers items = %#v, want objects", list["items"])
+	}
+	props, ok := items["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("answers items' properties = %#v", items["properties"])
+	}
+	for _, name := range []string{"question", "text"} {
+		p, ok := props[name].(map[string]any)
+		if !ok {
+			t.Errorf("answers items lack property %q", name)
+			continue
+		}
+		if want := map[string]string{"question": "integer", "text": "string"}[name]; p["type"] != want {
+			t.Errorf("answers item %q is %v, want %s", name, p["type"], want)
+		}
+	}
+	equal(t, "the required arguments", tool.required, []string{"task_id", "revision"})
+	def := tool.def()
+	schema, _ := def.Parameters.(map[string]any)
+	params, ok := schema["properties"].(map[string]any)
+	if !ok || params["answers"] == nil {
+		t.Fatalf("the tool's parameters = %#v, they name no answers", def.Parameters)
+	}
+	if !strings.Contains(def.Description, "Answer all open questions of a plan in one call") {
+		t.Errorf("the tool's about = %q", def.Description)
+	}
+}
+
+// A card that waits on the member's answer, no plan question, is still
+// answered with text alone: one comment, one event row, the same note.
+func TestChatSingleAnswerStillWorks(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	args := `{"task_id":"t-e","text":"60 seconds"}`
+	g.replies = [][]string{{call(1, "answer", args)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"use a replica?"}})
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #13 t-e \"Use a replica?\", text 60 seconds","id":"TOKEN","tool":"answer"}`, `done {}`})
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer","result":"Answered #13."}`,
+		`applied {"result":"Answered #13.","tool":"answer"}`, `done {}`})
+	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "60 seconds")
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13,
+		Kind: factoryd.EventQuestionAnswered, Detail: map[string]any{"comment": int64(1)}})
 }
