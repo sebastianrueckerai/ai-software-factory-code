@@ -18,15 +18,36 @@ import (
 // follows it.
 const schemaBranchPrefix = "factory/schema-"
 
+// schemaCardSize is the size of the card a schema copy files (roadmap 187):
+// small, like every pull request factoryd opened outside a card.
+const schemaCardSize = "small"
+
 // SchemaCopier brings the configuration repository's copies of the
 // generated schemas to this build: once per process it compares main's
 // with its own and opens one pull request for the difference, as the bot
-// from its fork, the way a roll does (ruling 303). An approver merges it;
-// nothing else does.
+// from its fork, the way a roll does (ruling 303). The pull request gets a
+// card of its own through FileFactoryPRTask (roadmap 187), so the chat, the
+// board and the merge rule cover it; an approver merges through that card.
+// Nothing else merges.
 type SchemaCopier struct {
 	Forgejo *Forgejo       // the bot
 	Config  *ForgejoConfig // reads main's tree
 	Build   string         // the build id, 12 hex
+	// Store holds the tasks the copier files cards in, their projects and
+	// the unfinished ones it looks a build's card up in.
+	Store interface {
+		CreateTask(ctx context.Context, t Task) error
+		SetTaskPR(ctx context.Context, id string, number int64) error
+		TransitionTask(ctx context.Context, id string, from []string, to string) error
+		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
+	}
+	// Workflows starts the workflow of the card it files.
+	Workflows Workflows
+	// Timeline records the card's events; nil records none.
+	Timeline *Timeline
+	// Budget is the policy's budget block in force, which sizes the card.
+	Budget func() policy.Budget
 }
 
 // SyncOnce runs the pass, tried up to tries times, wait apart, while ctx
@@ -107,8 +128,151 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 			return fmt.Errorf("comment on #%d: %w", pr.Number, err)
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)
+		c.forgetBuildCard(ctx, repo.String(), pr.Number)
+	}
+	// the pull request becomes a card of its own (roadmap 187), so the
+	// chat, the board and the merge rule cover it; the pass files one per
+	// build at most, while no other build's card stands open. The link is
+	// the pull request's own: a card whose filing died linking gets the
+	// number this pass has, so no second card ever stands.
+	if len(diffs) > 0 {
+		c.card(ctx, *own, pathsOf(diffs, c.Config.Dir))
 	}
 	return nil
+}
+
+// schemaCardBody tells what the card carries and how it ends.
+func schemaCardBody(pr PullRequestRef, repo, build string, paths []string) string {
+	return fmt.Sprintf("factoryd opened pull request [#%d](%s) on %s: main's copies of the generated schemas differ from what build %s generates.\n\nFiles: %s\n\nThe card's work is that very pull request: its gates verify it, an approval merges it as the merge rule of the project says, and the merge closes this card. factoryd files it and never merges anything itself.\n",
+		pr.Number, pr.URL, repo, build, strings.Join(paths, ", "))
+}
+
+// card files the card of the schema pull request ref (roadmap 187) through
+// FileFactoryPRTask, as the roller files its roll task: source
+// schema-copy, small's budget, the open pull request linked to the row. An
+// unfinished card of this build covers the pull request already: the pass
+// files none twice, and heals one whose filing died before it linked the
+// number. A failure costs only the log: the pull request stands, and the
+// next pass files the card again.
+func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []string) {
+	if !c.filing() {
+		return
+	}
+	repo := c.Config.Repo.String()
+	if open, err := c.buildCards(ctx, repo); err != nil {
+		log.Printf("schema copies: the cards of build %s on %s: %v", c.Build, repo, err)
+		return // a store that will not answer must not cost a second card
+	} else if len(open) > 0 {
+		c.healCardPR(ctx, open, ref)
+		return
+	}
+	p, ok, err := c.Store.ProjectByRepository(ctx, repo)
+	if err != nil {
+		log.Printf("schema copies: the project of %s: %v", repo, err)
+		return
+	}
+	if !ok {
+		log.Printf("schema copies: no project has the repository %s: pull request #%d stays uncarded", repo, ref.Number)
+		return
+	}
+	title := "Schema copies for " + c.Build
+	eur := policy.CardBudget(c.budget(), p.Budget, schemaCardSize, 0)
+	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, p, title,
+		schemaCardBody(ref, repo, c.Build, paths), nil,
+		Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: eur, Objective: title, SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
+		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
+	} else {
+		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)
+	}
+}
+
+// healCardPR links the pull request of this build's open cards that carry
+// no number: a filing that died between the row and the link leaves such a
+// card, which would otherwise run its workflow blind.
+func (c *SchemaCopier) healCardPR(ctx context.Context, cards []Task, ref PullRequestRef) {
+	for _, t := range cards {
+		if t.PRNumber != 0 {
+			continue
+		}
+		if err := c.Store.SetTaskPR(ctx, t.ID, ref.Number); err != nil {
+			log.Printf("schema copies: link pull request #%d to the card %s: %v", ref.Number, t.ID, err)
+			continue
+		}
+		log.Printf("schema copies: linked pull request #%d to the card %s", ref.Number, t.ID)
+	}
+}
+
+// filing is whether the copier can file cards at all: factoryd wires a
+// store and workflows, a bare copier only opens pull requests.
+func (c *SchemaCopier) filing() bool { return c.Store != nil && c.Workflows != nil }
+
+// budget is the policy's budget block in force; where factoryd wired none,
+// a small card gets no budget rather than a wrong one.
+func (c *SchemaCopier) budget() policy.Budget {
+	if c.Budget == nil {
+		return policy.Budget{}
+	}
+	return c.Budget()
+}
+
+// openStatuses are the statuses of a card whose work is not over.
+var openStatuses = []string{"queued", "running", "in-review", "waiting-human", "waiting-poster", "waiting-deps"}
+
+// buildCards are the unfinished cards of this copier's build on repository
+// repo: the pass files one per build at most, however often it runs and
+// whichever boot's process runs it.
+func (c *SchemaCopier) buildCards(ctx context.Context, repo string) ([]Task, error) {
+	var out []Task
+	for _, status := range openStatuses {
+		tasks, err := c.Store.ListTasksByStatus(ctx, status)
+		if err != nil {
+			return nil, fmt.Errorf("the %s cards: %w", status, err)
+		}
+		for _, t := range tasks {
+			if t.Source == SourceSchemaCopy && t.Repository == repo && t.SHA == c.Build {
+				out = append(out, t)
+			}
+		}
+	}
+	return out, nil
+}
+
+// forgetBuildCard gives up this build's still-open card of the schema pull
+// request number factoryd just closed: nothing is left for its gates to
+// verify, so the chat holds no dead approval card.
+func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64) {
+	if c.Store == nil {
+		return
+	}
+	for _, status := range openStatuses {
+		tasks, err := c.Store.ListTasksByStatus(ctx, status)
+		if err != nil {
+			log.Printf("schema copies: the %s cards of %s: %v", status, repo, err)
+			return
+		}
+		for _, t := range tasks {
+			if t.Source != SourceSchemaCopy || t.Repository != repo || t.SHA != c.Build || t.PRNumber != number {
+				continue
+			}
+			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
+				log.Printf("schema copies: close the card %s of pull request #%d: %v", t.ID, number, err)
+				continue
+			}
+			mirrorTaskState(ctx, c.Forgejo, t, "closed")
+			log.Printf("schema copies: closed the card %s: its pull request #%d is closed", t.ID, number)
+		}
+	}
+}
+
+// pathsOf are the repository paths the difference writes, sorted, under
+// dir of the configuration repository.
+func pathsOf(diffs []policy.SchemaDifference, dir string) []string {
+	paths := make([]string, 0, len(diffs))
+	for _, d := range diffs {
+		paths = append(paths, dir+"/"+d.Path)
+	}
+	slices.Sort(paths)
+	return paths
 }
 
 // open opens the pull request from branch on fork, which it cuts afresh
