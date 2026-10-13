@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // templateForgejo is a scripted Forgejo for the template pass: main of
@@ -32,6 +35,20 @@ type templateForgejo struct {
 	comments []string
 	written  []string
 	writes   []string
+	// issues are the card issues POST /issues made, in order; closedIssues
+	// their numbers once PATCH .../issues/N said closed.
+	issues       []templateIssue
+	closedIssues []int64
+	// labels are each issue's labels by number, as PUT .../labels left them.
+	labels map[int64][]string
+}
+
+type templateIssue struct {
+	number int64
+	title  string
+	body   string
+	labels []string
+	state  string
 }
 
 type templatePR struct {
@@ -81,8 +98,11 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 		if r.Method != http.MethodGet {
 			s.writes = append(s.writes, r.Method+" "+r.URL.Path+" by "+by)
 		}
+		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
-		json.NewDecoder(r.Body).Decode(&body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			body = map[string]any{}
+		}
 		const up, fk = "/api/v1/repos/demo-app/demo-app", "/api/v1/repos/factory-projects/demo-app"
 		p, q := r.URL.Path, r.URL.Query()
 		branch := s.branches[q.Get("ref")]
@@ -159,6 +179,49 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && p == up+"/issues":
+			n := int64(len(s.issues) + 1)
+			labels, _ := body["labels"].([]any)
+			names := make([]string, 0, len(labels))
+			for _, l := range labels {
+				names = append(names, fmt.Sprint(l))
+			}
+			s.issues = append(s.issues, templateIssue{number: n, title: body["title"].(string), body: body["body"].(string), labels: names, state: "open"})
+			if s.labels == nil {
+				s.labels = map[int64][]string{}
+			}
+			s.labels[n] = slices.Clone(names)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"number":%d,"html_url":"http://x%s"}`, n, p)
+		case r.Method == http.MethodPut && strings.HasSuffix(p, "/labels"):
+			var pl struct {
+				Labels []string `json:"labels"`
+			}
+			json.Unmarshal(raw, &pl) // #nosec G104 -- test stub
+			var n int64
+			if _, err := fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d/labels", &n); err != nil {
+				t.Errorf("labels path %s: %v", p, err)
+			}
+			s.issues[n-1].labels = pl.Labels
+			s.labels[n] = slices.Clone(pl.Labels)
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, up+"/issues/") && strings.Count(p, "/") == 7:
+			if body["state"] == "closed" {
+				var n int64
+				fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
+				s.issues[n-1].state = "closed"
+				s.closedIssues = append(s.closedIssues, n)
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/labels"):
+			n := int64(len(s.issues))
+			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d/labels", &n)
+			out := make([]map[string]string, len(s.issues[n-1].labels))
+			for i, name := range s.issues[n-1].labels {
+				out[i] = map[string]string{"name": name}
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
 			s.comments = append(s.comments, fmt.Sprintf("#%d by %s: %s", pr().number, by, body["body"]))
 			w.WriteHeader(http.StatusCreated)
@@ -235,8 +298,22 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 
 // templateRig is demo-app, ready, on template ts-go, with main holding
 // main's files, and a Registrar on the scripted Forgejo. A path outside
-// .forgejo/ and deploy/ is only ever written back to main's.
+// .forgejo/ and deploy/ is only ever written back to main's. The rig files
+// no cards: its Registrar has no card store (roadmap 187), so it reads as
+// it did before the pass had one.
 func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Registrar, *memProjects) {
+	fj, reg, store, _, _ := templateCardRig(t, main, false)
+	return fj, reg, store
+}
+
+// templateCardRig is templateRig's project and scripted Forgejo with the
+// card side wired: a fakeStore for the tasks, a fakeWorkflows recording
+// the runs it starts, and a Timeline over an in-memory object store. With
+// cards false the Registrar keeps no card store at all. Its pull requests
+// are the bot's own, so the pass files each card by itself; its issues get
+// the labels factoryd mirrors onto them.
+func templateCardRig(t *testing.T, main map[string]string, cards bool) (*templateForgejo, *Registrar, *memProjects, *fakeStore, *fakeWorkflows) {
+	t.Helper()
 	fj := &templateForgejo{main: main}
 	srv := fj.server(t)
 	p := demoProject()
@@ -251,9 +328,140 @@ func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Regis
 		"cmd/server/main.go":                "package main\n",
 	}
 	store := &memProjects{m: map[string]Project{"demo-app": p}}
+	tasks, wf := newFakeStore(), &fakeWorkflows{}
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
+	// the scripted pull requests are factory-projects', so a pass without a
+	// card store files no card by itself and reads as it did before
+	// roadmap 187.
 	reg := &Registrar{Forgejo: f, Store: store, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects"}
-	return fj, reg, store
+	if cards {
+		reg.Cards, reg.Workflows, reg.Timeline = tasks, wf, &Timeline{Objects: &fakeObjectStore{}}
+	}
+	return fj, reg, store, tasks, wf
+}
+
+// templateWant is what stage15Main lacks: ci.yml's smoke job and the
+// missing smoke script.
+func templateWant(t *testing.T, p Project, r *Registrar) map[string][]byte {
+	t.Helper()
+	rendered, err := policy.RenderTemplate(p.TemplateFiles, r.templateData(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string][]byte{".forgejo/workflows/ci.yml": []byte(rendered[".forgejo/workflows/ci.yml"]), "deploy/smoke.sh": []byte(rendered["deploy/smoke.sh"])}
+}
+
+// The card a template update pull request gets (roadmap 187): opening one
+// files a task of source template-update with the pull request linked,
+// labels its issue and starts its run.
+func TestTemplateUpdateFilesCard(t *testing.T) {
+	fj, reg, store, tasks, wf := templateCardRig(t, stage15Main(), true)
+	p := store.m["demo-app"]
+	c, err := reg.openTemplateUpdate(context.Background(), p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs", "deploy/smoke.sh": "missing"}))
+	if err != nil {
+		t.Fatal(c, err)
+	}
+	if len(fj.prs) != 1 || !strings.HasPrefix(string(c), "created pull request #1") {
+		t.Fatalf("pull requests %+v, change %q", fj.prs, c)
+	}
+	var got []Task
+	for _, row := range tasks.tasks {
+		got = append(got, row)
+	}
+	if len(got) != 1 {
+		t.Fatalf("tasks %v, want the open pass's one card", got)
+	}
+	row := got[0]
+	if row.Source != SourceTemplateUpdate || row.PRNumber != 1 || row.IssueNumber != 1 || row.Repository != "demo-app/demo-app" ||
+		row.Status != "queued" || row.Lane != policy.LaneReady {
+		t.Fatalf("stored row = %+v, want a queued ready card of pull request #1 and issue #1", row)
+	}
+	if len(wf.started) != 1 || wf.started[0] != row.ID {
+		t.Fatalf("started %v, want the card's run", wf.started)
+	}
+	if len(fj.issues) != 1 || fj.issues[0].title != "Template update for ts-go" ||
+		!strings.Contains(fj.issues[0].body, "factoryd opened pull request #1 (Template update) for template ts-go") ||
+		!strings.Contains(fj.issues[0].body, "The card's merge merges the pull request.") {
+		t.Fatalf("issues %+v", fj.issues)
+	}
+	if want := []string{"improvement", "state/queued"}; !slices.Equal(fj.issues[0].labels, want) {
+		t.Errorf("labels %v, want %v", fj.issues[0].labels, want)
+	}
+
+}
+
+// keepTemplateUpdate with a card already on the pull request files no
+// second task; one that came before roadmap 187 gets its card.
+func TestTemplateUpdateKeepDoesNotRefile(t *testing.T) {
+	fj, reg, store, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	p := store.m["demo-app"]
+	want := templateWant(t, p, reg)
+	if _, err := reg.openTemplateUpdate(ctx, p, want, templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs", "deploy/smoke.sh": "missing"})); err != nil {
+		t.Fatal(err)
+	}
+	fork := reg.Forgejo.Fork(p.Repo())
+	body := templateUpdateBody(p.Template, map[string]string{"deploy/smoke.sh": "missing"})
+	prOf := func(pr *templatePR) PullRequestRef {
+		return PullRequestRef{Number: pr.number, Head: pr.head, HeadRepo: fork.String(), State: pr.state, Base: "main", Mergeable: true, Body: pr.body}
+	}
+	f := reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken)
+	for i := 0; i < 2; i++ {
+		if _, err := reg.keepTemplateUpdate(ctx, f, p, prOf(fj.prs[0]), want, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(tasks.tasks) != 1 || len(fj.issues) != 1 {
+		t.Fatalf("tasks %d, issues %d, want the one card of the first pass", len(tasks.tasks), len(fj.issues))
+	}
+	// a pull request that came before roadmap 187 has no card: keep files it
+	orphan := &templatePR{number: 2, head: TemplateUpdateBranch, state: "open", body: body}
+	fj.prs = append(fj.prs, orphan)
+	if _, err := reg.keepTemplateUpdate(ctx, f, p, prOf(orphan), want, body); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks.tasks) != 2 || len(fj.issues) != 2 {
+		t.Fatalf("tasks %d, issues %d, want the orphan pull request filed a card", len(tasks.tasks), len(fj.issues))
+	}
+	if _, ok, err := tasks.TaskByPR(ctx, "demo-app/demo-app", 2); err != nil || !ok {
+		t.Fatalf("card by pull request #2: %v %v", ok, err)
+	}
+}
+
+// closeTemplateUpdate closes the card's issue as well: the close ends the
+// card as an approver's would.
+func TestTemplateUpdateCloseClosesCard(t *testing.T) {
+	fj, reg, store, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	p := store.m["demo-app"]
+	if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs", "deploy/smoke.sh": "missing"})); err != nil {
+		t.Fatal(err)
+	}
+	repo := p.Repo()
+	if len(tasks.tasks) != 1 {
+		t.Fatalf("tasks %v", tasks.tasks)
+	}
+	for _, row := range tasks.tasks {
+		if row.IssueNumber != 1 {
+			t.Fatalf("card %+v, want issue #1", row)
+		}
+	}
+	c, err := reg.closeTemplateUpdate(ctx, reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken), repo, 1, "main's files equal the template's")
+	if err != nil {
+		t.Fatal(c, err)
+	}
+	if !slices.Equal(fj.closedIssues, []int64{1}) || fj.issues[0].state != "closed" {
+		t.Fatalf("closed issues %v, issues %+v", fj.closedIssues, fj.issues)
+	}
+	if fj.prs[0].state != "closed" || len(fj.comments) != 1 {
+		t.Fatalf("pull request %+v, comments %v", fj.prs[0], fj.comments)
+	}
+	want := []string{"PATCH /api/v1/repos/demo-app/demo-app/issues/1 by basic factory-agent",
+		"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
+		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok"}
+	if got := fj.writes[len(fj.writes)-4 : len(fj.writes)-1]; !slices.Equal(got, want) {
+		t.Fatalf("writes %q\nwant %q: the card closes before the branch and the pull request", got, want)
+	}
 }
 
 // the rendered files of templateRig's template
@@ -286,7 +494,7 @@ func (s *templateForgejo) proposed(branch string) map[string]string {
 
 func templateBody(lines ...string) string {
 	return "Template ts-go, rendered for this project as registration seeds it, differs from main in these files:\n\n" + strings.Join(lines, "") +
-		"\nfactoryd keeps this pull request to the template every hour and closes it once main equals it. It is no card: factoryd files no task for it and never merges it, an approver does.\n"
+		"\nfactoryd keeps this pull request to the template every hour and closes it once main equals it. It is a card: factoryd filed one for it, whose gates an approver's approval passes and whose merge merges this pull request.\n"
 }
 
 // A main without the smoke job gets one pull request from factory-projects'

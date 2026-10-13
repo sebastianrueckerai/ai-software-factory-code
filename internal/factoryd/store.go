@@ -576,6 +576,9 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
 }
 
+// TaskByPR is the card whose row links pull request number on repository:
+// the template pass reads it to tell whether a pull request already has
+// its card (roadmap 187).
 func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND pr_number = $2`, repository, pr)
 }

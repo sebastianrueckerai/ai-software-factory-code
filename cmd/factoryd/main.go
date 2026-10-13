@@ -284,6 +284,8 @@ func main() {
 	}()
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Tree { return policyLoader.Current().Tree }, webhookSecret)
+	registrar.Cards = store
+	registrar.Workflows, registrar.Timeline = workflows, runner.Timeline()
 	webhookIntake.MainPushed = registrar.MainPushed
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {

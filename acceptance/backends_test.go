@@ -245,22 +245,22 @@ func (s *acceptanceStore) SettleSpendFinal(_ context.Context, id string, reporte
 	return s.SettleSpend(context.Background(), id, reported)
 }
 
-func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
+func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, number int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
+		if t.Repository == repository && t.PRNumber == number && number != 0 {
 			return t, true, nil
 		}
 	}
 	return factoryd.Task{}, false, nil
 }
 
-func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
+func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.PRNumber == pr && pr != 0 {
+		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
 			return t, true, nil
 		}
 	}
