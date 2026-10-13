@@ -1340,7 +1340,10 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 	for _, info := range infos {
 		if info.Terminating {
 			// its contents are being garbage-collected away: a policy
-			// write there fails and the namespace needs none any more
+			// write there fails and the namespace needs none any more.
+			// The wait out is observable in factoryd's log and on the
+			// task's timeline (roadmap 188).
+			r.observeNamespaceWait(ctx, info.Name)
 			continue
 		}
 		ns := info.Name
@@ -1377,6 +1380,31 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// observeNamespaceWait makes the lease admission's wait out of a terminating
+// namespace observable: factoryd's log names the namespace and the live
+// leases it holds back, and the task's timeline carries one namespace_wait
+// step per round that still found it terminating.
+func (r *Runner) observeNamespaceWait(ctx context.Context, ns string) {
+	id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
+	if id == ns || id == "" {
+		return // not an agent namespace: no task to record on
+	}
+	log.Printf("task %s: namespace %s is terminating: waited out; its egress policy admits nothing until it is gone or active again", id, ns)
+	r.record(ctx, id, "namespace_wait", map[string]any{"namespace": ns, "waited": "terminating"})
+}
+
+// BindTaskNamespace puts factoryd's RoleBinding into a task namespace, as
+// setupNamespace does before it writes anything there: an acceptance test
+// scripts the namespaces the production client reads and writes.
+func (r *Runner) BindTaskNamespace(ctx context.Context, ns string) error {
+	return r.kube.Create(ctx, "/apis/rbac.authorization.k8s.io/v1/namespaces/"+ns+"/rolebindings", map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "RoleBinding",
+		"metadata": map[string]any{"name": "factoryd"},
+		"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": "factoryd-task"},
+		"subjects": []any{map[string]any{"kind": "ServiceAccount", "name": "factoryd", "namespace": r.cfg.FactoryNamespace}},
+	})
 }
 
 // sameJSON compares two objects as their JSON: the live policy's spec
