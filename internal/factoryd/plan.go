@@ -835,9 +835,10 @@ func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevis
 
 // PlanAnswer is one member's answer to question Idx (from 1) of a plan
 // revision, as the batch store method and AnswerPlanQuestions take them.
+// The tags name the keys the store's one statement reads back.
 type PlanAnswer struct {
-	Idx  int
-	Text string
+	Idx  int    `json:"idx"`
+	Text string `json:"text"`
 }
 
 // ErrAnswered refuses a second answer to a plan's question.
@@ -914,14 +915,17 @@ func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision i
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var asked, answered bool
-	if err := tx.QueryRowContext(ctx, `WITH want (idx, text) AS (SELECT (e->>'idx')::int, e->>'text' FROM jsonb_array_elements($3::jsonb) AS a(e))
- 		SELECT EXISTS (SELECT 1 FROM want w WHERE NOT EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = w.idx)),
- 			EXISTS (SELECT 1 FROM want w WHERE EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = w.idx AND answer IS NOT NULL))`,
+	if err := tx.QueryRowContext(ctx, `WITH want (idx) AS (SELECT DISTINCT (e->>'idx')::int FROM jsonb_array_elements($3::jsonb) AS a(e)),
+ 		have AS (SELECT w.idx, q.answer IS NOT NULL AS done FROM want w
+ 			JOIN plan_questions q ON q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx),
+ 		miss AS (SELECT count(*) AS n FROM want w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.idx = w.idx)),
+ 		got AS (SELECT count(*) AS n FROM have h WHERE h.done)
+ 		SELECT (SELECT n FROM miss) > 0, (SELECT n FROM got) > 0`,
 		id, revision, string(b)).Scan(&asked, &answered); err != nil {
 		return err
 	}
 	switch {
-	case asked:
+	case asked && !answered:
 		return ErrNotFound
 	case answered:
 		return ErrAnswered
