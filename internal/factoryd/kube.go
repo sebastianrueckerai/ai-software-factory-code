@@ -40,8 +40,27 @@ var (
 	errForgejoNotFound = fmt.Errorf("forgejo: %w", ErrNotFound)
 )
 
-// saDir is a var so the wire test can point it at a stub token.
-var saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
+// saDir is where the pod's service-account token lives; a var so a test can
+// point it at a stub token. The acceptance tests (roadmap 188) set
+// FACTORYD_SA_DIR before they run, to drive this production client against
+// their scripted apiserver.
+var saDir = envOr("FACTORYD_SA_DIR", "/var/run/secrets/kubernetes.io/serviceaccount")
+
+// SaDirForTest points the production client's service-account directory at
+// dir and returns its former path, for an acceptance test that runs
+// InClusterKube against a scripted apiserver outside the cluster.
+func SaDirForTest(dir string) string {
+	old := saDir
+	saDir = dir
+	return old
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
 
 // Kube is the slice of the Kubernetes API the runner needs. The production
 // client talks raw REST with the pod's own service account (token re-read
@@ -144,7 +163,14 @@ func NewInClusterKube() (*InClusterKube, error) {
 	}
 	return &InClusterKube{
 		Host: "https://" + net.JoinHostPort(host, port),
-		HTTP: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}},
+		HTTP: &http.Client{Transport: &http.Transport{
+			// RootCAs pins the API server's key. A test that scripts the
+			// API outside the cluster (roadmap 188) serves it on an
+			// ephemeral address, whose certificate no in-cluster CA
+			// would name; there FACTORYD_KUBE_INSECURE skips the name
+			// check and the real deployment never sets it.
+			TLSClientConfig: &tls.Config{RootCAs: pool, InsecureSkipVerify: os.Getenv("FACTORYD_KUBE_INSECURE") != ""}, // #nosec G402 -- pinned by RootCAs; the name is only loose where a test says so
+		}},
 	}, nil
 }
 
