@@ -779,7 +779,12 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	equal(t, "GET", roles, []string{"user summarize #50", "assistant Let me look.1", "assistant Setting it.1", "assistant Done.0",
 		"assistant Undo of set_summary: The summary of #5 is back to \"\".0", "user and now?0", "assistant Fine.0"})
-	equal(t, "the stored call", got[2].ToolCalls, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
+	stored := got[2].ToolCalls
+	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
+		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
+	}
+	stored[0].ReadAt = time.Time{}
+	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
 		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The member may undo it."}})
 }
 
@@ -904,7 +909,12 @@ func TestChatProposalIsStored(t *testing.T) {
 		t.Fatalf("%d proposal rows, want 1", rows)
 	}
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the stored call", stored[0].ToolCalls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
+	calls := stored[0].ToolCalls
+	if calls[0].ReadAt.Before(start) || calls[0].ReadAt.After(end) {
+		t.Fatalf("the stored call's ReadAt = %v, want within the turn between %v and %v", calls[0].ReadAt, start, end)
+	}
+	calls[0].ReadAt = time.Time{}
+	equal(t, "the stored call", calls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
 		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
@@ -926,7 +936,12 @@ func TestChatProposalIsStored(t *testing.T) {
 	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics"}}
 	chatRows(t, r.events, before, "sebastian", card)
 	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the Do it's row", stored[0], factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
+	doRow := stored[0]
+	if read := doRow.ToolCalls[0].ReadAt; read.Before(start) || read.After(time.Now()) {
+		t.Fatalf("the Do it's ReadAt = %v, want a fresh read", read)
+	}
+	doRow.ToolCalls[0].ReadAt = time.Time{}
+	equal(t, "the Do it's row", doRow, factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
 		Conversation: 1,
 		ToolCalls:    []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
@@ -1577,5 +1592,97 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 	for _, jobs := range []any{nil, []any{map[string]any{"name": "test", "status": "success"}}} {
 		equal(t, fmt.Sprintf("a red run with jobs %v", jobs), mergeWarning([]map[string]any{{"step": "checks", "state": "failure", "jobs": jobs}}),
 			". Warning: Checks: failure.")
+	}
+}
+
+// TestChatToolResultCarriesReadAt proves every stored tool call has a
+// non-zero ReadAt within the last second: a turn calling a read tool
+// stores a ChatToolCall whose ReadAt is fresh.
+func TestChatToolResultCarriesReadAt(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	start := time.Now()
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("read it.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	end := time.Now()
+	stored, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, m := range stored {
+		for _, c := range m.ToolCalls {
+			found = true
+			if c.ReadAt.IsZero() {
+				t.Errorf("the stored call %s has a zero ReadAt", c.ID)
+			}
+			if c.ReadAt.Before(start.Add(-time.Second)) || c.ReadAt.After(end.Add(time.Second)) {
+				t.Errorf("the stored call %s ReadAt = %v, want within [%v, %v]", c.ID, c.ReadAt, start.Add(-time.Second), end.Add(time.Second))
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no tool calls were stored")
+	}
+}
+
+// TestChatTurnContextHasFreshCards proves the system message contains
+// fresh card state and old results show their age: two turns with a card
+// spend change between them; the second turn's system message holds the
+// new spend, and the first turn's replayed result carries its age prefix.
+func TestChatTurnContextHasFreshCards(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("first answer")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	r.chat.mu.Lock()
+	key := "sf/code sebastian"
+	for i := range r.chat.msgs[key] {
+		for j := range r.chat.msgs[key][i].ToolCalls {
+			if !r.chat.msgs[key][i].ToolCalls[j].ReadAt.IsZero() {
+				r.chat.msgs[key][i].ToolCalls[j].ReadAt = r.chat.msgs[key][i].ToolCalls[j].ReadAt.Add(-2 * time.Hour)
+			}
+		}
+	}
+	r.chat.mu.Unlock()
+	r.tasks.mu.Lock()
+	var found bool
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-m" {
+			r.tasks.tasks[i].SpentEUR = 2.5
+			found = true
+		}
+	}
+	r.tasks.mu.Unlock()
+	if !found {
+		t.Fatal("t-m not found in tasks")
+	}
+	g.replies = [][]string{{say("second answer")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	calls := g.calls()
+	if len(calls) < 3 {
+		t.Fatalf("%d model calls, want at least 3", len(calls))
+	}
+	secondMsgs := messages(t, calls[2])
+	secondSystem, _ := secondMsgs[0]["content"].(string)
+	if !strings.Contains(secondSystem, "€2.50 of €3.00") {
+		t.Errorf("the second turn's system message lacks the new spend:\n%s", secondSystem)
+	}
+	if !strings.Contains(secondSystem, "Cards now:") {
+		t.Errorf("the second turn's system message lacks 'Cards now:':\n%s", secondSystem)
+	}
+	var agedFound bool
+	for _, m := range secondMsgs {
+		content, _ := m["content"].(string)
+		if strings.HasPrefix(content, "[read at ") {
+			agedFound = true
+			if !strings.Contains(content, "min ago]") {
+				t.Errorf("the aged result lacks 'min ago]': %s", content)
+			}
+			break
+		}
+	}
+	if !agedFound {
+		t.Error("no aged result found in the second turn's conversation")
 	}
 }
