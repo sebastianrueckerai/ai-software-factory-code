@@ -266,12 +266,18 @@ func (c *Console) costsByText(ctx context.Context, a actor, by, from, to string)
 	if fok && tok && f.After(t) {
 		return costsDaysRefuse()
 	}
-	winFrom, winTo := costsWindow(time.Now())
-	if fok {
+	var winFrom, winTo time.Time
+	switch {
+	case fok && tok:
+		winFrom, winTo = f, t
+	case fok:
+		_, winTo = costsWindow(time.Now())
 		winFrom = f
-	}
-	if tok {
+	case tok:
+		winFrom, _ = costsWindow(time.Now())
 		winTo = t
+	default:
+		winFrom, winTo = costsWindow(time.Now())
 	}
 	ledger, err := c.cfg.Costs.Costs(ctx, winFrom, winTo)
 	if err != nil {

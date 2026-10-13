@@ -71,6 +71,64 @@ func TestCheckSplit(t *testing.T) {
 	}
 }
 
+// A file whose changed lines alone exceed the bound makes the split
+// impossible: the finding names it and its lines.
+func TestSplitOverBoundReturnsFindingsForAnOverBoundFile(t *testing.T) {
+	files := []PRFile{{Filename: "web/app.ts", Additions: 600, Deletions: 500}, {Filename: "api/links.go", Additions: 400}}
+	got := splitOverBound(files, 1000)
+	want := []string{"split: web/app.ts alone changes 1100 lines, over the bound 1000: no card can stay under it"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("findings %q, want %q", got, want)
+	}
+}
+
+// Files each under the bound leave the split possible: no findings.
+func TestSplitOverBoundReturnsNilWhenAllFilesAreUnderBound(t *testing.T) {
+	if got := splitOverBound(splitFiles, 1000); got != nil {
+		t.Fatalf("findings %q, want nil", got)
+	}
+}
+
+// Without a bound (0) there is no check, whatever the files' sizes.
+func TestSplitOverBoundReturnsNilWhenBoundIsZero(t *testing.T) {
+	files := []PRFile{{Filename: "web/app.ts", Additions: 5000, Deletions: 9000}}
+	if got := splitOverBound(files, 0); got != nil {
+		t.Fatalf("findings %q, want nil", got)
+	}
+}
+
+// A planted over-bound file refuses the split before any session: the
+// card never runs, no pod starts, the findings name the file and its
+// lines.
+func TestRunSplitRefusesAnOverBoundFileBeforeTheSession(t *testing.T) {
+	big := Task{ID: "t1", Status: "in-review", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
+	hub.prFiles = `[{"filename":"web/app.ts","additions":1100,"deletions":0},{"filename":"api/links.go","additions":100,"deletions":0}]`
+	v := runner.cfg.Policy()
+	v.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return v }
+	val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), []string(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res PlanResult
+	if err := val.Get(&res); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"split: web/app.ts alone changes 1100 lines, over the bound 1000: no card can stay under it"}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings %q, want %q", res.Findings, want)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" {
+		t.Fatalf("status after the refusal %s, want in-review", got.Status)
+	}
+	if len(kube.podOrder) != 0 {
+		t.Fatalf("a pod started for a doomed split")
+	}
+}
+
 // A split session runs the planner on the card's pull request: the card
 // runs meanwhile, the guide names the pull request, its files and the
 // bound, the clone holds its head as branch pull/9, and a passing answer
