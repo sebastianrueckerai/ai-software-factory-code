@@ -275,7 +275,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("schemas: %v", err)
 	}
-	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas)}
+	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas),
+		Store: store, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget}
 	go func() {
 		if err := schemaCopier.SyncOnce(ctx, 3, time.Minute); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("schema copies: %v", err)
@@ -283,6 +284,8 @@ func main() {
 	}()
 	runner.BootSweep(ctx)
 	registrar := newRegistrar(store, forgejo, kube, func() policy.Tree { return policyLoader.Current().Tree }, webhookSecret)
+	registrar.Cards = store
+	registrar.Workflows, registrar.Timeline = workflows, runner.Timeline()
 	webhookIntake.MainPushed = registrar.MainPushed
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
