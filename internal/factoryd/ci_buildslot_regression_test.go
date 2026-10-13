@@ -134,12 +134,7 @@ func TestCISpawnerReusesABuildSlotWhileItsFirewallStillDeleting(t *testing.T) {
 	// freed slot served it in the very poll that tore job 71 down. Forgejo's
 	// scheduler then handed it to that runner; the poll that sees it gone
 	// from the waiting list is where its queue measures.
-	// It waited on the cap alone — not on the reclaim window of the job
-	// whose runner finished, and not on the release of a finished VM: the
-	// freed slot served it in the very poll that tore job 71 down. Forgejo's
-	// scheduler then handed it to that runner; the poll that sees it gone
-	// from the waiting list is where its queue measures.
-	setJobs(waiting(70), waiting(71), waiting(72), taken(73, 73))
+	setJobs(waiting(70), taken(71, 71), waiting(72), taken(73, 73))
 	spawner.poll(ctx)
 	sample, ok := spawner.cfg.Queue.Seconds(73)
 	if !ok {

@@ -492,9 +492,13 @@ func (b *BuildVMs) prices(ctx context.Context) (hcloud.Pricing, error) {
 // deleting is the collector's to finish — it lists every open row of the
 // project, missing namespace included — so a firewall a just-deleted server
 // still answers resource_in_use for neither fails this release nor keeps
-// the next build waiting on it.
+// the next build waiting on it. A firewall already left deleting by an
+// earlier release comes back into this one: its server's delete was
+// accepted, so the provider's own attachment teardown is nearly done, and
+// a few spaced retries usually get it past resource_in_use in this poll —
+// the slot is free either way; this is only what closes the row.
 func (b *BuildVMs) Release(ctx context.Context, jobID int64) error {
-	rows, err := b.registry.HeldByOwner(ctx, "ci", strconv.FormatInt(jobID, 10))
+	rows, err := b.registry.OpenByOwner(ctx, "ci", strconv.FormatInt(jobID, 10))
 	if err != nil {
 		return err
 	}

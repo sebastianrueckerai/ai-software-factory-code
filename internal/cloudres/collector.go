@@ -403,6 +403,16 @@ func (c *Collector) closeAbsent(ctx context.Context, row Resource, now time.Time
 	if err != nil || !gone {
 		return err
 	}
+	// The provider no longer has it: whatever still waits (a firewall of
+	// this deleted server, say) waits on the provider alone, so the row
+	// stops holding its cap from here even while its release was still
+	// being retried. It goes with the transition to deleted; vanished
+	// clears the mark itself.
+	if row.State == StateDeleting {
+		if _, err := c.Registry.MarkProviderGone(ctx, row.ID); err != nil {
+			return err
+		}
+	}
 	to := StateVanished
 	if row.State == StateDeleting {
 		to = StateDeleted

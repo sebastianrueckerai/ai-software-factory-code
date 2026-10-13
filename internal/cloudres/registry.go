@@ -136,6 +136,11 @@ type Registry interface {
 	// MarkHeld keeps an open row counting against a cap while its release
 	// is still being retried; false when no such open row.
 	MarkHeld(ctx context.Context, id int64) (bool, error)
+	// MarkProviderGone ends that hold once the row's provider resource is
+	// answered absent: what remains of its commission waits on the
+	// provider alone, so it must not pin a cap any longer; false when no
+	// such open row.
+	MarkProviderGone(ctx context.Context, id int64) (bool, error)
 	// Adopt records providerID on a closed row of that kind that never had
 	// one (a create that landed after its row was closed) and restamps its
 	// deleted_at to now; false when no such row.
@@ -235,6 +240,15 @@ func (p PG) Transition(ctx context.Context, id int64, to string) (bool, error) {
 func (p PG) MarkHeld(ctx context.Context, id int64) (bool, error) {
 	res, err := p.DB.ExecContext(ctx,
 		`UPDATE cloud_resources SET held = true WHERE id = $1 AND state = ANY($2)`, id, OpenStates)
+	return affected(res, err)
+}
+
+// MarkProviderGone ends a deleting row's hold: its provider resource is
+// answered absent, so what remains of its commission waits on the provider
+// alone and no longer counts against a cap.
+func (p PG) MarkProviderGone(ctx context.Context, id int64) (bool, error) {
+	res, err := p.DB.ExecContext(ctx,
+		`UPDATE cloud_resources SET held = false WHERE id = $1 AND state = ANY($2)`, id, OpenStates)
 	return affected(res, err)
 }
 
@@ -387,13 +401,21 @@ func (m *Memory) Transition(ctx context.Context, id int64, to string) (bool, err
 }
 
 func (m *Memory) MarkHeld(ctx context.Context, id int64) (bool, error) {
+	return m.setHeld(id, true)
+}
+
+func (m *Memory) MarkProviderGone(ctx context.Context, id int64) (bool, error) {
+	return m.setHeld(id, false)
+}
+
+func (m *Memory) setHeld(id int64, held bool) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r, ok := m.rows[id]
 	if !ok || !slices.Contains(OpenStates, r.State) {
 		return false, nil
 	}
-	r.held = true
+	r.held = held
 	m.rows[id] = r
 	return true, nil
 }
