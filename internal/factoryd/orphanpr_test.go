@@ -2,10 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
-	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -179,7 +175,7 @@ func reconcileInto(t *testing.T, r *Runner) RunState {
 // no OpenPullRequest, no branch lookup (roadmap 187).
 func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	fj := newOrphanForgejo()
-	card := Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "Copy the schemas of abc123", Repository: "sf/repo",
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "Copy the schemas of abc123", Repository: "demo-app/demo-app",
 		SHA: "base", IssueNumber: 4, Source: SourceSchemaCopy, PRNumber: 9}
 	r, store, _ := newActivityRunner(t, card, &fj.prForgejo)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"the copy matches upstream","findings":[]}`}
@@ -195,6 +191,9 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	cfg := activityInto[TaskConfig](t, cfgVal, cfgErr)
 	if cfg.Class != policy.ClassCoder || cfg.Process != "maintenance" || cfg.Lane != "" {
 		t.Fatalf("TaskConfig = %+v, want maintenance's coder with no lane", cfg)
+	}
+	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := execActivity(t, r, ActivitySetState, "t1", "in-review"); err != nil {
 		t.Fatal(err)
