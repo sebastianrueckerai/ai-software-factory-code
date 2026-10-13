@@ -1326,12 +1326,18 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read leases: %w", err)
 	}
-	names, err := r.kube.NamespacesByLabel(ctx, "factory.ai/task", "")
+	infos, err := r.kube.ListNamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
 		return fmt.Errorf("list agent namespaces: %w", err)
 	}
 	var errs []error
-	for _, ns := range names {
+	for _, info := range infos {
+		if info.Terminating {
+			// its contents are being garbage-collected away: a policy
+			// write there fails and the namespace needs none any more
+			continue
+		}
+		ns := info.Name
 		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 		if id == ns || strings.HasPrefix(id, "ci-") {
 			continue
