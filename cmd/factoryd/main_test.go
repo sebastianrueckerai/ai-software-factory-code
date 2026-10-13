@@ -6,15 +6,19 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/hcloud"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -492,5 +496,127 @@ func TestConsoleWriters(t *testing.T) {
 	}
 	if _, _, err := consoleWriters(rows, writersOf, "elsewhere", now)(context.Background()); err == nil {
 		t.Fatal("no project lists the namespace, the lists did not fail")
+	}
+}
+
+// shutdownRecorder is the mock CI sweep provider and worker of the
+// shutdown test: it records every operation in call order, with the
+// context each ran under.
+type shutdownRecorder struct {
+	mu          sync.Mutex
+	ops         []string
+	listCtx     context.Context
+	listTimeout time.Duration
+	deleteCtx   context.Context
+	deleteErr   string
+	sweepCalls  int
+}
+
+func (r *shutdownRecorder) record(op string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ops = append(r.ops, op)
+}
+
+func (r *shutdownRecorder) Ops() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.ops)
+}
+
+func (r *shutdownRecorder) Servers(ctx context.Context, labelSelector string) ([]hcloud.Server, error) {
+	dl, ok := ctx.Deadline()
+	var left time.Duration
+	if ok {
+		left = time.Until(dl)
+	}
+	r.mu.Lock()
+	r.listCtx = ctx
+	r.listTimeout = left
+	r.sweepCalls++
+	r.mu.Unlock()
+	r.record("ciSweepList:" + labelSelector)
+	return []hcloud.Server{{ID: 7}}, nil
+}
+
+func (r *shutdownRecorder) DeleteServer(ctx context.Context, id int64) error {
+	r.mu.Lock()
+	r.deleteCtx = ctx
+	errStr := ""
+	if ctx.Err() != nil {
+		errStr = ctx.Err().Error()
+	}
+	r.mu.Unlock()
+	r.record("ciSweepDelete:" + strconv.FormatInt(id, 10))
+	if errStr != "" {
+		return errors.New(errStr)
+	}
+	return nil
+}
+
+func (r *shutdownRecorder) Stop() { r.record("workerStop") }
+
+// The shutdown's order (roadmap 189, Stage 18 item 3.15): when the process
+// context ends (SIGTERM), the CI spawner's own cancellable context goes
+// first, then the temporal worker stops, then SweepCIMachines deletes
+// every labelled machine on a fresh 30-second context, and only then do
+// the servers shut down.
+func TestShutdownSweepsCIMachinesBeforeExit(t *testing.T) {
+	rec := &shutdownRecorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	ciRunCtx, ciRunCancel := context.WithCancelCause(ctx)
+	// the mock CI spawner: it notices its run context ended, returns from
+	// its loop and closes spawnerDone; only then may the shutdown sweep.
+	spawnerDone := make(chan struct{})
+	go func() {
+		<-ciRunCtx.Done()
+		rec.record("ciSpawnerNoticed")
+		rec.record("ciSpawnerStopped")
+		close(spawnerDone)
+	}()
+	consoleServer := &http.Server{Addr: "127.0.0.1:0", Handler: http.NotFoundHandler()}
+	server := &http.Server{Addr: "127.0.0.1:0", Handler: http.NotFoundHandler()}
+	cons, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srvLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = consoleServer.Serve(cons) }()
+	go func() { _ = server.Serve(srvLn) }()
+	shutdownDone := make(chan struct{})
+	go func() {
+		runShutdown(ciRunCtx, ciRunCancel, spawnerDone, rec, rec, consoleServer, server)
+		close(shutdownDone)
+	}()
+	select {
+	case <-shutdownDone:
+		t.Fatal("runShutdown returned before the process context ended")
+	default:
+	}
+	cancel() // the SIGTERM
+	select {
+	case <-shutdownDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runShutdown did not return")
+	}
+	want := []string{"ciSpawnerNoticed", "ciSpawnerStopped", "workerStop",
+		"ciSweepList:" + factoryd.CISweepLabelSelector, "ciSweepDelete:7"}
+	if got := rec.Ops(); !slices.Equal(got, want) {
+		t.Fatalf("ops = %v; want %v", got, want)
+	}
+	if rec.sweepCalls != 1 {
+		t.Fatalf("sweep list calls = %d; want 1", rec.sweepCalls)
+	}
+	if rec.listTimeout <= 0 || rec.listTimeout > 30*time.Second {
+		t.Fatalf("the sweep's context timeout = %s; want a fresh one of at most 30 seconds", rec.listTimeout)
+	}
+	if rec.deleteCtx == nil {
+		t.Fatal("the sweep never deleted the machine it listed")
+	}
+	if rec.deleteErr != "" {
+		t.Fatalf("the sweep deleted on a dead context: %s", rec.deleteErr)
 	}
 }

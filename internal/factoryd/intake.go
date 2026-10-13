@@ -342,29 +342,74 @@ func ReproCommand(body string) string {
 
 // ValidateReproCommand is the static check on a reproduction command at
 // filing: it returns the refusal reason, or "" when the command may run.
-// A reproduction runs in place in the checked-out worktree: a command
-// that chains cd across a mount point, or creates a git worktree under
+// GateReproduction runs the command in place in the checked-out worktree:
+// one that chains cd across a mount point, or creates a git worktree under
 // /tmp, exits 128 ("not a git repository") in the agent sandbox, so a
-// session would only discover what this check names here.
+// session would only discover what this check names here. The reason is
+// the sentence between "command <reason>;"; intakeIssue wraps it into the
+// filing refusal.
 func ValidateReproCommand(cmd string) string {
 	if cmd == "" {
 		return ""
 	}
-	for _, seg := range strings.FieldsFunc(cmd, func(r rune) bool { return r == ';' || r == '\n' || r == '&' || r == '|' }) {
-		fields := strings.Fields(seg)
-		if len(fields) == 0 {
+	for _, seg := range splitReproSegments(cmd) {
+		var words []string
+		for _, f := range strings.Fields(seg) {
+			// a leading VAR=value assignment is env, not the command
+			if _, val, ok := strings.Cut(f, "="); ok && val != "" && !strings.ContainsAny(f[:strings.Index(f, "=")], "=/") {
+				continue
+			}
+			words = append(words, f)
+		}
+		if len(words) == 0 {
 			continue
 		}
-		switch fields[0] {
-		case "cd":
-			return "the reproduction runs in place in the checked-out worktree: a command that chains cd has no repository where it lands (the sandbox rule); drop the cd"
-		case "git":
-			if slices.Contains(fields, "worktree") {
-				return "the reproduction runs in place in the checked-out worktree: a git worktree command has no repository to link under the sandbox; drop the worktree"
+		if strings.EqualFold(words[0], "cd") {
+			return "a cd-chain leaves the checked-out worktree and finds no repository where it lands"
+		}
+		if strings.EqualFold(words[0], "git") {
+			for _, w := range words[1:] {
+				if strings.EqualFold(w, "worktree") {
+					return "a git worktree under the sandbox has no repository to link"
+				}
 			}
 		}
 	}
 	return ""
+}
+
+// reproChainOperators are the shell operators a reproduction command may
+// chain segments with: &&, ;, || and newlines.
+var reproChainOperators = []string{"&&", "||", ";"}
+
+// reproRefusal is the filing refusal of a reproduction command with
+// reason: it names the sandbox rule and lands the card in the backlog.
+func reproRefusal(reason string) string {
+	return fmt.Sprintf("factoryd: the reproduction command %s; a reproduction runs in place in the checked-out worktree. The card stays in backlog.", reason)
+}
+
+// splitReproSegments cuts a reproduction command at its chain operators
+// and newlines, leaving the segments between them.
+func splitReproSegments(cmd string) []string {
+	var segments []string
+	for _, line := range strings.Split(cmd, "\n") {
+		rest := line
+		for {
+			cut, op := -1, ""
+			for _, o := range reproChainOperators {
+				if i := strings.Index(rest, o); i >= 0 && (cut < 0 || i < cut) {
+					cut, op = i, o
+				}
+			}
+			if cut < 0 {
+				segments = append(segments, rest)
+				break
+			}
+			segments = append(segments, rest[:cut])
+			rest = rest[cut+len(op):]
+		}
+	}
+	return segments
 }
 
 // line "Size: <size>" naming a card size and its last line "Budget: <n>" or
@@ -566,9 +611,20 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		task.Kind, task.Status, task.ReproCommand = "human", "waiting-human", ""
 	}
 	var refused string
+	reproRefused := false
 	if task.Kind == "agent" {
 		if task, refused, err = in.enterOnCreation(ctx, p, task, names, defaultBranch, sender); err != nil {
 			return err
+		}
+		if reason := ValidateReproCommand(task.ReproCommand); reason != "" {
+			// the sandbox rule is known at filing: the card stays in the
+			// backlog and no session discovers it under GateReproduction
+			task.ReproCommand = ""
+			refused = strings.TrimSpace(refused + "\n" + reproRefusal(reason))
+			reproRefused = true
+			if task.Lane != policy.LaneBacklog {
+				task.Lane, task.Status, task.RequiredCapabilities, task.SHA, task.Gate, task.GateSince = policy.LaneBacklog, "backlog", nil, "", "", nil
+			}
 		}
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
@@ -582,7 +638,19 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index})
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
-	return in.enterLane(ctx, p, task, poster, defaultBranch)
+	// a card refused only its reproduction command keeps its write-up: the
+	// entry was allowed, refuseEntry's labels alone come off again
+	if err := in.enterLane(ctx, p, task, poster, defaultBranch); err != nil {
+		return err
+	}
+	if reproRefused {
+		if parts, err := SplitRepo(repo); err != nil {
+			log.Printf("%s: issue #%d on %s: restore the lane label: %v", via, issue.Index, repo, err)
+		} else if err := in.Forgejo.ReplaceIssueLabels(ctx, parts.Owner, parts.Name, issue.Index, names); err != nil {
+			log.Printf("%s: issue #%d on %s: restore the lane label: %v", via, issue.Index, repo, err)
+		}
+	}
+	return nil
 }
 
 // enterLane is card t's entry into its lane of project p by user by: the
