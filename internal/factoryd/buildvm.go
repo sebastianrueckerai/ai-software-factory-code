@@ -15,7 +15,6 @@ import (
 	"math"
 	"math/big"
 	"net"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -347,20 +346,18 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 	}
 	defer func() {
 		if err != nil {
-			// A release that only left a row deleting is the collector's to
-			// finish, not an outage: it costs no minute of build claims.
+			// Any failed provision backs off: while the provider answers
+			// errors, further ticks claim nothing, so an outage or a bad
+			// token costs no runner registration and namespace per tick.
+			// What the failure left behind decides only the log: a release
+			// that closed everything (a quota refusal whose firewall went)
+			// leaves no trace, a refused delete stays deleting for the
+			// collector — the slot is free either way, and the minute of
+			// quiet is what keeps the next poll from churning.
 			if rerr := b.Release(context.WithoutCancel(ctx), jobID); rerr != nil {
 				log.Printf("build vm: release after failed provision for job %d: %v", jobID, rerr)
 			}
-			open, oerr := b.registry.Open(context.WithoutCancel(ctx), "ci")
-			switch {
-			case oerr != nil:
-				log.Printf("build vm: rows after failed provision for job %d: %v", jobID, oerr)
-				b.backoffUntil = b.now().Add(buildVMBackoff)
-			case !slices.ContainsFunc(open, func(r cloudres.Resource) bool { return r.State == cloudres.StateRequested }):
-			default:
-				b.backoffUntil = b.now().Add(buildVMBackoff)
-			}
+			b.backoffUntil = b.now().Add(buildVMBackoff)
 		}
 	}()
 	pricing, err := b.prices(ctx)
