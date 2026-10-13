@@ -356,6 +356,10 @@ type Store interface {
 	// ErrAnswered when it has one, ErrNotFound when there is no such
 	// question.
 	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error
+	// AnswerPlanQuestions records by's answers to plan task id's revision
+	// in one statement: ErrAnswered when any question has an answer,
+	// ErrNotFound when there is no such question; none is stored then.
+	AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error
 	// OpenPlanQuestions is how many of revision's questions have no answer.
 	OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its

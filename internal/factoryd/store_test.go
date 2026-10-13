@@ -1808,6 +1808,22 @@ func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision,
 	return nil
 }
 
+func (s *fakeStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error {
+	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+	for _, a := range answers {
+		switch {
+		case a.Idx < 1 || a.Idx > len(qs):
+			return ErrNotFound
+		case qs[a.Idx-1].Answer != "":
+			return ErrAnswered
+		}
+	}
+	for _, a := range answers {
+		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy, qs[a.Idx-1].AnsweredAt = a.Text, by, time.Now()
+	}
+	return nil
+}
+
 func (s *fakeStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
 	qs, _ := s.PlanQuestions(ctx, id, revision)
 	return len(qs) - len(slices.DeleteFunc(qs, func(q PlanQuestion) bool { return q.Answer == "" })), nil
