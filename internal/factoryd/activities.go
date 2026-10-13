@@ -723,6 +723,9 @@ func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 // record appends to the timeline; a failed append is logged, never fails
 // the step it describes.
 func (r *Runner) record(ctx context.Context, taskID, step string, detail map[string]any) {
+	if r.timeline == nil {
+		return
+	}
 	if err := r.timeline.Append(ctx, taskID, step, detail); err != nil {
 		log.Printf("task %s: timeline %s: %v", taskID, step, err)
 	}

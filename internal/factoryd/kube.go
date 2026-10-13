@@ -153,7 +153,7 @@ func NewInClusterKube() (*InClusterKube, error) {
 	if host == "" || port == "" {
 		return nil, errors.New("kube in-cluster: KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT are not set")
 	}
-	caPEM, err := os.ReadFile(filepath.Join(saDir, "ca.crt"))
+	caPEM, err := os.ReadFile(filepath.Join(saDir, "ca.crt")) // #nosec G304 -- saDir is the pod's service-account mount or a test stub set by SaDirForTest; never user input
 	if err != nil {
 		return nil, fmt.Errorf("kube in-cluster: %w", err)
 	}
@@ -676,7 +676,7 @@ func (k *InClusterKube) request(ctx context.Context, method, path string, body a
 	if err != nil {
 		return nil, err
 	}
-	token, err := os.ReadFile(filepath.Join(saDir, "token"))
+	token, err := os.ReadFile(filepath.Join(saDir, "token")) // #nosec G304 -- saDir is the pod's service-account mount or a test stub set by SaDirForTest; never user input
 	if err != nil {
 		return nil, fmt.Errorf("kube in-cluster token: %w", err)
 	}
