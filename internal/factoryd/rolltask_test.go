@@ -885,6 +885,59 @@ func TestRollCommitAdoptsItsOwnUnrecordedCommit(t *testing.T) {
 	}
 }
 
+// The queue's staging merge advanced main into the roll's branch after
+// factoryd wrote its commit: the tip is a two-parent merge carrying the
+// recorded commit, not that commit itself. The guard walks the ancestry,
+// finds factoryd's commit and adopts the tip; no commit is written.
+func TestRollCommitAcceptsAQueueStagedMerge(t *testing.T) {
+	newGw := sha256Of(gwNewIdx)
+	folded := k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx))
+	f := &rollForgejo{branches: map[string]string{"factory/t-roll": "staged-merge"},
+		forkParents: map[string][]string{"staged-merge": {"roll-commit-1", "fork-main-head"}},
+		files:       map[string]map[string]string{forkRepo + "@staged-merge": folded}}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}})
+	var head string
+	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err != nil || out.Get(&head) != nil || head != "staged-merge" {
+		t.Fatalf("head %q err %v", head, err)
+	}
+	if len(f.commits) != 0 {
+		t.Fatalf("committed on a staged branch: %v", f.commits)
+	}
+	if got, _ := store.RollHead(context.Background(), "t-roll"); got != "staged-merge" {
+		t.Fatalf("recorded head %q, want the merged tip", got)
+	}
+	for _, r := range store.rolls {
+		if !r.Committed {
+			t.Fatalf("roll %+v left uncommitted", r)
+		}
+	}
+}
+
+// A tip that does not carry factoryd's commit (a foreign commit on the
+// base) refuses with the existing message shape.
+func TestRollCommitRefusesATipWithoutFactorydsCommit(t *testing.T) {
+	folded := k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerNewIdx), sha256Of(runnerIdx))
+	f := &rollForgejo{branches: map[string]string{"factory/t-roll": "rebased-by-an-agent"},
+		forkParents: map[string][]string{"rebased-by-an-agent": {"agent-base-commit"}},
+		files:       map[string]map[string]string{forkRepo + "@rebased-by-an-agent": folded}}
+	runner, _ := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1"},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}})
+	_, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err == nil || !strings.Contains(err.Error(), "factory/t-roll is at rebased-by-an-agent, not at roll-commit-1, the commit factoryd wrote") ||
+		!strings.Contains(err.Error(), errTerminal) {
+		t.Fatalf("err %v", err)
+	}
+	if len(f.commits) != 0 {
+		t.Fatalf("committed on a foreign tip: %v", f.commits)
+	}
+}
+
 // Several green runs waiting and no roll open: the newest files the roll,
 // which carries the older commits' code; no fold follows, and the older
 // run falls below the roll.
