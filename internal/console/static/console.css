@@ -347,7 +347,7 @@ button.undo { margin: 0 0 0 .3rem; padding: 0 .45rem; font-size: .78rem; }
 .cursor { color: var(--accent); animation: blink 1s steps(2) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
-.chat-form { display: flex; gap: .5rem; align-items: flex-end; margin: 0; padding: .5rem .8rem .6rem; border-top: 1px solid var(--line-subtle); }
+.chat-form { display: flex; gap: .5rem; align-items: center; margin: 0; padding: .5rem .8rem .6rem; border-top: 1px solid var(--line-subtle); }
 .chat-form textarea { flex: 1; max-width: none; resize: none; border-radius: 8px; }
 .chat-form button { margin: 0; }
 .chat-queue { list-style: none; margin: 0; padding: 0 .8rem .5rem; display: flex; flex-direction: column; gap: .3rem; }
