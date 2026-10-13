@@ -62,6 +62,8 @@ type fakeStore struct {
 	providerRefusals map[string]string
 	// createFails fails that many CreateTask calls
 	createFails int
+	// createCalls counts every CreateTask call, failed or not
+	createCalls int
 	deps        map[string][]string // task → the tasks it depends on
 	plans       map[string][]PlanRevision
 	questions   map[string][]PlanQuestion // by "task revision"
@@ -135,6 +137,7 @@ func newFakeStore() *fakeStore {
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
+	s.createCalls++
 	if s.createFails > 0 {
 		s.createFails--
 		return errors.New("insert failed")
