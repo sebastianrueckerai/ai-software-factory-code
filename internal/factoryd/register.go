@@ -85,7 +85,7 @@ type Registrar struct {
 	Tasks interface {
 		CreateTask(ctx context.Context, t Task) error
 		SetTaskPR(ctx context.Context, id string, number int64) error
-		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
+		TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
 	}
 	Workflows Workflows
 	Timeline  *Timeline
