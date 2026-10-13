@@ -561,6 +561,73 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
 }
 
+// doAnswerPlanQuestions answers every question of revision revision of
+// plan id that the member names at once, as doAnswerPlanQuestion answers
+// one: factoryd stores all answers and signals the plan's workflow, then
+// each answer is posted on the issue as theirs (factoryd.
+// PlanAnswerComment). An entry without a number or of none, an empty or
+// long one, and a repeated number are refused before anything is stored.
+func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string, revision int, answers []PlanAnswerInput) (string, error) {
+	t, err := c.planIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	qs, err := c.cfg.Tasks.PlanQuestions(ctx, t.ID, revision)
+	if err != nil {
+		return "", err
+	}
+	batch := make([]factoryd.PlanAnswer, 0, len(answers))
+	seen := map[int]bool{}
+	for _, ans := range answers {
+		if ans.Question < 1 || ans.Question > len(qs) {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("Plan #%d revision %d has no question %d.", t.IssueNumber, revision, ans.Question))
+		}
+		if seen[ans.Question] {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("question %d is answered twice", ans.Question))
+		}
+		seen[ans.Question] = true
+		text := strings.Join(strings.Fields(ans.Text), " ")
+		if text == "" || utf8.RuneCountInString(text) > maxPlanAnswer {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d characters is required", maxPlanAnswer))
+		}
+		batch = append(batch, factoryd.PlanAnswer{Idx: ans.Question, Text: text})
+	}
+	var stale factoryd.ErrStalePlan
+	switch err := c.cfg.AnswerPlanQuestions(ctx, t.ID, revision, batch, a.s.user); {
+	case errors.As(err, &stale):
+		return "", refuse(http.StatusConflict, stale.Error())
+	case errors.Is(err, factoryd.ErrAnswered):
+		return "", refuse(http.StatusConflict, "One of those questions is answered already.")
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d revision %d has no such question.", t.IssueNumber, revision))
+	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
+		log.Printf("console: %s answered %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
+		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
+	case err != nil:
+		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
+		return "", refuse(http.StatusConflict, "The answers could not be recorded; see the factoryd log.")
+	}
+	for _, ans := range batch {
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
+			map[string]any{"revision": revision, "index": ans.Idx, "answer": ans.Text})
+		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, ans.Text), nil); err != nil {
+			return "", &forgejoRefusal{"post the answer on the issue (the answers are recorded)", err}
+		}
+	}
+	log.Printf("console: %s answered %d questions of plan %s via %s", a.s.user, len(batch), t.ID, a.via)
+	note := fmt.Sprintf("Answered %s of plan #%d.", strings.Join(batchLines(batch), ", "), t.IssueNumber)
+	return note, nil
+}
+
+// batchLines is one answer's sentence part: "question 1: 60 seconds".
+func batchLines(batch []factoryd.PlanAnswer) []string {
+	lines := make([]string, len(batch))
+	for i, ans := range batch {
+		lines[i] = fmt.Sprintf("question %d: %s", ans.Idx, ans.Text)
+	}
+	return lines
+}
+
 // doRequestChanges posts a writer's change request on plan id's issue
 // as the member; intake hands it to the planner. The plan's pending
 // request is denied as theirs at once: the planner answers a new revision.
