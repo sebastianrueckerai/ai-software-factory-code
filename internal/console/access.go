@@ -137,6 +137,7 @@ var accessTable = map[string]accessRule{
 	"new_card":         {need: writer, scope: scChat},
 	"move_card":        rLane,
 	"answer":           rCard,
+	"tell_card":        rCard,
 	"comment":          rCard,
 	"steer":            rCard,
 	"retry":            {need: approver, scope: scCard, what: "retry a card"},
