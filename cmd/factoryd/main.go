@@ -275,7 +275,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("schemas: %v", err)
 	}
-	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas)}
+	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas),
+		Store: store, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget}
 	go func() {
 		if err := schemaCopier.SyncOnce(ctx, 3, time.Minute); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("schema copies: %v", err)
