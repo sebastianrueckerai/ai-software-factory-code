@@ -331,6 +331,53 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 	}
 }
 
+// The namespace state contract: ListNamespacesByLabel reports Terminating=true
+// for a namespace the apiserver stamped metadata.deletionTimestamp on — such a
+// namespace cannot accept new writes — and Labels carries its labels. Tests
+// simulate it with fakeKube.terminating[name] = true.
+func TestListNamespacesByLabelReportsTerminatingState(t *testing.T) {
+	ctx := context.Background()
+
+	fk := newFakeKube()
+	if err := fk.CreateNamespace(ctx, "factory-agents-t9", map[string]string{"factory.ai/task": "t9"}); err != nil {
+		t.Fatalf("fake CreateNamespace: %v", err)
+	}
+	if err := fk.CreateNamespace(ctx, "factory-agents-other", map[string]string{"factory.ai/task": "other"}); err != nil {
+		t.Fatalf("fake CreateNamespace: %v", err)
+	}
+	fk.terminating["factory-agents-t9"] = true
+	fakeList, err := fk.ListNamespacesByLabel(ctx, "factory.ai/task", "t9")
+	wantFake := []NamespaceInfo{{Name: "factory-agents-t9", Terminating: true, Labels: map[string]string{"factory.ai/task": "t9"}}}
+	if err != nil || !reflect.DeepEqual(fakeList, wantFake) {
+		t.Fatalf("fakeKube ListNamespacesByLabel = %+v, %v, want %+v", fakeList, err, wantFake)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces" || r.URL.Query().Get("labelSelector") != "factory.ai/task=t9" {
+			t.Errorf("GET %s?labelSelector=%s", r.URL.Path, r.URL.Query().Get("labelSelector"))
+		}
+		io.WriteString(w, `{"items":[{"metadata":{"name":"factory-agents-t9","labels":{"factory.ai/task":"t9"},"deletionTimestamp":"2026-10-13T11:13:54Z"}},`+
+			`{"metadata":{"name":"factory-agents-t10","labels":{"factory.ai/task":"t9"}}}]}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	got, err := k.ListNamespacesByLabel(ctx, "factory.ai/task", "t9")
+	want := []NamespaceInfo{
+		{Name: "factory-agents-t9", Terminating: true, Labels: map[string]string{"factory.ai/task": "t9"}},
+		{Name: "factory-agents-t10", Labels: map[string]string{"factory.ai/task": "t9"}},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListNamespacesByLabel = %+v, %v, want %+v", got, err, want)
+	}
+}
+
 // SecretsByLabels selects with every label, sorted, and answers each
 // Secret's name, type and decoded data.
 func TestInClusterKubeSecretsByLabels(t *testing.T) {

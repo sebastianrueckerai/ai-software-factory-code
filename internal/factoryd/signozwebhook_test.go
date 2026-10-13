@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // alertForgejo is the projects' repositories as the alert intake sees
@@ -789,5 +790,27 @@ func TestRestartWindowAlertNameMatchesTheRule(t *testing.T) {
 	}
 	if restartWindowAlert != rule.Alert {
 		t.Fatalf("restartWindowAlert = %q, want k8s/alerts/5xx-rate.json's alert %q", restartWindowAlert, rule.Alert)
+	}
+}
+
+// Ruling 181, card alert-window: an alert whose rule carries the capacity
+// label is a human's decision even on a project with agents — a coding
+// agent can only raise a limit. The intake files a human-lane task and
+// starts no workflow.
+func TestCapacityAlertFilesHumanCard(t *testing.T) {
+	r := newAlertRig(t)
+	if p := r.in.Projects.(*memProjects).m["demo-app"]; p.Agents != policy.AgentsCoder {
+		t.Fatalf("project demo-app on agents %q, want coder", p.Agents)
+	}
+	capacity := sigAlert("firing", "fp-cap", "demo-staging", firedAt, neverEnds)
+	capacity["labels"].(map[string]string)["capacity"] = "true"
+	if rr := r.post(t, "signoz", "hook-pw", capacity); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	var task Task
+	for _, task = range r.store.tasks {
+	}
+	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 {
+		t.Fatalf("task %+v, started %v", task, r.flows.started)
 	}
 }
