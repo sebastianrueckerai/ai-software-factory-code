@@ -1366,6 +1366,32 @@ func TestReproCommand(t *testing.T) {
 	}
 }
 
+// ValidateReproCommand is the static check on a reproduction command at
+// filing: one that chains cd or creates a git worktree is refused with a
+// reason naming the sandbox rule (a reproduction runs in place in the
+// checked-out worktree); a plain command passes.
+func TestValidateReproCommand(t *testing.T) {
+	for cmd, wantRefusal := range map[string]bool{
+		"":                             false,
+		"make repro":                   false,
+		"go test ./...":                false,
+		"cd /tmp/x && make repro":      true,
+		"make repro && cd other":       true,
+		"git worktree add /tmp/w HEAD": true,
+		"make a; cd b; make c":         true,
+		"echo cd to a directory":       false,
+		"git status":                   false,
+	} {
+		reason := ValidateReproCommand(cmd)
+		if (reason != "") != wantRefusal {
+			t.Errorf("ValidateReproCommand(%q) = %q, refusal wanted %v", cmd, reason, wantRefusal)
+		}
+		if wantRefusal && !strings.Contains(reason, "in place in the checked-out worktree") {
+			t.Errorf("ValidateReproCommand(%q) = %q, want it to name the sandbox rule", cmd, reason)
+		}
+	}
+}
+
 // An issue's body asks for its card's budget by a line "Size: <size>" or
 // "Budget: <n> [EUR]" (policy budget 5 by default, 15 at most): a size
 // gives its budget, an asked one wins over it, at most the project's card
