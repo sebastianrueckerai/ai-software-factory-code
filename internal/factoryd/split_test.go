@@ -100,7 +100,7 @@ func TestSplitOverBoundReturnsNilWhenBoundIsZero(t *testing.T) {
 // A planted over-bound file refuses the split before any session: the
 // card never runs, no pod starts, the findings name the file and its
 // lines.
-func TestRunSplitRefusesAnOverBoundFileBeforeTheSession(t *testing.T) {
+func TestRunSplitRefusesAnOverBoundFileWithoutASession(t *testing.T) {
 	big := Task{ID: "t1", Status: "in-review", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
 		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
 	kube := newFakeKube()
@@ -185,6 +185,121 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" {
 		t.Fatalf("status after the session %s, want in-review", got.Status)
 	}
+}
+
+// A split whose files all stay under the bound runs its planner session
+// as before: the pod starts, the guide names the pull request and the
+// bound, and the planner's answer becomes the card's plan revision.
+func TestRunSplitRunsTheSessionWhenAllFilesAreUnderBound(t *testing.T) {
+	big := Task{ID: "t1", Status: "in-review", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
+	hub.prFiles = `[{"filename":"web/app.ts","additions":500,"deletions":0},{"filename":"api/links.go","additions":520,"deletions":0}]`
+	v := runner.cfg.Policy()
+	v.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return v }
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	plan := Plan{Summary: "The API first, then the page on it.", Cards: []PlanCard{
+		{Key: "api", Role: RoleFeature, Title: "The links API", Brief: "Carry over api/ of pull/9.", Directories: []string{"api"},
+			Acceptance: []string{"TestCreateLink in api"}, Size: "medium"},
+		{Key: "web", Role: RoleFeature, Title: "The links page", Brief: "Carry over web/ of pull/9.", Directories: []string{"web"},
+			DependsOn: []string{"api"}, Acceptance: []string{"TestLinksPage in web"}, Size: "medium"},
+	}}
+	kube.scriptPods(0, resultLine(true, fencePlan(plan)))
+	if err := <-done; err != nil {
+		t.Fatalf("RunSplit: %v", err)
+	}
+	raw, sha, _ := planSHA(plan)
+	if res.Revision != 1 || res.SHA256 != sha || len(res.Findings) != 0 {
+		t.Fatalf("result %+v, want revision 1 at %s", res, sha)
+	}
+	if len(kube.podOrder) != 1 {
+		t.Fatalf("pods %d, want the session's one", len(kube.podOrder))
+	}
+	env := podEnv(kube.podAt(0))
+	guide := env["REPORT_GUIDE"]
+	for _, want := range []string{"Pull request #9 of this card changes 1020 lines in 2 files, more than the 1000 lines one pull request may change",
+		"- web/app.ts +500 -0\n- api/links.go +520 -0\n"} {
+		if !strings.Contains(guide, want) {
+			t.Fatalf("guide lacks %q:\n%s", want, guide)
+		}
+	}
+	if env["MODE"] != "report" || env["FINDINGS"] != "null" {
+		t.Fatalf("pod env MODE=%s FINDINGS=%s, want report and null", env["MODE"], env["FINDINGS"])
+	}
+	if rev, ok, _ := store.PlanRevision(context.Background(), "t1", 1); !ok || string(rev.Plan) != string(raw) {
+		t.Fatalf("revision %+v %v", rev, ok)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" {
+		t.Fatalf("status after the session %s, want in-review", got.Status)
+	}
+}
+
+// A split refused at once spends no session: the findings name the file,
+// no pod starts, the card keeps its status, and a second try on the same
+// over-bound head is refused again without one.
+func TestRunSplitSpendsNoSessionOnAnOverBoundRefusal(t *testing.T) {
+	big := Task{ID: "t1", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, big, kube, objects)
+	hub.prFiles = `[{"filename":"web/app.ts","additions":500,"deletions":0},{"filename":"api/links.go","additions":1100,"deletions":0}]`
+	v := runner.cfg.Policy()
+	v.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return v }
+
+	run := func(findings []string) PlanResult {
+		t.Helper()
+		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), findings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var res PlanResult
+		if err := val.Get(&res); err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	want := []string{"split: api/links.go alone changes 1100 lines, over the bound 1000: no card can stay under it"}
+	first := run([]string(nil))
+	if !slices.Equal(first.Findings, want) {
+		t.Fatalf("refusal findings %q, want %q", first.Findings, want)
+	}
+	second := run(first.Findings)
+	if !slices.Equal(second.Findings, want) {
+		t.Fatalf("second refusal %q, want %q", second.Findings, want)
+	}
+	if len(kube.podOrder) != 0 {
+		t.Fatalf("pods %d: a session ran for a doomed split", len(kube.podOrder))
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "waiting-human" {
+		t.Fatalf("status after the refusals %s, want waiting-human", got.Status)
+	}
+	line := timelineStep(t, objects, "t1", "split_refused")
+	if !slices.Equal(asStrings(line["findings"]), want) {
+		t.Fatalf("timeline findings %v, want %q", line["findings"], want)
+	}
+}
+
+// asStrings is a timeline findings list, its entries as strings.
+func asStrings(v any) []string {
+	list, _ := v.([]any)
+	out := make([]string, len(list))
+	for i, e := range list {
+		out[i], _ = e.(string)
+	}
+	return out
 }
 
 // FileSplit files the split's cards like a plan's, the member who split

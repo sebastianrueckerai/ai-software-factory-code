@@ -42,8 +42,22 @@ type ChatToolCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Result    string `json:"result"`
+	// ReadAt is when the result was read: a replayed result older than a
+	// minute shows its age beside the turn's fresh card state.
+	ReadAt time.Time `json:"read_at,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`
+}
+
+// StampReadAt gives each of calls without one the time now, so every tool
+// result a turn stores carries when it was read.
+func StampReadAt(calls []ChatToolCall, now time.Time) []ChatToolCall {
+	for i := range calls {
+		if calls[i].ReadAt.IsZero() {
+			calls[i].ReadAt = now
+		}
+	}
+	return calls
 }
 
 // EnsureChatTask is project name's chat task for the month of at, filed
@@ -123,7 +137,7 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) error {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
-		b, err := json.Marshal(m.ToolCalls)
+		b, err := json.Marshal(StampReadAt(m.ToolCalls, time.Now()))
 		if err != nil {
 			return err
 		}
@@ -156,6 +170,9 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 			if err := json.Unmarshal(calls, &m.ToolCalls); err != nil {
 				return nil, err
 			}
+			// a row stored before read_at was written reads back with the
+			// message's own time, so no result is ever undated
+			StampReadAt(m.ToolCalls, m.At)
 		}
 		out = append(out, m)
 	}
