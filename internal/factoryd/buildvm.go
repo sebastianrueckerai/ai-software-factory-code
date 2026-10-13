@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -308,13 +309,20 @@ type BuildVM struct {
 }
 
 // FreeSlot reports whether another VM may be created: not while backing
-// off a failed provision, and open server rows count, deleting ones
-// included, since their IP is not yet released.
+// off a failed provision, and only held rows count — requested, live, or
+// deleting with a release still retrying its deletes. A deleting row the
+// collector owns holds no slot: its delete was already accepted, so its IP
+// is the provider's to give back and waits on nothing factoryd still has to
+// do. Counting it held the slot through the release of the rest of its
+// commission (a firewall a just-deleted server still answers
+// resource_in_use for) and through the collector passes that finish an
+// interrupted teardown, which is what made a build job wait minutes past
+// the cap rather than seconds.
 func (b *BuildVMs) FreeSlot(ctx context.Context) (bool, error) {
 	if b.now().Before(b.backoffUntil) {
 		return false, nil
 	}
-	rows, err := b.registry.Open(ctx, "ci")
+	rows, err := b.registry.HeldOpen(ctx, "ci")
 	if err != nil {
 		return false, err
 	}
@@ -339,9 +347,19 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 	}
 	defer func() {
 		if err != nil {
-			b.backoffUntil = b.now().Add(buildVMBackoff)
+			// A release that only left a row deleting is the collector's to
+			// finish, not an outage: it costs no minute of build claims.
 			if rerr := b.Release(context.WithoutCancel(ctx), jobID); rerr != nil {
 				log.Printf("build vm: release after failed provision for job %d: %v", jobID, rerr)
+			}
+			open, oerr := b.registry.Open(context.WithoutCancel(ctx), "ci")
+			switch {
+			case oerr != nil:
+				log.Printf("build vm: rows after failed provision for job %d: %v", jobID, oerr)
+				b.backoffUntil = b.now().Add(buildVMBackoff)
+			case !slices.ContainsFunc(open, func(r cloudres.Resource) bool { return r.State == cloudres.StateRequested }):
+			default:
+				b.backoffUntil = b.now().Add(buildVMBackoff)
 			}
 		}
 	}()
@@ -470,10 +488,13 @@ func (b *BuildVMs) prices(ctx context.Context) (hcloud.Pricing, error) {
 	return p, nil
 }
 
-// Release deletes every open resource of jobID, servers first, and closes
-// the rows (cloudres.Collector.Release).
+// Release deletes what jobID still holds and closes those rows. A row left
+// deleting is the collector's to finish — it lists every open row of the
+// project, missing namespace included — so a firewall a just-deleted server
+// still answers resource_in_use for neither fails this release nor keeps
+// the next build waiting on it.
 func (b *BuildVMs) Release(ctx context.Context, jobID int64) error {
-	rows, err := b.registry.OpenByOwner(ctx, "ci", strconv.FormatInt(jobID, 10))
+	rows, err := b.registry.HeldByOwner(ctx, "ci", strconv.FormatInt(jobID, 10))
 	if err != nil {
 		return err
 	}

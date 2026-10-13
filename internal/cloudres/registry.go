@@ -41,6 +41,13 @@ var Kinds = []string{KindServer, KindVolume, KindFirewall}
 // OpenStates are the states whose resource may exist at the provider.
 var OpenStates = []string{StateRequested, StateLive, StateDeleting}
 
+// HeldStates are the open rows that hold a slot: requested and live. A
+// deleting row holds one only while its release is still factoryd's to
+// finish (MarkHeld): once a refused delete is left to the collector, the
+// row's resource is already gone or going, and waiting for the provider to
+// let the last piece of its commission go must not pin a cap.
+var HeldStates = []string{StateRequested, StateLive}
+
 // allowedFrom maps a target state to the states it may be entered from.
 // requested -> deleted is a create that definitively failed.
 var allowedFrom = map[string][]string{
@@ -87,6 +94,30 @@ type Resource struct {
 	// who made the commission standing or released it in the console
 	PromotedBy string
 	ReleasedBy string
+	// held marks an open row whose release is still being retried: it
+	// counts against a cap although deleting alone would not.
+	held bool
+}
+
+// Held reports whether the row holds a slot: requested and live always,
+// deleting only while a release still owns its retry (MarkHeld). An
+// exported view for callers outside the registry.
+func (r Resource) Holds() bool {
+	if r.State == StateDeleting {
+		return r.held
+	}
+	return slices.Contains(HeldStates, r.State)
+}
+
+// HeldRows returns the rows that hold a slot.
+func HeldRows(rows []Resource) []Resource {
+	var out []Resource
+	for _, r := range rows {
+		if r.Holds() {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // Registry is the durable record. Postgres in production; Memory in tests.
@@ -99,8 +130,12 @@ type Registry interface {
 	SetLive(ctx context.Context, id int64, providerID string) (bool, error)
 	// Transition moves a row to `to` if its current state allows it and
 	// reports whether it moved; entering deleted or vanished stamps
-	// deleted_at.
+	// deleted_at. Entering deleting clears the held mark: from there the
+	// collector owns the row, unless a release still holds it (MarkHeld).
 	Transition(ctx context.Context, id int64, to string) (bool, error)
+	// MarkHeld keeps an open row counting against a cap while its release
+	// is still being retried; false when no such open row.
+	MarkHeld(ctx context.Context, id int64) (bool, error)
 	// Adopt records providerID on a closed row of that kind that never had
 	// one (a create that landed after its row was closed) and restamps its
 	// deleted_at to now; false when no such row.
@@ -109,6 +144,13 @@ type Registry interface {
 	Open(ctx context.Context, project string) ([]Resource, error)
 	// OpenByOwner lists the open rows of one owner, oldest first.
 	OpenByOwner(ctx context.Context, project, ownerRef string) ([]Resource, error)
+	// HeldByOwner lists the rows of one owner that hold a slot (HeldStates),
+	// oldest first: what a cap counts and a release must still delete.
+	HeldByOwner(ctx context.Context, project, ownerRef string) ([]Resource, error)
+	// HeldOpen lists the project's open rows that hold a slot: requested
+	// and live, plus a deleting row whose release is still being retried
+	// (MarkHeld). What a cap counts.
+	HeldOpen(ctx context.Context, project string) ([]Resource, error)
 }
 
 var errUnknownState = errors.New("cloudres: unknown target state")
@@ -184,9 +226,15 @@ func (p PG) Transition(ctx context.Context, id int64, to string) (bool, error) {
 		return false, errUnknownState
 	}
 	res, err := p.DB.ExecContext(ctx,
-		`UPDATE cloud_resources SET state = $2,
+		`UPDATE cloud_resources SET state = $2, held = false,
 		        deleted_at = CASE WHEN $2 IN ('deleted', 'vanished') THEN now() ELSE deleted_at END
 		 WHERE id = $1 AND state = ANY($3)`, id, to, from)
+	return affected(res, err)
+}
+
+func (p PG) MarkHeld(ctx context.Context, id int64) (bool, error) {
+	res, err := p.DB.ExecContext(ctx,
+		`UPDATE cloud_resources SET held = true WHERE id = $1 AND state = ANY($2)`, id, OpenStates)
 	return affected(res, err)
 }
 
@@ -201,7 +249,7 @@ func affected(res sql.Result, err error) (bool, error) {
 const resourceColumns = `id, project, kind, provider_id, name, labels, owner_ref, price_per_hour_eur::float8,
 	created_at, lease_expires, state, deleted_at, repo, session_ref, size, purpose, address, lifetime,
 	COALESCE(hold_id, 0), COALESCE(approval_id, 0), accrued_hours, accrued_eur::float8, promoted_by, released_by,
-	reserved_eur::float8, monthly_eur::float8`
+	reserved_eur::float8, monthly_eur::float8, held`
 
 func (p PG) Open(ctx context.Context, project string) ([]Resource, error) {
 	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
@@ -211,6 +259,20 @@ func (p PG) Open(ctx context.Context, project string) ([]Resource, error) {
 func (p PG) OpenByOwner(ctx context.Context, project, ownerRef string) ([]Resource, error) {
 	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
 		WHERE project = $1 AND owner_ref = $2 AND state = ANY($3) ORDER BY id`, project, ownerRef, OpenStates)
+}
+
+func (p PG) HeldByOwner(ctx context.Context, project, ownerRef string) ([]Resource, error) {
+	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
+		WHERE project = $1 AND owner_ref = $2 AND state = ANY($3) ORDER BY id`, project, ownerRef, HeldStates)
+}
+
+// HeldOpen lists the project's open rows that hold a slot: what a cap
+// counts. A deleting row holds one only while its release is still being
+// retried (MarkHeld); left to the collector, it waits on the provider
+// alone and must not pin the cap.
+func (p PG) HeldOpen(ctx context.Context, project string) ([]Resource, error) {
+	return p.query(ctx, `SELECT `+resourceColumns+` FROM cloud_resources
+		WHERE project = $1 AND (state = ANY($2) OR held) ORDER BY id`, project, HeldStates)
 }
 
 // Get reads one row; false when it does not exist.
@@ -235,7 +297,7 @@ func (p PG) query(ctx context.Context, q string, args ...any) ([]Resource, error
 		if err := rows.Scan(&r.ID, &r.Project, &r.Kind, &r.ProviderID, &r.Name, &labels, &r.OwnerRef,
 			&r.PricePerHourEUR, &r.CreatedAt, &r.LeaseExpires, &r.State, &r.DeletedAt, &r.Repo, &r.SessionRef, &r.Size,
 			&r.Purpose, &r.Address, &r.Lifetime, &r.HoldID, &r.ApprovalID, &r.AccruedHours, &r.AccruedEUR,
-			&r.PromotedBy, &r.ReleasedBy, &r.ReservedEUR, &r.MonthlyEUR); err != nil {
+			&r.PromotedBy, &r.ReleasedBy, &r.ReservedEUR, &r.MonthlyEUR, &r.held); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(labels, &r.Labels); err != nil {
@@ -313,10 +375,25 @@ func (m *Memory) Transition(ctx context.Context, id int64, to string) (bool, err
 		return false, nil
 	}
 	r.State = to
+	if to == StateDeleting {
+		r.held = false // the collector owns the row from here
+	}
 	if to == StateDeleted || to == StateVanished {
 		t := m.now()
 		r.DeletedAt = &t
 	}
+	m.rows[id] = r
+	return true, nil
+}
+
+func (m *Memory) MarkHeld(ctx context.Context, id int64) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[id]
+	if !ok || !slices.Contains(OpenStates, r.State) {
+		return false, nil
+	}
+	r.held = true
 	m.rows[id] = r
 	return true, nil
 }
@@ -329,6 +406,16 @@ func (m *Memory) OpenByOwner(ctx context.Context, project, ownerRef string) ([]R
 	return m.filter(func(r Resource) bool {
 		return r.Project == project && r.OwnerRef == ownerRef && slices.Contains(OpenStates, r.State)
 	}), nil
+}
+
+func (m *Memory) HeldByOwner(ctx context.Context, project, ownerRef string) ([]Resource, error) {
+	return m.filter(func(r Resource) bool {
+		return r.Project == project && r.OwnerRef == ownerRef && r.Holds()
+	}), nil
+}
+
+func (m *Memory) HeldOpen(ctx context.Context, project string) ([]Resource, error) {
+	return m.filter(func(r Resource) bool { return r.Project == project && r.Holds() }), nil
 }
 
 // Get reads one row.

@@ -526,6 +526,14 @@ func (c *Collector) release(ctx context.Context, row Resource, by string) error 
 		err := c.delete(ctx, row, id, by)
 		row.State = StateDeleting
 		if err == nil || !retryable(err) || attempt >= attempts {
+			if err != nil && retryable(err) {
+				// The release gave up on a delete its provider still
+				// refuses (resource_in_use): the next pass owns it, and
+				// until then the row keeps holding its cap.
+				if _, merr := c.Registry.MarkHeld(ctx, row.ID); merr != nil {
+					log.Printf("cloud collector (%s): mark %s %d held: %v", c.Project, row.Kind, row.ID, merr)
+				}
+			}
 			return err
 		}
 		select {
