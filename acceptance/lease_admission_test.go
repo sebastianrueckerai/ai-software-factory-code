@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -330,9 +331,34 @@ func (a *apiserver) cnpPath(t *testing.T, w http.ResponseWriter, r *http.Request
 // collector takes it away first on a teardown.
 func (a *apiserver) rbacPath(w http.ResponseWriter, r *http.Request, rest string) {
 	nsName, sub, _ := strings.Cut(rest, "/")
-	_, name, hasName := strings.Cut(sub, "rolebindings/")
+	col, name, hasName := strings.Cut(sub, "/")
+	if col != "rolebindings" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	ns, known := a.namespaces[nsName]
-	if !known || !hasName || name != "factoryd" {
+	if !known {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !hasName {
+		if r.Method == http.MethodPost {
+			var body struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.Metadata.Name == "factoryd" {
+				ns.bound = true
+			}
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if name != "factoryd" {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -578,6 +604,15 @@ func newHarness(t *testing.T, reg *registry) *harness {
 	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	var pemBuf strings.Builder
+	for _, c := range srv.TLS.Certificates {
+		for _, raw := range c.Certificate {
+			pem.Encode(&pemBuf, &pem.Block{Type: "CERTIFICATE", Bytes: raw})
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte(pemBuf.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// the production client re-reads the pod's service-account token from
 	// this directory per request; the acceptance run points it at a stub
 	old := factoryd.SaDirForTest(dir)
@@ -639,7 +674,7 @@ func TestLeaseAdmissionWaitsOutTerminatingNamespace(t *testing.T) {
 	h.api.addNamespace(factoryNS, map[string]string{"app.kubernetes.io/name": "factoryd"})
 	h.api.putSecret(factoryNS, pullSecret, map[string]string{".dockerconfigjson": "{}"})
 	h.api.addNamespace(nsPrefix+"t-old", map[string]string{"factory.ai/task": "t-old"})
-	h.runner.BindTaskNamespace(ctx, nsPrefix + "t-old")
+	h.runner.BindTaskNamespace(ctx, nsPrefix+"t-old")
 	if err := h.runner.AdmitLeases(ctx); err != nil {
 		t.Fatalf("first AdmitLeases = %v, want nil", err)
 	}
@@ -654,6 +689,7 @@ func TestLeaseAdmissionWaitsOutTerminatingNamespace(t *testing.T) {
 
 	// the next session starts: task t-new's namespace is set up as
 	// setupNamespace would, and its lease joins the registry
+	h.api.addNamespace(nsPrefix+"t-new", map[string]string{"factory.ai/task": "t-new"})
 	h.runner.BindTaskNamespace(ctx, nsPrefix+"t-new")
 
 	// 1. AdmitLeases carries no error out of the pass and logs no
