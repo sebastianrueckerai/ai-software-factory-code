@@ -8,6 +8,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +19,9 @@ import (
 // projects seeded from it as one pull request, TemplateUpdateTitle, from
 // TemplateUpdateBranch on factory-projects' fork of the repository: from a
 // fork, its jobs hold a read-only token like every other pull request's
-// (ruling 97). factoryd files no task for it and never merges it.
+// (ruling 97). Since roadmap 187 the pull request is a card: openTemplateUpdate
+// files it with FileFactoryPRTask, so the chat, the board and the merge rule
+// cover it; the card's merge merges the pull request, its close closes it.
 const (
 	TemplateUpdateBranch = "factory/template-update"
 	TemplateUpdateTitle  = "Template update"
@@ -93,20 +96,22 @@ func (r *Registrar) templateUpdate(ctx context.Context, p Project) (Change, erro
 	case len(want) == 0:
 		return r.closeTemplateUpdate(ctx, f, repo, pr.Number, "main's files equal the template's")
 	case pr == nil:
-		return openTemplateUpdate(ctx, f, p, want, templateUpdateBody(p.Template, why))
+		return r.openTemplateUpdate(ctx, f, p, want, templateUpdateBody(p.Template, why))
 	}
 	return r.keepTemplateUpdate(ctx, f, p, *pr, want, templateUpdateBody(p.Template, why))
 }
 
 // openTemplateUpdate cuts the branch from main on the fork, made and
-// synced first, with want, and opens the pull request. A branch a closed
-// pull request left goes to leftBranch instead.
-func openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[string][]byte, body string) (Change, error) {
+// synced first, with want, opens the pull request and files its card
+// (roadmap 187): FileFactoryPRTask links pull request ref to the row, so
+// the next pass finds the card on the pull request and never refiles. A
+// branch a closed pull request left goes to leftBranch instead.
+func (r *Registrar) openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[string][]byte, body string) (Change, error) {
 	repo := p.Repo()
 	fork := f.Fork(repo)
 	_, err := f.BranchHeadSHA(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
 	if err == nil {
-		return leftBranch(ctx, f, repo, want)
+		return r.leftBranch(ctx, f, repo, want)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return "", err
@@ -129,7 +134,21 @@ func openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[str
 		// a branch without its pull request would read as the last one closed
 		return "", errors.Join(err, f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch))
 	}
+	if _, _, err := r.fileTemplateCard(ctx, p, ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", ")); err != nil {
+		return "", err
+	}
 	return Change(fmt.Sprintf("created pull request #%d: %s", ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))), nil
+}
+
+// fileTemplateCard files the card of the template update pull request
+// number on project p (roadmap 187): source template-update, so its run
+// verifies the open pull request instead of opening one.
+func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int64, files string) (Task, IssueRef, error) {
+	title := TemplateUpdateTitle + " for " + p.Template
+	body := "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + p.Template +
+		": it brings the template's later changes to this project. Its files: " + files + ". The card's merge merges the pull request.\n"
+	return FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, []string{"improvement"},
+		Task{ID: NewTaskID(), Source: SourceTemplateUpdate})
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
@@ -137,7 +156,7 @@ func openTemplateUpdate(ctx context.Context, f *Forgejo, p Project, want map[str
 // until the render changes. Otherwise it deletes the branch, and the next
 // pass opens the new pull request: Forgejo closes a deleted branch's pull
 // requests in the background, which could take a new one with them.
-func leftBranch(ctx context.Context, f *Forgejo, repo Repo, want map[string][]byte) (Change, error) {
+func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, repo Repo, want map[string][]byte) (Change, error) {
 	fork := f.Fork(repo)
 	last, err := f.LastClosedPullRequestFrom(ctx, repo.Owner, repo.Name, f.BotUser, fork, TemplateUpdateBranch)
 	if err != nil {
@@ -199,6 +218,15 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 			c = Change(fmt.Sprintf("updated pull request #%d: its description", pr.Number))
 		}
 	}
+	// a pull request that came before roadmap 187 has no card yet: file it
+	// now, so the pass never refiles one it tracks.
+	if _, ok, err := r.Store.TaskByPR(ctx, repo.String(), pr.Number); err != nil {
+		return "", err
+	} else if !ok {
+		if _, _, err := r.fileTemplateCard(ctx, p, pr.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", ")); err != nil {
+			return "", err
+		}
+	}
 	return c, nil
 }
 
@@ -252,9 +280,17 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 // outlives a close of factoryd's own (leftBranch), closes it, which
 // Forgejo also does for a deleted branch, and only then says why in a
 // comment by the bot (factory-projects' token has no issue scope): no
-// comment is posted twice.
+// comment is posted twice. It closes the card's issue first when one
+// exists (roadmap 187): the close ends the card as an approver's would.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
 	fork := f.Fork(repo)
+	if task, ok, err := r.Store.TaskByPR(ctx, repo.String(), number); err != nil {
+		return "", err
+	} else if ok {
+		if err := r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, task.IssueNumber); err != nil {
+			return "", fmt.Errorf("close card %s: %w", task.ID, err)
+		}
+	}
 	if err := f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch); err != nil {
 		return "", err
 	}
@@ -274,6 +310,6 @@ func templateUpdateBody(template string, why map[string]string) string {
 	for _, path := range slices.Sorted(maps.Keys(why)) {
 		fmt.Fprintf(&b, "- `%s`: %s\n", path, why[path])
 	}
-	b.WriteString("\nfactoryd keeps this pull request to the template every hour and closes it once main equals it. It is no card: factoryd files no task for it and never merges it, an approver does.\n")
+	b.WriteString("\nfactoryd keeps this pull request to the template every hour and closes it once main equals it. It is a card: factoryd filed one for it, whose gates an approver's approval passes and whose merge merges this pull request.\n")
 	return b.String()
 }

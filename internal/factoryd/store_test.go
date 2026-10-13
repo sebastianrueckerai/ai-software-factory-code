@@ -237,6 +237,15 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 	return Task{}, false, nil
 }
 
+func (s *fakeStore) TaskByPR(ctx context.Context, repository string, number int64) (Task, bool, error) {
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.PRNumber == number && number != 0 {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	for _, have := range s.intakeEvents {
 		if (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||

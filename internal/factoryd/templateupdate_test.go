@@ -32,6 +32,18 @@ type templateForgejo struct {
 	comments []string
 	written  []string
 	writes   []string
+	// issues are the card issues POST /issues made, in order; closedIssues
+	// their numbers once PATCH .../issues/N said closed.
+	issues       []templateIssue
+	closedIssues []int64
+}
+
+type templateIssue struct {
+	number int64
+	title  string
+	body   string
+	labels []string
+	state  string
 }
 
 type templatePR struct {
@@ -159,6 +171,42 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPost && p == up+"/issues":
+			n := int64(len(s.issues) + 1)
+			labels, _ := body["labels"].([]any)
+			names := make([]string, 0, len(labels))
+			for _, l := range labels {
+				names = append(names, fmt.Sprint(l))
+			}
+			s.issues = append(s.issues, templateIssue{number: n, title: body["title"].(string), body: body["body"].(string), labels: names, state: "open"})
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"number":%d,"html_url":"http://x%s"}`, n, p)
+		case r.Method == http.MethodPut && strings.HasSuffix(p, "/labels"):
+			var pl struct {
+				Labels []string `json:"labels"`
+			}
+			json.NewDecoder(r.Body).Decode(&pl) // #nosec G104 -- test stub
+			n := int64(len(s.issues))
+			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d/labels", &n)
+			s.issues[n-1].labels = pl.Labels
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, up+"/issues/") && strings.Count(p, "/") == 7:
+			if body["state"] == "closed" {
+				var n int64
+				fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
+				s.issues[n-1].state = "closed"
+				s.closedIssues = append(s.closedIssues, n)
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/labels"):
+			n := int64(len(s.issues))
+			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d/labels", &n)
+			out := make([]map[string]string, len(s.issues[n-1].labels))
+			for i, name := range s.issues[n-1].labels {
+				out[i] = map[string]string{"name": name}
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
 			s.comments = append(s.comments, fmt.Sprintf("#%d by %s: %s", pr().number, by, body["body"]))
 			w.WriteHeader(http.StatusCreated)
@@ -235,7 +283,9 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 
 // templateRig is demo-app, ready, on template ts-go, with main holding
 // main's files, and a Registrar on the scripted Forgejo. A path outside
-// .forgejo/ and deploy/ is only ever written back to main's.
+// .forgejo/ and deploy/ is only ever written back to main's. Its store
+// holds the tasks the pass files as cards, and its Workflows records the
+// card runs it starts.
 func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Registrar, *memProjects) {
 	fj := &templateForgejo{main: main}
 	srv := fj.server(t)
@@ -251,8 +301,13 @@ func templateRig(t *testing.T, main map[string]string) (*templateForgejo, *Regis
 		"cmd/server/main.go":                "package main\n",
 	}
 	store := &memProjects{m: map[string]Project{"demo-app": p}}
+	tasks := newFakeStore()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
-	reg := &Registrar{Forgejo: f, Store: store, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects"}
+	wf := &fakeWorkflows{}
+	reg := &Registrar{Forgejo: f, Store: struct {
+		ProjectStore
+		TaskStore
+	}{store, tasks}, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects", Workflows: wf}
 	return fj, reg, store
 }
 
