@@ -45,8 +45,7 @@ var fixtureDays = []policy.DayCost{
 var fixtureTasks = []policy.TaskCost{
 	{TaskID: "t-r", EUR: 1.5, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-frontier 2026-10-11", EUR: 1.2},
 		{Kind: policy.KindModel, Ref: "review/review-frontier 2026-10-11", EUR: 0.3}}},
-	{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-cheap 2026-10-10", EUR: 0.5},
-		{Kind: policy.KindTool, Ref: "search 2026-10-10", EUR: 0.1},
+	{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-cheap 2026-10-11", EUR: 0.6},
 		{Kind: policy.KindTool, Ref: "search 2026-10-11", EUR: 0.2}}},
 }
 
