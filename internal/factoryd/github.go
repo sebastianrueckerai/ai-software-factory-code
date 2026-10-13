@@ -432,5 +432,46 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 	if err != nil {
 		return "", "", err
 	}
+	// The pull request stands on the bot's fork: its card is filed there,
+	// where the workflow reads and merges it (roadmap 187).
+	r.fileSyncCard(ctx, p, fork, pr.Number, short, sha, by)
 	return sha, fmt.Sprintf("Pull request #%d brings %s at %s to main: %s", pr.Number, of, short, pr.URL), nil
+}
+
+// fileSyncCard files the card of the sync pull request pr (roadmap 187):
+// an issue of its own through FileFactoryPRTask, authored by requester by,
+// whose merge merges that pull request, so the chat, the board and the
+// merge rule cover it as they cover every card. A failure is logged, not
+// returned: the pull request stands open either way, and the next sync of
+// a newer SHA opens another card. Idempotent by SHA in the branch name: a
+// sync whose pull request #pr already has a card files none, and one whose
+// card lost its issue reuses it.
+func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr int64, short, sha, by string) {
+	if r.Tasks == nil || pr == 0 {
+		return
+	}
+	have, ok, err := r.Store.TaskByIssue(ctx, fork.String(), pr)
+	switch {
+	case err != nil:
+		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
+		return
+	case ok && have.IssueNumber != 0:
+		return // this SHA's card exists: nothing to file
+	}
+	var issue int64
+	if ok {
+		issue = have.ID // the earlier row, whose issue was never written
+	} else {
+		issue = pr // no row: the issue takes the pull request's number
+	}
+	wf := cmp.Or(r.Workflows, TemporalDefaultWorkflows)
+	title := "Sync from GitHub " + short
+	body := fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
+		p.Repository, sha, by, pr)
+	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, wf, r.Timeline, p, title, body, nil,
+		Task{ID: issue, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
+		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
+	} else {
+		log.Printf("project %s: sync pull request %d filed as issue #%d", p.Name, pr, ref.Number)
+	}
 }
