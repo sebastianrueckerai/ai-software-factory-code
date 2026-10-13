@@ -41,29 +41,32 @@ import (
 // prForgejo plays the pull request, status and issue endpoints the
 // workflow activities use.
 type prForgejo struct {
-	mu         sync.Mutex
-	forgejo    map[string]string // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
-	github     map[string]string // commit → its top-level .github tree id; unlisted commits have none
-	closed     []int64           // PATCH /pulls/{n} closes
-	closeFail  int               // PATCH /pulls/{n} answers 500 this many times first
-	branchGone bool              // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
-	refuse     bool              // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
-	deleted    []string          // "owner/repo branch" of every DELETE /branches/{b}
-	pulls      map[int64]string  // GET /pulls/{n} bodies
-	issueOff   bool              // GET /issues/{n} reports closed
-	closer     string            // the close on GET /issues/{n}/timeline; "" = sebastian
-	open       []map[string]any  // open pull requests
-	byHead     map[string]string // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
-	statuses   []string          // combined-status bodies, served in order, the last repeating
-	polls      int
-	tasks      string             // actions/tasks page 1 body (testdata file); later pages empty
-	tasksAuth  string             // the token actions/tasks expects; "" = registrar-tok
-	created    []map[string]any   // POST /pulls bodies
-	comments   []string           // issue comment bodies
-	labels     map[int64][]string // issue → labels
-	head       string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
-	contents   []map[string]any   // POST /contents bodies
-	calls      []string
+	mu            sync.Mutex
+	forgejo       map[string]string   // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
+	closed        []int64             // PATCH /pulls/{n} closes
+	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
+	branchGone    bool                // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
+	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
+	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
+	pulls         map[int64]string    // GET /pulls/{n} bodies
+	issueOff      bool                // GET /issues/{n} reports closed
+	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
+	open          []map[string]any    // open pull requests
+	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
+	statuses      []string            // combined-status bodies, served in order, the last repeating
+	statusesBySHA map[string][]string // sha -> combined-status bodies, served in order, the last repeating; wins over statuses
+	polls         int
+	pollsBySHA    map[string]int     // per-sha poll cursor of statusesBySHA
+	tasks         string             // actions/tasks page 1 body (testdata file); later pages empty
+	tasksAuth     string             // the token actions/tasks expects; "" = registrar-tok
+	created       []map[string]any   // POST /pulls bodies
+	comments      []string           // issue comment bodies
+	labels        map[int64][]string // issue → labels
+	head          string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
+	mainHead      string             // GET /branches/main's commit; unlisted branches answer head
+	contents      []map[string]any   // POST /contents bodies
+	calls         []string
 }
 
 func (f *prForgejo) srv(t *testing.T) *httptest.Server {
@@ -141,7 +144,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": f.head}})
+			head := f.head
+			if p == "/branches/main" && f.mainHead != "" {
+				head = f.mainHead
+			}
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"id": head}})
 		case r.Method == "POST" && p == "/contents":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -190,6 +197,16 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			// fake (checksResult's own tests cover the tail itself).
 			http.NotFound(w, r)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/"):
+			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
+			if listed, ok := f.statusesBySHA[sha]; ok {
+				if f.pollsBySHA == nil {
+					f.pollsBySHA = map[string]int{}
+				}
+				body := listed[min(f.pollsBySHA[sha], len(listed)-1)]
+				f.pollsBySHA[sha]++
+				io.WriteString(w, body)
+				return
+			}
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
 			io.WriteString(w, body)
@@ -992,25 +1009,25 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		fj   *prForgejo
 		want RunState
 	}{
-		"fresh": {prTask, &prForgejo{}, RunState{Status: "running"}},
+		"fresh": {prTask, &prForgejo{}, RunState{Status: "running", Source: "api"}},
 		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",
 			"head": map[string]any{"ref": "factory/t1", "sha": "c8", "repo": map[string]any{"full_name": "stranger/repo"}}}}},
-			RunState{Status: "running"}},
+			RunState{Status: "running", Source: "api"}},
 		"no recorded PR, merged before its number was recorded": {prTask, &prForgejo{byHead: map[string]string{"factory-agent/repo:factory/t1": `{"number":12,"state":"closed","merged":true}`}},
-			RunState{Status: "running", Merged: true}},
+			RunState{Status: "running", Source: "api", Merged: true}},
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
-			RunState{Status: "running", Merged: true, IssueClosed: true}},
+			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
-			RunState{Status: "running", PRClosed: true}},
-		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Skip: true}},
-		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Skip: true}},
-		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Roll: true}},
+			RunState{Status: "running", Source: "api", PRClosed: true}},
+		"done":  {withStatus(prTask, "done"), &prForgejo{}, RunState{Status: "done", Source: "api", Skip: true}},
+		"human": {withKind(prTask, "human"), &prForgejo{}, RunState{Status: "running", Source: "api", Skip: true}},
+		"roll":  {withSource(prTask, SourceRoll), &prForgejo{}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
 		if len(tc.want.Findings) > 0 {
@@ -1678,5 +1695,60 @@ type T struct{ S int ` + "`json:\"spec\"`" + ` }
 		for _, use := range processNameUses(t, name, src) {
 			t.Errorf("a process named in the engine: %s", use)
 		}
+	}
+}
+
+// An alert card's pre-check (roadmap 181, Stage 18 item 3.12): its alert is
+// gone from SigNoz's firing list, so the card closes itself before its
+// first model call; a transient burst files no work.
+func TestAlertPreCheckClosesWhenNotFiring(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
+		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
+	// SigNoz answers another rule firing, and this one resolved: no match
+	alerts := &fakeAlerts{list: []FiringAlert{
+		firing("active", map[string]string{"alertname": "gateway restarts"}, "restarts"),
+		firing("suppressed", map[string]string{"alertname": "ci queue p95"}, "p95 back under 5m"),
+	}}
+	alerts.list[1].Fingerprint = "fp-burst"
+	r.alerts = alerts
+	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+	var got bool
+	if err != nil || val.Get(&got) != nil {
+		t.Fatalf("AlertPreCheck: %v", err)
+	}
+	if got {
+		t.Fatal("pre-check = true, want false: the fingerprint no longer fires")
+	}
+	if alerts.calls.Load() == 0 {
+		t.Fatal("the pre-check never asked SigNoz")
+	}
+}
+
+// The same card with its alert still held firing by SigNoz passes: the
+// check only stops a card whose alert actually stopped firing.
+func TestAlertPreCheckPassesWhenFiring(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
+		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
+	a := firing("active", map[string]string{"alertname": "ci queue p95"}, "p95 above 5m")
+	a.Fingerprint = "fp-burst"
+	a.StartsAt = time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
+	r.alerts = &fakeAlerts{list: []FiringAlert{a}}
+	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+	var got bool
+	if err != nil || val.Get(&got) != nil {
+		t.Fatalf("AlertPreCheck: %v", err)
+	}
+	if !got {
+		t.Fatal("pre-check = false, want true: the fingerprint still fires")
 	}
 }

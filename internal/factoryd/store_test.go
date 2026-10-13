@@ -519,6 +519,16 @@ func (s *fakeStore) SetTaskRisk(ctx context.Context, id, class string) error {
 	return nil
 }
 
+func (s *fakeStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.AlertFingerprint = fingerprint
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	for i := range s.approvals {
 		if (a.Kind == ApprovalMerge || a.Kind == ApprovalPlan) && s.approvals[i].TaskID == a.TaskID && s.approvals[i].Kind == a.Kind && s.approvals[i].Status == "pending" {

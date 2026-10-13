@@ -93,6 +93,10 @@ type Task struct {
 	// closed or "failed: <why>", "" before the export took the card.
 	GitHubPR                   int64
 	GitHubPRURL, GitHubPRState string
+	// AlertFingerprint is the SigNoz alert that filed an alert card's
+	// task (alert-precheck, roadmap 181 item 3.12); "" for every other
+	// task. The pre-check reads its firing state by it.
+	AlertFingerprint string
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -287,6 +291,9 @@ type Store interface {
 	// SetTaskRisk records the risk class GatePolicy gave the task's pull
 	// request.
 	SetTaskRisk(ctx context.Context, id, class string) error
+	// SetTaskAlertFingerprint records the SigNoz alert fingerprint that
+	// filed an alert card's task (alert-precheck).
+	SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error
 	// OpenApproval records a pending approval request and returns its id;
 	// a merge or plan request denies the task's earlier pending one of its
 	// kind (a retry, a new head, a new plan revision) as superseded.
@@ -478,16 +485,16 @@ func insertTask(ctx context.Context, db interface {
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN $16 ELSE '' END,
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
-		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''))
+		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''))
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint)
 	return err
 }
 
@@ -525,7 +532,8 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	objective, repository, sha, kind, issue_number, source, pr_number,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
-	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state`
+	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
+	COALESCE(alert_fingerprint, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -535,7 +543,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -1054,6 +1062,13 @@ func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []strin
 
 func (s *PGStore) SetTaskRisk(ctx context.Context, id, class string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET risk_class = $2 WHERE id = $1`, id, class)
+	return oneRow(res, err, "task "+id)
+}
+
+// SetTaskAlertFingerprint records the SigNoz alert fingerprint that filed
+// an alert card's task (alert-precheck, roadmap 181 item 3.12).
+func (s *PGStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET alert_fingerprint = $2 WHERE id = $1`, id, fingerprint)
 	return oneRow(res, err, "task "+id)
 }
 
