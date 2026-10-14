@@ -838,9 +838,9 @@ func TestCapTimeoutWithCommitsGoesToVerification(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, h.finals)
 	}
-	// the timeout is tried MaximumAttempts (3) times, all one session
-	if want := []string{"pr c1 after 0 cards", "approval c1"}; !slices.Equal(steps, want) || len(h.sessions) != 3 || h.branchReads != 1 {
-		t.Fatalf("steps = %v, session tries = %d, branch reads = %d; want %v after three tries and one read", steps, len(h.sessions), h.branchReads, want)
+	// the timeout is tried MaximumAttempts (10) times, all one session
+	if want := []string{"pr c1 after 0 cards", "approval c1"}; !slices.Equal(steps, want) || len(h.sessions) != 10 || h.branchReads != 1 {
+		t.Fatalf("steps = %v, session tries = %d, branch reads = %d; want %v after ten tries and one read", steps, len(h.sessions), h.branchReads, want)
 	}
 }
 
@@ -1300,8 +1300,8 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
-			// the second session's three tries time out
-			if n := len(h.sessions); n >= 2 && n <= 4 {
+			// the second session's ten tries time out
+			if n := len(h.sessions); n >= 2 && n <= 11 {
 				return SessionResult{}, temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)
 			}
 			return refusedSession, nil

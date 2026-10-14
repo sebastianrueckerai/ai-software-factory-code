@@ -443,7 +443,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			whyHuman = []string{failed}
 		}
 	}
-	if t.rolling && t.rollGap >= versionRollGap {
+	if t.rolling && t.rollGap == versionRollGap {
 		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
 	// an approval or a split signalled before this request (for an earlier

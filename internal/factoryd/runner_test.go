@@ -1630,21 +1630,20 @@ func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
 	}
 }
 
-// factoryd stopping (the worker stop channel) is not the session's end:
-// the worker is stopped gracefully and pushes its work in progress, the
-// heartbeat carries its report, and the retry on the next factoryd
-// continues from it.
-func TestRunSessionWorkerStopPushesWorkInProgress(t *testing.T) {
+// factoryd stopping detaches from the session (roadmap 222, item 2): the
+// worker runs on in its pod, nothing is deleted or revoked, the row keeps
+// how much of the log was consumed, and the activity's retryable stop
+// carries the session for the next factoryd.
+func TestRunSessionWorkerStopDetachesAndKeepsThePod(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
-	runner.stopWait = 10 * time.Second
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	stop := make(chan struct{})
 	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
 	var last sessionProgress
 	var mu sync.Mutex
 
-	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed to factory/t2 at c-wip") + "\n"
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(true, "pushed") + "\n"
 	_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
 		env.SetWorkerStopChannel(stop)
 		env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
@@ -1656,23 +1655,88 @@ func TestRunSessionWorkerStopPushesWorkInProgress(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") || errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want a retryable stop", err)
 	}
-	if !slices.Contains(kube.deletedPods, "factory-agents-t2/worker-"+last.SessionID) {
-		t.Fatalf("deleted pods = %v, want the worker stopped", kube.deletedPods)
+	if len(kube.deletedPods) != 0 || len(kube.deletedNs) != 0 {
+		t.Fatalf("deleted pods %v, namespaces %v; want the worker running on", kube.deletedPods, kube.deletedNs)
+	}
+	if len(hub.revoked) != 0 {
+		t.Fatalf("revoked = %v: the session's tokens must outlive the detach", hub.revoked)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !last.Running || !slices.Contains(last.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") ||
-		!slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
-		t.Fatalf("last heartbeat = %+v, want the stopped worker's report for the retry", last)
+	live, ok := store.liveSessions["t2"]
+	if !ok || live.SessionID != last.SessionID || live.Pod != "worker-"+last.SessionID || live.Lines != strings.Count(loopFailure(1), "\n") {
+		t.Fatalf("live row = %+v (%v), heartbeat %+v; want the session's pod and the lines consumed before the stop", live, ok, last)
 	}
-	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"outcome":"stopped"`) || !strings.Contains(timeline, "c-wip") {
-		t.Fatalf("timeline = %s, want the stopped session's end with its push", timeline)
+	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_detached"`) || strings.Contains(timeline, `"step":"session_end"`) {
+		t.Fatalf("timeline = %s, want the detach and no end", timeline)
 	}
-	if !slices.Equal(hub.revoked, []int64{101}) {
-		t.Fatalf("revoked = %v: the session's read token, the one it minted, must not survive", hub.revoked)
+}
+
+// The next factoryd's retry reattaches to the live pod: no new pod, no
+// namespace or token work, the log read on from the lines consumed, the
+// same session record, and the session's push as its result.
+func TestRunSessionReattachesToTheLivePod(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(true, "pushed") + "\n"
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
 	}
-	if _, ok := kube.namespaces["factory-agents-t2"]; ok {
-		t.Fatal("namespace survived the stop")
+	first := store.liveSessions["t2"]
+	calls := len(hub.calls)
+
+	res, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID {
+		t.Fatalf("result = %+v, want the live session's push as its own", res)
+	}
+	if len(kube.podOrder) != 1 {
+		t.Fatalf("pods created %d, want the one the first factoryd made", len(kube.podOrder))
+	}
+	if later := hub.calls[calls:]; slices.ContainsFunc(later, func(c string) bool { return strings.HasPrefix(c, "mint ") }) {
+		t.Fatalf("forgejo calls after the detach %v, want no new token for a reattach", later)
+	}
+	if _, ok := store.liveSessions["t2"]; ok {
+		t.Fatal("the live row survived the session's end")
+	}
+	if !slices.Contains(kube.deletedPods, "factory-agents-t2/worker-"+first.SessionID) {
+		t.Fatalf("deleted pods = %v, want the pod gone at the end", kube.deletedPods)
+	}
+	timeline := string(objGet(objects, "sessions/t2/timeline.jsonl"))
+	if !strings.Contains(timeline, `"step":"session_reattached"`) || strings.Count(timeline, `"step":"session_start"`) != 1 {
+		t.Fatalf("timeline = %s, want one start and a reattach", timeline)
+	}
+	history := string(objGet(objects, "sessions/t2/"+first.SessionID+".jsonl"))
+	if strings.Count(history, "\n") != strings.Count(loopFailure(1), "\n")+1 {
+		t.Fatalf("session history:\n%s\nwant the events before the stop and the push, each once", history)
+	}
+}
+
+// A live row whose pod is gone (a crash took it) starts the attempt over
+// as before: a new pod, and the row replaced by the new session's.
+func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.SessionID == "s-gone" || len(kube.podOrder) != 1 {
+		t.Fatalf("result = %+v, pods %d; want a fresh session in a new pod", res, len(kube.podOrder))
+	}
+	if _, ok := store.liveSessions["t1"]; ok {
+		t.Fatal("a live row survived the fresh session's end")
 	}
 }
 
@@ -1723,10 +1787,13 @@ func TestRunSessionWorkerStopCutsAnInFlightSupervisorCall(t *testing.T) {
 	if len(hub.comments) != 0 {
 		t.Fatalf("comments = %q, want no decision from the cut call", hub.comments)
 	}
+	if len(kube.deletedPods) != 0 {
+		t.Fatalf("deleted pods = %v, want the worker running on for the reattach", kube.deletedPods)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
-		t.Fatalf("last heartbeat = %+v, want the stopped worker's push for the retry", last)
+	if !last.Running {
+		t.Fatalf("last heartbeat = %+v, want the running session for the retry", last)
 	}
 }
 
@@ -1942,7 +2009,7 @@ func TestFollowPodLogFailsLoudlyPastItsBuffer(t *testing.T) {
 	kube.scriptPods(0, strings.Repeat("0123456789\n", 1000))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	pl := followPodLogCap(ctx, kube, "ns", "p", "t1", 5000, nil)
+	pl := followPodLogCap(ctx, kube, "ns", "p", "t1", 0, 5000, nil)
 	time.Sleep(200 * time.Millisecond)
 	n := 0
 	for range pl.lines {

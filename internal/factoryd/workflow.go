@@ -389,7 +389,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.keepWork = workflow.GetVersion(ctx, "keep-work", workflow.DefaultVersion, versionKeepWork)
 	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
-	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
+	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollNoGap)
 	run.rollQueue = workflow.GetVersion(ctx, "roll-no-queue", workflow.DefaultVersion, versionRollNoQueue)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
@@ -649,6 +649,12 @@ const (
 	// Every code and plan session first waits while a roll holds sessions
 	// (AwaitRollHold), outside its agent time.
 	versionRollGap workflow.Version = 1
+	// versionRollNoGap (the same change id, roadmap 222, item 2): sessions
+	// survive factoryd's restart (RunSession reattaches to the pod from
+	// the live_sessions row), so a roll merges at once after its approval
+	// and no session waits for a hold. The gap, the hold and the note stay
+	// for the runs of version 1.
+	versionRollNoGap workflow.Version = 2
 	// versionRollNoQueue (change id "roll-no-queue", roadmap 222, the
 	// speed round's item 1): a roll takes no turn in its project's merge
 	// queue: its stages go straight to the approval, so cards merge past
@@ -1589,7 +1595,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		if t.v8 >= versionGatesPinned {
 			opts = mergeOptions()
 		}
-		gap := t.rolling && t.rollGap >= versionRollGap
+		gap := t.rolling && t.rollGap == versionRollGap
 		if gap {
 			if v, decided := t.awaitSessionGap(); decided {
 				return v
@@ -1660,7 +1666,7 @@ func (t *taskRun) awaitSessionGap() (verdict, bool) {
 // (versionRollGap), outside the session's agent time; a failed wait lets
 // the session start.
 func (t *taskRun) awaitRollHold() (verdict, bool) {
-	if t.rollGap < versionRollGap {
+	if t.rollGap != versionRollGap {
 		return verdict{}, false
 	}
 	v, decided, err := t.race(rollWaitOptions(), nil, ActivityAwaitRollHold, t.taskID)
@@ -1949,8 +1955,10 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 		ScheduleToCloseTimeout: remaining + sessionGrace,
 		HeartbeatTimeout:       2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        10 * time.Second,
-			MaximumAttempts:        3,
+			InitialInterval: 10 * time.Second,
+			// every factoryd restart costs the session one attempt (a detach
+			// and a reattach, roadmap 222, item 2)
+			MaximumAttempts:        10,
 			NonRetryableErrorTypes: []string{errTerminal},
 		},
 	}

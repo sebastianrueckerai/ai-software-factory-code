@@ -55,6 +55,7 @@ type fakeStore struct {
 	alertsMu     sync.Mutex
 	alerts       []Alert
 	rolls        []RollRequest
+	liveSessions map[string]LiveSession
 	// monthSpend is MonthSpend's answer, monthRefusals MonthCapRefusal's
 	// by task
 	monthSpend    MonthSpend
@@ -696,6 +697,32 @@ func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since ti
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
+}
+
+func (s *fakeStore) PutLiveSession(ctx context.Context, l LiveSession) error {
+	if s.liveSessions == nil {
+		s.liveSessions = map[string]LiveSession{}
+	}
+	s.liveSessions[l.TaskID] = l
+	return nil
+}
+
+func (s *fakeStore) SetLiveSessionLines(ctx context.Context, taskID string, lines int) error {
+	if l, ok := s.liveSessions[taskID]; ok {
+		l.Lines = lines
+		s.liveSessions[taskID] = l
+	}
+	return nil
+}
+
+func (s *fakeStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
+	l, ok := s.liveSessions[taskID]
+	return l, ok, nil
+}
+
+func (s *fakeStore) DeleteLiveSession(ctx context.Context, taskID string) error {
+	delete(s.liveSessions, taskID)
+	return nil
 }
 
 func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {

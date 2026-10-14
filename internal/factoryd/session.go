@@ -27,6 +27,18 @@ func NewSessionRecorder(ctx context.Context, store Store, objects ObjectStore, t
 	return &SessionRecorder{store: store, objects: objects, taskID: taskID, id: sessionID}, nil
 }
 
+// ResumeSessionRecorder continues a session's record from its object: a
+// reattached session appends to the same history.
+func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore, taskID, sessionID string) (*SessionRecorder, error) {
+	body, err := objects.Get(ctx, "sessions/"+taskID+"/"+sessionID+".jsonl")
+	if err != nil {
+		return nil, err
+	}
+	r := &SessionRecorder{store: store, objects: objects, taskID: taskID, id: sessionID}
+	r.history.Write(body)
+	return r, nil
+}
+
 // Record appends the event to the session history and ships the whole object.
 func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
 	line, err := json.Marshal(ev)

@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"sync/atomic"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -703,6 +705,59 @@ func TestFactorydEscalateClient(t *testing.T) {
 	}
 	if auth != "Bearer shared" || body != `{"task_id":"t-1","kind":"escalation","question":"q?","reason":"why","recommendation":"do x"}` {
 		t.Fatalf("auth %q body %s", auth, body)
+	}
+}
+
+// An escalation raised while factoryd restarts (unreachable, erring, or
+// with no live session yet) is retried until the reattached session takes
+// it; a refusal of the escalation itself is answered at once.
+func TestFactorydEscalateClientRetriesThroughARestart(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1:
+			w.WriteHeader(http.StatusConflict)
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			w.WriteHeader(http.StatusAccepted)
+		}
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client(), RetryFor: time.Second, RetryEvery: time.Millisecond}
+	if err := f.Escalate(context.Background(), "t-1", Escalation{Kind: "escalation", Question: "q?"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("calls = %d, want the two refusals retried, then the accept", n)
+	}
+
+	calls.Store(0)
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer refusing.Close()
+	f = &Factoryd{BaseURL: refusing.URL, Token: "shared", HTTP: refusing.Client(), RetryFor: time.Second, RetryEvery: time.Millisecond}
+	if err := f.Escalate(context.Background(), "t-1", Escalation{Kind: "escalation"}); err == nil {
+		t.Fatal("a refused escalation returned no error")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("calls = %d, want the refusal answered at once", n)
+	}
+
+	calls.Store(0)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer down.Close()
+	f = &Factoryd{BaseURL: down.URL, Token: "shared", HTTP: down.Client(), RetryFor: 20 * time.Millisecond, RetryEvery: time.Millisecond}
+	if err := f.Escalate(context.Background(), "t-1", Escalation{Kind: "escalation"}); err == nil {
+		t.Fatal("an escalation nobody took within the bound returned no error")
+	}
+	if n := calls.Load(); n < 2 {
+		t.Fatalf("calls = %d, want retries until the bound", n)
 	}
 }
 

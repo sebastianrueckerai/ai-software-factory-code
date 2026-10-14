@@ -152,7 +152,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
 	began := rfc3339(time.Now())
 	r.record(ctx, t.ID, "session_start", map[string]any{"session": s.id, "model": s.model, "mode": "report", "start_ref": s.startRef, "findings": s.findings})
-	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
+	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), nil)
 	if err != nil {
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report", "outcome": "aborted",
 			"summary": err.Error(), "started": began})

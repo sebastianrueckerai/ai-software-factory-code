@@ -95,16 +95,22 @@ func (p *podLog) pump(ctx context.Context) {
 // from the start, are skipped. This assumes the kubelet has not rotated
 // the container log in between. ctx ends it early.
 func followPodLog(ctx context.Context, kube Kube, ns, pod, taskID string, tap func([]byte)) *podLog {
-	return followPodLogCap(ctx, kube, ns, pod, taskID, maxLogBuffer, tap)
+	return followPodLogCap(ctx, kube, ns, pod, taskID, 0, maxLogBuffer, tap)
 }
 
-func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, capBytes int, tap func([]byte)) *podLog {
+// followPodLogFrom follows the log past its first seen lines: a
+// reattached session reads on from where the stopped factoryd's loop was.
+func followPodLogFrom(ctx context.Context, kube Kube, ns, pod, taskID string, seen int, tap func([]byte)) *podLog {
+	return followPodLogCap(ctx, kube, ns, pod, taskID, seen, maxLogBuffer, tap)
+}
+
+func followPodLogCap(ctx context.Context, kube Kube, ns, pod, taskID string, seen, capBytes int, tap func([]byte)) *podLog {
 	p := &podLog{lines: make(chan []byte), cap: capBytes}
 	p.cond = sync.NewCond(&p.mu)
 	go p.pump(ctx)
 	go func() {
 		defer p.finish()
-		seen, drainedAfterExit := 0, false
+		drainedAfterExit := false
 		for {
 			stream, err := kube.PodLog(ctx, ns, pod)
 			if err == nil {
