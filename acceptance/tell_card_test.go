@@ -263,10 +263,10 @@ func TestTellCardAtApprovalGate(t *testing.T) {
 
 // tellRunDescription is the line the member reads on the running card's
 // proposal: the tool, the card, the text, and where the state sends it.
-const tellRunDescription = `Tell a card, #11 t-r "Speed up the board", text Rebase on main first.` +
+const tellRunDescription = `Tell a card, #11 t-r "Speed up the board.", text Rebase on main first.` +
 	` → its session reads the message (#11 running, event card_steered)`
 
 // gateDescription is the running card's line at the approval gate: the
 // state sends the text to its pending merge request.
-const gateDescription = `Tell a card, #15 t-g "Cache the board", text Drop the committed binary.` +
+const gateDescription = `Tell a card, #15 t-g "Cache the board.", text Drop the committed binary.` +
 	` → the text denies its merge request, changes requested (#15 approval-gate, event merge_denied)`

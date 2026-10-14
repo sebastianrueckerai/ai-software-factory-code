@@ -42,8 +42,9 @@ func titleOf(t *testing.T, body, id string) string {
 }
 
 // The face's title: a writer's summary, else a planned card's key, else
-// the objective's first clause on one line, up to a full stop followed by
-// whitespace or ending the text, and at most 80 characters.
+// the objective's first paragraph — the title as the issue was filed, in
+// full; only a title longer than 80 runes is shortened, at a word boundary
+// with an ellipsis, never mid-word.
 func TestCardFaceTitle(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -53,15 +54,19 @@ func TestCardFaceTitle(t *testing.T) {
 		want string
 	}{
 		{"plan key", factoryd.Task{PlanKey: "web-pages", Objective: "Build the pages. All of them."}, "web-pages"},
-		{"first clause", factoryd.Task{Objective: "Fix the cache. Then update the tests."}, "Fix the cache"},
-		{"full stop before a newline", factoryd.Task{Objective: "Fix the cache.\nThen update the tests."}, "Fix the cache"},
-		{"full stop before a tab", factoryd.Task{Objective: "Fix the cache.\tThen update the tests."}, "Fix the cache"},
-		{"final full stop", factoryd.Task{Objective: "Fix the cache."}, "Fix the cache"},
-		{"a path keeps its dot", factoryd.Task{Objective: "Fix internal/console/board.go so it renders"}, "Fix internal/console/board.go so it renders"},
-		{"a version keeps its dot", factoryd.Task{Objective: "Bump to v1.2 and release. Then tag it."}, "Bump to v1.2 and release"},
-		{"lines joined", factoryd.Task{Objective: "Fix the\ncache"}, "Fix the cache"},
-		{"80 characters", factoryd.Task{Objective: strings.Repeat("abcdefghij", 10)}, strings.Repeat("abcdefghij", 8)},
 		{"a writer's summary", factoryd.Task{PlanKey: "web-pages", Objective: "Fix the cache.", HumanSummary: "the cache, at last"}, "the cache, at last"},
+		{"no full stop, a long body first sentence", factoryd.Task{Objective: factoryd.IssueObjective("Merge approval only on a green staged head",
+			"A merge approval request reaches the merge gate after its checks pass, and the approver should see a green staged head before approving it.")}, "Merge approval only on a green staged head"},
+		{"an internal full stop keeps the whole title", factoryd.Task{Objective: factoryd.IssueObjective("Fix the cache. It drops entries.", "Then update the tests.")}, "Fix the cache. It drops entries."},
+		{"a final full stop keeps the title", factoryd.Task{Objective: factoryd.IssueObjective("Fix the cache.", "Then update the tests.")}, "Fix the cache."},
+		{"an objective with no body", factoryd.Task{Objective: factoryd.IssueObjective("Speed up the board", "")}, "Speed up the board"},
+		{"a path keeps its dot", factoryd.Task{Objective: "Fix internal/console/board.go so it renders"}, "Fix internal/console/board.go so it renders"},
+		{"a version keeps its dot", factoryd.Task{Objective: "Bump to v1.2 and release"}, "Bump to v1.2 and release"},
+		{"lines joined", factoryd.Task{Objective: "Fix the\ncache"}, "Fix the cache"},
+		{"a hidden comment shows on no face", factoryd.Task{Objective: factoryd.IssueObjective("Fix the cache <!-- later --> now", "Then the tests.")}, "Fix the cache now"},
+		{"80 runes", factoryd.Task{Objective: strings.Repeat("é", 80)}, strings.Repeat("é", 80)},
+		{"over 80 runes, cut at a word", factoryd.Task{Objective: strings.Repeat("abcdefghij ", 10)}, strings.TrimSuffix(strings.Repeat("abcdefghij ", 7), " ") + "…"},
+		{"over 80 runes, one word", factoryd.Task{Objective: strings.Repeat("é", 81)}, strings.Repeat("é", 79) + "…"},
 	} {
 		tc.task.ID, tc.task.Kind, tc.task.Status, tc.task.Repository = "t-1", "agent", "running", "sf/code"
 		r.tasks.set("", tc.task)
@@ -517,8 +522,8 @@ func TestSummaryPost(t *testing.T) {
 		{strings.Repeat("é", 255), http.StatusSeeOther, strings.Repeat("é", 255), 1},
 		{strings.Repeat("x", 256), http.StatusBadRequest, strings.Repeat("é", 255), 0},
 		{"  the cache  ", http.StatusSeeOther, "the cache", 1},
-		{"   ", http.StatusSeeOther, "Fix the cache", 1},
-		{"", http.StatusSeeOther, "Fix the cache", 1},
+		{"   ", http.StatusSeeOther, "Fix the cache. Then the tests.", 1},
+		{"", http.StatusSeeOther, "Fix the cache. Then the tests.", 1},
 	} {
 		before := ev.count()
 		rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {step.summary}}), ck)
@@ -538,7 +543,7 @@ func TestSummaryPost(t *testing.T) {
 		t.Fatalf("a non-writer's summary = %d with %d rows, want 403 and none", rec.Code, ev.count()-before)
 	}
 	// no longer a writer, the viewer asks for the project
-	if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-1"); got != "Fix the cache" {
+	if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-1"); got != "Fix the cache. Then the tests." {
 		t.Fatalf("a refused summary changed the title to %q", got)
 	}
 }

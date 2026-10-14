@@ -32,10 +32,10 @@ const (
 	// backlogCardLine and readyCardLine are #5 as the turn's fresh read
 	// holds it before and after the move into ready; the fixture files it
 	// with a budget of 3 EUR, which every line shows.
-	backlogCardLine = `#5 t-m "Fix the cache" backlog (waits in the backlog until a member moves it into a lane)`
-	readyCardLine   = `#5 t-m "Fix the cache" queued (waits for its session to start), €0.00 of €3.00, lane ready`
+	backlogCardLine = `#5 t-m "Fix the cache." backlog (waits in the backlog until a member moves it into a lane)`
+	readyCardLine   = `#5 t-m "Fix the cache." queued (waits for its session to start), €0.00 of €3.00, lane ready`
 	// backlogCardHead is #5 as the card tool read it in the backlog.
-	backlogCardHead = `#5 t-m "Fix the cache" backlog (waits in the backlog until a member moves it into a lane), €0.00 of €3.00`
+	backlogCardHead = `#5 t-m "Fix the cache." backlog (waits in the backlog until a member moves it into a lane), €0.00 of €3.00`
 )
 
 // freshRig is the chat rig of these tests: the fixture stores, the code

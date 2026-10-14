@@ -386,10 +386,10 @@ func equal(t *testing.T, what string, got, want any) {
 }
 
 const boardText = `Backlog (1):
-  #5 t-m "Fix the cache" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00
+  #5 t-m "Fix the cache. It drops entries." backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00
 Ready (0):
 Running (1):
-  #11 t-r "Speed up the board" running (runs an agent session), gate session (an agent works in a sandbox)
+  #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
 Waiting on a human (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Waiting on the author (0):
@@ -465,7 +465,7 @@ func TestChatBoardShowsAHeldCard(t *testing.T) {
 		t.Fatalf("%d model calls, want 1", len(calls))
 	}
 	system, _ := messages(t, calls[0])[0]["content"].(string)
-	if want := "\n  #11 t-r \"Speed up the board\" running (runs an agent session), gate session (an agent works in a sandbox), waiting for a roll\n"; !strings.Contains(system, want) {
+	if want := "\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting for a roll\n"; !strings.Contains(system, want) {
 		t.Fatalf("the system message lacks %q:\n%s", want, system)
 	}
 }
@@ -484,7 +484,7 @@ func TestChatBoardShowsACardWaitingOnTheProvider(t *testing.T) {
 	}
 	system, _ := messages(t, calls[0])[0]["content"].(string)
 	for _, want := range []string{"\nStatus: waiting on you; 0 working; 1 waiting on the provider; 3 need you; ",
-		"\n  #11 t-r \"Speed up the board\" running (runs an agent session), gate session (an agent works in a sandbox), waiting on the provider\n"} {
+		"\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting on the provider\n"} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
@@ -502,7 +502,7 @@ func TestChatReadThenReply(t *testing.T) {
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("#5 waits in the backlog.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\nlane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmerge request 4 pending for pull request #9, risk high; a human decides b…"}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache. It drops entries.\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\nlane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmerge request 4 pending for pull request #9, risk high…"}`,
 		`text {"text":"#5 waits in the backlog."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -511,7 +511,7 @@ func TestChatReadThenReply(t *testing.T) {
 	equal(t, "the second call's last messages", msgs[2:], []map[string]any{
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
-		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
+		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache. It drops entries.\" backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00\n" +
 			"lane backlog of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
 			"merge request 4 pending for pull request #9, risk high; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
@@ -638,7 +638,7 @@ func TestChatProposalRunsOnDoIt(t *testing.T) {
 	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"start #5"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"task_id":"t-m","lane":"ready"},"description":"Move a card, #5 t-m \"Fix the cache\", lane ready","id":"TOKEN","tool":"move_card"}`,
+		`proposal {"arguments":{"task_id":"t-m","lane":"ready"},"description":"Move a card, #5 t-m \"Fix the cache. It drops entries.\", lane ready","id":"TOKEN","tool":"move_card"}`,
 		`done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	if len(r.fg.labelled) != 0 || len(g.calls()) != 1 {
@@ -1119,7 +1119,7 @@ func TestChatSteerAndComment(t *testing.T) {
 	g.replies = [][]string{{call(1, "steer", `{"task_id":"t-r","text":"Rebase on main first."}`, "comment", `{"task_id":"t-m","text":"Looks right."}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"tell #11 to rebase"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"description":"Message a running card, #11 t-r \"Speed up the board\", text Rebase on main first.","id":"TOKEN","tool":"steer"}`,
+		`proposal {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"description":"Message a running card, #11 t-r \"Speed up the board.\", text Rebase on main first.","id":"TOKEN","tool":"steer"}`,
 		`tool {"arguments":{"task_id":"t-m","text":"Looks right."},"duration_ms":0,"name":"comment","result":"Commented on #5."}`,
 		`applied {"result":"Commented on #5.","tool":"comment","undo":"TOKEN"}`,
 		`done {}`})
@@ -1423,8 +1423,8 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
 	})
 	for i, wantPrefix := range []string{
-		`#14 t-cap \"Trim the logs\" waiting-human (` + human + `)`,
-		`#15 t-mr \"Add the index\" waiting-human (` + human + `)`,
+		`#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
+		`#15 t-mr \"Add the index.\" waiting-human (` + human + `)`,
 	} {
 		line := events[7+i]
 		wantFragment := `"result":"` + wantPrefix
@@ -1433,15 +1433,15 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		}
 	}
 	equal(t, "stream tail", events[9:], []string{
-		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index\"","id":"TOKEN","tool":"approve_merge"}`,
+		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index.\"","id":"TOKEN","tool":"approve_merge"}`,
 		`done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs\" waiting-human ("+human+")\n"+
+	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\ncost: no model calls\n"+
 		"the question it waits on: the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed\n"+
 		"objective: Trim the logs.")
-	equal(t, "the card with a merge request", stored[0].ToolCalls[8].Result, "#15 t-mr \"Add the index\" waiting-human ("+human+")\n"+
+	equal(t, "the card with a merge request", stored[0].ToolCalls[8].Result, "#15 t-mr \"Add the index.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
 		"objective: Add the index.")
@@ -1571,9 +1571,9 @@ func TestApproveMergeProposalWarns(t *testing.T) {
 		"approve_merge", `{"task_id":"t-c1"}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"Approve the merges of #11, #5 and #13"}})
 	const (
-		r11 = `Approve a merge, #11 t-r "Speed up the board". Warning: The review has 2 open findings: cache.go:12: key the entries by tenant; ` +
+		r11 = `Approve a merge, #11 t-r "Speed up the board.". Warning: The review has 2 open findings: cache.go:12: key the entries by tenant; ` +
 			`cache_test.go: add a test of two tenants. Failing checks: vet.`
-		r5 = `Approve a merge, #5 t-m "Fix the cache". Warning: The review has 7 open findings: a.go: one; b.go: two and its second line; ` +
+		r5 = `Approve a merge, #5 t-m "Fix the cache. It drops entries.". Warning: The review has 7 open findings: a.go: one; b.go: two and its second line; ` +
 			`c.go: three; d.go: four; e.go: five; and 2 more. Failing checks: test, security.`
 		r13 = `Approve a merge, #13 t-e "Use a replica?"`
 	)

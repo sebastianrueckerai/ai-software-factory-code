@@ -826,12 +826,12 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-plan",
 		Project: "sf/code", Status: "pending", Spec: json.RawMessage(`{"revision":4,"sha256":"11e3f66aa"}`)})
 	equal(t, "the plan card", reads(t, r, g, "card", `{"task_id":"t-plan"}`), []string{
-		`#22 t-plan "Uptime checker" waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
+		`#22 t-plan "Uptime checker." waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
 			"lane plan of process spec\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
 			"plan request 20 pending for revision 4\nplan: see plan\nobjective: Uptime checker."})
 
 	const pinned = `{"task_id":"t-plan","revision":4,"sha256":"11e3f66aa"}`
-	proposal := `proposal {"arguments":` + pinned + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 4 sha 11e3f66…","id":"TOKEN","tool":"accept_plan"}`
+	proposal := `proposal {"arguments":` + pinned + `,"description":"Accept a plan, #22 t-plan \"Uptime checker.\", revision 4 sha 11e3f66…","id":"TOKEN","tool":"accept_plan"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "accept_plan", `{"task_id":"t-plan"}`)
 	equal(t, "the proposal", proposed, []string{proposal, `done {}`})
 	equal(t, "Do it", done, ran("accept_plan", pinned, "Accepted revision 4 of plan #22; factoryd files its cards."))
@@ -850,7 +850,7 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	const stale = `{"task_id":"t-plan","revision":3,"sha256":"3c0ffee11"}`
 	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", stale)
 	equal(t, "a stale revision", [][]string{proposed, done}, [][]string{
-		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
+		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker.\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
 		{`tool {"arguments":` + stale + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 4; reload"}`, `done {}`}})
 
 	ck, s := r.loggedIn(t)

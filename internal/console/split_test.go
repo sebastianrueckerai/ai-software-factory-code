@@ -79,7 +79,7 @@ func TestSplitCard(t *testing.T) {
 	g.replies = [][]string{{call(1, "split_card", `{"task_id":"t-big"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"split #30"}})
 	equal(t, "the proposal", events, []string{
-		`proposal {"arguments":{"task_id":"t-big"},"description":"Split a card, #30 t-big \"Links\"","id":"TOKEN","tool":"split_card"}`, `done {}`})
+		`proposal {"arguments":{"task_id":"t-big"},"description":"Split a card, #30 t-big \"Links.\"","id":"TOKEN","tool":"split_card"}`, `done {}`})
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{
 		`tool {"arguments":{"task_id":"t-big"},"duration_ms":0,"name":"split_card","result":"` + note + `"}`,
