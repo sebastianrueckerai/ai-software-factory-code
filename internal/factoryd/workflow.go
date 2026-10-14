@@ -952,6 +952,14 @@ func (t *taskRun) lifecycle() (string, error) {
 				findings = answer
 			}
 			t.grantPoster(&u)
+		case t.factoryPRCard >= versionFactoryPRCard && st.FactoryPR && st.PR.Number != 0:
+			// a card for a pull request factoryd opened outside any card's
+			// workflow (roadmap 187): like a roll it holds no session — its
+			// work is the pull request linked to it — and takes the gates
+			// from running, not straight from queued. Unlike a roll no
+			// RollCommit writes its branch, the pull request exists already.
+			t.pr = st.PR
+			return t.factoryPR(st.Head)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
@@ -1233,6 +1241,32 @@ func (t *taskRun) roll(head string) (string, error) {
 			return t.finish(last.final, last.reason)
 		}
 	}
+}
+
+// factoryPR runs a card for a pull request factoryd opened outside any
+// card's workflow (roadmap 187) from the head of the pull request linked
+// to it: like a roll's run it holds no session and takes the gates from
+// running (set running, then verify sets in-review and runs the stages).
+// Unlike a roll it runs no RollCommit — nothing writes its branch, the
+// pull request exists already — so findings on the head end the task where
+// a roll's next round would write what the findings ask (verify opens no
+// pull request: the linked one is taken, t.orphanPR).
+func (t *taskRun) factoryPR(head string) (string, error) {
+	if final, why, ok := t.decided(); ok {
+		return t.finish(final, why)
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
+		return t.finish("failed", "set running: "+errMessage(err))
+	}
+	last := t.verify(head)
+	if last.final != "" {
+		return t.finish(last.final, last.reason)
+	}
+	reason := last.reason
+	if reason == "" {
+		reason = "changes requested"
+	}
+	return t.finish("failed", "factory pull request: "+reason+": "+strings.Join(last.findings, "; "))
 }
 
 // drainFolds takes the pending roll_folded signals; RollCommit writes what
