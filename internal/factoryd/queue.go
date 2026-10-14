@@ -220,8 +220,11 @@ func signalQueueHeads(ctx context.Context, store Store, wf Workflows) {
 }
 
 // queued: the task's process merges one pull request of the project at a
-// time (versionMergeQueue).
+// time (versionMergeQueue); a roll takes no turn (versionRollNoQueue).
 func (t *taskRun) queued() bool {
+	if t.rolling && t.rollQueue >= versionRollNoQueue {
+		return false
+	}
 	return t.mergeQueue >= versionMergeQueue && t.cfg.Task.Queue == policy.QueueProject
 }
 
