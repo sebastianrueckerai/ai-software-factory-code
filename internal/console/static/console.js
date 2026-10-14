@@ -349,6 +349,41 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
+// The whole card opens the drawer (item 226): a click anywhere on the
+// face that is not a link, a button or a field; the title's link is the
+// same door for the keyboard. A selection is left alone.
+document.addEventListener("click", function (e) {
+  if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
+  var card = e.target.closest("#board [data-card]");
+  if (!card || String(getSelection && getSelection())) return;
+  location.hash = "#card=" + card.dataset.card;
+});
+// On the phone the columns are sections: Done starts folded, a tap on a
+// column's title folds or unfolds it.
+(function () {
+  function narrow() { return window.innerWidth < 900; }
+  function fold() {
+    document.querySelectorAll("#board .column.fold").forEach(function (c) {
+      if (!c.dataset.folded) {
+        c.dataset.folded = narrow() ? "yes" : "no";
+        c.classList.toggle("folded", c.dataset.folded === "yes");
+      }
+      var h = c.querySelector(":scope > h3");
+      if (h) h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+    });
+  }
+  document.addEventListener("DOMContentLoaded", fold);
+  document.addEventListener("htmx:afterSettle", fold);
+  document.addEventListener("click", function (e) {
+    var h = e.target.closest && e.target.closest("#board .column > h3");
+    if (!h || !narrow()) return;
+    var c = h.parentElement;
+    c.classList.toggle("folded");
+    c.dataset.folded = c.classList.contains("folded") ? "yes" : "no";
+    h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+  });
+})();
+
 // The card drawer docked at the right edge over the board: #card=<id> in
 // the URL opens it, on load too, and a card links there; Escape or its ✕
 // closes it.

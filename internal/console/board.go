@@ -88,18 +88,18 @@ type verdictForm struct {
 	CSRF, Back string
 }
 
-// The project screen's five columns (ruling 255), a view over the task
-// states and never a state of their own; the lane and the fine state are
-// chips on the card.
+// The project screen's four columns (ruling 255 as C8 amends it), a view
+// over the task states and never a state of their own: In progress holds
+// running, closing and in review, the stage word on the card; the lane
+// and the fine state are chips on the card.
 const (
 	colNeedsYou = iota
 	colQueued
-	colWorking
-	colVerifying
+	colProgress
 	colDone
 )
 
-var fiveTitles = []string{"Needs you", "Queued", "Working", "Verifying", "Done"}
+var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 
 // fiveColumn is t's column for viewer, -1 for a status none holds: a card
 // waiting on its author needs the viewer when they are the author, else
@@ -115,10 +115,8 @@ func fiveColumn(t factoryd.Task, viewer string) int {
 		return colQueued
 	case "backlog", "queued", "waiting-deps":
 		return colQueued
-	case "running", "closing":
-		return colWorking
-	case "in-review":
-		return colVerifying
+	case "running", "closing", "in-review":
+		return colProgress
 	case "done", "failed", "closed":
 		return colDone
 	}
@@ -633,7 +631,7 @@ func pct(spent, cap float64) int {
 func (d boardData) InProgress() []card {
 	var out []card
 	for _, col := range d.Columns {
-		if col.Title == "Working" || col.Title == "Verifying" || col.Title == "In progress" {
+		if col.Title == "In progress" {
 			out = append(out, col.Cards...)
 		}
 	}
@@ -716,6 +714,29 @@ func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project
 		out = append(out, k)
 	}
 	return out
+}
+
+// Final is a done, failed or closed card: a two-line row on the board.
+func (k card) Final() bool { return factoryd.Final(k.Status) }
+
+// Glyph is the final state's mark beside its word.
+func (k card) Glyph() string {
+	switch k.Status {
+	case "done":
+		return "✓"
+	case "failed":
+		return "✕"
+	case "closed":
+		return "⊘"
+	}
+	return "·"
+}
+
+// Speaks is whether the face shows the activity line: a card in progress,
+// one that waits, one stalled on the provider or stale; a queued card
+// keeps its face bare.
+func (k card) Speaks() bool {
+	return k.Stage != "" || strings.HasPrefix(k.Status, "waiting") || k.Stale || k.Provider || k.Retrying || k.Held
 }
 
 // configTree is commit's tree of the configuration directory in Forgejo,
@@ -1057,11 +1078,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			k.Badge = t.Lane
 		}
 	}
-	// the five columns are no lanes: a card wears its lane, unless its
-	// status says the same word
+	// the four columns are no lanes: a card wears its lane when it is
+	// not the default, ready, and its status does not say the same word
 	if !v.filter.wide() {
 		k.Badge = t.Lane
-		if t.Lane == t.Status {
+		if t.Lane == t.Status || t.Lane == policy.LaneReady {
 			k.Badge = ""
 		}
 	}
@@ -1279,7 +1300,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		byStatus["closing"] = byStatus["running"]
 	} else {
-		for _, title := range fiveTitles {
+		for _, title := range columnTitles {
 			d.Columns = append(d.Columns, column{Title: title})
 		}
 	}
@@ -1312,9 +1333,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
-		case col == colWorking && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
+		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
 			d.Status.Waiting++
-		case col == colWorking:
+		case col == colProgress && t.Status != "in-review":
 			d.Status.Working++
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
@@ -1876,13 +1897,14 @@ type drawerData struct {
 
 // Age is the card's time in its stage, or in all once it ended.
 func (d drawerData) Age() string {
+	var parts []string
 	if d.Card.StageAge != "" {
-		return d.Card.StageAge
+		parts = append(parts, d.Card.StageAge)
 	}
 	if d.Card.Total != "" {
-		return d.Card.Total + " in all"
+		parts = append(parts, d.Card.Total+" in all")
 	}
-	return ""
+	return strings.Join(parts, ", ")
 }
 
 // Word is the card's stage word, or its status.

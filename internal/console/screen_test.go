@@ -68,23 +68,23 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	return r, ck
 }
 
-// Ruling 255: the five columns are a view over the task states. Every
-// status lands in exactly one column, waiting on the author in Needs you
+// Ruling 255 as C8 amends it: the four columns are a view over the task
+// states. Every status lands in exactly one column, running, closing and
+// in review together in In progress, waiting on the author in Needs you
 // for the author and in Queued for anyone else; Needs you also holds the
 // human lane (the approval requests, the escalation with its answer form,
 // the human task), oldest waiting first; the headers count the column;
 // another project's card is on no column.
-func TestFiveColumnsPlaceEveryStatus(t *testing.T) {
+func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	r, ck := screenRig(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	want := map[string][]string{
-		"Needs you": {"approval 4", "t-me", "t-esc", "approval 3", "t-human"},
-		"Queued":    {"t-other", "t-back", "t-queue", "t-deps"},
-		"Working":   {"t-run", "t-close"},
-		"Verifying": {"t-rev"},
-		"Done":      {"t-done", "t-fail", "t-closed"},
+		"Needs you":   {"approval 4", "t-me", "t-esc", "approval 3", "t-human"},
+		"Queued":      {"t-other", "t-back", "t-queue", "t-deps"},
+		"In progress": {"t-run", "t-close", "t-rev"},
+		"Done":        {"t-done", "t-fail", "t-closed"},
 	}
-	counts := map[string]string{"Needs you": "5", "Queued": "4", "Working": "2", "Verifying": "1", "Done": "3"}
+	counts := map[string]string{"Needs you": "5", "Queued": "4", "In progress": "3", "Done": "3"}
 	for title, items := range want {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
@@ -272,36 +272,41 @@ func TestCardLaneAndFineChips(t *testing.T) {
 	r.objects["sessions/t-unheld/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}
 {"step":"session_start","attempt":1}
 `)
-	chips := func(body, id string) string {
+	// the chips line and the fine pills of the state row, per view
+	lines := func(body, id string) (chips, fine string) {
 		t.Helper()
 		face := faceOf(t, body, id)
-		start := strings.Index(face, `<p class="chips">`)
-		if start < 0 {
-			return ""
+		if start := strings.Index(face, `<p class="chips">`); start >= 0 {
+			chips = face[start : start+strings.Index(face[start:], "</p>")+len("</p>")]
 		}
-		return face[start : start+strings.Index(face[start:], "</p>")+len("</p>")]
+		for _, m := range regexp.MustCompile(`<span class="pill fine [^"]*">[^<]*</span>`).FindAllString(face, -1) {
+			fine += m
+		}
+		return chips, fine
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	const ready = `<span class="badge">ready</span> `
-	for id, want := range map[string][2]string{
-		"t-lane":   {`<p class="chips">` + ready + `</p>`, ""},
-		"t-back":   {"", ""},
-		"t-other":  {`<p class="chips">` + ready + `<span class="pill fine st-waiting hollow">waiting on the author</span> </p>`, `<p class="chips">` + ready + `</p>`},
-		"t-fail":   {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
-		"t-closed": {"", ""},
-		"t-done":   {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
-		"t-stale":  {`<p class="chips">` + ready + `<span class="pill fine st-stale">stale</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-stale">stale</span> </p>`},
-		"t-retry":  {`<p class="chips">` + ready + `<span class="pill fine st-running">retrying</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-running">retrying</span> </p>`},
-		"t-again":  {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
-		"t-held":   {`<p class="chips">` + ready + `<span class="pill fine st-waiting">waiting for a roll</span> </p>`, `<p class="chips">` + ready + `<span class="pill fine st-waiting">waiting for a roll</span> </p>`},
-		"t-unheld": {`<p class="chips">` + ready + `</p>`, `<p class="chips">` + ready + `</p>`},
+	// the default lane, ready, is no badge on the four-column board; the
+	// wide view's state columns name it
+	const ready = `<p class="chips"><span class="badge">ready</span> </p>`
+	for id, want := range map[string][4]string{
+		"t-lane":   {"", "", "", ""},
+		"t-back":   {"", "", "", ""},
+		"t-other":  {"", ready, `<span class="pill fine st-waiting hollow">waiting on the author</span>`, ""},
+		"t-fail":   {"", "", "", ""},
+		"t-closed": {"", "", "", ""},
+		"t-done":   {"", "", "", ""},
+		"t-stale":  {"", ready, `<span class="pill fine st-stale">stale</span>`, `<span class="pill fine st-stale">stale</span>`},
+		"t-retry":  {"", ready, `<span class="pill fine st-running">retrying</span>`, `<span class="pill fine st-running">retrying</span>`},
+		"t-again":  {"", ready, "", ""},
+		"t-held":   {"", ready, `<span class="pill fine st-waiting">waiting for a roll</span>`, `<span class="pill fine st-waiting">waiting for a roll</span>`},
+		"t-unheld": {"", ready, "", ""},
 	} {
-		if got := chips(five, id); got != want[0] {
-			t.Errorf("five columns, %s: chips %q, want %q", id, got, want[0])
+		if chips, fine := lines(five, id); chips != want[0] || fine != want[2] {
+			t.Errorf("four columns, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[0], want[2])
 		}
-		if got := chips(wide, id); got != want[1] {
-			t.Errorf("wide view, %s: chips %q, want %q", id, got, want[1])
+		if chips, fine := lines(wide, id); chips != want[1] || fine != want[3] {
+			t.Errorf("wide view, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[1], want[3])
 		}
 	}
 }

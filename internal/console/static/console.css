@@ -176,6 +176,7 @@ footer#live:empty { display: none; }
 .face { display: grid; gap: 2px; }
 .face > * { min-width: 0; }
 .face > p { margin: 0; }
+.face > div { margin: 0; }
 .line1 { font-size: 13px; line-height: 1.38; }
 .lane.five .face .line1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ref { color: var(--text-muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
@@ -214,6 +215,8 @@ footer#live:empty { display: none; }
 .github { margin: 2px 0 0; color: var(--text-muted); font: 11px/1.6 var(--font-mono); }
 /* chips: mono 11 px in a hairline box; blocked in red, a fine state in amber */
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.chips > * { max-width: 100%; }
+.chip.waiting { height: auto; min-height: 18px; padding: 1px 6px; white-space: normal; }
 .chip, .badge, .pill.fine { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--text-muted); font: 11px/1 var(--font-mono); white-space: nowrap; background: none; }
 .pill.fine::before { content: none; }
 .pill.fine, .badge.plan, .chip.waiting { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
@@ -243,19 +246,37 @@ footer#live:empty { display: none; }
 .face[class*="edge-"] { border-left: 3px solid var(--acc); }
 /* the quiet row of a card's actions */
 .transitions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.transitions button { height: 22px; padding: 0 7px; font-size: 11px; }
+.line2 > .pr { color: var(--text-muted); }
+.card:has(> .line1 > .title > .open) { cursor: pointer; }
+.card:has(> .line1 > .title > .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.card .open:focus-visible { outline: none; }
+/* a done, failed or closed card: a two-line row */
+.face.final { padding: 6px 2px 7px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
+.face.final:last-child { border-bottom: 0; }
+.face.final .line1 { font-size: 12.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.face.final .line1 .ref, .face.final .line1 .open { color: var(--text-faint); }
+.face.final .line1 .open:hover { color: var(--text); }
+.face.final:hover .line1 { color: var(--text-muted); }
+.dmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; margin: 1px 0 0; color: var(--text-faint); font: 11px/1.5 var(--font-mono); letter-spacing: -.02em; }
+.dmeta > * { white-space: nowrap; }
+.dmeta > *:not(:last-child)::after { content: "·"; margin-left: 5px; }
+.dmeta .g { margin-right: 4px; }
+.dmeta .chip { height: auto; padding: 0; border: 0; color: inherit; }
+.face.final.d-failed .dmeta .st { color: var(--st-failed); }
+.dmeta form.inline button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; letter-spacing: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; cursor: pointer; }
+.dmeta form.inline button:hover { color: var(--accent); background: none; text-decoration-color: currentColor; }
+/* on the phone the Done column folds */
+.column.folded > *:not(h3) { display: none; }
+.column.fold > h3 { cursor: pointer; }
 form.inline { display: inline; }
 form.inline button { margin: 0; }
 form.move button { padding: 0 6px; }
 .card[draggable=true] { cursor: grab; }
-/* the face's fold: the objective and the writer's forms, closed by default */
-.card details { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 4px; font-size: 12px; }
-.card details summary { cursor: pointer; color: var(--text-faint); font: 11px var(--font-mono); }
-.card details h4.objective { display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-weight: 400; color: var(--text-muted); margin: 4px 0; }
 .children { margin: 4px 0; padding-left: 16px; font-size: 12px; }
 .edit-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .edit-form label { display: contents; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
-.edit-icon { color: var(--text-muted); text-decoration: none; }
 .agent-summary { color: var(--text-muted); font-size: 12.5px; }
 
 /* Needs you items: a decision with its primary action first */

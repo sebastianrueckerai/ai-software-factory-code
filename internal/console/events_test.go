@@ -885,11 +885,11 @@ func TestStreamSendsTheCounters(t *testing.T) {
 		return true
 	}
 	moved()
-	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0, 0}) {
-		t.Errorf("counters %+v, want the strip and 2 0 1 0 0", got)
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0}) {
+		t.Errorf("counters %+v, want the strip and 2 0 1 0", got)
 	}
-	if got := next(teal); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 0, 0, 0}) {
-		t.Errorf("teal's counters %+v, want the strip and 2 0 0 0 0", got)
+	if got := next(teal); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 0, 0}) {
+		t.Errorf("teal's counters %+v, want the strip and 2 0 0 0", got)
 	}
 	// unchanged: two heartbeats pass after the event without counters
 	moved()
@@ -904,8 +904,8 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	queued := factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 12, Objective: "queue it"}
 	r.tasks.set("", running, queued)
 	moved()
-	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 1, 1, 0, 0}) {
-		t.Errorf("counters after a queued card %+v, want 2 1 1 0 0", got)
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 1, 1, 0}) {
+		t.Errorf("counters after a queued card %+v, want 2 1 1 0", got)
 	}
 }
 
@@ -1220,10 +1220,13 @@ func TestBoardActivityLine(t *testing.T) {
 		t.Errorf("the escalated card without an event lacks its question: %.400s", got)
 	}
 	hhmm := at.UTC().Format("15:04")
-	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm, "t-fin": "status done at " + hhmm} {
+	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm} {
 		if got := card(id); !strings.Contains(got, `class="activity">`+want+`<`) {
 			t.Errorf("the card whose newest event is its status lacks %q: %.400s", want, got)
 		}
+	}
+	if got := card("t-fin"); strings.Contains(got, `activity`) {
+		t.Errorf("a finished card claims an activity line: %.400s", got)
 	}
 	if got := card("t-b"); strings.Contains(got, `activity`) {
 		t.Errorf("a card with neither claims an activity line: %.400s", got)
