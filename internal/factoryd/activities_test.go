@@ -1268,7 +1268,9 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
 // at the cap, the model reviews oldest first, the last round, and
-// whether a retry_stronger climbed (sessions by attempt).
+// whether a retry_stronger climbed (sessions by attempt). The
+// finding_adjudicated steps land on the reviews that found them, by the
+// approval that overruled them (roadmap 192).
 func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
 	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
@@ -1277,6 +1279,7 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 			`{"step":"stage_findings","stage":"checks","round":2,"to":"agent","findings":["red"]}`+"\n"+
 			`{"step":"model_review","note":"model review failed: timeout","round":2}`+"\n"+
 			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"+
+			`{"step":"finding_adjudicated","finding":"a.go: x","by":"sebastian","why":"overruled: the check is advisory","time":"2026-10-14T09:00:00Z"}`+"\n"+
 			`{"step":"stage_findings","stage":"supervisor:repetition","round":3,"attempt":4,"to":"agent","findings":["loop"]}`+"\n"+
 			`{"step":"stage_findings","stage":"session","round":3,"attempt":5,"to":"stronger","findings":["none"]}`+"\n"+
 			`{"step":"dependencies_started","reason":"dependency #3 (links-api) ended failed: close this card, or answer to start it anyway"}`+"\n"))
@@ -1297,6 +1300,11 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	}
 	if len(st.Reviews) != 2 || st.Reviews[0].Verdict != "concerns" || st.Reviews[0].Findings[0] != "a.go: x" || st.Reviews[1].Note != "model review failed: timeout" {
 		t.Fatalf("reviews = %+v", st.Reviews)
+	}
+	adj, ok := st.Reviews[0].Adjudicated["a.go: x"]
+	when := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	if !ok || adj.By != "sebastian" || adj.Why != "overruled: the check is advisory" || !adj.When.Equal(when) {
+		t.Fatalf("the review's adjudication = %+v (found %v)", adj, ok)
 	}
 }
 
