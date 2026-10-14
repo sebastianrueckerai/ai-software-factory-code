@@ -65,139 +65,56 @@ func run(log func(string, ...any)) int {
 	case "repro":
 		return runRepro(log)
 	}
-	env, err := loadEnv()
+	return runSession(context.Background(), log, workspace, os.Stdout)
+}
+
+// session is what a session's start hands its run.
+type session struct {
+	env            workerEnv
+	repoDir        string
+	base, mainHead string
+	brief          harness.TaskBrief
+	oc             *factoryd.Opencode
+	gate           *pushGate
+	ck             *checkpointer // nil for a report session
+	tel            *sessionTelemetry
+	outcome        string // for the session's duration metric
+	// closeTelemetry ends the session span and sends the last metrics,
+	// once; stopMessages closes the message endpoint
+	closeTelemetry, stopMessages func()
+}
+
+// runSession runs a session on the workspace ws, its envelopes on stdout.
+// A step before the harness that fails ends the session with a result
+// that names the step and its error.
+func runSession(ctx context.Context, log func(string, ...any), ws string, stdout io.Writer) int {
+	s, err := start(ctx, log, ws)
+	defer s.closeTelemetry()
+	defer s.stopMessages()
 	if err != nil {
 		log("%v", err)
+		writeResult(stdout, harness.Result{Success: false, Summary: "start failed: " + err.Error()}, s.closeTelemetry)
 		return 1
 	}
-	ctx := context.Background()
-	log("task %s session %s", env.taskID, env.sessionID)
-
-	otelProviders, err := telemetry.Setup(ctx, "agent-worker")
-	if err != nil {
-		log("telemetry: %v", err)
-		return 1
+	if s.env.report != "" {
+		return runReport(ctx, s, stdout, log)
 	}
-	tel, err := newSessionTelemetry(otelProviders.Tracer, otelProviders.Meter, env.taskID, env.sessionID, env.model)
-	if err != nil {
-		log("telemetry: %v", err)
-		return 1
-	}
-	tel.start()
-	outcome := "failed"
-	// factoryd deletes the pod once it reads the result line, so the session
-	// span and the last metrics leave before it
-	closeTelemetry := sync.OnceFunc(func() {
-		tel.end(outcome)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
-	})
-	defer closeTelemetry()
-	endBrief := tel.phase("brief")
-
-	// The pod mounts an emptyDir over HOME (the image root is read-only), so
-	// restore the image-baked opencode provider packages into it.
-	if _, err := os.Stat(filepath.Join(env.home, ".config", "opencode")); os.IsNotExist(err) {
-		if err := os.CopyFS(filepath.Join(env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
-			log("restore pre-baked opencode config: %v", err)
-			endBrief(err)
-			return 1
-		}
-	}
-
-	repoDir := filepath.Join(workspace, "repo")
-	if err := cloned(workspace); err != nil {
-		log("clone: %v", err)
-		endBrief(err)
-		return 1
-	}
-	base, mainHead, err := prepareRepo(repoDir, env)
-	if err != nil {
-		log("prepare repo: %v", err)
-		endBrief(err)
-		return 1
-	}
-
-	brief := harness.TaskBrief{
-		Objective:      env.objective,
-		Repository:     env.repository,
-		SHA:            env.repoSHA,
-		Findings:       env.findings,
-		Answers:        env.answers,
-		PosterInfo:     env.posterInfo,
-		Author:         env.author,
-		AuthorStanding: env.authorStanding,
-		Report:         env.report,
-		Tools:          env.tools,
-		Spec:           env.spec,
-		CardRole:       env.cardRole,
-		LeftOut:        env.leftOut,
-	}
-	if brief.Map, err = cardMap(repoDir, env.directories); err != nil {
-		log("repository map: %v", err)
-		endBrief(err)
-		return 1
-	}
-	if brief.Map != "" {
-		log("repository map: %d directories, %d bytes", len(env.directories), len(brief.Map))
-	}
-	oc := &factoryd.Opencode{
-		WorkDir:    repoDir,
-		GatewayURL: env.gatewayURL,
-		TokenFile:  env.tokenFile,
-		Model:      env.model,
-		Stronger:   env.strongerModel,
-		Cheap:      env.cheapModel,
-		Budget:     factoryd.TokenBudget{AnswerTokens: env.answerTokens, HeadroomTokens: env.headroomTokens},
-		Steps:      env.steps,
-	}
-	if err := oc.Prepare(ctx, harness.SandboxEnv{}, brief); err != nil {
-		log("prepare: %v", err)
-		endBrief(err)
-		return 1
-	}
-
-	gate := newPushGate()
-	stopMessages, err := serveMessages(env.messageHash, gate, func(ctx context.Context, text, model string) error {
-		if model != "" {
-			oc.SetModel(model)
-		}
-		return oc.Message(ctx, text)
-	}, log)
-	if err != nil {
-		log("%v", err)
-		endBrief(err)
-		return 1
-	}
-	defer stopMessages()
-	if env.report != "" {
-		endBrief(nil)
-		return runReport(ctx, oc, brief, tel, &outcome, closeTelemetry, log)
-	}
-	ck, err := newCheckpointer(repoDir, env, base)
-	if err != nil {
-		log("checkpoint store: %v", err)
-		endBrief(err)
-		return 1
-	}
-	endBrief(nil)
 	var emitMu sync.Mutex
 	emit := func(ev harness.Event) {
-		tel.observe(ev)
+		s.tel.observe(ev)
 		line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev})
 		if err != nil {
 			return
 		}
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		fmt.Println(string(line))
+		fmt.Fprintln(stdout, string(line))
 	}
 	ckCtx, stopCheckpoints := context.WithCancel(ctx)
 	ckDone := make(chan struct{})
 	go func() {
 		defer close(ckDone)
-		ck.loop(ckCtx, checkpointEvery, emit, log)
+		s.ck.loop(ckCtx, checkpointEvery, emit, log)
 	}()
 	// factoryd stops a session (a supervisor decision, the wall-clock cap)
 	// by deleting the pod: SIGTERM ends the agent, and its work in progress
@@ -205,8 +122,8 @@ func run(log func(string, ...any)) int {
 	// period runs out.
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
-	endRun := tel.phase("run")
-	res := oc.Run(runCtx, brief, emit)
+	endRun := s.tel.phase("run")
+	res := s.oc.Run(runCtx, s.brief, emit)
 	stopped := runCtx.Err() != nil
 	stopCheckpoints()
 	<-ckDone
@@ -221,15 +138,15 @@ func run(log func(string, ...any)) int {
 	var commit string
 	var pushErr error
 	res = deliver(res, stopped, func() (string, error) {
-		endPush := tel.phase("push")
-		commit, pushErr = commitAndPush(repoDir, env, base, mainHead, killOthers, func(commit string) (string, error) {
-			return gate.ask(commit, pushWait, os.Stdout)
+		endPush := s.tel.phase("push")
+		commit, pushErr = commitAndPush(s.repoDir, s.env, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
+			return s.gate.ask(commit, pushWait, stdout)
 		})
 		endPush(pushErr)
 		return commit, pushErr
-	}, env.branch, emit)
-	outcome = sessionOutcome(res, stopped, commit, pushErr)
-	writeResult(os.Stdout, res, closeTelemetry)
+	}, s.env.branch, emit)
+	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
+	writeResult(stdout, res, s.closeTelemetry)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
@@ -237,31 +154,125 @@ func run(log func(string, ...any)) int {
 	return 0
 }
 
+// start runs the session's steps before the harness, in order, on the
+// workspace ws; an error names the step that failed. s is never nil: its
+// closers undo what started.
+func start(ctx context.Context, log func(string, ...any), ws string) (s *session, err error) {
+	s = &session{outcome: "failed", closeTelemetry: func() {}, stopMessages: func() {}}
+	if s.env, err = loadEnv(); err != nil {
+		return s, fmt.Errorf("environment: %w", err)
+	}
+	log("task %s session %s", s.env.taskID, s.env.sessionID)
+	otelProviders, err := telemetry.Setup(ctx, "agent-worker")
+	if err != nil {
+		return s, fmt.Errorf("telemetry: %w", err)
+	}
+	if s.tel, err = newSessionTelemetry(otelProviders.Tracer, otelProviders.Meter, s.env.taskID, s.env.sessionID, s.env.model); err != nil {
+		return s, fmt.Errorf("telemetry: %w", err)
+	}
+	s.tel.start()
+	// factoryd deletes the pod once it reads the result line, so the session
+	// span and the last metrics leave before it
+	s.closeTelemetry = sync.OnceFunc(func() {
+		s.tel.end(s.outcome)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
+	})
+	endBrief := s.tel.phase("brief")
+	defer func() { endBrief(err) }()
+
+	// The pod mounts an emptyDir over HOME (the image root is read-only), so
+	// restore the image-baked opencode provider packages into it.
+	if _, err := os.Stat(filepath.Join(s.env.home, ".config", "opencode")); os.IsNotExist(err) {
+		if err := os.CopyFS(filepath.Join(s.env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
+			return s, fmt.Errorf("restore pre-baked opencode config: %w", err)
+		}
+	}
+	s.repoDir = filepath.Join(ws, "repo")
+	if err := cloned(ws); err != nil {
+		return s, fmt.Errorf("clone: %w", err)
+	}
+	if s.base, s.mainHead, err = prepareRepo(s.repoDir, s.env); err != nil {
+		return s, fmt.Errorf("prepare repo: %w", err)
+	}
+	s.brief = harness.TaskBrief{
+		Objective:      s.env.objective,
+		Repository:     s.env.repository,
+		SHA:            s.env.repoSHA,
+		Findings:       s.env.findings,
+		Answers:        s.env.answers,
+		PosterInfo:     s.env.posterInfo,
+		Author:         s.env.author,
+		AuthorStanding: s.env.authorStanding,
+		Report:         s.env.report,
+		Tools:          s.env.tools,
+		Spec:           s.env.spec,
+		CardRole:       s.env.cardRole,
+		LeftOut:        s.env.leftOut,
+	}
+	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
+		return s, fmt.Errorf("repository map: %w", err)
+	}
+	if s.brief.Map != "" {
+		log("repository map: %d directories, %d bytes", len(s.env.directories), len(s.brief.Map))
+	}
+	s.oc = &factoryd.Opencode{
+		WorkDir:    s.repoDir,
+		GatewayURL: s.env.gatewayURL,
+		TokenFile:  s.env.tokenFile,
+		Model:      s.env.model,
+		Stronger:   s.env.strongerModel,
+		Cheap:      s.env.cheapModel,
+		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
+		Steps:      s.env.steps,
+	}
+	if err := s.oc.Prepare(ctx, harness.SandboxEnv{}, s.brief); err != nil {
+		return s, fmt.Errorf("prepare brief: %w", err)
+	}
+	s.gate = newPushGate()
+	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
+		if model != "" {
+			s.oc.SetModel(model)
+		}
+		return s.oc.Message(ctx, text)
+	}, log)
+	if err != nil {
+		return s, err
+	}
+	s.stopMessages = stop
+	if s.env.report == "" {
+		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base); err != nil {
+			return s, fmt.Errorf("checkpoint store: %w", err)
+		}
+	}
+	return s, nil
+}
+
 // runReport runs a report session: the agent writes, nothing is committed
 // or pushed, and its last message is the result's summary, which factoryd
 // posts on the issue. A stopped session reports what it has.
-func runReport(ctx context.Context, oc *factoryd.Opencode, brief harness.TaskBrief, tel *sessionTelemetry, outcome *string,
-	closeTelemetry func(), log func(string, ...any)) int {
+func runReport(ctx context.Context, s *session, stdout io.Writer, log func(string, ...any)) int {
 	emit := func(ev harness.Event) {
-		tel.observe(ev)
+		s.tel.observe(ev)
 		if line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev}); err == nil {
-			fmt.Println(string(line))
+			fmt.Fprintln(stdout, string(line))
 		}
 	}
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
-	endRun := tel.phase("run")
-	res := oc.Run(runCtx, brief, emit)
+	endRun := s.tel.phase("run")
+	res := s.oc.Run(runCtx, s.brief, emit)
 	if err := killOthers(); err != nil {
 		res = harness.Result{Success: false, Summary: "stop agent processes: " + err.Error()}
 	}
 	if res.Success {
 		endRun(nil)
-		*outcome = "reported"
+		s.outcome = "reported"
 	} else {
 		endRun(errors.New("the agent did not finish"))
 	}
-	writeResult(os.Stdout, res, closeTelemetry)
+	writeResult(stdout, res, s.closeTelemetry)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1

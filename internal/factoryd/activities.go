@@ -609,6 +609,14 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush}
+	if out.start != nil {
+		// no agent saw the session's findings, and every next pod would
+		// wait the same way: a human fixes the cause, the answer starts
+		// the next session with them
+		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(), true
+		res.Findings = s.findings
+		return res
+	}
 	// a session that finished and pushed goes to verification, even when a
 	// stop raced its finish
 	if out.result != nil && out.result.Success && out.commit != "" {

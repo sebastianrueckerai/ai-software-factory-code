@@ -1680,6 +1680,44 @@ func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 	}
 }
 
+// A session whose pod cannot start goes to a human like any escalation,
+// but it ran no agent: its minute is no agent time, so the answer finds
+// the whole 20 minutes left and grants no slice, and the session it buys
+// runs on the same rung with the same findings.
+func TestWorkflowPodThatCannotStartTakesNoAgentTime(t *testing.T) {
+	h := newWorkflowHarness(t)
+	reason := startRefused + "push the worker image or correct its reference, then answer to start a session again, or close the card.\n" +
+		"image pull: container clone waits with ErrImagePull: not found"
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Model: in.Model, Reason: reason, StartFailed: true,
+				Findings: []string{"go vet: unreachable code"}}, nil
+		}).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s2", "c2"), nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the image is pushed", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, finals = %v; want done after the answer's attempt", final, len(h.sessions), h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{reason}) {
+		t.Fatalf("escalations = %q, want the start failure's", h.escalated)
+	}
+	if second := h.sessions[1]; second.Model != h.sessions[0].Model || !slices.Equal(second.Findings, []string{"go vet: unreachable code"}) {
+		t.Fatalf("second session = %+v, want the first's model and findings", second)
+	}
+	want := TaskUsage{AgentTime: 5 * time.Minute, Attempts: 2, ExtraAttempts: 1}
+	if last := h.usage[len(h.usage)-1]; last != want {
+		t.Fatalf("usage = %+v, want %+v", last, want)
+	}
+}
+
 // The slice a human answer buys is a quarter of the task's resolved agent
 // time, floored at min(minSession, WallClockCap) so the attempt it buys is
 // never born under the 5 minutes a session needs to start (ruling 237,

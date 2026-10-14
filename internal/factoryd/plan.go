@@ -1368,7 +1368,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
+	text, why, escalate, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -1377,9 +1377,9 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			return PlanResult{Refused: refused}, err
 		}
 	}
-	if escalated {
-		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": text})
-		return PlanResult{Escalate: text}, nil
+	if escalate != "" {
+		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": escalate})
+		return PlanResult{Escalate: escalate}, nil
 	}
 	if res, ok := r.takeFiled(taskID); ok {
 		return res, nil

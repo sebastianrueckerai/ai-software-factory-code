@@ -160,12 +160,12 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 			r.record(context.WithoutCancel(ctx), taskID, "split_state", map[string]any{"error": err.Error()})
 		}
 	}()
-	text, why, escalated, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
+	text, why, escalate, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if escalated {
-		return PlanResult{Findings: []string{"split: the planner stopped: " + text}}, nil
+	if escalate != "" {
+		return PlanResult{Findings: []string{"split: the planner stopped: " + escalate}}, nil
 	}
 	p, found := CheckSplit(text, files, bound, v.Document.Limits)
 	if text == "" {

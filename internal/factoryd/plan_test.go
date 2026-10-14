@@ -1342,6 +1342,45 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	}
 }
 
+// A planner session whose pod cannot start goes to a human at once with
+// the start failure, not back to the next planner session as a missing
+// plan.
+func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.phase, p.containers = "Pending", []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}}
+	}
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunPlan still waits on the pod")
+	}
+	want := "the session's pod cannot start, and no session can fix it: push the worker image or correct its reference, " +
+		"then answer to start a session again, or close the card.\nimage pull: container clone waits with ErrImagePull: " + imageNotFound
+	if res.Escalate != want || len(res.Findings) != 0 || res.Revision != 0 {
+		t.Fatalf("result %+v, want the escalation %q", res, want)
+	}
+}
+
 // file_plan checks the whole plan json at once, in the session that files
 // it: a refusal names every finding and stores nothing, the corrected plan
 // files as the next revision and is held for the running session, and a

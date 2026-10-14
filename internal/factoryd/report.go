@@ -117,23 +117,24 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 // reportSession runs one worker in report mode, with guide, findings and
 // a human's answers, in the task's own sandbox: the read token on the
 // repository, no push token, no fork. Its report is the agent's last
-// message, or why a stop ended it (escalated: a stop for a human); with
-// none, why the session ended without one.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (report, why string, escalated bool, err error) {
+// message, or why a stop ended it; with none, why the session ended
+// without one. escalate is what a human answers: a stop for a human, or
+// a pod that cannot start, which leaves no report.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (report, why, escalate string, err error) {
 	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
-		return "", "", false, err
+		return "", "", "", err
 	}
 	tc, err := r.TaskConfig(ctx, t.ID, pin)
 	if err != nil {
-		return "", "", false, err
+		return "", "", "", err
 	}
 	s.agentTime, s.checkIn = tc.AgentTime, tc.CheckIn
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return "", "", false, fmt.Errorf("revoke leftover credentials: %w", err)
+		return "", "", "", fmt.Errorf("revoke leftover credentials: %w", err)
 	}
 	cleanup := context.WithoutCancel(ctx)
 	defer func() {
@@ -144,10 +145,10 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}()
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
 	if err != nil {
-		return "", "", false, err
+		return "", "", "", err
 	}
 	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
-		return "", "", false, err
+		return "", "", "", err
 	}
 	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
 	began := rfc3339(time.Now())
@@ -156,7 +157,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report", "outcome": "aborted",
 			"summary": err.Error(), "started": began})
-		return "", "", false, err
+		return "", "", "", err
 	}
 	var text string
 	switch {
@@ -164,7 +165,11 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		text = out.result.Summary
 	case out.decision != nil && out.trip != nil:
 		text = fmt.Sprintf("The session stopped (%s, %s): %s", out.trip.Kind, out.decision.Action, cmp.Or(out.decision.Reason, out.decision.Guidance, out.trip.Detail))
-		escalated = out.decision.Action == ActionEscalate
+		if out.decision.Action == ActionEscalate {
+			escalate = text
+		}
+	case out.start != nil:
+		why, escalate = out.noResult, out.start.escalation()
 	case out.result != nil:
 		why = out.result.Summary
 	default:
@@ -176,7 +181,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report",
 		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(text, why), 2000), "started": began})
-	return text, why, escalated, nil
+	return text, why, escalate, nil
 }
 
 // Screen is the screening stage (ruling 182): it opens the task's

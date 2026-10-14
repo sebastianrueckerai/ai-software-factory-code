@@ -516,6 +516,10 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, pr int64, comm
 	}
 	defer r.trackPod(t.ID, ns, podName)()
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
+		var f *startFailure
+		if errors.As(err, &f) {
+			return harness.Repro{}, terminalError("the reproduction's pod cannot start: %v", f)
+		}
 		return harness.Repro{}, err
 	}
 	return r.readRepro(ctx, ns, podName, t.ID)

@@ -89,6 +89,7 @@ type fakePod struct {
 	deleted         bool          // deletion requested, grace period running
 	term            chan struct{} // closed at the deletion: the worker's SIGTERM
 	conditions      []PodCondition
+	containers      []ContainerState // init containers first, as PodDiagnosis reads them
 }
 
 func newFakeKube() *fakeKube {
@@ -311,7 +312,7 @@ func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (Po
 	if !ok {
 		return PodDiagnosis{}, ErrNotFound
 	}
-	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions}, nil
+	return PodDiagnosis{Phase: p.phase, Reason: p.reason, Message: p.message, Conditions: p.conditions, Containers: p.containers}, nil
 }
 
 // PodLogTail serves the scripted body's last lines.
@@ -1567,6 +1568,125 @@ func TestEvictionRecorded(t *testing.T) {
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
 	if err != nil || res.Outcome != OutcomeNoPush || res.Summary != "evicted: The node was low on resource: ephemeral-storage." {
 		t.Fatalf("result = (%+v, %v)", res, err)
+	}
+}
+
+// imageNotFound is containerd's answer, through the kubelet, for a
+// worker image whose manifest the registry does not hold.
+const imageNotFound = `rpc error: code = NotFound desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": reg/worker@sha256:abc: not found`
+
+// A pod whose clone init container or worker container waits on an image
+// the registry does not hold ends its session at the first such wait, not
+// after ten minutes: the session goes to a human with the step, the
+// container and the kubelet's words, the timeline's session_end says so,
+// and the findings no agent saw wait for the next session.
+func TestRunSessionPodThatCannotStartEscalatesAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		containers []ContainerState
+		summary    string
+	}{
+		{"clone", []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound},
+			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
+			"image pull: container clone waits with ErrImagePull: " + imageNotFound},
+		{"worker", []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+			{Name: "worker", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}},
+			"image pull: container worker waits with ErrImagePull: " + imageNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := Task{ID: "t4i", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+			kube := newFakeKube()
+			kube.onCreatePod = func() {
+				p := kube.podOrder[len(kube.podOrder)-1]
+				p.phase, p.containers = "Pending", tc.containers
+			}
+			objects := &fakeObjectStore{}
+			runner, _, _ := newTestRunner(t, task, kube, objects)
+
+			// a start that waits ends in the deadline's error, not ten minutes on
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			began := time.Now()
+			res, err := runSession(t, ctx, runner, SessionInput{TaskID: "t4i", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"go vet: unreachable code"}}, nil)
+			reason := "the session's pod cannot start, and no session can fix it: push the worker image or correct its reference, " +
+				"then answer to start a session again, or close the card.\n" + tc.summary
+			if err != nil || res.Outcome != OutcomeEscalate || res.Summary != tc.summary || res.Reason != reason || !res.StartFailed {
+				t.Fatalf("result = (%+v, %v), want an escalation:\n%s", res, err, reason)
+			}
+			if !slices.Equal(res.Findings, []string{"go vet: unreachable code"}) || res.Model != "factory/coding-cheap" {
+				t.Fatalf("findings %q on %s, want the session's own on its model", res.Findings, res.Model)
+			}
+			if d := time.Since(began); d >= 2*time.Second {
+				t.Fatalf("the session took %v, want its end at the first look at the pod", d)
+			}
+			if got := escalationSource(res.Reason); got != "start" {
+				t.Fatalf("escalation source = %q, want start", got)
+			}
+			if end := timelineStep(t, objects, "t4i", "session_end"); end["outcome"] != string(OutcomeEscalate) || end["summary"] != tc.summary {
+				t.Fatalf("session_end = %v, want outcome escalate with the summary", end)
+			}
+			if len(kube.deletedPods) != 1 {
+				t.Fatalf("deleted pods = %v, want the pod gone", kube.deletedPods)
+			}
+		})
+	}
+}
+
+// awaitPodStart ends a pod's start at the first wait no wait gets past,
+// in its init or its main container, and waits on through every other:
+// a registry that answers 503, a back-off that names no error (a kubelet
+// before 1.30), a container still being created, a pod no node takes. A
+// closed stop ends the first wait at once, so errWorkerStop says the
+// start waited.
+func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
+	const unavailable = `rpc error: code = Unknown desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": ` +
+		`unexpected status from HEAD request to https://reg/v2/worker/manifests/sha256:abc: 503 Service Unavailable`
+	for _, tc := range []struct {
+		name       string
+		containers []ContainerState
+		conditions []PodCondition
+		want       string // the start failure; "" waits on
+	}{
+		{name: "init ErrImagePull, manifest not found",
+			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}, {Name: "worker", State: "waiting", Reason: "PodInitializing"}},
+			want:       "image pull: container clone waits with ErrImagePull: " + imageNotFound},
+		{name: "main ImagePullBackOff after a pull not found",
+			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+				{Name: "worker", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + imageNotFound}},
+			want: `image pull: container worker waits with ImagePullBackOff: Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + imageNotFound},
+		{name: "manifest unknown",
+			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: "reading manifest abc in reg/worker: manifest unknown"}},
+			want:       "image pull: container clone waits with ErrImagePull: reading manifest abc in reg/worker: manifest unknown"},
+		{name: "invalid image name",
+			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "InvalidImageName", Message: `Failed to apply default image tag "reg/Worker": couldn't parse image name "reg/Worker": invalid reference format: repository name must be lowercase`}},
+			want:       `image pull: container clone waits with InvalidImageName: Failed to apply default image tag "reg/Worker": couldn't parse image name "reg/Worker": invalid reference format: repository name must be lowercase`},
+		{name: "container config",
+			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "CreateContainerConfigError", Message: `secret "task-git" not found`}},
+			want:       `container config: container worker waits with CreateContainerConfigError: secret "task-git" not found`},
+		{name: "registry 503",
+			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + unavailable}}},
+		{name: "back-off without the pull's error",
+			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc"`}}},
+		{name: "container creating",
+			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "ContainerCreating"}}},
+		{name: "unschedulable",
+			conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient memory."}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kube := newFakeKube()
+			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
+			r := &Runner{kube: kube}
+			stop := make(chan struct{})
+			close(stop)
+			err := r.awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
+			var f *startFailure
+			switch {
+			case tc.want == "" && !errors.Is(err, errWorkerStop):
+				t.Fatalf("awaitPodStart = %v, want it to wait on", err)
+			case tc.want != "" && (!errors.As(err, &f) || err.Error() != tc.want):
+				t.Fatalf("awaitPodStart = %v, want the start failure %q", err, tc.want)
+			}
+		})
 	}
 }
 

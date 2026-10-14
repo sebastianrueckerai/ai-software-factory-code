@@ -101,7 +101,8 @@ type Kube interface {
 	// PodLog streams the pod's stdout, following until the pod terminates or
 	// ctx is cancelled. The caller closes the stream.
 	PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error)
-	// PodDiagnosis reads the pod's phase, conditions and container states.
+	// PodDiagnosis reads the pod's phase, conditions and container
+	// states, its init containers' first.
 	PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error)
 	// PodLogTail is the pod's last lines of stdout, not followed.
 	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
@@ -109,9 +110,10 @@ type Kube interface {
 	DeletePersistentVolume(ctx context.Context, name string) error
 }
 
-// PodDiagnosis is what the gate supervisor reads of a sandbox pod. Reason
-// and Message are the pod's own status fields, set by the kubelet for an
-// end outside the container's own exit, eviction included.
+// PodDiagnosis is what the gate supervisor and a pod's start read of a
+// sandbox pod. Reason and Message are the pod's own status fields, set by
+// the kubelet for an end outside the container's own exit, eviction
+// included.
 type PodDiagnosis struct {
 	Phase      string           `json:"phase"`
 	Reason     string           `json:"reason,omitempty"`
@@ -463,28 +465,30 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 		Reason  string `json:"reason"`
 		Message string `json:"message"`
 	}
+	type status struct {
+		Name         string `json:"name"`
+		RestartCount int    `json:"restartCount"`
+		State        struct {
+			Waiting    *detail   `json:"waiting"`
+			Running    *struct{} `json:"running"`
+			Terminated *detail   `json:"terminated"`
+		} `json:"state"`
+	}
 	var pod struct {
 		Status struct {
-			Phase             string         `json:"phase"`
-			Reason            string         `json:"reason"`
-			Message           string         `json:"message"`
-			Conditions        []PodCondition `json:"conditions"`
-			ContainerStatuses []struct {
-				Name         string `json:"name"`
-				RestartCount int    `json:"restartCount"`
-				State        struct {
-					Waiting    *detail   `json:"waiting"`
-					Running    *struct{} `json:"running"`
-					Terminated *detail   `json:"terminated"`
-				} `json:"state"`
-			} `json:"containerStatuses"`
+			Phase                 string         `json:"phase"`
+			Reason                string         `json:"reason"`
+			Message               string         `json:"message"`
+			Conditions            []PodCondition `json:"conditions"`
+			InitContainerStatuses []status       `json:"initContainerStatuses"`
+			ContainerStatuses     []status       `json:"containerStatuses"`
 		} `json:"status"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
 		return PodDiagnosis{}, err
 	}
 	d := PodDiagnosis{Phase: pod.Status.Phase, Reason: pod.Status.Reason, Message: pod.Status.Message, Conditions: pod.Status.Conditions}
-	for _, c := range pod.Status.ContainerStatuses {
+	for _, c := range slices.Concat(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses) {
 		cs := ContainerState{Name: c.Name, Restarts: c.RestartCount, State: "running"}
 		switch {
 		case c.State.Waiting != nil:

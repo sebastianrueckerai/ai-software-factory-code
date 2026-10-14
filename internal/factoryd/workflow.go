@@ -264,6 +264,10 @@ type SessionResult struct {
 	Trip string
 	// Status is the provider's HTTP status of a provider_refused session.
 	Status int `json:",omitempty"`
+	// StartFailed: the session's pod could not start, on a cause no
+	// session fixes (Outcome escalate). No agent ran, so the session took
+	// no agent time and made no model call.
+	StartFailed bool `json:",omitempty"`
 	// Acceptance is the plan acceptance command the session ran with exit
 	// 0 (roadmap 208), when it ran one; a card it proves closes done on
 	// the fact, no model verdict and no human's answer owed.
@@ -1203,8 +1207,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			attempt--
 			continue
 		}
-		t.providerAnswered(&refusals, err)
-		u.AgentTime += workflow.Now(t.ctx).Sub(began)
+		if !res.StartFailed {
+			t.providerAnswered(&refusals, err)
+			u.AgentTime += workflow.Now(t.ctx).Sub(began)
+		}
 		u.Attempts = attempt
 		t.recordUsage(u)
 		if decided && v.escalate != "" {

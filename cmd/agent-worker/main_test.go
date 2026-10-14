@@ -396,6 +396,49 @@ func TestCloneModeClones(t *testing.T) {
 	})
 }
 
+// A session whose start fails before the harness runs leaves a result
+// naming the failed step and its error, whatever the step: the card reads
+// why, not a pod that exited without a result. The clone's failure is the
+// text its init container left in the workspace.
+func TestSessionStartFailureLeavesAResult(t *testing.T) {
+	const cloneErr = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
+	for name, tc := range map[string]struct {
+		taskID, fetchFailed, want string
+	}{
+		"environment":  {want: "start failed: environment: TASK_ID is required"},
+		"clone":        {taskID: "t1", fetchFailed: cloneErr, want: "start failed: clone: " + cloneErr},
+		"prepare repo": {taskID: "t1", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setRequiredEnv(t)
+			t.Setenv("TASK_ID", tc.taskID)
+			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			// the restored opencode config: the baked one exists in the image only
+			if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ws := t.TempDir()
+			if tc.fetchFailed != "" {
+				if err := os.WriteFile(fetchFailed(ws), []byte(tc.fetchFailed), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			if code := runSession(context.Background(), nolog, ws, &out); code != 1 {
+				t.Fatalf("exit %d, want 1", code)
+			}
+			want := harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1)}}
+			var got harness.WorkerEnvelope
+			if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &got) != nil ||
+				got.Type != want.Type || got.Result == nil || *got.Result != *want.Result {
+				t.Fatalf("stdout = %q, want the one result %+v", out.String(), *want.Result)
+			}
+		})
+	}
+}
+
 // The worker pushes one commit of its own on the session's start commit:
 // the agent's work, committed or not, is its tree; the agent's own commits
 // and their messages never reach the branch, and the subject, the issue's

@@ -406,7 +406,8 @@ type sessionOutcome struct {
 	decision  *Decision
 	digest    string
 	noResult  string
-	model     string // the model the session ended on
+	start     *startFailure // the pod could not start, noResult says so
+	model     string        // the model the session ended on
 	findings  []string
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
 }
@@ -524,6 +525,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 		out.noResult = err.Error()
+		errors.As(err, &out.start)
 		return out, nil
 	}
 	progress(0, nil)
@@ -952,17 +954,24 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 	return trip
 }
 
-// awaitPodStart waits for the pod to leave Pending; factoryd stopping
-// ends the wait with errWorkerStop (the retry creates the pod anew).
+// awaitPodStart waits for the pod to leave Pending. A container that
+// waits on a cause no wait removes ends it at once with a *startFailure;
+// factoryd stopping ends it with errWorkerStop (the retry creates the pod
+// anew).
 func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		phase, _, err := r.kube.PodStatus(ctx, ns, podName)
-		if err == nil && phase != "" && phase != "Pending" {
+		d, err := r.kube.PodDiagnosis(ctx, ns, podName)
+		if err == nil && d.Phase != "" && d.Phase != "Pending" {
 			return nil
 		}
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
+		}
+		for _, c := range d.Containers {
+			if step := startStep(c); step != "" {
+				return &startFailure{step: step, container: c.Name, reason: c.Reason, message: c.Message}
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -973,6 +982,58 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 		}
 	}
 	return fmt.Errorf("pod %s still pending after %s", podName, timeout)
+}
+
+// The start steps a pod can fail at for good.
+const (
+	stepImagePull       = "image pull"
+	stepContainerConfig = "container config"
+)
+
+// startStep is the step container c waits at when no wait gets it past:
+// an image reference that does not parse, an image or manifest the
+// registry does not hold, or a configuration the kubelet will not create
+// the container with; "" while a wait may (a registry that does not
+// answer, a pull still running). ImagePullBackOff's message carries the
+// last pull's error.
+func startStep(c ContainerState) string {
+	if c.State != "waiting" {
+		return ""
+	}
+	switch c.Reason {
+	case "InvalidImageName":
+		return stepImagePull
+	case "ErrImagePull", "ImagePullBackOff":
+		if strings.Contains(c.Message, "code = NotFound") || strings.Contains(c.Message, "manifest unknown") {
+			return stepImagePull
+		}
+	case "CreateContainerConfigError":
+		return stepContainerConfig
+	}
+	return ""
+}
+
+// startFailure is a pod that cannot start: the step, and the container
+// waiting at it with the kubelet's reason and message.
+type startFailure struct {
+	step, container, reason, message string
+}
+
+func (f *startFailure) Error() string {
+	return fmt.Sprintf("%s: container %s waits with %s: %s", f.step, f.container, f.reason, f.message)
+}
+
+// startRefused opens the escalation of a session whose pod cannot start.
+const startRefused = "the session's pod cannot start, and no session can fix it: "
+
+// escalation is the failure's escalation reason: its first line is the
+// card's question row (escalationQuestion), with the action.
+func (f *startFailure) escalation() string {
+	act := "push the worker image or correct its reference"
+	if f.step == stepContainerConfig {
+		act = "correct the sandbox pod's configuration"
+	}
+	return startRefused + act + ", then answer to start a session again, or close the card.\n" + f.Error()
 }
 
 // setupNamespace builds the session's sandbox: base is the read token of
