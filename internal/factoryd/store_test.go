@@ -350,7 +350,7 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
