@@ -404,48 +404,76 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 				"session %s stopped after %d events without finishing; continue from the branch as it is", dead.SessionID, dead.Events)})
 		}
 	}
+	// a session the stopped factoryd detached from runs on in its pod:
+	// this retry reattaches to it; a dead pod's row goes and the attempt
+	// starts over from the branch, the heartbeat's findings included
+	var live *LiveSession
+	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
+		return SessionResult{}, err
+	} else if ok {
+		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
+			live = &l
+			s.id, s.parent, s.findings = l.SessionID, in.ParentSessionID, in.Findings
+		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
+			return SessionResult{}, err
+		}
+	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 
-	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return SessionResult{}, fmt.Errorf("revoke leftover credentials: %w", err)
+	if live == nil {
+		if err := r.completion.reconcile(ctx, t.ID); err != nil {
+			return SessionResult{}, fmt.Errorf("revoke leftover credentials: %w", err)
+		}
 	}
 	cleanup := context.WithoutCancel(ctx)
+	// detached: factoryd is stopping and the session runs on for the
+	// retry; its sandbox and credentials stay
+	detached := false
 	defer func() {
+		if detached {
+			return
+		}
 		r.forgetNamespace(cleanup, t.ID)
 		if err := r.completion.reconcile(cleanup, t.ID); err != nil {
 			log.Printf("task %s: revoke session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
-	// least privilege (ruling 97): read on the task's repository and the
-	// bot's fork for the clone init container (a resumed branch's head is
-	// on the fork), nothing else on sf; the write token on the fork is
-	// minted when the worker asks for it, its agent dead (answerPush)
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
-	if err != nil {
-		return SessionResult{}, err
+	var deadline, startedAt time.Time
+	if live == nil {
+		// least privilege (ruling 97): read on the task's repository and the
+		// bot's fork for the clone init container (a resumed branch's head is
+		// on the fork), nothing else on sf; the write token on the fork is
+		// minted when the worker asks for it, its agent dead (answerPush)
+		base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
+		if err != nil {
+			return SessionResult{}, err
+		}
+		// freshNamespace deletes a leftover namespace first, and with it any
+		// pod a dead session left running
+		if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
+			return SessionResult{}, err
+		}
+		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
+		r.record(ctx, t.ID, "session_start", map[string]any{
+			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
+			"poster_info": s.posterInfo})
+	} else {
+		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, time.Until(live.Deadline)), live.StartedAt
+		r.record(ctx, t.ID, "session_reattached", map[string]any{"session": s.id, "pod": live.Pod, "lines": live.Lines, "attempt": in.Attempt})
 	}
-	// freshNamespace deletes a leftover namespace first, and with it any
-	// pod a dead session left running
-	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
-		return SessionResult{}, err
-	}
-	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
-	startedAt := time.Now()
 	began := rfc3339(startedAt)
-	r.record(ctx, t.ID, "session_start", map[string]any{
-		"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
-		"poster_info": s.posterInfo})
-	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx))
+	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)
 	if err != nil {
-		outcome := "aborted"
 		if errors.Is(err, errWorkerStop) {
-			// the last heartbeat is what the retry resumes from
-			outcome = "stopped"
+			// the row and the last heartbeat are what the retry resumes from
+			detached = true
 			activity.RecordHeartbeat(ctx, hb.snapshot())
+			r.record(cleanup, t.ID, "session_detached", map[string]any{"session": s.id, "attempt": in.Attempt, "started": began})
+			return SessionResult{}, err
 		}
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
-			"outcome": outcome, "summary": err.Error(), "commit": out.commit, "started": began})
+			"outcome": "aborted", "summary": err.Error(), "commit": out.commit, "started": began})
 		return SessionResult{}, err
 	}
 	res := sessionResult(s, out)
@@ -1468,6 +1496,9 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
 			return err
 		}
+	}
+	if err := r.store.DeleteLiveSession(ctx, taskID); err != nil {
+		return err
 	}
 	r.forgetNamespace(ctx, taskID)
 	msg := "factoryd: task " + taskID + " failed: " + r.untrusted(t, reason)

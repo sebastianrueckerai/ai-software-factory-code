@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -72,16 +73,48 @@ type Factoryd struct {
 	BaseURL string // http://factoryd.factory.svc.cluster.local:8080
 	Token   string // the shared bearer (secret factory/gateway-factoryd)
 	HTTP    *http.Client
+	// RetryFor and RetryEvery bound Escalate's retries while factoryd
+	// restarts (0: the defaults below)
+	RetryFor, RetryEvery time.Duration
 }
 
+// A restarting factoryd (a roll) is unreachable or has no live session for
+// a minute or two, within which the retried session reattaches (roadmap
+// 222, item 2): an escalation raised meanwhile waits for it, inside the
+// MCP tool's 150 s timeout.
+const (
+	escalateRetryFor   = 2 * time.Minute
+	escalateRetryEvery = 5 * time.Second
+)
+
 func (f *Factoryd) Escalate(ctx context.Context, taskID string, e Escalation) error {
-	_, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/escalations",
-		http.Header{"Authorization": {"Bearer " + f.Token}},
-		struct {
-			TaskID string `json:"task_id"`
-			Escalation
-		}{taskID, e})
-	return err
+	deadline := time.Now().Add(cmp.Or(f.RetryFor, escalateRetryFor))
+	for {
+		_, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/escalations",
+			http.Header{"Authorization": {"Bearer " + f.Token}},
+			struct {
+				TaskID string `json:"task_id"`
+				Escalation
+			}{taskID, e})
+		if err == nil || !escalateRetries(err) || !time.Now().Before(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(cmp.Or(f.RetryEvery, escalateRetryEvery)):
+		}
+	}
+}
+
+// escalateRetries: a factoryd unreachable, erring or without the live
+// session (409) is retried; a refusal of the escalation itself is not.
+func escalateRetries(err error) bool {
+	var pe *providerError
+	if !errors.As(err, &pe) {
+		return true
+	}
+	return pe.status >= 500 || pe.status == http.StatusConflict
 }
 
 func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error) {

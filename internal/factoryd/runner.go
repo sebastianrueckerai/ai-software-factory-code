@@ -438,8 +438,17 @@ const workerTerminationGrace = 60
 // ctx is cancelled (the workflow decided) or workerStop closes (factoryd
 // is stopping: the worker is stopped gracefully first, so its work in
 // progress is pushed and reported for the retry).
-func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string), workerStop <-chan struct{}) (out sessionOutcome, err error) {
-	recorder, err := NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent, s.model)
+// runSession runs the session in a new pod, or, with live set, reattaches
+// to the pod a stopped factoryd left running: the loop reads the pod's
+// log on from the lines that factoryd consumed, with the same session
+// record (roadmap 222, item 2).
+func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string), workerStop <-chan struct{}, live *LiveSession) (out sessionOutcome, err error) {
+	var recorder *SessionRecorder
+	if live != nil {
+		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, t.ID, s.id)
+	} else {
+		recorder, err = NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent, s.model)
+	}
 	if err != nil {
 		return out, err
 	}
@@ -460,17 +469,36 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// supervisor call included, ends within r.stopWait of it
 	var stopAt time.Time
 	podName := "worker-" + s.id
-	s.messageToken = rand.Text()
-	pod := r.workerPodSpec(t, s)
-	if err := r.kube.CreatePod(ctx, ns, podName, pod); err != nil {
-		return out, fmt.Errorf("create pod: %w", err)
+	// consumed is how many of the pod's log lines the loop took: the row
+	// keeps it for the reattach
+	consumed := 0
+	if live != nil {
+		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
+	} else {
+		s.messageToken = rand.Text()
+		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
+			return out, fmt.Errorf("create pod: %w", err)
+		}
+		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline}); err != nil {
+			return out, err
+		}
 	}
 	defer r.trackPod(t.ID, ns, podName)()
+	// detached: factoryd is stopping and the pod runs on for the next
+	// factoryd's retry of the activity; every other end deletes the pod
+	detached := false
 	defer func() {
+		if detached {
+			return
+		}
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := r.kube.DeletePod(delCtx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: delete pod %s: %v", t.ID, podName, err)
+		}
+		if err := r.store.DeleteLiveSession(delCtx, t.ID); err != nil {
+			log.Printf("task %s: forget live session %s: %v", t.ID, s.id, err)
 		}
 	}()
 
@@ -479,6 +507,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	wait := min(10*time.Minute, time.Until(deadline))
 	if err := r.awaitPodStart(ctx, ns, podName, wait, workerStop); err != nil {
 		if errors.Is(err, errWorkerStop) {
+			detached = true
 			return out, err
 		}
 		out.noResult = err.Error()
@@ -503,7 +532,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
 		}
 	}
-	followed := followPodLog(sessCtx, r.kube, ns, podName, t.ID, answer)
+	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
 	// ended names why the log ended without a result
 	ended := func(plain string) string {
@@ -517,6 +546,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// recorded and returned for supervision.
 	events := 0
 	read := func(line []byte) (ev *harness.Event, done bool) {
+		consumed++
 		var env harness.WorkerEnvelope
 		if err := json.Unmarshal(line, &env); err != nil {
 			// the worker's stderr log shares the stream with its envelopes
@@ -588,11 +618,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		}
 	}
-	// shutdown is factoryd's own stop: the worker is stopped and the
-	// activity retried on the next factoryd from its report.
+	// shutdown is factoryd's own stop: the session detaches, the worker
+	// runs on, and the activity's retry on the next factoryd reattaches
+	// from the row (the lines consumed so far) and the heartbeat.
 	shutdown := func() error {
-		stop(&Trip{Kind: TripShutdown, Findings: sup.Findings(), Detail: "factoryd is stopping"})
-		progress(events, append(sup.Findings(), out.stopReport()...))
+		detached = true
+		unregister()
+		if err := r.store.SetLiveSessionLines(context.WithoutCancel(ctx), t.ID, consumed); err != nil {
+			log.Printf("task %s: record the lines consumed of session %s: %v", t.ID, s.id, err)
+		}
+		progress(events, sup.Findings())
 		return errWorkerStop
 	}
 	// onTrip returns true when the session ends, with the session's error.
@@ -718,6 +753,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			if ev == nil {
 				continue
+			}
+			if err := r.store.SetLiveSessionLines(ctx, t.ID, consumed); err != nil {
+				log.Printf("task %s: record the lines consumed of session %s: %v", t.ID, s.id, err)
 			}
 			now := time.Now()
 			digest.add(*ev, now)

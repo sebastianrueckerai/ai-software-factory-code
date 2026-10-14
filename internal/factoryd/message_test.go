@@ -19,8 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"go.temporal.io/sdk/activity"
-	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -602,41 +600,29 @@ func TestWallClockStopAnswersThePushRequest(t *testing.T) {
 	}
 }
 
-// factoryd's own graceful shutdown stops the worker and answers its push
-// request before the activity returns for the retry.
-func TestShutdownAnswersThePushRequest(t *testing.T) {
+// factoryd's own graceful shutdown detaches (roadmap 222, item 2): the
+// worker is not stopped and asks for no push token; the activity returns
+// for the retry with the pod running on.
+func TestShutdownDetachesWithoutAStop(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
-	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
-	runner.stopWait = 10 * time.Second
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	worker, order := watchStop(t, runner, kube)
 	stop := make(chan struct{})
 	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
-	var last sessionProgress
-	var mu sync.Mutex
 
 	logs := loopFailure(1) + stoppedWorker("t2")
 	_, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
 		env.SetWorkerStopChannel(stop)
-		env.SetOnActivityHeartbeatListener(func(_ *activity.Info, details converter.EncodedValues) {
-			mu.Lock()
-			defer mu.Unlock()
-			_ = details.Get(&last)
-		})
 	})
 	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
 		t.Fatalf("err = %v, want the retryable stop", err)
 	}
-	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
-		t.Fatalf("order = %v, want the push token posted after the stop", got)
+	if got := order(); len(got) != 0 || len(worker.texts) != 0 || len(hub.revoked) != 0 {
+		t.Fatalf("order = %v, worker got %q, revoked %v; want the worker left running", got, worker.texts, hub.revoked)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t2"}) || len(hub.revoked) != 2 {
-		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if !slices.Contains(last.Findings, "the stopped session's work in progress is on the branch at c-wip") {
-		t.Fatalf("last heartbeat = %+v, want the pushed work in progress for the retry", last)
+	if _, ok := store.liveSessions["t2"]; !ok {
+		t.Fatal("no live row for the retry to reattach to")
 	}
 }
 

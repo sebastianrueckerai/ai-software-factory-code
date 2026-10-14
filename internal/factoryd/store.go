@@ -284,6 +284,14 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// PutLiveSession records a running session's sandbox; a retried
+	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
+	// keeps how much of the pod's log the loop consumed, and the session's
+	// end deletes it.
+	PutLiveSession(ctx context.Context, l LiveSession) error
+	SetLiveSessionLines(ctx context.Context, taskID string, lines int) error
+	LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error)
+	DeleteLiveSession(ctx context.Context, taskID string) error
 	// SetRollHold holds new sessions for roll task taskID from since to
 	// until; ClearRollHold ends its hold; RollHold is the newest hold in
 	// force at now, if any.
