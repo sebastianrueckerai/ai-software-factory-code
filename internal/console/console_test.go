@@ -2195,30 +2195,45 @@ func TestTimelineShowsTheSupervisorsAction(t *testing.T) {
 	}
 }
 
-// A roll task (ruling 178) waits in the human lane until its card opens,
-// then stands in its agent-lane column like any task.
-func TestBoardShowsARollInTheHumanLaneUntilItsCard(t *testing.T) {
+// A roll's card sits in the human lane only when its merge decision is
+// the one remaining action (ruling 219): at a pending merge approval or
+// in a waiting-human state; while its checks or review run the status
+// mapping places it in the verifying column.
+func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("", []factoryd.Task{
-		{ID: "t-roll", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c1c1c1c: factoryd, gateway", Repository: "sf/code"},
+		{ID: "t-checks", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c1c1c1c: factoryd, gateway", Repository: "sf/code", PRNumber: 7},
 		{ID: "t-m", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c2c2c2c: worker", Repository: "sf/code", PRNumber: 9},
+		{ID: "t-branch", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c3c3c3c: console", Repository: "sf/code"},
 	}...)
-	// the human lane and the state columns are the wide view's
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	column := func(id string) string {
+	column := func(body, id string) string {
 		start := strings.Index(body, `id="`+id+`"`)
 		if start < 0 {
 			t.Fatalf("column %s missing", id)
 		}
 		return body[start : start+strings.Index(body[start:], "</section>")]
 	}
-	human, running, review := column("col-human"), column("col-2"), column("col-5")
-	if !strings.Contains(human, "roll c1c1c1c") || strings.Contains(running, "roll c1c1c1c") {
-		t.Errorf("the roll without a card is not in the human lane only:\nhuman %s\nrunning %s", human, running)
+	// the five columns: needs you, queued, working, verifying, done
+	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	needs, verifying := column(five, "needs-you"), column(five, "col-3")
+	if strings.Contains(needs, "roll c1c1c1c") || !strings.Contains(verifying, "roll c1c1c1c") {
+		t.Errorf("the roll with its checks in flight is not in the verifying column only:\nneeds you %s\nverifying %s", needs, verifying)
 	}
-	if strings.Contains(human, "roll c2c2c2c") || !strings.Contains(review, "roll c2c2c2c") {
-		t.Errorf("the roll with its card is not in review:\nhuman %s\nreview %s", human, review)
+	if !strings.Contains(needs, "roll c2c2c2c") || strings.Contains(verifying, "roll c2c2c2c") {
+		t.Errorf("the roll at its pending merge approval is not in needs you only:\nneeds you %s\nverifying %s", needs, verifying)
+	}
+	// the wide view's human lane and state columns
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	human, working, review := column(body, "col-human"), column(body, "col-2"), column(body, "col-5")
+	if strings.Contains(human, "roll c1c1c1c") || !strings.Contains(review, "roll c1c1c1c") {
+		t.Errorf("the roll with its checks in flight is not in the review column only:\nhuman %s\nreview %s", human, review)
+	}
+	if !strings.Contains(human, "roll c2c2c2c") || strings.Contains(review, "roll c2c2c2c") {
+		t.Errorf("the roll at its pending merge approval is not in the human lane only:\nhuman %s\nreview %s", human, review)
+	}
+	if !strings.Contains(working, "roll c3c3c3c") && strings.Contains(human+review, "roll c3c3c3c") {
+		t.Errorf("the roll writing its branch is not in the working column only:\nhuman %s\nworking %s\nreview %s", human, working, review)
 	}
 }
 

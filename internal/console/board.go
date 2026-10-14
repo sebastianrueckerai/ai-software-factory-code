@@ -801,9 +801,12 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 }
 
 // humanLane: t has no agent, so its card is in the human lane: a human
-// task, or a roll task until its card (ruling 178).
+// task, or a roll task whose merge decision is its one remaining action —
+// a pending merge approval or a waiting-human state (ruling 219); while
+// its checks or review run the status mapping places it like any task.
 func (v *boardView) humanLane(t factoryd.Task) bool {
-	return t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) && !v.carded[t.ID]
+	return t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) &&
+		(t.Status == "waiting-human" || v.carded[t.ID])
 }
 
 // escalated: t waits on an escalation of its own; a waiting plan's card is
