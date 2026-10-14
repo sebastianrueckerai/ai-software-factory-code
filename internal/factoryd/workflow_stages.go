@@ -110,6 +110,9 @@ func (t *taskRun) runStages(commit string) verdict {
 			if !stop {
 				v = t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
+			if v.restage {
+				v = t.restage(commit, g, review, reviewed, capped, card, covered)
+			}
 			t.leaveQueue(cmp.Or(v.reason, v.final))
 			return v
 		}
@@ -668,7 +671,8 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // is. Success leaves the request to approve as before; a red or pending
 // head goes back through the checks stage's on_findings with the failing
 // or pending checks named, so no approval request exists while the head
-// is not green.
+// is not green; after the merge queue's last re-run of a head red at its
+// merge they go on the card instead (versionRedHeadRestage).
 func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 	if t.approvalGreen < versionApprovalGreen {
 		return verdict{}, false
@@ -691,6 +695,16 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 		for i, f := range findings {
 			findings[i] = queuePrefix + f
 		}
+	}
+	if t.restages >= maxRestages {
+		// red after the queue's last re-run (versionRedHeadRestage): a
+		// human's, not the agent's
+		lines := []string{fmt.Sprintf(restagedRed, maxRestages)}
+		for _, f := range findings {
+			lines = append(lines, policy.StageChecks+": "+f)
+		}
+		*card = append(lines, *card...)
+		return verdict{}, false
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 	var capped []string

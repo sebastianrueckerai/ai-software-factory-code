@@ -276,17 +276,15 @@ func (t *taskRun) queued() bool {
 	return t.mergeQueue >= versionMergeQueue && t.cfg.Task.Queue == policy.QueueProject
 }
 
-// queueTurn waits, at no cost, for the task's turn in its project's merge
-// queue, then merges main into its head (SyncWithMain) and runs the checks
-// stage again on a head that moved, recorded as factoryd's own move like a
-// re-run's. findings are the red checks on the synced head; stop
-// ends the stages with v (a terminal signal, a change request, a
-// conflict, a failed activity). The caller leaves the queue.
-func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
+// turn waits, at no cost, for the task's turn in its project's merge
+// queue, then merges main into head (SyncWithMain). stop ends the stages
+// with v (a terminal signal, a change request, a conflict, a failed
+// activity).
+func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 	for {
 		var ahead int
 		if err := workflow.ExecuteActivity(t.short, ActivityEnterQueue, t.taskID).Get(t.ctx, &ahead); err != nil {
-			return nil, verdict{final: "failed", reason: "enter the merge queue: " + errMessage(err)}, true
+			return sync, verdict{final: "failed", reason: "enter the merge queue: " + errMessage(err)}, true
 		}
 		if ahead == 0 {
 			break
@@ -302,18 +300,29 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 		for workflow.GetSignalChannel(t.ctx, SignalQueueTurn).ReceiveAsync(nil) {
 		}
 		if final, why, ok := t.decided(); ok {
-			return nil, verdict{final: final, reason: why}, true
+			return sync, verdict{final: final, reason: why}, true
 		}
 		if changes := t.drainChanges(); len(changes) > 0 {
-			return nil, verdict{findings: changes, reason: "changes requested", requested: true}, true
+			return sync, verdict{findings: changes, reason: "changes requested", requested: true}, true
 		}
 	}
-	var sync SyncResult
-	if err := workflow.ExecuteActivity(t.short, ActivitySyncWithMain, t.taskID, t.pr.Number, *head).Get(t.ctx, &sync); err != nil {
-		return nil, verdict{final: "failed", reason: "merge main into the pull request: " + errMessage(err)}, true
+	if err := workflow.ExecuteActivity(t.short, ActivitySyncWithMain, t.taskID, t.pr.Number, head).Get(t.ctx, &sync); err != nil {
+		return sync, verdict{final: "failed", reason: "merge main into the pull request: " + errMessage(err)}, true
 	}
 	if sync.Conflict != "" {
-		return nil, conflictVerdict(sync.Conflict), true
+		return sync, conflictVerdict(sync.Conflict), true
+	}
+	return sync, verdict{}, false
+}
+
+// queueTurn takes the task's turn (turn) and runs the checks stage again
+// on a head that moved, recorded as factoryd's own move like a re-run's.
+// findings are the red checks on the synced head; stop ends the stages
+// with v. The caller leaves the queue.
+func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
+	sync, v, stop := t.turn(*head)
+	if stop {
+		return nil, v, true
 	}
 	if sync.To == *head {
 		return nil, verdict{}, false
@@ -328,6 +337,77 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	*head, t.rerunHead, t.syncedHead = sync.To, sync.To, sync.To
 	g.ChecksPassed = false
 	return t.runStage(policy.StageChecks, head, g, review)
+}
+
+// maxRestages bounds the re-runs of a queue head red at its merge, per
+// pushed head (versionRedHeadRestage); restagedRed heads the card of one
+// still red after them.
+const (
+	maxRestages = 3
+	restagedRed = "the checks are still red after %d re-runs: a human decides the merge"
+)
+
+// restageable: a queue head red at its merge goes back through its turn
+// while it has re-runs left (versionRedHeadRestage).
+func (t *taskRun) restageable() bool {
+	return t.redRestage >= versionRedHeadRestage && t.queued() && t.restages < maxRestages
+}
+
+// restage takes a queue head whose checks were red at its merge back
+// through its turn, at most maxRestages times. The turn merges main in: a
+// red main pauses the queue, so the turn comes back once a fix made main
+// green. With nothing new from main the head's own checks are waited on
+// and the red ones run again on an empty commit (RerunChecks); red checks
+// that pass there, on the same tree, are flaky (checks_flaky), never
+// findings. A green head goes to the approval again; one still red after
+// the last re-run goes to a human, the card naming its checks (headGreen).
+// The re-staged head's own checks decide its merge (no checkedHead).
+func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
+	defer func() { t.restages = 0 }()
+	for t.restages = 1; ; t.restages++ {
+		sync, v, stop := t.turn(commit)
+		if stop {
+			return v
+		}
+		from, moved := commit, sync.To != commit
+		t.checkedHead = ""
+		var red []string
+		if !moved {
+			// the turn re-runs the head's red checks itself, not the
+			// checks stage
+			t.redHead = ""
+			if red, v, stop = t.runStage(policy.StageChecks, &commit, &g, &review); stop {
+				return v
+			}
+		}
+		if moved || len(red) > 0 {
+			if moved {
+				commit, t.syncedHead = sync.To, sync.To
+			} else if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
+				return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
+			}
+			t.rerunHead, g.ChecksPassed = commit, false
+			findings, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review)
+			switch {
+			case stop:
+				return v
+			case len(findings) > 0 && t.restages < maxRestages:
+				continue
+			case len(findings) == 0 && len(red) > 0:
+				checks := make([]string, len(red))
+				for i, f := range red {
+					checks[i] = FirstLine(f)
+				}
+				detail := map[string]any{"commit": from, "head": commit, "checks": checks}
+				if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "checks_flaky", detail).Get(t.ctx, nil); err != nil {
+					workflow.GetLogger(t.ctx).Warn("record flaky checks", "task", t.taskID, "error", err)
+				}
+			}
+		}
+		if v = t.approval(commit, g, review, reviewed, capped, card, covered); !v.restage {
+			return v
+		}
+	}
 }
 
 // leaveQueue takes the task out of its project's merge queue on its way

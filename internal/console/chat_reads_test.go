@@ -198,6 +198,11 @@ func TestChatCardInFull(t *testing.T) {
 	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, "\npull request #9 https://git.example/sf/code/pulls/9, head c0ffee2, open\n") {
 		t.Errorf("the card of a pull request the queue synced, with another pull request merged, reads\n%s", got)
 	}
+	r.objects["sessions/t-r/timeline.jsonl"] = []byte(readsTimeline +
+		`{"step":"checks_rerun","time":"2026-10-11T10:00:00Z","commit":"c0ffee1","head":"c0ffee3"}` + "\n")
+	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, "\npull request #9 https://git.example/sf/code/pulls/9, head c0ffee3, open\n") {
+		t.Errorf("the card of a pull request whose checks ran again on an empty commit reads\n%s", got)
+	}
 }
 
 // The pr read is a card's pull request: the newest checks' jobs, the

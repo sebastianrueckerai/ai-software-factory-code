@@ -216,8 +216,8 @@ func verdict(m map[string]any) string {
 }
 
 // prHead is a card's pull request's head by its timeline: the newest
-// commit a session pushed, a roll committed or the merge queue synced
-// to; "" for none.
+// commit a session pushed, a roll committed, the merge queue synced to or
+// a re-run of the checks made; "" for none.
 func prHead(steps []map[string]any) string {
 	for i := len(steps) - 1; i >= 0; i-- {
 		var head any
@@ -226,6 +226,8 @@ func prHead(steps []map[string]any) string {
 			head = m["commit"]
 		case "queue_synced":
 			head = m["to"]
+		case "checks_rerun":
+			head = m["head"]
 		}
 		if s, _ := head.(string); s != "" {
 			return s

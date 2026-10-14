@@ -424,6 +424,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewSupervised)
 	run.answerBurst = workflow.GetVersion(ctx, "answer-burst", workflow.DefaultVersion, versionAnswerBurst)
 	run.planBurst = workflow.GetVersion(ctx, "plan-burst", workflow.DefaultVersion, versionPlanBurst)
+	run.redRestage = workflow.GetVersion(ctx, "red-head-restage", workflow.DefaultVersion, versionRedHeadRestage)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -773,6 +774,14 @@ const (
 	// back once with every part of a change request in parts. A run from
 	// before the change goes back on the first comment.
 	versionPlanBurst workflow.Version = 1
+	// versionRedHeadRestage (change id "red-head-restage", roadmap 202
+	// with 67): a queue head whose checks are red at its merge goes back
+	// through its turn instead of waiting for a human: main is merged in,
+	// or its red checks run again on an empty commit, at most maxRestages
+	// times per pushed head (restage); red checks that pass on the same
+	// tree are recorded flaky, never findings, and a head still red after
+	// the last re-run waits for a human, its card naming the checks.
+	versionRedHeadRestage workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -857,6 +866,8 @@ type taskRun struct {
 	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel, versionReviewSupervised)
 	answerBurst       workflow.Version // an answer's wait resumes after its burst (versionAnswerBurst)
 	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
+	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
+	restages          int              // the re-stage under way, from 1; 0 outside restage
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -892,6 +903,9 @@ type verdict struct {
 	cancelled bool
 	// requested: the findings are a writer's change request
 	requested bool
+	// restage: the merge found the queue head's checks red, and its
+	// turn takes it again (versionRedHeadRestage)
+	restage bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1640,6 +1654,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
+	case res.RedHead && t.restageable():
+		return verdict{restage: true, reason: res.Refusal}, true, ""
 	case res.RedHead:
 		return verdict{}, false, res.Refusal
 	case res.Refusal != "":
@@ -1652,9 +1668,10 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 // task, a reviewer requests changes, a member's split files its cards
 // (versionSplit), or an approval merges the pull request as
 // factory-merge. An approval over findings the card showed adjudicates
-// them (versionAdjudicated). A merge Forgejo refuses keeps the wait; one
-// that fails otherwise keeps the approval and is tried again after
-// mergeRetryAfter (versionGatesPinned).
+// them (versionAdjudicated). A merge Forgejo refuses keeps the wait, but
+// a queue head's red checks take it back through its turn while re-runs
+// are left (versionRedHeadRestage); one that fails otherwise keeps the
+// approval and is tried again after mergeRetryAfter (versionGatesPinned).
 func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
@@ -1771,6 +1788,8 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
 		case res.Conflict && t.v23 >= versionMergeConflict:
 			return conflictVerdict(res.Refusal)
+		case res.RedHead && t.restageable():
+			return verdict{restage: true, reason: res.Refusal}
 		default:
 			// refused: a new approval wait
 			approver = ""
