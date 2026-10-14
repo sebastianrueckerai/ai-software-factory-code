@@ -23,6 +23,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 		logs:     map[string]string{test: readTestdata(t, "joblog-run1208-test.log"), image: readTestdata(t, "joblog-run1198-image.log")},
 	}
 	roller, store, _ := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
 	ctx := context.Background()
 	for range 2 {
@@ -34,7 +35,8 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its fix card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push), ci / image (push)\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) {
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push), ci / image (push)\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) ||
+		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/0.") {
 		t.Fatalf("issues %q, want the one fix-forward card", f.issues)
 	}
 	fix := store.tasks[pause.FixTask]
@@ -58,12 +60,16 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
 	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
 	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-time.Hour), FixTask: "fix1"}}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "in-review", Repository: codeRepo, IssueNumber: 40}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := store.pauses[codeRepo]; ok {
 		t.Fatal("the pause survived main's green run")
+	}
+	if len(f.comments) != 0 || len(f.closed) != 0 {
+		t.Fatalf("comments %q, closed issues %q; the fix-forward card ends with its merge", f.comments, f.closed)
 	}
 	if !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
 		t.Fatalf("signals = %q, want the waiting head woken", wf.signals)
@@ -106,9 +112,11 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 
 // A red push run whose every failed job lost its runner pauses the queue
 // as any red run does, but files a human card, no agent's: it names the
-// run's job, the runner's line and the re-run. Past the bound the pause
-// reverts nothing, the commit not being at fault, and the re-run that
-// turns the run green ends the pause.
+// run's job, the runner's line and the re-run. The job's log runs past
+// the 1 MiB factoryd reads: its tail tells. Past the bound the pause
+// reverts nothing, the commit not being at fault; while the re-run runs
+// it holds; the re-run that turns the run green ends the pause and closes
+// the card.
 func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	job := "/" + codeRepo + "/actions/runs/1208/jobs/0"
 	run := func(status string) map[string]any {
@@ -127,9 +135,11 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 			{"status": "failure", "context": "ci / test (push)", "target_url": job},
 			{"status": "success", "context": "ci / image (push)", "target_url": "/" + codeRepo + "/actions/runs/1208/jobs/1"},
 		}},
-		logs: map[string]string{job: readTestdata(t, "joblog-run1208-test.log")},
+		// 30000 lines of 40 bytes ahead of run 1208's tail
+		logs: map[string]string{job: strings.Repeat("2026-10-14T20:28:00.0000000Z #31 filler\n", 30000) + readTestdata(t, "joblog-run1208-test.log")},
 	}
 	roller, store, wf := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
 	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
 	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
@@ -144,7 +154,7 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
 	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push) (runner lost)\n\nMain CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
-		!strings.Contains(f.issues[0], "ci / test (push), "+job+":\n\n```\n\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
+		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+job+":\n\n```\n\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
 		!strings.Contains(f.issues[0], "Re-run each job from its page.") {
 		t.Fatalf("issues %q, want the one re-run card", f.issues)
 	}
@@ -171,6 +181,15 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 		t.Fatalf("pause = %+v (%v), pull requests %q, issues %d; want the pause alone", p, ok, f.pulls, len(f.issues))
 	}
 
+	// the re-run runs: run 57's green says nothing of main's head
+	f.runs = []map[string]any{run("running"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.pauses[codeRepo]; !ok || len(wf.signals) != 0 || len(f.comments) != 0 {
+		t.Fatalf("pause held: %v, signals %q, comments %q; want the pause alone", ok, wf.signals, f.comments)
+	}
+
 	// the re-run turns run 1208 green
 	f.runs = []map[string]any{run("success"), pushRun(57, commitC1, "success")}
 	if err := roller.poll(ctx); err != nil {
@@ -181,6 +200,28 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	}
 	if !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
 		t.Fatalf("signals = %q, want the waiting head woken", wf.signals)
+	}
+	want := "31 factoryd: main's push run 1208 at " + commitC2 + " is green (https://git.example/" + codeRepo + "/actions/runs/1208): the merge queue's pause has ended. Closing this issue."
+	if !slices.Equal(f.comments, []string{want}) || !slices.Equal(f.closed, []string{"31"}) {
+		t.Fatalf("comments %q, closed issues %q; want the card's issue closed with %q", f.comments, f.closed, want)
+	}
+	if !slices.ContainsFunc(store.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == fix.ID && e.Kind == IntakeFactoryClosed && e.CommentID == 31
+	}) {
+		t.Fatalf("intake events %+v, want factoryd's close of issue 31 recorded", store.intakeEvents)
+	}
+}
+
+// While main's newest push run waits, an older red one pauses nothing:
+// it says nothing of main's head.
+func TestRollerWaitsOnMainsNewestRun(t *testing.T) {
+	f := &rollForgejo{runs: []map[string]any{pushRun(59, commitC2, "waiting"), pushRun(58, commitC1, "failure")}}
+	roller, store, _ := newTestRoller(t, f)
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := store.pauses[codeRepo]; ok || len(f.issues) != 0 {
+		t.Fatalf("pause = %+v (%v), issues %q; want none", p, ok, f.issues)
 	}
 }
 

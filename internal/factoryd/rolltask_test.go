@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The fakeStore's roll requests, as PGStore keeps them.
@@ -214,6 +215,7 @@ type rollForgejo struct {
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
+	closed      []string                       // the number of every issue closed
 }
 
 // mergeCommit is a test's multi-parent (merge) commit: it lists its
@@ -375,7 +377,16 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 		case r.Method == "GET" && (p == "/" || f.logs[p] != ""):
 		case r.Method == "GET" && f.logs[strings.TrimSuffix(p, "/logs")] != "":
-			io.WriteString(w, f.logs[strings.TrimSuffix(p, "/logs")])
+			// as Forgejo's actions.Logs serves it
+			http.ServeContent(w, r, "", time.Time{}, strings.NewReader(f.logs[strings.TrimSuffix(p, "/logs")]))
+		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			if in["state"] == "closed" {
+				f.closed = append(f.closed, strings.TrimPrefix(p, "/issues/"))
+			}
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{})
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)

@@ -1164,10 +1164,12 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
 }
 
-// JobLog fetches a finished job's raw log. Forgejo 15.0.9 has no /api/v1
-// route for it (its own swagger lists none, and the design's guessed
-// GET /api/v1/repos/{owner}/{repo}/actions/jobs/{job_id}/logs 404s); the
-// web route that serves it (routers/web/web.go: GET
+// JobLog fetches the tail of a finished job's raw log, its last
+// maxForgejoAnswer bytes, where a failed step's error and the runner's
+// own lines stand; a log cut there starts mid-line. Forgejo 15.0.9 has
+// no /api/v1 route for it (its own swagger lists none, and the design's
+// guessed GET /api/v1/repos/{owner}/{repo}/actions/jobs/{job_id}/logs
+// 404s); the web route that serves it (routers/web/web.go: GET
 // .../actions/runs/{run}/jobs/{job}/attempt/{attempt}/logs, actions.Logs)
 // only recognizes a signed-in session — basic auth and a scoped token both
 // 404 on it, though the same credentials 200 the equivalent API calls
@@ -1177,6 +1179,9 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 // targetURL is a commit status's target_url, e.g.
 // "/sf/repo/actions/runs/7/jobs/0"; Forgejo redirects it to the run's
 // latest attempt, which this follows before asking for that attempt's log.
+// actions.Logs serves the log with http.ServeContent over a seekable
+// reader (zstd-compressed in storage too), so a suffix Range asks for the
+// tail alone.
 //
 // httpsJar wraps a cookiejar so every lookup and store believes the URL is
 // https, regardless of the scheme actually dialed.
@@ -1254,6 +1259,7 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	if err != nil {
 		return nil, err
 	}
+	logsReq.Header.Set("Range", fmt.Sprintf("bytes=-%d", maxForgejoAnswer))
 	res, err = client.Do(logsReq)
 	if err != nil {
 		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
@@ -1263,8 +1269,12 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	if err != nil {
 		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
 	}
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusPartialContent {
 		return nil, fmt.Errorf("forgejo job log %s: status %d", targetURL, res.StatusCode)
+	}
+	if len(body) > maxForgejoAnswer {
+		// the Range went unheeded: the body is the log's head
+		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, ErrAnswerTooLong)
 	}
 	return body, nil
 }

@@ -17,7 +17,8 @@ import (
 // assigns (no interactive register step, no per-job docker image).
 const forgejoRunnerImage = "code.forgejo.org/forgejo/runner:13.2.0"
 
-// runActionsJob pushes a one-job workflow that echoes marker to sha's
+// runActionsJob pushes a one-job workflow that prints 100000 numbered
+// lines, a log past the 1 MiB JobLog reads, then echoes marker, to sha's
 // commit on repo's main and waits for Forgejo to run it for real, using a
 // disposable forgejo-runner container registered against repo. It returns
 // the finished job's commit status, whatever its outcome — the caller
@@ -25,7 +26,7 @@ const forgejoRunnerImage = "code.forgejo.org/forgejo/runner:13.2.0"
 func runActionsJob(t *testing.T, bot *Forgejo, token string, repo Repo, marker string) CommitStatus {
 	t.Helper()
 	ctx := context.Background()
-	workflow := fmt.Sprintf("on: [push]\njobs:\n  log:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %q\n", marker)
+	workflow := fmt.Sprintf("on: [push]\njobs:\n  log:\n    runs-on: ubuntu-latest\n    steps:\n      - run: seq 1 100000 && echo %q\n", marker)
 	sha, err := bot.CreateFiles(ctx, token, repo, "main", "Add workflow", map[string][]byte{".forgejo/workflows/log.yml": []byte(workflow)})
 	if err != nil {
 		t.Fatalf("push the workflow: %v", err)
@@ -121,5 +122,9 @@ func TestJobLogOnForgejo15(t *testing.T) {
 	}
 	if !strings.Contains(string(log), marker) {
 		t.Fatalf("job log does not contain %q: %s", marker, log)
+	}
+	// the log's tail, cut at 1 MiB: the runner's first line is gone
+	if len(log) != maxForgejoAnswer || strings.Contains(string(log), "received task") || !strings.Contains(string(log), " 100000\n") {
+		t.Fatalf("job log of %d bytes starting %q, want its last 1048576", len(log), log[:min(200, len(log))])
 	}
 }

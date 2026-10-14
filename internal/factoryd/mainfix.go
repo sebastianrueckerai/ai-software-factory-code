@@ -61,18 +61,20 @@ func (s *PGStore) ClearQueuePause(ctx context.Context, project string) error {
 	return err
 }
 
-// mainState reads main's newest finished push run: a red one pauses the
-// queue and files the fix-forward card, a green one ends a pause, and a
-// pause past the bound with no revert yet files it. runs are the poll's,
-// newest first by id.
+// mainState reads main's newest push run: a red one pauses the queue and
+// files its card, a green one ends a pause, and a pause past the bound
+// with no revert yet files it. While the newest runs or waits (a red
+// one's re-run too), or ended neither green nor red, nothing changes: an
+// older run says nothing of main's head. runs are the poll's, newest
+// first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	var newest *ActionRun
 	for i := range runs {
-		if x := &runs[i]; x.PrettyRef == prBase && (x.Status == "success" || x.Status == "failure") && (newest == nil || x.ID > newest.ID) {
+		if x := &runs[i]; x.PrettyRef == prBase && (newest == nil || x.ID > newest.ID) {
 			newest = x
 		}
 	}
-	if newest == nil {
+	if newest == nil || (newest.Status != "success" && newest.Status != "failure") {
 		return nil
 	}
 	project := r.Repo.String()
@@ -87,6 +89,9 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 		}
 		log.Printf("roller: main is green again at %s (run %d): the merge queue of %s goes on", newest.CommitSHA, newest.ID, project)
 		signalQueueHeads(ctx, r.Store, r.Workflows)
+		if err := r.closeRerun(ctx, pause, *newest); err != nil {
+			log.Printf("roller: close re-run card %s: %v", pause.FixTask, err)
+		}
 		return nil
 	case newest.Status == "failure" && !paused:
 		return r.pause(ctx, *newest)
@@ -133,7 +138,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 		body := fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: the runner of each failed job shut down while "+
 			"the job ran, as its own line below says. No change to the code fixes that, so no agent works on this card.\n\n%s\n\n"+
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green "+
-			"result ends the pause. Close this issue once it has.\n\nfiled by factoryd",
+			"result ends the pause, and factoryd closes this issue.\n\nfiled by factoryd",
 			run.Index, run.CommitSHA, strings.Join(lost, "\n\n"))
 		t, ref, err = FileTask(ctx, r.Store, r.Forgejo, p.Repo(), title, body, []string{"human"}, Task{
 			ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceRerun,
@@ -145,7 +150,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 			"The project's merge queue is paused until a push run of main is green. Read the run's log, find the cause in main at %s, "+
 			"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
 			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
-			run.Index, run.CommitSHA, failed, r.Forgejo.BaseURL, r.Repo, run.Index, short, mainRedBound, short)
+			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
 		t, ref, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
 		})
@@ -158,6 +163,26 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, ref.Number)
 	return nil
+}
+
+// closeRerun closes the pause's re-run card once run, main's green push
+// run, ended the pause: a comment naming the run, then the issue's close
+// as factoryd's own, which finishes the human card (issueClosed). A
+// fix-forward card ends with its own merge.
+func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun) error {
+	t, ok, err := r.Store.Task(ctx, pause.FixTask)
+	if err != nil || !ok || t.Source != SourceRerun || t.Status != "waiting-human" {
+		return err
+	}
+	msg := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d): the merge queue's pause has ended. Closing this issue.",
+		run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
+	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
+		return err
+	}
+	if err := recordFactoryClose(ctx, r.Store, t); err != nil {
+		return err
+	}
+	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link

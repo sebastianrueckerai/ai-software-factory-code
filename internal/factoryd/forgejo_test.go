@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -1107,5 +1108,45 @@ func TestEnsureLabelsReportsWhatItCreated(t *testing.T) {
 	}
 	if c, err := f.EnsureLabels(context.Background(), "sf", "r", map[string]string{"agent": "#1"}); c != Unchanged || err != nil {
 		t.Fatalf("all present = %q, %v", c, err)
+	}
+}
+
+// JobLog asks for the log's last 1 MiB with a suffix Range, which
+// Forgejo's actions.Logs honours (http.ServeContent): a log past it
+// answers its tail, where the failed step's error stands, not its head.
+// A server that ignores the Range answers the head, which JobLog refuses.
+func TestJobLogReadsTheTail(t *testing.T) {
+	// 40000 lines of 30 bytes, then the runner's line
+	head := strings.Repeat("2026-10-14T20:28:00Z filler 1\n", 40000)
+	last := "2026-10-14T20:29:01Z \u2699\ufe0f [runner]: context canceled\n"
+	full := head + last
+	honour := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/user/login":
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		case r.URL.Path == "/sf/code/actions/runs/7/jobs/0/logs" && honour:
+			if got := r.Header.Get("Range"); got != "bytes=-1048576" {
+				t.Errorf("Range = %q, want the last 1 MiB", got)
+			}
+			http.ServeContent(w, r, "", time.Time{}, strings.NewReader(full))
+		case r.URL.Path == "/sf/code/actions/runs/7/jobs/0/logs":
+			io.WriteString(w, full)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
+
+	body, err := f.JobLog(context.Background(), "/sf/code/actions/runs/7/jobs/0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 1<<20 || !strings.HasSuffix(string(body), last) || string(body) != full[len(full)-1<<20:] {
+		t.Fatalf("JobLog answered %d bytes ending %q, want the log's last 1048576 of %d", len(body), body[max(0, len(body)-80):], len(full))
+	}
+
+	honour = false
+	if _, err := f.JobLog(context.Background(), "/sf/code/actions/runs/7/jobs/0"); !errors.Is(err, ErrAnswerTooLong) {
+		t.Fatalf("JobLog with the Range ignored: %v, want ErrAnswerTooLong", err)
 	}
 }
