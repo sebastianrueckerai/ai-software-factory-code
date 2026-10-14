@@ -872,3 +872,55 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		}
 	}
 }
+
+// The four columns hold their cards by arrival, the newest on top
+// (Sebastian, 2026-10-14): Queued by filing, In progress by admission,
+// Done by finishing, whatever order the store gave them; a card without
+// the time keeps its filing time, and the store's order holds among
+// equals. The wide view keeps the store's order, where the fake, as
+// the store since #762, ranks the running cards by rank and id.
+func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	task := func(id, status string, filed time.Duration) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed)}
+	}
+	run := func(id string, filed, admitted time.Duration) factoryd.Task {
+		k := task(id, "running", filed)
+		k.AdmittedAt = ago(admitted)
+		return k
+	}
+	done := func(id, status string, filed, finished time.Duration) factoryd.Task {
+		k := task(id, status, filed)
+		if finished > 0 {
+			k.FinishedAt = ago(finished)
+		}
+		return k
+	}
+	// the store's order: Queued oldest first, In progress and Done as ranked
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: task("t-q-old", "queued", 3*time.Hour)}, {Task: task("t-q-new", "queued", time.Hour)}, {Task: task("t-q-mid", "waiting-deps", 2*time.Hour), WaitingOn: "#9"},
+		{Task: run("t-r-first", 6*time.Hour, 5*time.Hour)}, {Task: run("t-r-last", 4*time.Hour, 10*time.Minute)}, {Task: run("t-r-mid", 5*time.Hour, time.Hour)},
+		{Task: done("t-d-old", "done", 9*time.Hour, 2*time.Hour)}, {Task: done("t-d-new", "done", 8*time.Hour, 10*time.Minute)},
+		{Task: done("t-f-none", "failed", 90*time.Minute, 0)}, {Task: done("t-d-mid", "closed", 7*time.Hour, time.Hour)},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := map[string][]string{
+		"Queued":      {"t-q-new", "t-q-mid", "t-q-old"},
+		"In progress": {"t-r-last", "t-r-mid", "t-r-first"},
+		"Done":        {"t-d-new", "t-d-mid", "t-f-none", "t-d-old"},
+	}
+	for title, items := range want {
+		if got := columnItems(t, body, title); !slices.Equal(got, items) {
+			t.Errorf("%s holds %v, want %v", title, got, items)
+		}
+	}
+	// the wide view keeps the store's order, which since #762 puts the
+	// newest finished first (the rig's fake sorts as the store does)
+	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if got := columnItems(t, wide, "Running"); !slices.Equal(got, []string{"t-r-first", "t-r-last", "t-r-mid"}) {
+		t.Errorf("the wide view's Running holds %v, want the store's order", got)
+	}
+}

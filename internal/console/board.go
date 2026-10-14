@@ -138,6 +138,25 @@ func waitingSince(bt factoryd.BoardTask) time.Time {
 	return bt.CreatedAt
 }
 
+// arrival orders the four columns' cards newest first (Sebastian,
+// 2026-10-14): Queued by filing, In progress by admission, Done by
+// finishing; a card without the time keeps its filing time, and the
+// store's order holds among equals. Needs you stays oldest waiting first.
+func arrival(cols []column) {
+	at := func(k card) time.Time {
+		switch {
+		case slices.Contains([]string{"running", "closing", "in-review"}, k.Status) && k.AdmittedAt != nil:
+			return *k.AdmittedAt
+		case factoryd.Final(k.Status) && k.FinishedAt != nil:
+			return *k.FinishedAt
+		}
+		return k.CreatedAt
+	}
+	for i := range cols {
+		slices.SortStableFunc(cols[i].Cards, func(a, b card) int { return at(b).Compare(at(a)) })
+	}
+}
+
 // stateColumns are the wide view's columns after the lanes, in board
 // order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
@@ -1512,6 +1531,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		case col >= 0:
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
+	}
+	if !wide {
+		arrival(d.Columns)
 	}
 	for _, a := range v.pending {
 		if a.Project != shown.Repository {
