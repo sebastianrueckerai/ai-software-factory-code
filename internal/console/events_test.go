@@ -1054,7 +1054,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`,
-		`<p class="stream" id="live" role="status"></p>`} {
+		`<footer id="live" role="status"></footer>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)
 		}

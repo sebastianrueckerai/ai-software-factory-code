@@ -228,7 +228,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else if (e.kind === "session_said") said(e);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
-        tickEvent(e);
         if (e.kind === "card_steered") said(e);
         // a new status may end the session, and its steer box with it
         if (e.kind === "task_status") chat(e.task_id);
@@ -293,60 +292,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     }
     showStatus();
   }
-  // The ticker along the foot: the project's newest events, the live ones
-  // put first; the set is repeated to fill the width and scrolls at about
-  // 28 px a second, paused on hover (CSS) and still under reduced motion.
-  function tick() {
-    var track = document.getElementById("ticker-track");
-    if (!track || !track.firstElementChild) return;
-    var one = track.firstElementChild, width = track.parentElement.clientWidth || 1;
-    track.style.animation = "none";
-    while (track.children.length > 1) track.removeChild(track.lastElementChild);
-    if (!track.dataset.n) track.dataset.n = one.children.length;
-    var items = Array.prototype.slice.call(one.children, 0, +track.dataset.n).map(function (x) { return x.outerHTML; }).join("");
-    one.innerHTML = items;
-    var sw = one.scrollWidth || 1, k = Math.max(1, Math.ceil(width / sw));
-    if (k > 1) {
-      var fill = document.createElement("span");
-      fill.setAttribute("aria-hidden", "true");
-      fill.innerHTML = items.repeat(k - 1);
-      one.appendChild(fill);
-    }
-    var twin = one.cloneNode(true);
-    twin.setAttribute("aria-hidden", "true");
-    track.appendChild(twin);
-    track.style.setProperty("--dur", Math.round(sw * k / 28) + "s");
-    void track.offsetWidth;
-    track.style.animation = "";
-  }
-  function tickEvent(e) {
-    var track = document.getElementById("ticker-track");
-    if (!track || !track.firstElementChild || !e.task_id) return;
-    var status = e.kind === "task_status" && e.detail ? e.detail.status : "", cls = {done: "done", failed: "failed", closed: "closed"}[status] || "event";
-    var glyph = {done: "✓", failed: "✕", closed: "⊘"}[status] || "·";
-    var card = document.querySelector && document.querySelector("[data-card=\"" + CSS.escape(e.task_id) + "\"] .title");
-    var words = card ? card.textContent.trim() : (status || e.kind + " by " + e.actor);
-    if (card && status && cls === "event") words += " · " + status;
-    var item = document.createElement("span");
-    item.className = "tk t-" + cls;
-    var when = item.appendChild(document.createElement("time"));
-    when.textContent = new Date(e.at).toISOString().slice(11, 16);
-    var g = item.appendChild(document.createElement("span"));
-    g.className = "g";
-    g.setAttribute("aria-hidden", "true");
-    g.textContent = glyph;
-    item.appendChild(document.createElement("b")).textContent = e.issue_number ? "#" + e.issue_number : e.task_id;
-    item.appendChild(document.createElement("span")).textContent = words;
-    var one = track.firstElementChild, n = +track.dataset.n || one.children.length;
-    // the set's own items, without the copies that filled the width
-    one.innerHTML = Array.prototype.slice.call(one.children, 0, n).map(function (x) { return x.outerHTML; }).join("");
-    one.insertBefore(item, one.firstChild);
-    while (one.children.length > 24) one.removeChild(one.lastElementChild);
-    track.dataset.n = one.children.length;
-    tick();
-  }
-  document.addEventListener("DOMContentLoaded", tick);
-  window.addEventListener("resize", function () { tick(); });
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
     if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);

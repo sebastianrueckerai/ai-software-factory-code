@@ -868,7 +868,6 @@ type boardData struct {
 	PolicyVersion int64
 	PolicyCommit  string
 	PolicyTreeURL string
-	Ticker        []tick // the project's newest events along the foot
 }
 
 func pct(spent, cap float64) int {
@@ -938,78 +937,6 @@ func (d boardData) NeedLinks() []needLink {
 		default:
 			out = append(out, needLink{n.Card.Title, n.anchor()})
 		}
-	}
-	return out
-}
-
-// tick is one item of the ticker along the foot: a project event with the
-// card's words.
-type tick struct {
-	At, Glyph, Ref, Words, Class string
-}
-
-// tickerLimit bounds the events the ticker shows; tickerWindow is how far
-// back they reach, and tickerQuiet how many the ticker keeps regardless
-// of age when the window holds none.
-const (
-	tickerLimit  = 24
-	tickerWindow = 24 * time.Hour
-	tickerQuiet  = 5
-)
-
-// recentTicks keeps the rows of the last tickerWindow, newest first; a
-// quiet project keeps its newest tickerQuiet rows, so the ticker never
-// scrolls through old days beside today's events, and never stands empty.
-func recentTicks(rows []factoryd.Event, now time.Time) []factoryd.Event {
-	var recent []factoryd.Event
-	for _, e := range rows {
-		if now.Sub(e.At) <= tickerWindow {
-			recent = append(recent, e)
-		}
-	}
-	if len(recent) > 0 {
-		return recent
-	}
-	return rows[:min(len(rows), tickerQuiet)]
-}
-
-// tickerOf is the project's newest events as ticks, newest first: a
-// status row by its status word and glyph, any other row by its kind, the
-// card's title when it is on the board.
-func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project) []tick {
-	rows, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, 0, tickerLimit)
-	if err != nil {
-		log.Printf("console: the ticker of %s: %v", p.Repository, err)
-		return nil
-	}
-	var out []tick
-	for _, e := range recentTicks(rows, time.Now()) {
-		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
-		if e.IssueNumber > 0 {
-			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
-		}
-		if t, ok := v.byID[e.TaskID]; ok {
-			k.Words = c.card(t).Title
-		}
-		if e.Kind == factoryd.EventTaskStatus {
-			status, _ := e.Detail["status"].(string)
-			switch status {
-			case "done":
-				k.Glyph, k.Class = "✓", "done"
-			case "failed":
-				k.Glyph, k.Class = "✕", "failed"
-			case "closed":
-				k.Glyph, k.Class = "⊘", "closed"
-			}
-			if k.Words == "" {
-				k.Words = status
-			} else if k.Class == "event" {
-				k.Words += " · " + status
-			}
-		} else if k.Words == "" {
-			k.Words = e.Kind + " by " + e.Actor
-		}
-		out = append(out, k)
 	}
 	return out
 }
@@ -1765,7 +1692,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)
-		d.Ticker = c.tickerOf(ctx, v, shown)
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil

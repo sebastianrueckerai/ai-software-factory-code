@@ -64,27 +64,6 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 }
 
-// The ticker lists the project's events newest first, as the store
-// answers them.
-func TestTickerNewestFirst(t *testing.T) {
-	r, ev := newRigWithEvents(t)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "ticks", IssueNumber: 5})
-	day := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
-	for _, at := range []time.Time{day, day.Add(time.Hour)} {
-		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton, At: at}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	_, track, _ := strings.Cut(body, `id="ticker-track"`)
-	track, _, _ = strings.Cut(track, "</footer>")
-	late, early := strings.Index(track, "<time>11:00</time>"), strings.Index(track, "<time>10:00</time>")
-	if late < 0 || early < 0 || late > early {
-		t.Errorf("the ticker is not newest first (11:00 at %d, 10:00 at %d):\n%s", late, early, track)
-	}
-}
-
 // The status panel's In progress list and Needs you links hold in the
 // wide view too, and a human task links to its drawer: it has no
 // escalation article.
@@ -137,29 +116,6 @@ func TestNoInlineStyle(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `<span class="gauge"><meter min="0" max="100" value="`) {
 		t.Errorf("the strip's gauge is not a meter")
-	}
-}
-
-// The ticker keeps the last day's events, newest first, and never
-// scrolls through old days beside today's; a project quiet for a day
-// keeps its newest five, so the ticker never stands empty.
-func TestTickerKeepsTheLastDay(t *testing.T) {
-	now := time.Date(2026, 10, 14, 15, 0, 0, 0, time.UTC)
-	at := func(h float64) factoryd.Event {
-		return factoryd.Event{At: now.Add(-time.Duration(h * float64(time.Hour)))}
-	}
-	rows := []factoryd.Event{at(0.5), at(23.9), at(24.1), at(48), at(72), at(96), at(120)}
-	if got := recentTicks(rows, now); len(got) != 2 || got[0].At != rows[0].At || got[1].At != rows[1].At {
-		t.Errorf("a day with two events keeps %d, want the two of the last 24 hours", len(got))
-	}
-	if got := recentTicks(rows[2:], now); len(got) != 5 || got[0].At != rows[2].At || got[4].At != rows[6].At {
-		t.Errorf("a quiet day keeps %d, want the newest five", len(got))
-	}
-	if got := recentTicks(rows[5:], now); len(got) != 2 {
-		t.Errorf("a quiet day with two old events keeps %d, want both", len(got))
-	}
-	if got := recentTicks(nil, now); len(got) != 0 {
-		t.Errorf("no events keep %d", len(got))
 	}
 }
 

@@ -54,7 +54,7 @@ a { color: var(--accent); }
 /* figures, refs, times, the activity line and chips in the monospace
    stack with tabular numerals; text in the system face */
 .mono, time, kbd, code, .ref, .fig, .count, .elapsed, .checks, .spend, .calls, .gate, .activity, .chip, .pill, .badge, .who, .chat-who, .tabs button,
-.status-line, .drawer-facts, .meta.chat-start, .provenance, .links, .tk { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-variant-ligatures: none; }
+.status-line, .drawer-facts, .meta.chat-start, .provenance, .links { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-variant-ligatures: none; }
 /* every scrollbar thin and in the theme's colours, the page's gutter
    always present so content that changes height moves nothing */
 html { scrollbar-gutter: stable; }
@@ -660,19 +660,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 /* the drawer docks at the right edge of the main area, over the board
    and never over the chat */
 .drawer { position: absolute; top: 12px; right: 0; bottom: 12px; width: min(46%, 720px); z-index: 20; overflow-y: auto; padding: 14px 18px 28px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-left: 1px solid var(--accent); border-right: 0; box-shadow: var(--drawer-shadow); animation: drin .16s ease-out; }
-/* the ticker along the foot: the project's newest events in mono, quiet,
-   scrolling at about 28 px a second, paused on hover or focus */
-.ticker { position: relative; display: flex; align-items: center; height: 28px; flex: none; overflow: hidden; border-top: 1px solid var(--line); background: var(--bg); color: var(--text-faint); font: 12px var(--font-mono); -webkit-mask: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); mask: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
-.tk-track { display: inline-flex; flex: none; white-space: nowrap; animation: tick var(--dur, 80s) linear infinite; will-change: transform; }
-.ticker:hover .tk-track, .ticker:focus-within .tk-track { animation-play-state: paused; }
-.tk-set { display: inline-flex; flex: none; }
-.tk { display: inline-flex; align-items: center; gap: 8px; padding: 0 22px 0 0; }
-.tk + .tk::before, .tk-set + .tk-set > .tk:first-child::before { content: ""; width: 3px; height: 3px; margin-right: 14px; background: var(--line-strong); }
-.tk b { font-weight: 400; }
-.tk.t-failed .g, .tk.t-failed em { color: var(--failed-quiet); }
-.tk time { font-family: inherit; }
-.stream { position: absolute; inset: 0; margin: 0; padding: 0 16px; line-height: 28px; background: var(--bg); color: var(--need-text); }
-.stream:empty { display: none; }
 @keyframes tick { to { transform: translateX(-50%); } }
 @media (min-width: 1700px) {
   #screen { gap: 14px; padding: 14px 18px; }
@@ -736,7 +723,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .choices button, .escalation form:not(.inline) button[type=submit], .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .approval form[action$="/split"] button, .transitions button { width: 100%; height: 44px; font-size: 14px; }
   .drawer { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .tabs { overflow-x: auto; }
-  .ticker { margin-top: 4px; }
 }
 
 /* the secondary pages: the form of a new task or project */
