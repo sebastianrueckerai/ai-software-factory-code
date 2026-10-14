@@ -154,9 +154,45 @@ type labScene struct {
 	alerts           []factoryd.Alert
 	resources        []cloudres.Resource
 	drawer           string
+	// autonomy is the project's autonomy level for the scene (roadmap
+	// 239); empty: manual.
+	autonomy string
 }
 
-var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene}
+var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
+	"assisted": assistedScene}
+
+// assistedScene is the factory's own code at autonomy assisted: the
+// agent started the login card itself (its applied move in the chat, the
+// event naming it the decider), one card works, one backlog card waits,
+// and the board head's selector shows the level.
+func assistedScene(now time.Time) labScene {
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	running := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a1", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
+		Process: "spec", Repository: "sf/code", IssueNumber: 7, Size: "small", BudgetEUR: 2, SpentEUR: 0.31,
+		Objective: "Speed up the find box.\n\nAcceptance:\n- The find answers in under 100 ms\n"}}
+	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Lane: policy.LaneReady,
+		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2,
+		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in member lands on the board\n"}}
+	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog,
+		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small",
+		Objective: "Trim the roll notes.\n\nAcceptance:\n- The roll comment fits on one line\n"}}
+	msgs := []factoryd.ChatMessage{
+		{Role: "user", Content: "Start the login redirect card; the slots are free.", At: ago(9 * time.Minute)},
+		{Role: "assistant", At: ago(9*time.Minute - 5*time.Second), ToolCalls: []factoryd.ChatToolCall{{
+			ID: "call_1", Name: "move_card", Arguments: `{"task_id":"t-a2","lane":"ready"}`, ReadAt: ago(9*time.Minute - 5*time.Second),
+			Result: "Moved #8 to lane ready; it leaves the backlog once factoryd picks it up."}}},
+		{Role: "assistant", At: ago(9*time.Minute - 3*time.Second), Content: "#8 is queued for a work slot; #7 runs its session. The ready check passed: criteria, size, budget and room."},
+	}
+	events := []factoryd.Event{
+		{Kind: factoryd.EventCardMoved, TaskID: "t-a2", IssueNumber: 8, Actor: "sebastian", Via: factoryd.ViaChat, At: ago(9 * time.Minute),
+			Detail: map[string]any{"lane": "ready", "autonomy": "assisted", "merge_rule": "human", "decider": "agent",
+				"chat_task": factoryd.ChatTaskID("ai-software-factory-code", now)}},
+	}
+	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting},
+		chat: msgs, events: events, spend: 1.2, chatSpend: 0.18, drawer: "t-a1",
+		pulse: factoryd.Pulse{Repository: "sf/code", At: now, Sentence: "One card works, one queues for a slot, one waits in the backlog."}}
+}
 
 // labPRFiles are the lab's pull requests' changed files by Forgejo path.
 var labPRFiles = map[string]string{
@@ -173,7 +209,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire or quiet", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet or assisted", name)
 	}
 	now := time.Now()
 	s := scene(now)
@@ -224,6 +260,10 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
 	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
 	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
+	if p, ok := r.ledger.files["ai-software-factory-code"]; ok {
+		p.Autonomy = cmp.Or(s.autonomy, policy.AutonomyManual)
+		r.ledger.files["ai-software-factory-code"] = p
+	}
 	r.c.mu.Lock()
 	r.c.checks = nil
 	r.c.mu.Unlock()

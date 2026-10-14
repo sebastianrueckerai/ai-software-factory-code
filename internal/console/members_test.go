@@ -175,7 +175,7 @@ func TestInvite(t *testing.T) {
 		`tool {"arguments":{"login":"dave"},"duration_ms":0,"name":"invite","result":"` + said + `"}`,
 		`applied {"result":"` + said + `","tool":"invite"}`, `done {}`})
 	equal(t, "invited", r.invited, []string{"demo/demo dave write"})
-	chatRows(t, r.events, before, "bob", factoryd.Event{Repository: "demo/demo", Kind: factoryd.EventMemberInvited, Detail: map[string]any{"login": "dave"}})
+	chatRows(t, r.events, before, "bob", factoryd.Event{Repository: "demo/demo", Kind: factoryd.EventMemberInvited, Detail: map[string]any{"login": "dave", "autonomy": "manual", "merge_rule": "human", "decider": "member", "chat_task": factoryd.ChatTaskID("demo", time.Now())}})
 
 	r.repoWriters["demo/demo"] = append(r.repoWriters["demo/demo"], "alice")
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}

@@ -73,6 +73,10 @@ type ChatConfig struct {
 	// Confirm are the tools a member must OK: a call proposes, and the
 	// member's Do it runs it. An empty list runs every tool at once.
 	Confirm []string `yaml:"confirm,omitempty" json:"confirm"`
+	// DocRepo is the owner/name of the repository write_doc commits
+	// documents to (the project's document repository, the factory's own
+	// first); empty: the project's chat writes no documents.
+	DocRepo string `yaml:"doc_repo,omitempty" json:"doc_repo,omitempty"`
 }
 
 // ChatTools are the project agent's tools, one per console action and
@@ -83,7 +87,8 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card"}
+	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
+	"write_doc", "set_autonomy"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -92,10 +97,68 @@ var ChatModels = []string{"operator"}
 var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-		"alert_verdict", "promote_resource", "release_resource"}}
+		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy"}}
+
+// The autonomy levels of a project (roadmap 239): how much the project
+// agent may do without its member's OK. Full auto is no level of its
+// own: it is autonomous with merge_rule auto, shown as one state.
+const (
+	AutonomyManual     = "manual"
+	AutonomyAssisted   = "assisted"
+	AutonomyAutonomous = "autonomous"
+	// AutonomyFullAuto is the display state of autonomous at merge_rule
+	// auto; no file names it.
+	AutonomyFullAuto = "full auto"
+)
+
+// AutonomyValues are the autonomy values a project file may name.
+var AutonomyValues = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomous}
+
+// DefaultBacklogCap bounds a project's unstarted filings when its file
+// sets no backlog_cap.
+const DefaultBacklogCap = 8
+
+// assistedOff are the tools that come off the confirm list at assisted:
+// the agent starts and files ready work itself, and every start and
+// filing still passes the ready check.
+var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session"}
+
+// AlwaysConfirm are the tools confirmed at every level: merges while the
+// rule is human, invites, the actions outside the project, and the level
+// and cap changes themselves.
+var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
+	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy"}
+
+// ConfirmFor resolves the confirm list of autonomy level at merge rule
+// over base, the list the policy and the project file set: manual is
+// base as its files set it, assisted takes the starts and filings off
+// and keeps the always-confirm set, autonomous keeps the always-confirm
+// set only, with merges following the rule.
+func ConfirmFor(level, mergeRule string, base []string) []string {
+	ensure := func(list []string) []string {
+		for _, t := range AlwaysConfirm {
+			if !slices.Contains(list, t) {
+				list = append(list, t)
+			}
+		}
+		return list
+	}
+	switch level {
+	case AutonomyAssisted:
+		return ensure(slices.DeleteFunc(slices.Clone(base), func(t string) bool { return slices.Contains(assistedOff, t) }))
+	case AutonomyAutonomous:
+		if mergeRule == MergeAuto {
+			return slices.DeleteFunc(slices.Clone(AlwaysConfirm), func(t string) bool { return t == "approve_merge" || t == "deny_merge" })
+		}
+		return slices.Clone(AlwaysConfirm)
+	default:
+		return slices.Clone(base)
+	}
+}
 
 // ChatOf is project p's chat block: DefaultChat, the policy's keys over
-// it, then the project file's.
+// it, then the project file's, with p's autonomy level resolved into the
+// confirm list.
 func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 	c := DefaultChat
 	for _, b := range []*ChatConfig{d.Chat, p.Chat} {
@@ -108,6 +171,7 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 			c.Confirm = b.Confirm
 		}
 	}
+	c.Confirm = ConfirmFor(p.Autonomy, p.MergeRule, c.Confirm)
 	return c
 }
 
@@ -125,6 +189,9 @@ func (c *ChatConfig) validate() error {
 		if !slices.Contains(ChatTools, t) {
 			return fmt.Errorf("chat.confirm: unknown tool %q (known: %v)", t, ChatTools)
 		}
+	}
+	if c.DocRepo != "" && !repositoryName.MatchString(c.DocRepo) {
+		return fmt.Errorf("chat.doc_repo %q: owner/name in lower case", c.DocRepo)
 	}
 	return nil
 }

@@ -31,6 +31,10 @@ type actor struct {
 	s          *session
 	repository string
 	via        string
+	// level, mergeRule, chatTask and decider ride the chat's actor: the
+	// autonomy state, the rule and the chat task behind its actions, and
+	// who decided, the agent unconfirmed or the member (roadmap 239).
+	level, mergeRule, chatTask, decider string
 }
 
 // button is the actor of the request's button.
@@ -180,8 +184,25 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // record writes what a just did as one event row, their login the actor,
-// even once they left: the action took effect.
+// even once they left: the action took effect. A chat actor's row names
+// the autonomy state, the decider and the chat task behind it (roadmap
+// 239's recording).
 func (c *Console) record(ctx context.Context, a actor, repository, taskID string, issue int64, kind string, detail map[string]any) {
+	if a.level != "" {
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		detail["autonomy"] = a.level
+		if a.mergeRule != "" {
+			detail["merge_rule"] = a.mergeRule
+		}
+		if a.decider != "" {
+			detail["decider"] = a.decider
+		}
+		if a.chatTask != "" {
+			detail["chat_task"] = a.chatTask
+		}
+	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
 		Actor: a.s.user, Via: a.via, Detail: detail})
 }
@@ -299,6 +320,20 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 			return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "project "+ps[i].Name+" has no lane "+lane)
 		}
 		label = laneLabels[lane]
+		// the ready check gates the chat agent's filings and starts; the
+		// human's buttons and the webhook intake file as they always did
+		// (roadmap 239)
+		if a.via == factoryd.ViaChat {
+			if v, ok := c.inForce(ctx); ok {
+				line := factoryd.BacklogRefusal(ctx, c.cfg.Tasks, v.Tree, ps[i].Repository, title)
+				if lane != policy.LaneBacklog {
+					line = factoryd.FileRefusal(ctx, c.cfg.Tasks, v.Tree, ps[i].Repository, title, title, body, size)
+				}
+				if line != "" {
+					return factoryd.Repo{}, 0, refuse(http.StatusConflict, "The ready check refuses the filing: "+line)
+				}
+			}
+		}
 	}
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
@@ -350,6 +385,13 @@ func (c *Console) doMoveCard(ctx context.Context, a actor, id, lane string) (str
 	}
 	if why != "" {
 		return "", refuse(http.StatusForbidden, why)
+	}
+	if a.via == factoryd.ViaChat {
+		if v, ok := c.inForce(ctx); ok {
+			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, v.Tree, t); line != "" {
+				return "", refuse(http.StatusConflict, "The ready check refuses the start: "+line)
+			}
+		}
 	}
 	if _, err := c.addLabel(ctx, a, t, laneLabels[lane], t.IssueNumber); err != nil {
 		return "", &forgejoRefusal{"label the issue", err}
@@ -428,22 +470,50 @@ func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, 
 		log.Printf("console: the cards of plan %s: %v", t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the plan's cards")
 	}
-	var backlog []int64
-	for _, k := range cards {
-		if k.Status == "backlog" && k.IssueNumber > 0 {
-			backlog = append(backlog, k.IssueNumber)
+	var backlog, waits []factoryd.Task
+	var lines []string
+	var tree policy.Tree
+	hasTree := false
+	if a.via == factoryd.ViaChat {
+		if v, ok := c.inForce(ctx); ok {
+			tree, hasTree = v.Tree, true
 		}
 	}
+	for _, k := range cards {
+		if k.Status != "backlog" || k.IssueNumber == 0 {
+			continue
+		}
+		if hasTree {
+			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, tree, k); line != "" {
+				waits = append(waits, k)
+				lines = append(lines, fmt.Sprintf("#%d %s", k.IssueNumber, line))
+				continue
+			}
+		}
+		backlog = append(backlog, k)
+	}
+	nums := make([]int64, len(backlog))
+	for i, k := range backlog {
+		nums[i] = k.IssueNumber
+	}
 	n := 0
-	if len(backlog) > 0 {
-		if n, err = c.addLabel(ctx, a, t, factoryd.LabelAgent, backlog...); err != nil {
+	if len(nums) > 0 {
+		if n, err = c.addLabel(ctx, a, t, factoryd.LabelAgent, nums...); err != nil {
 			log.Printf("console: %s started plan %s: %d of %d cards labelled", a.s.user, t.ID, n, len(backlog))
 			return "", &forgejoRefusal{"label the plan's cards", err}
 		}
 	}
-	log.Printf("console: %s started plan %s via %s: %d cards labelled agent", a.s.user, t.ID, a.via, n)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanStarted, map[string]any{"cards": n})
-	return fmt.Sprintf("Start plan: %d %s of plan #%d labelled agent.", n, plural(n, "card"), t.IssueNumber), nil
+	log.Printf("console: %s started plan %s via %s: %d cards labelled agent, %d wait", a.s.user, t.ID, a.via, n, len(waits))
+		started := map[string]any{"cards": n}
+	if len(waits) > 0 {
+		started["waiting"] = len(waits)
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanStarted, started)
+	var note string
+	if len(waits) > 0 {
+		note = " The ready check holds " + plural(len(waits), "card") + " in the backlog: " + strings.Join(lines, "; ") + "."
+	}
+	return fmt.Sprintf("Start plan: %d %s of plan #%d labelled agent.%s", n, plural(n, "card"), t.IssueNumber, note), nil
 }
 
 // doRetry files failed plan card id again (factoryd's RetryPlanCard)
@@ -466,6 +536,13 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	}
 	if !allowed {
 		return "", refuse(http.StatusForbidden, movedByRefusal(ready, t.Repository))
+	}
+	if a.via == factoryd.ViaChat {
+		if v, ok := c.inForce(ctx); ok {
+			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, v.Tree, t); line != "" {
+				return "", refuse(http.StatusConflict, "The ready check refuses the retry: "+line)
+			}
+		}
 	}
 	issue, err := c.cfg.RetryPlanCard(ctx, t.ID, a.s.user)
 	var no factoryd.ErrNoRetry
@@ -510,6 +587,25 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 	}
 	var stale factoryd.ErrStalePlan
 	var open factoryd.ErrOpenQuestions
+	if a.via == factoryd.ViaChat {
+		if v, ok := c.inForce(ctx); ok {
+			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.ID, revision); err != nil {
+			log.Printf("console: the revision %d of plan %s: %v", revision, t.ID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")
+		} else if ok {
+			var p struct {
+				Cards []json.RawMessage `json:"cards"`
+			}
+			if err := json.Unmarshal(rev.Plan, &p); err == nil && len(p.Cards) > 0 {
+				if n, err := c.cfg.Tasks.CountBacklog(ctx, t.Repository); err != nil {
+					log.Printf("console: the backlog of %s: %v", t.Repository, err)
+				} else if room := v.Tree.BacklogCapOf(t.Repository) - n; len(p.Cards) > room {
+					return "", refuse(http.StatusConflict, fmt.Sprintf("The ready check refuses the acceptance: filing %d cards would pass the backlog cap of %d (%d cards wait now); it waits for room.", len(p.Cards), v.Tree.BacklogCapOf(t.Repository), n))
+				}
+			}
+		}
+		}
+	}
 	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.s.user); {
 	case errors.As(err, &stale):
 		return "", stale

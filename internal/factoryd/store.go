@@ -234,6 +234,10 @@ type Store interface {
 	// session runs and no spend accrues, so its slot frees at once, and
 	// the answer that resumes it overshoots the bound for one gate pass.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
+	// CountBacklog counts repository's cards that hold no admission
+	// stamp: backlog rows and queued rows not yet admitted, the
+	// complement of CountAdmitted's slots (roadmap 239's backlog cap).
+	CountBacklog(ctx context.Context, repository string) (int, error)
 	// ListQueuedByRepository lists repository's queued cards in filing
 	// order, the oldest first: the order a freed slot admits them in.
 	// created_at ties (Forgejo stamps whole seconds) break by issue
@@ -1284,4 +1288,16 @@ func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string
 		return "", false, err
 	}
 	return sha, true, nil
+}
+
+// CountBacklog counts repository's cards that hold no admission stamp:
+// backlog rows and queued rows not yet admitted, the complement of
+// CountAdmitted's slots (roadmap 239's backlog cap).
+func (s *PGStore) CountBacklog(ctx context.Context, repository string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
+			AND status NOT IN ('done', 'failed', 'closed') AND admitted_at IS NULL`, repository).Scan(&n)
+	return n, err
 }

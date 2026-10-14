@@ -56,6 +56,9 @@ type toolInput struct {
 	DependsOn  string `json:"depends_on,omitempty"`
 	Remove     bool   `json:"remove,omitempty"`
 	Mode       string `json:"mode,omitempty"`
+	Autonomy   string `json:"autonomy,omitempty"`
+	Content    string `json:"content,omitempty"`
+	BacklogCap int    `json:"backlog_cap,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -186,7 +189,8 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, cardTitle(d)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
-		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode}, {"verdict", in.Verdict}} {
+		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
+		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -903,6 +907,29 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSplit(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
+		}},
+	{name: "write_doc", title: "Write a document", write: true,
+		params: map[string]any{"path": str("the file's path under docs/ of the document repository: docs/roadmap.md, a file under docs/plans/ or docs/board/, or a new docs/<name>.md"),
+			"content":     str("the file's full new content"),
+			"base_sha256": str("the sha256 of the content the file was last read with; a stale hash refuses and returns the current content")},
+		required: []string{"path", "content"},
+		about:    "Commit a document to the project's document repository, straight to master: the path allow-list under docs/, the size cap, the roadmap's structure check on a roadmap edit, and the content-hash compare-and-swap. The member's OK at every level.",
+		fits:     "the project's document repository",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, in.Path, in.Content, in.SHA256)
+			return note, nil, err
+		}},
+	{name: "set_autonomy", title: "Set the autonomy level", write: true,
+		params: map[string]any{"autonomy": enum("the level: manual confirms everything, assisted starts and files ready work itself, autonomous runs within the always-confirm set", policy.AutonomyValues...),
+			"backlog_cap": map[string]any{"type": "integer", "description": "how many of the project's cards may wait unstarted, 1 or more (default 8)", "minimum": 1}},
+		required: []string{"autonomy"},
+		about:    "Set the project's autonomy level, and its backlog cap with it, in the configuration's project file: the one change that waits for the member's OK at every level, the level's own included.",
+		fits:     "the project's policy",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.BacklogCap, t.a); err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
 		}},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

@@ -180,7 +180,7 @@ func TestChatGithubExport(t *testing.T) {
 	equal(t, "the row", r.mirrors.rows["demo-app export"], factoryd.Mirror{Project: "demo-app",
 		Direction: factoryd.MirrorExport, Remote: "acme/app", Username: "u", Token: ghToken, State: "created", Mode: factoryd.ModeMirror})
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app"}})
+		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "auto", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
 
 	g.replies = [][]string{{call(1, "github_export", args)}}
 	_, _, tokens = chatPost(t, r, ck, s, demo, url.Values{"message": {"export it again"}})
@@ -203,7 +203,7 @@ func TestChatGithubExport(t *testing.T) {
 		`text {"text":"It is the factory's own."}`, `done {}`})
 	equal(t, "Forgejo calls of the refused", r.mirrors.took(), []string(nil))
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app"}})
+		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "auto", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
 
 	said, _ := json.Marshal([]any{chat.msgs, chat.proposals, r.events.all(), g.calls(), events, done, gone, refused, seed})
 	if strings.Contains(string(said)+logs.String(), ghToken) {

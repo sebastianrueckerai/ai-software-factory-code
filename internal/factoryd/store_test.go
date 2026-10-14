@@ -358,6 +358,29 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 	return n, nil
 }
 
+func (s *fakeStore) CountBacklog(ctx context.Context, repository string) (int, error) {
+	n := 0
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil {
+			continue
+		}
+		if !factorydFinal(t.Status) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// factorydFinal is Final for the fake, which cannot import its own
+// package's helper by name.
+func factorydFinal(status string) bool {
+	switch status {
+	case "done", "failed", "closed":
+		return true
+	}
+	return false
+}
+
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {

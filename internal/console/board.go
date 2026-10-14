@@ -1081,6 +1081,10 @@ type boardData struct {
 	Problems    []string
 	Approver    bool // may authorize the shown project's spend (rulings 128, 254)
 	Factory     bool // writes the factory's own code: the layout links the factory-level pages
+	// Autonomy is the shown project's autonomy level, which the head's
+	// selector changes (roadmap 239); empty: no policy in force.
+	Autonomy       string
+	AutonomyLevels []string
 	// PolicyVersion, PolicyCommit and PolicyTreeURL are the configuration
 	// version factoryd runs, as /policy shows it: its number and its
 	// commit, linked to the commit's tree in Forgejo. All zero when the
@@ -1750,6 +1754,14 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 	}
 	f.Project, d.Writes, d.Approver = shown.Name, writable[shown.Name], v.approves(shown.Repository)
+	if v, ok := c.inForce(ctx); ok {
+		if pc, ok := v.Projects[shown.Name]; ok && shown.Name != "" {
+			d.Autonomy, d.AutonomyLevels = pc.Autonomy, policy.AutonomyValues
+			if d.Autonomy == "" {
+				d.Autonomy = policy.AutonomyManual
+			}
+		}
+	}
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
 	wide := f.wide()

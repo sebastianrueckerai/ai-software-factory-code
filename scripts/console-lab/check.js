@@ -16,6 +16,9 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
+  assisted: ["Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
+    "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
+
   busy: ["Factory console", "Board", "New task", "Projects", "Resources", "Costs", "Policy", "Alerts", "Log out", "sebastian", "Theme",
     "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",

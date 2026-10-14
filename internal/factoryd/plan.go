@@ -296,6 +296,42 @@ func questionFindings(qs []PlanQuestion) []string {
 	return out
 }
 
+// sizeFindings are a card size's findings, the plan card's and the ready
+// check's alike: one of the card sizes, whose lines stay under the risk
+// bound.
+func sizeFindings(size string, bound int) []string {
+	var out []string
+	if n, ok := sizeLines(bound)[size]; ok && bound > 0 && n >= bound {
+		out = append(out, fmt.Sprintf("size %s plans up to %d changed lines and the bound is %d: split the card", size, n, bound))
+	}
+	switch {
+	case slices.Contains(policy.CardSizes, size):
+	case size == "":
+		out = append(out, `size "": want small, medium or large`)
+	default:
+		out = append(out, fmt.Sprintf("size %s: split it; a card is one package, one page or one set of endpoints", size))
+	}
+	return out
+}
+
+// acceptanceFindings are a card's acceptance criteria's findings, the
+// plan card's and the ready check's alike.
+func acceptanceFindings(acceptance []string) []string {
+	var out []string
+	if n := len(acceptance); n < 1 || n > maxCardAcceptance {
+		out = append(out, fmt.Sprintf("%d acceptance tests; want 1 to %d", n, maxCardAcceptance))
+	}
+	for i, a := range acceptance {
+		switch n := utf8.RuneCountInString(a); {
+		case n == 0:
+			out = append(out, fmt.Sprintf("acceptance test %d is empty", i+1))
+		case n > maxAcceptanceItem:
+			out = append(out, fmt.Sprintf("acceptance test %d is over %d characters", i+1, maxAcceptanceItem))
+		}
+	}
+	return out
+}
+
 // cardFindings are one card's findings on its own fields: a size whose
 // derived lines reach the risk bound does not fit under it.
 func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
@@ -303,18 +339,11 @@ func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 	add := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
 	}
-	if n, ok := sizeLines(bound)[c.Size]; ok && bound > 0 && n >= bound {
-		add("size %s plans up to %d changed lines and the bound is %d: split the card", c.Size, n, bound)
+	for _, f := range sizeFindings(c.Size, bound) {
+		add("%s", f)
 	}
 	if c.Rung != "" && c.Rung != RungCheap && c.Rung != RungFrontier {
 		add("rung %s: want cheap, frontier or none", c.Rung)
-	}
-	switch {
-	case slices.Contains(policy.CardSizes, c.Size):
-	case c.Size == "":
-		add(`size "": want small, medium or large`)
-	default:
-		add("size %s: split it; a card is one package, one page or one set of endpoints", c.Size)
 	}
 	switch n := utf8.RuneCountInString(c.Title); {
 	case n == 0:
@@ -341,16 +370,8 @@ func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 			add("directory %q: closed to agents, the template owns it", d)
 		}
 	}
-	if n := len(c.Acceptance); n < 1 || n > maxCardAcceptance {
-		add("%d acceptance tests; want 1 to %d", n, maxCardAcceptance)
-	}
-	for i, a := range c.Acceptance {
-		switch n := utf8.RuneCountInString(a); {
-		case n == 0:
-			add("acceptance test %d is empty", i+1)
-		case n > maxAcceptanceItem:
-			add("acceptance test %d is over %d characters", i+1, maxAcceptanceItem)
-		}
+	for _, f := range acceptanceFindings(c.Acceptance) {
+		add("%s", f)
 	}
 	return out
 }
@@ -1584,7 +1605,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Author: approver, AuthorWriter: true})
+			Rung: c.Rung, Size: c.Size, Author: approver, AuthorWriter: true})
 		if err != nil {
 			return nil, err
 		}

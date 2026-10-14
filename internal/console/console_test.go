@@ -285,6 +285,37 @@ func (s *fakeTasks) Dependents(_ context.Context, id string) ([]factoryd.Depende
 	return out, nil
 }
 
+func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, bt := range s.tasks {
+		t := bt.Task
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+			continue
+		}
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
+			(t.Status == "queued" && t.AdmittedAt != nil) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *fakeTasks) CountBacklog(_ context.Context, repository string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, bt := range s.tasks {
+		t := bt.Task
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil || factoryd.Final(t.Status) {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 func (s *fakeTasks) PlanRevision(_ context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1151,7 +1182,7 @@ func TestPagesRequireASession(t *testing.T) {
 func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	form := url.Values{"title": {"x"}, "lane": {"ready"}, "project": {"ai-software-factory-code"}}
+	form := url.Values{"title": {"x"}, "lane": {"ready"}, "project": {"ai-software-factory-code"}, "body": {"Do the thing.\n\nAcceptance:\n- It works\n"}, "size": {"small"}}
 	for name, tok := range map[string]string{"missing": "", "wrong": "nope"} {
 		f := url.Values{}
 		for k, v := range form {
@@ -1292,24 +1323,28 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		project, lane, priority string
-		labels                  []any
-		filed                   string
+		project, lane, priority, body, size string
+		labels                              []any
+		filed                               string
 	}{
-		{"ai-software-factory-code", "ready", "", []any{1.0}, "41"},
-		{"ai-software-factory-code", "human", "priority/p1", []any{2.0, 7.0}, "41"},
-		{"ai-software-factory-code", "backlog", "", []any{3.0}, "41"},
-		{"linkshort", "plan", "", []any{24.0}, "42"},
+		{"ai-software-factory-code", "ready", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}, "41"},
+		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}, "41"},
+		{"ai-software-factory-code", "backlog", "", "details", "", []any{3.0}, "41"},
+		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}, "42"},
 	} {
+		wantBody := tc.body
+		if tc.size != "" {
+			wantBody += "\n\nSize: " + tc.size
+		}
 		r.fg.issues, r.fg.calls = nil, nil
-		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {"details"},
-			"lane": {tc.lane}, "priority": {tc.priority}}), ck)
+		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {tc.body},
+			"lane": {tc.lane}, "priority": {tc.priority}, "size": {tc.size}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed+"&project="+tc.project {
 			t.Fatalf("%s: POST /tasks = %d to %q: %s", tc.lane, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]
-		if got["title"] != "Fix the cache" || got["body"] != "details" || fmt.Sprint(got["labels"]) != fmt.Sprint(tc.labels) {
-			t.Errorf("%s: issue %v, want labels %v", tc.lane, got, tc.labels)
+		if got["title"] != "Fix the cache" || got["body"] != wantBody || fmt.Sprint(got["labels"]) != fmt.Sprint(tc.labels) {
+			t.Errorf("%s: issue %v, want labels %v and body %q", tc.lane, got, tc.labels, wantBody)
 		}
 		for _, call := range r.fg.calls {
 			if !strings.HasSuffix(call, " Bearer access-1") {
@@ -1350,27 +1385,30 @@ func TestNewTaskSize(t *testing.T) {
 	if !strings.Contains(form, want) {
 		t.Fatalf("form lacks the size select %q: %s", want, form)
 	}
-	file := func(size string) *httptest.ResponseRecorder {
+	file := func(size, lane, body string) *httptest.ResponseRecorder {
 		r.fg.issues = nil
 		return r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Fix the cache"},
-			"body": {"details"}, "lane": {"ready"}, "size": {size}}), ck)
+			"body": {body}, "lane": {lane}, "size": {size}}), ck)
 	}
-	for size, wantBody := range map[string]string{"large": "details\n\nSize: large", "": "details"} {
+	for _, tt := range []struct{ size, lane, body, wantBody string }{
+		{"large", "ready", "details\n\nAcceptance:\n- It works", "details\n\nAcceptance:\n- It works\n\nSize: large"},
+		{"", "backlog", "details", "details"},
+	} {
 		before := ev.count()
-		if rec := file(size); rec.Code != http.StatusSeeOther {
-			t.Fatalf("size %q: POST /tasks = %d: %s", size, rec.Code, rec.Body)
+		if rec := file(tt.size, tt.lane, tt.body); rec.Code != http.StatusSeeOther {
+			t.Fatalf("size %q: POST /tasks = %d: %s", tt.size, rec.Code, rec.Body)
 		}
-		if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != wantBody {
-			t.Fatalf("size %q: issues %v, want one with body %q", size, r.fg.issues, wantBody)
+		if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != tt.wantBody {
+			t.Fatalf("size %q: issues %v, want one with body %q", tt.size, r.fg.issues, tt.wantBody)
 		}
-		detail := map[string]any{"lane": "ready", "title": "Fix the cache"}
-		if size != "" {
-			detail["size"] = size
+		detail := map[string]any{"lane": tt.lane, "title": "Fix the cache"}
+		if tt.size != "" {
+			detail["size"] = tt.size
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardFiled, repo: "sf/code", detail: detail})
 	}
 	before := ev.count()
-	if rec := file("giant"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "size must be small, medium or large") {
+	if rec := file("giant", "ready", "details"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "size must be small, medium or large") {
 		t.Fatalf("size giant: POST /tasks = %d: %s", rec.Code, rec.Body)
 	}
 	if len(r.fg.issues) != 0 || ev.count() != before {

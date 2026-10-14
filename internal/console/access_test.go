@@ -80,15 +80,15 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		if rule.scope == scProject || rule.scope == scChat {
 			cookie, csrf, name, subject, user = ak, as.csrf, "demo", "demo", "alice"
 		}
-		wantCode, wantWords := words(rule, subject, "ai-software-factory-code")
+		wantCode, wantWords := words(rule, subject, name)
 		rec := r.do(post(path(p.pattern, name), url.Values{"csrf": {csrf}}), cookie)
 		if code, body := rec.Code, strings.TrimSpace(rec.Body.String()); code != wantCode || body != wantWords {
 			t.Errorf("POST %s as %s = %d %q, want %d %q", p.pattern, user, code, body, wantCode, wantWords)
 		}
 		pages++
 	}
-	if pages != 30 || !slices.Equal(skipped, []string{"POST /logout"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 30 driven and only logout skipped", pages, skipped)
+	if pages != 31 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 31 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -133,8 +133,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 28 || len(tools) != 47 {
-		t.Fatalf("%d of %d tools checked as writes: want 28 of 47", writes, len(tools))
+	if writes != 30 || len(tools) != 49 {
+		t.Fatalf("%d of %d tools checked as writes: want 30 of 49", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -269,8 +269,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 28 {
-		t.Fatalf("%d write tools driven: want 28", writes)
+	if writes != 30 {
+		t.Fatalf("%d write tools driven: want 30", writes)
 	}
 }
 

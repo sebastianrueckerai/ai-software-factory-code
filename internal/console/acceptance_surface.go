@@ -72,7 +72,8 @@ func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
-			Repository: "sf/code", IssueNumber: 5, Objective: "Fix the cache. It drops entries.", BudgetEUR: 3, SpentEUR: 0.4}},
+			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
+			Objective: "Fix the cache. It drops entries.\n\nAcceptance:\n- The cache keeps entries across a restart\n"}},
 		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
 			Process: "maintenance", Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."}},
 		{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
@@ -746,3 +747,34 @@ func (a *AcceptanceRig) Get(context.Context, string) ([]byte, error) {
 }
 
 func (a *AcceptanceRig) Put(context.Context, string, []byte) error { return nil }
+
+func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, bt := range a.tasks {
+		t := bt.Task
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+			continue
+		}
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
+			(t.Status == "queued" && t.AdmittedAt != nil) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (a *AcceptanceRig) CountBacklog(_ context.Context, repository string) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, bt := range a.tasks {
+		t := bt.Task
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil || factoryd.Final(t.Status) {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}

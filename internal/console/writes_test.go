@@ -250,10 +250,10 @@ func TestChatNewCardSize(t *testing.T) {
 // (roadmap 222, item 5); a rung without a reason is refused.
 func TestChatNewCardRung(t *testing.T) {
 	r, g := newWritesRig(t)
-	args := `{"title":"Cache metrics","body":"Count hits.","lane":"ready","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
+	args := `{"title":"Cache metrics","body":"Count hits.\n\nAcceptance:\n- The metrics work","lane":"ready","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane ready."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nSize: small\nRung: frontier, touches the queue")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
 	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", ""); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}

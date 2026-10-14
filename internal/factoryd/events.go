@@ -13,6 +13,9 @@ import (
 // The events (stage11-design.md section 2): the fixed list a later triggers
 // block reads. Only card_entered_lane and task_ended drive behaviour.
 const (
+	// EventAutonomyChanged records a project's autonomy level or backlog
+	// cap change (roadmap 239): detail {"from", "to", "backlog_cap"}.
+	EventAutonomyChanged = "autonomy_changed"
 	EventCardCreated       = "card_created"
 	EventCardEnteredLane   = "card_entered_lane"
 	EventTaskEnded         = "task_ended"

@@ -23,6 +23,8 @@ type DelegationStore interface {
 	CreateTask(ctx context.Context, t Task) error
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
+	CountAdmitted(ctx context.Context, repository string) (int, error)
+	CountBacklog(ctx context.Context, repository string) (int, error)
 }
 
 // DelegationDeps is what DelegationHandler files a card with.
@@ -32,6 +34,9 @@ type DelegationDeps struct {
 	Workflows Workflows
 	Timeline  *Timeline
 	Budget    func() policy.Budget
+	// Policy reads the tree in force, for the ready check the delegated
+	// card passes (roadmap 239).
+	Policy func() policy.Tree
 }
 
 // DelegationHandler serves the gateway's hand-over of an agent's delegate
@@ -75,6 +80,12 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 		if !ok {
 			http.Error(w, "no project has the repository "+parent.Repository, http.StatusConflict)
 			return
+		}
+		if d.Policy != nil {
+			if line := FileRefusal(ctx, d.Store, d.Policy(), parent.Repository, in.Title, in.Title, in.Brief, "small"); line != "" {
+				http.Error(w, "the ready check refuses the filing: "+line, http.StatusConflict)
+				return
+			}
 		}
 		child, ref, err := fileDelegation(ctx, d, p, parent, in.Title, in.Brief)
 		if err != nil {

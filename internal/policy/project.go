@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -275,6 +276,33 @@ type ProjectConfig struct {
 	// Chat is the project agent's block for this project; its keys
 	// replace the policy's.
 	Chat *ChatConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
+	// Autonomy is how much the project agent may do without its member's
+	// OK: manual confirms everything, assisted starts and files ready
+	// work itself, autonomous runs the chat within the always-confirm
+	// set. Absent: manual.
+	Autonomy string `yaml:"autonomy,omitempty" json:"autonomy,omitempty"`
+	// BacklogCap bounds how many of the project's cards hold no admission
+	// stamp (backlog and queued); a filing at the cap refuses. Absent: 8.
+	BacklogCap int `yaml:"backlog_cap,omitempty" json:"backlog_cap,omitempty"`
+}
+
+// AutonomyState is the project's autonomy as the selector shows it: full
+// auto when autonomous runs merge_rule auto, else the level, else
+// manual.
+func (p ProjectConfig) AutonomyState() string {
+	if p.Autonomy == AutonomyAutonomous && p.MergeRule == MergeAuto {
+		return AutonomyFullAuto
+	}
+	return cmp.Or(p.Autonomy, AutonomyManual)
+}
+
+// BacklogCapOf is how many of repository's cards may wait unstarted: its
+// project file's backlog_cap, else the default.
+func (t Tree) BacklogCapOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok && p.BacklogCap > 0 {
+		return p.BacklogCap
+	}
+	return DefaultBacklogCap
 }
 
 // ProjectBudget caps a project's spend in EUR.
@@ -467,6 +495,12 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)
+	}
+	if p.Autonomy != "" && !slices.Contains(AutonomyValues, p.Autonomy) {
+		bad("autonomy %q: want one of %v", p.Autonomy, AutonomyValues)
+	}
+	if p.BacklogCap < 0 {
+		bad("backlog_cap %d: a count of cards", p.BacklogCap)
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)

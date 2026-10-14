@@ -84,6 +84,10 @@ type Tasks interface {
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	// CountAdmitted and CountBacklog count the project's work slots and
+	// its unstarted filings, the ready check's room (roadmap 239).
+	CountAdmitted(ctx context.Context, repository string) (int, error)
+	CountBacklog(ctx context.Context, repository string) (int, error)
 }
 
 // Config wires the console. ForgejoURL serves the code exchange and API
@@ -157,6 +161,10 @@ type Config struct {
 	// (factoryd's forgejo-config token).
 	InfraRepo  factoryd.Repo
 	InfraToken string
+	// DocsToken is the docs writer's Forgejo token, which write_doc
+	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
+	// documents.
+	DocsToken string
 	// CheckProject judges projects/<name>.yaml with file's text the
 	// loader's way against the tree at infra's head
 	// (factoryd.CheckProjectFile): the refusal's lines, none when it
@@ -337,6 +345,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
 		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},
+		{"POST /projects/{name}/autonomy", http.HandlerFunc(c.autonomyButton), nil},
 		{"POST /projects/{name}/export", http.HandlerFunc(c.githubExport), mirrors},
 		{"POST /projects/{name}/export/remove", http.HandlerFunc(c.removeGithubExport), mirrors},
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},

@@ -122,6 +122,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/new":            rProject,
 	"POST /projects/{name}/chat/proposals/{id}": rProject,
 	"POST /projects/{name}/chat/undo/{token}":   rProject,
+	"POST /projects/{name}/autonomy":            {need: approver, scope: scProject, what: "change the autonomy level"},
 	"POST /projects/{name}/export":              {need: writer | approver, scope: scProject, what: "export it to GitHub"},
 	"POST /projects/{name}/export/remove":       {need: writer | approver, scope: scProject, what: "remove its GitHub export"},
 	"POST /projects/{name}/export/sync":         {need: writer | approver, scope: scProject, what: "sync it from GitHub"},
@@ -161,6 +162,8 @@ var accessTable = map[string]accessRule{
 	"split_card":       {need: approver, scope: scCard, what: "split a card"},
 	"unmove_card":      rCard,
 	"delete_comment":   rCard,
+	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
+	"write_doc":        {need: writer, scope: scChat},
 }
 
 // admit refuses a unless they hold rule's roles over repository, whose

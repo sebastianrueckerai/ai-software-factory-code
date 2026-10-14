@@ -50,7 +50,7 @@ type Delegated struct {
 // DelegateIn is the delegate tool's input.
 type DelegateIn struct {
 	Title string `json:"title" jsonschema:"the child card's title, one line"`
-	Brief string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, how to check it"`
+	Brief string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, and an 'Acceptance:' section listing how the work is checked (one '- item' per test); factoryd refuses a brief without one"`
 }
 
 // maxDelegateBrief bounds a delegate call's brief.

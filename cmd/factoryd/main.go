@@ -360,7 +360,8 @@ func main() {
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
-		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget})))
+		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
+		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +441,7 @@ func main() {
 		ConfigDir:  configDir,
 		InfraRepo:  configRepo,
 		InfraToken: forgejo.Seeded[policy.SecretConfig],
+		DocsToken:  optionalSecret("FORGEJO_DOCS_TOKEN"),
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
 		},
@@ -779,6 +781,16 @@ var bootSecrets []string
 func mustSecret(name string) string {
 	v := mustEnv(name)
 	bootSecrets = append(bootSecrets, v)
+	return v
+}
+
+// optionalSecret reads a duty secret that may be absent: empty seats no
+// capability, and a present value is registered for scrubbing.
+func optionalSecret(name string) string {
+	v := os.Getenv(name)
+	if v != "" {
+		bootSecrets = append(bootSecrets, v)
+	}
 	return v
 }
 
