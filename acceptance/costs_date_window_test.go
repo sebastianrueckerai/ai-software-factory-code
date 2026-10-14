@@ -68,6 +68,18 @@ type acceptLedger struct {
 // card's lines with a day in the window summed into its EUR and kept as
 // its lines, and the window's own From and To on the head. The fixture's
 // lines carry their day in Ref behind a space: "coding-cheap 2026-10-10".
+// DaySpend is the fixture's total of one day, the board's figure; it is
+// no window read.
+func (l *acceptLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
+	var eur float64
+	for _, d := range fixtureDays {
+		if d.Day == day.Format(policy.DateLayout) {
+			eur += d.Total
+		}
+	}
+	return eur, nil
+}
+
 func (l *acceptLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

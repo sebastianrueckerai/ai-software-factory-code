@@ -153,6 +153,13 @@ type CostLine struct {
 // DateLayout is the ledger's day format.
 const DateLayout = "2006-01-02"
 
+// LedgerDaySpend is the ledger's total of one UTC day.
+func LedgerDaySpend(ctx context.Context, db *sql.DB, day time.Time) (float64, error) {
+	var eur float64
+	err := db.QueryRowContext(ctx, `SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE day = $1::date`, day.UTC().Format(DateLayout)).Scan(&eur)
+	return eur, err
+}
+
 func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, error) {
 	c := Costs{From: from.Format(DateLayout), To: to.Format(DateLayout), Days: []DayCost{}, Tasks: []TaskCost{}}
 	rows, err := db.QueryContext(ctx,

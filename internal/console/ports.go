@@ -47,6 +47,9 @@ type Policies interface {
 // and a task's model calls.
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
+	// DaySpend is the ledger's total of one UTC day, the board's figure
+	// against the day cap.
+	DaySpend(ctx context.Context, day time.Time) (float64, error)
 	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
 	// CallTotals sums the tasks' audit call rows: their tokens and the
 	// modeled cost and plan credits derived from them at read time

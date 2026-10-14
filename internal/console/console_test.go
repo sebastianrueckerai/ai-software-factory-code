@@ -653,6 +653,18 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 	return l.costs, nil
 }
 
+// DaySpend is the fake's total of one day; it records no window, as it
+// is not the costs read the window tests watch.
+func (l *fakeLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
+	var eur float64
+	for _, d := range l.costs.Days {
+		if d.Day == day.Format(policy.DateLayout) {
+			eur += d.Total
+		}
+	}
+	return eur, nil
+}
+
 func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.ModelCall, error) {
 	return l.calls[taskID], nil
 }

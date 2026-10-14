@@ -142,7 +142,11 @@ type card struct {
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
-	Total, GateAge     string
+	Total, GateAge string
+	// Stage is the work stage of a card in progress (C8): planning on a
+	// plan-lane card, building on a coder's, verifying in review, "" in
+	// any other status. StageAge is how long the card has been in it.
+	Stage, StageAge    string
 	GateText           string
 	EscalationAlert    int64  // the escalation's open alert
 	WaitingOn          string // a card in waiting-deps: the issues it waits on
@@ -552,7 +556,11 @@ type statusLine struct {
 	Working, Waiting, NeedYou int
 	Spend                     factoryd.ProjectSpend
 	CapEUR                    float64
-	GitHub                    string
+	// TodayEUR is the factory's spend this UTC day and DayCapEUR the
+	// policy's day cap, as /costs shows them.
+	TodayEUR, DayCapEUR float64
+	GitHub              string
+	GitHubURL           string // the export's remote on GitHub, "" when not exported
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -663,6 +671,7 @@ func (c *Console) card(t factoryd.Task) card {
 		k.GateAge, k.GateText = minutes(time.Since(*t.GateSince)), t.Gate
 	}
 	k.StatusClass = statusClass(t.Status)
+	k.Stage, k.StageAge = stage(t, end)
 	k.Title = cmp.Or(t.HumanSummary, func() string {
 		if t.PlanKey != "" {
 			return t.PlanKey
@@ -673,6 +682,33 @@ func (c *Console) card(t factoryd.Task) card {
 		k.NearBudget = nearBudget(t.SpentEUR, t.BudgetEUR)
 	}
 	return k
+}
+
+// stage is t's work stage and how long it has been in it at now:
+// planning or building since the admission, verifying since its gate
+// began, else since the admission; a card never admitted counts from its
+// filing.
+func stage(t factoryd.Task, now time.Time) (string, string) {
+	var word string
+	switch t.Status {
+	case "running", "closing":
+		word = "building"
+		if t.Lane == policy.LanePlan {
+			word = "planning"
+		}
+	case "in-review":
+		word = "verifying"
+	default:
+		return "", ""
+	}
+	since := t.CreatedAt
+	if t.AdmittedAt != nil {
+		since = *t.AdmittedAt
+	}
+	if word == "verifying" && t.GateSince != nil {
+		since = *t.GateSince
+	}
+	return word, minutes(now.Sub(since))
 }
 
 // minutes is a duration in whole minutes, or hours and minutes.
@@ -1286,6 +1322,13 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 		d.Problems = append(d.Problems, "the project's spend this month could not be read")
 	}
 	s.CapEUR = monthCap(v.policy, p.Repository)
+	if v.policyOK {
+		s.DayCapEUR = v.policy.Document.Budget.DayEUR
+	}
+	if s.TodayEUR, err = c.cfg.Costs.DaySpend(ctx, time.Now().UTC()); err != nil {
+		log.Printf("console: the spend today: %v", err)
+		d.Problems = append(d.Problems, "the spend today could not be read")
+	}
 	if c.cfg.Mirrors == nil {
 		return
 	}
@@ -1296,6 +1339,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	}
 	if ok {
 		s.GitHub, _, _ = strings.Cut(m.State, ":")
+		s.GitHubURL = m.Remote
 	}
 }
 
