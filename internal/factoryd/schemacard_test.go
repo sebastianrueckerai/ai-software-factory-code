@@ -252,9 +252,9 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	if card.PRNumber != 1 || card.IssueNumber != 1 {
 		t.Fatalf("card = %+v, want pull request #1 and its issue linked", card)
 	}
-	if card.Status != "queued" || card.Kind != "agent" || card.Lane != policy.LaneReady || card.Process != "maintenance" ||
+	if card.Status != "queued" || card.Kind != "agent" || card.Lane != "" || card.Process != "" ||
 		!slices.Equal(card.RequiredCapabilities, []string{policy.ClassCoder}) {
-		t.Fatalf("card = %+v, want a queued ready card of maintenance's coder", card)
+		t.Fatalf("card = %+v, want a queued no-lane card of ready's class, like a roll", card)
 	}
 	if card.BudgetEUR != policy.CardBudget(testCardBudget, nil, "small", 0) || card.RiskClass != "standard" {
 		t.Fatalf("card = %+v, want small's budget of the policy in force", card)
