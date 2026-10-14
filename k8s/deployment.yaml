@@ -12,6 +12,9 @@ spec:
       labels: {app: factory-gateway}
     spec:
       serviceAccountName: factory-gateway
+      # a roll lets the model calls in flight finish (callDrain, 270 s, in
+      # cmd/factory-gateway) and settle their holds before the pod goes
+      terminationGracePeriodSeconds: 300
       automountServiceAccountToken: true # the JWKS fetch authenticates with this token
       # every callee is named in full, so the first DNS query is the one the
       # egress policy admits; search-path expansions would be refused

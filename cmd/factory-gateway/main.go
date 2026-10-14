@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -103,10 +104,12 @@ func main() {
 
 	addr := ":" + cfg.Port
 	log.Printf("factory-gateway %s listening on %s", version, addr)
+	calls, endCalls := context.WithCancel(context.Background())
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Routes(version),
 		ReadHeaderTimeout: 10 * time.Second,
+		BaseContext:       func(net.Listener) context.Context { return calls },
 	}
 	go func() {
 		if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -114,14 +117,39 @@ func main() {
 		}
 	}()
 	<-ctx.Done()
-	drain, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := server.Shutdown(drain); err != nil {
-		log.Printf("shutdown: %v", err)
-	}
+	drainCalls(server, endCalls, callDrain, callSettle)
 	flush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFlush()
 	if err := otelProviders.Shutdown(flush); err != nil {
 		log.Printf("telemetry shutdown: %v", err)
+	}
+}
+
+// callDrain is how long a roll lets the calls in flight run on: the
+// longest model call seen ran 200 s, and the pod's grace period
+// (k8s/deployment.yaml) leaves room past it. callSettle is how long a call
+// cut at the drain's end takes to book its hold and write its audit row.
+const (
+	callDrain  = 270 * time.Second
+	callSettle = 10 * time.Second
+)
+
+// drainCalls ends server on a roll: new calls go to the next pod, the calls
+// in flight run on for up to drain, and any still running past it are
+// cancelled (endCalls ends their request context), so each one's handler
+// books its hold and audits the call within settle instead of dying with
+// the process and leaving the hold for the sweep to book in full.
+func drainCalls(server *http.Server, endCalls context.CancelFunc, drain, settle time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), drain)
+	defer cancel()
+	if err := server.Shutdown(ctx); err == nil {
+		return
+	}
+	log.Printf("shutdown: calls still in flight after %s: cancelling them", drain)
+	endCalls()
+	ctx, cancel = context.WithTimeout(context.Background(), settle)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("shutdown: %v", err)
 	}
 }
