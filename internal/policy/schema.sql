@@ -74,6 +74,8 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS ledger_day ON ledger (day);
 CREATE INDEX IF NOT EXISTS ledger_task ON ledger (task_id);
+-- a ref's newest model calls, which measure its cache floor
+CREATE INDEX IF NOT EXISTS ledger_model_ref ON ledger (ref, id) WHERE kind = 'model';
 
 -- Holds are costs a call or resource may still incur: they count against
 -- the task and day headroom until released into the ledger.

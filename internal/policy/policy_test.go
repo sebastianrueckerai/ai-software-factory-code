@@ -375,12 +375,16 @@ func TestFit(t *testing.T) {
 
 // Hand-derived at in 0.30, cache read 0.03, out 1.50 EUR per million: a
 // 495,000-byte request after a call of 480,000 bytes and 135,000 prompt
-// tokens is about 495,000 × 135,000 / 480,000 = 139,218.75 tokens: 135,000
-// at the cache-read price (0.00405), 4,218.75 at the input price
-// (0.001265625) and the margin of a quarter, 34,804.6875 tokens, at the
-// input price (0.01044140625): 0.01575703125, plus 4,096 output tokens
-// (0.006144) = 0.02190103125 EUR. The first call of a task holds the
-// 495,000 bytes as tokens at the input price: 0.1485 + 0.006144.
+// tokens is about 495,000 × 135,000 / 480,000 = 139,218.75 tokens, its
+// margin of a quarter 34,804.6875, and 4,096 output tokens cost 0.006144.
+// A floor of the whole prefix holds the 135,000 at the cache-read price
+// (0.00405), 4,218.75 and the margin at the input price (0.01170703125):
+// 0.02190103125 EUR. A floor of zero, or none measured, holds all
+// 174,023.4375 at the input price (0.05220703125): 0.05835103125. A floor
+// of half holds 67,500 at the cache-read price (0.002025) and 106,523.4375
+// at the input price (0.03195703125): 0.04012603125. The first call of a
+// task holds the 495,000 bytes as tokens at the input price: 0.1485 +
+// 0.006144.
 func TestFitCalibrated(t *testing.T) {
 	p := Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6}
 	earlier := Usage{PromptTokens: 135000, CachedTokens: 131600, OutputTokens: 900, BodyBytes: 480000}
@@ -388,13 +392,17 @@ func TestFitCalibrated(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		earlier Usage
+		floor   float64
 		want    float64
 	}{
-		{"calibrated by the earlier call", earlier, 0.02190103125},
-		{"the first call keeps the byte bound", Usage{}, 0.154644},
-		{"an earlier call without usage keeps the byte bound", Usage{BodyBytes: 480000}, 0.154644},
+		{"a floor of the whole prefix keeps the cache-read price", earlier, 1, 0.02190103125},
+		{"a floor above the whole prefix counts as the whole", earlier, 1.4, 0.02190103125},
+		{"a floor of zero prices the prefix at the input price", earlier, 0, 0.05835103125},
+		{"a floor of half prices half the prefix at the cache-read price", earlier, 0.5, 0.04012603125},
+		{"the first call keeps the byte bound", Usage{}, 1, 0.154644},
+		{"an earlier call without usage keeps the byte bound", Usage{BodyBytes: 480000}, 1, 0.154644},
 	} {
-		h, err := Fit(free, HoldRequest{Bytes: 495000, Earlier: tc.earlier, Price: p, WantOut: 4096})
+		h, err := Fit(free, HoldRequest{Bytes: 495000, Earlier: tc.earlier, CacheFloor: tc.floor, Price: p, WantOut: 4096})
 		if err != nil || h.MaxOut != 4096 || math.Abs(h.EUR-tc.want) > 1e-12 {
 			t.Errorf("%s: Fit = (%+v, %v), want 4096 tokens for %v EUR", tc.name, h, err, tc.want)
 		}

@@ -1149,3 +1149,7 @@ func (f *accBatchChat) SaveSummary(context.Context, string, string, int64, facto
 func (f *accBatchChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
 
 func (f *accBatchChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }
+
+func (s *accBatchStore) OverHoldCall(ctx context.Context, taskID string, since time.Time) (*factoryd.OverHoldCall, error) {
+	panic("unused")
+}

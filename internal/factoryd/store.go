@@ -301,6 +301,10 @@ type Store interface {
 	// figures the gateway fits the task's next call into
 	// (policy.ReadTaskFree).
 	TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error)
+	// OverHoldCall is the task's agent's newest model call since since
+	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
+	// none.
+	OverHoldCall(ctx context.Context, taskID string, since time.Time) (*OverHoldCall, error)
 	// SetTaskModelAlias moves a running session to alias: the gateway
 	// admits the session's calls on it from the next one (the in-session
 	// climb, roadmap 222, item 5).
@@ -1304,4 +1308,19 @@ func (s *PGStore) CountBacklog(ctx context.Context, repository string) (int, err
 		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
 			AND status NOT IN ('done', 'failed', 'closed') AND admitted_at IS NULL`, repository).Scan(&n)
 	return n, err
+}
+
+func (s *PGStore) OverHoldCall(ctx context.Context, taskID string, since time.Time) (*OverHoldCall, error) {
+	var c OverHoldCall
+	err := s.db.QueryRowContext(ctx,
+		`SELECT model_alias, prompt_tokens, cached_tokens, output_tokens, COALESCE(output_limit, 0), COALESCE(hold_eur, 0)::float8, COALESCE(call_cost_eur, 0)::float8
+		 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND over_hold <> '' AND ts >= $3 ORDER BY ts DESC, id DESC LIMIT 1`,
+		taskID, gateway.AuditKindAgent, since).Scan(&c.Alias, &c.PromptTokens, &c.CachedTokens, &c.OutputTokens, &c.OutputLimit, &c.HoldEUR, &c.CostEUR)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &c, nil
 }

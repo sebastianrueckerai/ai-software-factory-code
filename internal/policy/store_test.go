@@ -346,7 +346,11 @@ func TestHolds(t *testing.T) {
 // A model call's ledger row keeps its usage and request bytes, and the
 // task's next hold on the same ref calibrates from the newest row with
 // usage (the figures of TestFitCalibrated); a row without usage, another
-// ref's and another task's do not count.
+// ref's and another task's do not count. The cache floor is measured on
+// the ref's calls that followed an earlier call of their task: none
+// measured prices the prefix at the input price, a floor of the whole
+// prefix keeps the cache-read price, and one call served half its prefix
+// halves it. Another ref's calls measure no floor of this one.
 func TestModelHoldCalibrates(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -370,8 +374,26 @@ func TestModelHoldCalibrates(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Bytes = 495000
+	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.05835103125) {
+		t.Fatalf("calibrated hold without a measured floor = (%+v, %v), want 0.05835103125 EUR", h, err)
+	}
+	// e's second call found its first call's 1,000 prompt tokens cached;
+	// its two calls on review/coding-cheap found nothing cached
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('e', 'model', 'coding-cheap', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'coding-cheap', 0.01, 1200, 1000, 10, 4800),
+		('e', 'model', 'review/coding-cheap', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'review/coding-cheap', 0.01, 1200, 0, 10, 4800)`); err != nil {
+		t.Fatal(err)
+	}
 	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.02190103125) {
-		t.Fatalf("calibrated hold = (%+v, %v), want 0.02190103125 EUR", h, err)
+		t.Fatalf("calibrated hold under a floor of the whole prefix = (%+v, %v), want 0.02190103125 EUR", h, err)
+	}
+	// f's second call found 1,000 of its first call's 2,000 tokens cached
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('f', 'model', 'coding-cheap', 0.01, 2000, 0, 10, 8000), ('f', 'model', 'coding-cheap', 0.01, 3000, 1000, 10, 12000)`); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.04012603125) {
+		t.Fatalf("calibrated hold under a floor of half = (%+v, %v), want 0.04012603125 EUR", h, err)
 	}
 	req.Ref = "coding-frontier"
 	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.154644) {

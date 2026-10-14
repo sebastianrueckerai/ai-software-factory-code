@@ -493,6 +493,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if out.model != "" {
 		s.model = out.model
 	}
+	if out.overHold, err = r.store.OverHoldCall(ctx, t.ID, startedAt); err != nil {
+		return SessionResult{}, err
+	}
 	res := sessionResult(s, out)
 	res.Model = s.model
 	if res.Outcome == OutcomePushed {
@@ -645,12 +648,36 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	default:
 		res.Summary = out.noResult
 	}
+	if out.overHold != nil {
+		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
+	}
 	ended := "previous session ended without a pushed commit: "
 	if out.commit != "" {
 		ended = "previous session ended unfinished: "
 	}
 	res.Findings = append(slices.Clone(out.findings), ended+res.Summary)
 	return res
+}
+
+// OverHoldCall is a model call the gateway booked beyond its hold (COST
+// OVER HOLD): its alias, its usage and output limit, its hold and its cost.
+type OverHoldCall struct {
+	Alias                                    string
+	PromptTokens, CachedTokens, OutputTokens int
+	OutputLimit                              int
+	HoldEUR, CostEUR                         float64
+}
+
+// state names the call's tokens, hold and cost and the action that fits:
+// an output that ran to its limit wants a shorter one; below it, the
+// prompt cost more than its hold, and a smaller context fits.
+func (c OverHoldCall) state() string {
+	s := fmt.Sprintf("a model call on %s crossed its cost hold: %d prompt tokens (%d cached) and %d output tokens cost %.6f EUR against a hold of %.6f EUR; ",
+		c.Alias, c.PromptTokens, c.CachedTokens, c.OutputTokens, c.CostEUR, c.HoldEUR)
+	if c.OutputLimit > 0 && c.OutputTokens >= c.OutputLimit {
+		return s + fmt.Sprintf("its output ran to the limit of %d tokens, so a shorter output fits: write the change in smaller pieces", c.OutputLimit)
+	}
+	return s + "its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 }
 
 // providerRepetition is Dashscope's refusal of a conversation that repeats

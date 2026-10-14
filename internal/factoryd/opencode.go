@@ -821,6 +821,9 @@ type opencodeParser struct {
 	lastText    string
 	stopped     bool
 	errMsg      string
+	// the last model step's finish reason, output and reasoning tokens
+	finish                     string
+	finishOut, finishReasoning float64
 }
 
 func (p *opencodeParser) errMessage() string { return p.errMsg }
@@ -831,7 +834,23 @@ func (p *opencodeParser) fail(msg string) {
 	}
 }
 
-func (p *opencodeParser) summary() string { return p.lastText }
+// summary is the agent's last text. A session that went idle without a
+// stop leads with how its last model step finished: a step cut at its
+// output limit ends on "length", often with no text at all.
+func (p *opencodeParser) summary() string {
+	if p.stopped {
+		return p.lastText
+	}
+	s := "the session went idle before a model step finished"
+	if p.finish != "" {
+		s = fmt.Sprintf("the agent's last model step finished on %q after %.0f output and %.0f reasoning tokens, not on \"stop\"",
+			p.finish, p.finishOut, p.finishReasoning)
+	}
+	if p.lastText != "" {
+		s += "; its last text: " + p.lastText
+	}
+	return s
+}
 
 func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	if p.errMsg != "" {
@@ -1033,6 +1052,7 @@ func (p *opencodeParser) stepFinish(partJSON []byte, at time.Time, emit func(har
 		p.lastText = p.pendingText
 		p.pendingText = ""
 	}
+	p.finish, p.finishOut, p.finishReasoning = part.Reason, part.Tokens.Output, part.Tokens.Reasoning
 	if part.Reason == "stop" {
 		p.stopped = true
 	}

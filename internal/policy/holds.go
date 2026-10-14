@@ -33,13 +33,16 @@ type HoldRequest struct {
 	// Bytes is a model call's request body length. Earlier is the task's
 	// newest settled call on the same ref with usage, which calibrates the
 	// prompt tokens Bytes carries; without one, a token covers at least
-	// one byte.
-	Bytes    int
-	Earlier  Usage
-	Price    Price
-	WantOut  int // the caller's output limit; 0 = none
-	DayEUR   float64
-	MonthEUR float64
+	// one byte. CacheFloor is the share of Earlier's prompt the provider
+	// serves from its cache at the least, as measured on the ref
+	// (cacheFloor); 0 when none is measured.
+	Bytes      int
+	Earlier    Usage
+	CacheFloor float64
+	Price      Price
+	WantOut    int // the caller's output limit; 0 = none
+	DayEUR     float64
+	MonthEUR   float64
 	// Project names the task's project and ProjectEUR its month cap, its
 	// file's budget.month_eur (Tree.ProjectCap): +Inf for none.
 	Project    string
@@ -130,17 +133,19 @@ type Usage struct {
 // Fit clamps a call's output limit to what the free task, day, month and
 // project headroom can pay for, or refuses it. Calibrated by an earlier
 // call (ruling 274), the prompt is about Bytes times that call's tokens per
-// byte: the part up to that call's prompt tokens, which the provider serves
-// from its cache, at the cache-read price, the rest and a margin of a
-// quarter at the input price. Without one it is at most Bytes tokens at
-// the input price.
+// byte. Of the part up to that call's prompt tokens, the share the
+// provider's measured floor vouches for (CacheFloor) is at the cache-read
+// price; the rest and a margin of a quarter are at the input price. No
+// provider promise is trusted: without a measured floor the whole prompt
+// is at the input price. Without an earlier call it is at most Bytes
+// tokens at the input price.
 func Fit(f Free, r HoldRequest) (Hold, error) {
 	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
 	tokens, measure := float64(r.Bytes), "at most"
 	inEUR := tokens * r.Price.In
 	if e := r.Earlier; e.PromptTokens > 0 && e.BodyBytes > 0 {
 		tokens, measure = float64(r.Bytes)*float64(e.PromptTokens)/float64(e.BodyBytes), "about"
-		cached := min(tokens, float64(e.PromptTokens))
+		cached := min(tokens, float64(e.PromptTokens)) * min(r.CacheFloor, 1)
 		inEUR = cached*r.Price.CacheRead + (tokens-cached+tokens/4)*r.Price.In
 	}
 	outFit := 0
@@ -230,6 +235,9 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return Hold{}, err
 		}
+		if r.CacheFloor, err = cacheFloor(ctx, tx, r.Ref); err != nil {
+			return Hold{}, err
+		}
 		h, err = Fit(free, r)
 	}
 	if err != nil {
@@ -240,6 +248,27 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 		return Hold{}, err
 	}
 	return h, tx.Commit()
+}
+
+// cacheFloorCalls is how many of a ref's newest settled calls measure its
+// cache floor.
+const cacheFloorCalls = 100
+
+// cacheFloor is the least share of its earlier call's prompt (the prefix
+// Fit prices) the provider served from its cache, over those of the newest
+// cacheFloorCalls settled calls on ref that followed an earlier call of
+// their task on ref, Earlier as TakeHold reads it; 0 when none did.
+func cacheFloor(ctx context.Context, tx *sql.Tx, ref string) (float64, error) {
+	var floor float64
+	err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(min(c.cached_tokens::float8 / LEAST(c.prompt_tokens, e.prompt_tokens)), 0)::float8
+		 FROM (SELECT id, task_id, prompt_tokens, cached_tokens FROM ledger
+		       WHERE kind = 'model' AND ref = $1 AND prompt_tokens > 0 AND body_bytes > 0
+		       ORDER BY id DESC LIMIT $2) c
+		 CROSS JOIN LATERAL (SELECT prompt_tokens FROM ledger
+		       WHERE task_id = c.task_id AND kind = 'model' AND ref = $1 AND prompt_tokens > 0 AND body_bytes > 0 AND id < c.id
+		       ORDER BY id DESC LIMIT 1) e`, ref, cacheFloorCalls).Scan(&floor)
+	return floor, err
 }
 
 // LockHeadroom serializes everything that takes headroom, until tx ends.

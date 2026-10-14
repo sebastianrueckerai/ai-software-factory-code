@@ -514,6 +514,54 @@ func TestRunSessionFailedSessionsLine(t *testing.T) {
 	}
 }
 
+// A session whose model call crossed its cost hold (card #756, audit row
+// 46726) ends naming the call's state: the worker's line says how the last
+// step finished, and the gateway's booking adds the prompt, cached and
+// output tokens, the cost, the hold and the fitting action, an output at
+// its limit a shorter output, one below it a smaller context. The line
+// reaches the next brief and the card, its last line and its history.
+func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
+	p := &opencodeParser{}
+	p.line([]byte(`{"type":"step_finish","sessionID":"ses_x","part":{"reason":"length","tokens":{"input":13784,"output":24576,"reasoning":0,"cache":{"read":8896,"write":0}},"cost":0}}`), func(harness.Event) {})
+	said := p.summary()
+	if want := `the agent's last model step finished on "length" after 24576 output and 0 reasoning tokens, not on "stop"`; said != want {
+		t.Fatalf("worker summary = %q, want %q", said, want)
+	}
+	for name, tc := range map[string]struct {
+		call *OverHoldCall
+		want string
+	}{
+		"the output at its limit": {&OverHoldCall{Alias: "coding-frontier", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
+			said + "; a model call on coding-frontier crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
+				"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
+		"the prompt over its price": {&OverHoldCall{Alias: "coding-frontier", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
+			said + "; a model call on coding-frontier crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
+				"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
+		"no call crossed its hold": {nil, said},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+			if tc.call != nil {
+				store.overHolds = map[string]OverHoldCall{"t2": *tc.call}
+			}
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 13, Model: "m"}, nil, reads(0, 2)+resultLine(false, said))
+			if err != nil || res.Outcome != OutcomeNoPush || res.Summary != tc.want {
+				t.Fatalf("result = (%+v, %v), want no_push with summary %q", res, err, tc.want)
+			}
+			line := "previous session ended without a pushed commit: " + tc.want
+			if got := res.Findings[len(res.Findings)-1]; got != line {
+				t.Fatalf("line = %q, want %q", got, line)
+			}
+			var run taskRun
+			run.remember("session", 13, res.Findings)
+			card := run.sessionCapCard(res.Summary, nil)
+			if !strings.Contains(card, "\nlast: "+tc.want+"\n") || !strings.HasSuffix(card, "\n- session, attempt 13: "+line) {
+				t.Fatalf("card = %q, want the state as its last line and its newest finding", card)
+			}
+		})
+	}
+}
+
 // A session the gateway refused at the project's month cap waits on a
 // human with the refusal, which names the file a human raises the cap in.
 func TestProjectCapRefusalEscalates(t *testing.T) {

@@ -152,6 +152,25 @@ func TestOpencodeParserFlagsAPIError(t *testing.T) {
 	}
 }
 
+// A session that went idle without a stop says how its last model step
+// finished, its last text after it; one without a finished step says so.
+func TestOpencodeParserNamesAnUnstoppedEnd(t *testing.T) {
+	p := &opencodeParser{}
+	if got, want := p.summary(), "the session went idle before a model step finished"; got != want {
+		t.Fatalf("summary without a step = %q, want %q", got, want)
+	}
+	for _, l := range []string{
+		`{"type":"text","sessionID":"ses_x","part":{"text":"Writing the patch now."}}`,
+		`{"type":"step_finish","sessionID":"ses_x","part":{"reason":"length","tokens":{"output":20000,"reasoning":4576},"cost":0}}`,
+	} {
+		p.line([]byte(l), func(harness.Event) {})
+	}
+	want := `the agent's last model step finished on "length" after 20000 output and 4576 reasoning tokens, not on "stop"; its last text: Writing the patch now.`
+	if p.stopped || p.errMessage() != "" || p.summary() != want {
+		t.Fatalf("parser: stopped %v, error %q, summary %q; want %q", p.stopped, p.errMessage(), p.summary(), want)
+	}
+}
+
 func TestOpencodeParserRejectsGarbage(t *testing.T) {
 	p := &opencodeParser{}
 	p.line([]byte(`not json`), func(ev harness.Event) {})

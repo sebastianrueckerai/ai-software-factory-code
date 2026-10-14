@@ -811,3 +811,7 @@ func (s *acceptanceStore) finalOf(taskID string) (final, reason string) {
 func (s *acceptanceStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
+
+func (s *acceptanceStore) OverHoldCall(context.Context, string, time.Time) (*factoryd.OverHoldCall, error) {
+	return nil, nil
+}

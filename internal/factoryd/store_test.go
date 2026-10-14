@@ -65,7 +65,8 @@ type fakeStore struct {
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	// held are TaskFree's outstanding holds by task (Held, Holds, Expires)
-	held map[string]policy.TaskFree
+	held      map[string]policy.TaskFree
+	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
 	createFails int
 	// createCalls counts every CreateTask call, failed or not
@@ -2087,4 +2088,11 @@ func TestPGStoreRaiseTaskBudget(t *testing.T) {
 	if _, _, err := s.RaiseTaskBudget(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("raise of no task = %v, want ErrNotFound", err)
 	}
+}
+
+func (s *fakeStore) OverHoldCall(ctx context.Context, taskID string, since time.Time) (*OverHoldCall, error) {
+	if c, ok := s.overHolds[taskID]; ok {
+		return &c, nil
+	}
+	return nil, nil
 }

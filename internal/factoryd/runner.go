@@ -407,6 +407,7 @@ type sessionOutcome struct {
 	noResult  string
 	model     string // the model the session ended on
 	findings  []string
+	overHold  *OverHoldCall // the session's newest call booked beyond its hold
 }
 
 // stopReport is what a stopped worker left for the next session: its
